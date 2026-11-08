@@ -14,10 +14,12 @@ conflicts = [[{ group = "cpu" }, { group = "cuda" }, { group = "rocm" }, { group
 
 [tool.uv.workspace]
 members = ["packages/*", "apps/*"]
+exclude = ["packages/__pycache__", "apps/__pycache__"]  # the pattern above matches them, and uv refuses a member with no project
 
 [dependency-groups]
 # `uv sync` installs the app, and through it every library (but not torch).
-dev = ["wpt", "pytest>=8", "pytest-xdist>=3", "moto[s3]>=5"]
+# pytest-testmon is pinned exactly: ci/startup/child_files.py extends one of its internals.
+dev = ["wpt", "pytest>=8", "pytest-xdist>=3", "pytest-testmon==2.3.0", "moto[s3]>=5"]
 cpu = ["torch>=2.14"]
 # NVIDIA, CUDA 13.0: needs driver 580 or newer. The attention kernels: TileLang under Linux (DeepSeek's
 # version; apache-tvm-ffi 0.1.10 and later break it on Python 3.14), Triton on Windows through triton-windows
@@ -74,5 +76,5 @@ explicit = true
 testpaths = ["packages", "apps"]
 # test files in different members may share a name
 addopts = "--import-mode=importlib"
-# scripts/check.py deselects it unless the push changes image code (docs/architecture.md, "Checks")
+# ci/tests.py runs it apart, and only when a change touches image code (docs/architecture.md, "Checks")
 markers = ["image_build: locks and builds a real image with Docker"]

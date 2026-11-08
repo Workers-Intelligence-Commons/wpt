@@ -121,8 +121,8 @@ Every option also comes from the environment (`--micro-batch` is
 
 ## Contributing
 
-Every commit is signed off (`git commit -s`), and `uv run scripts/check.py`
-runs every check CI runs before you push. A new source starts under review
+Every commit is signed off (`git commit -s`), and `uv run ci/all.py` runs the
+checks your change touches before you push. A new source starts under review
 and enters only when a maintainer admits it in a signed commit; see
 [CONTRIBUTING.md](CONTRIBUTING.md). License questions the project cannot
 settle alone are listed for legal review in

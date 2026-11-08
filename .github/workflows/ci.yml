@@ -1,16 +1,23 @@
-# Every check of docs/architecture.md#checks, on every push and pull request:
-# scripts/check.py, the same script anyone runs before pushing.
+# The checks of docs/architecture.md#checks, on every push and pull request:
+# ci/all.py, the script anyone runs, compared with the last green commit.
 name: ci
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  actions: read  # the last green run
+
 jobs:
   check:
     runs-on: ubuntu-24.04
     env:
       WPT_STORE: file:///tmp/wpt-store
+      WPT_TEST_RECORD: /tmp/wpt-test-record
+      BRANCH: ${{ github.head_ref || github.ref_name }}
+      COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,16 +27,35 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mercurial
       - name: Install the workspace (CPU PyTorch; builds the Rust tokenizer)
         run: uv sync --locked --group cpu
-      - name: Every check, as `uv run scripts/check.py` runs them on your machine
+      - name: Find the last green commit of this branch
+        id: green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run ci/last_green.py "$GITHUB_REPOSITORY" "$BRANCH" "$GITHUB_EVENT_NAME"
+      - name: Restore the test record of that commit
+        id: record
+        if: steps.green.outputs.commit != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.WPT_TEST_RECORD }}
+          key: test-record-${{ env.BRANCH }}-${{ steps.green.outputs.commit }}
+      - name: Every part a change since then touches
         run: |
+          # the commits a push sends, which the commits check reads whatever the last green commit is
           if [ "${{ github.event_name }}" = pull_request ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            range="$base..${{ github.event.pull_request.head.sha }}"
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
           elif [ "${{ github.event.before }}" != 0000000000000000000000000000000000000000 ]; then
-            base="${{ github.event.before }}"
-            range="$base..${{ github.sha }}"
+            range="${{ github.event.before }}..${{ github.sha }}"
           else  # a new branch: every commit it holds
-            base="$(git hash-object -t tree /dev/null)"
             range="${{ github.sha }}"
           fi
-          uv run scripts/check.py --base "$base" --range "$range"
+          if [ "${{ steps.record.outputs.cache-hit }}" = true ]; then
+            uv run ci/all.py --cpu --base "${{ steps.green.outputs.commit }}" --range "$range"
+          else  # no green run, or no record of it: everything
+            uv run ci/all.py --cpu --all --range "$range"
+          fi
+      - name: Keep the test record of this green run
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.WPT_TEST_RECORD }}
+          key: test-record-${{ env.BRANCH }}-${{ env.COMMIT }}

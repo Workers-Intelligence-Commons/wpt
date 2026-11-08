@@ -10,7 +10,7 @@ documentation. -->
 
 ## Checks
 
-- [ ] `uv run scripts/check.py` passed
+- [ ] `uv run ci/all.py` passed
 - [ ] Every commit is signed off (`git commit -s`)
 - [ ] The documentation is updated in the same change as the code
 - [ ] A new package has its row in `docs/licenses.md`

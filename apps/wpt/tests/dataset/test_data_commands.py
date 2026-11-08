@@ -93,6 +93,22 @@ def test_new_source_without_its_texts_leaves_the_license_text_to_a_person(kit, r
     assert code == 0 and "left out" not in out
 
 
+def test_check_fetch_of_named_sources_reads_only_their_rules_and_plain_check_reads_every_one(
+        kit, repo, store, git_upstream, monkeypatch, capsys):
+    monkeypatch.setenv("WPT_STORE", store.root.as_uri())
+    monkeypatch.setenv("WPT_SESSION", store.session)
+    good, broken = (kit.add_source(repo, store, "example", name, {"type": "git", "address": git_upstream[0]})
+                    for name in ("good", "broken"))
+    path = repo.root / "data" / "sources" / broken / "source.json"
+    path.write_text(path.read_text(encoding="utf-8").replace('"licenses"', '"lycenses"'), encoding="utf-8")
+    root = ["--root", str(repo.root)]
+
+    code, out, _ = run(capsys, *root, "check", "--fetch", good)
+    assert code == 0 and "checked 1 sources" in out
+    assert run(capsys, *root, "check")[0] == 1
+    assert run(capsys, *root, "check", "--fetch", broken)[0] == 1
+
+
 def test_new_source_refuses_an_empty_license_text_file_and_declares_formats_without_files(
         kit, repo, store, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("WPT_STORE", store.root.as_uri())

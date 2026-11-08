@@ -266,4 +266,7 @@ def test_a_failed_import_of_flash_linear_attention_keeps_its_reason(monkeypatch)
     present = types.ModuleType("fla.ops.kda")
     present.chunk_kda = present.fused_recurrent_kda = object()
     monkeypatch.setitem(sys.modules, "fla.ops.kda", present)
+    loss = types.ModuleType("fla.modules.fused_linear_cross_entropy")  # the real one needs Triton
+    loss.fused_linear_cross_entropy_loss = object()
+    monkeypatch.setitem(sys.modules, "fla.modules.fused_linear_cross_entropy", loss)
     assert _fla_kernels() and fla_failure() is None

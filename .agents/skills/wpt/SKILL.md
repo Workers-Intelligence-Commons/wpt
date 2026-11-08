@@ -1,6 +1,6 @@
 ---
 name: wpt
-description: How to work in the WPT repository (Workers' Pre-trained Transformer) with its own tools. Use it before adding or changing a source, a recipe, the model, training, an evaluation or a training step, before running any `wpt` subcommand, and before every push. It names the subcommand for each job, what each one reads and writes, how to extend evaluation and training, and the rules that keep `scripts/check.py` green.
+description: How to work in the WPT repository (Workers' Pre-trained Transformer) with its own tools. Use it before adding or changing a source, a recipe, the model, training, an evaluation or a training step, before running any `wpt` subcommand, and before every push. It names the subcommand for each job, what each one reads and writes, how to extend evaluation and training, and the rules that keep the checks of `ci/` green.
 ---
 
 # WPT tooling
@@ -25,24 +25,28 @@ break compatibility (CONTRIBUTING.md, "Writing about the project").
 ## Before every push
 
 ```sh
-uv run scripts/check.py
+uv run ci/all.py
 ```
 
-It runs what CI runs, the same way (CI calls this script): `uv.lock`
-matches the project files, the Python tests, the Rust tests, the data
-rules on every source (read, not downloaded), one small source fetched
-and checked (`standardebooks-joseph-conrad-ford-madox-ford-the-nature-of-a-crime-5366b0f3`,
+The tests prove that things work, not that they are correct; only the checks
+of data sources prove correctness. `ci/` holds one script per part, and
+`ci/all.py` runs them all: `lock` (`uv.lock` matches the project files), `tests`,
+`rust`, `data` (the data rules on every source, read, not downloaded), `sources`
+(one small source fetched and checked,
+`standardebooks-joseph-conrad-ford-madox-ford-the-nature-of-a-crime-5366b0f3`,
 a short book: it proves the fetch works; the sources
 a pull request adds or changes are fetched by the maintainer with
-`check --fetch`) and the commits (sign-off
+`check --fetch`) and `commits` (sign-off
 on every commit, an allowed signature on every commit that changes a
-`decision`, of a source, a license entry or a license text), compared with what a push would send. A green run means a
-green CI. It needs a git clone with an upstream branch; elsewhere pass
-`--base` and `--range`.
+`decision`, of a source, a license entry or a license text, on what a push
+would send).
 
-To check work before committing it, run `uv run scripts/check.py
---working-tree`: every check but the commits, on the files as they are. The
-push still needs the run above.
+Only what a change touches runs, the files as they are, committed or not, compared
+with the upstream branch: `--all` runs everything, `--base REV` and `--range RANGE`
+name other revisions. pytest-testmon chooses the tests from a record in the user's
+cache folder that every checkout of a machine shares. `--cpu` adds CI's software
+conditions (the GPU hidden, Triton blocked). A green run here is no promise of a
+green CI: only CI shows the timing of its 4 cores (docs/architecture.md, "Checks").
 
 Commits are signed off (`git commit -s`): CI refuses any commit without a
 `Signed-off-by` line.
@@ -97,7 +101,7 @@ that part of the store: `<id>/sources/`, `<id>/datasets/`, `<id>/models/`,
 | manifest of a source's stored tree | `uv run wpt dataset manifest ID` (downloads it as `download` does, or finds it in the store) | the upstream, the store | the store; prints the list of the tree's files and the tree's manifest (the sha256 of that list) |
 | erase a passage | `uv run wpt dataset cut ID PATH START END --version V` (bytes of the file as the cuts before left it; the cut names the passage by its length and two hashes keyed by the store's cut key, never its text; docs/erasure.md) | the store | `data/sources/ID/source.json`; the store's cut key on the first cut (keep a backup) |
 | edit a source's files | `uv run wpt dataset unpack ID FOLDER`, edit, `uv run wpt dataset patch ID FOLDER NAME` | the source, the folder | the folder; then `data/sources/ID/NNNN-NAME.patch` |
-| check the data rules | `uv run wpt dataset check [--fetch [ID ...]] [--changed REV]` (`--fetch`: the sources are downloaded as `download` does, then checked strictly: cuts, patches, license and format maps, every file text, pointer tasks; it names each file that is not text, to list in `extract`, and each license entry whose statement would keep its files out (not there, a text no item holds, with that text's id, one it does not expect, or one not admitted), without failing; failures listed at the end) | `data/` | the store, with `--fetch` |
+| check the data rules | `uv run wpt dataset check [--fetch [ID ...]] [--changed REV]` (`--fetch`: the sources are downloaded as `download` does, then checked strictly, and with IDs the rules that need no download apply to those sources only: cuts, patches, license and format maps, every file text, pointer tasks; it names each file that is not text, to list in `extract`, and each license entry whose statement would keep its files out (not there, a text no item holds, with that text's id, one it does not expect, or one not admitted), without failing; failures listed at the end) | `data/` | the store, with `--fetch` |
 | build a vocabulary | `uv run wpt dataset build-tokenizer NAME [--stream] [--strict] [--plan]` (NAME as for `build`: stops before any token; a failing source is left out and listed in the lock; `--strict` (`WPT_STRICT=1`): any failing source stops it, every source whose format map fails named before any text is read; `--plan`: as for `build`) | the data part of the model recipe NAME | the store; its run record `<id>/runs/<run>/`; `data/recipes/tokenizers/<its tokenizer>.lock.json` (commit it) |
 | exclude a source's unusable files | `uv run wpt dataset exclude-unusable ID` (fetches it from upstream, nothing kept, past each file upstream does not give; then the text check) | the source | its `source.json`: exact-path excludes with their reasons in `extract.note`, for review before the commit |
 | follow a run | `uv run wpt store runs [--session ID]`, `uv run wpt store run FOLDER [--session ID] [--follow]` | the store's run records | prints the runs, or one run's stage, counts, last events and errors |
@@ -255,7 +259,7 @@ company's model may enter the data, so:
   mechanically (line endings, spacing, splitting into files), never by
   writing their text yourself.
 - Pass the result to the tools with shell commands: `unpack`, copy the
-  formatted files into the folder, `patch`, then `scripts/check.py`;
+  formatted files into the folder, `patch`, then `ci/all.py`;
   never through the commands marked `*` in `wpt dataset --help`.
 - From a session with an AI assistant, keep only the person's own
   messages.

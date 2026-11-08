@@ -20,6 +20,7 @@ from wpt_utils.lines import bare
 from wpt_worker import certificate
 from wpt_worker.link import Connection, Key, LinkError, dial, pin, probe, receive, send, server_context
 from wpt_worker.manager import Worker, checkout, keys, machines, run_jobs
+from wpt_worker.server import python_path
 
 GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.org", "GIT_COMMITTER_NAME": "T",
            "GIT_COMMITTER_EMAIL": "t@example.org", "GIT_CONFIG_GLOBAL": os.devnull}
@@ -129,6 +130,14 @@ def test_the_checkout_sent_leaves_data_out_holds_uncommitted_changes_and_is_the_
     assert names == ["code.py", "new.py"]
 
 
+def test_a_job_keeps_the_python_path_it_inherited_behind_the_checkout_s_own(monkeypatch):
+    checkout = os.pathsep.join(["/job/a/src", "/job/b/src"])
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["/startup", "", "/other"]))
+    assert python_path(["/job/a/src", "/job/b/src"]) == os.pathsep.join([checkout, "/startup", "/other"])
+    monkeypatch.delenv("PYTHONPATH")
+    assert python_path(["/job/a/src"]) == "/job/a/src"
+
+
 def test_a_key_says_where_its_worker_is_and_its_token_is_never_shown_whole():
     key = Key("34.0.113.5", 8470, "a" * 64, "secret-token/1", place="cluster-1", private="10.0.0.5")
     again = Key.parse(str(key))
@@ -169,7 +178,7 @@ def test_workers_in_one_place_meet_through_nccl_and_workers_in_different_places_
         assert [m["transport"] for m in across] == ["link", "link"]
         hub = Key.parse(across[1]["hub"])
         assert "hub" not in across[0] and (hub.host, hub.port, hub.pin) == ("34.0.113.1", 8470, pin)
-        assert hub.token == across[0]["secret"] == across[1]["secret"] and "t1" not in across[1]["hub"]
+        assert hub.token == across[0]["secret"] == across[1]["secret"] != first.token
         secrets.add(hub.token)
     assert len(secrets) == 2  # one per run
     assert [m["transport"] for m in placed(Key("34.0.113.1", 8470, pin, "t1"), Key("10.0.0.2", 8470, pin, "t2"))] \

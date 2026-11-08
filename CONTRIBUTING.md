@@ -167,7 +167,7 @@ together.
 5. `uv run wpt dataset check --fetch <id>` must pass (it also converts every
    file to Markdown, and names each license entry whose statement would
    keep its files out of a build), and `uv run wpt dataset markdown-check <id>` (every
-   note complete, no leftover markup), then `uv run scripts/check.py`.
+   note complete, no leftover markup), then `uv run ci/all.py`.
 6. Open a pull request. Say what the source is, its license, and anything a
    reviewer should know; use `note` fields for reasons that must stay with
    the data.
@@ -374,29 +374,27 @@ an older shape, not when that shape changed.
 
 ```sh
 uv run scripts/setup.py      # once per machine: installs the right PyTorch build
-uv run scripts/check.py      # every check CI runs, before you push
-uv run scripts/check.py --working-tree   # the same on work not committed yet, without the commit checks
+uv run ci/all.py             # the checks your change touches, before you push
+uv run ci/all.py --all       # every check, whatever changed
+uv run ci/all.py --cpu       # with the software conditions of CI: every GPU hidden, Triton blocked
+uv run ci/tests.py           # one part: lock, tests, rust, data, sources or commits
 ```
 
-`scripts/check.py` is what CI runs too: the tests of every package, the Rust
-tests, the data rules on every source (read, not downloaded), the download and
-check of one small source (`standardebooks-joseph-conrad-ford-madox-ford-the-nature-of-a-crime-5366b0f3`,
+The tests prove that things work, not that they are correct; only the checks of
+data sources prove correctness. `ci/all.py` is what CI runs too: the tests, the
+Rust tests, the data rules on every source (read, not downloaded), the download
+and check of one small source
+(`standardebooks-joseph-conrad-ford-madox-ford-the-nature-of-a-crime-5366b0f3`,
 a short book fixed at one git commit, so its download never changes), which
-proves the fetch and its checks work, and the checks on your commits, compared with the
-upstream branch. A green run means a green CI. Neither check.py nor CI
-downloads the sources a pull request adds or changes: the maintainer runs
-`uv run wpt dataset check --fetch` on them before merging. There is no
-local hook. The tests run in parallel, each process with one PyTorch thread and
-no GPU, as in CI (a plain `uv run pytest` uses the GPU), on as many processes
-as both 75% of the cores and 75% of the available memory (divided by the memory
-a sample of the tests held when it ran alone first) allow, at least 1. The image build test runs only when your push changes image
-code (`packages/wpt-agent/src/wpt_agent/images.py`, the tests
-`apps/wpt/tests/agent/test_images.py` and
-`packages/wpt-agent/tests/test_agent_image.py`, the root `conftest.py`, the image lock and image licenses schemas
-of wpt-dataset, or `data/images/`); otherwise `uv run pytest` runs it. The task
-step tests keep their pinned and built image in `.pytest_cache/` and in Docker, so
-only the first check on a machine, and every CI run, which starts empty, pays
-for locking and building it (`docs/architecture.md`, "Checks").
+proves the fetch and its checks work, and the checks on your commits. Only what
+your change touches runs: pytest-testmon runs the tests whose source changed, and
+the other parts run when their files changed since your upstream branch, committed
+or not. The commits check always runs, on what a push would send. Neither
+`ci/all.py` nor CI downloads the sources a pull request adds or changes: the
+maintainer runs `uv run wpt dataset check --fetch` on them before merging. There
+is no local hook. A green run here is no promise of a green CI: `--cpu` matches
+CI's software, and only CI shows the timing of its 4 cores. `docs/architecture.md`,
+"Checks", says how each part chooses what it runs, and what each takes.
 
 Stored results of the data pipeline hold no code, so a change to the code leaves
 them found. When your change makes a stage give something else for the same

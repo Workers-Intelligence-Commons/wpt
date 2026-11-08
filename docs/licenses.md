@@ -56,6 +56,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | cffi | 2.1.1 | MIT-0 | through cryptography |
 | charset-normalizer | 3.5.2 | MIT | through requests |
 | colorama | 0.4.6 | BSD-3-Clause | Windows only, through pytest |
+| coverage | 7.17.2 | Apache-2.0 | tests, through pytest-testmon |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | the gpu worker's certificate (wpt-worker), and tests through moto; its compiled part includes OpenSSL (Apache-2.0), statically linked |
 | einops | 0.8.2 | MIT | through fla-core |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
@@ -86,7 +87,8 @@ packages must stay compatible with AGPL-3.0-or-later.
 | pycparser | 3.11 | BSD-3-Clause | tests, through moto (cffi) |
 | pygments | 2.21.0 | BSD-2-Clause | through pytest |
 | pytest | 9.1.1 | MIT | tests |
-| pytest-xdist | 3.8.0 | MIT | tests: runs them in parallel (scripts/check.py) |
+| pytest-testmon | 2.3.0 | MIT | tests: runs the ones a change touches (ci/tests.py); pinned, since ci/startup/child_files.py extends one of its internals |
+| pytest-xdist | 3.8.0 | MIT | tests: runs them in parallel (ci/tests.py) |
 | python-dateutil | 2.9.0.post0 | Apache-2.0 AND BSD-3-Clause | newer code is also under Apache-2.0; all of it is under BSD-3-Clause |
 | pyyaml | 6.0.3 | MIT | tests, through moto |
 | referencing | 0.37.0 | MIT | |

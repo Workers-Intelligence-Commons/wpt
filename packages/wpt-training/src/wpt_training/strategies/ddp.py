@@ -16,13 +16,14 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from wpt_training import PluginError, Strategy
+from wpt_utils.device import gpu_count
 
 
 class DDP(Strategy):
     def __init__(self):
         local_rank = int(os.environ["LOCAL_RANK"])
-        if torch.cuda.device_count():  # not is_available(): with every GPU hidden, Windows still says yes
-            device = torch.device("cuda", local_rank % torch.cuda.device_count())
+        if gpu_count():
+            device = torch.device("cuda", local_rank % gpu_count())
             torch.cuda.set_device(device)
             backend = "nccl" if dist.is_nccl_available() else "gloo"
         else:

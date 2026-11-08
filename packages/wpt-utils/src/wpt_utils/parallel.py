@@ -36,8 +36,12 @@ that item's result (Done). process_pool makes a pool of worker processes
 whose memory a Sizing measures.
 
 limit() is the same rule for work whose count must be fixed before it
-starts (the test processes of scripts/check.py), from one item's memory
-measured beforehand (peak() measures a program run alone).
+starts (the test processes of ci/tests.py), from one item's memory
+measured beforehand (average() measures a program run alone).
+
+Memory shared between processes counts once where the system says how it is
+shared (_proportional): a library that every process of a tree maps counts
+as one copy, as the machine holds it.
 """
 
 import collections
@@ -171,10 +175,27 @@ def _windows_processes():
     return found
 
 
+def _proportional(pid) -> int | None:
+    """The bytes process pid holds, each page it shares divided among the
+    processes that share it (Pss in /proc/PID/smaps_rollup), or None where
+    the system does not say: only Linux does, and never for a process that
+    ended or another user's."""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", "rb") as rollup:
+            for text in rollup:
+                if text.startswith(b"Pss:"):
+                    return int(text.split()[1]) * 1024
+    except (OSError, IndexError, ValueError):
+        pass
+    return None
+
+
 def resident(pids) -> dict[int, int] | None:
-    """{pid: resident bytes of that process and of every process it started,
-    and they started, still running} for each of pids (0 for one that
-    ended), or None where this machine does not say."""
+    """{pid: bytes held by that process and every process it started, and
+    they started, still running} for each of pids (0 for one that ended),
+    or None where this machine does not say. Each process counts by
+    _proportional, so what they share counts once, or else by its resident
+    bytes, which count a shared page in every process that maps it."""
     found = _processes()
     if found is None:
         return None
@@ -190,7 +211,8 @@ def resident(pids) -> dict[int, int] | None:
             if here in seen or here not in found:
                 continue
             seen.add(here)
-            total += found[here][1]
+            share = _proportional(here)
+            total += found[here][1] if share is None else share
             pending += children[here]
         totals[pid] = total
     return totals
@@ -310,19 +332,20 @@ def process_pool(sizing, count, initializer=None, initargs=()):
     return pool
 
 
-def peak(command, poll=0.1, **options):
-    """(the exit code, the most resident bytes the program and every program
-    it started held at once, or None where this machine does not say) of
+def average(command, poll=0.1, **options):
+    """(the exit code, the mean of the bytes the program and every program it
+    started held, as resident counts them, over the readings taken while it
+    ran, or None where this machine does not say) of
     command run to its end; options go to subprocess.Popen. The memory is
-    read every poll seconds, so a peak shorter than that may be missed."""
-    most = None
+    read every poll seconds."""
+    readings = []
     with subprocess.Popen(command, **options) as process:
         while process.poll() is None:
             found = resident([process.pid])
             if found is not None:
-                most = max(most or 0, found[process.pid])
+                readings.append(found[process.pid])
             time.sleep(poll)
-    return process.returncode, most
+    return process.returncode, sum(readings) / len(readings) if readings else None
 
 
 def limit(item_memory, what="workers", machine=None):
@@ -342,7 +365,7 @@ def limit(item_memory, what="workers", machine=None):
     by_memory = max(1, int(available * SHARE / item_memory))
     count = min(by_cores, by_memory)
     return count, (f"{count} {what}: the fewer of {SHARE:.0%} of {machine.cores} cores ({by_cores}) and {SHARE:.0%} of "
-                   f"{available / 1e9:.1f} GB available at {item_memory / 1e9} GB each ({by_memory})")
+                   f"{available / 1e9:.1f} GB available at {item_memory / 1e9:.1f} GB each ({by_memory})")
 
 
 class Sizing:

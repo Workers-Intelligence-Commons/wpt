@@ -4,6 +4,7 @@ Order: an NVIDIA or AMD GPU (both appear as "cuda" in PyTorch), then an Intel
 GPU ("xpu"), then the CPU. Among several GPUs of one kind, the one with the
 most memory wins. Which of these PyTorch can use depends on the build that
 scripts/setup.py installed; a missing build or driver falls back to the CPU.
+WPT_CPU=1 in the environment forces the CPU, whatever the machine holds.
 processor_name() names the CPU the same way on Linux, Windows and macOS.
 """
 
@@ -14,12 +15,26 @@ import sys
 
 import torch
 
+FORCE_CPU = "WPT_CPU"
 OVERRIDE = "HSA_OVERRIDE_GFX_VERSION"
 KFD_NODES = "/sys/class/kfd/kfd/topology/nodes"
 
 
+def cpu_forced() -> bool:
+    """Whether the environment forces the CPU."""
+    return os.environ.get(FORCE_CPU, "") in ("1", "true", "yes")
+
+
+def gpu_count() -> int:
+    """How many CUDA devices a training's processes share out: none when
+    the CPU is forced. device_count, not is_available: with every GPU
+    hidden, Windows still says yes."""
+    return 0 if cpu_forced() else torch.cuda.device_count()
+
+
 def select_device() -> torch.device:
-    """Return the device to run on.
+    """Return the device to run on: the CPU when the environment forces it,
+    with no GPU runtime started.
 
     Effect, AMD on Linux only: when no installed GPU is in the PyTorch build's
     supported chip list, sets HSA_OVERRIDE_GFX_VERSION (unless already set) so
@@ -27,6 +42,8 @@ def select_device() -> torch.device:
     reads it when the GPU is first used, so this must run before any GPU work.
     Without an override, GPUs whose chip the build lacks are never picked.
     """
+    if cpu_forced():
+        return torch.device("cpu")
     usable = None  # GPU indices worth considering; None = all
     if torch.version.hip and OVERRIDE not in os.environ:
         supported = _supported_amd_chips()

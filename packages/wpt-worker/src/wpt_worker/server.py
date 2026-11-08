@@ -258,6 +258,14 @@ class Server:
             return self.peers.pop(number, None)
 
 
+def python_path(paths, inherited=None):
+    """The PYTHONPATH of a job: the checkout's source folders, then the
+    entries the worker's own environment (or inherited) holds, which a startup
+    file placed there needs."""
+    inherited = os.environ.get("PYTHONPATH", "") if inherited is None else inherited
+    return os.pathsep.join([*paths, *(path for path in inherited.split(os.pathsep) if path)])
+
+
 class Session:
     """One manager's connection: its checkout, its job, the job's channels."""
 
@@ -343,7 +351,7 @@ class Session:
         self.peer_secret = (json.loads(body).get("machines") or {}).get("secret")
         python = self._environment(checkout) if self.server.settings.install else sys.executable
         paths = [str(src) for root in SOURCES for src in sorted((checkout / root).glob("*/src"))]
-        environ = {**os.environ, "PYTHONPATH": os.pathsep.join(paths), "PYTHONSAFEPATH": "1",
+        environ = {**os.environ, "PYTHONPATH": python_path(paths), "PYTHONSAFEPATH": "1",
                    "WPT_WORKER_JOB": f"127.0.0.1:{self.jobs.getsockname()[1]}", "WPT_WORKER_JOB_KEY": self.job_key,
                    "WPT_WORKER_SPEC": str(work / "spec.json"), "WPT_WORKER_WORK": str(work)}
         group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"

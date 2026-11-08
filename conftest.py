@@ -1,6 +1,6 @@
 """Shared setup for the tests of every package and application: one
 PyTorch thread and no GPU per test process when pytest-xdist runs the tests
-in parallel (scripts/check.py), the `on_the_cpu` fixture, whether Docker runs
+in parallel (ci/tests.py), the `on_the_cpu` fixture, whether Docker runs
 on this machine and a Debian-based image the sandbox tests run in, how two
 passes over the same tokens may differ in routing, and the builders of throwaway repositories,
 upstream projects and HTTP servers (the `kit` fixture and the fixtures

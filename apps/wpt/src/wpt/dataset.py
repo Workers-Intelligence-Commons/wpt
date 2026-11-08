@@ -12,7 +12,9 @@
                                           then check them: cuts, patches, license map,
                                           text; every source is checked, and the failures listed
                                           at the end; each license entry whose statement would
-                                          keep its files out of a build is named, not a failure
+                                          keep its files out of a build is named, not a failure;
+                                          with ids, the rules with no download apply to those
+                                          sources only
     wpt dataset check --changed REV       fetch only sources changed since git revision REV, and
                                           every source with task files when data/images/ changed
     wpt dataset check-commits RANGE       DCO sign-off and signed decisions (e.g. origin/main..HEAD)
@@ -215,7 +217,8 @@ def cmd_download(args, repo):
 
 
 def cmd_check(args, repo):
-    problems = repo.check()
+    named = [] if args.changed else args.fetch or []  # their own rules; the rest of data/ is plain `check`'s
+    problems = [problem for sid in named for problem in repo.check_source(sid)] if named else repo.check()
     if problems:
         say("\n".join(problems), ERROR)
         return 1
@@ -229,7 +232,7 @@ def cmd_check(args, repo):
         fetched = _downloaded(download.run(repo, selection.ids, store, "check", args.arguments), failed)
         for sid in fetched:  # every source is checked, so one run names every failure
             _check_fetched(repo, sid, store, failed)
-    say(f"checked {len(repo.source_ids())} sources and their recipes")
+    say(f"checked {len(named)} sources" if named else f"checked {len(repo.source_ids())} sources and their recipes")
     return _failures(failed, len(selection.ids))
 
 

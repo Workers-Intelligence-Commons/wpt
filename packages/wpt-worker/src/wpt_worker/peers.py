@@ -40,6 +40,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from wpt_training import Strategy
+from wpt_utils.device import gpu_count
 
 from .link import PART, Key, LinkError, dial, receive, send
 from .server import PEER_WAIT
@@ -224,8 +225,8 @@ class Bridged(Strategy):
         environ = os.environ if environ is None else environ
         local_rank, local_world = int(environ["LOCAL_RANK"]), int(environ["LOCAL_WORLD_SIZE"])
         self.machine, self.machines = int(environ[MACHINE]), int(environ[MACHINES])
-        if torch.cuda.device_count():
-            device = torch.device("cuda", local_rank % torch.cuda.device_count())
+        if gpu_count():
+            device = torch.device("cuda", local_rank % gpu_count())
             torch.cuda.set_device(device)
             backend = "nccl" if dist.is_nccl_available() else "gloo"
         else:

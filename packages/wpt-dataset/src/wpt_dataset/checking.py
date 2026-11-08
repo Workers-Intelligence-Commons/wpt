@@ -39,7 +39,11 @@ class Selection:
 
 def to_fetch(repo: Repo, open_store, changed: str | None = None, fetch: list[str] | None = None) -> Selection:
     """The sources a check downloads (see the module's docstring); open_store()
-    gives the store, asked only when pointer tasks must be read."""
+    gives the store, asked only when pointer tasks must be read. Sources
+    named in fetch are the only ones it reads."""
+    if fetch and not changed:
+        named = [repo.source(sid) for sid in fetch]
+        return Selection([s.id for s in named if not s.unwritten], {s.id: s.note for s in named if s.unwritten})
     unwritten = {s.id: s.note for s in repo.sources() if s.unwritten}
     ids = []
     if changed:
@@ -51,7 +55,7 @@ def to_fetch(repo: Repo, open_store, changed: str | None = None, fetch: list[str
             ids = sorted(set(ids) | {s.id for s in repo.sources() if has_tasks(s) and not s.unwritten
                                     and ((pointed := _points_into(repo, s, store)) is None or pointed & gone)})
     elif fetch is not None:
-        ids = wanted(repo, fetch)
+        ids = wanted(repo, [])
     return Selection([sid for sid in ids if sid not in unwritten], unwritten)
 
 

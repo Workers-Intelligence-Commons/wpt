@@ -81,7 +81,7 @@ a source whose every address fails stops. Never download it another way.
 ## 5. Commit the sources under review
 
 Commit the new sources with their `under-review` decisions (the `wpt` skill's
-rules apply: `scripts/check.py`, sign-off, no personal paths).
+rules apply: `ci/all.py`, sign-off, no personal paths).
 
 ## 6. Admission needs the maintainer's explicit yes
 

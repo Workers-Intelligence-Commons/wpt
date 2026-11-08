@@ -1205,7 +1205,7 @@ tree and starting jobs. Nothing is committed by `wpt web`, so every change shows
 | `wpt-model` | the WPT network ([model.md](model.md)) and its drafter, its safetensors model folders, and their license documents (`LICENSE`, `NOTICE`, model card) |
 | `wpt-training` | the training loop (global batch, evaluation, checkpoints, resuming) that runs one training step, with its plug points: strategies (how the hardware is used), and the parts of a step ([training.md](training.md), "Steps"): methods (how the model learns from an example), environments (where the examples come from), optimizers (how an update changes the weights) and the steps that name one of each, with the model parts they lock |
 | `wpt-inference` | sampling through the model's generation cache: several rows from one prompt, the model's next chat message (`next_message`, which `wpt chat --chat` and the text measures of `wpt eval` both write with), speculative decoding with a drafter and its scheduler, the scheduler's pass times (measured, recorded, replayed); training a model's drafter (`drafting.py`), which `wpt train` runs at the end of every run, so it uses `wpt-model` |
-| `wpt-utils` | helpers several packages share, one submodule each: `wpt_utils.device` picks the best GPU, else the CPU; `wpt_utils.programs` starts the outside programs WPT runs (`program(name)`, with a clear error when one is missing), identifies the code (`code()`: the checkout's commit and a hash of its uncommitted changes, the one place that reads the commit, which records and a training step's fingerprint hold; `code_name()`: the same as one line, which a stored result of the data pipeline keeps as what made it) and gives that commit, and whether there are changes, in the shape the records name them (`repository()`), without importing PyTorch; `wpt_utils.files.sha256_file` is the one way a file is hashed, by the store, the model folders and the run records alike; `wpt_utils.files.lock_file` is the lock the operating system holds on a file for one process, which the service layer and a local store's replace of a file share; `wpt_utils.settings.typed` types the settings of a training step and of its method, environment and optimizer from the defaults each file declares; `wpt_utils.parallel` is the one rule that sizes parallel work (at most 75% of the cores; before each new item it measures again and starts it only while a quarter of the memory, of the cores and, where the items write to a disk, of the free disk stays free, one item's memory being what running items are measured taking, never a given figure; it never stops a running item) and runs items that way with their results in the items' order, an error an item may fail with becoming that item's result; `wpt_utils.lines` writes every printed line, with its time and level |
+| `wpt-utils` | helpers several packages share, one submodule each: `wpt_utils.device` picks the best GPU, else the CPU (`WPT_CPU=1` forces the CPU); `wpt_utils.programs` starts the outside programs WPT runs (`program(name)`, with a clear error when one is missing), identifies the code (`code()`: the checkout's commit and a hash of its uncommitted changes, the one place that reads the commit, which records and a training step's fingerprint hold; `code_name()`: the same as one line, which a stored result of the data pipeline keeps as what made it) and gives that commit, and whether there are changes, in the shape the records name them (`repository()`), without importing PyTorch; `wpt_utils.files.sha256_file` is the one way a file is hashed, by the store, the model folders and the run records alike; `wpt_utils.files.lock_file` is the lock the operating system holds on a file for one process, which the service layer and a local store's replace of a file share; `wpt_utils.settings.typed` types the settings of a training step and of its method, environment and optimizer from the defaults each file declares; `wpt_utils.parallel` is the one rule that sizes parallel work (at most 75% of the cores; before each new item it measures again and starts it only while a quarter of the memory, of the cores and, where the items write to a disk, of the free disk stays free, one item's memory being what running items are measured taking, never a given figure; it never stops a running item) and runs items that way with their results in the items' order, an error an item may fail with becoming that item's result; `wpt_utils.lines` writes every printed line, with its time and level |
 | `wpt-agent` | the agent harness of agentic training: the tools (the four built-in ones, `ask`, and those a task or its image's pool declares, answered by programs in the image) and each attempt's choice of them, one Docker container per attempt, the images of `data/images/` and their locks, the agent loop and the task's check, and the playing of a task's attempts (`wpt_agent.play`), which the `agent-tasks` environment of the `finish-tasks` and `finish-tasks-with-less-writing` steps and the agent measures of `wpt eval` share, so `wpt eval` does not depend on `wpt train`; an image's lock and build (`images.py`) |
 | `wpt-worker` | the gpu worker, which runs the GPU work of a training on its machine, the link to it from the wpt manager's side, and the gradients exchanged between gpu workers in different places ([machines.md](machines.md)) |
 | `wpt` (`apps/wpt`) | the app: the `wpt` command and its web server, two controllers over the services above ([The app](#the-app)) |
@@ -1247,88 +1247,177 @@ their setup through `apps/wpt/tests/conftest.py`.
 
 ## Checks
 
-`uv run scripts/check.py` runs every check, the same way on any machine
-and in CI (`.github/workflows/ci.yml`, on every pull request and push), so
-a green run before pushing means a green CI. It compares with the upstream
-branch, as a push would.
-`uv run scripts/check.py --working-tree` checks the files as they are, so
-work needs no commit to be checked. It runs every check below but the
-commits, and the image build tests when the files as they are, new ones git
-does not track yet included, differ in image code from the upstream branch.
-It says that it left the commits out, and a push still needs a run without it.
+The tests prove that things work, not that they are correct. Only the checks
+of data sources prove correctness.
 
-The checks:
+`ci/` holds one script per part: `lock.py`, `tests.py`, `rust.py`, `data.py`,
+`sources.py` and `commits.py`, each run with `uv run ci/NAME.py`. `ci/all.py`
+runs every part, each even after one failed, and lists what passed, what failed
+and what was left out. Each part prints its time, and the tests part prints its
+slowest tests. Only what a change touches runs; `--all` runs everything.
 
-- `uv.lock` matches every `pyproject.toml`.
-- The tests of every package, and the Rust tests. None needs a server: the
-  S3 test runs against moto, which answers S3 requests inside the test
-  process. The tests run in parallel (pytest-xdist), each process limited
-  to one PyTorch thread and kept off the GPU, as in CI, since a GPU that
-  shares the machine's memory gives every process its own share of it; a
-  plain `uv run pytest` still uses the GPU. A test passes in both. One whose
-  claim a GPU cannot hold keeps its programs off the GPU in both (the
-  `on_the_cpu` fixture of the root `conftest.py`): a comparison of two
-  trainings bit for bit, since two runs on one GPU differ
-  ([training.md](training.md), "What is exactly repeatable"), and several
-  processes of a training on one machine, since NCCL refuses two processes on
-  one GPU. A limit in seconds on what a test waits for stands far above what
-  that takes, so other work on the machine does not reach it. The number of
-  processes is
-  fixed before they start, so it comes from `wpt_utils.parallel.limit`,
-  the rule's form for a count fixed in advance. The check first runs a
-  sample of the tests (every 40th, in collection order) alone, and
-  measures the memory that run held at most (`wpt_utils.parallel.peak`: the
-  program and every program it starts); one test process is taken to hold
-  that much, and the count is the smaller of 75% of the cores and 75% of the
-  memory available divided by it, at least 1. Where the memory of the sample
-  cannot be measured, or the available memory cannot be read, the cores
-  alone decide. The check prints the number, the sample's result and both
-  inputs.
-- The image build tests (marked `image_build`, in
-  `apps/wpt/tests/agent/test_images.py`, and the test of the agent
-  image's tools and check library in
-  `packages/wpt-agent/tests/test_agent_image.py`) lock and build
-  real images, which takes minutes. They run only when the push changes
-  image code: `packages/wpt-agent/src/wpt_agent/images.py`,
-  `apps/wpt/tests/agent/test_images.py`,
-  `packages/wpt-agent/tests/test_agent_image.py`, the root `conftest.py`
-  (the `image` fixture),
-  `packages/wpt-dataset/src/wpt_dataset/repo.py` (its `Repo.image_files`
-  decides which files an image's tag covers), the schemas
-  `image-lock.schema.json` and `image-licenses.schema.json` in
-  `packages/wpt-dataset/src/wpt_dataset/schemas/`, or anything under
-  `data/images/`. Otherwise the check leaves it out and says so; a plain
-  `uv run pytest` runs it with every other test.
-- The two task step tests that run attempts in a real image
-  (`apps/wpt/tests/train/test_steps.py`) keep its lock in
-  `.pytest_cache/` and the built image in Docker, for as long as the
-  image's files and `wpt_agent/images.py` stay the same. Only the first
-  check on a machine, and every CI run (which starts empty), pays for
-  locking and building it; when those files change, the next check locks
-  and builds again and removes the old image.
-- `wpt dataset check`: every file matches its schema and current shape,
+A change is the difference between the files as they are, committed or not, and
+a base: where the branch left its upstream branch on a machine, the last green
+commit in CI, or `--base REV`. The parts:
+
+- `lock`: `uv.lock` matches every `pyproject.toml`. It runs when one of them
+  changed.
+- `tests`: the tests of every package, below.
+- `rust`: the tokenizer's Rust tests. It runs when the tokenizer's Rust changed.
+- `data`: `wpt dataset check`: every file matches its schema and current shape,
   licenses are on the allowed list (with their text), coverage patterns
   have an allowed shape, each license entry expects license texts that
   exist and takes the entry itself as its place only where that is
   allowed, no machine admits or refuses at any level, each license text's
   id is that of its text, patches are numbered without gaps, mixture
   weights add up to 1 and pool expressions parse, recipes name existing
-  recipes.
-- `wpt dataset check --fetch
+  recipes. It runs when `data/` changed, or the code it uses: the command,
+  `wpt-dataset`, the packages it depends on, the root `pyproject.toml` and
+  `uv.lock`.
+- `sources`: `wpt dataset check --fetch
   standardebooks-joseph-conrad-ford-madox-ford-the-nature-of-a-crime-5366b0f3`:
   one short book is downloaded (or found in the store), and its cuts,
   patches, license map and text are checked, which proves the fetch and
-  its checks work. The sources a pull
+  its checks work. It reads only that source, the rules of the rest being the
+  `data` part's, and runs when `data` does. The sources a pull
   request adds or changes are not fetched here: the maintainer runs
   `wpt dataset check --fetch` on them before merging.
-- `wpt dataset check-commits <range>`: DCO sign-off on every commit, and a
-  signature from an allowed key on every commit that changes a decision, at
-  any of its three levels (a source's, a license entry's, a license
-  text's), or what an admitted or refused entry or text holds, compared by
-  content rather than by position.
+- `commits`: `wpt dataset check-commits <range>`: DCO sign-off on every commit,
+  and a signature from an allowed key on every commit that changes a
+  decision, at any of its three levels (a source's, a license entry's, a
+  license text's), or what an admitted or refused entry or text holds,
+  compared by content rather than by position. It always runs, on what a push
+  sends: `--range`, by default from the base to `HEAD`.
 
-It runs every check even after one failed, then lists which passed. There
-is no local hook: run it before pushing.
+There is no local hook: run `uv run ci/all.py` before pushing.
+
+### Which tests run
+
+pytest-testmon keeps a record of the source lines each test ran, and runs a test
+again only when one of those lines changed or when it failed. The record reads
+what coverage measures in the test's own process, and `ci/startup/` extends it to
+the programs a test starts: a startup file on `PYTHONPATH` makes each of them
+write every source file of ours it loads into a folder named per test, and a
+pytest plugin makes the test depend on all the lines of those files. A gpu
+worker's job keeps that search path behind its checkout's for this reason. The
+startup file acts only in the project's Python, since other Python programs,
+Mercurial among them, run with the same environment.
+
+Coverage sees only Python, and not the files of `ci/startup/`, which run before
+coverage starts or only in a child pytest. A change to any other file under
+`packages/` or `apps/`, a Rust file included, to any file of `ci/startup/`, or to
+the root `pyproject.toml` or `uv.lock` runs every test, and so does a missing record. The hashes of those files stay beside
+the record, written when a run passed. A change elsewhere in the repository,
+under `data/` for example, selects no test.
+
+testmon sees only code that runs. A test that reads files as text instead of
+running them is selected only when the code it runs changes, so CI can be green
+with such a test broken. `packages/wpt-dataset/tests/test_data_access.py` reads
+every source file to enforce that only the service layer reaches `data/`, and it
+does not run on most changes. A change to `data/`, `LICENSE` or `scripts/`
+selects no test. This is accepted.
+
+A machine's record is in the user's cache folder, or the folder
+`WPT_TEST_RECORD` names, and every checkout of the machine shares it, so a new
+checkout does not run everything. It stays outside the checkout because its
+changes would change the hash of uncommitted files that a test reads. A run with
+`--cpu` and a run without it each keep their own record, since their tests do
+not see the same machine.
+
+The image build tests (marked `image_build`, in
+`apps/wpt/tests/agent/test_images.py`, and the test of the agent
+image's tools and check library in
+`packages/wpt-agent/tests/test_agent_image.py`) lock and build
+real images, which takes minutes. They run apart and keep no record, with `--all`
+or when the change touches image code:
+`packages/wpt-agent/src/wpt_agent/images.py`,
+`apps/wpt/tests/agent/test_images.py`,
+`packages/wpt-agent/tests/test_agent_image.py`, the root `conftest.py`
+(the `image` fixture),
+`packages/wpt-dataset/src/wpt_dataset/repo.py` (its `Repo.image_files`
+decides which files an image's tag covers), the schemas
+`image-lock.schema.json` and `image-licenses.schema.json` in
+`packages/wpt-dataset/src/wpt_dataset/schemas/`, or anything under
+`data/images/`. Otherwise the part leaves them out and says so; a plain
+`uv run pytest` runs them with every other test.
+
+The two task step tests that run attempts in a real image
+(`apps/wpt/tests/train/test_steps.py`) keep its lock in
+`.pytest_cache/` and the built image in Docker, for as long as the
+image's files and `wpt_agent/images.py` stay the same. Only the first
+run on a machine, and every CI run that runs them (which starts empty), pays for
+locking and building it; when those files change, the next run locks
+and builds again and removes the old image.
+
+### How the tests run
+
+None needs a server: the S3 test runs against moto, which answers S3 requests
+inside the test process. The tests run in parallel (pytest-xdist), each process
+limited to one PyTorch thread and kept off the GPU, since a GPU that shares the
+machine's memory gives every process its own share of it; a plain
+`uv run pytest` still uses the GPU. A test passes in both. One whose
+claim a GPU cannot hold keeps its programs off the GPU in both (the
+`on_the_cpu` fixture of the root `conftest.py`): a comparison of two
+trainings bit for bit, since two runs on one GPU differ
+([training.md](training.md), "What is exactly repeatable"), and several
+processes of a training on one machine, since NCCL refuses two processes on
+one GPU. A limit in seconds on what a test waits for stands far above what
+that takes, so other work on the machine does not reach it.
+
+The number of processes is fixed before they start, so it comes from
+`wpt_utils.parallel.limit`, the rule's form for a count fixed in advance. The
+part first runs a sample of the chosen tests (every 40th, in collection order)
+alone, under a worker's conditions, and measures the memory that run held on
+average (`wpt_utils.parallel.average`: the mean of the readings taken while it
+ran, of the program and every program it starts, what they share counted once
+where the system says how it is shared, by each page's share in
+`/proc/PID/smaps_rollup`, and by resident memory elsewhere). One test process is
+taken to hold that much, and the count is the smaller of 75% of the
+cores and 75% of the memory available divided by it, at least 1, and never more
+than the tests. Where the memory of the sample cannot be measured, or the
+available memory cannot be read, the cores alone decide. The part prints the
+number, the sample's result and both inputs.
+
+### The `--cpu` option
+
+`--cpu` runs the tests under CI's software conditions, on any machine, with no
+second environment: `WPT_CPU=1`, the setting of `wpt_utils.device.select_device`
+that forces the CPU, every GPU hidden, and Triton blocked at startup in the
+project's Python. The last two go together, since a visible GPU under ROCm cannot
+start without Triton. CI always passes it. A run with `--cpu` shows what CI's
+software shows: the same tests collected, run and skipped. Only CI shows what
+depends on its machine: the timing of its 4 cores. A green run here is no promise
+of a green CI.
+
+### In CI
+
+`.github/workflows/ci.yml` runs on every pull request and push, and compares
+with the last green commit: `ci/last_green.py` finds the last successful run of
+the branch, of the same kind of event, through the GitHub API, and the test
+record of that commit comes from the Actions cache, where only a green run saves
+it. A part that failed therefore runs again until it is fixed, since its change
+stays in the comparison. With no green run or no record of it, everything runs.
+The `commits` part keeps reading the pushed range.
+
+### What each part takes
+
+Each figure comes from one run. A laptop's times depend on the workers
+its free memory allows, and a CI run on its 3 workers.
+
+A full run is meant to take 25 minutes on CI and 15 minutes on a local machine.
+Nothing fails when a run takes longer: the check prints its times so that growth
+gets noticed.
+
+| Part | 16 cores, 30 GB of memory | CI, 4 cores |
+| --- | --- | --- |
+| `lock` | under 1 s | under 1 s |
+| `tests`, every test | 12 min on 5 workers, 41 min on 1 | 21 min on 3 workers |
+| `tests`, nothing changed | 7 s | |
+| `tests`, an edit in `wpt_model/kda.py` | 9 min, 103 tests on 4 workers | |
+| `rust` | 3 s, its build done | 12 s |
+| `data` | 1 min 10 s | 2 min 20 s |
+| `sources` | 3 s | |
+| `commits` | as long as the range; under 1 s for one ordinary commit | 7 min for a commit that touched every source, under 1 s for an ordinary one |
 
 ## Migrations
 

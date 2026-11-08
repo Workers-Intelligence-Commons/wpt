@@ -4,8 +4,9 @@ import sys
 
 import torch
 
+import wpt_utils.device
 import wpt_utils.programs
-from wpt_utils.device import cpuinfo_name, processor_name, train_in_tf32
+from wpt_utils.device import cpuinfo_name, gpu_count, processor_name, select_device, train_in_tf32
 
 X86 = """processor\t: 0
 vendor_id\t: AuthenticAMD
@@ -71,6 +72,18 @@ def test_a_missing_sysctl_on_macos_names_the_architecture(monkeypatch):
     monkeypatch.setattr(wpt_utils.programs, "program", missing)
     monkeypatch.setattr(subprocess, "run", never)
     assert processor_name() == platform.machine()
+
+
+def test_the_setting_forces_the_cpu_on_a_machine_with_a_gpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(wpt_utils.device, "_largest", lambda backend, usable=None: 0)
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising=False)
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")  # no child process asks the build for its chips
+    monkeypatch.delenv("WPT_CPU", raising=False)
+    assert select_device().type == "cuda" and gpu_count() == 2
+    monkeypatch.setenv("WPT_CPU", "1")
+    assert select_device().type == "cpu" and gpu_count() == 0
 
 
 def test_training_uses_tf32_on_a_cuda_device_and_leaves_the_cpu_exact():

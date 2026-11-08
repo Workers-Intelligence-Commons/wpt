@@ -1,3 +1,5 @@
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -5,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from wpt_utils.parallel import (SAMPLE, Done, Machine, Processes, Sizing, Threads, each, in_order, limit, peak,
+from wpt_utils import parallel
+from wpt_utils.parallel import (SAMPLE, Done, Machine, Processes, Sizing, Threads, average, each, in_order, limit,
                                 process_pool)
 
 GB = 1e9
@@ -340,16 +343,56 @@ def test_processes_measure_what_a_worker_holds():
     assert measured >= 150e6
 
 
-def test_peak_is_the_most_memory_a_program_and_the_programs_it_started_held_at_once():
-    child = "import time; held = b'x' * (200 << 20); time.sleep(1.0)"
+def test_average_is_the_mean_memory_a_program_and_the_programs_it_started_held_while_it_ran():
+    child = "import time; held = b'x' * (200 << 20); time.sleep(2.0)"
     parent = (f"import subprocess, sys; subprocess.run([sys.executable, '-c', {child!r}])")
-    code, most = peak([sys.executable, "-c", parent], poll=0.1)
+    code, mean = average([sys.executable, "-c", parent], poll=0.1)
     assert code == 0
-    if most is None:
+    if mean is None:
         pytest.skip("this machine does not say how much memory a process takes")
-    assert most >= 150e6  # the child's, which the parent did not hold itself
+    assert mean >= 150e6  # the child's, which the parent did not hold itself
 
 
-def test_peak_gives_the_exit_code_of_a_program_that_fails():
-    code, _ = peak([sys.executable, "-c", "raise SystemExit(3)"])
+SHARES_ITS_MEMORY = """import os, signal, sys, time
+held = bytearray(b"x" * (200 << 20))
+child = os.fork()  # the child holds the same pages as its parent
+if child == 0:
+    time.sleep(60)
+    os._exit(0)
+print(child, flush=True)
+sys.stdin.readline()
+os.kill(child, signal.SIGKILL)
+"""
+
+
+@pytest.fixture
+def sharing():
+    """A running program whose child shares 200 MB with it: its id."""
+    if not hasattr(os, "fork"):
+        pytest.skip("this system does not share a process's memory with its child")
+    with subprocess.Popen([sys.executable, "-c", SHARES_ITS_MEMORY], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          text=True) as process:
+        process.stdout.readline()
+        yield process.pid
+        process.stdin.close()
+
+
+def test_memory_a_program_shares_with_its_child_counts_once(sharing):
+    # a worker count from a tree's memory must see what the machine holds: libraries shared
+    # by every process of a tree counted once each
+    if parallel._proportional(sharing) is None:
+        pytest.skip("this machine does not say how memory is shared")
+    assert 150e6 < parallel.resident([sharing])[sharing] < 300e6
+
+
+def test_memory_counts_as_resident_where_the_system_does_not_say_how_it_is_shared(sharing, monkeypatch):
+    monkeypatch.setattr(parallel, "_proportional", lambda pid: None)
+    found = parallel.resident([sharing])
+    if found is None:
+        pytest.skip("this machine does not say how much memory a process takes")
+    assert found[sharing] >= 350e6  # both processes, each with the whole of it
+
+
+def test_average_gives_the_exit_code_of_a_program_that_fails():
+    code, _ = average([sys.executable, "-c", "raise SystemExit(3)"])
     assert code == 3
