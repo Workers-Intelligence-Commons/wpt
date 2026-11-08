@@ -5,6 +5,8 @@ under --import-mode=importlib)."""
 
 import json
 import os
+import secrets
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -193,6 +195,27 @@ def built(tmp_path, monkeypatch):
                            license_text=LICENSE_TEXT, recipe=recipe, records=records, covered=lambda data: covered(data, root),
                            download=lambda sid: download(root, store, sid), source=source,
                            build=lambda name="d": build_dataset(repo, name, store, log=lambda *_: None))
+
+
+@pytest.fixture
+def worker_port():
+    """Gives a port for a gpu worker that meets others on the port after its
+    own (docs/machines.md, "Several machines"): an even one below the range
+    the system takes the ports of its connections from, since a port there
+    stays taken for a minute after a connection that used it, and PyTorch
+    cannot listen on it. Even, so one worker's port is never another's next."""
+    def free() -> int:
+        while True:
+            port = 20000 + 2 * secrets.randbelow(6000)
+            try:
+                with socket.socket() as first, socket.socket() as second:
+                    first.bind(("127.0.0.1", port))
+                    second.bind(("127.0.0.1", port + 1))
+            except OSError:
+                continue
+            return port
+
+    return free
 
 
 @pytest.fixture

@@ -46,7 +46,7 @@ class Fake(Provider):
         found = []
         for index in range(count):
             folder = Path(self.settings["FAKE_FOLDER"]) / name / str(index)
-            env = {**os.environ, "WPT_WORKER_TOKEN": token, "WPT_WORKER_PORT": "0",
+            env = {**os.environ, "WPT_WORKER_TOKEN": token, "WPT_WORKER_PORT": str(Fake.port()),
                    "WPT_WORKER_ADDRESS": "127.0.0.1", "WPT_WORKER_FOLDER": str(folder)}
             if count > 1:
                 env.update(WPT_WORKER_PLACE=name, WPT_WORKER_PRIVATE="127.0.0.1")
@@ -84,8 +84,9 @@ Fake.cluster_of = {}
 
 
 @pytest.fixture
-def fake(built, on_the_cpu, tmp_path, monkeypatch):
+def fake(built, on_the_cpu, tmp_path, monkeypatch, worker_port):
     Fake.calls, Fake.processes, Fake.lose, Fake.failures, Fake.cluster_of = [], {}, False, 0, {}
+    Fake.port = worker_port
     monkeypatch.setattr(rental, "providers", lambda: {"fake": Fake})
     monkeypatch.setenv("WPT_RENTAL_PROVIDER", "fake")
     monkeypatch.setenv("FAKE_FOLDER", str(tmp_path / "rented"))

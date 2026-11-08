@@ -54,6 +54,7 @@ SCHEME = "wpt-worker"
 # other side after IDLE quiet seconds, every INTERVAL seconds, COUNT times, and data left unacknowledged
 # for UNACKNOWLEDGED seconds breaks the connection too
 IDLE, INTERVAL, COUNT, UNACKNOWLEDGED = 30, 10, 6, 90
+LEAVING = 10  # seconds close() gives the reading thread to end: a notice's handler may be writing
 
 
 class LinkError(Exception):
@@ -343,11 +344,17 @@ class Connection:
             self._handle(header, body)
 
     def close(self):
+        """End the link, its descriptor given back last: a TLS read that the
+        end of the link interrupts writes an alert to that descriptor, and
+        a writing thread its frame, and the next file this process opens gets
+        the same number, so either would land in that file."""
         try:
             self.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-        self.sock.close()
+        self._reader.join(LEAVING)
+        with self._sending:
+            self.sock.close()
 
     def _send(self, header, body=b""):
         if self._broken is not None:

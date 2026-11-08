@@ -1,6 +1,6 @@
 """A run on several gpu workers, and a lost gpu worker (docs/machines.md,
 "Several machines" and "A lost gpu worker"). The workers run here on the
-CPU, each a process of its own on a port the system picks."""
+CPU, each a process of its own."""
 
 import json
 import os
@@ -26,13 +26,15 @@ def one_stage(steps):
     return {"stages": [{"block_size": 16, "steps": steps, "batch_size": 4}]}
 
 
-def start_worker(stack, tmp_path, name) -> Key:
-    """A gpu worker of its own, for one manager, as a person would start
-    one; its key."""
-    process = subprocess.Popen([sys.executable, "-m", "wpt_worker", "--local"], stdout=subprocess.PIPE, text=True,
-                               env={**os.environ, "WPT_WORKER_FOLDER": str(tmp_path / name)})
+def start_worker(stack, tmp_path, name, port) -> Key:
+    """A gpu worker of its own, as a person would start one, on port; its
+    key."""
+    process = subprocess.Popen([sys.executable, "-m", "wpt_worker"], stdout=subprocess.PIPE, text=True,
+                               env={**os.environ, "WPT_WORKER_FOLDER": str(tmp_path / name),
+                                    "WPT_WORKER_PORT": str(port), "WPT_WORKER_ADDRESS": "127.0.0.1"})
     stack.callback(process.wait, 120)
     stack.callback(process.stdout.close)
+    stack.callback(process.kill)
     return Key.parse(bare(process.stdout.readline()))
 
 
@@ -42,8 +44,8 @@ def train(built, tmp_path, recipe, out, workers="", *options):
     return load_file(tmp_path / out / "model.safetensors")
 
 
-def test_two_gpu_workers_train_the_same_model_as_two_processes_on_one_in_one_place_and_across_places(built,
-                                                                                                    tmp_path):
+def test_two_gpu_workers_train_the_same_model_as_two_processes_on_one_in_one_place_and_across_places(
+        built, tmp_path, worker_port):
     # in one place (private addresses, no place given), the workers' processes
     # meet through gloo here (NCCL on GPUs); across places (each key names
     # another place), they exchange gradients over their links: either way
@@ -54,7 +56,7 @@ def test_two_gpu_workers_train_the_same_model_as_two_processes_on_one_in_one_pla
     for out, places in (("near", ("", "")), ("far", ("?place=a", "?place=b"))):
         shutil.rmtree(built.store.root / "cache" / "steps")  # the hardware is no part of a step: each run trains
         with ExitStack() as stack:
-            found = [start_worker(stack, tmp_path, f"{out}-{index}") for index in range(2)]
+            found = [start_worker(stack, tmp_path, f"{out}-{index}", worker_port()) for index in range(2)]
             text = " ".join(str(key).replace("#", places[index] + "#") for index, key in enumerate(found))
             two = train(built, tmp_path, recipe, out, text, "--processes", "1")
         assert one.keys() == two.keys()
@@ -95,7 +97,7 @@ def test_a_gpu_worker_that_cannot_be_reached_or_whose_link_breaks_is_lost(built,
 
 
 def test_a_training_process_that_crashes_on_one_of_several_gpu_workers_ends_the_run_with_code_5_for_the_manager(
-        built, tmp_path, monkeypatch, capsys):
+        built, tmp_path, monkeypatch, capsys, worker_port):
     # the job ends on every worker, so the manager resumes from the checkpoint
     # it holds, as for a lost worker; on one worker the crash's own exit code stays
     import wpt.train
@@ -103,7 +105,8 @@ def test_a_training_process_that_crashes_on_one_of_several_gpu_workers_ends_the_
     monkeypatch.setattr(wpt.train, "run_jobs", lambda *_: 1)
     for count, expected in ((2, wpt.train.CRASHED), (1, 1)):
         with ExitStack() as stack:
-            text = " ".join(str(start_worker(stack, tmp_path, f"w{count}-{index}")) for index in range(count))
+            text = " ".join(str(start_worker(stack, tmp_path, f"w{count}-{index}", worker_port()))
+                            for index in range(count))
             monkeypatch.setenv("WPT_GPU_WORKERS", text)
             with pytest.raises(SystemExit) as ended:
                 main(["d", built.dataset_id, "--out", f"model{count}"])

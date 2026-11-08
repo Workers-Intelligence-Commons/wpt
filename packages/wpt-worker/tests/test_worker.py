@@ -17,7 +17,8 @@ import pytest
 
 import wpt_worker
 from wpt_utils.lines import bare
-from wpt_worker.link import Key, LinkError, dial, probe
+from wpt_worker import certificate
+from wpt_worker.link import Connection, Key, LinkError, dial, pin, probe, receive, send, server_context
 from wpt_worker.manager import Worker, checkout, keys, machines, run_jobs
 
 GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.org", "GIT_COMMITTER_NAME": "T",
@@ -329,6 +330,40 @@ def test_a_worker_prints_the_place_and_private_address_its_settings_give(tmp_pat
                                 "WPT_WORKER_FOLDER": str(tmp_path / "plain")})
     shown = Key.parse(bare(plain.stdout.splitlines()[0]))
     assert (shown.place, shown.private) == (None, None)
+
+
+def test_a_closed_link_writes_nothing_into_the_file_opened_right_after_it(tmp_path):
+    # the run's record opens its file as the manager closes its links, and that
+    # file takes the number of the link's descriptor; on this timing a round
+    # writes there about 1 round in 30 when the link's reading thread outlives
+    # the close
+    certificate_file, private_key, der = certificate.ensure(tmp_path / "tls")
+    context = server_context(certificate_file, private_key)
+
+    def answer(listener):
+        while True:
+            raw, _ = listener.accept()
+            with context.wrap_socket(raw, server_side=True) as sock:
+                receive(sock)
+                send(sock, {"kind": "welcome"})
+                try:
+                    while sock.recv(1 << 16):
+                        pass
+                except OSError:
+                    pass
+
+    listener = socket.create_server(("127.0.0.1", 0))
+    threading.Thread(target=answer, args=(listener,), daemon=True).start()
+    key = Key("127.0.0.1", listener.getsockname()[1], pin(der), "token")
+    for number in range(50):
+        link = Connection(dial(key))
+        time.sleep(0.002)  # its reading thread is in its read
+        link.close()
+        record = tmp_path / f"{number}.jsonl"
+        with open(record, "ab", buffering=0) as file:
+            file.write(b"line\n")
+        time.sleep(0.001)
+        assert record.read_bytes() == b"line\n"
 
 
 def test_a_job_that_ends_stopped_does_not_stop_the_others_a_second_time(monkeypatch):
