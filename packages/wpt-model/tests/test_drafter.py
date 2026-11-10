@@ -54,34 +54,31 @@ def test_a_drafter_of_another_vocabulary_is_refused(tmp_path):
 
 
 def test_the_model_card_names_the_drafter_and_its_notice_adds_no_source(tmp_path):
-    # the drafter's prompts are the beginnings of the dataset's training
-    # documents: the NOTICE credits the model's sources alone, and the card
-    # says what made the drafter and against which weights
+    # the drafter's prompts are the beginnings of the corpus's plain texts:
+    # the NOTICE credits the texts of CREDITS alone, the same with or
+    # without the drafter, and the card says what made the drafter and
+    # against which weights
     config = ModelConfig(**TINY)
     save_model(WPT(config), tmp_path, VOCABULARY, "test version 1")
-    source = {"address": "https://example.org/talks", "manifest": "1" * 64, "licenses": [{"license": "CC0-1.0", "paths": ["talks/**"],
-                                                                                  "attribution": "Talks, by Bo Speaker"}]}
     step = {"step": {"name": "answer-as-assistant"}, "method": {"name": "assistant-tokens"},
             "optimizer": {"name": "by-part"}, "environment": {"name": "conversations"}, "reads": "conversations",
             "locked": [], "updates": 1,
             "weights_update": 1, "stages": [{"block_size": None, "steps": 1, "batch_size": 8}],
-            "best_validation_loss": None, "reused": False, "sources": ["example-talks"]}
-    provenance = {"dataset": "d" * 64, "parameters": 1, "steps": [step], "device": "cpu",
-                  "sources": {}}
+            "best_validation_loss": None, "reused": False}
+    provenance = {"corpus": {"id": "d" * 64, "dataset": "talks", "depot": "file:///depot"}, "texts": 1,
+                  "parameters": 1, "steps": [step], "device": "cpu"}
     (tmp_path / "provenance.json").write_text(json.dumps(provenance))
-    provenance["sources"] = {"example-talks": source}
-    (tmp_path / "provenance.json").write_text(json.dumps(provenance))
+    (tmp_path / "CREDITS").write_text("file:///depot test-1: Talks, by Bo Speaker; CC0-1.0\n")
+    before = documents(tmp_path)["NOTICE"]
     save_drafter(Drafter(config, DrafterConfig.for_model(config)), tmp_path, "test version 1", "0" * 64, provenance={
-        "trained_by": {"command": "wpt train", "recipe_name": "chat"}, "dataset": "d" * 64,
+        "trained_by": {"command": "wpt train", "recipe_name": "chat"}, "corpus": "d" * 64,
         "target": {"weights": {"model.safetensors": "e" * 64}},
-        "acceptance": {"verified": 10, "accepted": 4, "rounds": 6, "tokens_per_round": 10 / 6},
-        "sources": {"example-other": {**source, "address": "https://example.org/other"}}})  # never read
+        "acceptance": {"verified": 10, "accepted": 4, "rounds": 6, "tokens_per_round": 10 / 6}})
     texts = documents(tmp_path)
-    assert "example-talks" in texts["NOTICE"] and "example-other" not in texts["NOTICE"]
+    assert "Talks, by Bo Speaker" in texts["NOTICE"] and texts["NOTICE"] == before
     card = texts["README.md"]
     assert "## Drafter" in card and "`wpt train`, recipe `chat`" in card and "`dddddddddddd`" in card
     assert "`model.safetensors` (sha256 `eeeeeeeeeeee`)" in card and "4 of 10 drafts kept" in card
-    assert "example-other" not in card
 
 
 def test_the_markov_head_s_rank_follows_the_model_s_width():
