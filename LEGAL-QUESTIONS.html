@@ -86,14 +86,14 @@ dd { margin: 0 0 4px; }
 <div lang="en">
 <h2>About this document</h2>
 <p>WPT (Workers' Pre-trained Transformer) is a language model trained from scratch, only on content whose license is clear. Its code and its weights are published under the GNU Affero General Public License, version 3 or later (AGPL-3.0-or-later). The project needs two things from that license: anyone may serve the model for money, and every modified version must be shared, including a version that is only offered as an online service.</p>
-<p>The project treats every training source like a dependency of the weights: a source enters only when its license allows the weights to be distributed under the AGPL. The repository holds no data, only a pointer to each source (its address) with its licenses, the place where each license is stated, and the credit each asks for. The full rules are in <code>docs/licenses.md</code>.</p>
+<p>The project treats every training text like a dependency of the weights: a text enters only when its license allows the weights to be distributed under the AGPL. The texts live in depots, folders of tables apart from the repository, each text with its licenses, its notice (the copyright notice exactly as its source gives it, or the proof that it is in the public domain) and its credits; people decide on each text, under their declared name. The repository holds code, recipes and documentation. The full rules are in <code>docs/licenses.md</code>.</p>
 <p>This page lists every choice that does not rest on a written statement that the content may be used in AGPL work, and every legal question the project is still waiting on. Each entry gives the current choice, the reasons and evidence behind it, and the question for a lawyer. Until an answer arrives, the current choice applies.</p>
 <p>It is a living document: every license question the maintainer cannot settle alone is added here. An answer is written under its question with its date and who gave it, and the rule it changes is written into <code>docs/licenses.md</code>.</p>
 </div>
 <div lang="fr">
 <h2>À propos de ce document</h2>
 <p>WPT (Workers' Pre-trained Transformer) est un modèle de langue entraîné de zéro, uniquement sur des contenus dont la licence est claire. Son code et ses poids sont publiés sous la GNU Affero General Public License, version 3 ou ultérieure (AGPL-3.0-or-later). Le projet attend deux choses de cette licence : chacun peut proposer le modèle comme service payant, et toute version modifiée doit être partagée, y compris une version seulement proposée comme service en ligne.</p>
-<p>Le projet traite chaque source d'entraînement comme une dépendance des poids : une source n'entre que si sa licence permet de distribuer les poids sous l'AGPL. Le dépôt ne contient aucune donnée, seulement un pointeur vers chaque source (son adresse) avec ses licences, l'endroit où chacune est énoncée et la mention que chacune exige. Les règles complètes sont dans <code>docs/licenses.md</code>.</p>
+<p>Le projet traite chaque texte d'entraînement comme une dépendance des poids : un texte n'entre que si sa licence permet de distribuer les poids sous l'AGPL. Les textes sont conservés dans des entrepôts (« depots »), des dossiers de tables distincts du dépôt de code, chaque texte avec ses licences, sa notice (la mention de copyright exactement telle que sa source la donne, ou la preuve qu'il est dans le domaine public) et ses crédits ; des personnes décident de chaque texte, sous le nom qu'elles déclarent. Le dépôt contient le code, les recettes et la documentation. Les règles complètes sont dans <code>docs/licenses.md</code>.</p>
 <p>Cette page liste chaque choix qui ne repose pas sur une déclaration écrite autorisant l'usage du contenu dans une œuvre sous AGPL, et chaque question juridique encore en attente. Chaque entrée donne le choix actuel, ses raisons et ses preuves, et la question posée à un juriste. Tant qu'aucune réponse n'est donnée, le choix actuel s'applique.</p>
 <p>C'est un document vivant : chaque question de licence que la mainteneuse ne peut pas trancher seule y est ajoutée. Une réponse est écrite sous sa question avec sa date et son auteur, et la règle qu'elle change est écrite dans <code>docs/licenses.md</code>.</p>
 </div>
@@ -171,7 +171,7 @@ dd { margin: 0 0 4px; }
 <div lang="en">
 <h3><span class="id">A4</span>Is one NOTICE file enough credit? <span class="status open">open</span></h3>
 <dl>
-<dt>Current choice</dt><dd>Credit is given once per model: its <code>NOTICE</code> lists every source with the credit its license asks for (authors, title, copyright line, link) and each distinct license text once. For datasets holding many documents, each kept document's credit goes into a file <code>CREDITS/&lt;source&gt;.jsonl</code> in the model folder. Generated text carries no credit; OUTPUT-NOTICE recommends linking to the repository.</dd>
+<dt>Current choice</dt><dd>Credit is given once per model: its <code>CREDITS</code> file, repeated in its <code>NOTICE</code>, lists every text the model learned from, one line per text, with its title, authors, address and licenses, then each notice (copyright line and Apache <code>NOTICE</code> content included) and each license text those lines name, once. Generated text carries no credit; OUTPUT-NOTICE recommends linking to the repository.</dd>
 <dt>Why</dt><dd>MIT and BSD ask that their notice go with copies, Apache-2.0 asks for its license and the source's <code>NOTICE</code> content, and CC BY 4.0 accepts credit "in any reasonable manner", including a link (section 3(a)(2)).</dd>
 <dt>Question</dt><dd>Does this satisfy the notice obligations of MIT, BSD, Apache-2.0 and CC BY when weights are distributed? What happens when a model reproduces a piece of a source in its output?</dd>
 </dl>
@@ -179,7 +179,7 @@ dd { margin: 0 0 4px; }
 <div lang="fr">
 <h3><span class="id">A4</span>Un seul fichier NOTICE suffit-il comme mention ? <span class="status open">ouverte</span></h3>
 <dl>
-<dt>Choix actuel</dt><dd>La mention est donnée une fois par modèle : son <code>NOTICE</code> liste chaque source avec la mention que sa licence exige (auteurs, titre, ligne de copyright, lien) et chaque texte de licence distinct une fois. Pour les jeux de données contenant de nombreux documents, la mention de chaque document retenu va dans un fichier <code>CREDITS/&lt;source&gt;.jsonl</code> du dossier du modèle. Le texte généré ne porte aucune mention ; OUTPUT-NOTICE recommande un lien vers le dépôt.</dd>
+<dt>Choix actuel</dt><dd>La mention est donnée une fois par modèle : son fichier <code>CREDITS</code>, repris dans son <code>NOTICE</code>, liste chaque texte dont le modèle a appris, une ligne par texte, avec son titre, ses auteurs, son adresse et ses licences, puis chaque notice (ligne de copyright et contenu du <code>NOTICE</code> Apache compris) et chaque texte de licence que ces lignes nomment, une fois. Le texte généré ne porte aucune mention ; OUTPUT-NOTICE recommande un lien vers le dépôt.</dd>
 <dt>Raisons</dt><dd>MIT et BSD demandent que leur notice accompagne les copies, Apache-2.0 demande sa licence et le contenu du fichier <code>NOTICE</code> de la source, et CC BY 4.0 accepte une mention « par tout moyen raisonnable », y compris un lien (section 3(a)(2)).</dd>
 <dt>Question</dt><dd>Cela remplit-il les obligations de notice de MIT, BSD, Apache-2.0 et CC BY lors de la distribution des poids ? Qu'en est-il lorsqu'un modèle reproduit un passage d'une source dans sa sortie ?</dd>
 </dl>
@@ -319,7 +319,7 @@ dd { margin: 0 0 4px; }
 <dt>Current choice</dt>
 <dd>
 <p>BlueOak-1.0.0 is accepted without an FSF ruling: its text sets no condition the AGPL forbids.</p>
-<p>A repository with two license files and no statement of choice is entered as both at once (for example <code>MIT AND Apache-2.0</code>), with both texts.</p>
+<p>A repository with two license files and no statement of choice enters only when both licenses are allowed, and its notice holds both statements.</p>
 <p>Third-party code copied inside a source is entered under the license its own license file gives, or else the license its package metadata declares (<code>package.json</code>, <code>Cargo.toml</code>...), with that license's official text, which then lacks the authors' copyright line.</p>
 <p>In a dataset whose records each carry their own license field, a record's value is read as the license of that record's own content, and a license the dataset gives its whole collection covers none of its records. A record enters only when its value was reviewed and is allowed.</p>
 </dd>
@@ -332,7 +332,7 @@ dd { margin: 0 0 4px; }
 <dt>Choix actuel</dt>
 <dd>
 <p>BlueOak-1.0.0 est acceptée sans avis de la FSF : son texte n'impose aucune condition que l'AGPL interdit.</p>
-<p>Un dépôt avec deux fichiers de licence et sans indication de choix est enregistré sous les deux à la fois (par exemple <code>MIT AND Apache-2.0</code>), avec les deux textes.</p>
+<p>Un dépôt avec deux fichiers de licence et sans indication de choix n'entre que si les deux licences sont admises, et sa notice contient les deux énoncés.</p>
 <p>Le code tiers copié dans une source est enregistré sous la licence de son propre fichier de licence, ou à défaut celle que déclarent ses métadonnées de paquet (<code>package.json</code>, <code>Cargo.toml</code>...), avec le texte officiel de cette licence, qui ne contient alors pas la ligne de copyright des auteurs.</p>
 <p>Dans un jeu de données dont chaque enregistrement porte son propre champ de licence, la valeur d'un enregistrement est lue comme la licence du contenu propre de cet enregistrement, et la licence que le jeu de données donne à sa collection entière ne couvre aucun de ses enregistrements. Un enregistrement n'entre que si sa valeur a été examinée et est admise.</p>
 </dd>
@@ -462,15 +462,15 @@ dd { margin: 0 0 4px; }
 <div lang="en">
 <h3><span class="id">E3</span>Text-and-data-mining opt-outs and robots.txt <span class="status open">open</span></h3>
 <dl>
-<dt>Current choice</dt><dd>An owner's "no AI training" statement in a README, or a machine-readable reservation (EU Directive 2019/790, article 4), leaves the content out even when its license allows use. The download tool reads each site's robots.txt and downloads nothing that it forbids to every crawler, to the tool itself, or to a crawler whose operator says it gathers training data; it then tries another place where the same content is published, read with that site's own robots.txt. A robots.txt that refuses only assistants fetching a page for one person is not read as refusing training.</dd>
-<dt>Question</dt><dd>Does this meet article 4 and its French transposition (article L122-5-3 of the Code de la propriété intellectuelle)? May the project use a copy from another site when the first site's robots.txt refuses it but the owner states nothing?</dd>
+<dt>Current choice</dt><dd>An owner's statement refusing AI training, in a README for example, or a machine-readable reservation (EU Directive 2019/790, article 4), leaves the content out even when its license allows the use. People add texts by hand; no program fetches them, and robots.txt is not read.</dd>
+<dt>Question</dt><dd>Does this respect article 4 and its French transposition (article L122-5-3 of the Intellectual Property Code)? Must a person adding a text by hand treat a site's robots.txt as a machine-readable reservation?</dd>
 </dl>
 </div>
 <div lang="fr">
 <h3><span class="id">E3</span>Oppositions à la fouille de textes et robots.txt <span class="status open">ouverte</span></h3>
 <dl>
-<dt>Choix actuel</dt><dd>Une déclaration du titulaire refusant l'entraînement d'IA dans un README, ou une réserve lisible par machine (directive UE 2019/790, article 4), exclut le contenu même quand sa licence permet l'usage. L'outil de téléchargement lit le robots.txt de chaque site et ne télécharge rien de ce qu'il interdit à tous les robots, à l'outil lui-même, ou à un robot dont l'opérateur dit qu'il collecte des données d'entraînement ; il essaie alors un autre lieu où le même contenu est publié, lu avec le robots.txt de ce site. Un robots.txt qui refuse seulement les assistants récupérant une page pour une personne n'est pas lu comme un refus de l'entraînement.</dd>
-<dt>Question</dt><dd>Cela respecte-t-il l'article 4 et sa transposition française (article L122-5-3 du Code de la propriété intellectuelle) ? Le projet peut-il utiliser une copie venant d'un autre site quand le robots.txt du premier site la refuse mais que le titulaire ne dit rien ?</dd>
+<dt>Choix actuel</dt><dd>Une déclaration du titulaire refusant l'entraînement d'IA, dans un README par exemple, ou une réserve lisible par machine (directive UE 2019/790, article 4), exclut le contenu même quand sa licence permet l'usage. Les textes sont ajoutés à la main ; aucun programme ne les télécharge, et le robots.txt n'est pas lu.</dd>
+<dt>Question</dt><dd>Cela respecte-t-il l'article 4 et sa transposition française (article L122-5-3 du Code de la propriété intellectuelle) ? Une personne qui ajoute un texte à la main doit-elle traiter le robots.txt d'un site comme une réserve lisible par machine ?</dd>
 </dl>
 </div>
 </div>
@@ -481,14 +481,14 @@ dd { margin: 0 0 4px; }
 <div lang="en">
 <h3><span class="id">E4</span>Personal data in git histories, and erasure <span class="status open">open</span></h3>
 <dl>
-<dt>Current choice</dt><dd>A git source may include its commit history; commit authors' names and email addresses stay as git wrote them, since the repository publishes them under its license. Every erasure request is honored by cutting bytes from future builds; requests under the GDPR are answered within one month. Models already published are not changed, and text committed to this repository stays in its history.</dd>
+<dt>Current choice</dt><dd>A text may hold a git commit history; commit authors' names and email addresses stay as git wrote them, since the repository publishes them under its license. Every erasure request is honored. Once admitted, the passage is cut from the depot, which drops every older state of itself. Every corpus built from the affected text is marked stale, and training refuses it until it is rebuilt without the passage. Requests under the GDPR are answered within one month. Models already published are not changed.</dd>
 <dt>Question</dt><dd>May the project train on commit authors' names and emails? Does the erasure process meet the GDPR, given that published models are not changed?</dd>
 </dl>
 </div>
 <div lang="fr">
 <h3><span class="id">E4</span>Données personnelles dans les historiques git, et effacement <span class="status open">ouverte</span></h3>
 <dl>
-<dt>Choix actuel</dt><dd>Une source git peut inclure son historique de commits ; les noms et adresses e-mail des auteurs de commits restent tels que git les a écrits, puisque le dépôt les publie sous sa licence. Chaque demande d'effacement est honorée en coupant des octets dans les constructions futures ; les demandes au titre du RGPD reçoivent une réponse sous un mois. Les modèles déjà publiés ne sont pas modifiés, et un texte versé dans ce dépôt reste dans son historique.</dd>
+<dt>Choix actuel</dt><dd>Un texte peut contenir un historique de commits git ; les noms et adresses e-mail des auteurs de commits restent tels que git les a écrits, puisque le dépôt les publie sous sa licence. Chaque demande d'effacement est honorée. Une fois admise, le passage est coupé dans l'entrepôt, qui supprime tous ses états antérieurs. Chaque corpus construit à partir du texte touché est marqué périmé, et l'entraînement le refuse tant qu'il n'est pas reconstruit sans le passage. Les demandes au titre du RGPD reçoivent une réponse sous un mois. Les modèles déjà publiés ne sont pas modifiés.</dd>
 <dt>Question</dt><dd>Le projet peut-il entraîner sur les noms et adresses e-mail des auteurs de commits ? Le processus d'effacement respecte-t-il le RGPD, sachant que les modèles publiés ne sont pas modifiés ?</dd>
 </dl>
 </div>

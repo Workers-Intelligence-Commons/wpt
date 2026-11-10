@@ -1,5 +1,5 @@
-# The wpt manager (docs/machines.md): one container that downloads the
-# sources, builds the dataset and trains the recipe WPT_RECIPE names, through
+# The wpt manager (docs/machines.md): one container that trains the recipe
+# WPT_RECIPE names on its corpus, already built in the store, through
 # a gpu worker (WPT_GPU_WORKERS; with none, a local one in this container),
 # then keeps the model in the store under the run's name. One command, from
 # the repository's root:
@@ -14,10 +14,8 @@
 # Settings, from the environment or the .env file given:
 #
 #     WPT_RECIPE            the model recipe; required
-#     WPT_DATASET           the id of a dataset the store holds: nothing is downloaded or built
-#     WPT_SESSION           the session the run works in; unset, the one of the run it goes on with,
-#                           else a new ID, which it prints and writes into wpt-run.txt
-#     WPT_FROM              another session, which the run reads what its own does not hold from
+#     WPT_CORPUS            the corpus the run trains on (its id, or a start of it); unset, the
+#                           corpus last built for the recipe's depot and dataset; nothing is built
 #     WPT_RUN               the run's name; unset, the manager makes one and writes it, with the
 #                           lines to copy, into wpt-run.txt at the repository's root
 #     WPT_EVALUATE          1: evaluate the model at the end; off by default
@@ -87,10 +85,8 @@ services:
     command: ["sh", "-c", "uv run scripts/setup.py && exec uv run --frozen --no-sync wpt manager"]
     environment:
       WPT_RECIPE: ${WPT_RECIPE:?set WPT_RECIPE, the model recipe to train (docs/machines.md)}
-      WPT_SESSION: ${WPT_SESSION:-}
-      WPT_FROM: ${WPT_FROM:-}
       WPT_RUN: ${WPT_RUN:-}
-      WPT_DATASET: ${WPT_DATASET:-}
+      WPT_CORPUS: ${WPT_CORPUS:-}
       WPT_EVALUATE: ${WPT_EVALUATE:-}
       WPT_STORE: ${WPT_STORE:-file:///store}
       WPT_MANAGER_FOLDER: /manager/models

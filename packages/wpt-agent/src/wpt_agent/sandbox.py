@@ -18,19 +18,14 @@ The files only a task's tools read (tool_files) are unpacked into
 TOOL_FILES, a folder owned by root that only the group TOOLS enters
 (750); what it holds belongs to TOOL, with no access for others (folders
 750, files 640). A tool's program runs as TOOL: the model's user with the
-group TOOLS, so it reads those files, may change them (the push tool's
-hidden remote), and changes /work as the model's own tools do, while the
+group TOOLS, so it reads those files, may change them, and changes /work as the model's own tools do, while the
 model's commands, in group AGENT, cannot enter TOOL_FILES; they cannot
 reach the program's process either, since another group keeps the kernel
 from letting one look into the other (ptrace access, /proc/<pid>/fd and
-/mem). Folders a task puts outside /work (`outside`, such as a
-repository's remote at /tmp/origin.git) are unpacked at their absolute
-paths under /tmp, with the user as their owner, as /work's files are.
-Folders of the image a task removes (`absent`) are each covered by an
+/mem). Folders of the image a task removes (`absent`) are each covered by an
 empty, read-only folder kept in memory, so the container shows them
 empty.
-save() and restore() carry hidden files and such folders to a check's
-container: docker cp cannot read /tmp, a tmpfs, so they are read while
+save() and restore() carry hidden files to a check's container: docker cp cannot read /tmp, a tmpfs, so they are read while
 the container still runs, which changes nothing the model's commands
 reach.
 
@@ -64,7 +59,7 @@ import time
 from dataclasses import dataclass
 from typing import BinaryIO, NamedTuple
 
-from wpt_dataset.manifest import EXECUTABLE, FILE, SYMLINK
+from .files import EXECUTABLE, FILE, SYMLINK
 
 from . import docker
 from .docker import DockerFailed
@@ -119,14 +114,12 @@ class Ran(NamedTuple):
 class Sandbox:
     """A running container of `image` holding `files` ({path under /work:
     (manifest mode, content)}), whose commands run as `user`, tool_files,
-    the same way, under TOOL_FILES, and outside ({absolute folder under
-    /tmp: its files, the same way}), each folder of the image in absent
+    the same way, under TOOL_FILES, each folder of the image in absent
     shown empty. Use it in a with block: leaving it removes the
     container."""
 
     def __init__(self, image: str, files: dict[str, tuple[str, bytes]], *, user: str, limits: Limits,
-                 tool_files: dict[str, tuple[str, bytes]] | None = None, outside: dict[str, dict] | None = None,
-                 absent=()):
+                 tool_files: dict[str, tuple[str, bytes]] | None = None, absent=()):
         self.image, self.user, self.limits, self.container = image, user, limits, None
         confined = [*CONFINED, "--security-opt", "no-new-privileges"] if user != ROOT else []
         created = self._docker(
@@ -143,10 +136,6 @@ class Sandbox:
             self._docker("start", self.container)
             work = {posixpath.join(WORK, path): entry for path, entry in files.items()}
             self._unpack(work, owner=user, folders={WORK.strip("/")} | {f for path in work for f in _parents(path)})
-            if outside:
-                placed = {posixpath.join(place, path): entry for place, found in outside.items()
-                          for path, entry in found.items()}
-                self._unpack(placed, owner=user, folders={f for path in placed for f in _parents(path)} - {"tmp"})
             if tool_files:
                 hidden = {posixpath.join(TOOL_FILES, path): entry for path, entry in tool_files.items()}
                 self._unpack(hidden, owner=TOOL, private=True, guarded={TOOL_FILES.strip("/")},
@@ -228,8 +217,7 @@ class Sandbox:
 
     def save(self, root: str, paths) -> BinaryIO | None:
         """A tar archive, in a temporary file of the host, of these paths
-        under the folder root (TOOL_FILES, or / for a folder outside
-        /work), read while the container runs; a path the model removed is
+        under the folder root (TOOL_FILES), read while the container runs; a path the model removed is
         left out. None when it no longer runs (memory ran out) or the
         model's processes fill it, so that nothing can be read: the check
         then finds them missing."""
@@ -251,7 +239,7 @@ class Sandbox:
         return archive
 
     def restore(self, archive, root: str, paths):
-        """Put the paths save() read under the folder root (/work, or /),
+        """Put the paths save() read under the folder root (/work),
         in place of whatever is there."""
         ran = self._start("exec", "-i", "-u", ROOT, self.container, "sh", "-c",
                           'cd "$0" && rm -rf -- "$@" && exec tar -x -f -', root, *paths,

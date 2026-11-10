@@ -3,21 +3,23 @@
 Next to its weights, a model folder carries:
 
     LICENSE       the GNU AGPL, version 3: the license of the weights
-    CREDITS/      for each source whose files hold many documents with
-                  their own licenses, <source id>.jsonl: one line per
-                  document, with its license and the credit its record gives
+    CREDITS       every text the model learned from, one line each, with its
+                  credit and licenses, then the notices and license texts
+                  they name (wpt_depot.notice, written by wpt train from the
+                  corpus)
     NOTICE        the licenses of the weights and of generated text, the
-                  sources the model learned from with the credit each one
-                  asks for, and the output notice
+                  texts the model learned from (CREDITS), and the output
+                  notice
     README.md     the model card: the same licenses first, then what the
                   model is, how it was built, and its evaluation results
 
-write_documents(folder) generates them (documents(folder) gives their text)
-from the folder's own records (config.json, provenance.json, evals/*.json,
-drafter/config.json and drafter/provenance.json), so they cannot disagree
-with what the folder holds. The drafter's weights are the model's, under
-the same license and header; its prompts are the beginnings of the
-dataset's training documents, so it reads no source the model did not.
+write_documents(folder) generates NOTICE and README.md (documents(folder)
+gives their text) from the folder's own files (config.json, provenance.json,
+CREDITS, evals/*.json, drafter/config.json and drafter/provenance.json), so
+they cannot disagree with what the folder holds. The drafter's weights are
+the model's, under the same license and header; its prompts are the
+beginnings of the plain texts the model read, so it reads no text the model
+did not.
 WEIGHT_METADATA goes into the header of every weight
 file, so the licenses travel with the weights even alone.
 
@@ -26,7 +28,6 @@ root files; a test checks they stay identical.
 """
 
 import json
-import shutil
 from importlib.resources import files
 from pathlib import Path
 
@@ -54,15 +55,16 @@ def license_text() -> str:
 
 def documents(folder) -> dict[str, str]:
     """{LICENSE, NOTICE and README.md: their text} for a model folder, from
-    its config.json, provenance.json and evals/*.json."""
+    its config.json, provenance.json, CREDITS and evals/*.json."""
     folder = Path(folder)
     config = _read(folder / "config.json")
     provenance = _read(folder / "provenance.json")
+    credits = (folder / CREDITS_NAME).read_text(encoding="utf-8")
     evals = [_read(path) for path in sorted((folder / EVALS_NAME).glob("*.json"))]
     drafter = folder / DRAFTER_NAME
     drafter = ({"config": _read(drafter / "config.json"), "provenance": _read(drafter / "provenance.json")}
                if (drafter / "config.json").exists() else None)
-    return {LICENSE_NAME: license_text(), NOTICE_NAME: notice(provenance),
+    return {LICENSE_NAME: license_text(), NOTICE_NAME: notice(provenance, credits),
             CARD_NAME: card(config, provenance, evals, drafter)}
 
 
@@ -72,20 +74,10 @@ def write_documents(folder):
         (Path(folder) / name).write_text(text, encoding="utf-8", newline="\n")
 
 
-def write_credits(folder, provenance, read_file):
-    """Write CREDITS/<source id>.jsonl for every source the model learned
-    from whose dataset record lists `credits`; read_file(reference) gives
-    the bytes of the file a record's reference ({"key", "sha256"}) names.
-    Replaces earlier copies."""
-    folder = Path(folder) / CREDITS_NAME
-    shutil.rmtree(folder, ignore_errors=True)
-    for sid, source in sorted(learned_from(provenance).items()):
-        if source.get("credits"):
-            folder.mkdir(exist_ok=True)
-            (folder / f"{sid}.jsonl").write_bytes(read_file(source["credits"]))
-
-
-def notice(provenance) -> str:
+def notice(provenance, credits: str) -> str:
+    """NOTICE: the licenses, the corpus the model learned from, the texts
+    of credits (CREDITS), then the output notice."""
+    corpus = provenance["corpus"]
     lines = [
         "WPT model notice", "",
         f"Weights: {LICENSE}. These weights are part of WPT (Workers' Pre-trained",
@@ -95,41 +87,22 @@ def notice(provenance) -> str:
         f"Generated text: {OUTPUT_LICENSE}, under the output notice at the end of this file.", "",
         f"Project: {REPOSITORY}",
         *_built_from(provenance), "", "",
-        "Sources this model learned from", "",
-        "Each source with the sha256 of the list of files it was built from (its",
-        "manifest), and for each license the paths it covers and the credit it asks",
-        "for, as recorded when the dataset was built.",
-        "Their license texts follow the list, each text once.",
+        "Texts this model learned from", "",
+        f"From corpus {corpus['id']}, built from dataset {corpus['dataset']} of the depot {corpus['depot']}:",
+        "one line per text, with its depot and id there, its title, authors and",
+        "address when it has them, and its licenses (any one of them allows it),",
+        "then the notices and the license texts the lines name.", "",
     ]
-    texts = {}  # text -> the sources and licenses that give it
-    for sid, source in sorted(learned_from(provenance).items()):
-        addresses = [f"{part['address']} (into {part['folder']}/)" for part in source.get("addresses", [])]
-        lines += ["", sid, *(f"  address:  {address}" for address in addresses or [source["address"]]),
-                  f"  manifest: {source['manifest']}"]
-        if source.get("credits"):
-            lines.append(f"  credit of each document: {CREDITS_NAME}/{sid}.jsonl")
-        for entry in source["licenses"]:
-            field = entry.get("place", {}).get("field")
-            covers = ", ".join(entry["paths"]) + (f" (records whose {field} is {', '.join(map(repr, entry['expected']))})"
-                                                  if field else "")
-            lines += [f"  {entry['license']} for {covers}:",
-                      *(f"    {line}" for line in entry["attribution"].splitlines())]
-            if entry.get("text"):  # datasets built before shape 4 recorded no texts
-                texts.setdefault(entry["text"], []).append(f"{sid} ({entry['license']})")
-    if texts:
-        lines += ["", "", "License texts"]
-        for text, users in texts.items():
-            lines += ["", f"--- {', '.join(users)}", "", text.rstrip("\n")]
-    return "\n".join(lines) + "\n\n\n" + output_notice()
+    return "\n".join(lines) + "\n" + credits.rstrip("\n") + "\n\n\n" + output_notice()
 
 
 def card(config, provenance, evals, drafter=None) -> str:
     lines = [
         "---", "license: agpl-3.0", "---", "",
-        f"# WPT model, dataset {provenance['dataset'][:12]}", "",
+        f"# WPT model, corpus {provenance['corpus']['id'][:12]}", "",
         f"> {SUMMARY}",
         ">",
-        "> The full notice, with every source and the credit it asks for, is in",
+        "> The full notice, with every text it learned from and its credit, is in",
         f"> [NOTICE](NOTICE). Project: {REPOSITORY}", "",
         "## Model", "",
         *_model_kind(provenance),
@@ -139,18 +112,16 @@ def card(config, provenance, evals, drafter=None) -> str:
         f"{', '.join(map(str, config['engram_layers'])) or 'none'}",
         f"- Context: {config['block_size']} tokens; vocabulary: {config['vocab_size']:,} tokens", "",
         "## Training", "",
-        f"- Dataset: `{provenance['dataset']}`",
+        f"- Corpus: `{provenance['corpus']['id']}`, built from dataset `{provenance['corpus']['dataset']}` of the "
+        f"depot `{provenance['corpus']['depot']}`",
         *(f"- {line}" for line in _built_from(provenance)),
         f"- Device: {provenance['device']}",
         f"- Every input and tool version: [provenance.json](provenance.json)", "",
         "The steps, in order, each on the weights the one before it left:", "",
         *(f"{number}. {_step(step)}" for number, step in enumerate(provenance["steps"], start=1)), "",
         *_drafter(drafter),
-        "## Sources", "",
-        "| Source | Manifest | Licenses |", "|---|---|---|",
-        *(f"| {sid} | `{source['manifest']}` | {', '.join(sorted({e['license'] for e in source['licenses']}))} |"
-          for sid, source in sorted(learned_from(provenance).items())), "",
-        "Authors and the credit each source asks for: [NOTICE](NOTICE).", "",
+        "## Texts", "",
+        f"{provenance['texts']:,} texts; each one, with its authors and its credit: [NOTICE](NOTICE).", "",
         "## Evaluations", "",
     ]
     if not evals:
@@ -169,13 +140,6 @@ def _eval_code(result) -> str:
     return f"code {code_name(result['code'])}" if "code" in result else f"wpt eval {result['wpt_eval']}"
 
 
-def learned_from(provenance) -> dict:
-    """Every source the model learned from: those of every step. The
-    drafter adds none: its prompts are the beginnings of the dataset's
-    training documents."""
-    return provenance["sources"]
-
-
 def _drafter(drafter):
     if drafter is None:
         return []
@@ -187,10 +151,10 @@ def _drafter(drafter):
              "unchanged: the drafter changes how fast the model writes, never what it writes.", ""]
     trained, target = provenance.get("trained_by"), (provenance.get("target") or {}).get("weights")
     if trained:
-        dataset = provenance.get("dataset")
+        corpus = provenance.get("corpus")
         lines.append(f"- Trained by `{trained['command']}`, recipe `{trained['recipe_name']}`, the model frozen, on "
-                     "answers the model wrote itself to the beginnings of the training documents of dataset "
-                     f"`{(dataset or 'unknown')[:12]}`")
+                     "answers the model wrote itself to the beginnings of the plain texts of corpus "
+                     f"`{(corpus or 'unknown')[:12]}`")
     if target:
         lines.append("- Against the weights " + ", ".join(f"`{name}` (sha256 `{sha[:12]}`)"
                                                            for name, sha in target.items()))
@@ -226,8 +190,6 @@ def _step(step):
                                  f"{stage['steps']:,} updates" for stage in stages)
     else:
         text += f"; {stages[0]['batch_size']:,} examples an update"
-        if step["sources"]:
-            text += f"; trained on {', '.join(step['sources'])}"
     if step["best_validation_loss"] is not None:
         text += f"; best validation loss {step['best_validation_loss']:.4f}"
     if step["reused"]:

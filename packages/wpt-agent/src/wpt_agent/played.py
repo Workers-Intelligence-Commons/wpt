@@ -1,5 +1,4 @@
-"""Playing attempts at a task: what a training step and the measures
-share, with no learning and no record of their own.
+"""Playing attempts at a task: what a training step reads, with no learning and no record of their own.
 
     ready(names)               the built images and their pools of tools, or Unready
     attempt_box(image, task, o) one attempt's container, its files arranged for the offer o
@@ -17,9 +16,8 @@ are drawn (Sampling: GREEDY always takes the likeliest token) and the
 generator that draws them, so the same generator state gives the same
 attempts again; or, instead of the model and the generator, writer: what
 makes a writer like wpt_inference.Writer (the wpt manager's, whose model
-writes on its gpu worker). A step that learns asks for each attempt's routes (R3);
-a measure asks for its changes to /work, which people read when they
-rate it.
+writes on its gpu worker). A step that learns asks for each attempt's routes (R3) and, for the
+terse reward, its changes to /work.
 """
 
 import difflib
@@ -27,13 +25,12 @@ import hashlib
 import sys
 from dataclasses import dataclass
 
-from wpt_dataset.errors import DatasetError
-from wpt_dataset.manifest import SYMLINK, glob_match_any
-from wpt_dataset.repo import Repo
+from wpt_recipes import RecipeError, Recipes
 from wpt_utils.lines import WARNING, say
 
 from . import images
 from .check import CORRECT, score
+from .files import SYMLINK, glob_match_any
 from .images import ImageError
 from .loop import Attempt, attempts
 from .sandbox import AGENT, Limits, Sandbox, SandboxError
@@ -74,10 +71,10 @@ def ready(names) -> tuple[dict, dict]:
     images, from the repository holding the working folder; Unready naming
     the command that builds a missing image, or what is broken."""
     try:
-        repo = Repo.find()
+        repo = Recipes.find()
         return ({name: images.built(repo.root, name) for name in names},
                 {name: repo.image_tools(name) for name in names})
-    except (ImageError, DatasetError) as error:
+    except (ImageError, RecipeError) as error:
         raise Unready(str(error)) from None
 
 
@@ -87,7 +84,7 @@ def attempt_box(image, task, offer) -> tuple[Sandbox, Arranged]:
     attempt's arrangement (tools.arranged), returned too."""
     found = arranged(task, offer)
     box = Sandbox(image, found.files, user=AGENT, limits=Limits(**task.container), tool_files=found.tool_files,
-                  outside=found.outside, absent=found.absent)
+                  absent=found.absent)
     return box, found
 
 
@@ -143,8 +140,7 @@ def play(task, offers, keep, *, tokenizer, built, sampling: Sampling, check_seco
             outcome, why = outcomes[i], None
             if not isinstance(outcome, SandboxError):
                 try:
-                    found, why = score(boxes[i], task.check, check_seconds, outcome.conversation, task.check_files,
-                                       offers[i].hidden, tuple(placed[i].outside))
+                    found, why = score(boxes[i], task.check, check_seconds, outcome.conversation, offers[i].hidden)
                     # what /work holds after the check stopped its processes
                     left = boxes[i].work_files(FILE_BYTES) if with_changes or task.area is not None else None
                     if found is not None and task.area is not None:

@@ -12,14 +12,14 @@ attempt in its own row (wpt_inference.Writer); while one attempt's tool
 calls run, the others wait.
 
 An attempt opens with the task's full instructions, or with its one-line
-form (terse; the measure of terse against full requests) when the caller
+form (terse) when the caller
 asks for it.
 
 Each attempt is offered its tools (tools.Offer: by default every tool of
 the task under its own name), and its conversation's metadata keeps
 `tools`, the name each offered tool had for the model mapped to the real
 tool's, `looking`, the real names of the offered tools that look at
-sources (wpt_dataset.tasks.looks; wpt_check's looking rule reads it),
+sources (wpt_agent.tasks.looks; wpt_check's looking rule reads it),
 `answered_by`, the task's looking tools that can answer what it leaves
 open, `answered_in`, the attempt's starting files under /work that the
 task's answered_in matches (wpt_check.asked_last reads both), and
@@ -47,11 +47,11 @@ import os
 import re
 from dataclasses import dataclass
 
-from wpt_dataset.manifest import glob_match_any
-from wpt_dataset.tasks import looks
 from wpt_tokenizer import END, chat
 
+from .files import glob_match_any
 from .sandbox import SandboxError, SandboxFull
+from .tasks import looks
 from .tools import arranged, call, plain
 
 # why an attempt ended
@@ -62,7 +62,7 @@ TOKENS = "tokens"  # the task's max_tokens
 CONTEXT = "context"  # the context the caller allows is full
 FULL = "full"  # the model's processes or files filled its container: no command can start there
 
-# the one question every attempt, and every measure that asks for a confidence, puts after the final reply
+# the one question every attempt, puts after the final reply
 CONFIDENCE = ("How sure are you that you did what was asked, and did it right? Reply with a number from 0 to 100 "
               "and nothing else.")
 NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)?")  # a number as the reply to CONFIDENCE writes it

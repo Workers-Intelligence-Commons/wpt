@@ -1,7 +1,9 @@
 # Contributing
 
-Thank you for helping. WPT trains only on content whose license is clear, so
-most of this page is about sources.
+Thank you for helping. WPT trains only on content whose license is clear.
+The repository holds code, recipes and documentation; the texts live in
+depots, and most of this page is about adding texts to a depot and
+deciding on them.
 
 ## Every commit: sign off (DCO)
 
@@ -11,17 +13,6 @@ by `git commit -s`. By it you certify the
 have the right to submit the change under the project's license. CI refuses
 commits without it.
 
-For a commit that adds or changes a source, signing off also certifies that:
-
-- you read the source's license, and every path it covers;
-- you looked for a "no AI training" wish from the owner (README, a
-  machine-readable text-and-data-mining reservation) and found none
-  (`wpt dataset` also skips any address whose site's robots.txt forbids it
-  and tries the next mirror; see [docs/licenses.md](docs/licenses.md));
-- the source holds no personal data.
-
-You take responsibility for those three checks.
-
 ## Issues and pull requests
 
 Open an issue from one of the forms in
@@ -29,7 +20,7 @@ Open an issue from one of the forms in
 (both cover the tooling and the model), **Model behavior**, **Source
 proposal** and **Erasure request**. Each form asks for the part concerned.
 The Bug and Enhancement forms also ask for the commit, the exact command,
-the recipe, the dataset id and the weights' sha256, the run record's
+the recipe, the corpus id and the weights' sha256, the run record's
 folder, and your system, GPU and PyTorch build. The other forms ask for
 what fits their kind. A blank issue stays possible. For an
 erasure request that should not be public, or for a security problem, use
@@ -64,295 +55,147 @@ creates every label before its first use. The words of the dropdown and of
 the workflow are the area label names without `area: `: change them
 together.
 
-## Adding a source
+## Adding a text
 
-1. Check the license against [docs/licenses.md](docs/licenses.md). It must be
-   on the allowed list, clearly; its "What to check" column says where each
-   kind of license hides a trap. CC BY-SA 4.0, the one grey-zone license,
-   is allowed until legal review says otherwise. Public domain must hold
-   under the law of the country where the work was first published.
-2. Choose the id: `uv run wpt dataset source-id <origin> [<item>] <address>`.
-   For a git repository on GitHub, write the address without `.git`:
-   GitHub's robots.txt forbids `/*.git` addresses to AI training
-   crawlers, and the plain address serves the same repository.
-3. Create `data/sources/<id>/source.json` (see
-   [docs/architecture.md](docs/architecture.md)), with its `address`
-   (what upstream serves there when asked is what is taken), a `decision`
-   stating `"under-review"`, with your name (`by`) and today's `date`, and
-   the same decision in each license entry (see "Decisions are signed").
-   A git source also names, in `revision`, the full id of the commit you
-   reviewed (40 hexadecimal characters): the download fetches exactly
-   that commit, so upstream's later commits enter only when a person moves
-   `revision` and reviews them.
-   Map every path to exactly one license entry in `licenses`, and to
-   exactly one format in `formats` (how it becomes Markdown,
-   [docs/architecture.md](docs/architecture.md), "Documents are Markdown":
-   an EPUB page is `xhtml`, a web page that is not strict XML, such as
-   Project Gutenberg's, is `html`). Write each entry's coverage with the
-   allowed pattern shapes: a named folder (`src/**`), a named kind of file
-   (`**/*.js`, `*.js`) or an exact path, never `**` alone. Give each entry
-   its `place`, the file, record field or outside page where its license
-   statement is, and in `expected` the ids of the license texts in
-   `data/license-texts/` that statement may be (a text not there yet is
-   added as a new item, under review, with `wpt dataset add-license-text
-   ID --file PATH` or `--page ADDRESS` once the source is downloaded: it
-   prints the item's id, the sha256 of its normalized text, which
-   `check --fetch` and the build also name for a text they do not know), or
-   the record values it covers
-   ([docs/licenses.md](docs/licenses.md), "License entries"). In each
-   license entry, write in `attribution` the credit that license asks
-   for, as the source gives it: authors, title, copyright line, link, and
-   in `text` the license as the source gives it (its license file with its
-   copyright line, then an Apache `NOTICE` file's content; for public
-   domain, why). Every model trained on the source repeats both in its
-   notice.
-4. `uv run wpt dataset download <id>` puts it in the store, in a new
-   session whose ID it prints; give that ID to the commands after it, through
-   `--session ID` or `WPT_SESSION` (`uv run wpt store list` shows every
-   session when the ID is lost). With `--from OLD_ID` it fetches only the
-   sources the old session does not hold. A file is
-   text when it is UTF-8, or when it states its own encoding (a
-   byte-order mark, an HTML page's `<meta charset>`, an XML declaration,
-   Project Gutenberg's `Character set encoding:` line, a Python coding
-   line) and decodes under it; nothing is guessed ([docs/architecture.md](docs/architecture.md),
-   "Encodings"). List every file that is not text in `extract`'s
-   `exclude`, by its exact path (`*`, `?` and `[` written `[*]`, `[?]` and
-   `[[]`): `check --fetch` (step 5) names each one. Map every file in
-   `formats` first: the format says which statement the file can make,
-   and a file no records or chat format reads is checked as text.
-   `uv run wpt dataset manifest <id>` prints the manifest of the stored
-   upstream tree.
-   A dataset on huggingface.co is a git repository, `"type": "git"` at
-   `https://huggingface.co/datasets/<owner>/<name>`: its file list comes
-   from git, its large files through LFS, and only the files `extract`
-   keeps are stored. An archive inside a git repository stays one
-   file. A source published at several
-   addresses (its documents in one archive and their metadata in another)
-   lists them in `addresses`, each with the
-   folder of the tree it fills, and repeats the first one in `address`
-   ([docs/architecture.md](docs/architecture.md), "source.json"). A file
-   holding many documents, each with its own
-   license (JSON Lines, optionally `.gz` or `.zst`, or Parquet), is in the
-   `records` format: it names the record's `text`, `id` and `credit`
-   fields, and each license entry covering it names the license field as
-   its place (`{"field": "metadata.license"}`) and lists in `expected` the
-   values it covers ([docs/licenses.md](docs/licenses.md), "Rules"). A
-   text field that holds Markdown says `"as": "markdown"`, and one that
-   holds a web page says `"as": "html"`; a `title` field gives
-   the document its heading, and a dataset holding several revisions of
-   one record names their date field in `newest`. A dataset that states
-   one license for all its records gives its one license entry another
-   place, and every record takes it. A
-   JSON document whose field holds the list of records names that field in
-   `records`; an XML file is one record, its fields XPath expressions with
-   the entry's `namespaces`, and a `join` reads the license and credit from
-   another file of the same record ([docs/architecture.md](docs/architecture.md),
-   "Documents are Markdown").
-   A git source may add its history: `"history": {"since": "<commit>"}`
-   gives one file `.git/history/<commit>` per commit from `since` to
-   `revision` (merges left out), in `git format-patch` layout and limited
-   to the files `extract` keeps, and `.git/history/order`, the commits'
-   order with the merges marked. `since` is the commit from which the root
-   license file holds the license the source lists, an ancestor of
-   `revision`; give these files a
-   `code` format with the language `patch` and a license entry of their
-   own, `.git/history/**`: no other pattern covers them
+A text is one piece of final training text, such as an article, a book or
+a code file ([docs/data-selection.md](docs/data-selection.md), "Texts").
+Each file of a repository or a collection is its own text.
+
+1. Check the license against [docs/licenses.md](docs/licenses.md). It must
+   be on the allowed list, clearly; its "What to check" column says where
+   each kind of license hides a trap. CC BY-SA 4.0, the one grey-zone
+   license, is allowed until legal review says otherwise. Public domain
+   must hold under the law of the country where the work was first
+   published.
+2. Read the license of the text, look for a "no AI training" wish from the
+   owner (a statement, or a machine-readable text-and-data-mining
+   reservation), and check that the text holds no personal data
    ([docs/licenses.md](docs/licenses.md), "Rules").
-   A git source downloads only the contents of the files it keeps. A
-   submodule (a folder pointing to a commit of another repository) is
-   either excluded in `extract` or read at that commit from the address
-   `submodules` gives for its path, `{"vendor/lib": "https://..."}`; its
-   own submodules follow the same rule, by their full path. Its files
-   need a license entry like any other path.
-5. `uv run wpt dataset check --fetch <id>` must pass (it also converts every
-   file to Markdown, and names each license entry whose statement would
-   keep its files out of a build), and `uv run wpt dataset markdown-check <id>` (every
-   note complete, no leftover markup), then `uv run ci/all.py`.
-6. Open a pull request. Say what the source is, its license, and anything a
-   reviewer should know; use `note` fields for reasons that must stay with
-   the data.
+3. The depot must hold each license the text names, by its SPDX id
+   (`wpt depot sql "SELECT id, name FROM licenses"`). A text's licenses are
+   a choice: one allowed license is enough.
+4. Write the text's notice into a file: the license statement exactly as
+   the source gives it, with its copyright line, followed for Apache-2.0 by
+   the source's `NOTICE` content; for public domain, the proof and its
+   sources ([docs/licenses.md](docs/licenses.md), "Licenses and notices").
+   Every model trained on the text repeats it.
+5. Add it:
 
-## Adding your own texts
+   ```sh
+   uv run wpt depot add FILE --license L [--license L2] --notice NOTICE_FILE \
+       --tag TAG ... --title TITLE --author NAME ... --address ADDRESS \
+       --name "LEGAL NAME" --email EMAIL --accept
+   ```
 
-Text written for WPT, by you, lives in the repository itself, as the
-patches of an `empty` source (see [docs/architecture.md](docs/architecture.md)).
-The simplest way is the "New source" page of `uv run wpt web`: write or
-paste your text, and the page makes the source, under review
-(`under-review`), with your text as its first patch; its "Conversations"
-and "Tasks" pages write the conversations and tasks training steps read the same
-way, its "Ratings" page your pass or fail on a model's attempts (a
-measure only, never a training signal:
-[docs/evaluation.md](docs/evaluation.md), "People's ratings"), its
-"Probes" page the questions the `probes` test asks a model and the
-patterns that flag an alarming reply (a measure only too:
-[docs/evaluation.md](docs/evaluation.md), "Probes"), and every
-page shows which data files git sees as changed.
-`uv run wpt dataset new-source` does the same on the command line. By
-hand:
+   It joins the depot under review, with your declaration as its first
+   decision ("Decisions", below). Take tags only from the list of
+   [docs/data-selection.md](docs/data-selection.md), "Tags". The "Add"
+   page of `uv run wpt depot web` does the same.
 
-1. Choose its id: `uv run wpt dataset source-id <origin> [<item>] empty:<name>`.
-2. Create `data/sources/<id>/source.json` with `"type": "empty"`, the
-   address `empty:<name>`, a license entry for your text with a license
-   you choose (for example `CC0-1.0`), your `attribution`, the entry
-   itself as its place (`{"entry": true}`) and its decision, its tags, and
-   the source's decision.
-3. `uv run wpt dataset unpack <id> <folder>` (a folder outside the
-   repository), write or edit your files there, then
-   `uv run wpt dataset patch <id> <folder> <name>`. Each later change is the
-   same two commands and one more patch. Both work in a session of the store:
-   give `--session ID` or set `WPT_SESSION`, and any new ID will do.
+The depot refuses a text that names a license it does not hold, and
+nothing is written.
 
-Committed text stays public in the repository's history, clones and forks:
-an erasure can remove it from future builds, never from that history (see
-[docs/erasure.md](docs/erasure.md)). Commit only text you want public for
-good. Your signed-off commit certifies you wrote it, and it holds no other
-person's personal data and no output of another company's model.
+## Adding your own texts and items
 
-No program admits or refuses a source, a license entry or a license
-text. A script kept outside the repository may write a source's
-description as help: its output is not a source of truth, a person checks
-it, and only a person admits, after reviewing it. Tools such as ScanCode
-may help you find license texts; they never decide.
+Text you write for WPT is added the same way, under a license you choose
+(for example `CC0-1.0`), with yourself as its author. Conversations,
+tasks, ratings and probes are items: their content is JSON that matches
+their kind's schema, added with `--kind KIND`
+([docs/data-selection.md](docs/data-selection.md), "Items"):
 
-## Decisions are signed
+- a conversation, in the chat format, for the `answer-as-assistant` step
+  ([docs/chat-format.md](docs/chat-format.md));
+- a task, for the `finish-tasks` steps
+  ([docs/training.md](docs/training.md), "Tasks");
+- a rating, your pass or fail on one attempt of a `wpt eval` run, a
+  measure only that no training step reads;
+- a probe, a question to ask a model and the patterns that flag a reply
+  as alarming, a measure only too.
 
-Decisions are made at three levels, each signed by a person
-([docs/licenses.md](docs/licenses.md), "Who decides"):
+Your declaration on every decision, your text's included, records your
+legal name and email, and both are public. Add only text you wrote, that
+holds no other person's personal data and no output of another company's
+model.
 
-- the source's `decision`: whether WPT wants the source at all;
-- each license entry's `decision`: whether its coverage and license are
-  accepted for the files it covers;
-- each license text's `decision`, in
-  `data/license-texts/<id>/license-text.json`: whether that text is an
-  accepted license statement.
+No program admits or refuses a text. A script may help you prepare a text
+and its metadata: its output is not a source of truth, a person checks it,
+and only a person admits, after reviewing it. Tools such as ScanCode may
+help you find license texts; they never decide.
 
-Each decision is in exactly one of three states: `under-review`, not yet
-decided, where everything new starts and where a doubt stays; `admitted`;
-or `refused`. Each gives who set it (`by`) and when (`date`). A file
-trains only when its source, its entry and the text found at its entry's
-place are all admitted. The builds and `check --fetch` without ids read
-only admitted sources: an `under-review` source is left out of them
-exactly as a refused one is.
+## Decisions
 
-A person's name holds no colon. A save that changes a license entry's
-license, place or expected texts without deciding it anew sends that entry
-back to `under-review`, with the `by` `machine:wpt dataset`: `check`
-refuses an `admitted` or `refused` decision whose `by` is a machine's.
+Every decision is a row of the depot with one of three statuses,
+`under review`, `admitted` or `refused`, and the decider's declaration: a
+legal name, an email, and the confirmation (`--accept`, or a confirming
+button shown beside the confirmation's words) that they read the requirements, accept
+them, and that what they submit meets them. The declaration is public and
+not verified ([docs/licenses.md](docs/licenses.md), "Who decides").
 
-A maintainer admits a source, an entry or a license text by setting its
-`decision` to `admitted`, with their name and the date. An admission needs
-no reason: the license map and its texts already say why the source is
-allowed. It carries one only for an
-exception, such as an explicit permission for content without a license.
-Refusing a source always gives the reason, so nobody reviews it again from
-scratch; a source under review may give one (a doubt gives the missing
-fact). A refused source stays in the repository as a reference: it is
-never deleted. A commit that changes any `decision`, at any of the three
-levels, or what an admitted or refused entry or license text holds (an
-entry's license, place, expected texts and coverage, and its text when its
-place is the entry itself; a text's `files`), must be signed (`git commit -S`) by an SSH key listed in
-`data/allowed-signers` or a GPG key in `data/allowed-gpg-keys.asc`; CI
-checks the signature against the lists as they stood before the commit, so
-a new key can only be added by a commit signed with a key already listed.
+```sh
+uv run wpt depot decide admit "list_contains(tags, 'gutenberg')" \
+    --name "LEGAL NAME" --email EMAIL --accept
+```
 
-This applies to every commit that changes a decision, including the commit
-that first adds a source. A pull request proposing a source therefore fails
-the signature check until a maintainer decides: the maintainer sets the
-decision, then signs each commit of the pull request (for example
-`git rebase --exec 'git commit --amend --no-edit -S' <base>`; amending keeps
-the original author) and merges with a merge commit. Squash and rebase merges
-on GitHub replace the commits and their signatures, so they are not used for
-decisions.
+One decision applies to every text the SQL condition over the `texts`
+table matches. Anyone's decisions are appended. A text is admitted when at
+least one decision admits it and none refuses it, and only an admitted
+text joins a library and trains. A refused text stays in the depot as a
+reference. A decision never changes a text a locked library holds.
 
-## Changing a source
+## Libraries and datasets
 
-- **New address or newer version**: edit `address` in place, and for a
-  git source `revision`, the full id of the newer commit (the "Sources"
-  page of `wpt web`, or `wpt dataset save source`). The source keeps its
-  id, its decisions and its history; the next download fetches the new
-  address or commit. A cut or patch that no longer applies takes the
-  source out of the builds until it is made again.
-- **Fresh content at the same address**: a download into a new session
-  fetches it in full (`uv run wpt dataset download <id>` with no session
-  makes one and prints its ID), and the old session stays. A git source then
-  gets the same commit again.
-- **A license that changed**: changing an entry's license, place or
-  expected texts sends that entry back to `under-review`; the source's
-  decision and its other entries stay.
-- **What a build reports**: a file no entry covers, a file that is not
-  text and is not listed, a record value no entry expects, a pointer task
-  whose passage is gone. Add the entry or the `extract` path, or run the
-  task builder again ([docs/training.md](docs/training.md), "The task
-  builder").
-- **Patches**: `0001-<name>.patch`, `0002-<name>.patch`... in git's format,
-  applied in order after the erasure cuts. Removal patches are welcome.
+A library groups admitted texts, and a dataset says which libraries to
+train on, with optional shares by tag. `wpt depot library new`, `put`,
+`lock`, `fork` and `report` make and fill libraries, and report a
+problem with one; `wpt depot dataset new`,
+`export` and `import` make datasets and write them out as remotes;
+`wpt depot build DATASET` builds a dataset's corpus into the store
+([docs/data-selection.md](docs/data-selection.md)).
+
+## Changing a text
+
+A text never changes. A newer or corrected version is another text, added
+under review; the older one stays where it is until someone refuses it or
+asks for its erasure. A locked library keeps the texts it holds.
 
 ## Erasure requests
 
-Every erasure request is honored. Open a public issue, or use the
-repository's **Security** tab, **Report a vulnerability**, to ask privately.
-See [docs/erasure.md](docs/erasure.md).
+Every erasure request is honored. Ask through `wpt depot erase` or the
+page of the text in `wpt depot web`, open a public issue, or use the
+repository's **Security** tab, **Report a vulnerability**, to ask
+privately. See [docs/erasure.md](docs/erasure.md).
 
 ## Models and generated text
 
 No output of another company's model is accepted, in data or in
 training, and no synthetic data that a WPT model did not make. WPT's
 own models may be used in training, their output included
-([docs/data-selection.md](docs/data-selection.md), "Models in training"). A contribution that uses a WPT model (to produce
-data, or in any training role) must say exactly what that model did.
-The uses today are a model's draft of a conversation's reply, below, and
-the `finish-tasks` step's reward on a task's one-line form, which compares an
-attempt with the model's own attempt at the full form
+([docs/data-selection.md](docs/data-selection.md), "Models in training").
+A contribution that uses a WPT model (to produce data, or in any training
+role) must say exactly what that model did. A conversation's `assistant`
+message that started as a WPT model's draft records it in its
+`metadata.draft` ([docs/chat-format.md](docs/chat-format.md), "Model
+drafts"), and the `finish-tasks` step's reward on a task's one-line form
+compares an attempt with the model's own attempt at the full form
 ([docs/training.md](docs/training.md), "Rewards").
 
-A conversation's `assistant` message may start as a draft of a WPT model:
-in the conversation editor of
-`wpt web`, a WPT model folder writes the next reply, and you edit it or
-confirm it as it is. The message's `metadata.draft` says exactly what the
-model did: the model folder's name, the sha256 of each of its weights
-files, the sha256 of the draft as the model wrote it, and `edited`,
-whether you changed it, which the service layer computes from the content
-when the conversation is saved; the check refuses an `edited` that does
-not match the content in any other chat file. An unedited confirmed draft
-is allowed. The rest of `metadata.draft` is a claim the client makes,
-which the server does not check: that
-a WPT model wrote the draft, and its model, weights and sha256. See
-[docs/chat-format.md](docs/chat-format.md), "Model drafts".
-
-An AI assistant (a coding agent helping you) uses the `wpt dataset`
-commands only for structure and metadata: the kinds and names of files,
-`source.json`, recipes, file lists, tags, git's status; never to read or
-write people's texts, except that it may read a source's text to choose
-its tags, and then changes only the tags. Otherwise it never runs the
-commands and options that do (`read`, `write`, `conversation`, `save-conversation`, `task`,
-`save-task`, `save-rating`, `save-probe`, and `new-source`'s `--file` and
-`--license-text`, marked `*`
-in `uv run wpt dataset --help`). It may start a new source with
-`new-source` without `--file` and `--license-text`: the source is made with its license, attribution,
-format entries and tags, and the license text left empty (`--format
-FORMAT=PATTERN` declares a format entry, such as `markdown=**/*.md` or
-`text=notes/*.txt`, without any file; an empty `--license-text` file is an
-error, not a text to write later); you then write the license text
-(`wpt dataset save source`, or the "Sources" page of `wpt web`), and the
-check names the source until you do (the text may be empty only while
-the source is not admitted, that is `under-review` or `refused`, and
-builds and checks leave such a source out with a note), then add your
-files, in any format. People write their texts themselves. When a
-person asks an assistant only to change the form of a text they wrote
-(line endings, spacing, splitting into files), the assistant may move it
-with scripts that transform whole files mechanically and report only its
-shape, never its words, then pass it to `unpack` and `patch`; it never
-reads or writes the words itself.
+An AI assistant (a coding agent helping you) never reads or writes the
+words of people's texts and items: it works on their metadata only
+(licenses, notices' ids, tags, credits, decisions, libraries), except that
+it may read a text to choose its tags, and then changes only the tags.
+People write and add their texts themselves. When a person asks an
+assistant only to change the form of a text they wrote (line endings,
+spacing, splitting into files), the assistant may move it with scripts
+that transform whole files mechanically and report only its shape, never
+its words; it never reads or writes the words itself.
 
 ## Training records
 
-Demonstrations and environment recordings are files of a source, like any
-other text ([docs/training.md](docs/training.md), "Where records
-live"): their license, credit and decision are the source's, in its
-`source.json`, and the signed-off commit that adds them names their
-contributor. Their shape is not settled yet; the code reads
-conversations in the `chat` format, tasks in the `task` format,
-ratings in the `rating` format and probes in the `probe` format.
+Demonstrations and environment recordings are items of a depot, like any
+other text ([docs/training.md](docs/training.md), "Where records live"):
+their licenses, credits, notice and decisions are the item's. Their shape
+is not settled yet; the code reads conversations and tasks, and the depot
+also holds ratings and probes.
 
 ## Writing about the project
 
@@ -365,10 +208,8 @@ git's history. No text holds a decision's date, a "(maintainer's
 decision)" tag (only "maintainer's decision alone" stays, for a license
 choice with no outside ruling) or an account of earlier versions. Rules
 are general: they name no source and no example, so they hold for any
-number of sources. Dates that belong to the content stay, such as a
-author's death date or a lawyer's answer in `LEGAL-QUESTIONS.html`. A
-migration step (`wpt dataset migrate`) says what it changes in a file of
-an older shape, not when that shape changed.
+number of texts. Dates that belong to the content stay, such as an
+author's death date or a lawyer's answer in `LEGAL-QUESTIONS.html`.
 
 ## Code
 
@@ -377,32 +218,19 @@ uv run scripts/setup.py      # once per machine: installs the right PyTorch buil
 uv run ci/all.py             # the checks your change touches, before you push
 uv run ci/all.py --all       # every check, whatever changed
 uv run ci/all.py --cpu       # with the software conditions of CI: every GPU hidden, Triton blocked
-uv run ci/tests.py           # one part: lock, tests, rust, data, sources or commits
+uv run ci/tests.py           # one part: lock, tests, rust, data or commits
 ```
 
-The tests prove that things work, not that they are correct; only the checks of
-data sources prove correctness. `ci/all.py` is what CI runs too: the tests, the
-Rust tests, the data rules on every source (read, not downloaded), the download
-and check of one small source
-(`standardebooks-joseph-conrad-ford-madox-ford-the-nature-of-a-crime-5366b0f3`,
-a short book fixed at one git commit, so its download never changes), which
-proves the fetch and its checks work, and the checks on your commits. Only what
-your change touches runs: pytest-testmon runs the tests whose source changed, and
-the other parts run when their files changed since your upstream branch, committed
-or not. The commits check always runs, on what a push would send. Neither
-`ci/all.py` nor CI downloads the sources a pull request adds or changes: the
-maintainer runs `uv run wpt dataset check --fetch` on them before merging. There
-is no local hook. A green run here is no promise of a green CI: `--cpu` matches
-CI's software, and only CI shows the timing of its 4 cores. `docs/architecture.md`,
-"Checks", says how each part chooses what it runs, and what each takes.
-
-Stored results of the data pipeline hold no code, so a change to the code leaves
-them found. When your change makes a stage give something else for the same
-inputs, raise that stage's version in the same commit: every later build on any
-machine then does that stage again (`docs/architecture.md`, "Fingerprints and
-the store", names them). A package or Python upgrade that changes what a stage
-gives counts as such a change. A locked vocabulary is the exception: it is never
-trained again, so `VOCABULARY_VERSION` acts only on a recipe with no lock.
+The tests prove that things work, not that they are correct. `ci/all.py`
+is what CI runs too: the tests, the Rust tests, the recipes' check, and
+the checks on your commits. Only what your change touches runs:
+pytest-testmon runs the tests whose source changed, and the other parts
+run when their files changed since your upstream branch, committed or not.
+The commits check always runs, on what a push would send. There is no
+local hook. A green run here is no promise of a green CI: `--cpu` matches
+CI's software, and only CI shows the timing of its 4 cores.
+`docs/architecture.md`, "Checks", says how each part chooses what it runs,
+and what each takes.
 
 A test checks that the code works, not that it works well: it runs without crashing, its computation is valid
 (finite numbers, values in their range, tokens come out, training changes

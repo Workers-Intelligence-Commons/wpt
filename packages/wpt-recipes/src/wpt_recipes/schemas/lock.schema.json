@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/lock.schema.json",
+  "title": "WPT tokenizer lock (data/recipes/tokenizers/<name>.lock.json), written by the command that trains the vocabulary: the frozen vocabulary of one recipe version",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recipe", "texts", "vocabulary_sha256"],
+  "properties": {
+    "recipe": {"type": "object", "description": "the tokenizer recipe as it was when the vocabulary was trained, version included"},
+    "texts": {
+      "type": "array",
+      "minItems": 1,
+      "description": "every text the vocabulary was trained on, by the address of its depot and its id there",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["depot", "id"],
+        "properties": {"depot": {"type": "string", "minLength": 1}, "id": {"type": "string", "minLength": 1}}
+      }
+    },
+    "vocabulary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "note": {"type": "string"}
+  }
+}

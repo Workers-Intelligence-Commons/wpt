@@ -8,8 +8,8 @@ from dataclasses import asdict
 import pytest
 import torch
 
-from wpt_dataset import series
 from wpt_model import PARTS, WPT, ModelConfig
+from wpt_recipes import series
 from wpt_store import LocalStore
 from wpt_store.shards import write_shard
 from wpt_telemetry import Telemetry
@@ -25,18 +25,18 @@ CPU = Strategy(torch.device("cpu"))
 
 @pytest.fixture
 def dataset(tmp_path):
-    """A store with 2 training shards of 300 random tokens and a held-out shard; and its record."""
-    store = LocalStore(tmp_path / "store").at("test-session")
+    """A store with 2 token files of 300 random tokens; and the corpus's record."""
+    store = LocalStore(tmp_path / "store")
     generator = torch.Generator().manual_seed(0)
 
     def shard(name, part):
         path = tmp_path / f"{name}.parquet"
         digest = write_shard(path, [(torch.randint(50, (300,), generator=generator).tolist(), "s", f"s/{name}",
                                      part, 0)])
-        return {**asdict(store.put_named(f"test-session/datasets/d/{digest}.parquet", path)), "token_sha256": digest, "rows": 1, "tokens": 300}
+        return {**asdict(store.put_named(f"corpora/d/{digest}.parquet", path)), "token_sha256": digest, "rows": 1,
+                "tokens": 300}
 
-    record = {"shards": [shard("a", "p"), shard("b", "p")], "held_out_shards": [shard("h", "held-out")],
-              "total_tokens": 600, "sources": {"s": {"name": "s"}}}
+    record = {"shards": [shard("a", "p"), shard("b", "p")], "total_tokens": 600}
     return store, record
 
 

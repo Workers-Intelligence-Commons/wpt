@@ -10,8 +10,7 @@ number of frames, a descriptor byte (0: no per-frame checksums) and the
 format's magic number. The whole file is ordinary zstd: `zstd -d` gives
 back the original bytes.
 
-Every frame holds about FRAME bytes, whatever the file: the build's choice by
-whole frames (wpt_dataset.choice) reads a source's tar by them.
+Every frame holds about FRAME bytes, whatever the file.
 
 Writer compresses while the bytes come, several frames at once as
 wpt_utils.parallel allows, the frames written in order. SeekTable reads a

@@ -9,21 +9,21 @@ with one version. Compatibility runs one way: permissive content can enter
 copyleft, never the reverse.
 
 The weights of WPT models are under AGPL-3.0-or-later too. Each model folder
-carries the license text (`LICENSE`), a `NOTICE` naming every source the
-model learned from with the credit it asks for, and a model card; the weight
-files' headers name the licenses (see [training.md](training.md)). A
+carries the license text (`LICENSE`), a `NOTICE` and a `CREDITS` naming
+every text the model learned from with its credit, and a model card; the
+weight files' headers name the licenses (see [training.md](training.md)). A
 model's drafter (`drafter/`, [model.md](model.md), "The drafter") is part of
 its weights: the same license, the same header in its weight file. Its
-prompts are the beginnings of the model's own training documents, whose
-sources the same `NOTICE` already credits, and it learns only from answers
-WPT's own model writes, never from another company's model (below).
+prompts are the beginnings of the plain texts the model read, which the
+same `CREDITS` already names, and it learns only from answers WPT's own
+model writes, never from another company's model (below).
 
-Data built by WPT's tools (token shards, vocabularies, dataset records) is
-under AGPL-3.0-or-later too, by the same logic as code: every source is
-treated as a dependency, and every allowed source permits AGPL use. The
-content of each source inside keeps its own license wherever it is shared,
-with its credit and license text; the AGPL covers what WPT adds to it, the
-format, the structure and everything the pipeline puts around the content.
+Data built by WPT's tools (corpora and vocabularies) is under
+AGPL-3.0-or-later too, by the same logic as code: every text is treated as
+a dependency, and every allowed license permits AGPL use. The content of
+each text inside keeps its own license wherever it is shared, with its
+credit, notice and license text; the AGPL covers what WPT adds to it, the
+format, the structure and everything the build puts around the content.
 
 Still open:
 
@@ -40,7 +40,7 @@ are vague or missing, from its license files. All of them were checked for
 the versions below.
 
 **When a version changes** in `uv.lock`, `Cargo.lock` or
-`apps/wpt/ui/bun.lock`, check that row
+`bun.lock`, check that row
 again (the license can change between versions) and update its version
 here; a new package gets a row, a removed one loses its row. The required
 packages must stay compatible with AGPL-3.0-or-later.
@@ -49,6 +49,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
+| arro3-core | 0.9.1 | MIT OR Apache-2.0 | through deltalake |
 | attrs | 26.1.0 | MIT | |
 | boto3 | 1.43.113 | Apache-2.0 | |
 | botocore | 1.43.113 | Apache-2.0 | |
@@ -58,6 +59,9 @@ packages must stay compatible with AGPL-3.0-or-later.
 | colorama | 0.4.6 | BSD-3-Clause | Windows only, through pytest |
 | coverage | 7.17.2 | Apache-2.0 | tests, through pytest-testmon |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | the gpu worker's certificate (wpt-worker), and tests through moto; its compiled part includes OpenSSL (Apache-2.0), statically linked |
+| deltalake | 1.6.6 | Apache-2.0 | the depot's tables (wpt-depot) |
+| deprecated | 3.0.1 | MIT | through deltalake |
+| duckdb | 2.0.0 | MIT | SQL reads over the depot's tables (wpt-depot); its metadata gives the license as a classifier only |
 | einops | 0.8.2 | MIT | through fla-core |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
 | fla-core | 0.5.2 | MIT | KDA's GPU kernel (flash-linear-attention), used where Triton runs |
@@ -67,7 +71,6 @@ packages must stay compatible with AGPL-3.0-or-later.
 | jmespath | 1.1.0 | MIT | |
 | jsonschema | 4.26.0 | MIT | |
 | jsonschema-specifications | 2025.9.1 | MIT | |
-| lxml | 6.1.3 | BSD-3-Clause | reads XHTML for the Markdown conversion; its compiled part bundles zlib (Zlib), libiconv (LGPL-2.1), libxml2, libxslt and libexslt (MIT) |
 | moto | 5.2.4 | Apache-2.0 | tests: answers the S3 test's requests inside the test process |
 | numpy | 2.5.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | |
 | opentelemetry-api | 1.45.1 | Apache-2.0 | each command run's record and live view (wpt-telemetry) |
@@ -80,7 +83,6 @@ packages must stay compatible with AGPL-3.0-or-later.
 | opentelemetry-semantic-conventions | 0.66b1 | Apache-2.0 | through opentelemetry-sdk |
 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | through pytest |
 | pluggy | 1.6.0 | MIT | through pytest |
-| protego | 0.7.0 | BSD-3-Clause | reads robots.txt files |
 | protobuf | 7.36.2 | BSD-3-Clause | through opentelemetry-proto; its metadata says "3-Clause BSD License" |
 | py-partiql-parser | 0.6.3 | MIT | tests, through moto |
 | pyarrow | 26.0.0 | Apache-2.0 | |
@@ -101,6 +103,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | typing-extensions | 4.16.0 | PSF-2.0 | through opentelemetry; PyTorch needs it too |
 | urllib3 | 2.8.0 | MIT | |
 | werkzeug | 3.1.9 | BSD-3-Clause | tests, through moto |
+| wrapt | 2.5.2 | BSD-2-Clause | through deprecated |
 | xmltodict | 1.0.4 | MIT | tests, through moto |
 
 ### PyTorch (one build per machine, picked by `scripts/setup.py`)
@@ -246,9 +249,7 @@ They run unmodified next to WPT and are not linked into it.
 | maturin | >=1.15,<2 | MIT OR Apache-2.0 | builds the tokenizer package |
 | uv_build | >=0.13.0,<0.14.0 | MIT OR Apache-2.0 | builds the other packages |
 | Rust toolchain | 1.98.0 | MIT OR Apache-2.0 | compiles the tokenizer |
-| git | any | GPL-2.0-only | fetches sources, applies patches, checks commits |
-| mercurial | any | GPL-2.0-or-later | fetches mercurial sources |
-| GnuPG | any | GNU GPL | checks GPG-signed decisions |
+| git | any | GPL-2.0-only | fetches the repositories of agentic tasks, checks commits |
 | Docker Engine and its CLI | any | Apache-2.0 | builds the images and runs the containers of agentic training |
 | Docker Desktop | any | proprietary (Docker Subscription Service Agreement) | runs Docker Engine on Windows and macOS (the way WPT uses Docker on Windows) |
 | actions/checkout | v4 | MIT | CI |
@@ -291,7 +292,7 @@ table checked again.
 | --- | --- | --- | --- |
 | python (Docker's official image, Debian trixie slim) | 3.14 | PSF-2.0 for Python; each Debian package its own license | the manager's base image |
 | docker (Docker's official image, its `docker` command) | 29.9.2 | Apache-2.0 | the manager's `docker` command, for the sandboxes |
-| git, mercurial, GnuPG, rustup, build-essential (Debian packages) | trixie | as in "Tools that build and check WPT"; rustup MIT OR Apache-2.0; build-essential's compilers GPL-3.0-or-later | the manager's downloads, signed commits and tokenizer build |
+| git, rustup, build-essential (Debian packages) | trixie | as in "Tools that build and check WPT"; rustup MIT OR Apache-2.0; build-essential's compilers GPL-3.0-or-later | the repositories of agentic tasks and the tokenizer build |
 | uv | 0.13.5 | MIT OR Apache-2.0 | installs the libraries, on the manager and on the gpu worker |
 | SkyPilot (`skypilot[all]`, with the libraries it installs for every cloud it reaches) | 0.14.1 | Apache-2.0 for SkyPilot; each library its own license | the manager's `sky` command, which rents gpu workers, in an environment of its own on Python 3.13 (which uv installs, PSF-2.0) |
 | pytorch/pytorch | 2.14.1, CUDA 13.0, cuDNN 9 | BSD-3-Clause for PyTorch; NVIDIA's CUDA and cuDNN under NVIDIA's license agreements, as in "CUDA build, Linux only" | the gpu worker's base image |
@@ -361,27 +362,40 @@ them on the user's machine, under their own terms. Distributing WPT
 together with them (a container image, an installer) needs its own license
 check first, above all for the NVIDIA, Intel and AMD runtimes.
 
-### The web interface (`apps/wpt/ui/bun.lock`)
+### The web interface (`bun.lock`)
 
-Bun installs these when `wpt web` builds its interface. Only React,
-React DOM and scheduler end up in the built files the browser loads; the
-others build them. lightningcss's MPL-2.0 names the AGPL as a Secondary
-License (its section 1.12).
+Bun installs these when `wpt depot web` builds its interface. The root
+`package.json` makes one workspace of the interface (`apps/wpt/ui`) and the
+packages of the organization's design system, a git submodule at
+`vendor/wic-design-system` pinned to commit 99ca81f. React, React DOM,
+scheduler and the design system's tokens, fonts and components end up in
+the built files the browser loads; the others build them. lightningcss's
+MPL-2.0 names the AGPL as a Secondary License (its section 1.12).
+
+The design system's NOTICE gives three licenses. Its tokens, components and
+brand book are under AGPL-3.0-or-later. Its fonts, in
+`packages/tokens/fonts`, are under OFL-1.1, each with its license file
+alongside. The WPT, WIC and hub monograms, in `packages/tokens/logos`, and
+their drawings in the Mark component and in every build that contains it,
+are not licensed: all rights reserved. The interface draws the WPT monogram
+through Mark, so its built files hold that drawing.
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
+| @workers-intelligence-commons/tokens | workspace, submodule at 99ca81f | AGPL-3.0-or-later; fonts OFL-1.1; monograms all rights reserved | in the built files (tokens and fonts) |
+| @workers-intelligence-commons/components | workspace, submodule at 99ca81f | AGPL-3.0-or-later; Mark's monograms all rights reserved | in the built files (components, and the Mark drawing) |
 | react | 19.3.1 | MIT | in the built files |
 | react-dom | 19.3.1 | MIT | in the built files |
 | scheduler | 0.28.0 | MIT | in the built files, through react-dom |
-| vite | 8.3.4 | MIT | builds the interface |
-| rolldown | 1.2.14 | MIT | through vite |
-| @rolldown/binding-* | 1.2.14 | MIT | one per platform (15), through rolldown |
-| @rolldown/pluginutils | 1.0.1 | MIT | through vite |
-| @oxc-project/types | 0.154.0 | MIT | through rolldown |
+| vite | 8.3.6 | MIT | builds the interface |
+| rolldown | 1.2.16 | MIT | through vite |
+| @rolldown/binding-* | 1.2.16 | MIT | one per platform (15), through rolldown |
+| @rolldown/pluginutils | 1.1.0 | MIT | through vite |
+| @oxc-project/types | 0.156.0 | MIT | through rolldown |
 | lightningcss | 1.33.0 | MPL-2.0 | through vite |
 | lightningcss-* | 1.33.0 | MPL-2.0 | one per platform (11), through lightningcss |
 | detect-libc | 2.1.2 | Apache-2.0 | through lightningcss |
-| postcss | 8.5.30 | MIT | through vite |
+| postcss | 8.5.32 | MIT | through vite |
 | nanoid | 3.3.20 | MIT | through postcss |
 | picocolors | 1.1.1 | ISC | through postcss |
 | source-map-js | 1.2.2 | BSD-3-Clause | through postcss |
@@ -394,26 +408,31 @@ License (its section 1.12).
 | @types/react | 19.3.0 | MIT | types only |
 | @types/react-dom | 19.3.0 | MIT | types only |
 | csstype | 3.2.3 | MIT | types only, through @types/react |
+| @types/bun | 1.4.4 | MIT | types only, through the components package |
+| bun-types | 1.4.4 | MIT | types only, through @types/bun |
+| @types/node | 26.6.6 | MIT | types only, through bun-types |
+| undici-types | 8.9.0 | MIT | types only, through @types/node |
 
 ## What the corpus accepts
 
-**When in doubt, it is not used.** A doubtful source stays under review,
-as a reference, and no build reads it.
+**When in doubt, it is not used.** A doubtful text stays under review. A
+text under review joins no library, so no corpus reads it
+([data-selection.md](data-selection.md), "Libraries").
 
 **The linking test.** A license is allowed only if, were the content code,
 a program under the project's license (AGPL-3.0-or-later) could statically
 link it and be distributed. This holds inside every family below: a license
 that fails it is refused, whatever its family.
 
-The allowed list below is not exhaustive. It holds the licenses the check
-accepts today, the same as `packages/wpt-dataset/src/wpt_dataset/licenses.py`,
-and the licenses we recommend to contributors; another license that passes
-the linking test can be added to both. Each one lets its content end up
-inside AGPL-3.0-or-later weights: it is permissive, its own text lets the
-content move to the GPLv3 or the AGPL (AGPL section 13 accepts GPLv3 works,
-each part keeping its license), or it asks only for credit. The "What to
-check" column names the usual traps of licenses of that kind, not every
-one: a person still reads the license of every path.
+The allowed list below is not exhaustive. It holds the licenses a depot's
+`licenses` table may hold ("Licenses and notices", below), and the
+licenses we recommend to contributors; another license that passes the
+linking test can be added to it. Each one lets its content end up inside
+AGPL-3.0-or-later weights: it is permissive, its own text lets the content
+move to the GPLv3 or the AGPL (AGPL section 13 accepts GPLv3 works, each
+part keeping its license), or it asks only for credit. The "What to check"
+column names the usual traps of licenses of that kind, not every one: a
+person still reads the license of every text.
 
 The evidence comes from the FSF license list
 (<https://www.gnu.org/licenses/license-list.html>), the license texts, the
@@ -427,27 +446,27 @@ alone, without an outside ruling, says so in its row.
 
 | License (SPDX) | Why it is allowed | What to check |
 | --- | --- | --- |
-| `LicenseRef-public-domain` | no rights left | public domain under the law of the country where the content was first published, for every author and translator (Rules, "Public domain"); the entry's `text` gives the proof and its sources |
+| `LicenseRef-public-domain` | no rights left | public domain under the law of the country where the content was first published, for every author and translator (Rules, "Public domain"); the text's notice gives the proof and its sources |
 | `CC0-1.0`, `Unlicense` | public-domain dedications; FSF: compatible | a dedication by the right person: a site cannot dedicate what it does not own |
-| `MIT`, `MIT-0`, `0BSD`, `BSD-1-Clause`, `BSD-2-Clause`, `BSD-2-Clause-Patent`, `BSD-3-Clause`, `ISC`, `X11`, `NCSA`, `PostgreSQL`, `UPL-1.0`, `HPND`, `W3C`, `curl` | FSF: GPL-compatible (BSD-2-Clause-Patent: Blue Oak Gold) | the copyright line of the source's own license file goes into `text` with the license |
-| `Apache-2.0` | FSF: compatible with GPLv3 (not v2) | the source's `NOTICE` file, if any: its content follows the license in `text` |
+| `MIT`, `MIT-0`, `0BSD`, `BSD-1-Clause`, `BSD-2-Clause`, `BSD-2-Clause-Patent`, `BSD-3-Clause`, `ISC`, `X11`, `NCSA`, `PostgreSQL`, `UPL-1.0`, `HPND`, `W3C`, `curl` | FSF: GPL-compatible (BSD-2-Clause-Patent: Blue Oak Gold) | the copyright line of the source's own license file goes into the text's notice |
+| `Apache-2.0` | FSF: compatible with GPLv3 (not v2) | the source's `NOTICE` file, if any: its content goes into the text's notice |
 | `Zlib`, `BSL-1.0`, `WTFPL` | FSF: compatible | Zlib: changed versions must be marked as changed |
 | `Python-2.0`, `PSF-2.0` | FSF: compatible from Python 2.0.1 and 2.1.1 | Python 1.6b1 to 2.1 licenses are not compatible |
 | `Unicode-3.0`, `Unicode-DFS-2016` | FSF: compatible with every GPL version | |
-| `Artistic-2.0` | FSF: compatible through its section 4(c)(ii) | Artistic-1.0 is refused; a choice between Artistic and the GPL is written as an expression (below) |
+| `Artistic-2.0` | FSF: compatible through its section 4(c)(ii) | Artistic-1.0 is refused; a choice between Artistic and the GPL is a text that names both licenses (below) |
 | `BlueOak-1.0.0` | Blue Oak Council's model permissive license | no FSF ruling; its text sets no condition the AGPL forbids |
-| `FSFAP` | FSF: the GNU All-Permissive License is "compatible with the GNU GPL", in its older wording without the warranty sentence too | the notice and its copyright line go into `text` |
-| `BSD-3-Clause-No-Nuclear-Warranty` | BSD-3-Clause's terms, plus an acknowledgement that the software is not designed for nuclear facilities: it disclaims a warranty and sets no condition on use (maintainer's decision alone) | the copyright line goes into `text` with the license, as for BSD-3-Clause |
+| `FSFAP` | FSF: the GNU All-Permissive License is "compatible with the GNU GPL", in its older wording without the warranty sentence too | the license statement and its copyright line go into the text's notice |
+| `BSD-3-Clause-No-Nuclear-Warranty` | BSD-3-Clause's terms, plus an acknowledgement that the software is not designed for nuclear facilities: it disclaims a warranty and sets no condition on use (maintainer's decision alone) | the copyright line goes into the text's notice, as for BSD-3-Clause |
 
 ### GPLv3 family
 
 A GPL-family license (GPL, LGPL, AGPL, any version) counts as "-or-later"
 unless the license file, the package metadata or the repository's files
-state "only" for it. An explicit "only" statement always wins, over the
-license a license text item names too. A license that states neither "only"
-nor "or later" is "-or-later": the Program that specifies no version lets
-any version be chosen (GPL section 9, LGPL section 14, AGPL section 14).
-The rule applies to every source, whoever writes it.
+state "only" for it. An explicit "only" statement always wins. A license
+that states neither "only" nor "or later" is "-or-later": the Program that
+specifies no version lets any version be chosen (GPL section 9, LGPL
+section 14, AGPL section 14). The rule applies to every text, whoever adds
+it.
 
 | License (SPDX) | Why it is allowed | What to check |
 | --- | --- | --- |
@@ -463,13 +482,13 @@ The rule applies to every source, whoever writes it.
 | `MPL-2.0` | section 1.12 names "the GNU Affero General Public License, Version 3.0, or any later versions" a Secondary License, and section 3.3 allows distribution under it | files marked "Incompatible With Secondary Licenses" (Exhibit B, SPDX `MPL-2.0-no-copyleft-exception`) are refused |
 | `EUPL-1.2` | its appendix lists the AGPL; the European Commission: "you may distribute under the AGPL a larger derivative work integrating components covered by the EUPL" | EUPL-1.1 is refused (FSF: incompatible) |
 | `CECILL-2.1` | FSF: "explicitly compatible with the GNU GPL" | CeCILL-B and CeCILL-C are refused |
-| `EPL-2.0 OR GPL-2.0-or-later`, with or without `WITH Classpath-exception-2.0` | the GPL "secondary license" the file designates | EPL-2.0 alone is refused (FSF: incompatible without that designation) |
+| `EPL-2.0` with `GPL-2.0-or-later` or `GPL-2.0-or-later WITH Classpath-exception-2.0` as the choice | the GPL "secondary license" the file designates | EPL-2.0 alone is refused (FSF: incompatible without that designation) |
 
 ### Credit only: Creative Commons Attribution 4.0
 
 | License (SPDX) | Why it is allowed | What to check |
 | --- | --- | --- |
-| `CC-BY-4.0` | FSF: "compatible with all versions of the GNU GPL"; credit may be given "in any reasonable manner", including a link (section 3(a)(2)); Creative Commons: for training, credit "could be a simple link to the source of the dataset" | NC and ND variants are refused; the credit names the creator, the copyright notice, the license, a link and whether the work was changed; a label that names no version is CC BY, written `CC-BY-4.0` with a note in `text` that no version is named (maintainer's decision alone) |
+| `CC-BY-4.0` | FSF: "compatible with all versions of the GNU GPL"; credit may be given "in any reasonable manner", including a link (section 3(a)(2)); Creative Commons: for training, credit "could be a simple link to the source of the dataset" | NC and ND variants are refused; the credit names the creator, the copyright notice, the license, a link and whether the work was changed; a label that names no version is CC BY, written `CC-BY-4.0` with a statement in the text's notice that no version is named (maintainer's decision alone) |
 
 ### Share-alike, a grey zone: Creative Commons Attribution-ShareAlike 4.0
 
@@ -488,110 +507,46 @@ Facts gathered for the legal review:
 - Wikipedia text is CC BY-SA 4.0 under the current Wikimedia Terms of Use.
 - Common Pile v0.1 includes CC BY-SA content.
 
-### Several licenses on one file
+### Several licenses on one text
 
-A license entry may be an SPDX expression of alternatives, such as
-`EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0`. It passes when
-one alternative is allowed, and WPT uses the content under that
-alternative. `WITH` names an exception from a second closed list,
-`EXCEPTIONS` in `licenses.py`, which holds only exceptions that add
-permissions: `Classpath-exception-2.0` (Java), `LLVM-exception` (LLVM,
-after Apache-2.0) and `GCC-exception-3.1` (GCC's runtime libraries, after
-GPL-3.0-or-later). `AND` joins licenses that apply at once, such as
-`MIT AND Apache-2.0` for a repository with both license files and no
-statement that one may choose: the alternative passes when every license
-in it is allowed, and its `text` holds every one of their texts. When the repository states the choice
-(its README or `Cargo.toml` says "MIT OR Apache-2.0", "MIT/Apache-2.0" or
-"at your option"), the entry is `MIT OR Apache-2.0`. `AND` binds before `OR`, as in SPDX;
-parentheses are not accepted.
+A text's licenses are a choice: it passes when one of them is allowed, and
+WPT uses the content under that license. A license with an exception is
+one license of the depot, its id written `<license> WITH <exception>`.
+Only exceptions that add permissions are accepted:
+`Classpath-exception-2.0` (Java), `LLVM-exception` (LLVM, after
+Apache-2.0) and `GCC-exception-3.1` (GCC's runtime libraries, after
+GPL-3.0-or-later). A repository that states the choice (its README or
+`Cargo.toml` says "MIT OR Apache-2.0", "MIT/Apache-2.0" or "at your
+option") gives each of its texts both licenses.
 
-### License entries
+Licenses that all apply to one text together, such as a repository with
+two license files and no statement that one may choose, are one combined
+license of the depot, its id the licenses joined by ` AND `, for example
+`MIT AND CC-BY-4.0`, like `Apache-2.0 WITH LLVM-exception`.
+`wpt depot license add` accepts such a row. A combined license is allowed
+only when every part is, and its notice holds the statement of each part.
 
-Each license entry of a source (`licenses` in its `source.json`) says
-three things, and carries its own decision:
+### Licenses and notices
 
-1. **Its place**, where its license statement must be found (`place`): a
-   file of the source's tree (`{"file": path}`, the covered file itself
-   too, for a file whose own header states its license), a field of each
-   record (`{"field": name}`), or a page at an outside address
-   (`{"page": address}`), which the download stores with the source's
-   files. A fourth place, the entry itself (`{"entry": true}`), is allowed
-   only where no statement can exist in the content: in an `empty` source
-   (text written for WPT, such as conversations, tasks and ratings) and
-   for `LicenseRef-public-domain` (a proof such as death dates or
-   publication law). There the signed entry's `text` is the statement.
-2. **What is expected there** (`expected`): at a file or a page, the ids
-   of the license texts it may match (items of `data/license-texts/`,
-   below), at least one; at a field, the exact values of that field the
-   entry covers. The entry itself expects nothing.
-3. **What it covers** (`paths`). Every file is covered by exactly one
-   entry. A records file whose entries name a field place is covered
-   record by record: each record by the entry that expects its field's
-   value. A record whose value no entry expects is covered by none and
-   left out; the build and `check --fetch` report its value with its
-   count, the proposal of an entry for that value, and a person adds that
-   entry, under review.
+A depot stores each official license text once, in its `licenses` table:
+its id is the license's SPDX name (`CC-BY-SA-4.0`,
+`LicenseRef-public-domain`, or a license with its exception), with its
+name and its official text. A text names the ids of its licenses, and the
+depot refuses a text that names a license it does not hold. Only licenses
+on the allowed list above go into that table. `wpt depot license add ID
+NAME FILE` adds a license with its official text read from `FILE`, and
+the "Licenses" page of `wpt depot web` does the same; the depot refuses an
+id it holds already.
 
-Coverage patterns are narrow enough that the person signing sees at a
-glance what they cover:
-
-- a named folder with a star: `src/*` for its files, `src/**` for
-  everything under it;
-- a named kind of file in every folder (`**/*.js`) or in the top folder
-  (`*.js`);
-- an exact path.
-
-A pattern that names neither a folder nor a kind of file, such as `**`
-alone, is refused by the check. The person signing an entry refuses a
-pattern that covers someone else's code under the source's license (such
-as `vendor/*`); no program refuses it for them.
-
-**The statement match.** Every build reads each entry's statement in the
-bytes the store holds: the file at its place, or the page downloaded with
-the source. The statement is looked up among the license texts, by the
-sha256 of its bytes first, then by its normalized text; it matches when
-the text found is one the entry expects. A field place matches by its
-selection alone, and the entry itself as it stands. An upstream statement
-that changed matches no expected text, so the build leaves that entry's
-files out and reports it. A statement outside the declared places is
-never read.
-
-**The entry's text** (`text`) is the license as the source gives it, with
-its copyright line, followed for Apache-2.0 by the source's own `NOTICE`
-content; for `LicenseRef-public-domain`, the proof. MIT and BSD ask that
-their notice go with copies, and Apache asks for its license and the
-`NOTICE` content, so every model's `NOTICE` ends its list of sources with
-each distinct text once.
-
-### License texts
-
-Every license text is an item of its own, like a source:
-`data/license-texts/<id>/`, with a `license-text.json` and, optionally,
-`license-text.txt`, the text itself. Its schema is
-`packages/wpt-dataset/src/wpt_dataset/schemas/license-text.schema.json`.
-
-- Its id is the sha256 of its normalized text: the text lowercased,
-  without its copyright lines, every run of characters other than letters
-  and digits made one space (`wpt_dataset.license_check.text_id`). So one
-  item serves every copy of the same license with other copyright
-  holders.
-- `files` lists the sha256 of each exact file it was seen as: a file is
-  found by its own sha256 first, then by its normalized text.
-- `license-text.json` holds its decision (`under-review`, `admitted` or
-  `refused`, signed like a source's), its kind (`license`, `notice`: it
-  names a license without its text, `not-a-license`, or `readme`: a README
-  read for what it says about training), its license when it is or names
-  one, where it was first found (a source id and a path), and the
-  reviewer's explanation.
-
-A license text is written only through the service layer: its
-`license-text.json` with `wpt dataset save license-text ID FILE --version
-V`, or `wpt web`'s documents routes, and a new item with its text, under
-review, from the bytes a downloaded source holds at a file or a license
-page (`wpt dataset add-license-text ID --file PATH` or `--page ADDRESS`,
-or `wpt web`'s `POST /api/sources/{id}/license-texts`), or by the
-migration that meets it in a source. A statement no license text holds is
-reported with the id its text would have.
+A text also points to a notice, stored once in the depot's `notices`
+table and shared by every text that gives it: the license statement
+exactly as the source gives it, with its copyright line, followed for
+Apache-2.0 by the source's own `NOTICE` content; for
+`LicenseRef-public-domain`, the proof that the work is in the public
+domain and its sources. MIT and BSD ask that their notice go with copies,
+and Apache asks for its license and the `NOTICE` content, so every model's
+notice repeats the notices and license texts of the texts it learned from
+([output-notice.md](output-notice.md)).
 
 ### Still refused
 
@@ -612,7 +567,7 @@ with the major software licenses"
 Refused: `CC-BY-1.0`, `CC-BY-2.0`, `CC-BY-2.5`, `CC-BY-2.5-AU`,
 `CC-BY-3.0`, `CC-BY-3.0-AT`, `CC-BY-3.0-AU`, `CC-BY-3.0-DE`,
 `CC-BY-3.0-IGO`, `CC-BY-3.0-NL`, `CC-BY-3.0-US` and
-`LicenseRef-CC-BY-2.0-FR`; a file under one of them is left out.
+`LicenseRef-CC-BY-2.0-FR`; a text under one of them stays out.
 
 ### Waiting for the linking test
 
@@ -624,8 +579,8 @@ when it is:
 | License (SPDX) | What to check |
 | --- | --- |
 | `PDDL-1.0` |  |
-| `CDLA-Permissive-2.0` | sharing the data itself needs the license text, which WPT never does (it holds pointers) |
-| `CDLA-Sharing-1.0` | Results may hold no more than a de minimis part of the data (section 1.11): measure memorization (`wpt eval FOLDER memorization`) before publishing weights trained on it |
+| `CDLA-Permissive-2.0` | sharing the data itself needs the license text |
+| `CDLA-Sharing-1.0` | Results may hold no more than a de minimis part of the data (section 1.11): weights trained on it need a measure of memorization before they are published |
 | `ODC-By-1.0` | it covers a database, not the documents in it: each document needs its own license |
 | `OGL-UK-3.0` | it excludes personal data, third-party rights and logos; default credit: "Contains public sector information licensed under the Open Government Licence v3.0." |
 | `OGL-Canada-2.0` |  |
@@ -639,19 +594,19 @@ when it is:
 ## Rules
 
 - **Public domain** means public domain under the law of the country
-  where the kept content was first published, and that law alone,
+  where the content was first published, and that law alone,
   whatever another country says. That law applies to every author and
   translator whose words are in the content: the content is in the public
   domain when the law's terms have ended for each of them, or when its
   authors placed it in the public domain themselves. When the country of
-  first publication is unknown, the source is a doubt. A translation is
+  first publication is unknown, the text is a doubt. A translation is
   judged in two parts: the original under the law of its own first
   publication, the translation under the law of the translation's.
 - **A newspaper issue is one collective work**, signed articles included,
   judged under the law of the country where it was published.
 - **A later edition counts as the text it reproduces.** Its editors are
-  credited in the attribution, and their work does not block the source,
-  unless the edition states otherwise.
+  credited, and their work does not block the text, unless the edition
+  states otherwise.
 - **A digitized book's proof** names every person whose words are in it,
   each with a death year, and the printed edition it reproduces. The
   people are those the library's catalog lists for the book and those the
@@ -665,155 +620,162 @@ when it is:
   the catalog's credit even when the scan does not show it: the passages
   show the scan holds the text.
 - **Doubts are never guessed.** A fact the decision needs that cannot be
-  found, or facts that disagree, make the source a doubt for the
-  maintainer. A doubt stays `under-review`, with the missing fact as its
-  `reason`, and is not refused.
+  found, or facts that disagree, make the text a doubt for the
+  maintainer. A doubt stays under review and is not refused.
 - **Public-domain dedications.** A statement that the content is in the
   public domain, or under CC0, counts when its authors made it, or the
   project that made the content, and nothing from the same holder
   contradicts it: a notice reserving rights, a condition on copying or
   changing the content. A request about a name alone, or a copyright line
   beside a release of every right, contradicts nothing. A label a
-  distributor writes on content it did not make does not count. The entry
-  is `LicenseRef-public-domain`, with the statement quoted in `text`.
-- **Every path has exactly one license entry.** A source can hold several
-  licenses, each mapped to its paths, and each entry carries its credit
-  (`attribution`), its text (`text`), its place, what is expected there
-  and its decision ("License entries", above). Each path is checked on its
-  own: a file can carry another license than the rest of its source.
+  distributor writes on content it did not make does not count. The text's
+  license is `LicenseRef-public-domain`, with the statement quoted in its
+  notice.
+- **Every text names its own licenses.** Each file of a repository or a
+  collection is its own text, so a file can carry another license than
+  the rest of its collection.
 - **Every file whose license allows it comes in.** Configuration, build
-  files, license files and edition pages are data like any other. Only
-  the rules on this page leave a file out, and files that are not text
-  the repository can read: UTF-8, or the encoding a file states itself.
+  files, license files and edition pages are texts like any other. Only
+  the rules on this page leave a file out.
 - **A file is covered by the license its publication gives it**, such as
   a repository's license file for every file of the repository. A file no
   license covers is all rights reserved, and stays out.
 - **Records.** In a dataset whose records each carry their own license
-  value (a `records` file), each license entry names that field as its
-  place and lists in `expected` the exact values it covers, and a record
-  enters only when its value is listed: a value nobody reviewed never
-  enters. A value is the license of
-  that record's own content. A license the dataset gives its whole
-  collection covers its records only when it is the license of the content
-  itself: the dataset's makers made that content or state that it is under
-  that license. A license on a collection whose content belongs to others,
-  and is copyrighted, covers none of its records. When the owners of the
-  content state that it is under a later version of a license than the
-  value its records carry, their statement decides: that value is mapped to
-  the later version, and the entry's `text` quotes the statement. A
-  statement by a host or a distributor that does not own the content does
-  not count. Terms of use that contributors accept when they publish are
-  the owners' own statement, and a license whose text allows sharing a
-  changed version under a later version lets that content move to the
-  later version. A value that joins several licenses with
-  commas is their `AND` ("Several licenses on one file", above): its
-  entry is allowed only when every license in it is, and its `text` holds
-  every one of their texts. When a value is known to be wrong for part of
-  a file, the format entry's `keep` rules leave that part out by another
-  field: each names a field and the values it may hold, and a record
-  enters only when every rule holds. Each kept record's credit fields go
-  into `CREDITS/<source id>.jsonl` in every model folder trained on it,
-  which `NOTICE` names.
-- **Third-party code** inside a source (a copied library, a dependency
-  folder) gets its own license entry when its license is allowed: its
+  value, each record is its own text, under the license its value names,
+  and a record enters only when a person reviewed that value. A value is
+  the license of that record's own content. A license the dataset gives
+  its whole collection covers its records only when it is the license of
+  the content itself: the dataset's makers made that content or state that
+  it is under that license. A license on a collection whose content
+  belongs to others, and is copyrighted, covers none of its records. When
+  the owners of the content state that it is under a later version of a
+  license than the value its records carry, their statement decides: that
+  value means the later version, and the text's notice quotes the
+  statement. A statement by a host or a distributor that does not own the
+  content does not count. Terms of use that contributors accept when they
+  publish are the owners' own statement, and a license whose text allows
+  sharing a changed version under a later version lets that content move
+  to the later version. A value that joins several licenses with commas
+  means they apply at once ("Several licenses on one text", above). A
+  record whose value is known to be wrong stays out.
+- **Third-party code** inside a repository (a copied library, a dependency
+  folder) is under its own license when that license is allowed: its
   license file, or else the license its package metadata declares, with
-  that license's official text in `text`. A folder that declares no
-  license stays out.
+  that license's official text. A folder that declares no license stays
+  out.
 - **A license notice without the license's text** (a file that only names
   the license and links to it) counts as a license declared in package
-  metadata: the entry's `text` holds the notice, then that license's
-  official text.
+  metadata: the text's notice holds that statement, and the depot holds
+  the license's official text.
 - **A git submodule** is another repository with its own license. Its
-  files enter at the commit the parent pins, with a license entry of
-  their own when that license is allowed; a submodule under another
-  license, or one that cannot be fetched, is excluded.
-- **A git history** (`history` in a git source) starts at the commit from
-  which the repository's root license file holds the license the source
-  lists. Its diffs show every file the source keeps, so its license entry
-  is the `AND` of every license in the source, with every credit. Commit
-  authors' names and emails stay as git wrote them: the repository
-  publishes them under its license. Only license patterns that start with
-  `.git/history/` cover the history files, its order file included.
-- **An entry under several licenses** (an `AND` expression: a git
-  history, or a folder whose files mix licenses) has as its place the
-  repository's root license file when that file holds an admitted text of
-  one of its licenses. A place is one file, so it cannot show every
-  license of the expression.
-- **A license file that lists bundled components** is admitted for the
-  files under allowed licenses when its list gives some named files a
-  license that is refused or on no allowed list. Each of those files is
-  excluded from the source by its path. A list that names its files too
-  vaguely to exclude them keeps the text a doubt.
+  files enter at the commit the parent pins, under their own license when
+  that license is allowed; a submodule under another license is left out.
+- **A license file that lists bundled components** covers the files under
+  allowed licenses when its list gives some named files a license that is
+  refused or on no allowed list. Each of those files stays out. A list
+  that names its files too vaguely to leave them out keeps the whole
+  repository a doubt.
 - **A choice of law and courts is not a condition on copying or use**,
   and neither is a statement that the license file itself declares not
   binding. The license they accompany decides.
 - **GitHub repositories with 10,000 stars or more** are a collection to
-  draw sources from, forks and archived ones included, when their license
+  draw texts from, forks and archived ones included, when their license
   is allowed, whether GitHub recognizes the license file or reading the
   file identifies it.
 - **"No AI training" wishes are honored** even when the license would allow
   use: a statement by the owner, or a machine-readable
   text-and-data-mining reservation (EU Directive 2019/790, article 4),
   leaves the content out, wherever it is hosted. Review looks for them on
-  every source.
-- **robots.txt is enforced in the code**, with no setting to turn it off:
-  before any download from an http(s) address, `wpt dataset` reads the
-  site's robots.txt (RFC 9309) and does not download from that address when
-  it is forbidden to every crawler (`*`), to WPT's own fetcher (the name
-  `wpt`, which its User-Agent starts with), or to an AI training
-  crawler. Those are the crawlers whose operator documents that
-  they gather training data, listed with the link to that statement in
-  `packages/wpt-dataset/src/wpt_dataset/robots.py`. A crawler that only
-  fetches a page at a person's request is not on the list: a site that
-  refuses only such crawlers has not refused training.
-- **A robots.txt speaks for its own site**, which is not always the
-  owner's: a refused address is skipped and the source's next mirror is
-  tried, read with its own robots.txt. The source fails only when no
-  address works, with the failure of its main address (`CrawlForbidden`
-  when that one refused). Only an answer 404
-  (not found) or 410 (gone) means no rules; any other answer leaves the
-  policy unknown, so that address is not used and the next mirror is
-  tried.
-- **No personal data**: sources made of personal data are not accepted.
+  every text.
+- **No personal data**: texts made of personal data are not accepted.
 - A machine can check that a license is written and allowed, not that it is
   true. If the source page lies, only human review catches it.
 
 ## Who decides
 
-People decide, at three levels, each recorded where it applies and
-signed:
+People decide. Every decision is a row of the depot's `decisions` table,
+with one of three statuses (`under review`, `admitted` or `refused`), the
+time it was made, and the decider's declaration: their legal name, their
+contact email, and their confirmation, with a clearly worded button or
+`--accept`, that they read the [requirements](requirements.md), accept them, and that what
+they submit meets them. The declaration is recorded on each decision, is
+public, and is not verified; the form says so before anyone confirms.
 
-- **The source's decision** (`decision` in `source.json`): whether WPT
-  wants the source at all, a matter of data selection
-  ([data-selection.md](data-selection.md)).
-- **Each license entry's decision** (`decision` in the entry): whether its
-  coverage and its license are accepted for the files it covers. The
-  person refuses a pattern that covers someone else's code.
-- **Each license text's decision** (`decision` in its
-  `license-text.json`): whether that text is an accepted license
-  statement.
+- The app enforces the allowed list ("What the corpus accepts") when a
+  decision admits a text: admitting a text none of whose licenses is
+  allowed is refused. One allowed license is enough, since a text's
+  licenses are a choice.
+- Adding a text is a decision under review: every text added at once gets
+  that decision.
+- `wpt depot decide admit|refuse WHERE` makes one decision, admitted or
+  refused, and appends it to every text the SQL condition `WHERE`
+  matches.
+- `wpt depot relicense ID ... --license L ...` (or "Change licenses" on
+  a text's page, and "Change their licenses" in the review of an
+  admission) changes the licenses of texts as a new revision of each, their
+  ids kept ([data-selection.md](data-selection.md), "Texts"). Every new
+  license is one the depot holds. A locked library goes on reading the
+  revision it pinned. The change is a decision under review that carries the
+  decider's declaration and a reason the depot writes itself, `licenses
+  changed from OLD to NEW`, with the text's old and new lists of
+  licenses. Texts whose old lists differ get one decision each. A text
+  that names the new licenses already is left out and reported, so a
+  change never only wipes its decisions.
+- `wpt depot content ID FILE` (or "Edit content" on a text's page) changes
+  a text's content as a new content version and a new revision of it, its
+  id kept ([data-selection.md](data-selection.md), "Texts"). A locked
+  library goes on reading the revision it pinned, with its content. The
+  change is a decision under review that carries the decider's
+  declaration and a reason the depot writes itself, `content changed from
+  version OLD to version NEW`. A content that changes nothing writes
+  nothing.
+- `wpt depot credits ID` (or "Edit credits" on a text's page) changes a
+  text's credits as a new revision of it: its title, authors, tags,
+  address or notice. A locked library goes on reading the revision it
+  pinned. The change is a decision
+  under review that carries the decider's declaration and a reason the
+  depot writes itself, naming each credit's old and new value, separated
+  by semicolons (`title changed from A to B; tags changed from x, y to x,
+  z`); a notice is named by its id. Unlike a license or content change, it
+  starts nothing over: the decisions before it keep counting, so an admitted text
+  stays admitted and in its libraries.
+- An erasure request is decided the same way, by
+  `wpt depot decide admit|refuse --erasure ID` or on the "Erasures" page
+  ([erasure.md](erasure.md)).
+- Reporting a problem with a library is a decision under review too
+  ([data-selection.md](data-selection.md), "Libraries"). A locked library
+  takes it as any other.
 
-A file trains only when its source, its entry and the text found at its
-entry's place are all admitted; a field place and the entry itself have
-no text to admit. Each decision has exactly three states: `under-review`
-(not yet decided, where everything new starts, and where a doubt stays,
-its reason naming the missing fact), `admitted` and `refused`, with a
-reason for a refusal or an exceptional admission. A commit that changes a
-decision at any level must be signed by an allowed key (see
-[CONTRIBUTING.md](../CONTRIBUTING.md)), and so must a commit that changes
-what an admitted or refused entry or text holds: an entry's license,
-place, expected texts and coverage (and its text, when its place is the
-entry itself), wherever the entry stands in the list, and a text's exact
-files. A refused source stays in the
-repository as a reference: it is never deleted.
+A library's name, a dataset, and the depot's maintainer and takedown
+contact change with no declaration and no decision, since they decide
+nothing about a text ([data-selection.md](data-selection.md), "Libraries"
+and "Datasets").
 
-No program admits or refuses, at any level. The service layer sends a
-license entry back to `under-review` when a save changes its license, its
-place or its expected texts without deciding it anew; that decision then
-reads `by` `machine:wpt dataset`, with the date and the reason. A record's
-value never sends an entry back. A machine's name (`machine:<name>`) may
-sign only an `under-review` decision. The build applies only the rules
-people wrote.
+Anyone's decisions are appended. The depot keeps every decision on a text
+in order, and the app's policy (`wpt_depot.policy`), not the depot, says
+how they combine. A text starts over when its licenses change or its
+content changes. Only the decisions from its latest start over on count,
+so a refusal made before it no longer blocks the text, an admission made
+before it no longer admits it, and the text is under review again. Of the decisions that
+count, a text is admitted when at least one admits it and none refuses it,
+and decisions under review count for neither. Only an admitted text joins
+a library and trains. A refusal, a license change or a content change
+takes the text out of every open library that holds it. Nothing puts it
+back by itself: once it is admitted again, a person puts it back. A locked
+library keeps the revision it pinned, whatever decision, license change,
+content change or change of credits comes after ([data-selection.md](data-selection.md), "Libraries"). A refused text
+stays in the depot as a reference: a decision never deletes a text.
+
+No program admits or refuses: every decision carries a person's
+declaration. An AI assistant may read and write a depot (add texts, query,
+build), but admitting a text is always a human decision.
+
+A decision may carry a public `reason`, written by its decider
+(`--reason` on `wpt depot decide`); `wpt depot show` and the web pages show
+it. A reason that starts with `licenses changed from ` or `content changed
+from version ` is the depot's own record of a license or content change,
+which the policy recognises, so a person's decision with such a reason is
+refused.
 
 A license question the maintainer cannot settle alone goes into
 [LEGAL-QUESTIONS.html](../LEGAL-QUESTIONS.html), the page for legal
@@ -826,7 +788,7 @@ Tools may help reviewers by flagging, never by deciding:
 
 - [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit)
   detects license texts file by file, which helps on large repositories. It
-  is optional and not part of the build.
+  is optional and takes no part in a decision.
 - A small model trained on past human decisions may later flag doubtful
   cases. It never decides.
 
@@ -846,6 +808,6 @@ such as a repository's code, even when its authors used an AI assistant:
 the license of the person who published it decides, and repositories are
 not filtered for signs of such tools.
 
-It does not cover a source's tags either: an AI assistant may choose them
-([data-selection.md](data-selection.md), "Tags and pools"), since a tag
-labels a text and adds nothing to it.
+It does not cover a text's tags either: an AI assistant may choose them
+([data-selection.md](data-selection.md), "Tags"), since a tag labels a
+text and adds nothing to it.

@@ -1,4 +1,4 @@
-"""Storage for everything WPT downloads or builds.
+"""Storage for everything WPT builds and trains.
 
 WPT hosts no data: each machine points the WPT_STORE setting at its own store,
 
@@ -10,23 +10,14 @@ supplies five operations on files; everything here is built on them, alike
 for both kinds. A store holds real named things, the same on a folder and
 on a bucket:
 
-    index                              each session ID and what it holds (wpt_store.index)
-    <id>/sources/<source>.tar.zst      a source's files (wpt_store.sessions)
-    <id>/sources/<source>.json         when, address, size, or the error, and what reading needs
-    <id>/datasets/<name>/              dataset.json, its shards, vocabulary, document list, credits,
-                                       conversations and tasks (wpt_store.sessions)
-    <id>/models/<name>/                the model's real files (wpt_store.models)
-    <id>/runs/<run>/                   each command's log
-    cache/<stage>/<fingerprint>        results that can be rebuilt, shared by every ID
-    cut-key                            the secret cuts are matched under (wpt_dataset.erasure)
-
-An ID is a session's (wpt_store.sessions): Store.at(session, start) is the
-store as one command works in it, and a store given no ID refuses whatever
-needs one (SessionNeeded).
+    corpora/<name>/                    a dataset's corpus: its record corpus.json, token files,
+                                       vocabulary, tables and tasks (wpt_depot.corpus)
+    models/<name>/                     the model's real files (wpt_store.models)
+    runs/<run>/                        each command's log
+    cache/<stage>/<fingerprint>        results that can be rebuilt
 
 Hashes do two jobs. Every read checks the bytes against their sha256, which
-what names a file holds: a File (key, sha256) as a record gives it, a
-wpt_store.Placed for one file of a source. A record itself, written by
+what names a file holds: a File (key, sha256) as a record gives it. A record itself, written by
 put_json, holds the sha256 of its own fields, `check`, and a result holds
 its own in its first line. And finished work is found from its inputs: its
 fingerprint names its result.
@@ -42,28 +33,27 @@ fingerprint names its result.
         sha256, which has(), size(), path(), get_bytes(), read_range(),
         release() and delete() take, as they take a File
     put_named(key, source), put_json(key, record), get_json(key), delete_json(key)
-        a file of a session under the key its caller names
+        a file under the key its caller names
 
 Every file a store writes is compressed while it is written, with zstd in
 frames of about 1 MB that a range read takes a few at a time (wpt_store.blocks),
 and kept so only when that saves space, under its key plus .zst then, under
 its key as it is otherwise (Store.keep_smaller). Which of the two names a
-file is stored under is found once and kept in memory. A source's tar is
-always compressed: its name says so. Large files are compressed several
+file is stored under is found once and kept in memory. Large files are compressed several
 frames at once, as wpt_utils.parallel allows, and sent to S3 in parts that
 every upload of the process sends together, at most wpt_store.kinds.UPLOADS
 at once in total. Record files are compressed, except the one a local store
 adds lines to while its record runs.
 
 A run's record is one folder of files written by name, a command's own
-account of one run (see wpt_telemetry), <id>/runs/<run>/, named here
-"<id>/<run>", built on the same five operations as everything else, alike
+account of one run (see wpt_telemetry), runs/<run>/, named here by
+its run's name, built on the same five operations as everything else, alike
 for both kinds. A file is written whole, or added to line by line, never
 both. A file written whole is in the store, on the disk for a local store,
 when the call returns. An S3 store holds added lines back until
 flush_records() sends them together, as one part of the file, since each
 request costs time (and money on S3). A local store appends each line at
-once to one plain file, <id>/runs/<run>/<name>.open, so a crash loses none
+once to one plain file, runs/<run>/<name>.open, so a crash loses none
 that was added (flush_records() puts them on the disk), and
 end_records(folder), when the record ends, compresses each such file into
 one part. Lines added by several processes read back in the order they were
@@ -76,19 +66,17 @@ WPT_STORE_ENDPOINT_URL and WPT_STORE_REGION (default us-east-1). The
 store reads no AWS_* setting (no AWS_ENDPOINT_URL, no AWS_PROFILE) and no
 AWS configuration or credentials file, so the keys a cloud provider's
 other tools use never reach it. A store keeps local copies in its cache
-folder: an S3 store every file read as a file, after its check, and the
-tars its downloads made unless they stream; a local store the compressed
-ones read as a file, which it cannot give in place. release() removes a
+folder: an S3 store every file read as a file, after its check; a local
+store the compressed ones read as a file, which it cannot give in place. release() removes a
 copy; copies_in(folder) is the same store making in folder only the copies
 its work asks for as files, for work that keeps none. A local store keeps
 that folder and its scratch folder under .local/ at its root, which is no
 part of the store. A store sent to another process (pickled) opens the same
-store there, in the same session.
+store there.
 
-Failures: StoreSettingError (no or bad WPT_STORE), SessionNeeded (an ID
-needed and not given), MissingFile (no such file or record file),
-CorruptFile (stored bytes do not match their sha256, a compressed file or
-the index is not in its format, or a record part is not in the store's
+Failures: StoreSettingError (no or bad WPT_STORE), MissingFile (no such
+file or record file), CorruptFile (stored bytes do not match their sha256,
+a compressed file is not in its format, or a record part is not in the store's
 format; the copy is not used), MixedRecord (a whole write to a file added
 to line by line, or the reverse; nothing is written). Writing raises what
 the folder or the bucket raised (OSError, botocore's errors): nothing is
@@ -99,7 +87,6 @@ import collections
 import contextlib
 import copy
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -115,17 +102,13 @@ from urllib.parse import unquote, urlparse
 from wpt_utils.files import lock_file, sha256_file, unlock_file
 from wpt_utils.parallel import Sizing, in_order
 
-from . import blocks, index, sessions
+from . import blocks
 from .ahead import REQUESTS, Ahead
-from .errors import CorruptFile, MissingFile, MixedRecord, SessionNeeded, StoreError, StoreSettingError
-from .kinds import UPLOADS, Absent, Bucket, Folder, atomic_copy, sync_file, sync_folder
-from .names import NAME, NAME_CHARACTERS, File, as_record_name, check_name, check_record_name, check_session
+from .errors import CorruptFile, MissingFile, MixedRecord, StoreError, StoreSettingError
+from .kinds import UPLOADS, Absent, Bucket, Folder, sync_file, sync_folder
+from .names import NAME, NAME_CHARACTERS, File, as_record_name, check_name, check_record_name
 from .models import copy_out, has_model, keep_model, model_file, put_model
-from .sessions import (Held, Packing, dataset_key, dataset_vocabulary, failed_addresses, find_dataset, given, held, held_all, held_here,
-                       keep_dataset, keep_failure, latest_dataset, needed, new_id, remove_unowned_partials, source_row,
-                       started)
 from .settings import now, read_env_file
-from .tars import Placed
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
 CHUNK = 1 << 20
@@ -133,16 +116,13 @@ PACKED = ".zst"  # the end of a key whose file is compressed
 OPEN = ".open"  # the end of the key of the plain file a local store adds a record file's lines to while it runs
 TAIL = 64 << 10  # bytes read at a compressed file's end for its seek table: the whole table up to 8,000 frames
 DOWNLOAD = 64 << 20  # bytes of one file fetched in one request, when a whole file is copied from the store
-RUN_BYTES = 16 << 20  # original bytes of frames one request of fetch_files takes, past which the next run starts
 FRAMES_KEPT = 64  # decompressed frames kept in memory for range reads (about 64 MB)
 READ_AHEAD = 16  # frames one range read of a kind that reads in place (a folder) fetches at most when it needs some
 # that are not kept: about 16 MB per request, fewer than FRAMES_KEPT so that all of them stay kept
 TABLES_KEPT = 1024  # seek tables kept in memory
 KEYS_KEPT = 1 << 16  # keys files were found under (compressed or not) kept in memory
-HELD_KEPT = 16  # source records kept parsed in memory, with their versions (wpt_store.sessions): one of 200,000
-# files takes about 100 MB
 CACHE, FILES = "cache", "files"  # the folder of what can be rebuilt, and its stage of results named by their content
-RUNS = index.RUNS  # the folder of a session's run records
+RUNS = "runs"  # the folder of the run records
 CHECK = "check"  # the field of a record (put_json) holding the sha256 of its other fields
 
 
@@ -155,16 +135,12 @@ def _check_sha(sha):
 
 
 def _run_prefix(folder, name=None) -> str:
-    """The key of a run's folder ("<id>/<run>"), ending in '/'; ValueError
-    for any other shape, or a file name the store does not allow."""
-    session, slash, run = folder.partition("/")
-    if not slash:
-        raise ValueError(f"a run is named <session>/<run>: {folder!r}")
-    check_session(session)
-    check_record_name(run)
+    """The key of a run's folder (the run's name), ending in '/'; ValueError
+    for a run's or file's name the store does not allow."""
+    check_record_name(folder)
     if name is not None:
         check_record_name(name)
-    return f"{session}/{RUNS}/{run}/"
+    return f"{RUNS}/{folder}/"
 
 
 def _result_key(stage, fingerprint) -> str:
@@ -231,60 +207,15 @@ class Store:
 
     def __init__(self, kind, cache):
         self.kind, self.cache = kind, Path(cache)
-        self.session = None  # the ID of a view of at(): the session it works in
-        self.start = None  # the ID that session started from (at), which it reads what it lacks from
-        self.copies_only = False  # a view of copies_in: only path() and file_path() make a local copy
-        self._copies = Folder(self.cache)  # the local copies of tars, read through the same five operations
+        self.copies_only = False  # a view of copies_in: only path() makes a local copy
         self._record_kinds = {}  # (folder, name) -> WHOLE or APPENDED, as this store learned it
         self._tables, self._frames, self._keys = _Kept(TABLES_KEPT), _Kept(FRAMES_KEPT), _Kept(KEYS_KEPT)
-        self.held_records = _Kept(HELD_KEPT)  # (session, source) -> (its version, its parsed record) (wpt_store.sessions)
         self._ahead = Ahead()  # reads of a kind that waits (S3) with several requests in flight
         self._compressing, self._compressing_lock = None, threading.Lock()
         # record lines added and not yet sent: (folder, name) -> [(time, number, data)]; see _raw_append_record
         self._writer, self._pending, self._ticks = secrets.token_hex(4), {}, _Ticks()
         self._pending_lock = threading.Lock()
         self._record_started = set()  # (folder, name) of the plain record files this store has added to
-
-    # Sessions
-
-    def at(self, session: str, start: str | None = None) -> "Store":
-        """The same store as one command works in it: under the ID session,
-        reading from the ID start what the session does not hold."""
-        check_session(session)
-        if start is not None:
-            check_session(start)
-        self.compressing()  # made before the copy, so every view shares this store's one
-        view = copy.copy(self)
-        view.session, view.start = session, start
-        return view
-
-    def needed(self) -> str:
-        """The session of this view of at(), SessionNeeded without one."""
-        if self.session is None:
-            raise SessionNeeded(sessions.NO_SESSION)
-        return self.session
-
-    def reading(self) -> list[str]:
-        """The sessions a read looks in, in order: this view's, then the one
-        it started from."""
-        return [self.needed(), *([self.start] if self.start else [])]
-
-    def sessions(self) -> list[str]:
-        """Every session the store holds, sorted, from its folders."""
-        found = (key.removesuffix("/") for key in self.kind.list("", deep=False) if key.endswith("/"))
-        return sorted(name for name in found if name != CACHE)
-
-    def index(self, threads=False):
-        """The store's index (wpt_store.index), as a sqlite3 connection to a
-        copy in the cache folder, removed when the connection closes
-        (close(), or the end of a `with` block over it: there it closes,
-        where a plain sqlite3 connection's `with` only ends a transaction);
-        threads: usable from any thread, one at a time."""
-        return index.read(self.kind, self.cache, threads)
-
-    def note(self, rows):
-        """Put rows (wpt_store.index.held_row) into the index."""
-        index.put(self.kind, self.cache, rows)
 
     # Results
 
@@ -377,13 +308,9 @@ class Store:
 
     def put_json(self, key: str, record: dict) -> dict:
         """Store a record, a JSON object, under key, replacing any earlier
-        one, with the sha256 of its fields in CHECK, the ID it started from
-        in `from` when the session has one, over any `from` a record copied
-        from another session brought: the record as stored. A record of the
-        session is on the disk, or held by S3, when this returns."""
+        one, with the sha256 of its fields in CHECK: the record as stored. It
+        is on the disk, or held by S3, when this returns."""
         record = {name: value for name, value in record.items() if name != CHECK}
-        if self.start is not None and self.session is not None and key.startswith(f"{self.session}/"):
-            record["from"] = self.start
         record[CHECK] = hashlib.sha256(_record_bytes(record)).hexdigest()
         self.keep_smaller(key, _record_bytes(record), durable=True)
         return record
@@ -541,8 +468,8 @@ class Store:
     def __reduce__(self):
         """A store sent to another process (a worker process of the same
         run) is the same store opened there, with the same cache folder,
-        in the same session: a view of copies_in stays one."""
-        return _reopened, (self._opening(), str(self.cache), self.copies_only, self.session, self.start)
+        a view of copies_in stays one."""
+        return _reopened, (self._opening(), str(self.cache), self.copies_only)
 
     def _opening(self):
         """(a class, its arguments) that open this store again."""
@@ -553,156 +480,6 @@ class Store:
         if key is None:
             raise MissingFile(f"{file.key} is not in the store")
         return key
-
-    # One file of a source's tar
-
-    def read_file(self, placed: Placed) -> bytes:
-        """One file of a source, checked against its sha256: from the copy
-        fetch_files made, when there is one. MissingFile when its tar is
-        not in the store."""
-        if placed.text is not None:
-            return placed.text
-        if (local := self._held(placed)) is not None:
-            return local.read_bytes()
-        key, kind = self._archive(placed)
-        with self._reading(placed.archive, key):
-            data = self._range(key, placed.start, placed.length, kind)
-        if len(data) != placed.length or hashlib.sha256(data).hexdigest() != placed.sha256:
-            raise CorruptFile(f"{placed.archive}: the {placed.length} bytes at {placed.start} "
-                                f"do not match their sha256 {placed.sha256}")
-        return data
-
-    def _held(self, placed: Placed) -> Path | None:
-        """The local copy of one file of a source that a view of copies_in
-        holds, None without one."""
-        local = self.cache / placed.sha256[:2] / placed.sha256
-        return local if self.copies_only and local.is_file() else None
-
-    def fetch_files(self, places: list[Placed]):
-        """In a view of copies_in, a local copy of each of these files of
-        sources it does not hold, each checked against its sha256, for
-        read_file to read: only the frames that hold them are fetched, and
-        the frames next to each other go in one request, up to REQUESTS
-        requests at once. A frame is fetched once, however many files it
-        holds, or once more where two runs of frames meet (_runs). Each
-        request's frames are let go once its files are copied, so memory
-        holds REQUESTS runs at most, however many frames the files touch."""
-        places = [placed for placed in places if self._held(placed) is None]
-        for placed in places:
-            if placed.text is not None:
-                self._copy_fetched(placed, placed.text)
-        places = [placed for placed in places if placed.text is None]
-        for archive, placed in itertools.groupby(sorted(places, key=lambda p: p.archive), key=lambda p: p.archive):
-            placed = list(placed)
-            key, kind = self._archive(placed[0])
-            with self._reading(archive, key):
-                self._fetch_frames(key, kind, placed)
-
-    def _copy_fetched(self, file: Placed, data: bytes):
-        """Keep one fetched file's bytes as its local copy, once they match
-        its sha256."""
-        if len(data) != file.length or hashlib.sha256(data).hexdigest() != file.sha256:
-            raise CorruptFile(f"{file.archive}: the {file.length} bytes at {file.start} do not match "
-                                f"their sha256 {file.sha256}")
-        local = self.cache / file.sha256[:2] / file.sha256
-        local.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=local.parent, prefix=".partial-")
-        with os.fdopen(fd, "wb") as out:
-            out.write(data)
-        _replace_file(tmp, local)
-
-    def _fetch_frames(self, key, kind, places):
-        """Copy these files out of a source's tar (fetch_files), one run of
-        frames at a time on each of REQUESTS threads."""
-        table = self._table(key, kind)
-        frameless = [file for file in places if not table.frames(file.start, file.length)]
-        for file in frameless:
-            self._copy_fetched(file, b"")
-
-        def copied(run):
-            frames, files = run
-            at = table.stored[frames.start]
-            data = kind.read(key, at, table.stored[frames.stop] - at)[0]
-            held = b"".join(self._frame(key, table, frame, data[table.stored[frame] - at:table.stored[frame + 1] - at])
-                            for frame in frames)
-            del data
-            for file in files:
-                start = file.start - table.original[frames.start]
-                self._copy_fetched(file, held[start:start + file.length])
-
-        with ThreadPoolExecutor(REQUESTS) as pool:
-            list(pool.map(copied, _runs(table, [file for file in places if file not in frameless])))
-
-    def file_path(self, placed: Placed) -> Path:
-        """A local file holding one file of a source, checked against
-        its sha256: a copy in the cache folder, where path() keeps a file's,
-        read part by part and kept until release(placed.sha256)."""
-        local = self.cache / placed.sha256[:2] / placed.sha256
-        if not local.is_file():
-            local.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=local.parent, prefix=".partial-")
-            try:
-                with os.fdopen(fd, "wb") as out:
-                    for data in self.file_parts(placed):
-                        out.write(data)
-                _replace_file(tmp, local)
-            except BaseException:
-                Path(tmp).unlink(missing_ok=True)
-                raise
-        return local
-
-    def file_parts(self, placed: Placed, size=DOWNLOAD):
-        """One file of a source, in parts of at most size bytes, read one
-        at a time, so a large file is never in memory whole: from the copy a
-        view of copies_in holds, when there is one; CorruptFile, at the
-        latest after the last part, when the bytes do not match its sha256
-        (the parts given are then not that file)."""
-        if placed.text is not None:
-            yield placed.text
-            return
-        if (local := self._held(placed)) is not None:
-            with open(local, "rb") as copy:
-                while data := copy.read(size):
-                    yield data
-            return
-        key, kind = self._archive(placed)
-        digest, done = hashlib.sha256(), 0
-        with self._reading(placed.archive, key):
-            while done < placed.length:
-                data = self._range(key, placed.start + done, min(size, placed.length - done), kind)
-                if not data:
-                    break  # the tar ends first
-                digest.update(data)
-                done += len(data)
-                yield data
-        if done != placed.length or digest.hexdigest() != placed.sha256:
-            raise CorruptFile(f"{placed.archive}: the {placed.length} bytes at {placed.start} "
-                                f"do not match their sha256 {placed.sha256}")
-
-    def _archive(self, placed):
-        """(the key to read a source's tar under, the kind to read it from:
-        its local copy's when there is one, of that very version)."""
-        copied = _copy_key(placed.archive, placed.version)
-        return (copied, self._copies) if self._copies.on_disk(copied) is not None else (placed.archive, self.kind)
-
-    def keep_archive(self, key, path, version, replaced=None, local=False):
-        """Move a source's tar, the local file path of sha256 version, into
-        the store under key, on the disk before any record names it. local:
-        a store whose files are not on this machine keeps a copy in its
-        cache folder, removed again when the store refused the file. replaced:
-        the version it replaces, whose copy goes."""
-        copy = self.cache.joinpath(*_copy_key(key, version).split("/")) if local and not self.local else None
-        if copy is not None:
-            atomic_copy(path, copy)
-        try:
-            self.kind.write(key, path, move=True, durable=True)
-        except BaseException:
-            if copy is not None:
-                copy.unlink(missing_ok=True)
-            raise
-        self.forget(key)
-        if replaced is not None and replaced != version:
-            self._copies.delete(_copy_key(key, replaced))
 
     # Compressed files
 
@@ -981,19 +758,15 @@ class Store:
         return sorted(self._record_files_under(_run_prefix(folder)))
 
     def record_folders(self) -> list[str]:
-        """Every run, <id>/<run>, of this view's session and the one it
-        started from, or of every session for a store with no session,
-        oldest first (a run's name starts with its UTC time)."""
-        sessions = [self.session, *([self.start] if self.start else [])] if self.session else self.sessions()
-        return sorted((f"{session}/{name}" for session in sessions
-                       for name, is_folder in self._record_files_under(f"{session}/{RUNS}/").items() if is_folder),
-                      key=lambda folder: folder.partition("/")[2])
+        """Every run's name, oldest first (a run's name starts with its UTC
+        time)."""
+        return sorted(name for name, is_folder in self._record_files_under(f"{RUNS}/").items() if is_folder)
 
-    # A record file written whole is <id>/runs/<run>/<name>.zst. A file added
+    # A record file written whole is runs/<run>/<name>.zst. A file added
     # to line by line is a folder of parts, and, in a local store while its
-    # record runs, also one plain file <id>/runs/<run>/<name>.open that its
+    # record runs, also one plain file runs/<run>/<name>.open that its
     # lines are appended to, read after the parts (end_records makes it a
-    # part). The parts are <id>/runs/<run>/<name>/<time>-<writer>-<number>.zst:
+    # part). The parts are runs/<run>/<name>/<time>-<writer>-<number>.zst:
     # each part holds the additions one flush_records() sent, each one framed
     # as "<time> <number> <length>\n" and its bytes. <time> is when it was
     # added (nanoseconds since 1970, never twice the same for one writer),
@@ -1271,10 +1044,10 @@ def _append(path: Path, data: bytes):
             view = view[file.write(view):]
 
 
-def _reopened(opening, cache, copies_only, session, start) -> Store:
+def _reopened(opening, cache, copies_only) -> Store:
     kind, arguments = opening
     store = kind(*arguments)
-    store.cache, store.copies_only, store.session, store.start = Path(cache), copies_only, session, start
+    store.cache, store.copies_only = Path(cache), copies_only
     return store
 
 
@@ -1318,31 +1091,6 @@ def store_from_settings(env_file=".env", environ=None) -> Store:
 def _default_cache():
     base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else os.environ.get("XDG_CACHE_HOME")
     return Path(base or Path.home() / ".cache") / "wpt-store"
-
-
-def _copy_key(key, version) -> str:
-    """The key, in the cache folder, of the local copy of the version of a
-    source's tar: it ends as a compressed file's key does."""
-    return f"{key}.{version}{PACKED}"
-
-
-def _runs(table, places) -> list[tuple[range, list[Placed]]]:
-    """(frames next to each other, the files they hold) that together hold
-    these files of a source's tar, each at least one frame long. A file
-    is never split between two runs. A run past RUN_BYTES of original bytes
-    takes no more files, so when files lie one against the other, the frame
-    two of them share belongs to both runs."""
-    runs = []
-    for file in sorted(places, key=lambda place: place.start):
-        held = table.frames(file.start, file.length)
-        frames, files = runs[-1] if runs else (range(0), [])
-        size = table.original[frames.stop] - table.original[frames.start]
-        if frames and held.start <= frames.stop and size < RUN_BYTES:
-            files.append(file)
-            runs[-1] = range(frames.start, max(frames.stop, held.stop)), files
-        else:
-            runs.append((held, [file]))
-    return runs
 
 
 def _replace_file(tmp, target: Path):

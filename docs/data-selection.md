@@ -1,80 +1,120 @@
 # Data selection
 
-## The source's decision
+This document covers what WPT trains on: the texts of a depot, the
+libraries that group them, the datasets that say what to train on, and
+the corpus a dataset is built into. How a depot stores them is in
+[architecture.md](architecture.md), "The depot"; which licenses a text may
+carry and how decisions work is in [licenses.md](licenses.md).
 
-Each source carries its own decision (`decision` in its `source.json`),
-signed by a person: whether WPT wants that source at all. It is a decision
-about data selection, under the rules of this document and of
-[licenses.md](licenses.md) on synthetic data and on other companies'
-models. Whether its licenses are accepted is decided apart, for each
-license entry and each license text ([licenses.md](licenses.md), "Who
-decides"). A change to a license entry sends that entry back
-to under review and leaves the source's decision as it is.
+## Texts
 
-## Documents
+A text is one piece of final training text, such as an article, a book
+or a code file, with its metadata. Each text is a row of a depot's
+`texts` table:
 
-Every file of an admitted source's final tree (after cuts and patches)
-that the build keeps is a document, identified as `<source id>/<path>`.
-The build keeps a file when its license entry and the license text found
-at that entry's place are admitted too, the file is text, and an entry
-covers it ([architecture.md](architecture.md), "The build"). Symlinks are not documents.
-A document is the file's Markdown, read in the encoding the file states,
-else UTF-8, and written as UTF-8 ([architecture.md](architecture.md),
-"Encodings"); an image in a web page
-(`xhtml` or `html`) leaves the marker `[image]` or `[image: ALT]` where it
-was ([architecture.md](architecture.md), "Documents are Markdown").
+- its text, or, for a structured item, its kind and its content
+  ("Items", below);
+- its licenses: one or more ids of the depot's licenses, as a choice, so
+  one allowed license is enough ([licenses.md](licenses.md), "Licenses
+  and notices");
+- its notice: the copyright notice exactly as the source gives it, or the
+  proof that the work is in the public domain, stored once in the depot
+  and shared by every text that gives it;
+- its credits: a title, its authors, and the address it came from, each
+  optional;
+- its tags ("Tags", below);
+- its decisions, in order, and the libraries that hold it.
 
-A file in the `records` format (a dataset holding many documents, such as a
-JSON Lines or Parquet file) is not one document: each of its records whose
-license enters, and that the format entry's `keep` rules keep, is one,
-identified as `<source id>/<path>#<record id>`, and tagged with its file's
-tags.
+A text holds final text only. Plain text stays as written, with no
+Markdown escaping and no backslash line breaks. A structured page keeps
+its headings, paragraphs and lists, and code keeps its exact file. Where a
+text came from survives in its address, so changing how a text was made
+means making it again from its origin.
 
-A git source with `history` adds one document per commit,
-`<source id>/.git/history/<commit>`: the commit as `git format-patch`
-writes it, limited to the files the source keeps. Its order file,
-`.git/history/order` ([architecture.md](architecture.md), `history`),
-stays a file of the source's stored tree, but it is not a training
-document: the build, the vocabulary and every other
-list of documents leave it out.
+A text never changes by itself. A newer version of a work is another
+text, under review. An older one stays where it is until someone refuses
+it or asks for its erasure ([erasure.md](erasure.md)).
 
-**Exact duplicates are removed**: when several documents have the same
-content, the first by source id, then by path, keeps it. Nothing judges
-content. Near-duplicates stay.
+Every change of a text makes a new revision of it: a new row under the
+same id, with the next revision number (1, 2, 3...) and the depot's
+change number ("Change numbers", below). Its rows before stay as they
+were, and the highest revision is the current one. A revision holds the
+small fields (licenses, notice, credits, tags, decisions) and the number
+of the content version it reads, never the content itself.
 
-## Tags and pools
+A text's content is stored apart, as content versions numbered 1, 2,
+3..., each with the change number it was made at. A content version never
+changes but by an erasure, which cuts its passages from every version
+([erasure.md](erasure.md)).
 
-Tags describe paths in `source.json` (language, domain...). They come from
-the source's own statements, from a person, from a measure of the source
-or of the file, or from an AI assistant that looked at the source: its statements,
-its pages and its text.
-A pool selects documents by a tag
-expression:
+Its licenses change only through `wpt depot relicense`, which starts its
+decisions over ([licenses.md](licenses.md), "Who decides").
 
-| Expression | Selects |
-| --- | --- |
-| `fr` | documents tagged `fr` |
-| `fr && literature` | both |
-| `fr \|\| es` | either |
-| `!(poetry)` | not; `!` must directly precede `(` |
-| `fr && (literature \|\| poetry)` | grouping |
+Its content changes through `wpt depot content ID FILE` or "Edit content"
+on the page of the text: a plain text in a text area, an item through the
+form of its kind's schema, which its new content must still match. The
+change is a new content version and a new revision that reads it. It is a
+decision under review, with the person's declaration, whose reason the
+depot writes, `content changed from version OLD to version NEW`. It starts
+the text's decisions over, as a license change does
+([licenses.md](licenses.md), "Who decides"): the text is under review
+again and leaves every open library, to be put back once it is admitted. A
+locked library keeps reading the content version of the revision it
+pinned. A content that changes nothing writes nothing.
 
-`!` binds tightest, then `&&`, then `||`.
+Its credits, tags and notice change through `wpt depot credits ID` or
+"Edit credits" on the page of the text. The change is a decision under
+review, with the person's declaration, whose reason the depot writes,
+naming each credit's old and new value. The decisions before it keep
+counting, so the text keeps its status and its libraries
+([licenses.md](licenses.md), "Who decides"). A changed notice is stored
+once, as on an add.
 
-A document matching several pools of one mixture goes to the **first**
-matching pool, in the order the mixture lists them. Reordering pools
-therefore changes the dataset (and its id).
+### Change numbers
 
-### The list of tags
+Every change of a depot has a number, one past the last: a text added, a
+decision, a revision, a library made, changed or locked, a dataset, an
+erasure. Each revision and each membership records the number of the
+change that made it, so the depot can be read as it was at any change
+number.
 
-A tag is a language code, a training tag (the `tag` setting of a training
-step, [chat-format.md](chat-format.md) and [training.md](training.md)) or
-one of these words. Names are flat: a tag has no parent, and a pool for a
-wider area lists its tags.
+`wpt depot add FILE` adds one text, under review, with its licenses,
+notice, tags and credits; `wpt depot show ID` shows it with its decisions
+and libraries; `wpt depot sql "SELECT ..."` answers any read query over
+the depot's tables. `wpt depot web` does the same as pages
+([architecture.md](architecture.md), "Two interfaces").
+
+Duplicate texts are kept. Nothing judges a text's content: people decide
+on it ([licenses.md](licenses.md), "Who decides").
+
+### Items
+
+A structured item is a text whose content is JSON instead of plain text:
+its row holds a `kind` and its `content`, and no `text`. A binary file
+inside the content is written in base64. The depot's `kinds` table holds
+each kind's meaning and the JSON Schema its content must match, and the
+depot checks every item against it when it is added. A new depot starts
+with four kinds:
+
+| Kind | What it is | Who reads it |
+| --- | --- | --- |
+| `conversation` | a conversation in the chat format ([chat-format.md](chat-format.md)) | the `answer-as-assistant` step |
+| `task` | a task for agentic training: what it asks, its starting files and its check ([training.md](training.md), "Tasks") | the `finish-tasks` and `finish-tasks-with-less-writing` steps |
+| `rating` | a person's pass or fail on one attempt of a `wpt eval` run | no step: a measure only |
+| `probe` | a question to ask a model and the patterns that flag a reply as alarming | no step: a measure only |
+
+An item gets the same licenses, notice, credits, tags and decisions as a
+plain text.
+
+## Tags
+
+Tags say what a text is. A tag is a language code or one of the words
+below. Names are flat: a tag has no parent, and a share for a wider area
+names one of its tags ("Shares", below).
 
 An AI assistant takes tags only from this list and never makes one up. A
 tag it finds missing stays a suggestion for the maintainer, written apart
-from the sources.
+from the depot.
 
 | Family | What it says | Tags |
 | --- | --- | --- |
@@ -83,10 +123,10 @@ from the sources.
 | Fiction genre | the kind of story and its readers | `adventure`, `romance`, `mystery`, `science-fiction`, `fantasy`, `horror`, `historical-fiction`, `humour`, `children` |
 | Broad group | a wide grouping of books | `literature`, `books` |
 | Period | when the text was written | `ancient`, `medieval`, `early-modern`, `19th-century`, `20th-century`, `21st-century` |
-| Text state | how the text reached the corpus | `scanned`, `translated`, `verse-numbers` |
+| Text state | how the text reached the depot | `scanned`, `translated`, `verse-numbers` |
 | Code language | the programming language of a file | `code-<language>` |
-| Length | how big the whole source is | `short`, `medium`, `long`, `huge` |
-| File format | the file's format | `format-html`, `format-xhtml`, `format-text`, `format-markdown`, `format-code`, `format-records` |
+| Length | how big the work is | `short`, `medium`, `long`, `huge` |
+| File format | the format of the file the text came from | `format-html`, `format-xhtml`, `format-text`, `format-markdown`, `format-code`, `format-records` |
 | Structure | what the text holds | `with-images`, `with-tables`, `with-footnotes`, `with-dialogue` |
 
 A word that is also a language code means the language, so a topic never
@@ -110,141 +150,182 @@ Meanings the word alone does not give:
 - `verse-numbers`: each verse starts with its reference.
 - `code-<language>`: the language's name in Linguist, GitHub's list of
   languages and their file endings, in lower case. `+` becomes `p`, `#`
-  becomes `sharp`, and any other character the tag syntax refuses becomes
-  `-`.
-- `short`: the whole source is under 100 KB. `medium`: from 100 KB to
-  1 MB. `long`: from 1 MB to 1 GB. `huge`: over 1 GB. A Length tag covers
-  all of a source's files, whatever the size of each document. The size
-  is what the source's address serves: a compressed file counts
-  compressed, and a git repository counts as its host reports it, with
-  its history and its images.
-- `format-<name>`: the `formats` entry that covers the file names that
-  format.
-- `with-images`: holds at least one image marker. `with-tables`: holds at
-  least one table. `with-footnotes`: holds at least one footnote.
-  `with-dialogue`: a large part of it is speech between people.
+  becomes `sharp`, and any other character that is not a letter, a digit
+  or `-` becomes `-`.
+- `short`: under 100 KB. `medium`: from 100 KB to 1 MB. `long`: from 1 MB
+  to 1 GB. `huge`: over 1 GB.
+- `with-tables`: holds at least one table. `with-footnotes`: holds at
+  least one footnote. `with-dialogue`: a large part of it is speech
+  between people.
 
-## Mixtures
+Tags are plain stored data. Nothing computes the Length, File format or
+Structure tags: whoever adds a text writes the tags it has, and the depot
+keeps them as written.
 
-`data/recipes/mixtures/<name>.json`:
+## Libraries
 
-```json
-{
-  "pools": [
-    { "name": "fr", "select": "fr && !(literature)", "weight": 0.5, "max_epochs": 4, "note": "" },
-    { "name": "literature", "select": "literature", "weight": 0.5, "note": "" }
-  ],
-  "note": ""
-}
-```
+A library is a named collection of admitted texts inside a depot. Only an
+admitted text joins one: a text under review sits in the depot and in no
+library. A refusal or a change of its licenses takes a text out of every
+open library that holds it ([licenses.md](licenses.md), "Who decides").
 
-A weight is a share of the dataset's total tokens; weights add up to 1. A
-pool smaller than its share repeats: whole passes over its documents, then a
-partial pass. More passes than `max_epochs` (default 4, after Muennighoff et
-al. 2023, where up to about 4 passes are about as good as fresh data) is
-refused; a higher `max_epochs` is the explicit permission.
+A library records when each text joined it and when it left, by change
+number. An open library reads each of its texts at its current revision,
+and at a past change number it reads the texts it held then, each at the
+revision it had then. A locked library reads, for good, the exact revision
+of each text it held when it was locked: a newer revision of one of its
+texts does not reach it. The page of a locked library lists those
+revisions and marks each text that has a newer one, and the page of a text
+shows how many revisions it has and which revision each locked library
+reads.
 
-## The data part of a model recipe
+- `wpt depot library new NAME` makes an open library.
+- `wpt depot library put LIBRARY WHERE` puts into an open library every
+  admitted text the SQL condition `WHERE` matches, and names the matched
+  texts it left out because they are not admitted.
+- `wpt depot library rename LIBRARY NAME` gives a library, open or
+  locked, a new name. The name is not what it holds, so the change needs
+  no declaration and no decision.
+- `wpt depot library lock LIBRARY` locks it for good, pinning the current
+  revision of each text it holds. No text joins or leaves a locked
+  library; only an erasure still takes a text out or cuts its content
+  ([erasure.md](erasure.md)). Its texts can still get new revisions,
+  which it does not read. A dataset built from a locked library can be
+  built again later.
+- `wpt depot library fork LIBRARY NAME [--without WHERE]` makes a new open
+  library holding the same texts, less those the SQL condition `WHERE`
+  matches, and records which library it started from (`forked_from`). It
+  starts with no problem.
+- `wpt depot library report LIBRARY PROBLEM [WHERE]` reports a problem with
+  a library, locked or not, with the reporter's declaration. A library's
+  `problems` lists them: the ids of the texts concerned (the texts of the
+  library `WHERE` matches, none without `WHERE`), the problem in words,
+  and the decision, under review, that records who reported it. A report
+  changes no membership and no text, so a locked library takes it; to
+  correct the library, fork it without the texts concerned.
 
-A model recipe (`data/recipes/models/<name>.json`, see
-[model.md](model.md)) says everything that changes a model; its `data`
-part is what a build enforces:
+## Datasets
 
-```json
-"data": { "mixture": "<mixture name>", "tokenizer": "<tokenizer recipe name>",
-          "total_tokens": 2000000000, "held_out": 0.001 }
-```
+A dataset is a row of a depot that says what to train on: its name, the
+tokenizer recipe whose vocabulary its corpus uses, the libraries it reads,
+and optional shares. Each library it reads is named by the address of its
+depot (this depot or another), its id there, and the change number of
+the depot that owns the library it reads it at, which is that depot's
+change number when the library was named. In a clone, a library of the
+upstream named by the clone's address is named at the upstream change the
+clone's pulls brought ([architecture.md](architecture.md), "Following an
+upstream").
+A dataset never picks single texts: it takes every text of its libraries
+that its shares pick.
 
-`wpt dataset build <name>` builds the data part of the model recipe of
-that name (or of `SERIES:SIZE`, a size of a model series, whose data part
-every size of the series shares) and prints the dataset id: the fingerprint of the data part, the
-mixture, the vocabulary and every document. Recipes with the same data
-part share one dataset, and `wpt train` refuses a dataset built from
-another data part than its recipe's. The session's dataset of the recipe's
-name, or `series-<series>` for a size of a series, with the first 8 hex
-characters of the dataset id, is the folder of the dataset (a build with
-other content writes another); the dataset last built for the recipe or the
-series is the one `wpt train` reads when it is given no id. It reads the sources `wpt dataset
-download` put in the session it is given and downloads none; a source that is
-missing or failed there is left out and listed in the record. A task pointing into a
-source the build left out, one not downloaded among them, stops the build,
-naming the task and the source. It reads only the documents its pools need:
-each pool draws them from an index of the sources' records, in a seeded
-order of whole frames (the 1 MiB unit the store fetches: the files that
-start in one frame of one source's tar go together, a file stored on its own
-alone), by bytes, in rounds until its share is met, so a build fetches about
-the bytes it chooses. A pool's share is passed by one frame's files at most. With `--stream`, it
-keeps none of their Markdown on the machine; the dataset is the same
-([architecture.md](architecture.md), "Fingerprints and the store"). There is no
-tokens-per-parameter rule: a model may be data-starved or oversized for its
-data. Model size is the recipe's `model` part.
+`wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID ...
+[--share TAG=SHARE ...]` makes one.
 
-The build record (in the store) lists the sources and their trees, the
-download each source's files came from (its session and time), the pools
-with their documents, tokens, shares and passes, the shards and the tool
-versions used. It also gives a
-fingerprint (a sha256) for each part the training steps read: `text` (the
-shards, training and held-out), and `conversations` and `tasks` when the
-dataset holds some. Each holds the vocabulary too, since every part becomes
-tokens with it. The documents a pool takes and the order of the rows come
-from the dataset's documents and sources that hold documents, never from the
-conversations and tasks or the sources left out, so adding a conversation or
-a task, or leaving out a source that holds no documents, leaves the `text`
-fingerprint as it was ([training.md](training.md), "Step results and
-reuse").
+`wpt depot dataset edit NAME`, or "Edit it" on the view of the dataset,
+changes its name, its libraries and its shares as a new revision, its id
+and its tokenizer recipe kept, with the checks of a new one. A library it
+read already, named by its depot's address in any form (in a clone, a
+library of the upstream by either depot's address), stays as the
+dataset holds it, its address and its change number included, and its
+depot is not opened, so a dataset imported from a remote whose depots this
+machine cannot reach still changes; a library added is read at its depot's
+change number now. The change needs no declaration and no decision, since it
+decides nothing about a text. A corpus built before keeps its own copy of
+the dataset's row, its id and revision included, so it stays what it was;
+the view of a dataset lists every corpus built from any of its revisions,
+with the revision each was built from.
 
-## Held-out text and contamination
+### Shares
 
-A fixed share of every source's documents (`held_out`), chosen by a hash of
-the document id, never enters training; it goes to separate held-out shards
-used to measure the model.
+Shares are optional and ordered, each a tag and a share of the tokens
+(`0.3` is 30%), each share above 0 and at most 1, each tag once. A text
+counts for the first share whose tag it has. A text that has none of the
+shares' tags is left out. Without shares, every text of the libraries is
+taken.
 
-A source may hold out documents together, whatever source they belong to:
-its optional `held_out_by` field gives a pattern (a Python regular
-expression) searched in each document's path, and where it is found, the
-hash reads the pattern's groups joined by one space (its whole match when
-it has no group) instead of the document id. Documents of any source with
-the same groups then share their fate. A document whose path the pattern
-is not found in keeps its id's fate.
+The build brings the shares to their proportions without repeating a text.
+It counts each share's tokens, finds the share that is scarcest relative to
+its proportion, and keeps every text of that share. From each other share it
+takes a seeded random subset of texts, whose tokens match the proportion
+against the scarcest share. A text enters a corpus once at most. The seed
+is part of the dataset, so the same dataset builds the same corpus. The
+corpus's record keeps how many tokens each share holds (`shares_tokens`) and
+how many texts the build left out (`left_out`: texts no share took, texts
+trimmed from a share, items of the kinds that shares do not apply to).
 
-Translations of one text are held out together: sources whose documents
-are translations of each other give them the same groups through
-`held_out_by` (such as a book and chapter), so the same part is held out
-in every language at once, since another translation of a held-out
-passage would otherwise leak it. A measure that needs to know which parts
-are held out reads the same field, so the rule has one owner
-([evaluation.md](evaluation.md), "Text measures"). A document's group is
-part of the dataset id's fingerprint, so a dataset holding such sources
-gets a new id when it is built again, and the document list records the
-split the groups give; a dataset without such sources keeps its id.
+A share with no text refuses the build. Shares apply to plain texts only:
+conversations and tasks are not trimmed.
 
-Every dataset build stores, beside the dataset's record, the list of all
-its documents: each one's id, the sha256 of its Markdown (the same sha256
-the dataset id's fingerprint reads) and its tag, `training` or `held-out`.
-It is found from the dataset id,
-which a model's `provenance.json` names and every training run is
-given, so a step and a measure learn which texts the model held out from
-that list alone: a pointer task whose
-document's text is one of them is measure-only, and no source is
-converted to Markdown to find out ([training.md](training.md),
-"Measure tasks"). Reading pointer tasks against a dataset that has no
-document list is refused (`DocumentListMissing`): such a dataset is
-used with the repository at the commit that built it. Nothing
-falls back and nothing is rebuilt. A dataset the store does not hold at
-all is refused the same way, the message saying it is not in the store.
+### Remotes
 
-Contamination is evaluation text that also appears in training text.
-`wpt dataset contamination DATASET_ID`, run by hand on a built dataset, checks
-held-out documents for runs of 13 words also found in the training documents
-of its shards (as in the GPT-3 paper) and **reports** them; it removes
-nothing, so training data never depends on evaluation sets. The report is
-saved in the store under the dataset, and it takes no part in the dataset id
-or in any later step. An overlap is a finding, not a failure: it never sets
-the command's exit code. A dataset with a saved report prints that report
-and is not checked again. A report inside the dataset's own record counts as
-saved; that one covers every training document, also those no pool drew.
-External benchmarks are not part of this repository. Training on a benchmark
-follows the normal license rules.
+A dataset written out as JSON is a remote: the dataset's row without its
+id, pointing to the depots and the change numbers its data comes from, so anyone
+can build its corpus without the depot that made it.
+`wpt depot dataset export NAME` writes one, and
+`wpt depot dataset import FILE` makes a dataset from one.
+
+### Building a dataset again
+
+A dataset names each library with a change number, and a depot keeps
+every revision and membership, so the dataset builds the same corpus
+again whatever its libraries and texts did since. Only an admitted
+erasure changes that corpus: the texts it removes are gone, and the
+passages it cuts are cut in every revision ([erasure.md](erasure.md)).
+
+## Corpora
+
+`wpt depot build DATASET` builds the dataset's corpus into the store
+(`WPT_STORE`): what training reads. It runs on the machine that holds the
+depot. A rented GPU machine only reads the corpus and trains
+([machines.md](machines.md)). The build needs the lock of the dataset's
+tokenizer recipe at its version and the vocabulary that lock names in the
+store ([tokenizer.md](tokenizer.md)); without them it builds nothing.
+
+The build takes every text of the dataset's libraries, each library at
+the change number the dataset names; a text two libraries hold is taken once. It
+then keeps:
+
+- every plain text, as its tokens followed by the end-of-document token,
+  in token files;
+- every conversation, as the tokens of the chat template
+  ([chat-format.md](chat-format.md), "The template"), in token files of
+  their own;
+- every task, as one line of `tasks.jsonl`.
+
+Items of other kinds are not training data: the build leaves them out and
+counts them in the record. The texts go in a seeded order drawn from the
+dataset's row, so that any first part of the corpus is drawn from all of
+it. Every size of a model series reads the same corpus, the smaller sizes
+its first part ([model.md](model.md), "Model series").
+
+A corpus says everything about what it holds, even once the depots it
+read change or vanish. Beside its token files and `tasks.jsonl`, it holds
+these tables:
+
+- `dataset`: the dataset's row, copied, with the time of the build;
+- `texts`: every text it took, with its depot's address, its id there,
+  its kind, its credits, licenses and tags copied, its notice, and where
+  its tokens start (the steps that read conversations and tasks pick them
+  by tag from this table);
+- `licenses` and `notices`: the license texts and notices those texts
+  name, copied from their depots (ids carry their depot's name, so they never
+  repeat across depots).
+
+Everything goes under `corpora/<dataset name>-<first 8 hex characters of
+the corpus id>/` in the store, with the record, `corpus.json`, written
+last, so a build that fails leaves no corpus. The corpus id covers the
+dataset's id and its row (without its revision and change), the
+vocabulary and every file's content, so building the same corpus again
+finds it and writes nothing, and another dataset with the same content
+gets a corpus of its own. The record also gives a
+fingerprint of each part a training step reads, `text`, `conversations`
+and `tasks` ([training.md](training.md), "Step results and reuse").
+
+A model recipe's data part names a depot address, a dataset in it, the
+tokenizer recipe and the total tokens ([model.md](model.md), "Model
+recipes"). `wpt train` reads the corpus last built for that depot and
+dataset, or the corpus it is given. A text added to the depot after a
+build reaches training only once the corpus is built again.
 
 ## Languages and translation
 
@@ -255,28 +336,28 @@ parallel text is scarce. It comes from:
   sentence;
 - texts published in several languages under a license on the allowed list
   ([licenses.md](licenses.md));
-- translations contributed under the DCO.
+- translations people add to a depot, under their declaration
+  ([licenses.md](licenses.md), "Who decides").
 
 ## Models in training
 
 WPT's own models may be used in training, their output included: as a
-reference a reward compares
-with, such as a model's own full attempt in the terse-versus-full reward
-of the `finish-tasks` step ([training.md](training.md), "Rewards"), as
-a draft a person edits or confirms ([chat-format.md](chat-format.md),
-"Model drafts"), or as `answer-as-assistant` conversations made of its
-attempts that passed their
-task's check (issue #50, not built yet). Every such use says exactly what the WPT model did, so it is
-open to review.
+reference a reward compares with, such as a model's own full attempt in
+the terse-versus-full reward of the `finish-tasks` step
+([training.md](training.md), "Rewards"), as a draft a person edits or
+confirms ([chat-format.md](chat-format.md), "Model drafts"), or as
+`answer-as-assistant` conversations made of its attempts that passed
+their task's check. Every such use says exactly what the WPT model did, so
+it is open to review.
 
 Other companies' models stay completely forbidden: no output of theirs
 enters the data or the training, and they take no role in it, not as
-data, a simulator or a judge. Setting a source's tags is the one
-exception: an AI assistant may choose them, and only the tag words enter
-`source.json`. Synthetic data not made by a WPT model is
-forbidden too; puzzles and tasks a program generates are not that kind of
-synthetic data ([licenses.md](licenses.md), "No distillation from another
-company's model").
+data, a simulator or a judge. Setting a text's tags is the one exception:
+an AI assistant may choose them, and only the tag words enter the depot.
+Synthetic data not made by a WPT model is forbidden too; puzzles and tasks
+a program generates are not that kind of synthetic data
+([licenses.md](licenses.md), "No distillation from another company's
+model").
 
 ## Model size
 

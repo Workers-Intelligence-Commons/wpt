@@ -34,7 +34,7 @@ def test_the_start_line_names_the_licenses_and_where_the_notice_is(tmp_path, mon
     folder = model_folder(tmp_path / "model", notice="the notice\n")
     monkeypatch.setattr("builtins.input", lambda prompt: "")  # an empty line quits
     main([str(folder)])
-    assert (f"generated text: CC0-1.0; weights: AGPL-3.0-or-later; sources and notices: {folder / 'NOTICE'} "
+    assert (f"generated text: CC0-1.0; weights: AGPL-3.0-or-later; the texts it learned from and their notices: {folder / 'NOTICE'} "
             "(wpt chat --about)") in capsys.readouterr().out
 
 
@@ -64,7 +64,7 @@ def test_a_folder_without_notice_still_names_the_licenses(tmp_path, monkeypatch,
     assert "AGPL-3.0-or-later" in about and "CC0-1.0" in about and "https://github.com/Workers-Intelligence-Commons/wpt" in about
     monkeypatch.setattr("builtins.input", lambda prompt: "")
     main([str(folder)])
-    assert "this folder has no NOTICE; notices and sources: https://github.com/Workers-Intelligence-Commons/wpt" in capsys.readouterr().out
+    assert "this folder has no NOTICE; notices: https://github.com/Workers-Intelligence-Commons/wpt" in capsys.readouterr().out
 
 
 def test_notices_reach_a_pipe_as_utf8(tmp_path):
@@ -81,34 +81,30 @@ def test_the_scheduler_s_times_can_be_read_from_a_run_s_record_on_the_same_setup
     # --scheduler-costs reads a record's
     # times instead of measuring them; another setup is refused
     folder = model_folder(tmp_path / "model")
-    store = LocalStore(tmp_path / "store").at("test-session")
+    store = LocalStore(tmp_path / "store")
     monkeypatch.setenv("WPT_STORE", store.root.as_uri())
-    monkeypatch.setenv("WPT_SESSION", store.session)
     monkeypatch.chdir(tmp_path)
     config = load_model(folder).config
     block = load_drafter(folder).block
-    store.write_record("test-session/run", COSTS_FILE, costs_file([1.0] * (block + 1), costs_setup(config, 1, block, "cpu")))
-    store.write_record("test-session/other", COSTS_FILE, costs_file([1.0] * 5, costs_setup(config, 1, block - 1, "cpu")))
+    store.write_record("run", COSTS_FILE, costs_file([1.0] * (block + 1), costs_setup(config, 1, block, "cpu")))
+    store.write_record("other", COSTS_FILE, costs_file([1.0] * 5, costs_setup(config, 1, block - 1, "cpu")))
     monkeypatch.setattr("wpt.chat.measure_costs", lambda *args: pytest.fail("the times are read, not measured"))
     monkeypatch.setattr("wpt.chat.select_device", lambda: torch.device("cpu"))
     answers = iter(["the", ""])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    main([str(folder), "--scheduler-costs", "test-session/run", "--max-new-tokens", "3"])
+    main([str(folder), "--scheduler-costs", "run", "--max-new-tokens", "3"])
     # the 3 tokens are random and may hold line breaks, so "the" starts a line
     # of the output but that line is not always the last one
     assert "\nthe" in capsys.readouterr().out
     with pytest.raises(SystemExit, match=f"ValueError: .*another setup: draft {block - 1}, here {block}"):
-        main([str(folder), "--scheduler-costs", "test-session/other"])
+        main([str(folder), "--scheduler-costs", "other"])
     with pytest.raises(SystemExit, match="MissingFile"):
-        main([str(folder), "--scheduler-costs", "test-session/none"])
-    monkeypatch.delenv("WPT_SESSION")
-    with pytest.raises(SystemExit, match="SessionNeeded"):
-        main([str(folder), "--scheduler-costs", "test-session/run"])
+        main([str(folder), "--scheduler-costs", "none"])
 
 
 def test_a_chat_is_a_conversation_in_the_current_shape(tmp_path, monkeypatch):
-    # what --chat holds is a chat-format conversation that the data rules accept as it is
-    from wpt_dataset.repo import validate
+    # what --chat holds is a chat-format conversation that a depot accepts as an item as it is
+    from wpt_depot.kinds import check_content, starting_rows
 
     folder = model_folder(tmp_path / "model")
     typed = iter(["hello", ""])
@@ -117,7 +113,8 @@ def test_a_chat_is_a_conversation_in_the_current_shape(tmp_path, monkeypatch):
     monkeypatch.setattr("wpt.chat.answer", lambda model, tokenizer, conversation, *rest: (
         asked.append(json.loads(json.dumps(conversation))) or ([{"type": "text", "text": "hi"}], "hi")))
     main([str(folder), "--chat"])
-    validate(asked[0], "conversation", "wpt chat --chat")
+    [schema] = [row["schema"] for row in starting_rows() if row["id"] == "conversation"]
+    check_content("conversation", schema, json.dumps(asked[0]))
 
 
 def test_the_kernels_named_reach_the_attention_before_the_model_loads_and_one_that_cannot_work_stops_the_command(

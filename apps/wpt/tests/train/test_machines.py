@@ -39,7 +39,7 @@ def start_worker(stack, tmp_path, name, port) -> Key:
 
 
 def train(built, tmp_path, recipe, out, workers="", *options):
-    subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.dataset_id, "--out", out, "--strategy", "ddp",
+    subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.corpus_id, "--out", out, "--strategy", "ddp",
                     *options], cwd=tmp_path, env={**os.environ, "WPT_GPU_WORKERS": workers}, check=True)
     return load_file(tmp_path / out / "model.safetensors")
 
@@ -78,7 +78,7 @@ def test_a_gpu_worker_that_cannot_be_reached_or_whose_link_breaks_is_lost(built,
         port = free.getsockname()[1]
     monkeypatch.setenv("WPT_GPU_WORKERS", str(Key("127.0.0.1", port, "0" * 64, "secret-token")))
     with pytest.raises(SystemExit) as lost:
-        main(["d", built.dataset_id, "--out", "model"])
+        main(["d", built.corpus_id, "--out", "model"])
     assert lost.value.code == LOST
     err = capsys.readouterr().err
     assert "gpu worker lost" in err and "secret-token" not in err
@@ -92,7 +92,7 @@ def test_a_gpu_worker_that_cannot_be_reached_or_whose_link_breaks_is_lost(built,
     monkeypatch.delenv("WPT_GPU_WORKERS")
     monkeypatch.setattr(wpt.train, "run_jobs", broken)
     with pytest.raises(SystemExit) as lost:
-        main(["d", built.dataset_id, "--out", "model"])
+        main(["d", built.corpus_id, "--out", "model"])
     assert lost.value.code == LOST and "the other side closed the link" in capsys.readouterr().err
 
 
@@ -109,7 +109,7 @@ def test_a_training_process_that_crashes_on_one_of_several_gpu_workers_ends_the_
                             for index in range(count))
             monkeypatch.setenv("WPT_GPU_WORKERS", text)
             with pytest.raises(SystemExit) as ended:
-                main(["d", built.dataset_id, "--out", f"model{count}"])
+                main(["d", built.corpus_id, "--out", f"model{count}"])
         assert ended.value.code == expected
     assert wpt.train.CRASHED == 5 and wpt.train.CRASHED != LOST
     err = capsys.readouterr().err
@@ -139,7 +139,7 @@ def patched_recipe(built, tmp_path, name, steps, patch):
 
 
 def started(built, tmp_path, recipe, *options, **environ):
-    return subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.dataset_id, "--out", "model",
+    return subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.corpus_id, "--out", "model",
                            "--strategy", "ddp", "--processes", "2", *options], cwd=tmp_path, capture_output=True,
                           text=True, env={**os.environ, **environ})
 

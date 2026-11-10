@@ -401,7 +401,7 @@ def _train(spec, link, store, work, strategy, telemetry):
                                             done=marks[:number - 1], log=log, telemetry=telemetry,
                                             save_last=True,  # its result is kept from the checkpoint
                                             start=continued if step.continues else None, limit=limit, signals=signals)
-                            sources = environment.sources if strategy.is_main else {}
+                            learned = environment.learned if strategy.is_main else {}
                         finally:
                             environment.close()
                         span.set(**asdict(trained))
@@ -415,7 +415,7 @@ def _train(spec, link, store, work, strategy, telemetry):
                 except (ValueError, SettingsMismatch, PluginError, StoreError) as error:
                     raise Refused(f"{type(error).__name__}: step {number} {step.name}: {error}") from None
                 if strategy.is_main:
-                    about = {"number": number, "reached": _reached(trained), "sources": dict(sorted(sources.items()))}
+                    about = {"number": number, "reached": _reached(trained), "learned": dict(sorted(learned.items()))}
                     sent_state = None if checkpoint.every else upload(link, local.path)
                     call(link, "step.done", json.dumps(about).encode(), state=sent_state)
                     continued.remove()

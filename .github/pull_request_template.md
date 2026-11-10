@@ -15,18 +15,6 @@ documentation. -->
 - [ ] The documentation is updated in the same change as the code
 - [ ] A new package has its row in `docs/licenses.md`
 - [ ] Nothing personal or secret is in the change, its commits or its logs
-- [ ] A change of a data file's shape comes with its migration (`wpt dataset migrate`)
-
-## A source
-
-<!-- Only for a pull request that adds or changes a source. -->
-
-License, with the address of its text:
-
-Why it is allowed (`docs/licenses.md`, "What to check"):
-
-A maintainer decides every source: the commits of a source change are signed by
-a maintainer afterwards (CONTRIBUTING.md, "Decisions are signed").
 
 ## The model
 

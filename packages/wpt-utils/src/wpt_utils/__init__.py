@@ -14,5 +14,5 @@
                          its text
 
 Import the submodule you need: this package itself imports nothing, so
-wpt_utils.programs works where PyTorch is not installed (wpt dataset).
+wpt_utils.programs works where PyTorch is not installed (wpt depot, wpt agent).
 """

@@ -1,9 +1,9 @@
 """Store kinds: where a store keeps its files, a local folder (Folder) or
 an S3-compatible bucket (Bucket). WPT_STORE's prefix picks one
 (wpt_store.open_store). A file is named by a key, '/'-separated parts such
-as <id>/sources/<source>.json, and a kind supplies five operations on them,
-nothing else; compression, the files of sessions, the cache and the index
-are built above them, alike for every kind:
+as models/<name>/config.json, and a kind supplies five operations on them,
+nothing else; compression, the records and the cache are built above them,
+alike for every kind:
 
     write(key, source, move=False, durable=False)
                                       write a whole file, from bytes or a local

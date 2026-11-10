@@ -10,9 +10,11 @@ is how a run is started and looked after.
 
 ## Before the run
 
-- The dataset is built from the model recipe: `uv run wpt dataset build
-  NAME` prints its id. The first build that names a vocabulary with no lock
-  writes its lock (`data/recipes/tokenizers/NAME.lock.json`): commit it.
+- The corpus of the recipe's dataset is built: `uv run wpt depot build
+  DATASET`, on the machine that holds the depot, prints its id. The build
+  needs the lock of the dataset's tokenizer recipe
+  (`data/recipes/tokenizers/NAME.lock.json`) and the vocabulary it names
+  in the store.
 - PyTorch is installed for this machine's GPU: a plain `uv sync` removes
   it, `uv run scripts/setup.py` puts it back.
 - The model folder (`--out`, under `runs/`, which git ignores) is new, or
@@ -27,12 +29,12 @@ from the repository folder:
 
 | System | Command |
 | --- | --- |
-| Windows (PowerShell) | `.\scripts\detach.ps1 uv run wpt train RECIPE DATASET_ID --session ID --out runs/NAME [options]` |
-| Linux, macOS | `scripts/detach.sh uv run wpt train RECIPE DATASET_ID --session ID --out runs/NAME [options]` |
+| Windows (PowerShell) | `.\scripts\detach.ps1 uv run wpt train RECIPE [CORPUS_ID] --out runs/NAME [options]` |
+| Linux, macOS | `scripts/detach.sh uv run wpt train RECIPE [CORPUS_ID] --out runs/NAME [options]` |
 
-`--session ID` names the store's session that holds the dataset; with
-`WPT_SESSION` set in the environment or in `.env`, it can be left out. Without
-either, the command is refused (`SessionNeeded`); `uv run wpt store list` shows every session when the ID is lost.
+Without a corpus id, `wpt train` reads the corpus last built for the
+recipe's depot and dataset; `uv run wpt store list` lists the corpora the
+store holds.
 
 On a Windows machine, use the Windows row from PowerShell, never a WSL
 shell (the `wpt` skill, "Setting up a machine").
@@ -64,7 +66,7 @@ gone without that line has failed: the end of the log says why.
 
 A crash restarts every process on its own, up to `--max-restarts` times
 (default 3), from the last checkpoint; the log says `starting every process
-again`. A refusal (exit code 2: missing dataset, other settings than the
+again`. A refusal (exit code 2: missing corpus, other settings than the
 checkpoint's) is never restarted.
 
 After a stop, or once the restarts are used up, the same command with
@@ -92,8 +94,7 @@ Any of them may be added or changed when resuming.
 ## A run over several machines
 
 With `--run NAME`, the checkpoint is kept in the store (`WPT_STORE`)
-instead of the model folder: any machine using the same store and session
-ID (`--session ID` or `WPT_SESSION`) continues
+instead of the model folder: any machine using the same store continues
 the run with the same command plus `--run NAME --resume`. Use it when a run
 may move to another machine.
 

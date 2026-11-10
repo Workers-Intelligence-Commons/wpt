@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        WPT trains only on content whose license is clear. A maintainer decides every source, after the license check of `docs/licenses.md`. You can also open a pull request with the `source.json` yourself (CONTRIBUTING.md, "Adding a source").
+        WPT trains only on content whose license is clear. People decide on every text, after the license check of `docs/licenses.md`. You can also add the texts to a depot yourself (CONTRIBUTING.md, "Adding a text").
   - type: dropdown
     id: area
     attributes:
@@ -57,7 +57,7 @@ body:
     id: ai_wish
     attributes:
       label: "Wish about AI training"
-      description: "What you found when you looked for a \"no AI training\" wish from the owner: README, terms of use, a machine-readable text-and-data-mining reservation, robots.txt. Say what you looked at."
+      description: "What you found when you looked for a \"no AI training\" wish from the owner: README, terms of use, a machine-readable text-and-data-mining reservation. Say what you looked at."
     validations:
       required: true
   - type: textarea

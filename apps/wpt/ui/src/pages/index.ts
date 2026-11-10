@@ -1,14 +1,24 @@
 import type { ComponentType } from "react";
-import { conversations } from "./conversations";
-import { images, recipes, signers } from "./documents";
-import { jobs } from "./jobs";
-import { newSource } from "./new-source";
-import { probes } from "./probes";
-import { ratings } from "./ratings";
-import { sources } from "./sources";
-import { tasks } from "./tasks";
+import { add } from "./add";
+import { datasets } from "./datasets";
+import { decisions } from "./decisions";
+import { depot } from "./depot";
+import { erasures } from "./erasures";
+import { libraries } from "./libraries";
+import { licenses } from "./licenses";
+import { overview } from "./overview";
+import { settings } from "./settings";
+import { tags } from "./tags";
+import { texts } from "./texts";
 
-// One entry per page; its routes are in apps/wpt/src/wpt/web/pages/<name>.py.
-export type Page = { path: string; title: string; Component: ComponentType<{ rest: string[] }> };
+// One entry per page; each calls the routes of apps/wpt/src/wpt/depot/web/routes.py.
+// group: where the navigation lists it, the data apart from the setup (null:
+// not listed: "Add a text" is a button, and the views of one decision or one
+// tag are reached from the lists that name them). rest: the parts of the address
+// after the page's own; query: the address's query.
+export type Page = {
+  path: string; title: string; group: "data" | "setup" | null;
+  Component: ComponentType<{ rest: string[]; query: URLSearchParams }>;
+};
 
-export const pages: Page[] = [sources, newSource, conversations, tasks, ratings, probes, recipes, images, signers, jobs];
+export const pages: Page[] = [overview, texts, libraries, datasets, erasures, licenses, depot, settings, add, decisions, tags];

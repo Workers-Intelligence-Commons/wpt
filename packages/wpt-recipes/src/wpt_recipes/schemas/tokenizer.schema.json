@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/tokenizer.schema.json",
+  "title": "WPT tokenizer recipe (data/recipes/tokenizers/<name>.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "depot", "dataset", "sample_bytes", "vocab_size"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1, "description": "the vocabulary's version: raise it to train a new vocabulary (more data, another size, a new tokenizer); until then the locked one is reused"},
+    "depot": {"type": "string", "description": "the address of the depot whose texts train the vocabulary: a folder or a bucket; empty until a person names it, and the check names each recipe to fill in"},
+    "dataset": {"type": "string", "description": "the name of the dataset of that depot whose texts train the vocabulary; empty until a person names it, and the check names each recipe to fill in"},
+    "sample_bytes": {"type": "integer", "minimum": 1, "description": "the bytes of text, at most, of the sample of that dataset's texts that trains the vocabulary"},
+    "vocab_size": {"type": "integer", "minimum": 257, "description": "256 bytes + end-of-document + merges"},
+    "note": {"type": "string"}
+  }
+}

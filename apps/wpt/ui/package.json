@@ -7,6 +7,8 @@
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
+    "@workers-intelligence-commons/components": "workspace:*",
+    "@workers-intelligence-commons/tokens": "workspace:*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

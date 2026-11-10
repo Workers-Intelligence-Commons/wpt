@@ -1,14 +1,15 @@
-"""Train a model as a model recipe says, on the dataset built from it.
+"""Train a model as a model recipe says, on the corpus of its dataset.
 
 Usage:
-    wpt train RECIPE [DATASET_ID] [options]
-    wpt train RECIPE [DATASET_ID] --strategy ddp --processes N [options]
+    wpt train RECIPE [CORPUS_ID] [options]
+    wpt train RECIPE [CORPUS_ID] --strategy ddp --processes N [options]
+    wpt train series NAME
 
 RECIPE is a file name in data/recipes/models/, without .json, in the
 repository holding the current folder, or SERIES:SIZE, one size of the
 series file data/recipes/series/SERIES.json, whose model recipe the
-series derives (wpt_dataset.series; docs/model.md, "Model series"): every
-size of a series reads the start of the series' one dataset; or
+series derives (wpt_recipes.series; docs/model.md, "Model series"): every
+size of a series reads the same corpus, the smaller sizes its first part; or
 SERIES:SIZE:RUN, another run of that size (a decay branch, a learning
 rate of the check). Everything
 that changes the resulting model comes from it: the architecture's
@@ -18,17 +19,26 @@ each a built-in step of wpt_training (read-text, answer-as-assistant,
 finish-tasks, finish-tasks-with-less-writing) or a .py file, with its
 method, environment, optimizer, settings and locked parts. The model's
 context is the last window length of the last step that reads text
-windows. DATASET_ID is what `wpt dataset build RECIPE` prints; without it,
-the dataset last built for the recipe, which the store names (for a size of
-a series, the one last built for the series). The dataset
-comes from the store named by WPT_STORE (environment or .env), and a
-dataset built from another data part than the recipe's is refused. It
-holds everything the steps read: the text's shards, and the conversations
-and tasks the build found. Training never builds anything: it reads the
-dataset and checks every input against its recorded hash first. Every
-step's settings, the drafter's, the steps' locked parts, and that the
-dataset holds something for each step to learn from are checked before
-any step runs.
+windows. The recipe's data part names a depot and a dataset of it, whose
+corpus `wpt depot build DATASET` builds into the store named by WPT_STORE
+(environment or .env), on the machine that holds the depot. CORPUS_ID is
+what that build prints (or a start of it); without it, the corpus last
+built for the recipe's dataset, found by the dataset's id, which training
+reads from the depot (a dataset's corpora stay its own through a rename,
+and a new dataset given an old name has none); when that corpus was built
+from an older revision of the dataset than the current one, training uses
+it and warns, naming both revisions. A corpus of another depot, dataset or
+tokenizer recipe than the recipe's is refused. It holds everything the
+steps read: the token files of plain texts and of conversations, and the
+tasks. Training never builds anything and writes nothing to the depot: it
+reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
+locked parts, and that the corpus holds something for each step to learn
+from are checked before any step runs. A corpus that is stale (an admitted
+erasure reached a text it was built from) or that holds fewer tokens than the
+data part's total_tokens is refused. A step that reads text windows and sets no
+prefix_tokens trains on the first total_tokens of the corpus.
+
+`wpt train series NAME` prints the numbers of every size of a series.
 
 The training runs on gpu workers (wpt_worker; docs/machines.md): the
 keys WPT_GPU_WORKERS lists, one gpu worker per machine, or with none a
@@ -37,7 +47,7 @@ link. On several workers, each runs --processes processes; workers in one
 place meet through NCCL, workers in different places exchange gradients
 over their TLS links (only --strategy ddp runs that way): the same synced
 training either way. This command is the
-wpt manager's side: it reads the recipe, the dataset, the tokenizer and
+wpt manager's side: it reads the recipe, the corpus, the tokenizer and
 the store, sends each worker its own checkout and everything the steps
 read, answers the environments' parts that run here (the tokenizer's
 work, the sandboxes of agentic tasks), keeps the checkpoints and the
@@ -74,13 +84,13 @@ Every option can also come from an environment variable, WPT_ plus the
 option name in capitals with '_' for '-' (--micro-batch ->
 WPT_MICRO_BATCH; WPT_RESUME=1), or from the same line in the .env file of
 the current folder; the command line wins, then the environment. The
-recipe may come from WPT_RECIPE and the dataset id from WPT_DATASET.
+recipe may come from WPT_RECIPE and the corpus id from WPT_CORPUS.
 WPT_GPU_WORKERS and WPT_LINK_CHECKPOINTS are read the same way.
 
 After each step, the store keeps its result (cache/steps/<fingerprint>): the
 weights and the optimizer's state, under a fingerprint of the step before
 it, the step itself (method, optimizer, environment, settings, locked
-parts), the fingerprint of the part of the dataset it reads, the seed and
+parts), the fingerprint of the part of the corpus it reads, the seed and
 the code (wpt_utils.programs.code: its commit and a hash of its
 uncommitted changes, so any commit makes every kept result unknown); no
 option is part of it. A run whose first steps
@@ -111,10 +121,8 @@ After a crash, every process on the gpu worker starts again, up
 to --max-restarts times (default 3), and continues from the worker's own
 checkpoint; 0 starts no launcher there.
 
-It works in the session --session ID or WPT_SESSION names, and refuses to
-start without one; --from OLD_ID (WPT_FROM) also reads what the session does
-not hold from that other session. This command records the run in the
-session, in its own folder of <id>/runs/ (wpt_telemetry; docs/observability.md), and the gpu worker's main
+This command records the run in its own folder of the store's runs/
+(wpt_telemetry; docs/observability.md), and the gpu worker's main
 process adds to the same folder through the link: what it read, every
 step, update, evaluation and checkpoint, every step result kept or reused,
 and every file it wrote, one folder over the worker's restarts. When that
@@ -124,9 +132,9 @@ checkpoint (which the broken record does not name), and stops with code 3.
 After the last step, the gpu worker trains the model's drafter for
 speculative decoding against the final weights, the model frozen, with the
 recipe's `drafter` section (wpt_inference.drafting; docs/model.md, "The
-drafter"): its prompts are the beginnings of the dataset's training
-documents, and the model alone writes the answers, which stop at the end
-of a document and, when a step trained on conversations or tasks, at
+drafter"): its prompts are the beginnings of the plain texts the steps
+read, and the model alone writes the answers, which stop at the end
+of a text and, when a step trained on conversations or tasks, at
 <|im_end|>, the end of a turn (the manager sends both tokens' ids). A
 model and its drafter are one unit: no option skips it, and a drafter that cannot be trained refuses the run
 (code 2) and writes nothing; every step's result is kept, so the same
@@ -154,12 +162,13 @@ starts the step over; the results of the steps before it stay in the
 store.
 
 The model folder gets config.json, the weights (their headers name the
-licenses), tokenizer.json (the dataset's vocabulary, for wpt chat), the
+licenses), tokenizer.json (the corpus's vocabulary, for wpt chat), the
 drafter (drafter/: config.json, model.safetensors, and provenance.json,
 which names the sha256 of the weights it was trained against),
-provenance.json (what produced it: each step, its fingerprint and result,
-and the sources each one learned from), and LICENSE, NOTICE and README.md
-(the model card). It is written beside the target as a hidden folder,
+provenance.json (what produced it: the corpus, each step, its fingerprint
+and result, and what of the corpus each one learned from), CREDITS (every
+text the steps learned from, one line each, from the corpus's tables:
+wpt_depot.notice), and LICENSE, NOTICE and README.md (the model card). It is written beside the target as a hidden folder,
 recorded, then renamed into place: a run that fails before leaves the
 target as it was. A folder already there, with everything in it (an
 earlier model, its checkpoint, the results wpt eval wrote for other
@@ -181,20 +190,21 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from wpt import sessions
-from wpt_dataset.build import current_record, last_dataset
-from wpt_dataset.errors import DatasetError
-from wpt_dataset.repo import Repo
-from wpt_dataset.sources import fingerprint
+from wpt_depot import Depot
+from wpt_depot import corpus as corpora
+from wpt_depot.depot import location
+from wpt_depot.errors import DepotError, NotFound
+from wpt_depot.notice import model_notice
 from wpt_inference import COSTS_FILE
 from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig, canonical_ids, save_drafter, save_model, weight_files, weight_hashes
 from wpt_model.drafter import Drafter
-from wpt_model.notice import WEIGHT_METADATA, write_credits, write_documents
+from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
 from wpt_model.sparse import FORMS, named_form
+from wpt_recipes import RecipeError, Recipes
 from wpt_store import NAME as STORE_NAME
-from wpt_store import StoreError, find_dataset, read_env_file, store_from_settings
-from wpt_store.models import checkpoint_keys, state_key
+from wpt_store import StoreError, read_env_file, store_from_settings
+from wpt_store.models import checkpoint_key, state_key
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, file_hashes, set_result, short
 from wpt_tokenizer import RUSTC_VERSION, Tokenizer, chat
 from wpt_training import (WINDOWS, Checkpoint, FolderCheckpoint, PluginError, check_continuations, load_state,
@@ -202,7 +212,7 @@ from wpt_training import (WINDOWS, Checkpoint, FolderCheckpoint, PluginError, ch
 from wpt_training.launch import REFUSED, STOPPED
 from wpt_utils.files import sha256_file
 from wpt_utils.lines import ERROR, WARNING, say
-from wpt_utils.programs import code, repository
+from wpt_utils.programs import code, fingerprint, repository
 from wpt_worker.link import LinkError
 from wpt_worker.manager import Files, NoCheckout, code_root, keys, machines, run_jobs, start_workers
 from wpt_worker.training import CHECKPOINTS, STEP_ENDS
@@ -221,12 +231,11 @@ class Refused(Exception):
 
 
 class InputError(Exception):
-    """The dataset is missing, its record describes another id, it has a
-    record shape this version does not read, it was built from another data
-    part than the recipe's, the recipe's steps cannot run as asked, or the
-    batch does not split over the processes. Nothing has been trained. (A
-    shard or vocabulary that does not match its hash is the store's
-    CorruptFile.)"""
+    """The corpus is missing, it was built from another depot, dataset or
+    tokenizer recipe than the recipe's, the recipe's steps cannot run as
+    asked, or the batch does not split over the processes. Nothing has been
+    trained. (A token file or vocabulary that does not match its hash is the
+    store's CorruptFile.)"""
 
 
 def parse_size(text):
@@ -249,7 +258,7 @@ OPTIONS = [
     ("strategy", str, "single", "how the hardware is used: a built-in name or a .py file"),
     ("processes", int, 1, "start this many processes on this machine, one per GPU (with --strategy ddp or split)"),
     ("max-shard-size", parse_size, None, "split the weights into files of at most this size, e.g. 500MB"),
-    ("stream-shards", int, 8, "with --stream: dataset shards in use at once (windows are drawn from them)"),
+    ("stream-shards", int, 8, "with --stream: token files of the corpus in use at once (windows are drawn from them)"),
     ("run", str, None, "keep the checkpoint in the store under this name, so any machine using the store can "
                        "continue the run"),
     ("scheduler-costs", str, None, "replay the drafter scheduler's pass times that an earlier run recorded on the "
@@ -271,19 +280,18 @@ OPTIONS = [
 ]
 
 
-SHARD_FIELDS = ("key", "sha256", "token_sha256")  # what a model's provenance keeps of each shard of its dataset
+SHARD_FIELDS = ("key", "sha256", "token_sha256")  # what a model's provenance keeps of each token file of its corpus
 
 
 def parse_args(argv=None, environ=None):
     environ = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="wpt train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sessions.options(parser)
     parser.add_argument("recipe", nargs="?", default=environ.get("WPT_RECIPE"),
                         help="model recipe: a file name in data/recipes/models/, without .json, or SERIES:SIZE[:RUN], "
                              "a size of a series file of data/recipes/series/ or another run of it (WPT_RECIPE)")
-    parser.add_argument("dataset", nargs="?", default=environ.get("WPT_DATASET"),
-                        help="dataset id that `wpt dataset build RECIPE` printed; default: the dataset last built "
-                             "for the recipe (WPT_DATASET)")
+    parser.add_argument("corpus", nargs="?", default=environ.get("WPT_CORPUS"),
+                        help="corpus id that `wpt depot build DATASET` printed, or a start of it; default: the corpus "
+                             "last built for the recipe's depot and dataset (WPT_CORPUS)")
     for name, kind, default, text in OPTIONS:
         variable = "WPT_" + name.upper().replace("-", "_")
         if variable in environ:
@@ -293,8 +301,8 @@ def parse_args(argv=None, environ=None):
                 parser.error(f"{variable}={environ[variable]!r}: {error}")
         parser.add_argument(f"--{name}", type=kind, default=default, help=f"{text} ({variable})")
     parser.add_argument("--stream", action="store_true", default=environ.get("WPT_STREAM", "") in ("1", "true", "yes"),
-                        help="read the training shards a few at a time instead of copying them all to disk first "
-                             "(WPT_STREAM)")
+                        help="read the corpus's token files a few at a time instead of copying them all to disk "
+                             "first (WPT_STREAM)")
     parser.add_argument("--recompute", action="store_true",
                         default=environ.get("WPT_RECOMPUTE", "") in ("1", "true", "yes"),
                         help="keep only each layer's input and run the layer again for the backward pass: the same "
@@ -323,27 +331,83 @@ def load_recipe(name):
     """The model recipe of that name (or SERIES:SIZE[:RUN]), checked against its
     schema, from the repository holding the current folder."""
     try:
-        return Repo.find().model_recipe(name)
-    except DatasetError as error:
+        return Recipes.find().model_recipe(name)
+    except RecipeError as error:
         raise InputError(str(error)) from None
 
 
-def load_dataset(store, dataset_id, recipe):
-    """(record, the key of the record, tokenizer), the record and vocabulary
-    checked, and the dataset built from the recipe's data part."""
-    found = find_dataset(store, dataset_id)
+def recipe_dataset(recipe) -> dict:
+    """The current row of the dataset the recipe's data part names, read
+    from its depot without writing to it; InputError when the depot cannot
+    be read or holds no dataset of that name."""
+    data = recipe["data"]
+    try:
+        return Depot.view(data["depot"]).dataset(data["dataset"])
+    except NotFound:
+        raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: make it, then build it "
+                         f"with `wpt depot build {data['dataset']}` on the machine that holds the depot") from None
+    except (DepotError, OSError) as error:
+        raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
+                         f"({type(error).__name__}: {error}); give the corpus id instead") from None
+
+
+def find_corpus(store, given, recipe, log=say) -> dict:
+    """The record of the corpus given (an id or a start of it), or without
+    one the corpus last built for the recipe's dataset, found by its id in
+    its depot (a dataset's corpora stay its own through a rename), with a
+    warning in the log when it was built from an older revision of the
+    dataset than the current one; InputError when the store holds none."""
+    data = recipe["data"]
+    dataset = None
+    try:
+        if given is not None:
+            found = corpora.find(store, given)
+        else:
+            dataset = recipe_dataset(recipe)
+            found = corpora.latest(store, data["depot"], dataset["id"])
+    except ValueError as error:
+        raise InputError(str(error)) from None
     if found is None:
-        raise InputError(f"no dataset {dataset_id} in session {store.session} of {store}; build it with "
-                         "`wpt dataset build <recipe>`")
-    record_key, record = found
-    if not current_record(record):
-        raise InputError(f"dataset {dataset_id} has a record of another shape than this wpt train reads; build the "
-                         "recipe again with the current wpt dataset")
-    if record.get("recipe") != recipe["data"]:
-        raise InputError(f"dataset {dataset_id} was built from {record.get('recipe_name')!r} with another data part "
-                         "than this recipe's; build this recipe with `wpt dataset build`")
-    tokenizer = Tokenizer.from_bytes(store.get_bytes(record["tokenizer"]["vocabulary"]))  # sha256-checked by the store
-    return record, record_key, tokenizer
+        raise InputError(f"no corpus {given} in {store}" if given is not None else
+                         f"no corpus of dataset {data['dataset']!r} ({dataset['id']}) of the depot {data['depot']!r} "
+                         f"in {store}: build it with `wpt depot build {data['dataset']}` on the machine that holds "
+                         "the depot")
+    if dataset is not None and found["dataset"]["revision"] < dataset["revision"]:
+        log(f"corpus {found['id']} was built from revision {found['dataset']['revision']} of the dataset "
+            f"{data['dataset']!r} ({dataset['id']}), whose current revision is {dataset['revision']}: this run "
+            f"trains on the older revision; build the dataset again with `wpt depot build {data['dataset']}` to "
+            "train on the current one", WARNING)
+    return found
+
+
+def load_corpus(store, record, recipe):
+    """The corpus's tokenizer, its vocabulary checked, once the corpus is
+    known to be built from the recipe's depot, dataset and tokenizer recipe:
+    a dataset of the recipe's dataset's name then, or, renamed since, of the
+    id the recipe's dataset has in its depot now."""
+    data = recipe["data"]
+    if (record["depot"] != str(location(data["depot"])) or record["tokenizer"]["recipe"] != data["tokenizer"]
+            or (record["dataset"]["name"] != data["dataset"]
+                and record["dataset"]["id"] != recipe_dataset(recipe)["id"])):
+        raise InputError(f"corpus {record['id']} was built from dataset {record['dataset']['name']!r} of the depot "
+                         f"{record['depot']!r} with the tokenizer recipe {record['tokenizer']['recipe']!r}; this "
+                         f"recipe names dataset {data['dataset']!r} of the depot {data['depot']!r} and the tokenizer "
+                         f"recipe {data['tokenizer']!r}")
+    return Tokenizer.from_bytes(store.get_bytes(record["tokenizer"]["vocabulary"]))  # sha256-checked by the store
+
+
+def check_record(record, recipe):
+    """InputError when the corpus cannot train the recipe: it is stale (an
+    admitted erasure reached a text it was built from) or it holds fewer
+    tokens than the data part's total_tokens."""
+    if "stale" in record:
+        raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
+                         f"{', '.join(record['stale']['erasures'])} on texts it was built from; build the dataset "
+                         f"{record['dataset']['name']!r} again with `wpt depot build`")
+    wanted = recipe["data"]["total_tokens"]
+    if record["total_tokens"] < wanted:
+        raise InputError(f"the recipe trains on {wanted:,} tokens (data.total_tokens); corpus {record['id']} holds "
+                         f"{record['total_tokens']:,}")
 
 
 def plan(recipe) -> tuple[list, int]:
@@ -365,17 +429,29 @@ def plan(recipe) -> tuple[list, int]:
     return steps, contexts[-1]
 
 
-def check_dataset(steps, record, store):
+def with_prefixes(recipe) -> dict:
+    """The recipe with a step that reads text windows and sets no
+    prefix_tokens given the first total_tokens of the data part as its prefix."""
+    entries = []
+    for entry in recipe["steps"]:
+        step = load_step(entry, PARTS)
+        if step.reads == WINDOWS and not step.settings["prefix_tokens"]:
+            entry = {**entry, "settings": {**entry.get("settings", {}), "prefix_tokens": recipe["data"]["total_tokens"]}}
+        entries.append(entry)
+    return {**recipe, "steps": entries}
+
+
+def check_corpus(steps, record, store):
     """InputError naming the first step whose environment finds nothing to
-    learn from in the dataset (wpt_training.Step.check_dataset)."""
+    learn from in the corpus (wpt_training.Step.check_corpus)."""
     for number, step in enumerate(steps, 1):
         try:
-            step.check_dataset(record, store)
+            step.check_corpus(record, store)
         except ValueError as error:
             raise InputError(f"step {number} {step.name}: {error}") from None
 
 
-# the part of the dataset record's `fingerprints` that a step reads, by the kind of examples it learns from
+# the part of the corpus record's `fingerprints` that a step reads, by the kind of examples it learns from
 PART_READ = {WINDOWS: "text", "conversations": "conversations", "attempts": "tasks"}
 
 
@@ -385,7 +461,7 @@ def fingerprints(steps, model_config, record, seed, code) -> list[str]:
     block_size, which no weight depends on and a later step may change),
     the step (wpt_training.Step.record: its files, method, environment,
     optimizer, settings and locked parts), the fingerprint of the part of
-    the dataset it reads (the record's `fingerprints`), the recipe's seed
+    the corpus it reads (the record's `fingerprints`), the recipe's seed
     and the code (code, wpt_utils.programs.code()). The step's position in the list, which its draws
     mix into the seed, is the length of the chain before it. No option is
     part of it."""
@@ -431,28 +507,37 @@ class StepResults:
                                                                    sort_keys=True).encode(), self.telemetry)
 
 
-def provenance(args, recipe, record, record_key, model_config, n_params, worker, strategy_file, done):
+def learned(done) -> dict:
+    """What of the corpus the steps learned from, together: the most plain
+    text tokens one read from the start, and the conversations and tasks
+    (wpt_training.Environment.learned)."""
+    found = {}
+    for step in done:
+        for part, count in step["learned"].items():
+            found[part] = max(found.get(part, 0), count)
+    return found
+
+
+def provenance(args, recipe, record, model_config, n_params, worker, strategy_file, done, texts):
     """What produced the model; worker: what the gpu worker said of itself
     when it was ready (its device, its processes, its Python and the
-    versions of the libraries it trained with)."""
-    sources = {sid: source for step in done for sid, source in step["sources"].items()}
+    versions of the libraries it trained with); texts: how many texts of
+    the corpus the steps learned from."""
     processes = worker["processes"]
     return {
         "recipe_name": args.recipe,
         "recipe": recipe,  # everything that changes the model: data, architecture, seed, steps, drafter
-        "dataset": record["id"],
-        "dataset_record": record_key,
-        "sources": dict(sorted(sources.items())),  # every step's, as the dataset record describes them
-        "skipped_sources": record.get("skipped", []),  # admitted, but left out of the build: it failed
+        "corpus": {"id": record["id"], "depot": record["depot"], "dataset": record["dataset"]["name"]},
+        "learned": learned(done),  # what of the corpus the steps learned from
+        "texts": texts,
         "vocabulary": record["tokenizer"]["vocabulary"],
         "shards": [{name: s[name] for name in SHARD_FIELDS} for s in record["shards"]],
-        "held_out_shards": [{name: s[name] for name in SHARD_FIELDS} for s in record["held_out_shards"]],
-        "options": {k: v for k, v in vars(args).items() if k not in ("recipe", "dataset", "session", "from_id")},  # how the hardware ran it
+        "options": {k: v for k, v in vars(args).items() if k not in ("recipe", "corpus")},  # how the hardware ran it
         "strategy": {"name": strategy_file.name, "file": strategy_file.file, "file_sha256": strategy_file.sha256,
                      "processes": processes},
         # each step in order: what it is, its fingerprint and kept result, whether this run reused it, what it
-        # reached, and the sources it learned from
-        "steps": [{**step, "sources": sorted(step["sources"])} for step in done],
+        # reached, and what of the corpus it learned from
+        "steps": list(done),
         "model": asdict(model_config),
         "parameters": n_params,
         **repository(),  # repository_commit, repository_dirty
@@ -463,27 +548,59 @@ def provenance(args, recipe, record, record_key, model_config, n_params, worker,
     }
 
 
+def print_series(name) -> int:
+    """Print the numbers of every size of the series file of that name (wpt train series NAME)."""
+    recipes = Recipes.find()
+    try:
+        plans = recipes.series_plans(name)
+        total = recipes.series_total_tokens(name)
+        say(f"series {name}: one corpus of {total:,} training tokens; wpt train {name}:SIZE reads its first prefix tokens")
+        for plan in plans:
+            model = plan.model
+            say(f"{plan.size}: width {model['d_model']}, {model['n_layer']} layers, global "
+                f"{'/'.join(model['global_attention'])}, Engram at {', '.join(map(str, model['engram_layers']))}; "
+                f"{plan.parameters:,} parameters without the vocabulary tables, {plan.total_parameters:,} with them; "
+                f"M {plan.flops_per_token:.4g} FLOPs per token, C {plan.compute:.4g}, D {plan.tokens:.4g} tokens; "
+                f"learning rate {plan.learning_rate:g}, batch {plan.batch_size} windows of {plan.block_size:,} "
+                f"(the law: {plan.batch_tokens:,.0f} tokens), {plan.updates:,} updates, warm-up {plan.warmup:,}, "
+                f"prefix {plan.prefix_tokens:,} tokens")
+            for run in recipes.series_runs(name, plan):
+                say(f"  {name}:{plan.size}:{run['run']}: {run['updates']:,} updates"
+                    + (f", decaying after update {run['start']:,} of the trunk" if run["start"] is not None else "")
+                    + f", learning rate {run['learning_rate']:g}")
+    except RecipeError as error:
+        say(f"InputError: {error}", ERROR)
+        return REFUSED
+    return 0
+
+
 def main(argv=None):
     sys.stdout.reconfigure(encoding="utf-8")  # the sample is any text; Windows pipes default to a narrower code page
+    given = sys.argv[1:] if argv is None else list(argv)
+    if given[:1] == ["series"]:
+        if len(given) != 2:
+            say("usage: wpt train series NAME", ERROR)
+            sys.exit(REFUSED)
+        code = print_series(given[1])
+        if code:
+            sys.exit(code)
+        return
     environ = settings()
     args = parse_args(argv, environ)
     arguments = sys.argv[1:] if argv is None else list(argv)
     try:
-        store = sessions.opened(store_from_settings(Path.cwd() / ".env"), args, Path.cwd() / ".env")
-        if args.dataset is None:
-            args.dataset = last_dataset(store, args.recipe)
-    except StoreError as error:  # no store, no record: nothing has started
+        store = store_from_settings(Path.cwd() / ".env")
+        recipe = load_recipe(args.recipe)
+        record = find_corpus(store, args.corpus, recipe)
+        check_record(record, recipe)
+    except (StoreError, InputError) as error:  # no store, no corpus: nothing has started, nothing is recorded
         say(f"{type(error).__name__}: {error}", ERROR)
         sys.exit(REFUSED)
-    if args.dataset is None:
-        say(f"no dataset was built for {args.recipe}: run `wpt dataset build {args.recipe}`, or give a dataset id",
-            ERROR)
-        sys.exit(REFUSED)
     try:
-        with Telemetry.start(store, "wpt train", arguments, short(args.dataset),
-                             inputs={"recipe": args.recipe, "dataset": args.dataset},
+        with Telemetry.start(store, "wpt train", arguments, short(record["id"]),
+                             inputs={"recipe": args.recipe, "corpus": record["id"]},
                              env_file=Path.cwd() / ".env") as telemetry:
-            code = _run(args, store, telemetry, environ)
+            code = _run(args, record, store, telemetry, environ)
             if code == RECORD_FAILED:  # the gpu worker's lines of the record could not be written
                 raise RecordError("the store refused a line of this run's record that the gpu worker sent")
             if code:
@@ -500,18 +617,18 @@ def settings() -> dict:
     return {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
 
 
-def _run(args, store, telemetry, environ) -> int:
+def _run(args, record, store, telemetry, environ) -> int:
     """The run; its exit code."""
     try:
         with telemetry.span("inputs.recipe", recipe=args.recipe):
-            recipe = load_recipe(args.recipe)
+            recipe = with_prefixes(load_recipe(args.recipe))
             strategy_file = strategy_plugin(args.strategy)
         with telemetry.span("inputs.steps", steps=len(recipe["steps"])):
             steps, context = plan(recipe)
     except (InputError, PluginError) as error:
         return _refuse(f"{type(error).__name__}: {error}", telemetry)
     try:
-        return _train(args, recipe, strategy_file, steps, context, store, telemetry, environ)
+        return _train(args, record, recipe, strategy_file, steps, context, store, telemetry, environ)
     except Refused as error:
         return _refuse(str(error), telemetry)
 
@@ -523,13 +640,11 @@ def _refuse(text, telemetry) -> int:
 
 class StoreCheckpoint(Checkpoint):
     """The checkpoint of a named run in the store: a record beside the
-    session's model NAME (wpt_store.models.CHECKPOINT) names the state's
-    file ({"state": {"key", "sha256"}}), which lies in the same folder, read
-    from the session, else from the one it started from, so any machine
-    using the same store continues it and emptying the store's cache folder
-    loses nothing of it. Each save replaces the session's record and deletes
-    the file it named, one a record of the session it started from names
-    staying. Every change of the record and every deletion are recorded in
+    model NAME (wpt_store.models.CHECKPOINT) names the state's file
+    ({"state": {"key", "sha256"}}), which lies in the same folder, so any
+    machine using the same store continues it and emptying the store's
+    cache folder loses nothing of it. Each save replaces the record and
+    deletes the file it named. Every change of the record and every deletion are recorded in
     the run's record, naming the file, and that line is in the store before
     the step (RecordError otherwise). When the record breaks, a save still
     writes the checkpoint's, unrecorded, then raises the RecordError;
@@ -539,20 +654,13 @@ class StoreCheckpoint(Checkpoint):
 
     def __init__(self, store, name, telemetry, kept: set):
         self.store, self.name, self.telemetry, self.kept = store, name, telemetry, kept
-        self.keys = checkpoint_keys(store, name)
+        self.key = checkpoint_key(name)
 
     def __str__(self):
-        return f"{self.store} as {self.keys[0]}"
-
-    def _state(self, keys) -> dict | None:
-        """The reference of the file the first of keys that holds a record names."""
-        for key in keys:
-            if (record := self.store.get_json(key)) is not None:
-                return record["state"]
-        return None
+        return f"{self.store} as {self.key}"
 
     def _named(self, state):
-        self.store.put_json(self.keys[0], {"state": state})
+        self.store.put_json(self.key, {"state": state})
 
     def exists(self):
         return self.state_file() is not None
@@ -575,8 +683,8 @@ class StoreCheckpoint(Checkpoint):
             partial.unlink(missing_ok=True)
 
     def save_file(self, path):
-        state = self.store.put_named(state_key(self.store, self.name, sha256_file(path)), path).reference()
-        previous = self._state(self.keys[:1])
+        state = self.store.put_named(state_key(self.name, sha256_file(path)), path).reference()
+        previous = self.state_file()
         try:
             self.telemetry.irreversible("training.checkpoint_saved", state=state["key"], checkpoint=str(self))
         except RecordError:
@@ -588,17 +696,18 @@ class StoreCheckpoint(Checkpoint):
             self.store.delete(previous)
 
     def remove(self):
-        state = self._state(self.keys[:1])
+        state = self.state_file()
         deleted = state if state and state["key"] not in self.kept else None
         if deleted:
             self._record_deletion(deleted)
-        self.store.delete_json(self.keys[0])
+        self.store.delete_json(self.key)
         if deleted:
             self.store.delete(deleted)
 
     def state_file(self) -> dict | None:
         """The reference of the file of the saved state, None when none is saved."""
-        return self._state(self.keys)
+        record = self.store.get_json(self.key)
+        return None if record is None else record["state"]
 
     def _record_deletion(self, state):
         self.telemetry.irreversible("training.checkpoint_deleted", state=state["key"], checkpoint=str(self))
@@ -722,28 +831,26 @@ def sent_files(steps, strategy_file) -> dict:
     return {plugin.given: Path(plugin.given).read_text(encoding="utf-8") for plugin in files}
 
 
-def _train(args, recipe, strategy_file, steps, context, store, telemetry, environ) -> int:
+def _train(args, record, recipe, strategy_file, steps, context, store, telemetry, environ) -> int:
     log = telemetry.log
     out = Path(args.out)
     out_was_there = out.exists()  # a failed step then leaves the target as it was
     mode = link_checkpoints(environ)
     try:
-        with telemetry.span("inputs.dataset", dataset=args.dataset, stream=args.stream) as span:
+        with telemetry.span("inputs.corpus", corpus=record["id"], stream=args.stream) as span:
             kept_states = set()  # the keys of the kept steps' state files, which a store checkpoint never deletes
             checkpoint = (StoreCheckpoint(store, args.run, telemetry, kept_states) if args.run
                           else FolderCheckpoint(out / CHECKPOINT_FOLDER))
             if checkpoint.exists() and not args.resume:
                 raise Refused(f"{checkpoint} holds an unfinished step: add --resume to continue it, or delete it")
-            record, record_key, tokenizer = load_dataset(store, args.dataset, recipe)
-            check_dataset(steps, record, store)  # what every step reads is there before the first one trains
-            span.set(shards=len(record["shards"]), held_out_shards=len(record["held_out_shards"]),
-                     conversations=record.get("conversations", {}).get("count", 0),
+            tokenizer = load_corpus(store, record, recipe)
+            check_corpus(steps, record, store)  # what every step reads is there before the first one trains
+            span.set(shards=len(record["shards"]), conversations=record["conversations"],
                      tasks=record.get("tasks", {}).get("count", 0))
-        telemetry.input(recipe=args.recipe, dataset=args.dataset, dataset_record=record_key,
-                        vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
+        telemetry.input(recipe=args.recipe, corpus=record["id"], vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
     except (StoreError, InputError) as error:
         raise Refused(f"{type(error).__name__}: {error}") from None
-    log(f"dataset {args.dataset}: vocabulary {tokenizer.vocab_size:,} tokens")
+    log(f"corpus {record['id']}: vocabulary {tokenizer.vocab_size:,} tokens")
 
     model_config = ModelConfig(vocab_size=tokenizer.vocab_size, block_size=context, **recipe["model"])
     try:  # the drafter trained at the end, and the scheduler's pass times replayed: refused now, not after training
@@ -781,15 +888,15 @@ def _train(args, recipe, strategy_file, steps, context, store, telemetry, enviro
     try:
         with telemetry.span("gpu_worker.checkout", workers=len(workers)):
             for worker in workers:
-                worker.send_checkout(Repo(checkout_root).data_folder(), checkout_root)
+                worker.send_checkout(Recipes(checkout_root).data_folder(), checkout_root)
         with telemetry.span("gpu_worker.job", checkpoints=mode, workers=len(workers),
                             transport=placed[0]["transport"]), telemetry.relay():
             code = run_jobs(workers, [{**spec, "machines": where} for where in placed], answers.handlers)
         if len(workers) > 1 and code not in (0, REFUSED, RECORD_FAILED, STOPPED):
             code = _crashed(code, len(workers), telemetry)
         if code == 0:
-            _finish(args, recipe, record, record_key, model_config, drafter_config, answers, tokenizer,
-                    checkpoint, out, store, telemetry, log)
+            _finish(args, recipe, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
+                    telemetry, log)
     except LinkError as error:
         code = _lost(error, telemetry)
     finally:
@@ -820,8 +927,8 @@ def _lost(error, telemetry) -> int:
     return LOST
 
 
-def _finish(args, recipe, record, record_key, model_config, drafter_config, answers, tokenizer, checkpoint, out,
-            store, telemetry, log):
+def _finish(args, recipe, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
+            telemetry, log):
     """The model folder, from the last step's kept state and what the gpu
     worker sent at the end (the drafter, a sample's token ids)."""
     with telemetry.span("model.load", state=answers.last_state):
@@ -836,7 +943,7 @@ def _finish(args, recipe, record, record_key, model_config, drafter_config, answ
         drafter.provenance = found["provenance"]
         answers.finished["drafter"].unlink()
     drafter.provenance = {**drafter.provenance, "trained_by": {"command": "wpt train", "recipe_name": args.recipe},
-                          "dataset": args.dataset}
+                          "corpus": record["id"]}
     n_params = sum(p.numel() for p in model.parameters())
     done = answers.done
     named = record["tokenizer"]
@@ -848,21 +955,24 @@ def _finish(args, recipe, record, record_key, model_config, drafter_config, answ
         with telemetry.span("model.write", folder=str(out)):
             with telemetry.span("model.weights"):
                 vocabulary = store.get_bytes(named["vocabulary"])
-                tokenizer_name = f"{named['recipe']} version {named['recipe_version']}"
+                tokenizer_name = named["recipe"] + (f" version {named['recipe_version']}"
+                                                    if named.get("recipe_version") is not None else "")
                 save_model(model, staging, vocabulary, tokenizer_name, max_shard_bytes=args.max_shard_size,
                            metadata=WEIGHT_METADATA)
                 save_drafter(drafter, staging, tokenizer_name, hashlib.sha256(vocabulary).hexdigest(),
                              metadata=WEIGHT_METADATA,
                              provenance={**drafter.provenance, "target": {"weights": weight_hashes(staging)}})
-            with telemetry.span("model.provenance") as span:
-                written = provenance(args, recipe, record, record_key, model_config, n_params,
-                                     answers.ready_found, answers.run.strategy_file, done)
+            with telemetry.span("model.notice") as span:  # every text learned from, NOTICE, LICENSE, the model card
+                credits = model_notice(store, record, learned(done))
+                (staging / CREDITS_NAME).write_text(credits, encoding="utf-8", newline="\n")
+                texts = sum(1 for line in credits.split("\n\n", 1)[0].splitlines() if line)
+                span.set(texts=texts)
+            with telemetry.span("model.provenance"):
+                written = provenance(args, recipe, record, model_config, n_params, answers.ready_found,
+                                     answers.run.strategy_file, done, texts)
                 (staging / "provenance.json").write_text(json.dumps(written, indent=2) + "\n", encoding="utf-8",
                                                          newline="\n")
-                span.set(sources=sorted(written["sources"]), skipped_sources=written["skipped_sources"])
-            with telemetry.span("model.notice"):  # the credits each source asks for, NOTICE, LICENSE, the model card
-                write_credits(staging, written, store.get_bytes)
-                write_documents(staging)
+            write_documents(staging)
             files = file_hashes(staging)
             telemetry.event("model.files", files=files)
             # recorded before the folder appears: a record that cannot be written leaves the target as it was
@@ -890,6 +1000,6 @@ def _finish(args, recipe, record, record_key, model_config, drafter_config, answ
             shutil.rmtree(staging, ignore_errors=True)
         raise
     checkpoint.remove()  # a checkpoint left by a step this run reused
-    log(f"saved {out} (licenses and sources: {out / 'NOTICE'})")
+    log(f"saved {out} (licenses and the texts it learned from: {out / 'NOTICE'})")
     # the sample the gpu worker wrote, so you immediately see what it learned
     log(tokenizer.decode(answers.finished["sample"]).decode("utf-8", errors="replace"))

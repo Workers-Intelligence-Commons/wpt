@@ -160,7 +160,7 @@ class LinkStore:
     before the call returns, and whose lines that store holds back are sent
     when flush_records() returns. Copies of files go into folder/files
     (path(), until release()), files derived from them into folder/scratch.
-    The manager answers only for the files of the run's dataset and
+    The manager answers only for the files of the run's corpus and
     states, and only for its record folder."""
 
     def __init__(self, link, folder):

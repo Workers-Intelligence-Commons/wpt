@@ -35,7 +35,8 @@ xpu = ["torch>=2.14", "triton-xpu"]
 wpt-tokenizer = { workspace = true }
 wpt-store = { workspace = true }
 wpt-telemetry = { workspace = true }
-wpt-dataset = { workspace = true }
+wpt-depot = { workspace = true }
+wpt-recipes = { workspace = true }
 wpt-model = { workspace = true }
 wpt-inference = { workspace = true }
 wpt-training = { workspace = true }

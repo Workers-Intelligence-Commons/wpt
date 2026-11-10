@@ -58,7 +58,7 @@ body:
     id: provenance
     attributes:
       label: "The model folder's provenance"
-      description: "The content of `provenance.json` from the model folder (dataset id, recipe, base model, steps), and the sha256 of its weight files."
+      description: "The content of `provenance.json` from the model folder (corpus, recipe, base model, steps), and the sha256 of its weight files."
       render: json
     validations:
       required: true

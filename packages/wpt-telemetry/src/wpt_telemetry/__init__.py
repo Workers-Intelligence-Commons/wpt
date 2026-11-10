@@ -1,18 +1,16 @@
 """The record of one WPT command run: what it read, what it did and what it
 wrote, so that afterwards one can know exactly what happened.
 
-wpt dataset build, wpt train and wpt eval each open one
-Telemetry per run. Its record is its own folder of the session it runs in,
-in the store named by WPT_STORE, <id>/runs/<run>/ (see wpt_store), named
+wpt train, wpt eval and wpt manager each open one Telemetry per run. Its
+record is its own folder in the store named by WPT_STORE, runs/<run>/ (see
+wpt_store), named
 <UTC start>-<command>-<main id>-<8 random hex digits>, where the command is
 the one that ran (`wpt train`; as_record_name turns each space into a '-':
 `wpt-train`) and the main id is what the run is about (a recipe name, a short
-dataset id, a short weights hash: the command chooses). The run's `folder`
-is "<id>/<run>", which every read of the record takes:
+corpus id, a short weights hash: the command chooses). The run's `folder`
+is that name, which every read of the record takes:
 
-    start.json     the command, its arguments, when it started, the job
-                   that started it (the WPT_JOB setting of `wpt web`, when
-                   it started the command), the tools,
+    start.json     the command, its arguments, when it started, the tools,
                    the code (its commit and a hash of its uncommitted
                    changes), the repository commit, and the trace id the live backend
                    shows it under
@@ -20,15 +18,12 @@ is "<id>/<run>", which every read of the record takes:
                    spans opened and closed, events with their values, and
                    every line the command printed
     ids.json       the ids the run read (inputs) and wrote (outputs), such
-                   as a dataset id or a weight file's sha256, rewritten as
-                   each is learned: the chain from a dataset build to the
+                   as a corpus id or a weight file's sha256, rewritten as
+                   each is learned: the chain from a corpus to the
                    models trained and evaluated on it
     end.json       how it ended: succeeded or failed, the exit code, the
                    error and its traceback
     other files    written by a part of the command (write_file, append_file)
-
-The session's index learns of the run when it ends (wpt_store.index): a run
-that crashed reaches it only when the index is rebuilt.
 
 Each file written whole is in the store before the call that makes it
 returns; a run with no end.json did not reach its end. The store holds
@@ -129,7 +124,6 @@ from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import NonRecordingSpan, SpanContext, Status, StatusCode, TraceFlags
 
 from wpt_store import MissingFile, MixedRecord, as_record_name, check_record_name, read_env_file
-from wpt_store.index import RUNS, held_row
 from wpt_utils.files import sha256_file
 from wpt_utils.lines import ERROR, INFO, WARNING, say
 from wpt_utils.parallel import memory
@@ -139,7 +133,6 @@ RECORD_FAILED = 3  # the exit code of a command whose record could not be writte
 ENDPOINT = "OTEL_EXPORTER_OTLP_ENDPOINT"
 JOIN_FOLDER = "WPT_RECORD_FOLDER"  # set by a launcher for the processes that join its record
 JOIN_PARENT = "WPT_RECORD_PARENT"  # <trace id>-<span id> of the launcher's span they belong under
-JOB = "WPT_JOB"  # set by `wpt web` for a command it starts: the id of the job, which start.json then names
 START, EVENTS, IDS, END = "start.json", "events.jsonl", "ids.json", "end.json"
 FLUSH_SECONDS = 30  # the store is sent the lines it holds back at least this often
 PROGRESS_SECONDS = 180  # a long stage prints how far it is at most this often
@@ -272,21 +265,18 @@ class Telemetry:
     @classmethod
     def start(cls, store, command, arguments, main_id, inputs=None, env_file=".env", environ=None, echo=None):
         """A new run's record, in a new folder named after main_id (what the
-        run is about: a recipe name, short(dataset id)...): start.json and
+        run is about: a recipe name, short(corpus id)...): start.json and
         ids.json are written before it returns (RecordError when the store
-        refuses them). store is a view of Store.at: SessionNeeded without a
-        session, nothing written."""
+        refuses them)."""
         moment = datetime.now(UTC)
         run = f"{moment:%Y%m%dT%H%M%SZ}-{as_record_name(command)}-{as_record_name(main_id)}-{secrets.token_hex(4)}"
-        folder = f"{store.needed()}/{run}"
+        folder = run
         live = _Live(command, folder, _endpoint(env_file, environ), echo or say)
         telemetry = cls(store, folder, command, live, echo or say, owner=True)
         try:
-            job = (os.environ if environ is None else environ).get(JOB)
             telemetry._write(START, _json({"command": command, "arguments": list(arguments),
                                            "started": _iso(moment), "trace": telemetry.trace,
-                                           "inputs": dict(inputs or {}), **({"job": job} if job else {}),
-                                           **({"from": store.start} if store.start else {}), **_where()}))
+                                           "inputs": dict(inputs or {}), **_where()}))
             telemetry._write(IDS, _json({"inputs": dict(inputs or {}), "outputs": {}}))
             telemetry._line({"kind": "span_start", "span": telemetry._root.id, "parent": None, "name": command,
                              "attributes": {}})
@@ -458,7 +448,7 @@ class Telemetry:
 
     def add_lines(self, lines):
         """Add [(file name, lines)] that a process of this run held back to
-        their files of this record (wpt_dataset.workers)."""
+        their files of this record."""
         self._check_open()
         for name, data in lines:
             self._append(name, data)
@@ -547,7 +537,6 @@ class Telemetry:
                                                 "ended": _iso(datetime.now(UTC)),
                                                 "seconds": round(time.time() - self._started, 3)}))
                         self._end_records()
-                        self._note_run()
             finally:
                 if self._live:
                     self._live.close()
@@ -624,12 +613,6 @@ class Telemetry:
         events to into one part."""
         if self.store is not None:
             self._store_call(EVENTS, lambda: self.store.end_records(self.folder))
-
-    def _note_run(self):
-        """The record ended: the session's index learns of the run."""
-        session, _, run = self.folder.partition("/")
-        self._store_call(START, lambda: self.store.note(
-            [held_row(session, RUNS, run, json.loads(self.store.read_record(self.folder, START)))]))
 
     def _flush(self):
         if self.store is not None:

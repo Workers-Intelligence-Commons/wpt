@@ -51,10 +51,13 @@ republish.
 
 3. Transparency
 
-This model was trained only on the sources listed in its build record, each
-with its license and a pointer to the original. The full list, the patches
-applied to it, and the build scripts are at
-https://github.com/Workers-Intelligence-Commons/wpt. Anyone can check what the model was
-trained on: its build record names every document by the sha256 of its text.
-Fetching a source again gives what its publisher serves today, which may
-differ from what the model was trained on.
+This model was trained only on the texts of the corpus its build record
+names. The corpus lists every text with the depot and id it came from, its
+licenses, its notice and the address it came from. Every text was admitted
+by a person whose declaration, a name and an email, is public in the depot.
+The recipes and the code are at
+https://github.com/Workers-Intelligence-Commons/wpt.
+
+A depot can change after a model was trained. An admitted erasure cuts a
+passage or removes a text, so a depot read today may not hold everything
+the model read.

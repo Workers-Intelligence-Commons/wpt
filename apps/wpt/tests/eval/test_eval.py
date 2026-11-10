@@ -1,51 +1,13 @@
 import json
 import threading
-from types import SimpleNamespace
 
 import pytest
-import torch
 
 import wpt_telemetry
-from wpt.eval import main, open_context, run_eval
+from wpt.eval import main
 from wpt_store import LocalStore
 from wpt_telemetry import FLUSH_THREAD
-from wpt_tokenizer import Tokenizer
 from wpt_utils.lines import bare
-from wpt_worker.evaluation import Served
-
-class Recall(torch.nn.Module):
-    """A stand-in model that knows its training documents by heart: after
-    any start of one of them it gives the next token, otherwise token 0."""
-
-    def __init__(self, documents, vocab_size):
-        super().__init__()
-        self.config = SimpleNamespace(block_size=1000)
-        self.weight = torch.nn.Parameter(torch.zeros(1))  # a device for the model
-        self.vocab_size = vocab_size
-        self.next = {tuple([Tokenizer.END, *d.tokens[:i].tolist()]): int(d.tokens[i])
-                     for d in documents for i in range(len(d.tokens))}
-
-    def forward(self, ids):
-        logits = torch.zeros(ids.size(0), ids.size(1), self.vocab_size)
-        for row, seen in enumerate(ids.tolist()):
-            logits[row, -1, self.next.get(tuple(seen), 0)] = 1
-        return logits
-
-
-def test_memorization_counts_the_training_documents_a_model_reproduces(trained):
-    # given a model that recalls every training document and no held-out one,
-    # the test must report all training documents and no held-out document
-    folder, sid = trained.folder, trained.source_id
-    context = open_context(folder, trained.store)
-    training, held_out = list(context.documents("training")), list(context.documents("held_out"))
-    assert training and held_out
-    context.model = Served(Recall(training, context.tokenizer.vocab_size))
-    context.device = context.model.device
-
-    data = run_eval(context, "memorization")["data"]
-    assert data["training"]["exact"] == data["training"]["documents"] == len(training)
-    assert data["training"]["exact_by_source"] == {sid: len(training)}
-    assert data["held_out"]["exact"] == 0 and data["held_out"]["documents"] == len(held_out)
 
 
 def test_a_folder_whose_drafter_was_trained_against_other_weights_is_refused(trained):
@@ -57,33 +19,19 @@ def test_a_folder_whose_drafter_was_trained_against_other_weights_is_refused(tra
     assert not (trained.folder / "evals").exists()
 
 
-def test_the_command_runs_every_built_in_test_into_the_model_card(trained, capsys):
-    folder = trained.folder
-    main([str(folder)])
-
-    result = json.loads((folder / "evals" / "memorization.json").read_text())
-    assert result["name"] == "memorization" and result["file"] == "wpt/eval/evals/memorization.py"
-    counts = trained.store.get_json(json.loads((folder / "provenance.json").read_text())["dataset_record"])["documents"]
-    assert result["data"]["held_out"]["documents"] == counts["held_out"]  # every one is long enough
-    assert 0 < result["data"]["training"]["documents"] <= counts["training"]
-    card = (folder / "README.md").read_text()
-    assert "### memorization" in card and result["text"].rstrip() in card
-    assert result["text"].rstrip() in bare(capsys.readouterr().out)
-
-
 def test_any_python_file_can_be_a_test(trained, tmp_path):
     folder = trained.folder
     test = tmp_path / "count_tokens.py"
     test.write_text(
         "from wpt.eval import Result\n\n"
         "def run(context):\n"
-        "    n = sum(len(d.tokens) for d in context.documents('held_out'))\n"
-        "    return Result({'held_out_tokens': n}, f'{n} held-out tokens')\n")
+        "    corpus = context.provenance['corpus']['id']\n"
+        "    return Result({'corpus': corpus}, f'trained on {corpus}')\n")
     main([str(folder), str(test)])
 
     result = json.loads((folder / "evals" / "count_tokens.json").read_text())
-    assert result["file"] == "count_tokens.py" and result["data"]["held_out_tokens"] > 0
-    assert f"{result['data']['held_out_tokens']} held-out tokens" in (folder / "README.md").read_text()
+    assert result["file"] == "count_tokens.py" and result["data"]["corpus"] == trained.corpus_id
+    assert f"trained on {trained.corpus_id}" in (folder / "README.md").read_text()
 
 
 def test_a_folder_holding_a_result_of_another_wpt_eval_version_is_evaluated_again(trained, tmp_path):
@@ -111,7 +59,7 @@ def test_a_test_that_returns_no_result_writes_nothing(trained, tmp_path):
     assert not (folder / "evals" / "broken.json").exists()
 
 
-def test_a_record_the_store_refuses_stops_the_evaluation_with_code_3(trained, monkeypatch, capsys):
+def test_a_record_the_store_refuses_stops_the_evaluation_with_code_3(trained, monkeypatch, capsys, tmp_path):
     # every command stops without its record, with the one exit code
     # that says so, before writing the result it could not record
     real = LocalStore._raw_append_record
@@ -122,8 +70,10 @@ def test_a_record_the_store_refuses_stops_the_evaluation_with_code_3(trained, mo
         real(self, folder, name, data)
 
     monkeypatch.setattr(LocalStore, "_raw_append_record", disk_full_at_the_result)
+    test = tmp_path / "constant.py"
+    test.write_text("from wpt.eval import Result\n\ndef run(context):\n    return Result(data={'x': 1}, text='x is 1')\n")
     with pytest.raises(SystemExit) as stopped:
-        main([str(trained.folder)])
+        main([str(trained.folder), str(test)])
     assert stopped.value.code == 3 and "No space left on device" in capsys.readouterr().err
     assert not (trained.folder / "evals").exists()
 

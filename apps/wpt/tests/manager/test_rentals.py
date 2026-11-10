@@ -191,12 +191,12 @@ def cut_run(built, tmp_path) -> Workers:
     found = provider.address("wpt-cut-1", lambda: None)
     key = Key(found.host, found.port, found.pin, "token-of-the-cut-run")
     kept = tmp_path / "runs" / "manager-state"
-    workers = Workers.new(kept, "cut", "d", "test-session")
+    workers = Workers.new(kept, "cut", "d")
     workers.state["workers"] = [{"key": str(key), "rental": {"provider": "fake", "name": "wpt-cut-1",
                                                              "kind": "on-demand"}}]
     workers.save()
     workers.release()  # the manager that ran it crashed: the system gave its lock back
-    folder = "test-session/20261025T120000Z-wpt-manager-cut-0000aaaa"
+    folder = "20261025T120000Z-wpt-manager-cut-0000aaaa"
     built.store.write_record(folder, "start.json", json.dumps({"command": "wpt manager", "started": "2026-10-25T12:00:00Z",
                                                                "arguments": [], "inputs": {"run": "cut"}}).encode())
     built.store.write_record(folder, "ids.json", json.dumps({"inputs": {"run": "cut"}, "outputs": {}}).encode())
@@ -291,7 +291,7 @@ def test_every_rental_is_tried_at_the_end_and_those_still_rented_are_named_and_k
             stopped.append(name)
 
     monkeypatch.setattr(rental, "providers", lambda: {"stubborn": Stubborn})
-    workers = Workers.new(tmp_path, "three", "d", "test-session")
+    workers = Workers.new(tmp_path, "three", "d")
     entries = [{"key": None, "rental": {"provider": "stubborn", "name": name, "kind": "on-demand"}}
                for name in ("wpt-a", "wpt-b", "wpt-c")]
     workers.state["workers"] = entries
@@ -305,7 +305,7 @@ def test_a_run_another_manager_runs_is_left_to_it(built, fake, tmp_path, monkeyp
     # two managers on one state folder: the second neither goes on with the
     # first one's run nor starts it, so it never gives back its rentals
     kept = tmp_path / "runs" / "manager-state"
-    busy = Workers.new(kept, "busy", "d", "test-session")  # the other manager, holding the run's lock
+    busy = Workers.new(kept, "busy", "d")  # the other manager, holding the run's lock
     busy.state["workers"] = [{"key": None, "rental": {"provider": "fake", "name": "wpt-busy-1", "kind": "on-demand"}}]
     busy.save()
     assert unfinished(built.store, "busy")  # no record yet: it looks cut short
@@ -427,7 +427,7 @@ def test_a_lost_worker_of_a_cluster_replaces_the_whole_cluster_and_a_crash_with_
         fake, tmp_path, monkeypatch):
     monkeypatch.setenv("WPT_RENTAL_GPUS", "x")
     settings = dict(os.environ)
-    workers = Workers.new(tmp_path / "state", "pair", "d", "test-session")
+    workers = Workers.new(tmp_path / "state", "pair", "d")
     recorder = Recorder()
     workers.prepare({**settings, "WPT_GPU_WORKERS": "2"}, tmp_path, recorder, lambda: None)
     [first] = [call[1] for call in fake.calls if call[0] == "rent"]
@@ -461,12 +461,12 @@ def test_a_crash_of_a_training_process_on_several_workers_resumes_the_run_within
     crashes = [5]
     tried = []
 
-    def crashing(step, arguments, log, last_line=False, environ=None, stops=None):
+    def crashing(step, arguments, log, environ=None, stops=None):
         if arguments[0] == "train":
             tried.append(list(arguments))
             if crashes:
                 raise Failed(step, crashes.pop())
-        return real(step, arguments, log, last_line, environ)
+        return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", crashing)
     monkeypatch.setenv("WPT_GPU_WORKERS", "2")
@@ -509,7 +509,7 @@ def test_rentals_that_could_not_be_stopped_are_tried_again_at_each_start_and_eve
     assert state(tmp_path, "sweep")["workers"] == []
 
     # a rental an earlier manager could not stop is tried again when the next one starts
-    left = Workers.new(tmp_path / "runs" / "manager-state", "old", "d", "test-session")
+    left = Workers.new(tmp_path / "runs" / "manager-state", "old", "d")
     left.state["workers"] = [{"key": None, "rental": {"provider": "fake", "name": "wpt-old-1", "kind": "on-demand"}}]
     left.end()
     left.release()
@@ -525,11 +525,11 @@ def test_the_evaluation_runs_on_the_rented_workers_before_they_are_given_back(bu
     real = wpt.manager.run_command
     order = []
 
-    def watching(step, arguments, log, last_line=False, environ=None, stops=None):
+    def watching(step, arguments, log, environ=None, stops=None):
         if arguments[0] == "eval":
             order.append(("eval", list(fake.calls), environ))
             return None
-        return real(step, arguments, log, last_line, environ)
+        return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", watching)
     monkeypatch.setenv("WPT_GPU_WORKERS", "1")
@@ -549,11 +549,11 @@ def test_training_on_rented_workers_names_the_triton_kernels_unless_the_settings
     real = wpt.manager.run_command
     named = []
 
-    def watching(step, arguments, log, last_line=False, environ=None, stops=None):
+    def watching(step, arguments, log, environ=None, stops=None):
         if arguments[0] == "train":
             named.append({**os.environ, **environ}.get("WPT_KERNELS"))  # what wpt train gets
             raise Failed(step, 2)
-        return real(step, arguments, log, last_line, environ)
+        return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", watching)
     monkeypatch.delenv("WPT_KERNELS")
@@ -577,13 +577,13 @@ def test_the_evaluation_on_rented_workers_names_the_triton_kernels_unless_the_se
     real = wpt.manager.run_command
     named = []
 
-    def watching(step, arguments, log, last_line=False, environ=None, stops=None):
+    def watching(step, arguments, log, environ=None, stops=None):
         if arguments[0] == "eval":
             named.append({**os.environ, **environ}.get("WPT_KERNELS"))  # what wpt eval gets
             return None
         if arguments[0] == "train":  # this machine may have no GPU for the Triton kernels: train with PyTorch's
             environ = {**environ, "WPT_KERNELS": "pytorch"}
-        return real(step, arguments, log, last_line, environ)
+        return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", watching)
     monkeypatch.setenv("WPT_EVALUATE", "1")
@@ -603,11 +603,11 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     real = wpt.manager.run_command
     fail = [True]
 
-    def failing(step, arguments, log, last_line=False, environ=None, stops=None):
+    def failing(step, arguments, log, environ=None, stops=None):
         if arguments[0] == "train" and fail:
             fail.pop()
             raise Failed(step, 1)
-        return real(step, arguments, log, last_line, environ)
+        return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", failing)
     monkeypatch.setenv("WPT_RECIPE", "d")
@@ -627,9 +627,9 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     main([])  # its model is in the store now: a new run under a new name
     assert (tmp_path / RUN_FILE).read_text() != written
     # another recipe's run name is never taken over
-    (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the recipe not-d in session s1; once it is done\n")
-    assert wpt.manager.previous_run(tmp_path, "d", built.store, None, None, None) is None
-    assert wpt.manager.previous_run(tmp_path, "not-d", built.store, None, None, None) == ("other-20260101T000000Z", "s1")
+    (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the recipe not-d; once it is done\n")
+    assert wpt.manager.previous_run(tmp_path, "d", built.store, None) is None
+    assert wpt.manager.previous_run(tmp_path, "not-d", built.store, None) == "other-20260101T000000Z"
 
 
 def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says_why(built, tmp_path, monkeypatch,
@@ -643,7 +643,7 @@ def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says
 
     monkeypatch.setenv("WPT_RECIPE", "d")
 
-    def failing(step, arguments, log, last_line=False, environ=None, stops=None):
+    def failing(step, arguments, log, environ=None, stops=None):
         raise Failed(step, 3)
 
     monkeypatch.setattr(wpt.manager, "run_command", failing)
@@ -774,9 +774,9 @@ def test_a_lost_worker_is_not_replaced_once_a_stop_is_under_way(built, fake, tmp
     monkeypatch.setenv("WPT_RUN", "lost-stop")
     real = wpt.manager.run_command
 
-    def losing(step, arguments, log, last_line=False, environ=None, stops=None):
+    def losing(step, arguments, log, environ=None, stops=None):
         if step != "train":
-            return real(step, arguments, log, last_line, environ, stops)
+            return real(step, arguments, log, environ, stops)
         (tmp_path / "runs" / "manager-state" / "lost-stop.stop").touch()
         raise Failed(step, LOST)
 
@@ -790,7 +790,7 @@ def test_a_lost_worker_is_not_replaced_once_a_stop_is_under_way(built, fake, tmp
 @pytest.mark.parametrize("asked", ["cap", "stop"])
 def test_a_run_that_comes_back_holding_rentals_is_stopped_during_its_commands_before_training(
         built, fake, tmp_path, monkeypatch, asked):
-    # idle rentals bill during the download too: neither the cap nor a stop waits for the build
+    # idle rentals bill before training too: neither the cap nor a stop waits for it
     monkeypatch.delenv("WPT_RUN", raising=False)
     monkeypatch.setattr(wpt.manager, "WATCH", 0.1)
     monkeypatch.setattr(wpt.manager, "COMMAND", ["-c", "import time; time.sleep(60)"])
@@ -817,9 +817,9 @@ def test_no_other_run_starts_after_a_sigterm(built, fake, tmp_path, monkeypatch)
     cut_run(built, tmp_path)
     real = wpt.manager.run_command
 
-    def signalled(step, arguments, log, last_line=False, environ=None, stops=None):
+    def signalled(step, arguments, log, environ=None, stops=None):
         os.kill(os.getpid(), signal.SIGTERM)
-        return real(step, arguments, log, last_line, environ, stops)
+        return real(step, arguments, log, environ, stops)
 
     monkeypatch.setattr(wpt.manager, "run_command", signalled)
     with pytest.raises(SystemExit) as stopped:
@@ -846,7 +846,7 @@ def test_a_sigterm_before_a_run_went_on_gives_its_rentals_back_and_leaves_a_run_
     monkeypatch.delenv("WPT_RUN", raising=False)
     monkeypatch.setattr(wpt.manager, "COMMAND", ["-c", "raise SystemExit('no command may start')"])
     cut_run(built, tmp_path)
-    idle = Workers.new(tmp_path / "runs" / "manager-state", "idle", "d", "test-session")
+    idle = Workers.new(tmp_path / "runs" / "manager-state", "idle", "d")
     idle.release()
     sigterm_at_the_first_look_at_the_rentals(monkeypatch)
     with pytest.raises(SystemExit) as stopped:
@@ -906,7 +906,7 @@ def test_a_command_that_outlives_the_stop_s_deadline_is_ended_and_the_machines_g
     ready, left = tmp_path / "ready", tmp_path / "left"
     monkeypatch.setattr(wpt.manager, "COMMAND", ["-c", f"""
 import pathlib, signal, subprocess, sys, time
-if 'build' in sys.argv:
+if 'train' in sys.argv:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     left = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
     pathlib.Path({str(left)!r}).write_text(str(left.pid))
@@ -964,7 +964,7 @@ def test_workers_rented_one_by_one_stop_being_rented_once_a_stop_comes(fake, tmp
 
     monkeypatch.setattr(rental, "providers", lambda: {"fake": Alone})
     monkeypatch.setenv("WPT_RENTAL_GPUS", "x")
-    workers = Workers.new(tmp_path / "state", "pair", "d", "test-session")
+    workers = Workers.new(tmp_path / "state", "pair", "d")
     recorder = Recorder()
     with pytest.raises(Failed):
         workers.prepare({**os.environ, "WPT_GPU_WORKERS": "2"}, tmp_path, recorder, watch)

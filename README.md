@@ -9,72 +9,68 @@ modified version must share it. The principles are in the
 [charter](docs/charter.md).
 
 This repository is everything needed to build a WPT model from nothing:
-the description of every source, the tools that fetch and check them, and
-the code that builds the data, trains, evaluates and runs the
-model. No checkpoint has been published yet.
+the code of the depot that holds the texts and the decisions on them, the
+code that builds a corpus from it, trains, evaluates and runs the model, and the
+recipes of the models. No checkpoint has been published yet.
 
 ## How it works
 
-**The repository describes a corpus; it does not hold one.** Each source
-is a `data/sources/<id>/source.json`: the address its content is fetched
-from, the license of every path with the place where its license
-statement must be found and the credit it asks for, how each file becomes
-Markdown, and the signed human decisions that admit or refuse it. The data
-itself is downloaded into a store you control (a folder or an S3 bucket),
-as upstream serves it when asked (a git repository at the one commit its
-source names), and every build checks each license statement against the
-bytes the store holds. A rebuild gives each git source at that commit and
-every other source's current content, license-checked, so it may not give
-the same bytes as an earlier one. The
-document list a model's dataset keeps (the sha256 of each document's
-Markdown) records what that model trained on. WPT hosts no data.
+**The texts live in a depot; the repository holds none.** A depot is a
+folder, known by its address, that holds texts and items (conversations,
+tasks), each with its license, credit and notice, the human decisions that
+admit or refuse it, the libraries that group admitted texts, and the
+datasets that say what to train on (`wpt depot`). `wpt depot build DATASET`
+builds a dataset into a corpus in a store you control (a folder or an S3
+bucket): the token files, with copies of every text's credits, licenses and
+notices. A model recipe names a depot address and a dataset in it, and
+`wpt train` reads that dataset's corpus from the store. A depot can follow
+another and pull its updates, the way a Git clone follows its remote.
+WPT hosts no data.
 
-- **Clear licenses only.** A source enters only when its license lets the
-  weights be distributed under the AGPL; when in doubt, it is refused
+- **Clear licenses only.** A text enters only when its license lets the
+  weights be distributed under the AGPL; when in doubt, it stays out
   ([docs/licenses.md](docs/licenses.md)). Owners' "no AI training" wishes
-  and robots.txt are honored.
+  are honored.
+- **People decide.** Every decision on a text carries the decider's
+  declared name and email, which are public; a text trains only when
+  someone admitted it and nobody refused it.
 - **No distillation.** Trained from scratch, with no output of another
   company's model in the data and no existing base model.
 - **Provenance travels with the model.** Every model folder carries a
-  `NOTICE` naming each source it learned from, with its credit, and a
+  `NOTICE` and `CREDITS` naming each text it learned from, with its credit, and a
   `provenance.json` recording exactly what produced it.
-- **Erasure on request**, through recorded cuts that apply to every later
-  build ([docs/erasure.md](docs/erasure.md)).
+- **Erasure on request**: an admitted erasure cuts the passage from the
+  depot and drops every older state of it, so every later corpus is built
+  without it ([docs/erasure.md](docs/erasure.md)).
 
 ## Quick start
 
 Requirements: [uv](https://docs.astral.sh/uv/), git and a Rust toolchain
-(the tokenizer is built from source). Mercurial only for Mercurial
-sources; GnuPG only to check GPG-signed decisions (on Windows, the
-gnupg.org build). On Windows, run WPT in Windows itself (PowerShell), not
+(the tokenizer is built from source). On Windows, run WPT in Windows itself (PowerShell), not
 inside WSL: a second system adds failures of its own and keeps files on a
 disk Windows does not see. Linux containers, where a step needs them, run
 through Docker Desktop.
 
 ```sh
 uv run scripts/setup.py                            # the PyTorch build for this machine's GPU
-echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where fetched and built data lives
+echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where corpora, models and runs live
+echo "WPT_DEPOT=$HOME/wpt-depot" >> .env           # the depot the wpt depot commands work on
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
-uv run wpt dataset download                        # every admitted source, into the store; prints a new session ID
-echo "WPT_SESSION=ID" >> .env                      # the session every later command works in
-uv run wpt dataset build classics-test --stream    # choose, convert, tokenize; prints a dataset id
+uv run wpt depot build DATASET                     # the corpus of the recipe's dataset, into the store; prints its id
 scripts/detach.sh uv run wpt train classics-test --stream --out runs/first
-uv run wpt eval runs/first                         # memorization and other tests, into the model card
+uv run wpt eval runs/first                         # the tests, into the model card
 uv run wpt chat runs/first                         # continue text with the model
 ```
 
 Every job is a subcommand of one command, `wpt` (`uv run wpt --help`
 lists them, and `uv run wpt SUBCOMMAND --help` gives each one's options).
-Every command that touches the store works in a session, an ID its files are
-stored under, named by `--session ID` or `WPT_SESSION`. Four need no ID:
-`wpt doctor`, and `wpt store list`, `runs` and `run`, which show every
-session of the store when given none, so `wpt store list` is how to find an
-ID. `wpt dataset download --from OLD_ID` into a new ID fetches only what the
-old one lacks.
+The store holds plain named things: `corpora/`, `models/` and `runs/`
+(`wpt store list` lists the corpora and models).
 
-`classics-test` is a small model recipe over the admitted public-domain
-books, enough to see every step work on one machine. A model recipe
+`classics-test` is a small model recipe, enough to see every step work on
+one machine; its depot address and dataset name are for a person to fill
+in. A model recipe
 (`data/recipes/models/`) holds everything that changes the model: its
 data, architecture and training steps
 ([model.md](docs/model.md)); the command-line options only say how the
@@ -83,11 +79,6 @@ hardware runs it.
 **Streaming** keeps disk use small at each step, for data larger than the
 disk:
 
-- `wpt dataset download --stream` keeps no copy on the downloading
-  machine of what an S3 store holds.
-- `wpt dataset build --stream` keeps the Markdown of the documents it
-  chose in a temporary folder deleted when it ends, not in the store's cache
-  folder. The dataset and its id are the same as without it.
 - `wpt train --stream` reads the training shards a few at a time (8 by
   default, about 2 GB, `--stream-shards`) instead of copying them all to
   disk first.
@@ -106,14 +97,13 @@ the same command with `--resume` continues.
 | use several GPUs | `--strategy ddp --processes N`, on the gpu worker's machine |
 | train on another machine's GPUs | a gpu worker on each machine (`deploy/gpu-worker/compose.yaml`, with `compose.nvidia.yaml` or `compose.amd.yaml` for GPUs), their keys in `WPT_GPU_WORKERS` ([machines](docs/machines.md)) |
 | rent the GPUs | `WPT_GPU_WORKERS=N` and `WPT_RENTAL_GPUS` for `wpt manager`, which rents N gpu workers through SkyPilot (as one cluster in one request), replaces a lost one and gives them back at the end ([machines](docs/machines.md)) |
-| download, build and train in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_RECIPE` set in `.env`; then `wpt store copy-out NAME runs/NAME --session ID` ([machines](docs/machines.md)) |
-| stop a build at a broken source | `wpt dataset build --strict`: any failing source stops it (without the flag it is left out and listed in the record) |
-| teach the model to chat | conversations tagged `answer-as-assistant` in a source, downloaded (`wpt dataset download`) and the dataset built again, and a recipe whose `steps` add `answer-as-assistant` after `read-text`: `wpt train RECIPE DATASET_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
-| teach the model to finish tasks as an agent | tasks tagged `finish-tasks` in a source, downloaded and the dataset built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and a recipe whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
+| train on a built corpus in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_RECIPE` set in `.env`; then `wpt store copy-out NAME runs/NAME` ([machines](docs/machines.md)) |
+| teach the model to chat | conversations in the dataset, the corpus built again, and a recipe whose `steps` add `answer-as-assistant` after `read-text`: `wpt train RECIPE CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
+| teach the model to finish tasks as an agent | tasks in the dataset, the corpus built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and a recipe whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
 | teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the recipe's `steps`: it trains on the same tasks ([training](docs/training.md)) |
 | train long windows on a small GPU | `--recompute`: layers run again in the backward pass instead of keeping their values |
 | train faster on a CUDA device (an NVIDIA or AMD GPU) | `--compile`: the passes over whole text windows run through `torch.compile` ([training](docs/training.md), "Compiling the passes") |
-| write your own texts, conversations and tasks, and edit recipes, in a browser | `wpt web` (needs Bun), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel or Tailscale); the same through `wpt dataset` commands, and the page "Jobs" starts the other commands and follows what they print ([architecture](docs/architecture.md), "Two interfaces") |
+| add texts, conversations and tasks, decide on them, and make libraries and datasets, in a browser | `wpt depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel or Tailscale); the same through the `wpt depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
 
 Every option also comes from the environment (`--micro-batch` is
 `WPT_MICRO_BATCH`), and `--help` lists them all. Details:
@@ -122,8 +112,7 @@ Every option also comes from the environment (`--micro-batch` is
 ## Contributing
 
 Every commit is signed off (`git commit -s`), and `uv run ci/all.py` runs the
-checks your change touches before you push. A new source starts under review
-and enters only when a maintainer admits it in a signed commit; see
+checks your change touches before you push; see
 [CONTRIBUTING.md](CONTRIBUTING.md). License questions the project cannot
 settle alone are listed for legal review in
 [LEGAL-QUESTIONS.html](LEGAL-QUESTIONS.html).
@@ -131,11 +120,11 @@ settle alone are listed for legal review in
 ## Documentation
 
 - [Charter](docs/charter.md)
-- [Architecture: sources, manifests, patches, store, builds](docs/architecture.md)
+- [Architecture](docs/architecture.md)
 - [Licenses and what the corpus accepts](docs/licenses.md)
 - [Questions for legal review, in English and French](LEGAL-QUESTIONS.html)
 - [Erasure requests](docs/erasure.md)
-- [Data selection: tags, pools, mixtures, held-out text](docs/data-selection.md)
+- [Data selection: texts, tags, libraries, datasets, corpora](docs/data-selection.md)
 - [Tokenizer](docs/tokenizer.md)
 - [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)
@@ -153,7 +142,6 @@ Code, documents and the weights of WPT models: the
 WPT model generates: the authors of WPT waive their rights in it under
 CC0-1.0 ([OUTPUT-NOTICE](OUTPUT-NOTICE), pending legal review), but
 anything it repeats from its training data or its context keeps its own
-license. Data built by WPT's tools (token shards, vocabularies, dataset
-records) is under the AGPL as well, while each source's content inside it
-keeps its own license. [NOTICE](NOTICE) says where to find a given model's
+license. Data built by WPT's tools (corpora and vocabularies) is under the
+AGPL as well, while each text's content inside it keeps its own license. [NOTICE](NOTICE) says where to find a given model's
 notice.

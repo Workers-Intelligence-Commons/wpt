@@ -54,6 +54,25 @@ def encode(tokenizer, conversation) -> tuple[list[int], list[bool]]:
     return ids, learn
 
 
+def marks(tokenizer, ids) -> list[bool]:
+    """For each token of ids, a conversation's tokens as encode() wrote
+    them, whether a model learns to predict it: encode()'s learn, read back
+    from the template's special tokens alone. A turn whose header is
+    <|im_start|>assistant\n is learned from the token after it to its
+    closing <|im_end|>, both included."""
+    header = [IM_START, *tokenizer.encode(b"assistant\n")]
+    learn, inside, at = [False] * len(ids), False, 0
+    while at < len(ids):
+        if not inside and list(ids[at:at + len(header)]) == header:
+            inside, at = True, at + len(header)
+            continue
+        if inside:
+            learn[at] = True
+            inside = ids[at] != IM_END
+        at += 1
+    return learn
+
+
 def prompt(tokenizer, conversation) -> list[int]:
     """The conversation's tokens followed by the start of an assistant turn:
     what a model continues to answer."""

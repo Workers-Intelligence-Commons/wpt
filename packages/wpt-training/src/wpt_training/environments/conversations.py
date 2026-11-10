@@ -1,9 +1,10 @@
-"""Conversations the dataset holds, tagged `tag` (docs/chat-format.md;
+"""The conversations the corpus holds, tagged `tag` (docs/chat-format.md;
 docs/training.md, "The answer-as-assistant step").
 
-Each conversation of the dataset whose chat file carries the tag becomes
-tokens with the chat template (wpt_tokenizer.chat), with the tokens the
-assistant wrote marked: those are the only ones a method learns. Each
+Each conversation whose text carries the tag is a row of the corpus's token files of conversations,
+its tokens as the chat template wrote them (wpt_tokenizer.chat), and the
+tokens the assistant wrote are marked, read back from the template's
+special tokens (chat.marks): those are the only ones a method learns. Each
 epoch goes over every conversation once, in an order drawn from the recipe's seed
 and the step's number in the recipe,
 `batch` conversations per update (the last update of an epoch may hold
@@ -12,24 +13,24 @@ each process takes --micro-batch of its conversations per pass (default:
 all of them); a process left with fewer passes than the others makes
 passes that learn nothing, so that every process makes as many.
 
-A dataset with no conversation tagged `tag` is refused before any step
-runs (check_dataset). Each conversation must fit the model's context
+A corpus with no conversation tagged `tag` is refused before any step runs
+(check_corpus). Each conversation must fit the model's context
 (block_size + 1 tokens, as text windows); a longer one fails the step,
 since cutting it would drop the answers it holds, and so does one without
 an assistant message.
 
-The wpt manager turns the conversations into tokens (Encoded, the
+The wpt manager reads the conversations and marks them (Encoded, the
 environment's part there, which holds the tokenizer); the gpu worker's
 main process gets only the token ids and the marks of what the assistant
 wrote, and shares them with the other processes.
 """
 
-import json
 import math
 
 import torch
 
-from wpt_training import Environment, Stage, StepFailed
+from wpt_store.shards import read_verified, shard_file
+from wpt_training import Environment, Stage, StepFailed, tagged
 
 GIVES = "conversations"
 SETTINGS = {"tag": "answer-as-assistant", "epochs": 3, "batch": 8}
@@ -42,43 +43,49 @@ def check(settings):
             raise ValueError(f"{key}: at least 1")
 
 
-def tagged(record, store, tag) -> list[dict]:
-    """The dataset's conversations ({id, tags, conversation}) whose chat file carries tag."""
-    part = record.get("conversations")
-    lines = [] if part is None else store.get_bytes(part["file"]).decode("utf-8").splitlines()
-    return [one for one in map(json.loads, lines) if tag in one["tags"]]
+def rows(record, store, tag):
+    """(depot, text id, tokens) of each of the corpus's conversations tagged tag, in
+    order, each token file checked (read_verified) and its local copy
+    released once read."""
+    wanted = tagged(record, store, tag)
+    for shard in record.get("conversation_shards", []):
+        found = read_verified(store, shard)
+        store.release(shard_file(shard))
+        for tokens, depot, text, _, _ in found:
+            if (depot, text) in wanted:
+                yield depot, text, tokens
 
 
-def check_dataset(settings, record, store):
-    if not tagged(record, store, settings["tag"]):
-        raise ValueError(f"no conversations: the dataset holds no chat file tagged {settings['tag']}")
+def check_corpus(settings, record, store):
+    if not any(True for _ in rows(record, store, settings["tag"])):
+        raise ValueError(f"no conversations: the corpus holds none tagged {settings['tag']}")
 
 
 class Encoded:
-    """The environment's part on the wpt manager: the conversations as
-    tokens, through the chat template (wpt_tokenizer.chat), each checked."""
+    """The environment's part on the wpt manager: the conversations' tokens
+    and what the assistant wrote of them (wpt_tokenizer.chat.marks), each
+    checked."""
 
     def __init__(self, settings, context):
         from wpt_tokenizer import chat  # the manager's own: the gpu worker has no tokenizer
 
-        found = tagged(context.record, context.store, settings["tag"])
         limit = context.config.block_size + 1
         examples = []
-        for one in found:
-            ids, learn = chat.encode(context.tokenizer, one["conversation"])
+        for depot, text, tokens in rows(context.record, context.store, settings["tag"]):
+            ids = [int(token) for token in tokens]
+            learn = chat.marks(context.tokenizer, ids)
             if len(ids) > limit:
-                raise StepFailed(f"{one['id']}: {len(ids)} tokens, more than the model's context ({limit} with the "
-                                 "first token)")
+                raise StepFailed(f"{depot} {text}: {len(ids)} tokens, more than the model's context ({limit} with "
+                                 "the first token)")
             if not any(learn[1:]):
-                raise StepFailed(f"{one['id']}: no assistant message to learn from")
+                raise StepFailed(f"{depot} {text}: no assistant message to learn from")
             examples.append((ids, learn))
-        sources = {one["id"].split("/", 1)[0] for one in found}
-        self.found = {"examples": examples, "sources": {sid: context.record["sources"][sid] for sid in sorted(sources)}}
+        self.found = {"examples": examples, "learned": {"conversations": len(examples)}}
         context.telemetry.event(f"{context.step}.conversations", conversations=len(examples),
                                 tokens=sum(len(ids) for ids, _ in examples))
 
     def examples(self) -> dict:
-        """{"examples": [(token ids, whether the assistant wrote each)], "sources": {id: its entry}}."""
+        """{"examples": [(token ids, whether the assistant wrote each)], "learned": {"conversations": how many}}."""
         return self.found
 
 
@@ -91,7 +98,7 @@ class Conversations(Environment):
         self.settings, self.data = settings, data
         found = _asked(data, "examples")
         self.examples = [(list(ids), list(learn)) for ids, learn in found["examples"]]
-        self.sources = found["sources"]
+        self.learned = found["learned"]
         self.tokens = sum(len(ids) for ids, _ in self.examples)
         self.per_epoch = math.ceil(len(self.examples) / settings["batch"])
         self.stage_list = (Stage(settings["epochs"] * self.per_epoch, settings["batch"]),)

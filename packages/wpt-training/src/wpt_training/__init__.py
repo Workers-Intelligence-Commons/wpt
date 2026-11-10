@@ -40,9 +40,10 @@ from .plugins import (SENT, Context, Data, Environment, Method, Optimizer, Plugi
                       load_step, load_strategy, step_seed, strategy_plugin, window_tokens_left)
 from .runner import (Checkpoint, FolderCheckpoint, Interrupted, Limit, Options, SettingsMismatch, StopSignals, Trained,
                      train, weights)
+from .tagged import tagged
 from .states import load_state, save_state
 
 __all__ = ["SENT", "Checkpoint", "Context", "Data", "Environment", "FolderCheckpoint", "Interrupted", "Limit", "Method", "Optimizer", "Options",
            "PluginError", "Run", "SettingsMismatch", "Stage", "Step", "StepFailed", "Strategy", "TextMethod",
            "Trained", "Verdict", "WINDOWS", "built_in", "check_continuations", "draw_numbers", "in_process", "load_state", "load_step", "load_strategy",
-           "save_state", "step_seed", "strategy_plugin", "train", "weights", "window_tokens_left"]
+           "save_state", "step_seed", "tagged", "strategy_plugin", "train", "weights", "window_tokens_left"]

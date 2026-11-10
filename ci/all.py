@@ -15,12 +15,11 @@ import commits
 import data
 import lock
 import rust
-import sources
 import tests
 from common import base_of, changed_paths, duration, options, perform
 from wpt_utils.lines import ERROR, INFO, say
 
-PARTS = (lock.PART, tests.PART, rust.PART, data.PART, sources.PART, commits.PART)
+PARTS = (lock.PART, tests.PART, rust.PART, data.PART, commits.PART)
 
 
 def main():

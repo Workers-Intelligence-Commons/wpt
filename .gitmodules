@@ -1,0 +1,4 @@
+[submodule "vendor/wic-design-system"]
+	path = vendor/wic-design-system
+	url = https://github.com/Workers-Intelligence-Commons/wic-design-system.git
+	branch = main

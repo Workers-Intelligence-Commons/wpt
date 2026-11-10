@@ -6,7 +6,8 @@ No model has been published yet. This page says how it will be done.
 
 A release is a commit of this repository made in a given month and tagged
 with that month, `YY.MM` (`26.10` for October 2026). Every model of the
-release is trained on that commit: its sources, recipes and code. There is
+release is trained with that commit's recipes and code, on the corpus its
+recipe names. There is
 at most one release a month, and only when the month brought enough
 changes and progress to be worth one; a month spent testing gives none.
 Anything not released still exists in the repository, and anyone can train
@@ -36,8 +37,8 @@ Each model is one repository on Hugging Face, under the
 final weights only, with the model folder's `LICENSE`, `NOTICE`,
 `provenance.json`, `tokenizer.json` and model card. Training steps are not
 published as branches or separate repositories: the model card gives the
-steps and the repository commit the model was trained on, so anyone can
-see exactly where it comes from.
+steps, the repository commit and the corpus the model was trained on, so
+anyone can see exactly where it comes from.
 
 ## Before a release
 

@@ -1,7 +1,7 @@
 # Observability: the record of every run
 
-Every run of `wpt dataset download`, `check --fetch`, `manifest`, `build`,
-`build-tokenizer` and `contamination`, `wpt train`, `wpt eval` and `wpt manager` keeps a record of what it did, from its first input to its last
+Every run of `wpt train`, `wpt eval` and `wpt manager` keeps a record of
+what it did, from its first input to its last
 file, so that afterwards one can know exactly what happened. The record is
 written into the store, as OpenTelemetry's three kinds of data (traces,
 logs and metrics) and in a form anyone can read without a backend. When an
@@ -17,13 +17,9 @@ ended.
 
 | Command | Records |
 | --- | --- |
-| `wpt dataset download`, `check --fetch`, `manifest` | how many sources download at once and why; each download tried again; each source kept (the event `store.source_kept`: the source and its manifest). Inputs: the source ids. Each source's outcome is in its own record in the session, never in the run's record ([architecture.md](architecture.md), "The download step") |
-| `wpt dataset build` | the recipe and mixture; the index (a span `index`: its files, documents, failing sources and how many sources it found saved) and each source it left out (the event `source.skipped`); the vocabulary (built, or found from its lock), and each source the tokenizer training read; the lock file written (its path and the vocabulary's sha256); how many sources are read at once and why; for each round of reading on a bucket store, what the downloaders did (the event `sources.ahead`: its parts, the limit on bytes held, how many downloaders and why, and as values the `bytes` copied, the parts that found their download done (`ready`), that waited for it (`waited`, `waited_seconds`) and that fetched for themselves (`alone`), the downloads `failed`, and the `full_seconds` the downloaders waited on the limit), each failed download (the event `sources.ahead_failed`: its source, part and error); each source read and converted (its tree, documents, duplicates, credits, the seconds its conversion took) or why it was skipped (a source not in the store, `NotDownloaded`, included), each worker process's part recorded under its source's span; the conversations and tasks kept for the training steps (spans `conversations` and `tasks`: how many, their file, their sources); the tokens; each pool; each shard written (training and held-out: key, sha256, rows, tokens, token sha256, sources); the dataset record. Inputs: the recipe, the tokenizer, the vocabulary, the manifest of every source's upstream tree, the skipped sources. Outputs: the dataset id, its record's key and its document list's sha256 |
-| `wpt dataset build-tokenizer` | the dataset recipe; the index; the vocabulary (trained, or found from its lock), and each source the training read; the lock file written (its path and the vocabulary's sha256). Inputs: the recipe. Outputs: the vocabulary's sha256 |
-| `wpt dataset contamination` | the check (a span `contamination`: the held-out documents and how many overlap; its progress in tokens), which a dataset with a saved report does not run, and the report's result (`store.result_set`). Input: the dataset id. Output: the report's sha256 |
-| `wpt train` | the recipe and its steps (a span `inputs.steps`); the dataset read, its token counts and the conversations and tasks it holds (a span `inputs.dataset`); the settings; each step reused from an earlier run (the event `training.step_reused`: its number, fingerprint and result); each step trained (a span `step`: its name, number and fingerprint, and what it reached), and inside it each of its stages (a span `training.stage`: its number, window length, batch, first and last updates, and the update a resumed run started at), every update (the event `training.step`: its loss over the whole batch, its window length, its duration, the learning rate of each parameter group), every update skipped, every evaluation (validation loss, best or not, stop or not), every checkpoint written, a resume, a stop, and what the step's environment records itself (`answer-as-assistant`: the conversations read and their tokens; `finish-tasks` and `finish-tasks-with-less-writing`: every attempt as a line of `<step>-attempts.jsonl` as soon as it is scored, a conversation in the chat format whose `metadata` identifies the attempt, with a span per group's attempts, a span per attempt inside it and an event per group and per round naming the lines, [training.md](training.md), "Runs"); each step's result kept in the store (a span `training.step_kept`: its fingerprint and the result's sha256); the drafter's training (a span `drafter`: the model's answers, its settings, every update's losses, the calibration and the share of drafts kept); the scheduler's pass times, measured or replayed (a span `scheduler.costs`), written as the file `scheduler-costs.json`, which `--scheduler-costs` replays in a later run; the weights, the drafter, `provenance.json`, the credits, `NOTICE`, `LICENSE` and the model card written, with the sha256 of every file of the model folder; the checkpoint's removal, and with `--run` every checkpoint file deleted from the store (the one each save replaces; a step's last one stays as its kept state), named by its sha256; the sample; a gpu worker lost (the event `gpu_worker.lost`, exit code 4). Inputs: the recipe, the dataset id, its record's key, the vocabulary, the results of the steps reused. Outputs: the result of each step trained, the model folder, the sha256 of each weight file, of the drafter's weights and of `provenance.json` |
-| `wpt eval` | each test (its file and sha256, its result's data), each result file and the model card written. Inputs: the weights' sha256 and the dataset id. Outputs: the sha256 of each result file and of the model card |
-| `wpt manager` | each of its commands as a span (`manager.download`, `manager.build` with the dataset id, `manager.train`, `manager.evaluate`), every line they print, the run's gpu workers (a span `manager.workers`, and inside it a span `manager.rent` per rental: its name, its kind and the worker's key with its token hidden), the provider's price before each rental (the event `manager.price`), what stopped the run before its end, a person, a SIGTERM or the cost cap (`manager.stop`), a stop's deadline that passed (`manager.stop_deadline`), each lost gpu worker (the event `manager.worker_lost`) and its replacement (`manager.worker_replaced`), each rental stopped (`manager.rental_stopped`, recorded before the stop) or not (`manager.rental_stop_failed`), a record named `rentals` for each try to stop the rentals of runs that ended, and the model kept in the store (a span `manager.model` with how many files, and the event `store.model_kept`). Each command it runs keeps its own record too. Inputs: the recipe, the run's name, the dataset id. Outputs: the model's manifest |
+| `wpt train` | the recipe and its steps (a span `inputs.steps`); the corpus read, its token counts and the conversations and tasks it holds (a span `inputs.corpus`); the settings; each step reused from an earlier run (the event `training.step_reused`: its number, fingerprint and result); each step trained (a span `step`: its name, number and fingerprint, and what it reached), and inside it each of its stages (a span `training.stage`: its number, window length, batch, first and last updates, and the update a resumed run started at), every update (the event `training.step`: its loss over the whole batch, its window length, its duration, the learning rate of each parameter group), every update skipped, every evaluation (validation loss, best or not, stop or not), every checkpoint written, a resume, a stop, and what the step's environment records itself (`answer-as-assistant`: the conversations read and their tokens; `finish-tasks` and `finish-tasks-with-less-writing`: every attempt as a line of `<step>-attempts.jsonl` as soon as it is scored, a conversation in the chat format whose `metadata` identifies the attempt, with a span per group's attempts, a span per attempt inside it and an event per group and per round naming the lines, [training.md](training.md), "Runs"); each step's result kept in the store (a span `training.step_kept`: its fingerprint and the result's sha256); the drafter's training (a span `drafter`: the model's answers, its settings, every update's losses, the calibration and the share of drafts kept); the scheduler's pass times, measured or replayed (a span `scheduler.costs`), written as the file `scheduler-costs.json`, which `--scheduler-costs` replays in a later run; the weights, the drafter, `provenance.json`, the credits, `NOTICE`, `LICENSE` and the model card written, with the sha256 of every file of the model folder; the checkpoint's removal, and with `--run` every checkpoint file deleted from the store (the one each save replaces; a step's last one stays as its kept state), named by its sha256; the sample; a gpu worker lost (the event `gpu_worker.lost`, exit code 4). Inputs: the recipe, the corpus id, the vocabulary, the results of the steps reused. Outputs: the result of each step trained, the model folder, the sha256 of each weight file, of the drafter's weights and of `provenance.json` |
+| `wpt eval` | each test (its file and sha256, its result's data), each result file and the model card written. Inputs: the weights' sha256 and the corpus id. Outputs: the sha256 of each result file and of the model card |
+| `wpt manager` | each of its steps as a span (`manager.corpus` with the corpus id, `manager.images`, `manager.train`, `manager.evaluate`), every line they print, the run's gpu workers (a span `manager.workers`, and inside it a span `manager.rent` per rental: its name, its kind and the worker's key with its token hidden), the provider's price before each rental (the event `manager.price`), what stopped the run before its end, a person, a SIGTERM or the cost cap (`manager.stop`), a stop's deadline that passed (`manager.stop_deadline`), each lost gpu worker (the event `manager.worker_lost`) and its replacement (`manager.worker_replaced`), each rental stopped (`manager.rental_stopped`, recorded before the stop) or not (`manager.rental_stop_failed`), a record named `rentals` for each try to stop the rentals of runs that ended, and the model kept in the store (a span `manager.model` with how many files, and the event `store.model_kept`). Each command it runs keeps its own record too. Inputs: the recipe, the run's name, the corpus id. Outputs: the model's name |
 
 The drafter scheduler's pass times are measured once per run of `wpt train`,
 and written into the run's record as
@@ -37,17 +33,13 @@ recorded on another setup are refused. [model.md](model.md), "The drafter",
 says exactly what a replay guarantees.
 
 Each command also records each step that cannot be undone just before it
-(such as `store.source_kept`, `store.model_kept`, `training.checkpoint_saved`,
+(such as `store.model_kept`, `training.checkpoint_saved`,
 `training.checkpoint_deleted`, `model.folder_replaced`, `eval.file_written`,
 `tokenizer.lock`). A result the store keeps in `cache/`, which can be
-computed again (a source's tree, what it keeps, its tokens, a step's result),
+computed again (a step's result),
 is the event `store.result_set` (`stage`, `fingerprint`, `sha256`), which goes
 with the next group of lines instead of being sent first: a crash can leave
 such a result unrecorded.
-
-The worker processes of a build hold their lines back and the asking
-process adds them to the record when each item ends, so an item writes no
-part of its own, and a worker that dies loses the lines of its item.
 
 In `wpt train`'s jobs on the gpu workers, with several processes, only the
 main process records (the first process of gpu worker 0):
@@ -56,25 +48,20 @@ all of them. The others record nothing.
 
 ## The record in the store
 
-Each run writes its own folder, `<id>/runs/<run>/`, under the session it runs
-in, in the store named by `WPT_STORE`, through the store's own interface (`wpt_store`: `write_record`,
+Each run writes its own folder, `runs/<run>/`, in the store named by
+`WPT_STORE`, through the store's own interface (`wpt_store`: `write_record`,
 `append_record`, `flush_records`, `end_records`, `read_record`, `record_files`,
 `record_folders`). Those calls and every command that takes a record folder
-name it `<id>/<run>`. The run's part is named
+name it `<run>`, named
 `<UTC start time>-<command>-<main id>-<8 random hex digits>`, such as
 `20261017T120501Z-wpt-train-5d41402a-3fa2b1c9`, where the command is the
-subcommand that ran (`wpt dataset download`, `wpt train`, `wpt eval`,
-`wpt manager`, and so on), which `start.json` names with its spaces and the
+subcommand that ran (`wpt train`, `wpt eval` or `wpt manager`), which `start.json` names with its spaces and the
 folder name with `-` in their place, and the main id is what the run is
 about:
 
 | Command | Main id |
 | --- | --- |
-| `wpt dataset download`, `check`, `manifest` | the one source id, or `<count>-sources` |
-| `wpt dataset build` | the model recipe's name |
-| `wpt dataset build-tokenizer` | the dataset recipe's name |
-| `wpt dataset contamination` | the first 8 characters of the dataset id |
-| `wpt train` | the first 8 characters of the dataset id |
+| `wpt train` | the first 8 characters of the corpus id |
 | `wpt eval` | the first 8 characters of the measured weights' sha256 (its first weight file's) |
 | `wpt manager` | the run's name |
 
@@ -85,7 +72,7 @@ cards stay where they were; the record only names them and their sha256.
 
 | File | Holds |
 | --- | --- |
-| `start.json` | the command, its arguments, when it started (UTC), the ids known at the start, `from` (the session it started from, with `--from`), `job` (the id `wpt web` gave the job that started the command, from the `WPT_JOB` setting; absent for a command started any other way), the tool versions (Python, platform, torch), the code (`code`: the commit it runs from and a hash of its uncommitted changes), the repository commit and whether the working tree had changes, and `trace`: the trace id the live backend shows the run under |
+| `start.json` | the command, its arguments, when it started (UTC), the ids known at the start, the tool versions (Python, platform, torch), the code (`code`: the commit it runs from and a hash of its uncommitted changes), the repository commit and whether the working tree had changes, and `trace`: the trace id the live backend shows the run under |
 | `events.jsonl` | one JSON object per line, in the order things happened (below) |
 | `ids.json` | `{"inputs": {...}, "outputs": {...}}`: every id the run read and wrote, rewritten as each is learned (each process adds to the copy in the store, so no process writes back an older one) |
 | `end.json` | `status` (`succeeded` or `failed`), `exit_code`, `error`, `traceback` (where the failure came from, as Python prints it, with the error it was raised while handling; `null` when it succeeded), when it ended, and how many seconds it took |
@@ -116,8 +103,8 @@ its own lines start whole.
 
 ### Following a model through its runs
 
-The ids connect the folders: a build's `outputs.dataset` is a training
-run's `inputs.dataset`; a training run's `outputs.step_results` holds the
+The ids connect the folders: a training run's `inputs.corpus` names the
+corpus `wpt depot build` built; a training run's `outputs.step_results` holds the
 results a later run reuses, named in its `inputs.reused_steps`; a training
 run's `outputs.weights` is an evaluation's `inputs.weights`. Each command is its own run; nothing groups them beyond
 these ids.
@@ -129,7 +116,7 @@ from wpt_store import store_from_settings
 store = store_from_settings()
 for folder in store.record_folders():
     ids = json.loads(store.read_record(folder, "ids.json"))
-    print(folder, ids["inputs"].get("dataset"), ids["outputs"].get("weights"))
+    print(folder, ids["inputs"].get("corpus"), ids["outputs"].get("weights"))
 ```
 
 ### wpt train's processes and restarts
@@ -184,8 +171,7 @@ other kind of write to a file, whichever process made it.
   is stored twice. Before a step that
   cannot be undone (a model folder renamed into place, an evaluation's
   result file or model card written, a checkpoint saved in or deleted from the
-  store, a tokenizer's lock file written, a source or a model kept
-  in the store), the command
+  store, a tokenizer's lock file written, a model kept in the store), the command
   records it as an event, sends the lines it holds and waits for
   the store's answer: a refused group stops it before that step. The one
   exception is a checkpoint saved once the record broke (below).
@@ -262,7 +248,7 @@ reads one level of names: it does not list every part of every file.
   Ctrl+C still gives 130. How soon it stops:
   - on Linux and macOS, the sending thread sends the main thread a real
     SIGINT. A wait ends at once (a pause, `wpt train` waiting for its
-    job, a download); a computation inside a library
+    job); a computation inside a library
     that does not run Python meanwhile (a GPU step, a large array
     operation) finishes first, and the command stops right after it;
   - on Windows, which cannot send a signal to one thread, Python's
@@ -301,8 +287,8 @@ The record and the live view carry the same level: `severity` in
 `WARNING` is `WARN`. Their text has no time and no level, since each of
 them has its own.
 
-What a command gives as its result is a line like any other: a dataset id,
-the names of `wpt dataset list`, a gpu worker's key. A program that reads
+What a command gives as its result is a line like any other: a corpus id,
+a gpu worker's key. A program that reads
 such a line takes its text back with `wpt_utils.lines.bare`.
 
 Four kinds of output are not lines of a log and keep their own form:
@@ -310,22 +296,21 @@ Four kinds of output are not lines of a log and keep their own form:
 - the conversation of `wpt chat`;
 - `--help`, and the usage errors of a command's arguments;
 - a document or a file's content written for a program or a person to keep:
-  the standard output of `wpt dataset manifest`, `show`, `read`,
-  `conversation` and `task`, and `wpt chat --about`;
+  the standard output of `wpt chat --about`;
 - what another program prints and a command passes on, and the lines of the
   shell scripts `start.sh` and `detach.sh`.
 
 ## Following a run
 
-`wpt store runs` lists the runs of a session, the latest last: each one's
+`wpt store runs` lists the runs, the latest last: each one's
 folder, command, start, and whether it ended. `wpt store run FOLDER` shows
 one run: its stage, its counts, its last events and its errors. With
 `--follow`, it goes on printing the lines a live run adds until the run ends.
 
-A stage that loops over sources, documents, merges or tokens prints a line
+A stage that loops over many items prints a line
 every few minutes, through the run's log: how many it has done of its total,
 its rate, the time left at that rate, and the memory in use. The line comes
-on a timer, so a stage held up by one long source still prints it.
+on a timer, so a stage held up by one long item still prints it.
 
 ## The live view
 
@@ -483,5 +468,3 @@ Once the run's record is closed,
 every call raises `RuntimeError`: a step or a test must not keep the
 telemetry for later.
 
-`wpt dataset build` also records each download it tries again after a
-failure that may pass (a timeout, a server error), as a printed line.

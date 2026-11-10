@@ -24,7 +24,7 @@ def ci(monkeypatch):
     afterwards: {name: module}."""
     monkeypatch.syspath_prepend(str(CI))
     monkeypatch.syspath_prepend(str(STARTUP))
-    names = ("common", "lock", "tests", "rust", "data", "sources", "commits", "all", "last_green", "child_files")
+    names = ("common", "lock", "tests", "rust", "data", "commits", "all", "last_green", "child_files")
     for name in names:
         monkeypatch.delitem(sys.modules, name, raising=False)
     yield SimpleNamespace(**{name: importlib.import_module(name) for name in names})
@@ -66,24 +66,36 @@ def test_a_change_is_what_differs_from_the_base_committed_or_not(ci, clone, monk
 
 
 @pytest.mark.parametrize("path, parts", [
-    ("packages/wpt-tokenizer/rust/src/lib.rs", {"rust", "data", "sources"}),
-    ("packages/wpt-tokenizer/rust-toolchain.toml", {"rust", "data", "sources"}),
+    ("packages/wpt-tokenizer/rust/src/lib.rs", {"rust"}),
+    ("packages/wpt-tokenizer/rust-toolchain.toml", {"rust"}),
     ("packages/wpt-model/pyproject.toml", {"lock"}),
-    ("uv.lock", {"lock", "data", "sources"}),
-    ("data/sources/one/source.json", {"data", "sources"}),
-    ("packages/wpt-dataset/src/wpt_dataset/repo.py", {"data", "sources"}),
-    ("apps/wpt/src/wpt/dataset.py", {"data", "sources"}),
-    ("apps/wpt/src/wpt/__init__.py", {"data", "sources"}),
-    ("apps/wpt/src/wpt/sessions.py", {"data", "sources"}),
-    ("packages/wpt-dataset/tests/test_repo.py", set()),
+    ("uv.lock", {"lock", "data"}),
+    ("data/recipes/models/one.json", {"data"}),
+    ("data/images/agent/Dockerfile", {"data"}),
+    ("packages/wpt-recipes/src/wpt_recipes/recipes.py", {"data"}),
+    ("packages/wpt-recipes/tests/test_recipes.py", set()),
+    ("apps/wpt/src/wpt/__init__.py", set()),
     ("packages/wpt-model/src/wpt_model/kda.py", set()),
     ("docs/architecture.md", set()),
-    ("ci/common.py", {"lock", "rust", "data", "sources"}),
+    ("ci/common.py", {"lock", "rust", "data"}),
     ("ci/rust.py", {"rust"}),
 ])
 def test_a_changed_path_runs_the_parts_it_touches_and_tests_and_commits_always_run(ci, path, parts):
     concerned = {part.name for part in ci.all.PARTS if part.concerned_by(path)}
     assert concerned == parts | {"tests", "commits"}
+
+
+def test_the_commits_part_names_each_commit_without_its_author_s_sign_off(ci, clone, monkeypatch):
+    # merge commits aside, every commit of the range carries its author's
+    # Signed-off-by line; another person's line does not count
+    root, git, base = clone
+    monkeypatch.setattr(ci.commits, "ROOT", root)
+    git("commit", "-q", "--allow-empty", "-s", "-m", "signed")
+    git("commit", "-q", "--allow-empty", "-m", "other\n\nSigned-off-by: U <u@example.org>")
+    other = git("rev-parse", "HEAD")
+    assert ci.commits.unsigned(f"{base}..HEAD") == [f"{other[:12]}: no 'Signed-off-by: T <t@example.org>' line "
+                                                   "(commit with `git commit -s`)"]
+    assert ci.commits.unsigned(f"{base}..HEAD~1") == []
 
 
 def given(ci, *arguments):

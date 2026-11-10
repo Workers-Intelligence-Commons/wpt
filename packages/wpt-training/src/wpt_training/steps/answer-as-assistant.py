@@ -1,6 +1,7 @@
 """Answer as the assistant: learn to write the assistant's turns of the
-conversations tagged `answer-as-assistant` (docs/training.md, "The
-answer-as-assistant step"), under by-part at a constant learning rate of
+corpus's conversations tagged
+`answer-as-assistant` (docs/training.md, "The answer-as-assistant
+step"), under by-part at a constant learning rate of
 1e-4, without weight decay, with its early stop. The routers' balancing
 biases stay as they are."""
 

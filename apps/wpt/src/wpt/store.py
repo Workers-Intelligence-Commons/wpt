@@ -1,53 +1,39 @@
 """wpt store: what the store named by WPT_STORE (environment or .env)
 holds.
 
-    wpt store list                    every session of the store's index, or with an ID the session and
-                                      the one it started from: what each holds, and each source of it
-                                      with its time, address and size, or its error
-    wpt store copy-out NAME FOLDER    the model folder the session keeps under the run's name NAME
-                                      (what the wpt manager prints at the end of a run) into the new
-                                      FOLDER, each file checked against its sha256
-    wpt store runs                    every run recorded in the store, or with an ID in the session and the
-                                      one it started from: its folder, command, start and how it ended
+    wpt store list                    every corpus the store holds (its id, the depot and dataset it
+                                      was built from, when, its tokens and texts) and every model it keeps
+    wpt store copy-out NAME FOLDER    the model folder the store keeps under the run's name NAME (what
+                                      the wpt manager prints at the end of a run) into the new FOLDER,
+                                      each file checked against its sha256
+    wpt store runs                    every run recorded in the store: its folder, command, start and
+                                      how it ended
     wpt store run FOLDER [--follow]   one run (FOLDER, or a part of its name only that folder holds):
                                       its stage, its counts, its last events and its errors; --follow
                                       prints its lines as they reach the store until it ends
-    wpt store rebuild-index           the store's index made again from the files of every session
-
-Each takes --session ID (WPT_SESSION) and --from OLD_ID. `list`, `runs` and
-`run` work with no ID: they show every session, which is how a person finds
-an ID, and an ID narrows them to it. `rebuild-index` needs none and ignores
-it, since it covers the whole store. `copy-out` is refused (SessionNeeded)
-with no ID.
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-from wpt import sessions
-from wpt_store import StoreError, index, store_from_settings
-from wpt_store.listing import listing
-from wpt_store.models import copy_out
+from wpt_depot import corpus
+from wpt_store import StoreError, store_from_settings
+from wpt_store.models import copy_out, names
 from wpt_telemetry import runs
 from wpt_utils.lines import ERROR, say
 
 
 def cmd_list(args, store):
-    states, rows = listing(store)
-    if store.session:
-        shown = store.reading()
-        states = [state for state in states if state.session in shown]
-        rows = [row for row in rows if row.session in shown]
-    say(f"{len(rows)} sessions:")
-    for row in rows:
-        say(f"  {row.session}: {_counts(row.held)}")
-    say(f"{len(states)} sources:")
-    for state in states:
-        last = (f"failed: {state.error}" if state.error else
-                f"from {state.address}{f', {state.size:,} bytes' if state.size is not None else ''}"
-                f"{''.join(f', {key} {value}' for key, value in sorted((state.got or {}).items()))}")
-        say(f"  {state.session}/{state.source}: {state.time} {last}")
+    found = corpus.records(store)
+    say(f"{len(found)} corpora:")
+    for record in found:
+        say(f"  {record['id']}: dataset {record['dataset']['name']} of {record['depot']}, built "
+            f"{record['built_at']}, {record['total_tokens']:,} tokens of plain text, {record['texts']:,} texts")
+    models = names(store)
+    say(f"{len(models)} models:")
+    for name in models:
+        say(f"  {name}")
     return 0
 
 
@@ -91,11 +77,6 @@ def cmd_run(args, store):
     return 0
 
 
-def cmd_rebuild_index(args, store):
-    say(f"the index holds {index.rebuild(store):,} things")
-    return 0
-
-
 def _counts(counted: dict) -> str:
     return ", ".join(f"{name} {count:,}" for name, count in sorted(counted.items())) or "none"
 
@@ -104,29 +85,19 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="wpt store", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("list", help="every session, or the one given, and what it holds").set_defaults(run=cmd_list)
+    commands.add_parser("list", help="every corpus and model the store holds").set_defaults(run=cmd_list)
     copying = commands.add_parser("copy-out", help="a model folder the store keeps, into a new folder")
     copying.add_argument("name", help="the run's name, which the wpt manager printed")
     copying.add_argument("folder", type=Path, help="the folder to write, which must not exist yet")
     copying.set_defaults(run=cmd_copy_out)
-    commands.add_parser("runs", help="every run recorded in the store, or in the session given").set_defaults(run=cmd_runs)
+    commands.add_parser("runs", help="every run recorded in the store").set_defaults(run=cmd_runs)
     showing = commands.add_parser("run", help="one run: its stage, counts, last events and errors")
     showing.add_argument("folder", help="its record folder, or a part of the name only that folder holds")
     showing.add_argument("--follow", action="store_true", help="print its lines as they reach the store until it ends")
     showing.set_defaults(run=cmd_run)
-    commands.add_parser("rebuild-index", help="the store's index made again from the files of every session"
-                        ).set_defaults(run=cmd_rebuild_index)
-    for command in commands.choices.values():
-        sessions.options(command)
     args = parser.parse_args(argv)
-    env_file = Path.cwd() / ".env"
     try:
-        store = store_from_settings(env_file)
-        if args.run is cmd_copy_out:
-            store = sessions.opened(store, args, env_file)
-        elif args.run is not cmd_rebuild_index:
-            store = sessions.viewed(store, args, env_file)
-        return args.run(args, store)
+        return args.run(args, store_from_settings(Path.cwd() / ".env"))
     except (StoreError, FileExistsError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2

@@ -9,7 +9,7 @@ answers are the same for every worker, and only the run's main process
                       with the plan: each step's fingerprint (on this side's code,
                       wpt_utils.programs.code: the checkout the worker runs), the steps reused, the state the
                       run starts from, the scheduler's pass times to replay
-    file.offer        a file of the run's dataset or of a state it starts from
+    file.offer        a file of the run's corpus or of a state it starts from
     record.*          a file of the run's record folder (read, write, append), and only of it;
                       flush: the lines the manager's store holds back, sent
     checkpoint.*      the run's checkpoint: exists, load, save (a file the job sent), remove
@@ -37,7 +37,7 @@ from wpt_utils.programs import code
 from wpt_worker.writing import RemoteWriter
 
 def named_files(value) -> dict[str, File]:
-    """{sha256: File} of every file a dataset record refers to: each
+    """{sha256: File} of every file a corpus's record refers to: each
     reference {"key", "sha256"} in it, shards included."""
     if isinstance(value, dict):
         if set(value) >= {"key", "sha256"}:
@@ -123,7 +123,7 @@ class Training:
     def _file(self, header, body):
         sha = header["sha"]
         if sha not in self.allowed:
-            raise ValueError(f"file {sha} is not one of this run's: the gpu worker reads only the dataset's "
+            raise ValueError(f"file {sha} is not one of this run's: the gpu worker reads only the corpus's "
                              "files and the states the run starts from")
         return self._offer(self.allowed[sha]), b""
 
@@ -195,7 +195,7 @@ class Training:
         number = about["number"]
         step, mark = run.steps[number - 1], self.marks[number - 1]
         kept = {"number": number, **step.record(), "fingerprint": mark, **about["reached"],
-                "sources": about["sources"]}
+                "learned": about["learned"]}
         with run.telemetry.span("training.step_kept", step=step.name, number=number, fingerprint=mark) as span:
             if header.get("state") is not None:  # the job sent the step's last checkpoint with its end
                 path = self.files.received(header["state"])

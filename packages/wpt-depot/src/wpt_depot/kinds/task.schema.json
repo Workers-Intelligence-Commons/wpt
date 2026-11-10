@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/task.schema.json",
+  "title": "WPT task (the content of a depot item of kind task: what the task asks, its starting files and its check; docs/training.md)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "files",
+    "check"
+  ],
+  "properties": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instructions",
+        "image",
+        "limits",
+        "needs"
+      ],
+      "properties": {
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "description": "what the model is asked to do, in full: the user message that starts every attempt, unless it opens with terse"
+        },
+        "terse": {
+          "type": "string",
+          "minLength": 1,
+          "description": "the same request in one line (no line break: tasks.py refuses one), for the measure of terse against full requests: an attempt may open with it instead of instructions (docs/training.md, \"Tasks\")"
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "description": "the image the attempt's container runs: a folder name in data/images/"
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_turns",
+            "max_tokens",
+            "command_seconds"
+          ],
+          "properties": {
+            "max_turns": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "assistant turns in one attempt"
+            },
+            "max_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "tokens the model writes in one attempt, over every turn"
+            },
+            "command_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "how long one tool call may run in the container"
+            }
+          }
+        },
+        "container": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "sizes of the attempt's and the check's containers above the defaults (tasks.py SIZES; a smaller value leaves the default); 2 x disk + 1024 MiB must stay below memory",
+          "properties": {
+            "memory": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "MiB of memory, files in /work and /tmp included"
+            },
+            "disk": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "MiB that /work and /tmp may each hold"
+            },
+            "processes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "processes and threads running at once"
+            },
+            "cpus": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "CPUs' worth of time"
+            }
+          }
+        },
+        "needs": {
+          "type": "array",
+          "description": "the tools the task cannot be done without; each entry lists the variants of one need, and every attempt is offered exactly one of them (docs/training.md, \"Tools\")",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/variant"
+            }
+          }
+        },
+        "answered_by": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "the looking tools (read, bash, a declared tool marked looks) that can answer what the task leaves open, through which an attempt opens the files of answered_in before it asks the user (wpt_check.asked_last); required with replies",
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "answered_in": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "glob patterns of the paths under /work where the task's answers live: an attempt asks the user only after it opened, through answered_by, every starting file they match; a question counts at once when they match none (the answer is absent; wpt_check.asked_last); required with replies",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "replies": {
+          "type": "array",
+          "minItems": 1,
+          "description": "the user's replies, written in advance, to the ask tool, which only a task with replies offers: the first reply whose pattern matches the question is given",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pattern",
+              "reply"
+            ],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "a Python regular expression, searched for anywhere in the question"
+              },
+              "reply": {
+                "type": "string",
+                "minLength": 1,
+                "description": "what the user answers"
+              }
+            }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "description": "tools the task offers beyond read, write, edit, bash and ask, each answered by a program in the image",
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        },
+        "tool_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "paths under files/ (a file, or a folder and everything in it) that go to the tools' programs instead of /work: the model's own tools cannot read them",
+          "items": {
+            "type": "string",
+            "pattern": "^[^/]+(/[^/]+)*$"
+          }
+        },
+        "absent": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "absolute folders of the image, outside /work and /tmp, that the attempts' containers show empty: the task removes what the image installs there (docs/training.md, \"Tasks\")",
+          "items": {
+            "type": "string",
+            "pattern": "^(/[A-Za-z0-9._+-]+)+$"
+          }
+        },
+        "area": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "glob patterns of the paths under /work an attempt may change, [] for none: a changed path outside them breaks the within_area part (docs/training.md, \"Rewards\"); a task without an area gets no such part",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gates": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "the parts (the check's, or within_area) that must be 1: when one is below 1, or missing, the attempt scores 0 whatever the rest (docs/training.md, \"Rewards\")",
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "note": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "address",
+            "commit"
+          ],
+          "description": "the Git repository the task works in: the agent harness fetches it at this commit when the task runs",
+          "properties": {
+            "address": {
+              "type": "string",
+              "minLength": 1,
+              "description": "where the repository is fetched from"
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+              "description": "the full id of the commit"
+            }
+          }
+        }
+      },
+      "description": "what the task asks and how an attempt runs"
+    },
+    "files": {
+      "type": "object",
+      "description": "the starting files, by their path under files/",
+      "propertyNames": {
+        "pattern": "^[^/]+(/[^/]+)*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/file"
+      }
+    },
+    "check": {
+      "$ref": "#/$defs/file",
+      "description": "the program run after the attempt, which prints a score from 0 to 1"
+    }
+  },
+  "$defs": {
+    "variant": {
+      "description": "one way to meet a need: a tool's name, or tools offered together and the paths under files/ that go to the tools' programs, as tool_files, in an attempt offered this variant only",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/name"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tools"
+          ],
+          "properties": {
+            "tools": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/name"
+              }
+            },
+            "tool_files": {
+              "type": "array",
+              "uniqueItems": true,
+              "description": "paths under files/",
+              "items": {
+                "type": "string",
+                "pattern": "^[^/]+(/[^/]+)*$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "span": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+      "maxLength": 64
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "parameters",
+        "program"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "what the model reads about the tool"
+        },
+        "parameters": {
+          "type": "object",
+          "description": "the JSON Schema of the call's arguments"
+        },
+        "program": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "the absolute path, in the image, of the program that answers a call"
+        },
+        "names": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          },
+          "description": "other names an attempt may offer the tool under"
+        },
+        "looks": {
+          "type": "boolean",
+          "description": "whether a call of the tool looks at sources, as read does (search, fetch, a file search); answered_by names only looking tools (docs/training.md, \"The check library\")"
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "content"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "100644",
+            "100755",
+            "120000"
+          ],
+          "description": "a file, an executable file, or a symbolic link"
+        },
+        "content": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "the file's bytes in base64; a link's target"
+        }
+      }
+    }
+  }
+}

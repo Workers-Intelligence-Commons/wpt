@@ -1,24 +1,20 @@
-"""A size of a model series built and trained through the commands
-(docs/model.md, "Model series"): SERIES:SIZE goes wherever a model
-recipe's name goes."""
+"""A size of a model series trained through the commands (docs/model.md,
+"Model series"): SERIES:SIZE goes wherever a model recipe's name goes."""
 
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from wpt_dataset import build as dataset_build
-from wpt_dataset.build import build_dataset, last_dataset
-from wpt_dataset.repo import Repo
+from wpt_recipes import Recipes
 from wpt_training import WINDOWS
 from wpt_worker.training import drafter_shards
 from wpt.train import main as train
-from wpt_store import find_dataset
 
 # a series of two sizes of the application tests' tiny model; laws chosen so that C = M and D = M / 2000:
 # the small size (66,266 parameters, M 397,596) reads 199 tokens as 3 updates of 4 windows of 16 tokens, the
 # large one (314,548, M 1,887,288) 944 tokens as 15 updates
 TINY = {
-    "data": {"mixture": "m", "tokenizer": "t", "held_out": 0.5},
+    "data": {"depot": "", "dataset": "d", "tokenizer": "t"},  # the depot: the test's
     "reference": {"n_layer": 4, "d_model": 16, "kda_heads": 2, "kda_head_dim": 8, "attention_heads": 2,
                   "attention_head_dim": 128, "query_rank": 8, "output_groups": 1, "output_rank": 8, "index_heads": 2,
                   "index_head_dim": 128, "index_top_k": 2, "n_experts": 4, "top_k": 2, "expert_width": 8,
@@ -50,32 +46,33 @@ def test_the_drafter_reads_the_shards_the_run_s_steps_read_and_none_past_their_p
     assert drafter_shards(spec, [turns]) == shards  # no text step
 
 
-def test_every_size_of_a_series_builds_one_dataset_and_a_size_trains_on_its_start(built, tmp_path):
+def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(built, tmp_path):
     folder = tmp_path / "data" / "recipes" / "series"
     folder.mkdir(parents=True)
-    (folder / "tiny.json").write_text(json.dumps(TINY))
-    repo = Repo(tmp_path)
-    small = build_dataset(repo, "tiny:small", built.store, log=lambda *_: None)
-    assert build_dataset(repo, "tiny:large", built.store, log=lambda *_: None) == small  # one build for the series
-    record = find_dataset(built.store, small)[1]
-    assert record["recipe"]["total_tokens"] == 15 * 4 * 17  # the large size's prefix
-    train(["tiny:small", small, "--out", "model"])
+    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.address}}))
+    recipes = Recipes(tmp_path)
+    data = recipes.model_recipe("tiny:small")["data"]
+    assert data == recipes.model_recipe("tiny:large")["data"]
+    assert data["total_tokens"] == 15 * 4 * 17  # the large size's prefix
+    train(["tiny:small", "--out", "model"])  # the corpus last built for the series' dataset
     provenance = json.loads((Path("model") / "provenance.json").read_text())
-    assert provenance["recipe_name"] == "tiny:small"
-    assert provenance["recipe"] == repo.model_recipe("tiny:small")
+    assert provenance["recipe_name"] == "tiny:small" and provenance["corpus"]["id"] == built.corpus_id
+    assert provenance["recipe"] == recipes.model_recipe("tiny:small")
     [step] = provenance["recipe"]["steps"]
     assert step["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
-    assert step["settings"]["prefix_tokens"] == 3 * 4 * 17
+    assert step["settings"]["prefix_tokens"] == 3 * 4 * 17 == provenance["learned"]["text"]  # the corpus's start
     assert step["optimizer"]["settings"] == {"lr": 0.002, "warmup": 1}
     assert provenance["model"]["n_layer"] == 4 and provenance["model"]["d_model"] == 16
 
 
-def test_a_build_names_its_dataset_for_every_size_and_run_of_the_series(built, tmp_path):
+def test_train_series_prints_every_size_and_trains_nothing(built, tmp_path, capsys):
     folder = tmp_path / "data" / "recipes" / "series"
     folder.mkdir(parents=True)
-    (folder / "tiny.json").write_text(json.dumps(TINY))
-    assert last_dataset(built.store, "tiny:small") is None
-    built_id = dataset_build.run(Repo(tmp_path), "tiny:small", built.store, ["build", "tiny:small"])
-    assert last_dataset(built.store, "tiny:large") == built_id
-    assert last_dataset(built.store, "tiny:large:lr-0.5") == built_id
-    assert last_dataset(built.store, "tiny") is None  # a model recipe of that name is another thing
+    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.address}}))
+
+    train(["series", "tiny"])
+
+    printed = capsys.readouterr().out
+    assert f"series tiny: one corpus of {15 * 4 * 17:,} training tokens" in printed
+    assert "small: width 16" in printed and "large: width 32" in printed and "prefix 204 tokens" in printed
+    assert not (tmp_path / "model").exists()

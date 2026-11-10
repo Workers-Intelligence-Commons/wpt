@@ -16,7 +16,7 @@ def model_folder(root):
 
 
 def test_a_model_kept_under_its_run_s_name_is_copied_out_whole_and_a_damaged_file_is_refused(tmp_path):
-    store = open_store((tmp_path / "store").as_uri()).at("s1")
+    store = open_store((tmp_path / "store").as_uri())
     files = model_folder(tmp_path / "model")
     keep_model(store, "fox-1", put_model(store, "fox-1", tmp_path / "model"))
 
@@ -26,7 +26,7 @@ def test_a_model_kept_under_its_run_s_name_is_copied_out_whole_and_a_damaged_fil
     with pytest.raises(FileExistsError):  # never into a folder that exists
         copy_out(store, "fox-1", tmp_path / "copy")
 
-    [stored] = (tmp_path / "store" / "s1" / "models" / "fox-1").glob("model.safetensors*")  # as it is, or compressed
+    [stored] = (tmp_path / "store" / "models" / "fox-1").glob("model.safetensors*")  # as it is, or compressed
     stored.write_bytes(b"tampered\n")
     with pytest.raises(CorruptFile):
         copy_out(store, "fox-1", tmp_path / "damaged")

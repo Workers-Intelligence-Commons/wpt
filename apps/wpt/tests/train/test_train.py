@@ -3,7 +3,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -19,14 +18,13 @@ from wpt_inference import COSTS_FILE, DRAFT, costs_setup, replayed_costs
 from wpt_model import load_drafter, load_model, load_tokenizer, tokenizer_identity, weight_hashes
 import wpt_telemetry
 from wpt_store import LocalStore, StoreError
-from wpt_telemetry import FLUSH_THREAD, Telemetry
+from wpt_telemetry import FLUSH_THREAD
 from wpt_tokenizer import Tokenizer
 from wpt_utils.device import select_device
-from wpt.dataset import main as dataset
 from wpt.train import StoreCheckpoint, main
 from wpt_training import load_state
 from wpt_utils.lines import bare
-from wpt_store import find_dataset
+from wpt_depot import corpus as corpora
 from wpt_store.shards import shard_file
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -49,24 +47,24 @@ def forget_steps(store):
 
 
 def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatch, capsys):
-    store, dataset_id = built.store, built.dataset_id
+    store, corpus_id = built.store, built.corpus_id
     recipe = built.recipe("three", training=one_stage(3))
-    monkeypatch.setenv("WPT_RECIPE", recipe)  # the recipe and the dataset come from the environment too
-    monkeypatch.setenv("WPT_DATASET", dataset_id)
+    monkeypatch.setenv("WPT_RECIPE", recipe)  # the recipe and the corpus come from the environment too
+    monkeypatch.setenv("WPT_CORPUS", corpus_id)
     main(["--out", "model"])
 
     assert "| indexer loss " in capsys.readouterr().out  # beside the training loss, at each evaluation
     model = load_model(tmp_path / "model")
     assert model.config.n_layer == 4 and model.config.block_size == 16  # the recipe's numbers
-    record = find_dataset(store, dataset_id)[1]
-    # the weights name the dataset's vocabulary, and only that file loads with them
+    record = corpora.find(store, corpus_id)
+    # the weights name the corpus's vocabulary, and only that file loads with them
     assert tokenizer_identity(tmp_path / "model") == ("t version 1", record["tokenizer"]["vocabulary"]["sha256"])
     tokenizer = Tokenizer.from_bytes(load_tokenizer(tmp_path / "model"))
     assert model.config.vocab_size == tokenizer.vocab_size
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["dataset"] == dataset_id
-    assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"] and provenance["dataset_record"].startswith(
-        f"{store.session}/datasets/d-{dataset_id[:8]}/")
+    assert provenance["corpus"] == {"id": corpus_id, "depot": built.depot.address, "dataset": "d"}
+    assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
+    assert provenance["learned"] == {"text": record["total_tokens"]}  # the recipe trains on the whole corpus
     assert provenance["recipe_name"] == "three"
     assert provenance["recipe"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
     [step] = provenance["steps"]
@@ -79,14 +77,14 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
 
 def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built, tmp_path, capsys):
     # afterwards one must know exactly what happened, from the store alone:
-    # the dataset read, each step's loss, the evaluations, the files written
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+    # the corpus read, each step's loss, the evaluations, the files written
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     printed = bare(capsys.readouterr().out)
 
     [run] = built.records("wpt train")
     assert run.end["status"] == "succeeded" and run.end["exit_code"] == 0
-    assert run.ids["inputs"]["recipe"] == "three" and run.ids["inputs"]["dataset"] == built.dataset_id
-    assert f"-wpt-train-{built.dataset_id[:8]}-" in run.folder  # its folder is found by the dataset it trained on
+    assert run.ids["inputs"]["recipe"] == "three" and run.ids["inputs"]["corpus"] == built.corpus_id
+    assert f"-wpt-train-{built.corpus_id[:8]}-" in run.folder  # its folder is found by the corpus it trained on
     steps = [e for e in run.events if e.get("name") == "training.step"]
     assert [e["attributes"]["step"] for e in steps] == [1, 2, 3]
     assert all(math.isfinite(e["values"]["train_loss"]) for e in steps)
@@ -106,7 +104,7 @@ def test_what_the_gpu_worker_records_reaches_the_live_backend_once_through_this_
                                                                                      capsys):
     # the local worker's environment names the backend too: it must still send nothing itself, or its spans come twice
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_backend.endpoint)
-    main(["d", built.dataset_id, "--out", "model"])
+    main(["d", built.corpus_id, "--out", "model"])
 
     run = built.records("wpt train")[-1]
     update = next(line for line in run.events if line["kind"] == "event" and line["name"] == "training.step")
@@ -125,12 +123,12 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
     # unit; the run trains the drafter at its end, the model frozen, and
     # measures the scheduler's pass times once, into its record; a later run
     # replays them
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     folder = tmp_path / "model"
     drafter = load_drafter(folder).provenance
     assert drafter["target"] == {"weights": weight_hashes(folder)}
     assert drafter["trained_by"] == {"command": "wpt train", "recipe_name": "three"}
-    assert drafter["dataset"] == built.dataset_id and drafter["prompts"]["count"] == 4
+    assert drafter["corpus"] == built.corpus_id and drafter["prompts"]["count"] == 4
     [run] = built.records("wpt train")
     names = [e.get("name") for e in run.events]
     assert names.index("drafter.settings") > max(i for i, name in enumerate(names) if name == "training.step")
@@ -143,18 +141,18 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
     costs = replayed_costs(recorded, setup)
     assert len(costs) == DRAFT + 1 and all(seconds > 0 for seconds in costs)
 
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "again", "--scheduler-costs",
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "again", "--scheduler-costs",
           run.folder])
     replayed = built.records("wpt train")[-1]
     assert built.store.read_record(replayed.folder, COSTS_FILE) == recorded
     # refused before training, not after: no such record, or times measured on another setup
-    for recipe, record, why in ((built.recipe("three", training=one_stage(3)), "test-session/no-such-run", "MissingFile"),
+    for recipe, record, why in ((built.recipe("three", training=one_stage(3)), "no-such-run", "MissingFile"),
                                 (built.recipe("block", training=one_stage(3), drafter={"block": 4}), run.folder,
                                  "another setup: draft 5, here 4"),
                                 (built.recipe("longer", training=one_stage(3, block_size=32)), run.folder,
                                  "another setup: model block_size 16, here 32")):
         with pytest.raises(SystemExit) as refused:
-            main([recipe, built.dataset_id, "--out", "never", "--scheduler-costs", record])
+            main([recipe, built.corpus_id, "--out", "never", "--scheduler-costs", record])
         assert refused.value.code == 2 and not (tmp_path / "never").exists()
         assert why in capsys.readouterr().err
         assert not [e for e in built.records("wpt train")[-1].events if e.get("name") == "training.step"]
@@ -163,7 +161,7 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
 def test_drafter_feature_layers_the_model_does_not_have_are_refused_before_training(built, tmp_path, capsys):
     # checked against the model's layers at startup
     with pytest.raises(SystemExit) as refused:
-        main([built.recipe("three", training=one_stage(3), drafter={"features": [9]}), built.dataset_id, "--out",
+        main([built.recipe("three", training=one_stage(3), drafter={"features": [9]}), built.corpus_id, "--out",
               "model"])
     assert refused.value.code == 2 and "9 is not a layer of a" in capsys.readouterr().err
     assert not [e for e in built.records("wpt train")[-1].events if e.get("name") == "training.step"]
@@ -175,7 +173,7 @@ def test_compiling_off_a_cuda_device_refuses_the_run_before_training(built, on_t
     if given == "environment":
         monkeypatch.setenv("WPT_COMPILE", "1")
     with pytest.raises(SystemExit) as refused:
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model",
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model",
               *(["--compile"] if given == "option" else [])])
     assert refused.value.code == 2
     assert "--compile runs on a CUDA device, and this process runs on cpu" in capsys.readouterr().err
@@ -188,14 +186,14 @@ def test_kernels_named_that_cannot_work_on_the_gpu_worker_refuse_the_run_before_
     # run stops with the reason, never another form; here a worker with no
     # GPU asked for Triton's kernels. A name that is no form is refused too
     with pytest.raises(SystemExit) as refused:
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model", "--kernels", "triton"])
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model", "--kernels", "triton"])
     assert refused.value.code == 2
     assert "KernelUnavailable: Triton kernels run on a GPU, and this process runs on cpu" in capsys.readouterr().err
     assert not [e for e in built.records("wpt train")[-1].events if e.get("name") == "training.step"]
 
     monkeypatch.setenv("WPT_KERNELS", "fast")
     with pytest.raises(SystemExit) as refused:
-        main(["d", built.dataset_id, "--out", "model"])
+        main(["d", built.corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "WPT_KERNELS='fast': not one of tilelang, triton, pytorch" in \
         capsys.readouterr().err
 
@@ -207,7 +205,7 @@ def test_a_drafter_that_cannot_be_trained_refuses_the_run_and_its_steps_stay_kep
     # trains the drafter again
     failing = built.recipe("three", training=one_stage(3), drafter={"prompts": 2, "held_out": 0.9})
     with pytest.raises(SystemExit) as refused:
-        main([failing, built.dataset_id, "--out", "model", "--checkpoint-every", "0"])
+        main([failing, built.corpus_id, "--out", "model", "--checkpoint-every", "0"])
     assert refused.value.code == 2
     assert capsys.readouterr().err.strip().endswith(
         "DrafterFailed: held_out 0.9 keeps every one of the 2 prompts apart; nothing was written; every step's "
@@ -218,7 +216,7 @@ def test_a_drafter_that_cannot_be_trained_refuses_the_run_and_its_steps_stay_kep
     assert names.count("training.checkpoint") == 1 and names.count("store.result_set") == 1  # the step's result
     assert names.index("training.checkpoint") > max(i for i, name in enumerate(names) if name == "training.step")
     # the drafter's section takes no part in a step's fingerprint: a fixed one reuses the kept step
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     again = built.records("wpt train")[-1]
     assert not [e for e in again.events if e.get("name") == "training.step"]
     assert [e["attributes"]["step"] for e in again.events if e.get("name") == "training.step_reused"] == ["read-text"]
@@ -239,7 +237,7 @@ def test_a_record_the_store_refuses_stops_the_run_once_its_checkpoint_is_saved(b
     monkeypatch.setattr(LocalStore, "_raw_append_record", disk_full_at_step_3)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")  # the checkpoint it saves comes to this machine
     with pytest.raises(SystemExit) as stopped:
-        main([built.recipe("five", training=one_stage(5)), built.dataset_id, "--out", "model"])
+        main([built.recipe("five", training=one_stage(5)), built.corpus_id, "--out", "model"])
 
     assert stopped.value.code == 3 and "No space left on device" in capsys.readouterr().err
     [run] = built.records("wpt train")
@@ -296,7 +294,7 @@ def test_training_into_a_model_folder_replaces_it_whole_and_only_once_recorded(b
     # that fails leaves the earlier folder as it was; a run that succeeds
     # replaces it as a whole, results of other weights and stray files included
     recipe = built.recipe("two", training=one_stage(2))
-    main([recipe, built.dataset_id, "--out", "model"])
+    main([recipe, built.corpus_id, "--out", "model"])
     folder = tmp_path / "model"
     (folder / "evals").mkdir()
     (folder / "evals" / "memorization.json").write_text("{}\n")
@@ -313,14 +311,14 @@ def test_training_into_a_model_folder_replaces_it_whole_and_only_once_recorded(b
     with monkeypatch.context() as patch:
         patch.setattr(LocalStore, "_raw_append_record", disk_full_at_the_files)
         with pytest.raises(SystemExit) as stopped:
-            main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+            main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert stopped.value.code == 3
     assert {path.name: path.read_bytes() for path in folder.iterdir() if path.is_file()} == before
     assert (folder / "evals" / "memorization.json").exists()
     # the step's result is kept: the same command finishes the run without training
     assert not (folder / "checkpoint").exists()
 
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert not (folder / "evals").exists() and not (folder / "notes.txt").exists()
     assert json.loads((folder / "provenance.json").read_text())["recipe_name"] == "three"
     run = built.records("wpt train")[-1]
@@ -339,7 +337,7 @@ def test_on_s3_the_model_folder_is_replaced_only_once_its_record_is_in_the_bucke
     (folder / "notes.txt").write_text("mine\n")
     s3.refuse(b'"training.checkpoint_removed"')
     with pytest.raises(SystemExit) as stopped:
-        main(["d", built.dataset_id, "--out", "model"])
+        main(["d", built.corpus_id, "--out", "model"])
     assert stopped.value.code == 3
     # as it was: the step's checkpoint went once its result was kept
     assert sorted(path.name for path in folder.iterdir()) == ["notes.txt"]
@@ -360,14 +358,14 @@ def test_every_checkpoint_deleted_from_the_store_is_named_in_the_record_first(bu
 
     monkeypatch.setattr(LocalStore, "delete", delete)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")  # each checkpoint comes to the store
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model", "--checkpoint-every", "1",
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model", "--checkpoint-every", "1",
           "--run", "fox-1"])
     assert len({sha for sha, _ in deleted}) == 2 and all(named for _, named in deleted)
     assert checkpoint(built.store, "fox-1") is None
     [step] = json.loads((tmp_path / "model" / "provenance.json").read_text())["steps"]
     state = json.loads(built.store.get_result("steps", step["fingerprint"])[0])["state"]
     assert built.store.has(state) and state["key"] not in {key for key, _ in deleted}
-    assert state["key"].startswith(f"{built.store.session}/models/fox-1/")  # beside the run's checkpoint record
+    assert state["key"].startswith("models/fox-1/")  # beside the run's checkpoint record
 
 
 def test_on_s3_a_checkpoint_is_deleted_only_once_its_deletion_is_in_the_bucket(built, s3, tmp_path, monkeypatch):
@@ -381,7 +379,7 @@ def test_on_s3_a_checkpoint_is_deleted_only_once_its_deletion_is_in_the_bucket(b
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")
     s3.refuse(b'"training.checkpoint_deleted"')
     with pytest.raises(SystemExit) as stopped:
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model",
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model",
               "--checkpoint-every", "1", "--run", "fox-1"])
     assert stopped.value.code == 3 and deleted == []
     assert checkpoint(s3.store, "fox-1") is not None
@@ -394,7 +392,7 @@ def test_an_earlier_folder_that_cannot_be_removed_is_left_beside_with_a_warning(
     # the new model is in place and complete: an earlier folder that the
     # system will not remove must not fail the run, but must be named; a
     # Ctrl+C during its removal names it the same way, and still stops
-    main(["d", built.dataset_id, "--out", "model"])
+    main(["d", built.corpus_id, "--out", "model"])
     real = shutil.rmtree
 
     def refuse_the_replaced_one(path, *args, **options):
@@ -404,7 +402,7 @@ def test_an_earlier_folder_that_cannot_be_removed_is_left_beside_with_a_warning(
 
     monkeypatch.setattr(shutil, "rmtree", refuse_the_replaced_one)
     with pytest.raises(KeyboardInterrupt) if isinstance(error, KeyboardInterrupt) else contextlib.nullcontext():
-        main(["d", built.dataset_id, "--out", "model"])
+        main(["d", built.corpus_id, "--out", "model"])
 
     [left] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-replaced-")]
     assert (left / "model.safetensors").exists() and (tmp_path / "model" / "model.safetensors").exists()
@@ -418,7 +416,7 @@ def test_an_earlier_folder_that_cannot_be_removed_is_left_beside_with_a_warning(
 def test_an_earlier_folder_is_put_back_when_the_new_one_cannot_take_its_place(built, tmp_path, monkeypatch):
     # moving the earlier folder aside and the new one in are one step: when
     # the second fails, the target must be the earlier folder again
-    main(["d", built.dataset_id, "--out", "model"])
+    main(["d", built.corpus_id, "--out", "model"])
     before = {path.name: path.read_bytes() for path in (tmp_path / "model").iterdir() if path.is_file()}
     real = os.replace
 
@@ -429,7 +427,7 @@ def test_an_earlier_folder_is_put_back_when_the_new_one_cannot_take_its_place(bu
 
     monkeypatch.setattr(os, "replace", refuse_the_new_one)
     with pytest.raises(PermissionError):
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert {path.name: path.read_bytes() for path in (tmp_path / "model").iterdir() if path.is_file()} == before
     assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".model")] == []
 
@@ -439,7 +437,7 @@ def test_an_earlier_folder_that_cannot_be_put_back_is_named_with_the_new_one(bui
     # missing: neither model may be deleted, and the error names both
     from wpt.train import RestoreFailed
 
-    main(["d", built.dataset_id, "--out", "model"])
+    main(["d", built.corpus_id, "--out", "model"])
     earlier = (tmp_path / "model" / "model.safetensors").read_bytes()
     real = os.replace
 
@@ -450,58 +448,58 @@ def test_an_earlier_folder_that_cannot_be_put_back_is_named_with_the_new_one(bui
 
     monkeypatch.setattr(os, "replace", refuse_every_move_into_the_target)
     with pytest.raises(RestoreFailed) as failed:
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert not (tmp_path / "model").exists() and str(failed.value.aside) in str(failed.value)
     assert (failed.value.aside / "model.safetensors").read_bytes() == earlier
     assert json.loads((failed.value.new / "provenance.json").read_text())["recipe_name"] == "three"
 
 
-def test_a_trained_model_folder_names_its_licenses_and_sources(built, tmp_path):
-    # whoever receives the folder, or only a weight file, must learn the licenses
-    # and the credit each source asks for
-    dataset_id, sid = built.dataset_id, built.source_id
-    main(["d", dataset_id, "--out", "model"])
+def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from(built, tmp_path):
+    # whoever receives the folder, or only a weight file, must learn the licenses,
+    # and each text the model learned from, with its notice and license text
+    main(["d", built.corpus_id, "--out", "model"])
     folder = tmp_path / "model"
 
+    credits = (folder / "CREDITS").read_text()
+    learned = credits.split("\n\n", 1)[0].splitlines()
+    texts = {(one["depot"], one["id"]): one
+             for one in corpora.read_table(built.store, corpora.find(built.store, built.corpus_id), "texts").to_pylist()}
+    assert len(learned) == len(texts) == 16  # the step read every token of the plain texts
+    assert all(line.startswith(f"{built.depot.address} ") and "; MIT; notice " in line for line in learned)
+    assert f"\n{built.notice}\n" in credits and "MIT (MIT License)\nCopyright (c) 2026 Ada Writer" in credits
     notice = (folder / "NOTICE").read_text()
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
-    [entry] = json.loads((tmp_path / "data" / "sources" / sid / "source.json").read_text())["licenses"]
-    assert f"{sid}\n" in notice and f"  MIT for {', '.join(entry['paths'])}:\n    {built.attribution}\n" in notice
-    assert f"License texts\n\n--- {sid} (MIT)\n\n{built.license_text}" in notice  # what MIT asks to travel
+    assert f"From corpus {built.corpus_id}, built from dataset d of the depot {built.depot.address}" in notice
+    assert credits.rstrip("\n") in notice
     assert notice.endswith((ROOT / "OUTPUT-NOTICE").read_text())
     assert (folder / "LICENSE").read_text() == (ROOT / "LICENSE").read_text()
     card = (folder / "README.md").read_text()
     assert card.startswith("---\nlicense: agpl-3.0\n---\n") and "Weights: AGPL-3.0-or-later" in card
-    assert f"| {sid} |" in card and "None yet: run `wpt eval" in card
-    manifest = json.loads((folder / "provenance.json").read_text())["sources"][sid]["manifest"]
-    assert re.fullmatch("[0-9a-f]{64}", manifest)  # the plain sha256 of the list of files, as the store names the tree
-    assert f"  manifest: {manifest}\n" in notice and f"| {sid} | `{manifest}` |" in card
+    assert built.corpus_id in card and "None yet: run `wpt eval" in card
+    assert json.loads((folder / "provenance.json").read_text())["texts"] == len(learned)
     with safe_open(folder / "model.safetensors", "pt") as weights:
         assert weights.metadata()["license"] == "AGPL-3.0-or-later"
         assert weights.metadata()["output_license"] == "CC0-1.0"
 
 
 def test_a_damaged_shard_stops_training_before_it_starts(built, tmp_path, capsys):
-    store, dataset_id = built.store, built.dataset_id
-    record = find_dataset(store, dataset_id)[1]
+    store, corpus_id = built.store, built.corpus_id
+    record = corpora.find(store, corpus_id)
     path = store.path(shard_file(record["shards"][0]))  # the shard's own bytes, whether the store keeps it compressed or not
     path.write_bytes(path.read_bytes()[:-10] + b"0123456789")
     with pytest.raises(SystemExit) as refused:
-        main(["d", dataset_id, "--out", "model"])
+        main(["d", corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "CorruptFile" in capsys.readouterr().err  # 2: never restarted
     assert not (tmp_path / "model").exists()
 
 
-def test_a_dataset_built_from_another_recipe_data_is_refused(built, tmp_path, capsys):
-    # the model must train on what its recipe names, so a dataset id built
-    # from another data part stops the run before it starts
-    other = built.recipe("other")
-    recipe = json.loads((tmp_path / "data" / "recipes" / "models" / "other.json").read_text())
-    recipe["data"]["total_tokens"] = 2000
-    (tmp_path / "data" / "recipes" / "models" / "other.json").write_text(json.dumps(recipe))
+def test_a_corpus_of_another_dataset_than_the_recipe_s_is_refused(built, tmp_path, capsys):
+    # the model must train on what its recipe names, so a corpus of another
+    # dataset stops the run before it starts
+    other = built.dataset("other")
     with pytest.raises(SystemExit) as refused:
-        main([other, built.dataset_id, "--out", "model"])
-    assert refused.value.code == 2 and "another data part" in capsys.readouterr().err
+        main(["d", other, "--out", "model"])
+    assert refused.value.code == 2 and "this recipe names dataset 'd'" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
 
 
@@ -515,7 +513,7 @@ def test_two_processes_train_the_same_model_as_one(built, on_the_cpu, tmp_path):
     recipe = built.recipe("four", training=one_stage(4))
     for out, command in [("one", ["-m", "wpt", "train", "--micro-batch", "2"]), ("two", ["-m", "wpt", "train", "--processes", "2", "--strategy", "ddp"])]:
         forget_steps(built.store)  # the hardware is no part of a step's fingerprint: each run trains
-        subprocess.run([sys.executable, *command, recipe, built.dataset_id, "--out", out], cwd=tmp_path, check=True)
+        subprocess.run([sys.executable, *command, recipe, built.corpus_id, "--out", out], cwd=tmp_path, check=True)
 
     one, two = weights(tmp_path / "one"), weights(tmp_path / "two")
     assert one.keys() == two.keys()
@@ -534,7 +532,7 @@ def test_split_windows_in_segments_train_the_same_model_as_one_process(built, on
     for out, options in [("one", []), ("two", ["--processes", "2", "--strategy", "split", "--micro-batch", "1",
                                               "--segment", "128"])]:
         forget_steps(built.store)
-        subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.dataset_id, "--out", out, *options],
+        subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.corpus_id, "--out", out, *options],
                        cwd=tmp_path, check=True)
 
     one, two = weights(tmp_path / "one"), weights(tmp_path / "two")
@@ -576,7 +574,7 @@ def interrupting(built, tmp_path, at_step_3, at_step=3, best=None):
            "    def evaluated(self, step, val_loss):\n"
            f"        return Verdict(best=step == {best}, stop=False)\n\n")
         + "def start(model, settings, run):\n    return Interrupting(model, settings)\n")
-    return [built.recipe("interrupting", training={**one_stage(5), "optimizer": str(method)}), built.dataset_id,
+    return [built.recipe("interrupting", training={**one_stage(5), "optimizer": str(method)}), built.corpus_id,
             "--strategy", str(strategy)]
 
 
@@ -696,7 +694,7 @@ def test_the_model_card_names_the_updates_trained_and_the_update_of_its_weights(
         "        return Verdict(best=step == 2, stop=step == 4)\n\n"
         "def start(model, settings, run):\n    return Early(model)\n")
     recipe = built.recipe("early", training={**one_stage(10), "optimizer": str(method)})
-    main([recipe, built.dataset_id, "--out", "model", "--strategy", str(strategy)])
+    main([recipe, built.corpus_id, "--out", "model", "--strategy", str(strategy)])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert (provenance["steps"][0]["updates"], provenance["steps"][0]["weights_update"]) == (4, 2)
@@ -705,20 +703,17 @@ def test_the_model_card_names_the_updates_trained_and_the_update_of_its_weights(
            "the weights of update 2" in card
 
 
-def test_streamed_training_never_copies_the_whole_dataset_to_disk(built, tmp_path, monkeypatch):
-    # --stream trains from a few shards at a time, so the gpu worker needs
-    # disk only for those, and the model folder names its sources as usual
-    store, dataset_id = built.store, built.dataset_id
+def test_streamed_training_never_copies_the_whole_corpus_to_disk(built, tmp_path, monkeypatch):
+    # --stream trains from a few token files at a time, so the gpu worker
+    # needs disk only for those, and the model folder names its texts as usual
     monkeypatch.setenv("WPT_WORKER_FOLDER", str(tmp_path / "worker"))  # the local worker's, kept
-    main([built.recipe("two", training=one_stage(2)), dataset_id, "--out", "model", "--stream", "--stream-shards", "1"])
+    main([built.recipe("two", training=one_stage(2)), built.corpus_id, "--out", "model", "--stream",
+          "--stream-shards", "1"])
 
-    record = find_dataset(store, dataset_id)[1]
-    held_out_only = [p.name for p in (tmp_path / "worker" / "job" / "scratch" / "tokens").glob("*.u32")]
-    assert len(held_out_only) == 1  # the held-out tokens; no file of every training shard
+    assert not list((tmp_path / "worker" / "job" / "scratch" / "tokens").glob("*.u32"))  # no copy of the tokens
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert set(provenance["sources"]) == {built.source_id}
+    assert provenance["corpus"]["id"] == built.corpus_id and provenance["texts"] > 0
     assert load_model(tmp_path / "model").config.block_size == 16
-    assert record["shards"][0]["sources"] == [built.source_id]
 
 
 def test_a_stop_saves_a_checkpoint_even_when_the_run_writes_none_during_a_step(built, tmp_path, monkeypatch):
@@ -734,7 +729,7 @@ def test_a_run_stops_at_its_limit_prints_what_it_measured_and_resumes(built, tmp
     # a short run to measure speed needs nobody to stop it: the speed and the
     # time of the whole run come from the updates after the first, which also
     # compiles the kernels, and the run goes on from its checkpoint
-    command = [built.recipe("five", training=one_stage(5)), built.dataset_id, "--out", "model"]
+    command = [built.recipe("five", training=one_stage(5)), built.corpus_id, "--out", "model"]
     with pytest.raises(SystemExit) as stopped:
         main([*command, "--stop-after-updates", "3"])
     assert stopped.value.code == 130
@@ -757,7 +752,7 @@ def test_a_run_stops_at_its_limit_prints_what_it_measured_and_resumes(built, tmp
 def test_the_update_asked_for_is_profiled_into_the_record_and_training_goes_on(built, tmp_path):
     # the profile of update 2 lands in the run's record, whatever the device; a run that does not ask has none
     recipe = built.recipe("three", training=one_stage(3))
-    main([recipe, built.dataset_id, "--out", "model", "--profile-update", "2"])
+    main([recipe, built.corpus_id, "--out", "model", "--profile-update", "2"])
     [run] = built.records("wpt train")
     text = built.store.read_record(run.folder, "profile.txt").decode()
     assert text.startswith("update 2: ") and "seconds by part:" in text and "data (environment.batch)" in text
@@ -765,39 +760,57 @@ def test_the_update_asked_for_is_profiled_into_the_record_and_training_goes_on(b
     assert "top 40 by self CPU time:" in text and "os.cpu_count()" in text
     assert load_model(tmp_path / "model").config.block_size == 16  # the run finished
 
-    main([recipe, built.dataset_id, "--out", "other"])
+    main([recipe, built.corpus_id, "--out", "other"])
     assert "profile.txt" not in built.store.record_files(built.records("wpt train")[-1].folder)
 
 
-def test_a_store_that_fails_while_the_last_dataset_is_read_refuses_the_run_in_one_line(built, monkeypatch, capsys):
-    def failing(store, name):
+def test_a_store_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_one_line(built, monkeypatch, capsys):
+    def failing(store, depot, dataset):
         raise StoreError("the bucket does not answer")
 
-    monkeypatch.setattr("wpt.train.last_dataset", failing)
+    monkeypatch.setattr(corpora, "latest", failing)
     with pytest.raises(SystemExit) as refused:
         main(["d"])
     assert refused.value.code == 2 and bare(capsys.readouterr().err) == "StoreError: the bucket does not answer\n"
 
 
-def test_wpt_train_without_a_dataset_id_reads_the_one_last_built_for_the_recipe(built, tmp_path, capsys):
+def test_wpt_train_without_a_corpus_id_reads_the_one_last_built_for_the_recipe_s_dataset(built, tmp_path, capsys):
     # the id goes from the build to the training through the store, not through a person's hands
-    recipe = built.recipe("three", training=one_stage(3))
+    recipe = built.recipe("three", training=one_stage(3), dataset="later")
     with pytest.raises(SystemExit) as refused:
         main([recipe, "--out", "model"])
-    assert refused.value.code == 2 and "no dataset was built for three" in capsys.readouterr().err
+    assert refused.value.code == 2 and "build it with `wpt depot build later`" in capsys.readouterr().err
 
-    dataset(["build", recipe])
-    assert bare(capsys.readouterr().out).strip().splitlines()[-1] == built.dataset_id
+    later = built.dataset("later")
     main([recipe, "--out", "model"])
-    assert json.loads((tmp_path / "model" / "provenance.json").read_text())["dataset"] == built.dataset_id
+    assert json.loads((tmp_path / "model" / "provenance.json").read_text())["corpus"]["id"] == later
 
-    # the recipe's data part changed since that build: the ref names a dataset that no longer matches
-    path = tmp_path / "data" / "recipes" / "models" / f"{recipe}.json"
-    document = json.loads(path.read_text())
-    path.write_text(json.dumps({**document, "data": {**document["data"], "held_out": 0.25}}))
-    with pytest.raises(SystemExit) as refused:
-        main([recipe, "--out", "other"])
-    assert refused.value.code == 2 and "another data part" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as refused:  # a start of an id that names no corpus
+        main([recipe, "0" * 8, "--out", "other"])
+    assert refused.value.code == 2 and "no corpus 00000000" in capsys.readouterr().err
+
+
+def test_a_corpus_is_found_by_its_dataset_s_id_through_a_rename_and_an_older_revision_is_used_with_a_warning(built):
+    # a renamed dataset keeps its corpora, and a newer revision of it than its corpus trains on that corpus, said
+    from wpt.train import InputError, find_corpus, load_corpus, load_recipe
+    later = built.dataset("later")
+    dataset = built.depot.dataset("later")
+    renamed = load_recipe(built.recipe("three", training=one_stage(3), dataset="renamed"))
+    built.depot.edit_dataset(dataset["id"], "renamed", [(None, one["library"]) for one in dataset["libraries"]],
+                             [(one["tag"], one["share"]) for one in dataset["shares"]])
+    said = []
+
+    record = find_corpus(built.store, None, renamed, lambda text, level="INFO": said.append((level, text)))
+
+    assert record["id"] == later and (record["dataset"]["id"], record["dataset"]["revision"]) == (dataset["id"], 1)
+    assert said == [("WARNING", f"corpus {later} was built from revision 1 of the dataset 'renamed' "
+                                f"({dataset['id']}), whose current revision is 2: this run trains on the older "
+                                "revision; build the dataset again with `wpt depot build renamed` to train on the "
+                                "current one")]
+    load_corpus(built.store, record, renamed)  # built under its old name, it is still the recipe's dataset
+    built.depot.new_dataset("later", "classics", [(None, dataset["libraries"][0]["library"])])
+    with pytest.raises(InputError, match="no corpus of dataset 'later'"):  # a new dataset of the old name has none
+        find_corpus(built.store, None, load_recipe(built.recipe("four", training=one_stage(3), dataset="later")))
 
 
 def test_a_stopped_run_saves_its_step_and_continues_on_another_machine(built, tmp_path, monkeypatch):
@@ -864,7 +877,7 @@ def test_a_new_model_that_cannot_take_an_empty_place_is_kept_and_named(built, tm
 
     monkeypatch.setattr(os, "replace", refuse_the_target)
     with pytest.raises(PermissionError):
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model", "--run", "fox-2"])
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model", "--run", "fox-2"])
     [kept] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-")]
     assert not (tmp_path / "model").exists()
     assert json.loads((kept / "provenance.json").read_text())["recipe_name"] == "three"
@@ -886,13 +899,13 @@ def test_a_new_model_that_cannot_take_the_place_of_its_own_checkpoint_folder_is_
     monkeypatch.setattr(os, "replace", refuse_the_new_one)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")  # the step's last checkpoint comes into the model folder
     with pytest.raises(PermissionError):
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert list((tmp_path / "model").iterdir()) == []
     [kept] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-")]
     assert json.loads((kept / "provenance.json").read_text())["recipe_name"] == "three"
     assert f"it is kept in {kept}" in capsys.readouterr().err
     monkeypatch.setattr(os, "replace", real)
-    main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])  # reuses the step
+    main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])  # reuses the step
     assert (tmp_path / "model" / "config.json").exists()
     assert kept.is_dir()  # the run wrote its own folder: the kept one is left to remove by hand
 
@@ -903,7 +916,7 @@ def test_a_restore_failure_inside_a_broken_record_still_keeps_both_models(built,
     import wpt.train
     from wpt_telemetry import RecordError
 
-    main(["d", built.dataset_id, "--out", "model"])
+    main(["d", built.corpus_id, "--out", "model"])
     earlier = (tmp_path / "model" / "model.safetensors").read_bytes()
     real_replace, real_folder = os.replace, wpt.train._replace_folder
 
@@ -921,7 +934,7 @@ def test_a_restore_failure_inside_a_broken_record_still_keeps_both_models(built,
     monkeypatch.setattr(os, "replace", refuse_every_move_into_the_target)
     monkeypatch.setattr(wpt.train, "_replace_folder", replace_while_the_record_breaks)
     with pytest.raises(SystemExit) as stopped:
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", "model"])
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert stopped.value.code == 3 and not (tmp_path / "model").exists()
     [aside] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-replaced-")]
     [new] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-") and path != aside]
@@ -940,7 +953,7 @@ def test_only_each_step_s_end_comes_back_from_the_gpu_worker_unless_every_checkp
     def checkpoints_set(out, mode):
         monkeypatch.setenv("WPT_LINK_CHECKPOINTS", mode)
         forget_steps(built.store)
-        main([built.recipe("three", training=one_stage(3)), built.dataset_id, "--out", out, "--checkpoint-every",
+        main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", out, "--checkpoint-every",
               "1", "--run", "fox-1"])
         run = built.records("wpt train")[-1]
         assert [e["attributes"]["step"] for e in run.events
@@ -953,23 +966,45 @@ def test_only_each_step_s_end_comes_back_from_the_gpu_worker_unless_every_checkp
 
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "sometimes")
     with pytest.raises(SystemExit) as refused:
-        main(["d", built.dataset_id, "--out", "model"])
+        main(["d", built.corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "WPT_LINK_CHECKPOINTS='sometimes': one of every, step-ends" in \
         capsys.readouterr().err
 
 
-def test_a_run_started_from_another_session_finds_its_checkpoint_and_leaves_that_session_s_in_place(store, tmp_path):
-    # --from reads the old checkpoint; each save and the end of the run change only the new session
-    first, second = tmp_path / "first", tmp_path / "second"
-    first.write_bytes(b"the old session's state")
-    second.write_bytes(b"the new session's state")
-    old = StoreCheckpoint(store, "fox-1", Telemetry.off(), set())
-    old.save_file(first)
-    saved = old.state_file()
+def refusal(capsys, argv) -> str:
+    """What wpt train wrote on its error output when it refused argv (exit code 2)."""
+    with pytest.raises(SystemExit) as stopped:
+        main(argv)
+    assert stopped.value.code == 2
+    return capsys.readouterr().err
 
-    new = StoreCheckpoint(store.at("next", store.session), "fox-1", Telemetry.off(), set())
-    assert new.exists() and new.state_file() == saved
-    new.save_file(second)
-    assert new.state_file() != saved and old.state_file() == saved and store.has(saved)
-    new.remove()
-    assert new.state_file() == saved and store.has(saved)
+
+def test_a_stale_corpus_is_refused_until_its_dataset_is_built_again(built, tmp_path, capsys):
+    # an admitted erasure reached a text the corpus holds (docs/erasure.md): training on it would learn the erased passage
+    record = corpora.find(built.store, built.corpus_id)
+    text = corpora.read_table(built.store, record, "texts").to_pylist()[0]["id"]
+    corpora.mark_stale(built.store, [text], [f"{built.depot.name()}-1"])
+
+    assert "is stale" in refusal(capsys, [built.recipe("stale"), built.corpus_id, "--out", "model"])
+    assert not (tmp_path / "model").exists()
+
+
+def test_a_corpus_with_fewer_tokens_than_the_recipe_s_total_is_refused(built, tmp_path, capsys):
+    record = corpora.find(built.store, built.corpus_id)
+    recipe = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())
+    recipe["data"]["total_tokens"] = record["total_tokens"] + 1
+    (tmp_path / "data" / "recipes" / "models" / "long.json").write_text(json.dumps(recipe))
+
+    assert "holds" in refusal(capsys, ["long", built.corpus_id, "--out", "model"])
+
+
+def test_a_plain_recipe_trains_on_the_first_total_tokens_of_its_corpus(built, tmp_path):
+    folder = tmp_path / "data" / "recipes" / "models"
+    recipe = json.loads((folder / "d.json").read_text())
+    recipe["data"]["total_tokens"] = 3000  # fewer than the corpus holds
+    (folder / "short.json").write_text(json.dumps(recipe))
+
+    main(["short", built.corpus_id, "--out", "model"])
+
+    provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
+    assert provenance["learned"]["text"] == 3000 < corpora.find(built.store, built.corpus_id)["total_tokens"]

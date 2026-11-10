@@ -1,17 +1,17 @@
-"""The wpt manager (docs/machines.md): one command that downloads, builds
-and trains a recipe through a local gpu worker, and keeps the model in the
-store under the run's name."""
+"""The wpt manager (docs/machines.md): one command that trains a recipe on
+its corpus, already built into the store, through a local gpu worker, and
+keeps the model in the store under the run's name."""
 
+import base64
 import json
 
 import pytest
 
-from wpt.manager import RUN_FILE, main, mount_point
+from wpt_depot import NewText
+from wpt_depot import corpus as corpora
+from wpt.manager import RUN_FILE, main, mount_point, task_images
 from wpt.store import main as store_command
 from wpt_telemetry import file_hashes
-from wpt_store import find_dataset, keep_dataset
-from wpt_store.models import has_model
-from wpt_utils.lines import bare
 
 
 def test_the_manager_refuses_to_start_without_a_recipe(built, monkeypatch, capsys):
@@ -22,19 +22,20 @@ def test_the_manager_refuses_to_start_without_a_recipe(built, monkeypatch, capsy
     assert not built.records("wpt manager")
 
 
-def test_one_command_downloads_builds_trains_and_keeps_the_model_under_the_run_s_name(built, tmp_path, monkeypatch,
-                                                                                     capsys):
+def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the_run_s_name(built, tmp_path,
+                                                                                            monkeypatch, capsys):
     # with no run name, the manager makes one and writes it, with the
     # command to copy, into the git-ignored file; the model it trained comes
     # back out of the store as the folder wpt train wrote, file for file,
-    # and the manager's own copy of that folder is gone
+    # and the manager's own copy of that folder is gone; it trains on the
+    # corpus last built for the recipe's dataset
     monkeypatch.setenv("WPT_RECIPE", "d")
     monkeypatch.delenv("WPT_RUN", raising=False)
     main([])
     [copy_out] = [line for line in (tmp_path / RUN_FILE).read_text().splitlines() if not line.startswith("#")]
     name = copy_out.split()[5]
     assert name.startswith("d-")
-    assert copy_out == f"uv run wpt store copy-out {name} runs/{name} --session {built.store.session}"
+    assert copy_out == f"uv run wpt store copy-out {name} runs/{name}"
     assert copy_out in capsys.readouterr().out
 
     assert not (tmp_path / "runs" / "manager" / name).exists()
@@ -48,60 +49,45 @@ def test_one_command_downloads_builds_trains_and_keeps_the_model_under_the_run_s
     [run] = built.records("wpt manager")
     assert run.end["status"] == "succeeded"
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
-        "manager.download", "manager.build", "manager.workers", "manager.train", "manager.model"]
+        "manager.corpus", "manager.workers", "manager.train", "manager.model"]
     assert [e["attributes"]["model"] for e in run.events if e.get("name") == "store.model_kept"] == [name]
-    assert train.start["arguments"][:1] == ["d"] and "--run" in train.start["arguments"]
+    assert train.start["arguments"][:2] == ["d", built.corpus_id] and "--run" in train.start["arguments"]
 
 
-def test_a_dataset_the_settings_name_is_trained_on_with_no_download_or_build(built, monkeypatch, capsys):
-    # a dataset built by other code stays usable: the manager trains on it as it is
+def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
+    other = built.dataset("later")  # the corpus last built, of another dataset than the recipe's
     monkeypatch.setenv("WPT_RECIPE", "d")
-    monkeypatch.setenv("WPT_DATASET", built.dataset_id)
-    main([])
-    [run] = built.records("wpt manager")
-    assert run.end["status"] == "succeeded"
-    assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
-        "manager.workers", "manager.train", "manager.model"]
-    [train] = built.records("wpt train")
-    assert built.dataset_id in train.start["arguments"]
-
-
-def test_a_run_given_no_session_makes_one_and_says_which_in_the_lines_it_writes(built, tmp_path, monkeypatch, capsys):
-    # the whole run works under the new ID, and the printed line copies its model out of that session
-    monkeypatch.setenv("WPT_RECIPE", "d")
-    monkeypatch.delenv("WPT_RUN", raising=False)
-    monkeypatch.delenv("WPT_SESSION")
-    monkeypatch.setenv("WPT_FROM", built.store.session)  # the sources and the dataset lie in the session of `built`
-    main([])
-    [copy_out] = [line for line in (tmp_path / RUN_FILE).read_text().splitlines() if not line.startswith("#")]
-    words = copy_out.split()
-    session = words[-1]
-    assert session != built.store.session and f"session {session}" in bare(capsys.readouterr().out)
-    assert store_command(words[4:7] + ["--session", session]) == 0
-    assert (tmp_path / words[6] / "config.json").is_file()
-    assert not has_model(built.store, words[5])  # the session it started from is left as it was
-
-
-def test_a_dataset_whose_record_holds_a_contamination_report_is_trained_on_as_it_is(built, monkeypatch, capsys):
-    record = find_dataset(built.store, built.dataset_id)[1]
-    report = {"ngram_words": 13, "held_out_documents": 1, "overlapping": 0, "examples": []}
-    keep_dataset(built.store, "d", {**record, "contamination": report})
-    monkeypatch.setenv("WPT_RECIPE", "d")
-    monkeypatch.setenv("WPT_DATASET", built.dataset_id)
+    monkeypatch.setenv("WPT_CORPUS", built.corpus_id[:12])
     main([])
     [run] = built.records("wpt manager")
     assert run.end["status"] == "succeeded"
     [train] = built.records("wpt train")
-    assert built.dataset_id in train.start["arguments"] and train.end["status"] == "succeeded"
+    assert built.corpus_id in train.start["arguments"] and other not in train.start["arguments"]
 
 
-def test_a_dataset_the_store_does_not_hold_stops_the_run_before_anything_starts(built, monkeypatch, capsys):
-    monkeypatch.setenv("WPT_RECIPE", "d")
-    monkeypatch.setenv("WPT_DATASET", "0" * 64)
+def test_a_recipe_whose_corpus_is_not_built_stops_the_run_before_anything_starts(built, monkeypatch, capsys):
+    built.recipe("unbuilt", dataset="unbuilt")
+    monkeypatch.setenv("WPT_RECIPE", "unbuilt")
     with pytest.raises(SystemExit) as refused:
         main([])
-    assert refused.value.code == 2 and "WPT_DATASET" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert refused.value.code == 2 and "build it with `wpt depot build unbuilt`" in err
+    [run] = built.records("wpt manager")
+    assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
+        "manager.corpus"]
     assert built.records("wpt train") == []
+
+
+def test_the_images_to_build_are_those_the_corpus_s_tasks_name_each_once(built):
+    def task(image):
+        check = {"mode": "100755", "content": base64.b64encode(b"#!/bin/sh\necho 1\n").decode()}
+        return NewText(kind="task", content=json.dumps({"task": {
+            "instructions": "Say hello.", "image": image, "needs": [],
+            "limits": {"max_turns": 2, "max_tokens": 6, "command_seconds": 5}}, "files": {}, "check": check}))
+
+    assert task_images(built.store, corpora.find(built.store, built.corpus_id)) == []
+    found = built.dataset("tasks", [task("tiny"), task("agent"), task("tiny")])
+    assert task_images(built.store, corpora.find(built.store, found)) == ["agent", "tiny"]
 
 
 def test_the_manager_reads_its_settings_from_dot_env_when_the_environment_leaves_them_unset(built, tmp_path,

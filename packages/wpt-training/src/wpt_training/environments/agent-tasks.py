@@ -1,7 +1,9 @@
-"""Attempts at the agentic tasks the dataset holds, tagged `tag`, each
-scored by its task's check (docs/training.md, "The finish-tasks step").
-A dataset with no task tagged `tag` is refused before any step runs
-(check_dataset).
+"""Attempts at the agentic tasks the corpus holds, tagged `tag` (its tasks.jsonl, each
+line read by wpt_agent.tasks.from_line), each scored by its task's check
+(docs/training.md, "The finish-tasks step"). A corpus with no task tagged `tag` is
+refused before any step runs (check_corpus). A task that names a Git
+repository starts from it, which the agent harness fetches on the wpt
+manager when the task is played (wpt_agent.tasks.prepared).
 
 Each task's image must be built where the wpt manager's sandboxes run
 first (`wpt agent build-image NAME`, on the Docker host DOCKER_HOST names,
@@ -84,7 +86,7 @@ import math
 import torch
 
 from wpt_model import Routes
-from wpt_training import Environment, Stage, StepFailed, agentic
+from wpt_training import Environment, Stage, StepFailed, agentic, tagged
 from wpt_utils.lines import WARNING
 
 GIVES = "attempts"
@@ -120,16 +122,19 @@ def check(settings):
             raise ValueError(f"{key}: at least 1")
 
 
-def tagged(record, store, tag) -> list[dict]:
-    """The dataset's tasks (tasks.to_json) whose task.json carries tag."""
+def lines(record, store, tag) -> list[str]:
+    """The lines of the corpus's tasks.jsonl, one task each, of the tasks tagged tag; [] without one."""
     part = record.get("tasks")
-    lines = [] if part is None else store.get_bytes(part["file"]).decode("utf-8").splitlines()
-    return [found for found in map(json.loads, lines) if tag in found["tags"]]
+    if part is None:
+        return []
+    wanted = tagged(record, store, tag)
+    found = [(line, json.loads(line)) for line in store.get_bytes(part["file"]).decode("utf-8").splitlines()]
+    return [line for line, task in found if (task["depot"], task["id"]) in wanted]
 
 
-def check_dataset(settings, record, store):
-    if not tagged(record, store, settings["tag"]):
-        raise ValueError(f"no tasks: the dataset holds no task tagged {settings['tag']}")
+def check_corpus(settings, record, store):
+    if not lines(record, store, settings["tag"]):
+        raise ValueError(f"no tasks: the corpus holds none tagged {settings['tag']}")
 
 
 class AgentTasks:
@@ -140,17 +145,16 @@ class AgentTasks:
 
     def __init__(self, settings, context):
         import wpt_agent  # the manager's own: the sandboxes run where it reaches Docker
-        from wpt_dataset import tasks as task_files
+        from wpt_agent.tasks import InvalidTask, from_line
 
         self.settings, self.data = settings, context
-        self.tasks = [task_files.from_json(found) for found in tagged(context.record, context.store, settings["tag"])]
-        found = {task.id.split("/", 1)[0] for task in self.tasks} | {sid for task in self.tasks
-                                                                      for sid, _, _ in task.documents}
-        self.sources = {sid: context.record["sources"][sid] for sid in sorted(found)}
         try:
+            pools = {}
+            self.tasks = [from_line(line, pools=pools) for line in lines(context.record, context.store, settings["tag"])]
             self.built, self.pools = wpt_agent.ready(sorted({task.image for task in self.tasks}))
-        except wpt_agent.Unready as unready:
-            raise StepFailed(str(unready)) from None
+        except (InvalidTask, wpt_agent.Unready) as error:
+            raise StepFailed(str(error)) from None
+        self.learned = {"tasks": len(self.tasks)}
         self.references = None  # {task id: (best start score, reference length)}, with reward "shorter"
         self.lines = {"folder": context.telemetry.folder and str(context.telemetry.folder), "count": 0}
         self.round = _Round()
@@ -158,8 +162,8 @@ class AgentTasks:
         self.ending = None
 
     def opening(self) -> dict:
-        """What the worker's part needs before its step starts: the sources of the tasks."""
-        return {"sources": self.sources}
+        """What the worker's part needs before its step starts: what of the corpus it learns from."""
+        return {"learned": self.learned}
 
     def begin(self) -> dict:
         """The reference, with reward "shorter", played once (a resumed step
@@ -333,7 +337,7 @@ class Attempts(Environment):
 
     def __init__(self, settings, data):
         self.settings, self.data, strategy = settings, data, data.strategy
-        self.sources = self._ask("opening")["sources"]
+        self.learned = self._ask("opening")["learned"]
         self.sampling = torch.Generator(device=strategy.device).manual_seed(data.step_seed)
 
     def _ask(self, name, *arguments, model=None):

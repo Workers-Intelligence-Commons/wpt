@@ -86,8 +86,11 @@ look.
 
 - **The repository README**: links to OUTPUT-NOTICE.
 - **The repository NOTICE**: says where to find the notice of a given model.
-- **The model folder's NOTICE**: the licenses, every source the model
-  learned from with its attribution, and the full output notice.
+- **The model folder's CREDITS**: every text the model learned from, one
+  line per text, with its credit and licenses, then the notices and
+  license texts those lines name.
+- **The model folder's NOTICE**: the licenses, the corpus the model learned
+  from, the content of CREDITS, and the full output notice.
 - **Model card** (the model folder's README.md): the licenses at the top,
   not the bottom.
 - **Weight file metadata**: each safetensors header carries `license`,
@@ -99,24 +102,28 @@ look.
 
 ## One source of truth
 
-Each source's `licenses` entries in `source.json` hold its attribution. The
-dataset build copies them into the dataset record; training copies the
-sources it used into `provenance.json`, and the model folder's NOTICE, model
-card and weight metadata are generated from it, so they cannot contradict
-each other. They are generated when a model is trained, not checked by CI,
-because the repository holds no model. A public web page listing every
-source does not exist yet.
+Each text of a depot holds its credits (title, authors, address), its
+licenses and its notice ([licenses.md](licenses.md), "Licenses and
+notices"). A corpus copies them into its own tables when it is built
+([data-selection.md](data-selection.md), "Corpora"), so it never depends on
+the depot afterwards. Training writes the model folder's CREDITS from the
+corpus's tables alone, one line per text the model's steps read
+(`wpt_depot.notice`), and records the corpus in `provenance.json`; the
+model folder's NOTICE, model card and weight metadata are generated from
+the folder's own files, so they cannot contradict each other. They are
+generated when a model is trained, not checked by CI, because the
+repository holds no model. No public web page lists every text.
 
 ## Before publishing weights
 
 - [ ] Have OUTPUT-NOTICE reviewed by a lawyer
 - [ ] Choose a stable domain name for the attribution address, or keep the
       repository address
-- [ ] Measure memorization on the model to publish: `wpt eval <model folder>
-      memorization` (see [evaluation.md](evaluation.md))
+- [ ] Measure memorization on the model to publish (`wpt eval` holds no such
+      measure, see [evaluation.md](evaluation.md))
 - [x] Check section 2, sections 15 and 16, and license compatibility in the
       official AGPL text (section 7 also matters, see clause 1)
 - [x] Decide where the clauses live: OUTPUT-NOTICE
-- [x] Generate NOTICE, the model card block and the metadata from the source
-      descriptions
+- [x] Generate CREDITS, NOTICE, the model card block and the metadata from
+      the corpus's tables
 - [x] Show the notice in `wpt chat` (`--about`)

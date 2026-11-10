@@ -45,55 +45,52 @@ tokenizer recipe, shared by every dataset and model that names it.
 `data/recipes/tokenizers/<name>.json`:
 
 ```json
-{ "version": 1, "sample_bytes": 10000000000, "vocab_size": 32000, "note": "" }
+{ "version": 1, "depot": "<address>", "dataset": "<name>", "sample_bytes": 10000000000, "vocab_size": 32000, "note": "" }
 ```
 
-`sample_bytes` is the size of the sample that trains it, in file bytes.
+`depot` is the address of a depot and `dataset` the name of a dataset
+there: their texts train the vocabulary. `sample_bytes` is the most bytes of
+text the sample that trains it holds.
+
+### Training it
+
+`wpt depot tokenizer RECIPE` trains the vocabulary of a recipe. It opens the
+recipe's depot, takes the plain texts of the recipe's dataset in the order
+its corpus would take them (the dataset's libraries at the states it names,
+its shares), and keeps each text whole while the bytes kept stay within
+`sample_bytes`; a text that no longer fits is passed over, and items are no
+sample. It trains the vocabulary on that sample, puts it in the store
+(`WPT_STORE`), and writes the recipe's lock. A recipe whose `depot` or
+`dataset` is still empty is refused (`InvalidRecipe`), and so is a dataset
+with no plain text within `sample_bytes` (`NoSample`).
 
 ### The lock freezes it
 
-A dataset recipe names its vocabulary. The first build of a dataset that
-names a recipe version with no lock draws a seeded sample of its own chosen
-documents, each pool taking its weight of `sample_bytes` at most, as the
-start of its chosen documents up to a whole frame's group (the unit the
-choice draws, [data-selection.md](data-selection.md)), trains the
-vocabulary on it (each document once), and writes
-`data/recipes/tokenizers/<name>.lock.json`: the recipe, the vocabulary's
-sha256, and the list of the documents it was trained on, named by its sha256
-(`documents_sha256`) and its number of lines (`document_count`). `wpt dataset
-build-tokenizer <dataset recipe>` does the same and stops before any token.
-The lock lists each source the build left out with the kind of its error
-(`left_out`); with `--strict`, a failing source stops the build instead. The list is
-one file of the store: a line per document, the JSON array
-`["<id>", "<sha256 of its Markdown>"]`, sorted by the line's bytes, written while the documents are read
-and sorted on disk, so it is never held in memory whole. Commit the lock.
+The vocabulary of a recipe version is trained once, and its lock,
+`data/recipes/tokenizers/<name>.lock.json`, freezes it: the recipe, the
+vocabulary's sha256, and every text it was trained on, by its depot's
+address and its id there (`texts`). Commit the lock.
 From then on, every build of that version uses that vocabulary:
 
-- **Adding or changing sources never retrains it.** Many datasets and
+- **Adding or changing texts never retrains it.** Many datasets and
   models, whatever their training settings, share one vocabulary, so a
-  model can keep training on new data. A source the vocabulary was not
+  model can keep training on new data. A text the vocabulary was not
   trained on still encodes exactly, since every byte has a token, only less
-  compactly; `wpt dataset tokenizer-check <name>` shows by how much.
+  compactly.
 - **A new vocabulary takes a new version.** For a big change (much more
   data, another size) or a change of the tokenizing algorithm, raise
-  `version` in the recipe: the next build trains a new vocabulary and
-  replaces the lock (git history keeps the old one). Editing the recipe
-  (other than its `note`) without raising `version` stops the build
-  (`TokenizerVersionNeeded`), so one name and version always mean one
-  vocabulary. A change of the tokenizer's code asks for no `version` of the
-  recipe: the lock keeps the vocabulary. A change of that code that changes
-  the tokens of the same text raises `TOKENS_VERSION` instead
-  ([architecture.md](architecture.md), "Fingerprints and the store").
+  `version` in the recipe and run `wpt depot tokenizer RECIPE` again: it
+  replaces the lock (git history keeps the old one). While the lock is of
+  the recipe's version, the command refuses to train (`TokenizerLocked`), so
+  one name and version always mean one vocabulary. A change of the
+  tokenizer's code asks for no `version` of the recipe: the lock keeps the
+  vocabulary.
 - **The vocabulary is shared through the store.** A locked vocabulary is
-  never trained again from the documents its lock lists, on this machine
-  or another: every build reads it from the store, checked against the
-  sha256 the lock keeps. A store that does not hold it stops the build
-  (`VocabularyMissing`), so a machine without access to the store that
-  holds it cannot use it. Each dataset keeps the vocabulary it was built
-  with in its folder, and a build finds a locked vocabulary there again
-  when the store's `cache/files/` does not hold it. The list of the trained
-  documents is shared through the store the same way: a store without it
-  stops the build (`TrainedListMissing`).
+  never trained again from the texts its lock lists, on this machine or
+  another: every build reads it from the store, checked against the sha256
+  the lock keeps. A build stops (`NoVocabulary`) when the recipe has no lock
+  of its version, or when the store does not hold the vocabulary, so a
+  machine without access to the store that holds it cannot use it.
 - **Erasure does not reach a locked vocabulary** until `version` is raised:
   merges learned from text that was erased later stay in it (see
   [erasure.md](erasure.md)).
@@ -104,9 +101,9 @@ mean other tokens.
 
 ### Where the vocabulary is checked
 
-- The dataset build uses only the locked vocabulary; the dataset record
+- The corpus build uses only the locked vocabulary; the corpus record
   names the recipe, its version and the vocabulary's file (`{"key",
-  "sha256"}`, in the dataset's folder), and the dataset id covers its
+  "sha256"}`, in the corpus's folder), and the corpus id covers its
   sha256.
 - Training reads the vocabulary from the store, checked against that
   sha256, and writes it into the model folder as `tokenizer.json`. Every
@@ -115,14 +112,6 @@ mean other tokens.
 - `wpt chat` and `wpt eval` load `tokenizer.json` only when its sha256
   is the one in the weights' headers (`TokenizerMismatch` otherwise), so a
   model never runs with another vocabulary.
-
-### Checking a vocabulary on the data
-
-`wpt dataset tokenizer-check <name>` encodes then decodes every document of
-every admitted source with the locked vocabulary: each must give back its
-exact bytes (`RoundTripFailed` otherwise). It prints, per source, the
-documents, characters, tokens and characters per token, and marks the
-sources the vocabulary was not trained on. It writes nothing to the store.
 
 A vocabulary file is canonical JSON:
 

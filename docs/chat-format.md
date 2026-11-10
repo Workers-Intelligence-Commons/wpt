@@ -62,56 +62,31 @@ person then edits or confirms, and its metadata records that
   written as tokens.
 
 A conversation without any `metadata`, or whose messages hold none, stays
-valid. `wpt dataset migrate` rewrites the repository's own files, and a
-source's `chat` file, whose bytes may be upstream's, is brought to the
-current shape as it is read (`wpt_dataset.migrate.upgrade`).
+valid.
 
 ## Model drafts
 
-In the conversation editor of `wpt web`, a person can ask a WPT model
-folder for the next `assistant` message. The reply appears as a draft that
-the person edits or confirms as it is; only then does it join the
-conversation. The message's
-`metadata.draft` records where it started:
+An `assistant` message may start as a reply a WPT model drafted, which a
+person then edited or confirmed as it is. The message's `metadata.draft`
+records where it started:
 
 - `model`: the name of the model folder that wrote the draft.
 - `weights`: the sha256 of each weights file of that folder, by file name,
   so the exact model is known even after the folder is renamed.
 - `sha256`: the sha256 of the draft's `content` as the model wrote it: the
-  JSON text of the block list with sorted keys, no spaces, and characters
-  outside ASCII kept as they are (`wpt_dataset.conversations.content_sha256`).
-- `edited`: whether the person changed it, which is exactly whether the
-  sha256 of the message's `content` now differs from `sha256`. The
-  service layer (`Repo.save_conversation`, behind `wpt web` and
-  `wpt dataset save-conversation`) computes it when the conversation is
-  saved, whatever the editor sent.
+  JSON text of the block list with sorted keys, no spaces, characters
+  outside ASCII kept as they are, and a whole number written as an
+  integer (`2.0` as `2`).
+- `edited`: whether the person changed it, which is whether the sha256 of
+  the message's `content` now differs from `sha256`.
 
-In `sha256`, a whole number is written as an integer (`2.0` as `2`), as a
-browser writes it back, so a draft the editor sends back unchanged still
-gives its sha256.
-
-`metadata.draft` is a claim the client makes, which the server does not
-check: neither `wpt web` nor `wpt dataset save-conversation` checks that a
-WPT model wrote the draft, nor its `model`, `weights` or `sha256`. They set
-only `edited`, from whether the message's `content` still gives the
-`sha256` the client sent.
-
-`wpt dataset check` refuses a `draft` on any message but an `assistant`
-one, and an `edited` that does not match the content (a chat file made
-another way, such as with `unpack` and `patch`). An unedited
-confirmed draft is allowed: confirming it is the person's choice that the
-reply is right. A message with no `draft` was written by the person from
-the start.
-
-## Writing a chat file
-
-The conversation editor and `wpt dataset save-conversation` write only in a
-chat file of an `empty` source, text written for WPT; an upstream source's
-chat file stays upstream's. Each line is the conversation's JSON on one
-line, with U+2028, U+2029 and U+0085 always written as `\u2028`, `\u2029`
-and `\u0085`, even in a value a save keeps unchanged: the same JSON, and no
-line splitter cuts the line in two. A replaced line keeps its layout where
-its meaning did not change, and every other line keeps its bytes.
+`metadata.draft` is a claim the person who adds the conversation makes.
+The depot checks only its shape, through the kind's schema, and refuses a
+`draft` on any message but an `assistant` one: nothing checks that a WPT
+model wrote the draft, its `model`, `weights` or `sha256`, or that
+`edited` matches the content. An unedited confirmed draft is allowed:
+confirming it is the person's choice that the reply is right. A message
+with no `draft` was written by the person from the start.
 
 ## Blocks
 
@@ -124,15 +99,15 @@ its meaning did not change, and every other line keeps its bytes.
 | `json` | `value` | a structured value: any JSON value; a harness builds it, the model never writes one ([The answer](#the-answer)) |
 | `file` | `sha256`, `media_type` | a media file such as a screenshot, stored next to the record and named by its sha256 |
 
-A new kind of element gets a new block type; existing blocks keep their
-meaning, and a migration step covers any change to them (docs/architecture.md, "Migrations").
+A new kind of element gets a new block type, and existing blocks keep
+their meaning.
 
 ## The answer
 
 The model never writes JSON, except its tool calls, which other harnesses
 parse as JSON: it writes text and special tokens, and the harness builds
 every `json` block and value in the records, in a shape that can later go
-back into sources, as conversations for the `answer-as-assistant` step
+back into a depot, as conversations for the `answer-as-assistant` step
 for example.
 
 The model's final reply, its last assistant message, one with no tool call,
@@ -170,55 +145,20 @@ that learns makes the whole attempt worth 0, whatever its other parts
 instructions ask for a block or say how to answer. There is no way to
 abstain: "I don't know" is never a way out that costs nothing.
 
-The text measures ask their questions the same way: the prompt never asks
-for JSON, the model's reply is text, and the measure keeps it, with its
-confidence where the measure asks one through the same question, as a
-`json` block in its records ([evaluation.md](evaluation.md), "Text
-measures").
+## In a depot
 
-## Files
+A conversation is a depot item of kind `conversation`, its content the
+object above ([data-selection.md](data-selection.md), "Items"). The depot
+checks it against the kind's JSON Schema when it is added
+(`packages/wpt-depot/src/wpt_depot/kinds/conversation.schema.json`): only
+an `assistant` message holds `thinking` or `tool_call` blocks or a
+`draft`, and only a `tool` message holds `tool_result` blocks.
 
-Conversations are files of a source, in the `chat` format: JSON Lines, one
-conversation per line. `wpt dataset check --fetch` checks every line
-against `packages/wpt-dataset/src/wpt_dataset/schemas/conversation.schema.json`
-(only an `assistant` message holds `thinking` or `tool_call` blocks, only a
-`tool` message holds `tool_result` blocks) and checks that each
-`tool_result` answers a `tool_call` made earlier in the conversation.
-
-A `chat` file is never a pre-training document. A dataset's build keeps
-every conversation with the tags of its file, and a training step reads
-those whose tags include its `tag` setting: the `answer-as-assistant`
-step reads the conversations tagged `answer-as-assistant`
-([training.md](training.md), "The answer-as-assistant step").
-
-### Message trees
-
-Some datasets store branching conversations: one
-message per record, each naming its parent, so a question can have several
-answers and each answer several follow-ups. A `chat` format entry with
-`tree` reads such a file (JSON Lines or Parquet, as a `records` file):
-
-```json
-{"format": "chat", "paths": ["messages.jsonl.gz"],
- "tree": {"id": "message_id", "parent": "parent_id", "role": "role", "text": "text",
-          "roles": {"prompter": "user", "assistant": "assistant"},
-          "drop": [{"field": "synthetic", "is": true}, {"field": "labels.pii.value", "above": 0}]}}
-```
-
-- `id`, `parent`, `role`, `text`: the fields holding them; a first message
-  has no parent. Fields with dots go into nested objects, as in `records`.
-- `roles`: each of the file's role names, mapped to WPT's.
-- `drop`: a message whose field `is` a value, or holds a number `above`
-  one, is dropped, and so is everything after it in the tree. A message
-  with no text is dropped too. Model-written messages are always dropped
-  this way: an `assistant` message is written by a person.
-
-Every path from a first message to a last one becomes a conversation, so
-the opening turns shared by several branches appear in each of them.
-Trailing messages that are not the assistant's are left off; a path with no
-assistant message, or one that repeats another exactly, gives none. A
-conversation's id ends with the id of its last message. A parent the file
-does not hold stops the check.
+A conversation is never a plain text that the `read-text` step reads. A
+corpus keeps every conversation of its dataset as the tokens of the
+template below, in token files of their own, and the `answer-as-assistant`
+step reads them ([training.md](training.md), "The answer-as-assistant
+step").
 
 ## The template
 

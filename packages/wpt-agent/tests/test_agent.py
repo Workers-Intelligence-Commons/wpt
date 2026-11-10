@@ -1,6 +1,5 @@
 import dataclasses
 import hashlib
-import json
 import random
 import re
 import subprocess
@@ -8,13 +7,14 @@ import time
 
 import pytest
 
-from wpt_agent import (AGENT, Limits, Sandbox, SandboxError, arranged, attempt, attempts, changes, docker, needed,
+from wpt_agent import (AGENT, Limits, Sandbox, SandboxError, arranged, attempt, attempts, changes, docker,
                        offer, opening, plain, score)
 from wpt_agent.loop import ANSWERED, CONFIDENCE, CONTEXT, FULL, TOKENS, TURNS
 from wpt_agent.sandbox import ROOT
 from wpt_agent.tools import ASK, NOT_KNOWN, OTHER_NAMES, TOOLS, call
-from wpt_dataset.manifest import EXECUTABLE, FILE, SYMLINK
-from wpt_dataset.tasks import ASK as ASK_NAME, BUILT_IN, REMOTE, Task, Variant
+from wpt_agent.files import EXECUTABLE, FILE, SYMLINK
+from wpt_agent.tasks import Task, Variant
+from wpt_recipes import ASK as ASK_NAME, BUILT_IN_TOOLS
 from wpt_tokenizer import Tokenizer, chat
 
 TOKENIZER = Tokenizer([])  # bytes only: any text encodes
@@ -77,8 +77,8 @@ def results(done):
 
 
 def test_the_tools_offered_are_the_names_the_task_format_allows():
-    # wpt_dataset refuses a declared tool that takes one of these names
-    assert [tool["name"] for tool in TOOLS] == list(BUILT_IN) and ASK["name"] == ASK_NAME
+    # wpt_agent.tasks refuses a declared tool that takes one of these names
+    assert [tool["name"] for tool in TOOLS] == list(BUILT_IN_TOOLS) and ASK["name"] == ASK_NAME
 
 
 def test_tool_calls_run_in_the_container_and_the_check_scores_what_they_left(image):
@@ -503,47 +503,24 @@ def test_a_needed_tool_is_always_offered_and_the_others_vary_with_the_seed():
 
 
 def test_each_attempt_gets_one_way_of_a_need_with_the_files_that_way_hides():
-    # a commit-and-push attempt pushes one
-    # way, the seeded choice of a variant: git through bash, no push tool
-    # offered; or the push tool with the remote, a folder outside /work,
-    # hidden among the tools' files under its own path
-    push = {"name": "push", "description": "Push.", "program": "/usr/local/bin/push", "parameters": {"type": "object"}}
-    remote = {"HEAD": (FILE, b"ref: refs/heads/main\n"), "config": (FILE, b"[core]\n")}
-    pushing = task(needs=((Variant(("bash",)), Variant(("bash", "push"), (REMOTE,))),), tools=(push,),
-                   outside={REMOTE: remote})
+    # an attempt reaches a file one way, the seeded choice of a variant:
+    # bash alone; or bash with the sync tool and the shared folder, a folder
+    # under files/, moved among the tools' files
+    sync = {"name": "sync", "description": "Sync.", "program": "/usr/local/bin/sync", "parameters": {"type": "object"}}
+    remote = {"shared.git/HEAD": (FILE, b"ref: refs/heads/main\n"), "shared.git/config": (FILE, b"[core]\n")}
+    syncing = task(needs=((Variant(("bash",)), Variant(("bash", "sync"), ("shared.git",))),), tools=(sync,),
+                   files={**task().files, **remote})
     ways = set()
     for seed in range(40):
-        chosen = offer(pushing, [], random.Random(seed))
-        found = arranged(pushing, chosen)
+        chosen = offer(syncing, [], random.Random(seed))
+        found = arranged(syncing, chosen)
         offered = set(chosen.names.values())
-        assert "bash" in offered and ("push" in offered) == bool(chosen.hidden) and found.files == pushing.files
-        moved = {f"tmp/origin.git/{path}": entry for path, entry in remote.items()}
-        assert (found.tool_files, found.outside) == ((moved, {}) if chosen.hidden else ({}, {REMOTE: remote}))
-        ways.add("push" in offered)
+        assert "bash" in offered and ("sync" in offered) == bool(chosen.hidden)
+        assert (found.files, found.tool_files) == ((task().files, remote) if chosen.hidden else (syncing.files, {}))
+        ways.add("sync" in offered)
     assert ways == {True, False}
 
 
-def test_the_needed_tools_are_the_varied_attempt_s_variants_under_their_real_names():
-    # an attempt offered only what it needs gets the same variant of each
-    # need, and so the same hidden files, as the varied attempt drawn from a
-    # generator in the same state, and nothing renamed, shuffled or added;
-    # the task's absent folders come with the arrangement either way
-    push = {"name": "push", "description": "Push.", "program": "/usr/local/bin/push", "parameters": {"type": "object"}}
-    pushing = task(needs=((Variant(("bash",)), Variant(("bash", "push"), (REMOTE,))), (Variant(("read",)),)),
-                   tools=(push,), outside={REMOTE: {"HEAD": (FILE, b"ref: refs/heads/main\n")}},
-                   absent=("/usr/share/doc/thing",))
-    pool = [{"name": "fetch", "description": "Fetch.", "program": "/usr/local/bin/fetch",
-             "parameters": {"type": "object"}}]
-    ways = set()
-    for seed in range(40):
-        varied, only = offer(pushing, pool, random.Random(seed)), needed(pushing, random.Random(seed))
-        expected = ["bash", "push", "read"] if varied.hidden else ["bash", "read"]
-        assert only.names == {name: name for name in expected} and [t["name"] for t in only.tools] == expected
-        assert only.hidden == varied.hidden and set(only.names) <= set(varied.names.values())
-        assert arranged(pushing, only) == arranged(pushing, varied)
-        assert arranged(pushing, only).absent == ("/usr/share/doc/thing",)
-        ways.add(only.hidden)
-    assert len(ways) == 2
 
 
 def test_an_attempt_s_changes_to_work_are_a_diff_naming_what_is_not_text():
@@ -568,7 +545,7 @@ def test_an_attempt_s_changes_to_work_are_a_diff_naming_what_is_not_text():
                     f"mode of run.sh: {FILE} -> {EXECUTABLE}\n")
     assert changes(before, {path: left(*entry) for path, entry in before.items()}) == ""
     cut = changes(before, after, limit=40)
-    assert cut.startswith(text[:40]) and cut.endswith(f" more bytes of changes]\n") and len(cut) < 100
+    assert cut.startswith(text[:40]) and cut.endswith(" more bytes of changes]\n") and len(cut) < 100
 
 
 def test_the_files_an_attempt_left_in_work_are_read_with_their_modes_and_hashes(image):

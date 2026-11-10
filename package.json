@@ -1,0 +1,12 @@
+{
+  "name": "wpt-workspace",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "workspaces": [
+    "apps/wpt/ui",
+    "vendor/wic-design-system/packages/*"
+  ],
+  "scripts": {
+    "postinstall": "bun run --filter @workers-intelligence-commons/tokens build && bun run --filter @workers-intelligence-commons/components build"
+  }
+}

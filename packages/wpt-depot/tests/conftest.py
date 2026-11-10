@@ -1,0 +1,21 @@
+import pytest
+
+from wpt_depot import About, Declaration, Depot
+
+ME = Declaration("Ada Lovelace", "ada@example.org", True)
+
+
+@pytest.fixture
+def me():
+    return ME
+
+
+@pytest.fixture
+def make_depot(tmp_path):
+    """make_depot(name): a new depot in the test's folder, with the license
+    CC0-1.0."""
+    def make(name="depot"):
+        depot = Depot.new(str(tmp_path / name), About(name, "Ada Lovelace", "ada@example.org"))
+        depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
+        return depot
+    return make

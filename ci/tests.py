@@ -52,11 +52,11 @@ AS_A_WORKER = {**NO_GPU, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 IMAGE_CODE = ("packages/wpt-agent/src/wpt_agent/images.py", "apps/wpt/tests/agent/test_images.py",
               "packages/wpt-agent/tests/test_agent_image.py",
               "conftest.py",  # the image fixture
-              "packages/wpt-dataset/src/wpt_dataset/repo.py",  # Repo.image_files: what the image's tag covers
-              "packages/wpt-dataset/src/wpt_dataset/schemas/image-lock.schema.json",
-              "packages/wpt-dataset/src/wpt_dataset/schemas/image-licenses.schema.json")
+              "packages/wpt-recipes/src/wpt_recipes/recipes.py",  # Recipes.image_files: what the image's tag covers
+              "packages/wpt-recipes/src/wpt_recipes/schemas/image-lock.schema.json",
+              "packages/wpt-recipes/src/wpt_recipes/schemas/image-licenses.schema.json")
 # whether an image's folder differs from the revision: only the service layer names the data folder
-IMAGES_DIFFER = "import sys; from wpt_dataset.repo import Repo; print(Repo('.').images_differ(sys.argv[1]))"
+IMAGES_DIFFER = "import sys; from wpt_recipes import Recipes; print(Recipes('.').images_differ(sys.argv[1]))"
 
 
 def record_folder() -> Path:

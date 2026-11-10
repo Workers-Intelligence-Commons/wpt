@@ -8,16 +8,13 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file
 
-from wpt_dataset.build import build_dataset
-from wpt_dataset.repo import Repo
 from wpt.train import main as train
 
 # the application tests' tiny model as a series, laws chosen so that C = M and D = M / 2000: the small size reads
 # 199 tokens as 3 updates of 4 windows of 16 tokens, after a warm-up of 1; its branches make 2 updates (half, 1.5
-# rounded up), decaying after update 1, and 3, decaying after update 2; the large size makes the one dataset hold
-# enough documents for the drafter
+# rounded up), decaying after update 1, and 3, decaying after update 2
 TINY = {
-    "data": {"mixture": "m", "tokenizer": "t", "held_out": 0.5},
+    "data": {"depot": "", "dataset": "d", "tokenizer": "t"},  # the depot: the test's
     "reference": {"n_layer": 4, "d_model": 16, "kda_heads": 2, "kda_head_dim": 8, "attention_heads": 2,
                   "attention_head_dim": 128, "query_rank": 8, "output_groups": 1, "output_rank": 8, "index_heads": 2,
                   "index_head_dim": 128, "index_top_k": 2, "n_experts": 4, "top_k": 2, "expert_width": 8,
@@ -45,8 +42,8 @@ def steps_of(folder):
 def test_branches_share_the_trunk_and_the_full_branch_trains_as_the_size_s_own_run(built, tmp_path):
     folder = tmp_path / "data" / "recipes" / "series"
     folder.mkdir(parents=True)
-    (folder / "tiny.json").write_text(json.dumps(TINY))
-    dataset = build_dataset(Repo(tmp_path), "tiny:small:branch-1", built.store, log=lambda *_: None)
+    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.address}}))
+    dataset = built.corpus_id
     # on the CPU, where the same updates give the same bits
     (tmp_path / "cpu.py").write_text("import torch\nfrom wpt_training import Strategy\n\n"
                                      "def start():\n    return Strategy(torch.device('cpu'))\n")

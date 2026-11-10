@@ -1,4 +1,4 @@
-"""Read text: next-token prediction on windows of the dataset's text, the
+"""Read text: next-token prediction on windows of the corpus's text, the
 windows growing stage by stage, under by-part on its multi-step schedule
 (docs/training.md, "The read-text step"). A recipe that stops after it
 makes a base model."""

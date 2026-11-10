@@ -12,9 +12,7 @@ scheduler's pass times are measured once, when the model is loaded;
 --scheduler-costs RECORD_FOLDER reads instead those a run recorded
 (scheduler-costs.json in that record folder of the store WPT_STORE
 names, environment or .env), refused when they were measured on another
-setup (the model's config, the drafter's block, the device). That read
-touches the store, so it takes --session ID (WPT_SESSION) and --from OLD_ID,
-and is refused (SessionNeeded) with no ID.
+setup (the model's config, the drafter's block, the device).
 
 --kernels FORM (WPT_KERNELS: tilelang, triton or pytorch) names what computes
 the model's attention on the GPU, as for wpt train (docs/model.md,
@@ -29,7 +27,7 @@ the chat template, and the model writes the assistant's message until
 calls are not run.
 
 --about prints the model folder's NOTICE: the licenses of the weights and of
-generated text, and the sources the model learned from.
+generated text, and the texts the model learned from.
 """
 
 import argparse
@@ -38,7 +36,6 @@ import os
 import sys
 from pathlib import Path
 
-from wpt import sessions
 from wpt_inference import COSTS_FILE, costs_setup, measure_costs, next_message, replayed_costs, sample_tokens
 from wpt_model import TokenizerMismatch, load_drafter, load_model, load_tokenizer
 from wpt_model.sparse import FORMS, KernelUnavailable, kernels, named_form
@@ -76,8 +73,8 @@ def answer(model, tokenizer, conversation, max_new_tokens=MAX_NEW_TOKENS, drafte
 def licenses_line(folder) -> str:
     """What the start line says about licenses, and where the notices are."""
     notice = Path(folder) / NOTICE_NAME
-    where = (f"sources and notices: {notice} (wpt chat --about)" if notice.exists() else
-             f"this folder has no {NOTICE_NAME}; notices and sources: {REPOSITORY}")
+    where = (f"the texts it learned from and their notices: {notice} (wpt chat --about)" if notice.exists() else
+             f"this folder has no {NOTICE_NAME}; notices: {REPOSITORY}")
     return f"generated text: {OUTPUT_LICENSE}; weights: {LICENSE}; {where}"
 
 
@@ -86,7 +83,7 @@ def about(folder) -> str:
     if notice.exists():
         return notice.read_text(encoding="utf-8")
     return (f"{folder} has no {NOTICE_NAME} (wpt train writes one). WPT weights are {LICENSE} and the text they "
-            f"generate is {OUTPUT_LICENSE}; the notices and the sources are at {REPOSITORY}\n")
+            f"generate is {OUTPUT_LICENSE}; the notices are at {REPOSITORY}\n")
 
 
 def main(argv=None):
@@ -98,11 +95,10 @@ def main(argv=None):
     parser.add_argument("model", nargs="?", default="runs/default", help="model folder (default: runs/default)")
     parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS, help="length limit of each continuation")
     parser.add_argument("--chat", action="store_true", help="chat with a model trained on conversations (roles and history)")
-    parser.add_argument("--about", action="store_true", help="print the model's licenses and sources, then quit")
+    parser.add_argument("--about", action="store_true", help="print the model's licenses and the texts it learned from, then quit")
     parser.add_argument("--scheduler-costs", metavar="RECORD_FOLDER",
                         help="read the drafter scheduler's pass times that a run recorded on the same setup: the name "
                              f"of its record folder in the store, which holds {COSTS_FILE} (default: measure them)")
-    sessions.options(parser)
     try:
         default = named_form(os.environ["WPT_KERNELS"]) if "WPT_KERNELS" in os.environ else None
     except argparse.ArgumentTypeError as error:
@@ -133,7 +129,7 @@ def main(argv=None):
     if args.scheduler_costs:  # a run's recorded pass times, on this setup only
         try:
             env_file = Path.cwd() / ".env"
-            store = sessions.opened(store_from_settings(env_file), args, env_file)
+            store = store_from_settings(env_file)
             recorded = store.read_record(args.scheduler_costs, COSTS_FILE)
             costs = replayed_costs(recorded, costs_setup(model.config, 1, drafter.block, device))
         except (StoreError, ValueError) as error:

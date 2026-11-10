@@ -25,8 +25,7 @@ from anywhere else than snapshot.debian.org or snapshot.ubuntu.com.
 import argparse
 import sys
 
-from wpt_dataset.errors import DatasetError
-from wpt_dataset.repo import Repo
+from wpt_recipes import RecipeError, Recipes
 
 from wpt_agent import images
 from wpt_utils.lines import say
@@ -43,10 +42,10 @@ def main(argv=None):
     build.add_argument("name", help="a folder name in data/images/")
     args = parser.parse_args(argv)
     try:
-        root = Repo.find().root
+        root = Recipes.find().root
         if args.command == "lock-image":
             images.lock(root, args.name, force=args.force)
         else:
             say(images.build(root, args.name))
-    except (images.ImageError, DatasetError) as error:
+    except (images.ImageError, RecipeError) as error:
         sys.exit(f"{type(error).__name__}: {error}")

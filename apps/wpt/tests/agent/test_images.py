@@ -10,7 +10,7 @@ from wpt_agent import ImageError
 from wpt_agent import docker
 from wpt_agent import images
 from wpt.agent import main
-from wpt_dataset.repo import Repo
+from wpt_recipes import Recipes
 
 # the documented shape: the base as an argument, packages installed with apt
 DOCKERFILE = """ARG BASE=ubuntu:24.04
@@ -46,7 +46,7 @@ def test_a_lock_pins_the_base_the_archive_date_and_packages_and_every_machine_bu
     assert sorted(licenses) == sorted(pinned["packages"])
     assert licenses["bash"]["version"] == pinned["packages"]["bash"]
     assert licenses["bash"]["licenses"]  # bash's copyright file is machine-readable
-    assert Repo(root).check() == []  # both files match their schemas
+    assert Recipes(root).check() == []  # both files match their schemas
     with pytest.raises(ImageError, match="lock.json exists; pass --force"):
         images.lock(root, "tiny", log=lambda *_: None)
 
@@ -265,7 +265,7 @@ def test_the_check_prints_the_policy_only_when_the_update_left_a_remote_list(tmp
 
 
 def a_repository(tmp_path):
-    for folder in ("data/sources", "data/images/tiny"):
+    for folder in ("data/recipes", "data/images/tiny"):
         (tmp_path / folder).mkdir(parents=True)
     (tmp_path / "data" / "images" / "tiny" / "Dockerfile").write_text(DOCKERFILE)
     return tmp_path

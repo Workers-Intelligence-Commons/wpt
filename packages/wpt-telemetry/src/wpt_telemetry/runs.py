@@ -1,6 +1,6 @@
 """What a store's records say about its runs, read back for people.
 
-    runs(store)            every run, <id>/<run>, with its command, its start
+    runs(store)            every run, by its folder's name, with its command, its start
                            and how it ended, from its start.json and end.json
     summary(store, folder) one run: its stage (the spans open at the last
                            line read), how many spans, events and lines it

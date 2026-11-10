@@ -1,19 +1,17 @@
 """wpt: every WPT job, each a subcommand with its own options (`wpt
 SUBCOMMAND --help`).
 
-    wpt dataset ...   sources, the data rules, vocabularies and dataset builds
+    wpt depot ...     the depot: texts, decisions, libraries, datasets, erasures, corpora, and its web pages
     wpt store ...     what the store holds, its runs, a kept model copied out
     wpt agent ...     the images of agentic tasks, locked and built
-    wpt train ...     train a model recipe on the dataset built from it
+    wpt train ...     train a model recipe on the corpus of its depot and dataset
     wpt eval ...      run tests on a trained model, into its model card
-    wpt scaling ...   fit the scaling curve and predict a loss
     wpt chat ...      continue text with a trained model, or chat with one
-    wpt manager       download, build and train a model recipe in one command
+    wpt manager       train a model recipe on its corpus in the store, through rented machines
     wpt doctor        check this machine: what is missing and how to fix it
-    wpt web ...       the local web server, on 127.0.0.1
 
-The subcommands and the web server (`wpt web`) are the app's two
-controllers over the same services, the libraries of packages/. A
+The subcommands are controllers over the services, the libraries of
+packages/; `wpt depot web` serves the depot's operations as pages too. A
 subcommand's module is imported only when it runs, so a light one (`wpt
 store`) never loads PyTorch.
 """
@@ -24,9 +22,9 @@ import sys
 from wpt_utils.lines import ERROR, say
 
 # each subcommand: the module whose main(argv) runs it
-COMMANDS = {"dataset": "wpt.dataset", "store": "wpt.store", "agent": "wpt.agent", "train": "wpt.train",
-            "eval": "wpt.eval", "scaling": "wpt.eval.scaling", "chat": "wpt.chat", "manager": "wpt.manager",
-            "doctor": "wpt.doctor", "web": "wpt.web"}
+COMMANDS = {"depot": "wpt.depot", "store": "wpt.store", "agent": "wpt.agent", "train": "wpt.train",
+            "eval": "wpt.eval", "chat": "wpt.chat", "manager": "wpt.manager",
+            "doctor": "wpt.doctor"}
 
 
 def main(argv=None):

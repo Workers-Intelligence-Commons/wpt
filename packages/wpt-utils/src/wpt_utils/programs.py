@@ -1,4 +1,4 @@
-"""The outside programs WPT runs (mercurial, GnuPG, Bun, git), the commit
+"""The outside programs WPT runs (git, Bun, docker), the commit
 of the WPT repository a command runs from, and what identifies the code
 itself.
 
@@ -8,7 +8,7 @@ command. code() is the one place that reads the repository commit: what
 a run's record and a model's provenance name as the code that made
 something, the commit of the checkout the code runs from and a hash of
 its uncommitted changes. code_name() gives it as one line, which a stored
-result of the data pipeline keeps in its first line as what made it.
+result keeps in its first line as what made it.
 repository() gives the commit, and whether there are changes, in the shape
 provenance.json and each run's record name them.
 """
@@ -20,14 +20,12 @@ from pathlib import Path
 
 
 class MissingTool(Exception):
-    """A program the work needs (mercurial for mercurial sources, GnuPG for
-    GPG-signed commits, Bun for wpt web) is not installed."""
+    """A program the work needs (git for a task's repository, Bun for
+    wpt depot web) is not installed."""
 
 
 def program(name: str) -> str:
-    """The absolute path of a program on the search path. Handing git an
-    absolute path also matters on Windows, where Git for Windows would
-    otherwise run its own bundled GnuPG, which rejects Windows paths."""
+    """The absolute path of a program on the search path."""
     path = shutil.which(name)
     if path is None:
         raise MissingTool(f"{name} is not installed (or not on the search path)")

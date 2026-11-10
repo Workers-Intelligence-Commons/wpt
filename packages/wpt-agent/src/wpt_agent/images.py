@@ -40,7 +40,7 @@ A built image is tagged wpt-agent/<name>:<hash of the folder's files
 except licenses.json>, so a changed Dockerfile or lock builds again.
 
 The folder is read and the two files written through the service layer
-(wpt_dataset.repo): docker gets the folder's files as a tar archive on its
+(wpt_recipes.Recipes): docker gets the folder's files as a tar archive on its
 standard input, never a path in the repository.
 """
 
@@ -54,8 +54,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from wpt_dataset.errors import DatasetError
-from wpt_dataset.repo import Repo
+from wpt_recipes import RecipeError, Recipes
 from wpt_utils.lines import say
 
 from . import docker
@@ -100,8 +99,8 @@ class ImageError(Exception):
 def files(root, name) -> dict[str, tuple[bool, bytes]]:
     """{path: (executable, content)} of every file in data/images/<name>/."""
     try:
-        return Repo(root).image_files(name)
-    except DatasetError as error:
+        return Recipes(root).image_files(name)
+    except RecipeError as error:
         raise ImageError(str(error)) from None
 
 
@@ -118,7 +117,7 @@ def lock(root, name, *, force=False, log=say) -> str:
     """Pin the image's inputs: write lock.json and licenses.json; with
     force, replace earlier ones. Returns lock.json's place in the
     repository (data/images/<name>/lock.json)."""
-    where, repo = files(root, name), Repo(root)
+    where, repo = files(root, name), Recipes(root)
     locked, licensed = repo.relative("image-lock", name), repo.relative("image-licenses", name)
     if repo.exists("image-lock", name) and not force:
         raise ImageError(f"{locked} exists; pass --force to lock the image again and replace it")
@@ -148,11 +147,11 @@ def lock(root, name, *, force=False, log=say) -> str:
 def build(root, name, log=say) -> str:
     """Build the image from the folder and its lock, unless this machine
     has it already. Returns its tag."""
-    where, wanted, repo = files(root, name), tag(root, name), Repo(root)
+    where, wanted, repo = files(root, name), tag(root, name), Recipes(root)
     locked = repo.relative("image-lock", name)
     try:
         pinned = repo.generated("image-lock", name)
-    except DatasetError as error:
+    except RecipeError as error:
         raise ImageError(str(error)) from None
     if pinned is None:
         raise ImageError(f"{locked} does not exist: run `wpt agent lock-image {name}` and commit it")

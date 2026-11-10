@@ -3,82 +3,146 @@
 **Every erasure request is honored**, including a copyright holder's request
 about content that is properly licensed.
 
+Backups of a depot are the one exception. An erasure does not reach a
+backup, so a backup keeps an erased passage for good, and a depot
+restored from it holds the passage again ([architecture.md](architecture.md),
+"Backups").
+
 ## How to ask
 
-- A public GitHub issue on this repository, or
-- privately, through GitHub's private vulnerability reporting: the
+- Through the depot: `wpt depot erase ID [START END] [--field POINTER] --reason TEXT` with
+  the asker's declaration, or `wpt depot web`: the "Ask for an erasure"
+  action of the "Erasures" page, which finds the text by a part of its
+  title or id, or by its exact id, or the page of the text. Both show the
+  text, where a selection with the mouse fills the positions, which can
+  also be typed, or the whole text can be named.
+  Anyone can make a request.
+- To a depot's maintainer, at the takedown contact its `about` table
+  names.
+- For this project, a public GitHub issue on this repository, or
+  privately, through GitHub's private vulnerability reporting: the
   repository's **Security** tab, then **Report a vulnerability**. It needs a
   GitHub account. Use it when the request itself should not be public.
 
 Requests under the GDPR are answered within one month.
 
-## What happens
+## What a request holds
 
-An erasure is a **cut**: a passage removed from one file of a source's
-upstream content, recorded in that source's `source.json`. A cut names the
-passage by its length and two keyed hashes, never by its text, since the
-repository is public:
+An erasure request is a row of the depot's `erasures` table, kept for
+good: its reason, its decisions, and its needles. A needle names one
+passage by its place, never by its content: the id of a text or an item
+(a depot's name and a number, "Ids" in [architecture.md](architecture.md)),
+and the start and end of the passage, counted in characters (Unicode code
+points), the end excluded. On an item ([data-selection.md](data-selection.md),
+"Items"), whose content is JSON, a needle also names a `field`, a JSON
+pointer to a string of the content (for example `/messages/0/text`), and
+its start and end count inside that string. A needle without a start and an
+end names the whole text or item.
 
-```json
-"cuts": [ { "path": "chapter-3.txt", "length": 1167,
-            "hmac": "<HMAC-SHA256 of the passage under the cut key>",
-            "rolling": 123456789 } ]
-```
+A text's content can change, each change a new content version kept next
+to the old ones ([data-selection.md](data-selection.md), "Texts"). A needle
+counts its places in one content version of its text, and the request
+records which: the one it names, or the text's current one when the
+request is asked.
 
-- `wpt dataset cut ID PATH START END --version V` makes a cut from bytes
-  `[START, END)` of the file as the cuts before it left it, read from the
-  store. A person checks the range on the stored file first.
-- `hmac` is the HMAC-SHA256 of the passage, and `rolling` its rolling hash,
-  whose parameters come from the same key. The key is a secret kept at the
-  store's root, in the file `cut-key` (`wpt_dataset/erasure.py`), so a guess at a short passage, such as
-  a name or a phone number, cannot be confirmed from the repository. The
-  first cut makes the key. Making a cut needs store access, and so does
-  matching one.
-- The build slides the keyed rolling hash over the file and confirms each
-  position where it matches by the HMAC; every confirmed run is removed,
-  wherever it is in the file. Several cuts on one file apply in the listed
-  order, each to the result of the one before.
-- A cut whose passage is no longer in the file, or a store without the
-  key, takes the whole source out of every build until a person makes the
-  cut again.
-- Cuts apply before patches; patches are written against the cut text, and
-  a patch that no longer applies takes the source out the same way.
-- The removed text disappears, with no marker.
-- Erasures never go through patches: a patch would publish the erased text
-  and keep it in git history.
+The needles of one request that name the same string, the same text and
+content version and for an item the same field, and that overlap or touch are one passage, from
+the first start to the last end. The request is carried out on that
+passage, so no character of any of its needles remains.
 
-The cut key must be kept and backed up with the store. Without it, no cut
-matches, and every source with a cut stays out of the builds until its
-cuts are made again.
+The "Erasures" page of `wpt depot web` shows what a request asks to
+erase, as a code review shows a removal: its needles grouped by text, and
+for each one its place and the text around it, at most 300 characters on
+each side, the passage struck through, read from the content version the
+needle names. A long passage shows only its two
+ends, and a whole text its head. Once the request is carried out, the depot
+keeps only each passage's length and the place it left, so a marker with
+that length stands there. A later erasure of the same string can still move
+the text around that place. A request carried out before places were
+recorded has none: its marker's place is reckoned from the needle's start
+less the request's other passages before it in the same string, and the
+view says so. `GET /api/erasures/{id}` gives the same view to any client,
+never a whole text.
 
-A person who asks to be erased, including from a copyright notice that a
-license requires keeping, gets the notice **and everything they made**
-removed, so that no license is left broken.
+A request is decided like a text: it starts with one decision under
+review, the asker's, and it is admitted when at least one decision admits
+it and none refuses it ([licenses.md](licenses.md), "Who decides").
+`wpt depot erasures` lists every request.
 
-## Text inside the repository
+`wpt depot decide admit|refuse --erasure ID` decides a request, with the
+decider's declaration, and so does the "Erasures" page of `wpt depot web`.
+Both call `Depot.decide_erasure`, which refuses a request that was carried
+out already.
 
-Sources of type `empty` (text written for WPT) live in this repository as
-patches. Erasing from them takes a new patch that removes the text, which
-stops future builds from using it, but the text stays in the repository's
-history, clones and forks. Such text is committed only by its own author,
-who accepts that.
+## What happens once it is admitted
+
+The depot carries out an admitted request at once:
+
+- From the content version each passage is in, it removes the passage
+  itself. Then, from every content version of that text, and from no other
+  text, it removes every place where the passage still appears, the
+  passages read from the text as it was before any cut of the request. On
+  an item, the passage is removed from every string of each content
+  version, and every cut version must still match its kind's JSON Schema:
+  a cut that breaks one is refused, and the request stays undecided. The
+  removed text leaves no marker.
+- Every revision of a text reads one of its content versions, so a cut
+  reaches every revision, and a locked library that pinned an older
+  revision reads its version cut. A passage in a small field of the
+  text, such as its title, is cut from every revision that holds it.
+- A needle without a start and an end removes its text or item from the
+  depot: every revision of it, every content version, and its place in
+  every library, locked or open.
+- A text removed whole leaves its id unused for good: no later text takes
+  it, so an id names one text everywhere it is recorded.
+- A later content change of that text is refused when its new content
+  holds a passage erased from it, matched by the passage's public hash.
+  The check covers only the text the passage was erased from.
+- A cut text keeps its id, its libraries and its decisions, in a locked
+  library too: the admitted erasure is its admission again.
+- The request's `erased` gets one entry per passage: its place once cut
+  in the content version its needle names (`at`: how many characters of
+  its string stand before it, in characters, inside the field for an item;
+  none for a whole text), the first of the
+  request's needles it covers (`needle`), its length and two public
+  hashes: the SHA-256 of its UTF-8 bytes, and a polynomial hash of its
+  characters whose base and numbers are fixed, public parameters. No
+  secret is involved, so any depot or clone can match an erased passage
+  in a text and refuse it. The cost is that anyone can confirm a guess at a
+  short passage, such as a name or a phone number, by hashing it; the
+  second hash can be slid over a later text to find the passage there.
+- The journal's copies of the erased texts, every content version, are cut the same way, and the
+  storage history of every table of the depot is dropped, so no file in
+  the depot's own folder holds the passage any more. Its backups are
+  copies of their own and keep it.
+
+A depot that follows an upstream carries out the upstream's admitted
+erasures when it pulls, with their recorded places ([architecture.md](architecture.md), "The depot").
+It takes no erasure request that names an upstream text and decides no
+upstream request: those are asked for and decided at the upstream, and
+the pull brings the result.
 
 ## What it covers
 
-Erasure applies to **future builds and models only**. Models already trained
-and published are not changed.
+Erasure applies to the depot and to every corpus built after it, never
+to the depot's backups. A corpus
+already in the store is not rewritten: it keeps the passage until its
+dataset is built again, and it is marked stale (its record names the
+erasures), so `wpt train` refuses it until it is built again. Built again,
+a dataset gives what its libraries held at its change numbers, less what
+the erasure removed or cut ([data-selection.md](data-selection.md),
+"Building a dataset again"). Models already trained and published are not
+changed.
 
-A locked vocabulary is not retrained when a source changes (see
+A locked vocabulary is not retrained when a text changes (see
 [tokenizer.md](tokenizer.md)), so merges learned from erased text, such as
 pieces of a rare name, stay in it until someone raises the tokenizer
 recipe's `version`. When an erasure must reach the vocabulary too, raise
-the version in the same commit as the cut.
+the version together with the erasure.
 
-## History rewrites
+## The repository's history
 
-Projects almost never rewrite git history to remove licensed content: they
-add a new commit. Debian, for example, never commits excluded upstream files
-(`Files-Excluded` in `debian/copyright`, with a mandatory reason). Rewriting
-history is for accidents such as a leaked secret, and it is incomplete:
-clones, forks and cached views keep the data until GitHub Support purges it.
-This project rewrites history only for accidents.
+The repository holds no texts, so an erasure never touches it. Its git
+history is rewritten only for accidents, such as a leaked secret, and a
+rewrite is incomplete: clones, forks and cached views keep the data until
+GitHub Support purges it.

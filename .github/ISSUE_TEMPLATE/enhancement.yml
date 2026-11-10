@@ -56,7 +56,7 @@ body:
     id: recipe_shapes
     attributes:
       label: "What it changes for recipe shapes"
-      description: "Which recipe, `source.json` or other data file shapes change, and the migration (`wpt dataset migrate`) that carries the existing files. Write \"nothing\" if nothing changes."
+      description: "Which recipe, depot item kind or other data file shapes change, and how the existing files are carried over. Write \"nothing\" if nothing changes."
     validations:
       required: true
   - type: textarea
@@ -86,15 +86,15 @@ body:
     id: recipe
     attributes:
       label: "Recipe"
-      description: "The name of the model recipe (`data/recipes/models/NAME.json`), tokenizer recipe or mixture involved. Write \"none\" if no recipe was involved."
+      description: "The name of the model recipe (`data/recipes/models/NAME.json`), tokenizer recipe or dataset involved. Write \"none\" if no recipe was involved."
       placeholder: "unimpaired-axolotl"
     validations:
       required: true
   - type: textarea
     id: ids
     attributes:
-      label: "Dataset id and model weights' sha256"
-      description: "The dataset id, and the sha256 of the first weight file of the model, that you used or produced. Write \"none\" if there is none."
+      label: "Corpus id and model weights' sha256"
+      description: "The corpus id, and the sha256 of the first weight file of the model, that you used or produced. Write \"none\" if there is none."
     validations:
       required: true
   - type: input

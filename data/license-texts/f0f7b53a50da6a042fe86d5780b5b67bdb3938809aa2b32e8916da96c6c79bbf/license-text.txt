@@ -1,8 +1,0 @@
-{
-  "name": "rsvp",
-  "version": "3.5.0",
-  "description": "Mock rsvp",
-  "license": "MIT",
-  "bin": "./bin/rsvp.js",
-  "dependencies": {}
-}

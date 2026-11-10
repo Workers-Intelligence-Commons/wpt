@@ -34,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-from wpt_dataset.repo import Repo
+from wpt_recipes import Recipes
 from wpt_model import ModelConfig, weight_files
 from wpt_model.checkpoint import CONFIG_NAME
 from wpt_utils.lines import say
@@ -68,7 +68,7 @@ class Remote:
                 root = code_root()
             except NoCheckout as error:
                 raise WorkerError(str(error)) from None
-            self.worker.send_checkout(Repo(root).data_folder(), root)
+            self.worker.send_checkout(Recipes(root).data_folder(), root)
             self.files = Files(Path(tempfile.mkdtemp(prefix="wpt-eval-link-")))
             weights = {name: self.files.offer(self.folder / name) for name in weight_files(self.folder)}
             spec = {"task": "wpt-eval", "model": asdict(self.config), "weights": weights,

@@ -1,8 +1,8 @@
 {
   "data": {
-    "mixture": "admitted",
-    "tokenizer": "admitted",
-    "held_out": 0.001
+    "depot": "",
+    "dataset": "",
+    "tokenizer": "admitted"
   },
   "reference": {
     "n_layer": 10,

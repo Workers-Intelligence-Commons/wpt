@@ -18,8 +18,8 @@ Each is a Python file, a built-in by its name or any path:
     environment file:  GIVES = "<kind of examples>"; SETTINGS = {...}
                        def start(settings, data) -> Environment, on the gpu worker; optional
                        check(settings), context(settings): the window length it trains at,
-                       which a model's context comes from, check_dataset(settings, record,
-                       store): ValueError when the dataset holds nothing for it, before any
+                       which a model's context comes from, check_corpus(settings, record,
+                       store): ValueError when the corpus holds nothing for it, before any
                        step runs, and manager(settings, context) -> its part on the wpt
                        manager (below)
     step file:         METHOD, ENVIRONMENT, OPTIMIZER = {"name": ..., "settings": {...}},
@@ -35,7 +35,7 @@ A step trains on a gpu worker (wpt_worker; docs/machines.md), which has no
 tokenizer, no Docker and no store of its own: everything it reads comes
 from the wpt manager. An environment that needs what only the manager
 holds (the tokenizer, the sandboxes) has a part there: manager(settings,
-context), given a Context (the store, the dataset's record, the tokenizer,
+context), given a Context (the store, the corpus's record, the tokenizer,
 the run's record, and writer(...), which has the model on the gpu worker
 write tokens), returns an object whose methods the environment's part on
 the worker calls through data.call(name, *arguments). Arguments and
@@ -316,7 +316,7 @@ def step_seed(seed: int, number: int) -> int:
 class Data:
     """What an environment's part on the gpu worker reads its examples
     from: the step's name, the store (the manager's, as the worker reads
-    it: wpt_worker.job.LinkStore), the dataset's record, the model's
+    it: wpt_worker.job.LinkStore), the corpus's record, the model's
     configuration, the strategy, the run's telemetry (its record), log (a
     no-op except in the main process), the recipe's seed, the step's number
     in the recipe (from 1), which the step's draws read with the seed
@@ -350,7 +350,7 @@ class Data:
 @dataclass
 class Context:
     """What an environment's part on the wpt manager reads: the step's
-    name, the store, the dataset's record, the model's tokenizer and
+    name, the store, the corpus's record, the model's tokenizer and
     configuration, the run's telemetry (its record), log, the recipe's seed
     and the step's number, and writer(prompt, rows, *, temperature, top_k,
     stops, routes), a writer (wpt_inference.Writer's write and routes) whose
@@ -386,13 +386,14 @@ def in_process(part) -> callable:
 class Environment:
     """Where a step's examples come from. stage_list: the step's stages
     (one for most environments; text windows have one per window length).
-    tokens: the tokens of its examples. sources: {source id: its entry in
-    the dataset record's `sources`} of what it read, for the model's
-    NOTICE."""
+    tokens: the tokens of its examples. learned: what of the corpus it
+    read, for the model's NOTICE: {"text": the tokens of the plain texts'
+    token files it read from their start}, {"conversations": how many},
+    {"tasks": how many}."""
 
     stage_list: tuple = ()
     tokens: int = 0
-    sources: dict = {}
+    learned: dict = {}
 
     def begin(self, model, strategy):
         """Called once before the step's first update, with the weights the
@@ -539,12 +540,12 @@ class Step:
         environment file's context(settings); None when it has none."""
         return getattr(self.environment.module, "context", lambda settings: None)(self.environment_settings)
 
-    def check_dataset(self, record: dict, store):
-        """ValueError when the dataset (its record, and its files in the
+    def check_corpus(self, record: dict, store):
+        """ValueError when the corpus (its record, and its files in the
         store) holds nothing the step can learn from, from its environment
-        file's check_dataset(settings, record, store); nothing when it has
+        file's check_corpus(settings, record, store); nothing when it has
         none."""
-        getattr(self.environment.module, "check_dataset", lambda settings, record, store: None)(
+        getattr(self.environment.module, "check_corpus", lambda settings, record, store: None)(
             self.environment_settings, record, store)
 
     def start_method(self) -> Method:

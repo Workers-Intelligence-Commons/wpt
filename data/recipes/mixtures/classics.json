@@ -1,5 +1,0 @@
-{
-  "pools": [
-    {"name": "en", "select": "en", "weight": 1}
-  ]
-}

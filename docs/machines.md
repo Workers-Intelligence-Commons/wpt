@@ -111,7 +111,7 @@ gets the manager's environment without `WPT_STORE` and the store's keys
 (`WPT_STORE_*`). Everything
 the job reads, the manager sends:
 
-- the files of the run's dataset and of the states it starts from,
+- the files of the run's corpus and of the states it starts from,
   checked against their sha256 when they arrive, and no other file;
 - the files of the recipe's steps and strategy that live outside the
   repository.
@@ -303,8 +303,8 @@ goes on from that checkpoint, with `--resume`.
 The checkpoint's way back is the same as a signal to `wpt train`, so a run
 stopped by hand keeps its step under either `WPT_LINK_CHECKPOINTS`. An
 evaluation under way gets the same signal and ends there; what is kept is
-what training kept. A stop asked during the download or the build of a run
-that holds no rental waits for them to end, and then nothing is rented. A
+what training kept. A stop asked while the images of a run that holds no
+rental are built waits for them to end, and then nothing is rented. A
 run that went on after a crash may hold rentals by then: those commands
 get the signal too, and the rentals are given back. A stop asked while a
 worker is being rented takes effect once the provider has started the
@@ -322,8 +322,8 @@ worker that loses its manager stops the job. Sandboxes the killed command
 was running are left on their Docker host.
 
 The deadline covers `wpt train`, `wpt eval`, and the commands before them
-when they got the signal. It does not cover a download or a build that gets
-no signal, which holds no rental. It does not cover the provider's launch
+when they got the signal. It does not cover an image build that gets no
+signal, which holds no rental. It does not cover the provider's launch
 either. `sky launch` runs in SkyPilot's own server, which goes on when the
 command is killed, and `sky down` finds no cluster to stop until the launch
 has recorded one, so ending the launch early could leave a cluster that is
@@ -410,9 +410,8 @@ manager, which holds the tokenizer, the store and the sandboxes. A job
 (`wpt_worker.evaluation`) loads the model folder's weights on the worker,
 which the manager offers as files, and answers what the tests ask of the
 model: a seeded generator, writers that write until a stop token or a limit
-(the same ones a training attempt uses), greedy writing for the
-memorization measure, and the next-token losses of windows of tokens for
-the held-out-loss measure. The tests cannot tell where the model is.
+(the same ones a training attempt uses), greedy writing, and the
+next-token losses of windows of tokens. The tests cannot tell where the model is.
 
 `wpt eval` uses the first key in `WPT_GPU_WORKERS` (the manager passes it
 the rentals it still holds, before it gives them back), else a local
@@ -431,18 +430,20 @@ through a short-lived container with no network
 
 ## The manager's Compose file
 
-`wpt manager` runs the whole pipeline as one command, each step its own
-command:
+`wpt manager` trains a recipe on a corpus the store already holds, each
+step its own command:
 
-1. `wpt dataset download`: every admitted source into the run's session;
-2. `wpt dataset build RECIPE`: the dataset, then `wpt agent build-image
-   NAME` for each image the dataset's tasks name, where `DOCKER_HOST`
+1. the corpus: `WPT_CORPUS`, or the one last built for the recipe's depot
+   and dataset; the manager neither downloads nor builds, so `wpt depot
+   build DATASET` builds the corpus first, on the machine that holds the
+   depot, and a run without one is refused; then `wpt agent build-image
+   NAME` for each image the corpus's tasks name, where `DOCKER_HOST`
    reaches Docker (nothing without tasks);
-3. `wpt train RECIPE DATASET_ID --run NAME --resume`: the training, through
+2. `wpt train RECIPE CORPUS_ID --run NAME --resume`: the training, through
    the run's gpu workers (rented first when `WPT_GPU_WORKERS` is a
    number), its checkpoint in the store under the run's name;
-4. `wpt eval`, only with `WPT_EVALUATE=1`;
-5. the model folder into the store, under the run's name; the manager's
+3. `wpt eval`, only with `WPT_EVALUATE=1`;
+4. the model folder into the store, under the run's name; the manager's
    own copy of the folder is then removed.
 
 A failed step stops the run with its exit code, and the same command with
@@ -467,9 +468,7 @@ wins (`WPT_STORE`, the manager's folders, `HOME`, `DOCKER_HOST`).
 | Setting | Meaning |
 | --- | --- |
 | `WPT_RECIPE` | the model recipe, `SERIES:SIZE` for a size of a model series, or `SERIES:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
-| `WPT_DATASET` | the id of a dataset the store holds: the manager skips the download and the build and trains on it, whatever code built it; unset, it builds the recipe's dataset from this checkout |
-| `WPT_SESSION` | the session the run works in, passed to each of its commands and written into `wpt-run.txt`; unset, the one of the run it goes on with, else a new ID, which it prints ([architecture.md](architecture.md), "The store") |
-| `WPT_FROM` | another session, which every command of the run reads what its own does not hold from |
+| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus last built for the recipe's depot and dataset |
 | `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the store |
 | `WPT_EVALUATE` | `1`: evaluate the model at the end; off by default |
 | `WPT_STORE` | the store; unset, a folder on the Compose volume `wpt-store`. A `file://` store must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |
@@ -502,16 +501,16 @@ the libraries, and its `HOME`, where SkyPilot keeps its clusters and keys.
 
 ## The final model
 
-The model folder goes into the run's session under the run's name: its real
-files lie in `<id>/models/NAME/`, beside `files.json`, which lists each file's
+The model folder goes into the store under the run's name: its real files
+lie in `models/NAME/`, beside `files.json`, which lists each file's
 sha256 and size and is written last. At the end, the manager prints the line
 that copies it out:
 
 ```sh
-uv run wpt store copy-out NAME runs/NAME --session ID
+uv run wpt store copy-out NAME runs/NAME
 ```
 
 `wpt store copy-out` writes the folder into a new folder, beside it first,
 then renames it into place, and checks every file against its sha256 and
 size: a file that differs stops it and leaves no folder. `wpt store list`
-lists what the store's index says of a session: each source it holds.
+lists every corpus and model the store holds.

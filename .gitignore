@@ -13,6 +13,6 @@ wpt-run.txt
 target/
 *.so
 *.pyd
-# the web interface's packages and build (`wpt web` builds them when it starts)
-apps/wpt/ui/node_modules/
+# the web interface's packages and build (`wpt depot web` builds them when it starts)
+node_modules/
 apps/wpt/ui/dist/

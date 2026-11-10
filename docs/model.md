@@ -214,8 +214,7 @@ The indexer's loss stays in PyTorch, since it reads only the chosen
 entries. Which form runs is decided once, before the first use
 (`wpt train` decides it before training and logs it). `wpt train`,
 `wpt eval` and `wpt chat` each take `--kernels` (or `WPT_KERNELS`) to name
-it: `triton`, `tilelang` or `pytorch`; `wpt web`'s model drafts read
-`WPT_KERNELS`. Unnamed, TileLang runs where it is installed on an NVIDIA GPU under Linux,
+it: `triton`, `tilelang` or `pytorch`. Unnamed, TileLang runs where it is installed on an NVIDIA GPU under Linux,
 else Triton where it is installed, else the PyTorch form. The training
 and the evaluation `wpt manager` runs on rented machines name `triton`
 unless its settings name the form. A form named after the decision must be the one decided. A
@@ -818,9 +817,8 @@ and the repository, or from a series file, the name of one of its sizes
 (and of that size's run, when it is another than its own) and the
 repository ("Model series", below). A model recipe holds:
 
-- the data: mixture, tokenizer recipe, total tokens and held-out share
-  (what a dataset recipe held before; dataset recipes are folded into
-  model recipes);
+- the data: the address of a depot (`depot`), the name of a dataset there
+  (`dataset`), the tokenizer recipe and the total tokens;
 - the architecture's numbers: layers, width, KDA heads and
   dimensions, the kind of each global layer (`global_attention`), the
   attention heads and dimensions of CSA and HCA (query
@@ -842,32 +840,14 @@ Settings that change the result come only from the recipe. Command-line
 options remain only for what does not: device strategy (splitting windows
 across processes included), number of processes, streaming, output folder,
 run name, resuming, micro-batch, recomputing, segments, checkpoints, weight
-file size and restarts. Mixtures and tokenizer recipes stay separate files,
-since several models share them. A model has at least 2 layers: the last is
-CSA or HCA, the others start with KDA. `wpt dataset migrate` brings a recipe of an earlier
-shape to the current one, step by step. A recipe with the MLA numbers gets
-the CSA and HCA ones at 0 and an empty `global_attention` (gated MLA's
-numbers say neither), which a person then fills in; `wpt dataset check`
-names each file until then. A recipe with the model's `block_size` and the
-training's `steps` and `batch_size` gets one stage of the training's
-`stages` (training.md, "Stages"). A recipe without the `drafter` section
-gets it, after `training`, with the drafter's training values every recipe
-states: 256 prompts of at most 64 tokens, answers of at most 256 tokens, 10
-epochs, learning rate 6e-4, 10% held out, 512 anchors, 8 answers per update,
-seed 0. The three recipes hold exactly these values; the settings a section
-leaves out (the drafter's shape, `weight_decay`, `warm_up`, `clip`,
-`temperature`, `top_k`, `ece_bins`) keep their defaults. A recipe with
-`training` and `posttrain` gets one list, `steps`, with `seed` beside it: the
-training becomes the first step, `read-text`, its method the step's
-optimizer (with its settings but the MTP loss weights, which become the
-step's), its stages and evaluations the step's settings, nothing locked;
-each post-training step follows under the name of the step that does the
-same (`sft` as `answer-as-assistant`, `grpo` as `finish-tasks`,
-`token-efficiency` as `finish-tasks-with-less-writing`), its learning
-rate and weight decay given to its optimizer, `by-part`, and a `tag`
-setting naming one of those steps renamed with it. A step given as a
-Python file keeps its name and settings, and the check that follows says
-what the file lacks.
+file size and restarts. Tokenizer recipes stay separate files, since
+several models share them. A model has at least 2 layers: the last is
+CSA or HCA, the others start with KDA. The recipes' `drafter` sections
+state the same training values: 256 prompts of at most 64 tokens, answers
+of at most 256 tokens, 10 epochs, learning rate 6e-4, 10% held out, 512
+anchors, 8 answers per update, seed 0; the settings a section leaves out
+(the drafter's shape, `weight_decay`, `warm_up`, `clip`, `temperature`,
+`top_k`, `ece_bins`) keep their defaults.
 
 A step whose optimizer is `muon` or `adamw` is named `by-part`; the
 entry keeps its own settings and gains none.
@@ -924,9 +904,10 @@ A model series, `data/recipes/series/<name>.json`, is one file for several
 sizes of one model, so the rules of a scaling test are written once and
 each size follows them. It holds the rules every size shares and the list
 of sizes, each a name and a width. `SERIES:SIZE` names one size wherever a
-model recipe's name goes (`wpt dataset build`, `wpt train`, `WPT_RECIPE`),
-and `wpt dataset series NAME` prints what each size gets. The code derives
-each size's model recipe (`wpt_dataset.series`):
+model recipe's name goes (`wpt train`, `WPT_RECIPE`). Every size reads
+the same corpus, the one of the series' depot and dataset, and a smaller
+size its first part (its prefix). The code derives
+each size's model recipe (`wpt_recipes.series`):
 
 - the shape: the series' `reference` model scaled to the size's width.
   Every width inside the model scales with it (KDA heads, attention heads,
@@ -968,21 +949,21 @@ each size's model recipe (`wpt_dataset.series`):
   The batch is the law's in whole windows of the series' `block_size`, at
   least 1, and the updates read `D` tokens. The warm-up is the series'
   `warmup_share` of the updates, at least 1; the drops stay at 80% and 90%.
-- the data: one dataset for the whole series. Its data part holds the
-  series' mixture, tokenizer recipe and held-out share, and the most
-  tokens any size's run reads (its own, or its trunk's, below), so every size's recipe has the same data part and
-  `wpt dataset build` of any size builds the same dataset. Each size's
+- the data: one corpus for the whole series. Its data part holds the
+  series' depot, dataset and tokenizer recipe, and the most tokens any
+  size's run reads (its own, or its trunk's, below), so every size's
+  recipe has the same data part and reads the same corpus. Each size's
   `read-text` step reads only the start of its training tokens
   (`prefix_tokens`: its updates times its batch times the window plus one,
-  training.md, "Prefix"), so every size sees the same documents in the
-  same order, and all of them share the held-out part.
+  training.md, "Prefix"), so every size sees the same texts in the same
+  order.
 
 The seed and the drafter are the series' own, the same at every size. The
 model's provenance holds the size's derived recipe and the name
 `SERIES:SIZE`.
 
 A size has other runs, each named `SERIES:SIZE:RUN` wherever a model
-recipe's name goes, and `wpt dataset series NAME` lists them:
+recipe's name goes:
 
 - `branch-SHARE`, a decay branch, one per share of the series' `branches`:
   SHARE times the size's updates, rounded half up. Every branch of a size
@@ -1013,11 +994,9 @@ recipe's name goes, and `wpt dataset series NAME` lists them:
 
 Each run's model folder and record are those of any `wpt train` run.
 
-`wpt scaling` fits the trained sizes' loss against their compute and
-predicts the loss of a larger size before it trains, and the
-`held-out-loss` test of `wpt eval` measures each size on the held-out part
-they share, by kind of text ([evaluation.md](evaluation.md), "Scaling
-curve" and "Held-out loss").
+`wpt train series NAME` prints the numbers of every size of the series
+(shape, parameters, compute, learning rate, batch, updates, prefix) and of
+each run of a size, and trains nothing.
 
 One series exists, `eldest-titmouse`: `interstitial-pecker`'s shape as its
 reference (width 512, 10 layers, 51.2 of width per layer), CSA and HCA in

@@ -1,9 +1,9 @@
 {
   "data": {
-    "mixture": "admitted",
+    "depot": "",
+    "dataset": "",
     "tokenizer": "admitted",
-    "total_tokens": 2925565920,
-    "held_out": 0.001
+    "total_tokens": 2925565920
   },
   "model": {
     "n_layer": 10,

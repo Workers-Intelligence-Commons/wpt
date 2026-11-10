@@ -51,15 +51,15 @@ body:
     id: recipe
     attributes:
       label: "Recipe"
-      description: "The name of the model recipe (`data/recipes/models/NAME.json`), tokenizer recipe or mixture involved. Write \"none\" if no recipe was involved."
+      description: "The name of the model recipe (`data/recipes/models/NAME.json`), tokenizer recipe or dataset involved. Write \"none\" if no recipe was involved."
       placeholder: "unimpaired-axolotl"
     validations:
       required: true
   - type: textarea
     id: ids
     attributes:
-      label: "Dataset id and model weights' sha256"
-      description: "The dataset id, and the sha256 of the first weight file of the model, that you used or produced. Write \"none\" if there is none."
+      label: "Corpus id and model weights' sha256"
+      description: "The corpus id, and the sha256 of the first weight file of the model, that you used or produced. Write \"none\" if there is none."
     validations:
       required: true
   - type: input
