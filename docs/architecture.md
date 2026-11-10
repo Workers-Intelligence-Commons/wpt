@@ -121,9 +121,18 @@ already. A change applied again after a crash compares keys instead, so it
 never writes a row twice. Only a row that changes in place is rewritten
 through a merge, which reads the whole table: a membership that ends, a
 content version an erasure cuts, a row a pull replaces, a journal entry
-marked done. A text's content is stored once, in `contents`, whose
-content columns are written without statistics, so no file footer or
-table log holds a copy of a text's first characters.
+marked done. Each write adds files that every later read of its table
+opens, so at regular intervals of writes a table's log is summed up in
+a checkpoint and its small files are merged: a read opens a bounded
+number of small files whatever the number of writes before. A merge
+that fails leaves the write it follows as committed. The files a merge
+replaces stay with the older states, and every checkpoint records them,
+so opening a table still grows slowly with the files it replaced.
+`contents` is never merged: its replaced files would hold each content a
+second time, so its file count grows with the writes that add contents.
+A query opens only the tables it reads. A text's content is stored once,
+in `contents`, whose content columns are written without statistics, so
+no file footer or table log holds a copy of a text's first characters.
 
 **Following an upstream.** A depot can follow another, its upstream, the
 way a Git clone follows its remote. `wpt depot clone ADDRESS TO --name NAME --maintainer M --takedown-contact C` copies

@@ -17,7 +17,26 @@ current (or named) state lists, never through delta-rs's Arrow reader,
 whose file system keeps the Python interpreter from exiting once it read
 rows. That reader is right for these tables because only this app writes
 them and delta-rs writes no deletion vectors and no column mapping: the
-listed files hold exactly the table's rows.
+listed files hold exactly the table's rows. A query opens only the
+tables it reads, as DuckDB's parser names them, since opening a table
+replays its log and lists its files.
+
+Every write adds at least one data file and one log entry, which every
+later read of the table opens again. delta-rs sums a table's log up in a
+checkpoint every 100 commits by itself, so a read replays at most 100 log
+entries after it. A checkpoint also records every file the table ever
+replaced, for as long as KEPT keeps older states, so opening a table
+still grows with the number of files replaced before, merged files
+included.
+
+Every COMPACT_EVERY storage versions, a write also merges the table's
+data files smaller than COMPACT_SIZE into one (Tables._compact), so a
+read opens at most about COMPACT_EVERY small files plus the merged ones,
+whatever the number of writes before. The merged files stay with the
+older states, as every replaced file does. The contents table is never
+merged (UNCOMPACTED), since its replaced files would keep a second copy
+of each content: its file count grows by one at every write that adds
+contents.
 
 The columns that hold a text's content are written with no statistics
 (UNMEASURED): a data file's footer and the table's log would otherwise
@@ -29,6 +48,8 @@ bucket's settings (wpt_depot.settings.bucket_settings) go to delta-rs as
 its storage options and to DuckDB as an S3 secret.
 """
 
+import json
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -37,6 +58,7 @@ import pyarrow as pa
 import pyarrow.fs as pafs
 from deltalake import ColumnProperties, DeltaTable, WriterProperties, write_deltalake
 from deltalake.exceptions import DeltaError, TableNotFoundError
+from wpt_utils.lines import WARNING, say
 
 from .errors import NotADepot, VersionGone
 from .schema import CONSTRAINTS, CURRENT, KEYS, SCHEMAS, TABLES, sql_name
@@ -46,6 +68,9 @@ KEPT = "interval 36500 days"  # how long a table keeps older states: until drop_
 RETENTION = {"delta.logRetentionDuration": KEPT, "delta.deletedFileRetentionDuration": KEPT}
 # the columns written without statistics, by table: those that hold a text's content
 UNMEASURED = {"contents": ("text", "content"), "journal": ("change",)}
+COMPACT_EVERY = 100  # storage versions of a table between two compactions (Tables._compact)
+COMPACT_SIZE = 1 << 20  # bytes: a data file smaller than this is merged again at each compaction
+UNCOMPACTED = ("contents",)  # merging would keep a second copy of each content in the files it replaced
 NONE_KEPT = {"delta.logRetentionDuration": "interval 0 seconds",
              "delta.deletedFileRetentionDuration": "interval 0 seconds"}
 
@@ -57,6 +82,8 @@ class Tables:
     def __init__(self, root, settings: dict | None = None):
         self.root = root if isinstance(root, str) else Path(root)
         self.settings = settings
+        self._database = None  # the DuckDB database every connection is a cursor of (_connect)
+        self._starting = threading.Lock()
 
     def uri(self, name: str) -> str:
         return f"{self.root}/{name}" if isinstance(self.root, str) else str(self.root / name)
@@ -119,21 +146,27 @@ class Tables:
     def version(self, name: str) -> int:
         return self.table(name).version()
 
-    def connection(self) -> duckdb.DuckDBPyConnection:
+    def connection(self, reading: str | None = None) -> duckdb.DuckDBPyConnection:
         """A DuckDB connection where each table's current rows are a view
         under its SQL name (schema.sql_name), and each revised table's
-        current state a view under its own name (schema.CURRENT)."""
+        current state a view under its own name (schema.CURRENT): only the
+        views the query `reading` names, with those they read, when given.
+        A view costs the opening of its table's current state, so a query
+        opens only the tables it reads."""
         con = self._connect()
+        names = _read_by(con, reading)
         for name in TABLES:
-            self._view(con, name, self.table(name), sql_name(name))
+            if names is None or sql_name(name) in names:
+                self._view(con, name, self.table(name), sql_name(name))
         for name, query in CURRENT.items():
-            con.execute(f'CREATE VIEW "{name}" AS {query}')
+            if names is None or name in names:
+                con.execute(f'CREATE TEMP VIEW "{name}" AS {query}')
         return con
 
     def query(self, sql: str, params=None) -> pa.Table:
-        """The rows of a DuckDB query over every table (connection), with
+        """The rows of a DuckDB query over the tables (connection), with
         params for its `?` placeholders."""
-        con = self.connection()
+        con = self.connection(sql)
         try:
             return con.sql(sql, params=params).to_arrow_table()
         finally:
@@ -159,7 +192,7 @@ class Tables:
         files = table.file_uris()
         if files:
             listed = ", ".join("'" + file.replace("'", "''") + "'" for file in files)
-            con.execute(f'CREATE VIEW "{as_name}" AS SELECT * FROM read_parquet([{listed}])')
+            con.execute(f'CREATE TEMP VIEW "{as_name}" AS SELECT * FROM read_parquet([{listed}])')
         else:
             con.register(as_name, SCHEMAS[name].empty_table())
 
@@ -168,7 +201,9 @@ class Tables:
         holds, so its cost does not grow with them: for rows whose keys the
         table cannot hold yet. Adding them again adds them twice."""
         if found.num_rows:
-            write_deltalake(self.table(name), found, mode="append", writer_properties=_properties(name))
+            table = self.table(name)
+            write_deltalake(table, found, mode="append", writer_properties=_properties(name))
+            self._compact(name, table)
 
     def insert(self, name: str, found: pa.Table):
         """Add the rows whose key the table does not hold yet: adding the
@@ -176,31 +211,57 @@ class Tables:
         the table."""
         if not found.num_rows:
             return
-        self.table(name).merge(found, predicate=_same(name), source_alias="source", target_alias="target",
-                               writer_properties=_properties(name)).when_not_matched_insert_all().execute()
+        table = self.table(name)
+        table.merge(found, predicate=_same(name), source_alias="source", target_alias="target",
+                    writer_properties=_properties(name)).when_not_matched_insert_all().execute()
+        self._compact(name, table)
 
     def upsert(self, name: str, found: pa.Table):
         """Put the rows: each replaces the row of the same key, or is added."""
         if not found.num_rows:
             return
-        (self.table(name).merge(found, predicate=_same(name), source_alias="source", target_alias="target",
-                                writer_properties=_properties(name))
+        table = self.table(name)
+        (table.merge(found, predicate=_same(name), source_alias="source", target_alias="target",
+                     writer_properties=_properties(name))
          .when_matched_update_all().when_not_matched_insert_all().execute())
+        self._compact(name, table)
 
     def merge_update(self, name: str, source: pa.Table, updates: dict, predicate: str | None = None):
         """For each row of source, update the row of the same key with
         updates (SQL over target.* and source.*), where predicate holds."""
         if not source.num_rows:
             return
-        (self.table(name).merge(source, predicate=_same(name), source_alias="source", target_alias="target",
-                                writer_properties=_properties(name))
+        table = self.table(name)
+        (table.merge(source, predicate=_same(name), source_alias="source", target_alias="target",
+                     writer_properties=_properties(name))
          .when_matched_update(updates, predicate=predicate).execute())
+        self._compact(name, table)
 
     def update(self, name: str, updates: dict, predicate: str):
-        self.table(name).update(updates, predicate=predicate, writer_properties=_properties(name))
+        table = self.table(name)
+        table.update(updates, predicate=predicate, writer_properties=_properties(name))
+        self._compact(name, table)
 
     def delete(self, name: str, predicate: str):
-        self.table(name).delete(predicate, writer_properties=_properties(name))
+        table = self.table(name)
+        table.delete(predicate, writer_properties=_properties(name))
+        self._compact(name, table)
+
+    @staticmethod
+    def _compact(name: str, table: DeltaTable):
+        """After a write to the table name, whose state is table now: at
+        every COMPACT_EVERY-th storage version, its data files smaller than
+        COMPACT_SIZE merged in one commit that changes no row. A write that
+        ends on another version, or a table of UNCOMPACTED, is left as it is.
+        A merge that fails is reported as a warning and leaves the write as
+        it was committed."""
+        if name not in UNCOMPACTED and table.version() % COMPACT_EVERY == 0:
+            try:
+                table.optimize.compact(target_size=COMPACT_SIZE, writer_properties=_properties(name))
+            except (DeltaError, OSError) as error:
+                # the write is committed already, and a merge that fails commits nothing: the
+                # write stands, and the table's small files wait for its next COMPACT_EVERY-th version
+                say(f"Merging the small files of the table {name} failed, its rows unchanged: {error}", WARNING)
 
     def drop_history(self, names=TABLES):
         """Remove every older state of the tables named: its log before a
@@ -215,7 +276,17 @@ class Tables:
 
     def _connect(self) -> duckdb.DuckDBPyConnection:
         """A DuckDB connection that gives times in UTC, as the tables hold
-        them, and for a bucket reads it with the bucket's settings."""
+        them: a cursor of one in-memory database these tables start once,
+        since starting a database costs far more than a cursor. Its views
+        are temporary, so they are its own."""
+        with self._starting:
+            if self._database is None:
+                self._database = self._start()
+        return self._database.cursor()
+
+    def _start(self) -> duckdb.DuckDBPyConnection:
+        """An in-memory DuckDB database that gives times in UTC and, for a
+        bucket, reads it with the bucket's settings."""
         con = duckdb.connect()
         con.execute("SET TimeZone = 'UTC'")
         if isinstance(self.root, str):
@@ -232,6 +303,36 @@ class Tables:
             listed = ", ".join(f"{key} '{str(value).replace(chr(39), chr(39) * 2)}'" for key, value in parts.items())
             con.execute(f"CREATE SECRET ({listed})")
         return con
+
+
+def _read_by(con: duckdb.DuckDBPyConnection, sql: str | None) -> set[str] | None:
+    """The names of the views the query sql reads, directly or through a
+    view of schema.CURRENT, as DuckDB's parser finds them; None (every
+    view) for no query, or one the parser refuses, so that running it
+    reports its own error."""
+    if sql is None:
+        return None
+    found, waiting = set(), {sql}
+    while waiting:
+        tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [waiting.pop()]).fetchall()[0][0])
+        if tree["error"]:
+            return None
+        for name in _base_tables(tree) - found:
+            found.add(name)
+            if name in CURRENT:
+                waiting.add(CURRENT[name])
+    return found
+
+
+def _base_tables(node) -> set[str]:
+    """The names, in lower case as SQL does not tell cases apart, of every
+    table a parse tree of json_serialize_sql reads."""
+    if isinstance(node, list):
+        return set().union(*map(_base_tables, node))
+    if not isinstance(node, dict):
+        return set()
+    own = {node["table_name"].lower()} if node.get("type") == "BASE_TABLE" else set()
+    return own.union(*map(_base_tables, node.values()))
 
 
 def _same(name: str) -> str:

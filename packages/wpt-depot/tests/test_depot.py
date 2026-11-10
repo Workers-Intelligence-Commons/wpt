@@ -3,10 +3,12 @@ import json
 from pathlib import Path
 
 import pytest
+from deltalake.exceptions import DeltaError
+from deltalake.table import TableOptimizer
 
 from wpt_depot import About, Declaration, Depot, Needle, NewText, clone, pull
 from wpt_depot.follow import COPIED
-from wpt_depot import erasure
+from wpt_depot import erasure, tables
 from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, JournalUnfinished, Locked,
                               NoDepotSetting, NotFound, Refused, VersionGone)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
@@ -186,7 +188,7 @@ def test_an_add_cut_before_its_contents_are_written_leaves_nothing_once_the_depo
 
 
 def test_an_add_cut_after_its_contents_are_written_is_finished_once_when_the_depot_is_opened_again(
-        make_depot, me, monkeypatch):
+        make_depot, me, monkeypatch, compaction):
     depot = make_depot()
 
     with monkeypatch.context() as patch:
@@ -218,7 +220,7 @@ def test_an_add_after_a_failed_add_on_the_same_open_depot_finishes_the_failed_on
         {"id": "depot-1", "n": 1}, {"id": "depot-2", "n": 1}]
 
 
-def test_a_text_s_content_is_held_by_one_file_of_the_depot_only(make_depot, me):
+def test_a_text_s_content_is_held_by_one_file_of_the_depot_only(make_depot, me, compaction):
     # neither the journal nor the tables' older states nor a file's statistics (the first characters of a
     # column's smallest and largest value) keep another copy; hex digits, which compression leaves as they are
     depot = make_depot()
@@ -235,11 +237,43 @@ def test_a_text_s_content_is_held_by_one_file_of_the_depot_only(make_depot, me):
     assert depot.show(texts[0])["text"]["text"] == f"{passage}in  text"
 
 
+def test_compaction_keeps_every_row_and_every_older_state_of_a_table(make_depot, me, monkeypatch):
+    # many writes leave a table few files to read, and a pull still reads its upstream as it read it
+    monkeypatch.setattr(tables, "COMPACT_EVERY", 3)
+    depot = make_depot()
+    first = [depot.add([plain(f"text {number}")], me)[0] for number in range(4)]
+    depot.decide("admitted", first, me)
+    version = depot.tables.version("texts")
+    then = depot.tables.read("texts", version).sort_by([("id", "ascending"), ("revision", "ascending")])
+    later = [depot.add([plain(f"later {number}")], me)[0] for number in range(8)]
+
+    assert len(depot.tables.table("texts").file_uris()) < len(first) + len(later)
+    assert depot.tables.read("texts", version).sort_by([("id", "ascending"), ("revision", "ascending")]) == then
+    assert Depot.open(depot.address).sql("SELECT id, len(decisions) AS decisions FROM texts ORDER BY id").to_pylist() == \
+        sorted([{"id": one, "decisions": 2} for one in first] + [{"id": one, "decisions": 1} for one in later],
+               key=lambda row: row["id"])
+
+
+def test_a_merge_of_small_files_that_fails_leaves_the_add_done(make_depot, me, monkeypatch, capsys):
+    # the merge follows a committed write: its failure must not report that write as failed
+    def fails(*args, **kwargs):
+        raise DeltaError("the disk is full")
+
+    monkeypatch.setattr(tables, "COMPACT_EVERY", 1)
+    monkeypatch.setattr(TableOptimizer, "compact", fails)
+    depot = make_depot()
+    added = depot.add([plain("one")], me)
+
+    assert Depot.open(depot.address).sql("SELECT id FROM texts")["id"].to_pylist() == added
+    assert "the disk is full" in capsys.readouterr().err
+
+
 def test_sql_reads_and_refuses_anything_else(make_depot, me):
     depot = make_depot()
     depot.add([plain("one", "wikipedia", "en")], me)
 
     assert depot.sql("SELECT count(*) AS n FROM texts WHERE list_contains(tags, 'en')")["n"].to_pylist() == [1]
+    assert depot.sql("SELECT count(*) AS n FROM TEXTS t JOIN Contents c ON c.id = t.id")["n"].to_pylist() == [1]
     for query in ("DELETE FROM texts", "SELECT 1; SELECT 2", "COPY (SELECT 1) TO 'out.csv'"):
         with pytest.raises(BadQuery):
             depot.sql(query)

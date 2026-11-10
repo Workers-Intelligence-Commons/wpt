@@ -18,7 +18,7 @@ def files_holding(folder, passage: str) -> list[Path]:
     return [path for path in Path(folder).rglob("*") if path.is_file() and passage.encode() in path.read_bytes()]
 
 
-def test_a_backup_opens_as_a_depot_reading_the_same_rows_and_older_states(make_depot, me, tmp_path):
+def test_a_backup_opens_as_a_depot_reading_the_same_rows_and_older_states(make_depot, me, tmp_path, compaction):
     depot = make_depot()
     texts = depot.add([plain("one"), plain("two")], me)
     depot.decide("admitted", texts, me)
