@@ -19,6 +19,11 @@ rows. That reader is right for these tables because only this app writes
 them and delta-rs writes no deletion vectors and no column mapping: the
 listed files hold exactly the table's rows.
 
+The columns that hold a text's content are written with no statistics
+(UNMEASURED): a data file's footer and the table's log would otherwise
+hold the first characters of its smallest and largest value, a second
+copy of a text's start that only the data file should hold.
+
 The folder is a path or, for a depot in a bucket, an s3:// address; the
 bucket's settings (wpt_depot.settings.bucket_settings) go to delta-rs as
 its storage options and to DuckDB as an S3 secret.
@@ -30,7 +35,7 @@ from urllib.parse import urlparse
 import duckdb
 import pyarrow as pa
 import pyarrow.fs as pafs
-from deltalake import DeltaTable
+from deltalake import ColumnProperties, DeltaTable, WriterProperties, write_deltalake
 from deltalake.exceptions import DeltaError, TableNotFoundError
 
 from .errors import NotADepot, VersionGone
@@ -39,6 +44,8 @@ from .settings import DEFAULT_REGION
 
 KEPT = "interval 36500 days"  # how long a table keeps older states: until drop_history
 RETENTION = {"delta.logRetentionDuration": KEPT, "delta.deletedFileRetentionDuration": KEPT}
+# the columns written without statistics, by table: those that hold a text's content
+UNMEASURED = {"contents": ("text", "content"), "journal": ("change",)}
 NONE_KEPT = {"delta.logRetentionDuration": "interval 0 seconds",
              "delta.deletedFileRetentionDuration": "interval 0 seconds"}
 
@@ -156,19 +163,28 @@ class Tables:
         else:
             con.register(as_name, SCHEMAS[name].empty_table())
 
+    def append(self, name: str, found: pa.Table):
+        """Add the rows in one commit, reading none of the rows the table
+        holds, so its cost does not grow with them: for rows whose keys the
+        table cannot hold yet. Adding them again adds them twice."""
+        if found.num_rows:
+            write_deltalake(self.table(name), found, mode="append", writer_properties=_properties(name))
+
     def insert(self, name: str, found: pa.Table):
         """Add the rows whose key the table does not hold yet: adding the
-        same rows again changes nothing."""
+        same rows again changes nothing. A merge, which reads every row of
+        the table."""
         if not found.num_rows:
             return
-        self.table(name).merge(found, predicate=_same(name), source_alias="source",
-                               target_alias="target").when_not_matched_insert_all().execute()
+        self.table(name).merge(found, predicate=_same(name), source_alias="source", target_alias="target",
+                               writer_properties=_properties(name)).when_not_matched_insert_all().execute()
 
     def upsert(self, name: str, found: pa.Table):
         """Put the rows: each replaces the row of the same key, or is added."""
         if not found.num_rows:
             return
-        (self.table(name).merge(found, predicate=_same(name), source_alias="source", target_alias="target")
+        (self.table(name).merge(found, predicate=_same(name), source_alias="source", target_alias="target",
+                                writer_properties=_properties(name))
          .when_matched_update_all().when_not_matched_insert_all().execute())
 
     def merge_update(self, name: str, source: pa.Table, updates: dict, predicate: str | None = None):
@@ -176,14 +192,15 @@ class Tables:
         updates (SQL over target.* and source.*), where predicate holds."""
         if not source.num_rows:
             return
-        (self.table(name).merge(source, predicate=_same(name), source_alias="source", target_alias="target")
+        (self.table(name).merge(source, predicate=_same(name), source_alias="source", target_alias="target",
+                                writer_properties=_properties(name))
          .when_matched_update(updates, predicate=predicate).execute())
 
     def update(self, name: str, updates: dict, predicate: str):
-        self.table(name).update(updates, predicate=predicate)
+        self.table(name).update(updates, predicate=predicate, writer_properties=_properties(name))
 
     def delete(self, name: str, predicate: str):
-        self.table(name).delete(predicate)
+        self.table(name).delete(predicate, writer_properties=_properties(name))
 
     def drop_history(self, names=TABLES):
         """Remove every older state of the tables named: its log before a
@@ -220,3 +237,10 @@ class Tables:
 def _same(name: str) -> str:
     """The merge predicate that matches a source row to the target row of the same key."""
     return " AND ".join(f"target.{key} = source.{key}" for key in KEYS[name])
+
+
+def _properties(name: str) -> WriterProperties:
+    """How a table's data files are written: compressed with Snappy, the
+    columns of UNMEASURED without statistics."""
+    return WriterProperties(compression="SNAPPY", column_properties={
+        column: ColumnProperties(statistics_enabled="NONE") for column in UNMEASURED.get(name, ())})

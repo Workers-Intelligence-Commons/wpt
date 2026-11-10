@@ -111,7 +111,8 @@ The depot carries out an admitted request at once:
   in a text and refuse it. The cost is that anyone can confirm a guess at a
   short passage, such as a name or a phone number, by hashing it; the
   second hash can be slid over a later text to find the passage there.
-- The journal's copies of the erased texts, every content version, are cut the same way, and the
+- The journal holds no content but the versions an erasure cuts, until
+  the erasure is done; the rows of the texts removed whole leave it. The
   storage history of every table of the depot is dropped, so no file in
   the depot's own folder holds the passage any more. Its backups are
   copies of their own and keep it.

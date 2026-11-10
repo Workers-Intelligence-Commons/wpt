@@ -96,11 +96,11 @@ def clone(address: str, to: str, about: About, settings: dict | None = None) -> 
     target.create()
     received = upstream.journal.settled()  # before any row is read: what is numbered up to it is whole
     for name in COPIED:
-        target.insert(name, upstream.tables.read(name))
+        target.append(name, upstream.tables.read(name))
     number = Depot(to, upstream.settings).change() + 1  # past every change number it received
-    target.insert("pulls", rows("pulls", [{"depot": about.name, "change": number, "upstream": upstream.name(),
+    target.append("pulls", rows("pulls", [{"depot": about.name, "change": number, "upstream": upstream.name(),
                                             "upstream_change": received}]))
-    target.insert("about", rows("about", [{"revision": 1, "change": number, **vars(about),
+    target.append("about", rows("about", [{"revision": 1, "change": number, **vars(about),
                                             "upstream": upstream.address}]))
     return Depot.open(to, upstream.settings)
 
@@ -113,7 +113,7 @@ def pull(depot: Depot) -> list[str]:
     if address is None:
         raise NoUpstream(f"{depot.address} follows no upstream")
     upstream = Depot.view(address, depot.settings)
-    with depot._writing:
+    with depot._writes():
         before = _carried_out(depot.tables.read("erasures"))
         settled, versions = _capture(upstream.tables)
         depot._change({"kind": "pull", "upstream": upstream.address, "own_erasures": depot.tables.version("erasures"),

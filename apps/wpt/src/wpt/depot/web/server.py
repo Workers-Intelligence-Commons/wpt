@@ -28,8 +28,8 @@ PROBLEMS = {"type": "object", "required": ["problems"],
 REFUSALS = {"400": "the body does not match the route's schema, or a query or remote is not one",
             "404": "no such text, library, dataset, erasure, recipe or route",
             "422": "the depot's rules refuse it; nothing was written",
-            "500": "a change is in the depot's journal and not applied to every table yet (opening the depot "
-                   "again finishes it), or a failure the routes do not name, whose trace the server prints",
+            "500": "a change is in the depot's journal and not applied to every table yet (the next write or "
+                   "opening the depot again finishes it), or a failure the routes do not name, whose trace the server prints",
             "503": "what the route needs is missing on this machine (the store, a locked vocabulary)"}
 
 

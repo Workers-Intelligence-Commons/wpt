@@ -101,13 +101,29 @@ tables, `contents`, `memberships`, `pins` and `pulls` included, are seen
 as they are.
 
 **The journal.** Delta Lake commits one table at a time, so a change that
-touches several tables is written whole into the journal first, and that
-write makes it certain. The depot then applies it to each table and marks
-it done. Opening a depot applies again every change left undone, so a
-crash never leaves a change half applied (`wpt_depot/journal.py`). The
-decision that admits an erasure and the erasure's carrying out are one
-change. Only the app that owns a depot finishes its journal: reading
-another depot (a dataset's library, a corpus, an upstream) writes nothing.
+touches several tables is written into the journal first, and that write
+makes it certain. The journal holds no text's content: the content
+versions a change adds are written to `contents` in one commit right
+after its entry, numbered by its change number. The depot then applies
+the change to each table and marks it done. Opening a depot applies
+again every change left undone, and cuts short a change whose content
+versions were never written, writing nothing of it, so a crash never
+leaves a change half applied. A change that fails while the depot stays
+open is finished the same way before its next write, so no later change
+takes the ids or the change number of an undone one (`wpt_depot/journal.py`). The decision that
+admits an erasure and the erasure's carrying out are one change. Only the
+app that owns a depot finishes its journal: reading another depot (a
+dataset's library, a corpus, an upstream) writes nothing.
+
+**Writing rows.** A new row is appended without reading the rows its
+table holds, so adding texts costs no more for the text the depot holds
+already. A change applied again after a crash compares keys instead, so it
+never writes a row twice. Only a row that changes in place is rewritten
+through a merge, which reads the whole table: a membership that ends, a
+content version an erasure cuts, a row a pull replaces, a journal entry
+marked done. A text's content is stored once, in `contents`, whose
+content columns are written without statistics, so no file footer or
+table log holds a copy of a text's first characters.
 
 **Following an upstream.** A depot can follow another, its upstream, the
 way a Git clone follows its remote. `wpt depot clone ADDRESS TO --name NAME --maintainer M --takedown-contact C` copies

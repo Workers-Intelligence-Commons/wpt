@@ -81,5 +81,5 @@ class NoUpstream(DepotError):
 
 class JournalUnfinished(DepotError):
     """A change was written to the journal and could not be applied to
-    every table; the next opening of the depot finishes it. The cause is
+    every table; the depot's next write or next opening finishes it. The cause is
     chained."""

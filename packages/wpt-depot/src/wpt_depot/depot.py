@@ -5,9 +5,15 @@ erasures and datasets, in the tables of one folder that one app writes
 Depot is the only code that changes a depot's tables. Each operation
 checks the whole change against the depot's rules first, so a refused
 change writes nothing. Every change goes through the journal: written
-whole first under the next change number, applied to each table, then
-marked done; Depot.open applies again whatever a crash left undone
-(wpt_depot.journal).
+first under the next change number (the content versions it adds right
+after it, outside the journal), applied to each table, then marked done;
+Depot.open applies again whatever a crash left undone, or cuts short a
+change whose content versions were never written (wpt_depot.journal).
+A new row (a text, a revision, a decision, a membership...) is appended,
+reading none of the rows a table holds, so adding texts costs no more
+for the text the depot holds already; only what changes in place (a membership
+that ends, a content version an erasure cuts, a journal entry marked
+done) is rewritten.
 
 The depot's state is numbered by its change number (Depot.change): every
 write raises it, and every revision row and membership records the change
@@ -76,9 +82,9 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   revision (an item is cut at a field of its JSON and every cut version is
   validated against its kind's schema again), or removed with every
   revision, content version, membership and pin; its
-  `erased` gets each passage's length and hashes, the journal's copies of
-  those texts are cut the same way, and every older state of every table's
-  storage is dropped. The hashes are public and keyless (wpt_depot.erasure),
+  `erased` gets each passage's length and hashes, the journal's rows of
+  the texts removed go, and every older state of every table's storage is
+  dropped. The hashes are public and keyless (wpt_depot.erasure),
   so any depot or clone can match an erased passage.
 - A problem with a library, locked or not, is reported on the library
   (`problems`): the texts concerned, the problem in words, and the
@@ -117,6 +123,7 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   (Depot.reads_here).
 """
 
+import contextlib
 import json
 import threading
 from collections.abc import Callable, Sequence
@@ -208,6 +215,8 @@ class Depot:
         self.address = str(self.tables.root)
         self.journal = Journal(self.tables)
         self._writing = threading.Lock()
+        self._again = False  # applying a change again (Depot.open): rows it wrote already are not written twice
+        self._unfinished = False  # a change of this object may be undone in the journal: see _writes
         self._name = None
         self._upstream = ...  # not read yet; None: it follows no upstream
 
@@ -223,8 +232,8 @@ class Depot:
         if depot.tables.exist():
             raise DepotExists(f"{depot.address} already holds a depot's tables")
         depot.tables.create()
-        depot.tables.insert("kinds", rows("kinds", kinds.starting_rows()))
-        depot.tables.insert("about", rows("about", [{"revision": 1, "change": 1, **vars(about)}]))
+        depot.tables.append("kinds", rows("kinds", kinds.starting_rows()))
+        depot.tables.append("about", rows("about", [{"revision": 1, "change": 1, **vars(about)}]))
         return depot
 
     @classmethod
@@ -243,13 +252,42 @@ class Depot:
     @classmethod
     def open(cls, address: str, settings: dict | None = None) -> "Depot":
         """The depot at address, to write: every change the journal holds
-        undone applied first. NotADepot when a table is missing."""
+        undone applied first, or cut short when its content versions were
+        never written. NotADepot when a table is missing."""
         depot = cls.view(address, settings)
         with depot._writing:
-            for entry, change in depot.journal.pending():
-                depot._apply(change, entry)
-                depot._done(entry, change)
+            depot._finish()
         return depot
+
+    def _finish(self):
+        """Apply every change the journal holds undone, or cut it short when
+        its content versions were never written."""
+        self._again = True
+        try:
+            for entry, change in self.journal.pending():
+                if _content_ids(change) and not self._contents_written(entry, change):
+                    self._cut_short(entry, change)
+                    continue
+                self._apply(change, entry)
+                self._done(entry, change)
+        finally:
+            self._again = False
+
+    @contextlib.contextmanager
+    def _writes(self):
+        """Hold the depot for a write. When a change this object wrote is
+        undone in the journal (it failed), it is finished first: the ids and
+        change numbers the write takes next must not be the undone change's
+        too. JournalUnfinished when it cannot be finished."""
+        with self._writing:
+            if self._unfinished:
+                try:
+                    self._finish()
+                except Exception as error:
+                    raise JournalUnfinished("a change the journal holds undone cannot be finished; opening the "
+                                            "depot again finishes it") from error
+                self._unfinished = False
+            yield
 
     def change(self) -> int:
         """The depot's change number: the number of its latest change, past
@@ -309,7 +347,7 @@ class Depot:
         if not values:
             raise Refused("give a maintainer, a takedown contact or both")
         _filled(**values)
-        with self._writing:
+        with self._writes():
             self._change({"kind": "about", "values": {name: value.strip() for name, value in values.items()}})
 
     # Reading
@@ -543,7 +581,7 @@ class Depot:
         licenses that apply together ('MIT AND CC-BY-4.0'). Refused when the
         id is held already."""
         _filled(license_id=license_id, name=name, text=text)
-        with self._writing:
+        with self._writes():
             if self.tables.query("SELECT id FROM licenses WHERE id = ?", [license_id]).num_rows:
                 raise Refused(f"the license {license_id} is held already")
             self._change({"kind": "license", "license": {"id": license_id, "name": name, "text": text}})
@@ -555,7 +593,7 @@ class Depot:
         made by declaration: their new ids, in order."""
         if not texts:
             raise Refused("nothing to add")
-        with self._writing:
+        with self._writes():
             decision = self._decision(UNDER_REVIEW, declaration)
             held_licenses = set(self.tables.query("SELECT id FROM licenses")["id"].to_pylist())
             held_kinds = {one["id"]: one["schema"] for one in self.tables.query("SELECT id, schema FROM kinds").to_pylist()}
@@ -577,8 +615,8 @@ class Depot:
                     "notice": None if one.notice is None else notices[one.notice], "title": one.title,
                     "authors": None if one.authors is None else list(one.authors), "tags": list(one.tags),
                     "address": one.address, "decisions": [decision["id"]], "content_version": 1})
-            self._change({"kind": "add", "decision": decision, "notices": new_notices, "texts": new_texts,
-                          "contents": contents})
+            self._change({"kind": "add", "decision": decision, "notices": new_notices, "texts": new_texts},
+                         contents=contents)
             return [one["id"] for one in new_texts]
 
     def blocked(self, texts: Selection, status: str = ADMITTED) -> list[dict]:
@@ -600,7 +638,7 @@ class Depot:
         none of whose licenses is allowed (wpt_depot.licenses)."""
         if status not in (ADMITTED, REFUSED):
             raise Refused(f"a decision on texts admits or refuses them, not {status!r}")
-        with self._writing:
+        with self._writes():
             matched = self.selected(texts)
             if not matched:
                 raise NotFound(f"no text matches {texts}" if isinstance(texts, str) else "no text is named")
@@ -632,7 +670,7 @@ class Depot:
         new = list(dict.fromkeys(new))
         if not new:
             raise Refused("a text names at least one license")
-        with self._writing:
+        with self._writes():
             matched = self.selected(texts)
             if not matched:
                 raise NotFound(f"no text matches {texts}" if isinstance(texts, str) else "no text is named")
@@ -680,7 +718,7 @@ class Depot:
         with plain or without content) or is not text, and when the new
         content holds a passage an erasure removed from this text (matched
         by its public hash)."""
-        with self._writing:
+        with self._writes():
             found = self.tables.query("SELECT kind, text, content, content_version FROM texts WHERE id = ?",
                                       [text]).to_pylist()
             if not found:
@@ -707,9 +745,9 @@ class Depot:
             decision = self._recorded(UNDER_REVIEW, declaration,
                                       policy.content_change(row["content_version"], version), self._next("decisions"))
             self._change({"kind": "content", "decision": decision, "text": text, "version": version,
-                          "contents": [{"id": text, "version": version, "kind": row["kind"],
-                                        "text": plain, "content": content}],
-                          "leave": self._open_libraries()})
+                          "leave": self._open_libraries()},
+                         contents=[{"id": text, "version": version, "kind": row["kind"], "text": plain,
+                                    "content": content}])
             return decision["id"], version
 
     def edit_credits(self, text: str, changes: dict, declaration: Declaration) -> tuple[str, str]:
@@ -734,7 +772,7 @@ class Depot:
                     raise Refused(f"{name} are a list of words that are not empty")
             elif value is not None:
                 _filled(**{name: value})
-        with self._writing:
+        with self._writes():
             found = self.tables.query("SELECT * FROM texts WHERE id = ?", [text]).to_pylist()
             if not found:
                 raise NotFound(f"no text {text}")
@@ -770,7 +808,7 @@ class Depot:
 
     def new_library(self, name: str) -> str:
         _filled(name=name)
-        with self._writing:
+        with self._writes():
             library = self._id(self._next("libraries"))
             self._change({"kind": "library", "library": {"id": library, "revision": 1, "name": name,
                                                          "forked_from": None, "problems": [], "locked_at": None},
@@ -782,7 +820,7 @@ class Depot:
         its name is not what it holds, so a locked library takes it too.
         NotFound without such a library; Refused for an empty name."""
         _filled(name=name)
-        with self._writing:
+        with self._writes():
             self._library(library)
             self._refuse_upstream("libraries", [library], FORK)
             self._change({"kind": "rename", "library": library, "name": name})
@@ -792,7 +830,7 @@ class Depot:
         that joined it, the ids selected and left out because they are not
         admitted). Locked when the library is locked; NotFound when a given
         id is no text."""
-        with self._writing:
+        with self._writes():
             found = self._library(library)
             self._refuse_upstream("libraries", [library], FORK)
             if found["locked_at"] is not None:
@@ -813,7 +851,7 @@ class Depot:
         """Lock an open library for good, as a new revision: it pins the
         current revision of each text it holds. Refused when it is locked
         already."""
-        with self._writing:
+        with self._writes():
             found = self._library(library)
             self._refuse_upstream("libraries", [library], FORK)
             if found["locked_at"] is not None:
@@ -826,7 +864,7 @@ class Depot:
         selected by without when it is given: its id. It starts with no
         problem. NotFound when a given id is no text."""
         _filled(name=name)
-        with self._writing:
+        with self._writes():
             self._library(library)
             held = self.matching(f"list_contains(libraries, {literal(library)}) "
                                  f"AND {policy.admitted_sql('decisions')}")
@@ -849,7 +887,7 @@ class Depot:
         or a given id is no text; Refused when a given id is a text the
         library does not hold. Membership and texts stay as they are."""
         _filled(problem=problem)
-        with self._writing:
+        with self._writes():
             self._library(library)
             self._refuse_upstream("libraries", [library])
             where, texts = texts, []
@@ -890,7 +928,7 @@ class Depot:
         asked = [tuple(one) + (None,) * (5 - len(one)) for one in needles]
         if not asked:
             raise Refused("an erasure names at least one needle")
-        with self._writing:
+        with self._writes():
             named = sorted({one[0] for one in asked})
             current = {one["id"]: one["content_version"] for one in self.tables.query(
                 "SELECT id, content_version FROM texts WHERE list_contains(?, id)", [named]).to_pylist()}
@@ -934,7 +972,7 @@ class Depot:
         requests = list(dict.fromkeys(requests))
         if not requests:
             raise Refused("no erasure request is named")
-        with self._writing:
+        with self._writes():
             found = {one["id"]: one for one in self.tables.query(
                 "SELECT * FROM erasures WHERE list_contains(?, id)", [requests]).to_pylist()}
             carry_out = {}
@@ -1090,7 +1128,7 @@ class Depot:
         values = {"name": name, "libraries": refs,
                   "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares]}
         self._checked_dataset({**old, **values})
-        with self._writing:
+        with self._writes():
             if self.tables.query("SELECT id FROM datasets WHERE name = ? AND id <> ?", [name, dataset]).num_rows:
                 raise Refused(f"the dataset name {name} is taken")
             self._change({"kind": "edit dataset", "dataset": dataset, "values": values})
@@ -1159,7 +1197,7 @@ class Depot:
 
     def _new_dataset(self, row: dict) -> str:
         self._checked_dataset(row)
-        with self._writing:
+        with self._writes():
             if self.tables.query("SELECT id FROM datasets WHERE name = ?", [row["name"]]).num_rows:
                 raise Refused(f"the dataset name {row['name']} is taken")
             row = {**row, "id": self._id(self._next("datasets")), "revision": 1}
@@ -1231,22 +1269,57 @@ class Depot:
             for one in found]
         return [{"id": text, "reasons": held} for text, held in reasons if held]
 
-    def _change(self, change: dict, past: int = 0):
+    def _change(self, change: dict, past: int = 0, contents: Sequence[dict] = ()):
         """Write change to the journal under the next change number (past
-        past too), apply it, mark it done."""
+        past too), then the content versions it adds (contents: rows of
+        contents but their change number, which the journal does not hold),
+        apply it, mark it done. When the content versions cannot be written,
+        the change is cut short and the error raised: nothing of it is
+        visible."""
         entry = max(self.change(), past) + 1
+        self._unfinished = True  # until it is done or cut short
         self.journal.write(change, entry)
+        if contents:
+            try:
+                self.tables.append("contents", rows("contents", [{**one, "change": entry} for one in contents]))
+            except Exception:
+                with contextlib.suppress(Exception):  # when this fails too, the next write or opening cuts it short
+                    self._cut_short(entry, change)
+                    self._unfinished = False
+                raise
         try:
             self._apply(change, entry)
             self._done(entry, change)
+            self._unfinished = False
         except Exception as error:
             raise JournalUnfinished(f"the journal's change {entry} ({change['kind']}) is not applied to every "
-                                    "table yet; opening the depot again finishes it") from error
+                                    "table yet; the depot's next write or opening it again finishes it") from error
 
     def _done(self, entry: int, change: dict):
-        self.journal.done(entry)
-        if change["kind"] == "erase":
-            self.tables.drop_history(["journal"])  # its state before `done` holds nothing erased; it goes too
+        if change["kind"] == "erase":  # its cut contents leave the journal, and the states that held them go
+            self.journal.done(entry, {name: value for name, value in change.items() if name != "cut"})
+            self.tables.drop_history(["journal"])
+        else:
+            self.journal.done(entry)
+
+    def _contents_written(self, entry: int, change: dict) -> bool:
+        """Whether the content versions the change adds are in contents, numbered by its entry."""
+        found = _content_ids(change)
+        return self.tables.query("SELECT count(*) AS n FROM contents WHERE change = ? AND list_contains(?, id)",
+                                 [entry, found])["n"][0].as_py() == len(found)
+
+    def _cut_short(self, entry: int, change: dict):
+        """End a change whose content versions are not all written: those
+        written go (they are written in one commit, so normally none is),
+        then its entry is marked done as cut short."""
+        listed = ", ".join(map(literal, _content_ids(change)))
+        self.tables.delete("contents", f"change = {int(entry)} AND id IN ({listed})")
+        self.journal.cut_short(entry, change)
+
+    def _write(self, table: str, found: pa.Table):
+        """Add new rows to a table: appended, or, when a change is applied
+        again, only those whose key it does not hold yet."""
+        (self.tables.insert if self._again else self.tables.append)(table, found)
 
     # Applying a change: each step leaves the tables as they are when it is applied again
 
@@ -1259,7 +1332,7 @@ class Depot:
         found = self.tables.query(f"SELECT * FROM ({latest(table)}) t WHERE list_contains(?, t.id) AND NOT EXISTS "
                                   f"(SELECT 1 FROM {table}_revisions r WHERE r.id = t.id AND r.change = ?)",
                                   [chosen, number]).to_pylist()
-        self.tables.insert(table, rows(table, [{**row, **values(row), "revision": row["revision"] + 1,
+        self._write(table, rows(table, [{**row, **values(row), "revision": row["revision"] + 1,
                                                 "change": number} for row in found]))
 
     def _join(self, texts: list[str], library: str, number: int):
@@ -1268,7 +1341,7 @@ class Depot:
             return
         held = set(self.tables.query("SELECT text FROM memberships WHERE library = ? AND left_change IS NULL",
                                      [library])["text"].to_pylist())
-        self.tables.insert("memberships", rows("memberships", [
+        self._write("memberships", rows("memberships", [
             {"library": library, "text": text, "joined_change": number, "left_change": None}
             for text in texts if text not in held]))
 
@@ -1287,20 +1360,19 @@ class Depot:
         applying it again changes nothing more."""
         kind = change["kind"]
         if "decision" in change:
-            self.tables.insert("decisions", rows("decisions", [_decision_row(change["decision"])]))
+            self._write("decisions", rows("decisions", [_decision_row(change["decision"])]))
         if "decisions" in change:
-            self.tables.insert("decisions", rows("decisions", [_decision_row(one) for one in change["decisions"]]))
+            self._write("decisions", rows("decisions", [_decision_row(one) for one in change["decisions"]]))
         if kind == "about":
             current = self.about()
             if current["change"] != number:
-                self.tables.insert("about", rows("about", [{**current, **change["values"],
+                self._write("about", rows("about", [{**current, **change["values"],
                                                             "revision": current["revision"] + 1, "change": number}]))
         elif kind == "license":
-            self.tables.insert("licenses", rows("licenses", [change["license"]]))
+            self._write("licenses", rows("licenses", [change["license"]]))
         elif kind == "add":
-            self.tables.insert("notices", rows("notices", change["notices"]))
-            self.tables.insert("contents", rows("contents", [{**one, "change": number} for one in change["contents"]]))
-            self.tables.insert("texts", rows("texts", [{**one, "change": number} for one in change["texts"]]))
+            self._write("notices", rows("notices", change["notices"]))
+            self._write("texts", rows("texts", [{**one, "change": number} for one in change["texts"]]))
         elif kind == "decide":
             decision = change["decision"]["id"]
             self._revise("texts", change["texts"], number, lambda row: {"decisions": [*row["decisions"], decision]})
@@ -1310,19 +1382,18 @@ class Depot:
                 self._revise("texts", group["texts"], number, lambda row, group=group: {
                     "licenses": change["licenses"], "decisions": [*row["decisions"], group["decision"]]})
             self._leave([text for group in change["groups"] for text in group["texts"]], change["leave"], number)
-        elif kind == "content":  # its contents are empty once an erasure removed the text
-            self.tables.insert("contents", rows("contents", [{**one, "change": number} for one in change["contents"]]))
+        elif kind == "content":
             decision = change["decision"]["id"]
             self._revise("texts", [change["text"]], number, lambda row: {
                 "content_version": change["version"], "decisions": [*row["decisions"], decision]})
             self._leave([change["text"]], change["leave"], number)
         elif kind == "credits":
-            self.tables.insert("notices", rows("notices", change["notices"]))
+            self._write("notices", rows("notices", change["notices"]))
             decision = change["decision"]["id"]
             self._revise("texts", [change["text"]], number,
                          lambda row: {**change["values"], "decisions": [*row["decisions"], decision]})
         elif kind == "library":  # a new library, or a fork with its texts
-            self.tables.insert("libraries", rows("libraries", [{**change["library"], "change": number}]))
+            self._write("libraries", rows("libraries", [{**change["library"], "change": number}]))
             self._join(change["texts"], change["library"]["id"], number)
         elif kind == "rename":
             self._revise("libraries", [change["library"]], number, lambda row: {"name": change["name"]})
@@ -1330,7 +1401,7 @@ class Depot:
             self._join(change["texts"], change["library"], number)
         elif kind == "lock":
             library = change["library"]
-            self.tables.insert("pins", self.tables.query(
+            self._write("pins", self.tables.query(
                 "SELECT ? AS library, t.id AS text, t.revision FROM texts t WHERE list_contains(t.libraries, ?)",
                 [library, library]).cast(rows("pins", []).schema))
             self._revise("libraries", [library], number,
@@ -1339,7 +1410,7 @@ class Depot:
             self._revise("libraries", [change["library"]], number,
                          lambda row: {"problems": [*(row["problems"] or []), change["problem"]]})
         elif kind == "ask erasure":
-            self.tables.insert("erasures", rows("erasures", [{**change["erasure"], "change": number}]))
+            self._write("erasures", rows("erasures", [{**change["erasure"], "change": number}]))
         elif kind in ("decide erasure", "erase"):
             decision = change["decision"]["id"]
             erased = None if kind != "erase" else [
@@ -1350,7 +1421,7 @@ class Depot:
             if kind == "erase":  # the decision that admits an erasure and its carrying out are one change
                 self._apply_erase(change)
         elif kind == "dataset":
-            self.tables.insert("datasets", rows("datasets", [{**change["dataset"], "change": number}]))
+            self._write("datasets", rows("datasets", [{**change["dataset"], "change": number}]))
         elif kind == "edit dataset":
             self._revise("datasets", [change["dataset"]], number, lambda row: change["values"])
         elif kind == "pull":
@@ -1368,9 +1439,7 @@ class Depot:
                                    column: pa.array([one[column] for one in found], pa.string())})
                 self.tables.merge_update("contents", source, {column: f"source.{column}"})
         self._remove_texts(change["removed"])
-        cut = {(one["id"], one["version"]): one.get("text", one.get("content")) for one in change["cut"]}
-        entries = self.journal.entries("add") + self.journal.entries("content") + self.journal.entries("erase")
-        self.journal.rewrite(_scrubbed(sorted(entries, key=lambda one: one[0]), cut, set(change["removed"])))
+        self.journal.rewrite(_without(self.journal.entries("add"), set(change["removed"])))
         self.tables.drop_history()
 
     def _remove_texts(self, texts: list[str]):
@@ -1398,29 +1467,23 @@ def location(address: str) -> Path | str:
     return Path(address).resolve()
 
 
-def _scrubbed(entries: list[tuple[int, dict]], cut: dict[tuple[str, int], str], removed: set[str]) -> dict[int, dict]:
-    """The journal's changes that hold a content version an erasure cut
-    (cut: {(id, version): its text cut}) or a text it removed, with that
-    content as the erasure left it: an add's and a content change's
-    contents, and an earlier erasure's cut versions."""
+def _without(entries: list[tuple[int, dict]], removed: set[str]) -> dict[int, dict]:
+    """The add entries that name a text an erasure removed, without its row."""
     changed = {}
     for entry, change in entries:
-        listed = "cut" if change["kind"] == "erase" else "contents"
-        held = [_cut_row(row, cut) for row in change[listed] if row["id"] not in removed]
-        if held != change[listed]:
-            changed[entry] = {**change, listed: held}
-            if change["kind"] == "add":
-                changed[entry]["texts"] = [row for row in change["texts"] if row["id"] not in removed]
+        kept = [row for row in change["texts"] if row["id"] not in removed]
+        if kept != change["texts"]:
+            changed[entry] = {**change, "texts": kept}
     return changed
 
 
-def _cut_row(row: dict, cut: dict[tuple[str, int], str]) -> dict:
-    """A row naming a content version (its id, version, and its text or
-    content), with that text as cut gives it when cut names the version."""
-    key = (row["id"], row["version"])
-    if key not in cut:
-        return row
-    return {**row, "text" if row.get("text") is not None else "content": cut[key]}
+def _content_ids(change: dict) -> list[str]:
+    """The ids of the texts whose content versions a change of the journal adds outside it, in contents."""
+    if change["kind"] == "add":
+        return [row["id"] for row in change["texts"]]
+    if change["kind"] == "content":
+        return [change["text"]]
+    return []
 
 
 def _needles(request: dict) -> list[Needle]:

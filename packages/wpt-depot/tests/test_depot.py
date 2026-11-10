@@ -137,14 +137,14 @@ def test_the_hashes_of_an_erased_passage_are_public_so_anyone_can_match_a_guess(
 
 
 def fails_on(table):
-    """Tables.insert, failing for the table named."""
-    real = Tables.insert
+    """Tables.append, failing for the table named."""
+    real = Tables.append
 
-    def insert(self, name, found):
+    def append(self, name, found):
         if name == table:
             raise OSError("the disk went away")
         return real(self, name, found)
-    return insert
+    return append
 
 
 def test_a_change_cut_short_is_finished_when_the_depot_is_opened_again(make_depot, me, monkeypatch):
@@ -155,7 +155,7 @@ def test_a_change_cut_short_is_finished_when_the_depot_is_opened_again(make_depo
     depot.put(library, "true")
 
     with monkeypatch.context() as patch:
-        patch.setattr(Tables, "insert", fails_on("memberships"))  # the fork's library row is written, its texts not
+        patch.setattr(Tables, "append", fails_on("memberships"))  # the fork's library row is written, its texts not
         with pytest.raises(JournalUnfinished):
             depot.fork(library, "fork")
     assert depot.sql("SELECT count(*) AS n FROM libraries")["n"].to_pylist() == [2]
@@ -164,6 +164,75 @@ def test_a_change_cut_short_is_finished_when_the_depot_is_opened_again(make_depo
 
     assert reopened.show(text)["text"]["libraries"] == [library, "depot-2"]
     assert reopened.sql("SELECT bool_and(done) AS done FROM journal")["done"].to_pylist() == [True]
+
+
+ADDED = "SELECT (SELECT count(*) FROM texts_revisions) AS texts, (SELECT count(*) FROM contents) AS contents, " \
+        "(SELECT count(*) FROM decisions) AS decisions, (SELECT count(*) FROM journal WHERE NOT done) AS undone"
+
+
+def test_an_add_cut_before_its_contents_are_written_leaves_nothing_once_the_depot_is_opened_again(
+        make_depot, me, monkeypatch):
+    depot = make_depot()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Tables, "append", fails_on("contents"))
+        patch.setattr(Depot, "_cut_short", fails_on("contents"))  # the process ends before it can cut it short
+        with pytest.raises(OSError):
+            depot.add([plain("one"), plain("two")], me)
+    reopened = Depot.open(depot.address)
+
+    assert reopened.sql(ADDED).to_pylist() == [{"texts": 0, "contents": 0, "decisions": 0, "undone": 0}]
+    assert reopened.add([plain("three")], me) == ["depot-1"]
+
+
+def test_an_add_cut_after_its_contents_are_written_is_finished_once_when_the_depot_is_opened_again(
+        make_depot, me, monkeypatch):
+    depot = make_depot()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Tables, "append", fails_on("texts"))
+        with pytest.raises(JournalUnfinished):
+            depot.add([plain("one"), plain("two")], me)
+    reopened = Depot.open(depot.address)
+
+    assert reopened.sql(ADDED).to_pylist() == [{"texts": 2, "contents": 2, "decisions": 1, "undone": 0}]
+    assert reopened.sql("SELECT id, text FROM texts ORDER BY id").to_pylist() == [
+        {"id": "depot-1", "text": "one"}, {"id": "depot-2", "text": "two"}]
+
+
+def test_an_add_after_a_failed_add_on_the_same_open_depot_finishes_the_failed_one_and_takes_new_ids(
+        make_depot, me, monkeypatch):
+    # an app such as wpt depot web keeps one open depot across requests, so its next write comes before any reopening
+    depot = make_depot()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Tables, "append", fails_on("texts"))
+        with pytest.raises(JournalUnfinished):
+            depot.add([plain("first")], me)
+    assert depot.add([plain("second")], me) == ["depot-2"]
+    reopened = Depot.open(depot.address)
+
+    assert reopened.sql("SELECT id, text FROM texts ORDER BY id").to_pylist() == [
+        {"id": "depot-1", "text": "first"}, {"id": "depot-2", "text": "second"}]
+    assert reopened.sql("SELECT id, count(*) AS n FROM contents GROUP BY id ORDER BY id").to_pylist() == [
+        {"id": "depot-1", "n": 1}, {"id": "depot-2", "n": 1}]
+
+
+def test_a_text_s_content_is_held_by_one_file_of_the_depot_only(make_depot, me):
+    # neither the journal nor the tables' older states nor a file's statistics (the first characters of a
+    # column's smallest and largest value) keep another copy; hex digits, which compression leaves as they are
+    depot = make_depot()
+    passage = hashlib.sha256(b"a passage held once").hexdigest()[:48]
+    texts = depot.add([plain(f"{passage}in the first text"), plain("another text")], me)
+    depot.decide("admitted", texts, me)
+    depot.change_content(texts[1], "another text, changed", None, me)
+    request = depot.ask_erasure("a word", [(texts[0], len(passage) + 3, len(passage) + 12)], me)
+    depot.decide_erasure(request, "admitted", me)  # the version it cuts holds the passage still
+
+    [held] = files_holding(depot.address, passage)
+
+    assert held.parent.name == "contents"
+    assert depot.show(texts[0])["text"]["text"] == f"{passage}in  text"
 
 
 def test_sql_reads_and_refuses_anything_else(make_depot, me):
@@ -633,7 +702,7 @@ def test_reading_another_depot_finishes_nothing_in_it(make_depot, me, monkeypatc
     depot.put(library, "true")
 
     with monkeypatch.context() as patch:
-        patch.setattr(Tables, "insert", fails_on("memberships"))
+        patch.setattr(Tables, "append", fails_on("memberships"))
         with pytest.raises(JournalUnfinished):
             depot.fork(library, "fork")
     before = depot.tables.version("texts"), depot.tables.version("journal")

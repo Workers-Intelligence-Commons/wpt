@@ -1,10 +1,22 @@
 """The journal: the depot's changes. Delta Lake commits one table at a
-time, so every change is written here whole first, and that write makes it
+time, so every change is written here first, and that write makes it
 certain; the depot then applies it to each table and marks it done. An
 entry's id is the change's number, the depot-wide change number that the
 rows it writes record (wpt_depot.schema). A change left undone (a crash, a
-failed write) is applied again when the depot is next opened, so applying
-a change twice must leave the tables as applying it once does.
+failed write) is applied again before the depot's next write or when it
+is next opened, so applying a change twice must leave the tables as
+applying it once does.
+
+An entry holds no text's content: the content versions a change adds are
+written to contents right after its entry, numbered by it, and the entry
+names them by their text ids. They are written in one commit, so they are
+all there or none is. A change whose content versions are not there when
+it is applied again was cut before anything visible: it is cut short, its
+entry marked done as CUT_SHORT, and nothing of it is written. Only an
+erasure's entry holds contents while it is undone, the versions it cut,
+and loses them when it is marked done, with every older state of the
+journal's storage (wpt_depot.depot). So each content is stored once, in
+contents.
 
 Rows numbered at a change left undone may already be written in some
 tables and not in others, so a reader of a depot that another app writes
@@ -23,17 +35,28 @@ import pyarrow as pa
 from .schema import rows
 from .tables import Tables
 
+CUT_SHORT = "cut short"  # the kind of an entry whose change was cut before its content versions were written
+
 
 class Journal:
     def __init__(self, tables: Tables):
         self.tables = tables
 
     def write(self, change: dict, number: int):
-        """Write change as the entry number, not done."""
-        self.tables.insert("journal", rows("journal", [{"id": number, "change": _text(change), "done": False}]))
+        """Write change as the entry number, not done: appended, since no
+        entry holds that number yet."""
+        self.tables.append("journal", rows("journal", [{"id": number, "change": _text(change), "done": False}]))
 
-    def done(self, entry: int):
-        self.tables.update("journal", {"done": "true"}, f"id = {int(entry)}")
+    def done(self, entry: int, change: dict | None = None):
+        """Mark the entry done, its change replaced by change when given."""
+        updates = {"done": "true"}
+        if change is not None:
+            updates["change"] = "'" + _text(change).replace("'", "''") + "'"
+        self.tables.update("journal", updates, f"id = {int(entry)}")
+
+    def cut_short(self, entry: int, change: dict):
+        """Mark the entry done as a change cut short, keeping only the kind it had."""
+        self.done(entry, {"kind": CUT_SHORT, "was": change["kind"]})
 
     def pending(self) -> list[tuple[int, dict]]:
         """(id, change) of every entry not done, in order."""
