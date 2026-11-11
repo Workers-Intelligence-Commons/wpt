@@ -1,8 +1,8 @@
 // The form that asks to erase a passage of one text or item, or all of it,
-// shared by the page of the text and the Erasures page: the text in its
-// reader, where a selection with the mouse fills the place (or the place is
-// typed), the passage it names, the reason, and the confirm that sends the
-// request (POST /api/erasures), under review.
+// shared by the current text of the workspace and the Erasures page: the
+// text in its reader, where a selection with the mouse fills the place (or
+// the place is typed), the passage it names, the reason, and the confirm
+// that sends the request (POST /api/erasures), under review.
 
 import { Checkbox, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useMemo, useState, type ReactNode } from "react";

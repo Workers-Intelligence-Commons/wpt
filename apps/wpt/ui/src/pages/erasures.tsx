@@ -1,7 +1,7 @@
 // Erasure requests: every one, kept for good (wpt depot erasures), one
 // decision on several open ones together (wpt depot decide --erasure), the
 // page's main action, asking for an erasure (a text found by its title or
-// id, then the form the text's page shares, erase-form.tsx), and the view of
+// id, then the form the workspace's text shares, erase-form.tsx), and the view of
 // what one request asks to erase (#/erasures?request=ID, erasure-view.tsx).
 // A request names passages by their place, never by their content. Once a
 // decision admits a request, the depot carries it out at once, which cannot
@@ -50,7 +50,7 @@ function Erasures({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Erasure requests"
-        chain={<>A request names passages of <a href={href(["texts"])}>texts</a> by their place, asked here or from a text's page; admitted, it cuts them, and every corpus holding them goes stale. Every request is kept.</>}
+        chain={<>A request names passages of <a href={href(["texts"])}>texts</a> by their place, asked here or beside a text in the workspace; admitted, it cuts them, and every corpus holding them goes stale. Every request is kept.</>}
         actions={<Button variant={ticked.length ? "quiet" : "primary"} onClick={() => { setSaid(null); setAsking(true); }}>Ask for an erasure</Button>} />
       {said && <p className="done cue" role="status">{said}</p>}
       {answer && !deciding && <Outcome answer={answer.answer} done={(d) => {

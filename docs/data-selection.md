@@ -51,12 +51,14 @@ changes but by an erasure, which cuts its passages from every version
 Its licenses change only through `wpt depot relicense`, which starts its
 decisions over ([licenses.md](licenses.md), "Who decides").
 
-Its content changes through `wpt depot content ID FILE` or "Edit content"
-on the page of the text: a plain text in a text area, an item through the
-form of its kind's schema, which its new content must still match. The
-change is a new content version and a new revision that reads it. It is a
-decision under review, with the person's declaration, whose reason the
-depot writes, `content changed from version OLD to version NEW`. It starts
+Its content changes through `wpt depot content ID FILE` or the editor of
+the workspace of `wpt depot web`: a plain text in a text editor whose find
+and replace, by words or a regular expression, works inside that text
+only, an item through the form of its kind's schema, which its new content
+must still match. Saving is the content change alone, and says so before
+the click. The change is a new content version and a new revision that
+reads it. It is a decision under review, with the person's declaration,
+whose reason the depot writes, `content changed from version OLD to version NEW`. It starts
 the text's decisions over, as a license change does
 ([licenses.md](licenses.md), "Who decides"): the text is under review
 again and leaves every open library, to be put back once it is admitted. A
@@ -64,7 +66,7 @@ locked library keeps reading the content version of the revision it
 pinned. A content that changes nothing writes nothing.
 
 Its credits, tags and notice change through `wpt depot credits ID` or
-"Edit credits" on the page of the text. The change is a decision under
+"Edit credits" beside the text in the workspace. The change is a decision under
 review, with the person's declaration, whose reason the depot writes,
 naming each credit's old and new value. The decisions before it keep
 counting, so the text keeps its status and its libraries
@@ -225,6 +227,10 @@ reads.
 - `wpt depot library put LIBRARY WHERE` puts into an open library every
   admitted text the SQL condition `WHERE` matches, and names the matched
   texts it left out because they are not admitted.
+- `wpt depot library take-out LIBRARY WHERE` takes out of an open library
+  every text the SQL condition `WHERE` matches, and names the matched texts
+  it did not hold. A text taken out keeps its status: it stays admitted and
+  can be put back.
 - `wpt depot library rename LIBRARY NAME` gives a library, open or
   locked, a new name. The name is not what it holds, so the change needs
   no declaration and no decision.
@@ -243,8 +249,9 @@ reads.
   `problems` lists them: the ids of the texts concerned (the texts of the
   library `WHERE` matches, none without `WHERE`), the problem in words,
   and the decision, under review, that records who reported it. A report
-  changes no membership and no text, so a locked library takes it; to
-  correct the library, fork it without the texts concerned.
+  changes no membership and no text, so a locked library takes it. To
+  correct an open library, take the texts concerned out of it; to correct
+  a locked one, fork it without them.
 
 ## Datasets
 

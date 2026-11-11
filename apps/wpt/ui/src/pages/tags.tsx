@@ -1,5 +1,5 @@
 // Tags: #/tags/TAG is one tag's view: how many texts have it, by status, and
-// those texts, with the link to the texts page filtered to it. #/tags lists
+// those texts, with the link to the workspace filtered to it. #/tags lists
 // every tag. The page is not in the navigation: lists link to it.
 
 import { Skeleton } from "@workers-intelligence-commons/components";

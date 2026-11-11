@@ -86,6 +86,9 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           of the store that holds a text it cut or removed
     wpt depot library new NAME            a new open library
     wpt depot library put LIBRARY WHERE   every admitted text WHERE matches joins the open library
+    wpt depot library take-out LIBRARY WHERE
+                                          every text WHERE matches leaves the open library and keeps
+                                          its status, admitted included
     wpt depot library lock LIBRARY        lock the library for good: it pins the current revision of
                                           each text it holds and reads those for good
     wpt depot library rename LIBRARY NAME a new name for the library, open or locked
@@ -309,6 +312,13 @@ def cmd_library_put(args):
     return 0
 
 
+def cmd_library_take_out(args):
+    taken_out, not_held = opened().take_out(args.library, args.where)
+    say(f"library {args.library}: {len(taken_out):,} texts taken out of it"
+        + (f"; {len(not_held):,} matched and not in it" if not_held else ""))
+    return 0
+
+
 def cmd_library_lock(args):
     opened().lock(args.library)
     say(f"library {args.library}: locked")
@@ -523,7 +533,7 @@ def parser() -> argparse.ArgumentParser:
     adding_license.add_argument("file", help="the official text (UTF-8)")
     adding_license.set_defaults(run=cmd_license_add)
 
-    library = commands.add_parser("library", help="make, fill, lock and fork libraries")
+    library = commands.add_parser("library", help="make, fill, empty, lock and fork libraries")
     libraries = library.add_subparsers(dest="action", required=True)
     making = libraries.add_parser("new", help="a new open library")
     making.add_argument("name")
@@ -536,6 +546,11 @@ def parser() -> argparse.ArgumentParser:
     putting.add_argument("library")
     putting.add_argument("where", help="an SQL condition over the texts table")
     putting.set_defaults(run=cmd_library_put)
+    taking = libraries.add_parser("take-out", help="every text a condition matches leaves an open library, "
+                                                   "its status kept")
+    taking.add_argument("library")
+    taking.add_argument("where", help="an SQL condition over the texts table")
+    taking.set_defaults(run=cmd_library_take_out)
     locking = libraries.add_parser("lock", help="lock a library for good")
     locking.add_argument("library")
     locking.set_defaults(run=cmd_library_lock)

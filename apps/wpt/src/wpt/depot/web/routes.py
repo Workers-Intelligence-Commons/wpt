@@ -37,6 +37,8 @@ DECLARATION = {"type": "object", "required": ["name", "email", "accepted"],
 ID = {"type": "object", "required": ["id"], "properties": {"id": TEXT}}
 # the exact texts an operation works on, by id: those the page reviewed, never a condition matched again later
 IDS = {"type": "array", "items": TEXT, "minItems": 1, "uniqueItems": True}
+# how many characters of text a page of passages holds at most, by default and at the most a request may ask
+PASSAGE_CHARACTERS, MAX_PASSAGE_CHARACTERS = 200_000, 2_000_000
 
 
 def refusals(handler):
@@ -130,17 +132,26 @@ def routes(depot: Depot) -> list[Route]:
         decision, version = changed if changed is not None else (None, None)
         return 200, {"decision": decision, "version": version}
 
+    def filtered(found) -> str:
+        """The SQL condition over the texts table a filter of the body stands for."""
+        ids = found.get("ids")
+        return condition(Filter(ids=None if ids is None else tuple(ids), tags=tuple(found.get("tags", [])),
+                                licenses=tuple(found.get("licenses", [])), statuses=tuple(found.get("statuses", [])),
+                                libraries=tuple(found.get("libraries", [])), locked=found.get("locked"),
+                                where=found.get("where")))
+
     @refusals
     def search(values, body):
-        found = body["filter"]
-        ids = found.get("ids")
-        where = condition(Filter(ids=None if ids is None else tuple(ids), tags=tuple(found.get("tags", [])),
-                                 licenses=tuple(found.get("licenses", [])), statuses=tuple(found.get("statuses", [])),
-                                 libraries=tuple(found.get("libraries", [])), locked=found.get("locked"),
-                                 where=found.get("where")))
+        where = filtered(body["filter"])
         return 200, {"where": where, **jsonable(depot.search(where, body.get("offset", 0), body.get("limit", 50),
                                                              body.get("order", "id"), body.get("descending", False),
                                                              body.get("every_id", False)))}
+
+    @refusals
+    def passages(values, body):
+        return 200, jsonable(depot.passages(filtered(body["filter"]), body.get("offset", 0), body.get("limit", 50),
+                                            body.get("characters", PASSAGE_CHARACTERS), body.get("order", "id"),
+                                            body.get("descending", False)))
 
     @refusals
     def blocked(values, body):
@@ -192,6 +203,11 @@ def routes(depot: Depot) -> list[Route]:
     def put(values, body):
         joined, left_out = depot.put(values["id"], body["texts"])
         return 200, {"joined": joined, "left_out": left_out}
+
+    @refusals
+    def take_out(values, body):
+        taken_out, not_held = depot.take_out(values["id"], body["texts"])
+        return 200, {"taken_out": taken_out, "not_held": not_held}
 
     @refusals
     def lock(values, body):
@@ -425,6 +441,22 @@ def routes(depot: Depot) -> list[Route]:
                                    "every_id": {"type": "boolean"}}},
               answer={"type": "object", "required": ["where", "total", "statuses", "locked", "tags", "licenses",
                                                      "rows"]}),
+        Route("POST", "/api/texts/passages", passages, "the texts a filter matches with their text, a page at a "
+              "time in the order of POST /api/texts/search, the page bounded both by a count of texts (limit) and "
+              "by characters: from offset, at most limit texts holding at most characters characters together, each "
+              "its id, kind, title, length in characters and passage, its text or an item's content from its start, "
+              "whole, or cut at characters for the page's first text when it is longer; a later text that does not "
+              "fit whole starts the next page; next is the offset of the text after the page, null when the page "
+              "ends the texts matched",
+              body={"type": "object", "required": ["filter"],
+                    "properties": {"filter": text_filter, "offset": {"type": "integer", "minimum": 0},
+                                   "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                                   "characters": {"type": "integer", "minimum": 1, "maximum": MAX_PASSAGE_CHARACTERS},
+                                   "order": {"enum": list(ORDERS)}, "descending": {"type": "boolean"}}},
+              answer={"type": "object", "required": ["rows", "next"], "properties": {
+                  "rows": {"type": "array", "items": {"type": "object", "required": [
+                      "id", "kind", "title", "length", "passage"]}},
+                  "next": {"type": ["integer", "null"]}}}),
         Route("POST", "/api/texts/blocked", blocked, "of exactly the texts named, each one a decision of that status "
               "(default admitted) cannot cover, the check a decision applies: its id and its reasons (it belongs to "
               "the upstream this depot follows, for any decision; none of its licenses is allowed, for an "
@@ -481,6 +513,11 @@ def routes(depot: Depot) -> list[Route]:
               "(wpt depot library put): the ids that joined it, and those left out, not admitted",
               body={"type": "object", "required": ["texts"], "properties": {"texts": IDS}},
               answer={"type": "object", "required": ["joined", "left_out"]}),
+        Route("POST", "/api/libraries/{id}/taken-out", take_out, "every text of those named that the open library "
+              "holds leaves it and keeps its status, admitted included (wpt depot library take-out): the ids taken "
+              "out, and those named that it did not hold",
+              body={"type": "object", "required": ["texts"], "properties": {"texts": IDS}},
+              answer={"type": "object", "required": ["taken_out", "not_held"]}),
         Route("POST", "/api/libraries/{id}/lock", lock, "lock the library for good: it pins the current revision of "
               "each text it holds (wpt depot library lock)",
               body=OBJECT, answer=OBJECT),

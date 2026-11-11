@@ -244,7 +244,8 @@ pull brings refused, or with its licenses or content changed, leaves the clone's
 open libraries at the pull's change number, as that decision made in the
 clone would; its locked libraries keep their pins. A dataset reads one of
 the upstream's libraries in the clone whether it names it by the clone's
-address or by the upstream's, so the library's page lists both. The pages show quietly
+address or by the upstream's, so the head of the library in the workspace
+lists both. The pages show quietly
 that a text, library, dataset or erasure request belongs to the upstream,
 and offer no action on it that the depot would refuse.
 
@@ -422,24 +423,26 @@ refused change writes nothing.
 | the depot at a glance | none | `GET /api/decisions/latest`; pages "Overview" and "Settings" |
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on, the erasure requests it decides or the problem it records; the view of a decision, and of a reported problem |
 | a tag, shown | `sql QUERY` | `POST /api/texts/search` with the tag; the view of a tag |
-| texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; page "Texts" |
+| texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the playlist of the "Workspace" page |
+| texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Workspace" page |
 | a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
-| a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the page of the text |
+| a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the editor of the "Workspace" page, with the text's record |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
-| a decision on texts | `decide admit\|refuse WHERE` | `POST /api/decisions`, on named texts, and `POST /api/texts/blocked`, which of named texts an admission cannot cover and why; page "Texts" and the page of the text |
-| a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on named texts; the review of an admission, for texts with no allowed license, and the page of the text |
-| a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; the page of the text |
-| a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the page of the text |
+| a decision on texts | `decide admit\|refuse WHERE` | `POST /api/decisions`, on named texts, and `POST /api/texts/blocked`, which of named texts an admission cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A and R |
+| a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on named texts; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
+| a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
+| a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
-| libraries | `library new`, `put`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|pins\|lock\|forks\|problems\|name]`; page "Libraries" with each library's page, a locked one's with its pinned revisions, and the view of each reported problem |
+| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`; the "Workspace" page lists them and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
 | datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/tokenizers`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`, `POST /api/remotes`; page "Datasets" with the view of each dataset |
 | a corpus | `build DATASET` | `POST /api/datasets/{name}/corpus`; page "Datasets" |
 | a tokenizer's vocabulary | `tokenizer RECIPE` | none |
-| erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the page of the text asks |
+| erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Workspace" page asks |
 
 Each row of a list on the pages opens a view of that thing, with its own
-address in the page's hash so it can be linked: a text (`#/texts/ID`), a
-library (`#/libraries/ID`), a reported problem
+address in the page's hash so it can be linked: a text (`#/texts/ID`, the
+workspace with that text in its editor), a library (`#/libraries/ID`, the
+workspace with that library open), a reported problem
 (`#/libraries/ID/problems/DECISION`), a dataset (`#/datasets/ID`), a
 license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
 decision (`#/decisions/ID`) and a tag (`#/tags/TAG`).
@@ -451,14 +454,33 @@ that they read the requirements, accept them, and that what they submit
 meets them. The commands take it as `--name`, `--email` and `--accept`.
 The "Settings" page keeps the name and email in the browser and says that
 both are public. Each decision is sent only by a click on its own confirming
-button. Beside the button stand the confirmation that `GET /api/about` gives,
-a link to the requirements, and the name and email the decision records. A
-form without a name or an email says so and links to the settings.
+button, or by a deciding key of the workspace. Beside the button stand the
+confirmation that `GET /api/about` gives, a link to the requirements, and
+the name and email the decision records. A form without a name or an email
+says so and links to the settings.
+
+The "Workspace" page replaces separate pages of texts and libraries. Its
+left column lists what can be opened: every text, each status, the
+libraries, the tags, the licenses, and the filters saved in the browser.
+What is open is a filter, kept in the address, which the filter bar
+refines. The middle column is the playlist of what is open, a page at a
+time; the right column is the current text in a text editor, with its
+record and its actions beside it. Saving an edit is a content change only:
+the text goes back under review and leaves every open library, and is
+admitted again apart. In the playlist, keys move from text to text, and A
+and R admit or refuse the current text and open the next one. A legend
+beside the playlist lists the keys and shows the confirmation they make
+with the name and email they record. A line names the text and the
+decision after each press. Without a name or an email, the key asks for
+them and decides nothing. The keys do nothing while the cursor is in a
+field or the editor. The blob mode shows the open texts as one continuous
+text, read a page at a time as it scrolls; a click on a passage opens
+that text in the editor.
 
 The web pages decide on texts by their ids, never by a filter. A filter
 finds the texts; the review window lists every id it reached, each ticked,
-and the decision, the put, the fork or the report takes exactly the ids that
-stay ticked. A text that matches the filter after the review is not part of
+and the decision, the put, the take-out, the fork or the report takes exactly
+the ids that stay ticked. A text that matches the filter after the review is not part of
 the decision.
 
 The review of an admission sets apart the texts the depot would refuse to

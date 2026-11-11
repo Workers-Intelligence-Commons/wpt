@@ -161,9 +161,9 @@ asks for its erasure. A locked library keeps the texts it holds.
 ## Erasure requests
 
 Every erasure request is honored. Ask through `wpt depot erase` or the
-page of the text in `wpt depot web`, open a public issue, or use the
-repository's **Security** tab, **Report a vulnerability**, to ask
-privately. See [docs/erasure.md](docs/erasure.md).
+text's "Ask to erase" in the workspace of `wpt depot web`, open a public
+issue, or use the repository's **Security** tab, **Report a
+vulnerability**, to ask privately. See [docs/erasure.md](docs/erasure.md).
 
 ## Models and generated text
 

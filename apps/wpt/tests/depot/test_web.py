@@ -236,6 +236,55 @@ def test_a_review_gets_every_id_a_filter_matches_and_the_decision_takes_exactly_
         ("test-depot-8", "admitted", 2), ("test-depot-7", "under review", 1)]
 
 
+def test_texts_taken_out_of_an_open_library_stay_admitted_and_a_locked_library_refuses_it(web):
+    request, depot = web
+    for text in ("one", "two", "three"):
+        request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "declaration": ME})
+    every = ["test-depot-1", "test-depot-2", "test-depot-3"]
+    request("POST", "/api/decisions", {"status": "admitted", "texts": every, "declaration": ME})
+    request("POST", "/api/libraries", {"name": "open"})
+    request("POST", "/api/libraries", {"name": "locked"})
+    request("POST", "/api/libraries/test-depot-1/texts", {"texts": every[:2]})
+    request("POST", "/api/libraries/test-depot-2/texts", {"texts": every})
+    request("POST", "/api/libraries/test-depot-2/lock", {})
+
+    assert request("POST", "/api/libraries/test-depot-1/taken-out", {"texts": ["test-depot-1", "test-depot-3"]}) == (
+        200, {"taken_out": ["test-depot-1"], "not_held": ["test-depot-3"]})
+    status, held = request("POST", "/api/texts/search", {"filter": {"libraries": ["test-depot-1"]}})
+    assert [one["id"] for one in held["rows"]] == ["test-depot-2"]
+    assert request("GET", "/api/texts/test-depot-1")[1]["status"] == "admitted"
+    change = depot.change()
+    status, refused = request("POST", "/api/libraries/test-depot-2/taken-out", {"texts": ["test-depot-1"]})
+    assert status == 422 and refused["problems"][0].startswith("Locked:")
+    assert depot.change() == change
+    assert request("POST", "/api/libraries/test-depot-9/taken-out", {"texts": ["test-depot-1"]})[0] == 404
+
+
+def test_passages_give_the_texts_a_filter_matches_with_their_text_a_page_bounded_by_count_and_characters(web):
+    # the blob of the pages reads a collection page by page this way, never the whole collection at once
+    request, depot = web
+    for text, tags in (("a" * 10, ["x"]), ("b" * 4, ["x"]), ("c" * 4, ["y"]), ("d" * 3, ["x"]), ("e" * 2, ["x"])):
+        request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "tags": tags, "title": text[0],
+                                       "declaration": ME})
+    tagged = {"tags": ["x"]}
+
+    status, first = request("POST", "/api/texts/passages", {"filter": tagged, "characters": 6})
+    assert status == 200 and first == {"rows": [{"id": "test-depot-1", "kind": None, "title": "a", "length": 10,
+                                                 "passage": "aaaaaa"}], "next": 1}
+    status, second = request("POST", "/api/texts/passages", {"filter": tagged, "offset": 1, "characters": 6})
+    assert [(one["id"], one["passage"]) for one in second["rows"]] == [("test-depot-2", "bbbb")]
+    assert second["next"] == 2
+    status, third = request("POST", "/api/texts/passages", {"filter": tagged, "offset": 2, "limit": 1})
+    assert [one["id"] for one in third["rows"]] == ["test-depot-4"] and third["next"] == 3
+    status, last = request("POST", "/api/texts/passages", {"filter": tagged, "offset": 3})
+    assert [(one["id"], one["passage"]) for one in last["rows"]] == [("test-depot-5", "ee")] and last["next"] is None
+    status, longest = request("POST", "/api/texts/passages", {"filter": {}, "order": "length", "descending": True,
+                                                              "characters": 100})
+    assert [one["id"] for one in longest["rows"]] == ["test-depot-1", "test-depot-2", "test-depot-3", "test-depot-4",
+                                                      "test-depot-5"] and longest["next"] is None
+    assert request("POST", "/api/texts/passages", {"filter": tagged, "characters": 0})[0] == 400
+
+
 def test_the_review_of_an_admission_gets_the_texts_it_cannot_cover_with_their_reasons(web):
     # the page lists these texts apart before an admission: the route answers the depot's own check
     request, depot = web

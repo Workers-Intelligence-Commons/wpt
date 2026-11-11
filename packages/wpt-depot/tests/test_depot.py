@@ -67,6 +67,54 @@ def test_a_locked_library_takes_no_text_and_a_fork_is_an_open_library_holding_it
         == [{"forked_from": library, "locked_at": None}]
 
 
+def test_a_text_taken_out_of_an_open_library_leaves_it_stays_admitted_and_can_be_put_back(make_depot, me):
+    depot = make_depot()
+    leaving, staying, outside = depot.add([plain("leaving"), plain("staying"), plain("outside")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("open")
+    depot.put(library, [leaving, staying])
+    before = depot.change()
+
+    assert depot.take_out(library, [leaving, outside]) == ([leaving], [outside])
+
+    assert depot.library_texts(library, depot.change())["id"].to_pylist() == [staying]
+    assert depot.library_texts(library, before)["id"].to_pylist() == [leaving, staying]
+    assert depot.show(leaving)["status"] == "admitted"
+    assert depot.put(library, [leaving]) == ([leaving], [])
+    assert depot.library_texts(library, depot.change())["id"].to_pylist() == [leaving, staying]
+
+
+def test_a_locked_library_refuses_a_take_out_and_writes_nothing(make_depot, me):
+    depot = make_depot()
+    [text] = depot.add([plain("pinned")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("locked")
+    depot.put(library, [text])
+    depot.lock(library)
+    before = depot.change()
+
+    with pytest.raises(Locked):
+        depot.take_out(library, [text])
+
+    assert depot.change() == before
+    assert depot.library_texts(library, depot.change())["id"].to_pylist() == [text]
+
+
+def test_a_pull_brings_a_take_out_made_upstream(make_depot, me, tmp_path):
+    upstream = make_depot("upstream")
+    texts = upstream.add([plain("leaving"), plain("staying")], me)
+    upstream.decide("admitted", texts, me)
+    library = upstream.new_library("open")
+    upstream.put(library, texts)
+    follower = clone(upstream.address, str(tmp_path / "follower"), About("follower", "Grace Hopper", "grace@example.org"))
+    upstream.take_out(library, [texts[0]])
+
+    pull(follower)
+
+    assert follower.library_texts(library, follower.change())["id"].to_pylist() == [texts[1]]
+    assert follower.show(texts[0])["status"] == "admitted"
+
+
 def test_an_item_is_kept_only_when_its_content_matches_its_kind(make_depot, me):
     depot = make_depot()
     probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
@@ -1528,6 +1576,7 @@ REFUSED_ON_UPSTREAM_ROWS = {
     "rename a library": lambda depot, me, ids: depot.rename_library(ids["library"], "mine"),
     "lock a library": lambda depot, me, ids: depot.lock(ids["library"]),
     "put into a library": lambda depot, me, ids: depot.put(ids["library"], [ids["mine"]]),
+    "take out of a library": lambda depot, me, ids: depot.take_out(ids["library"], [ids["text"]]),
     "report on a library": lambda depot, me, ids: depot.report(ids["locked"], "a problem", None, me),
     "edit a dataset": lambda depot, me, ids: depot.edit_dataset(ids["dataset"], "renamed", [(None, ids["library"])]),
 }

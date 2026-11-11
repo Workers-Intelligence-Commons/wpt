@@ -13,8 +13,8 @@ restored from it holds the passage again ([architecture.md](architecture.md),
 - Through the depot: `wpt depot erase ID [START END] [--field POINTER] --reason TEXT` with
   the asker's declaration, or `wpt depot web`: the "Ask for an erasure"
   action of the "Erasures" page, which finds the text by a part of its
-  title or id, or by its exact id, or the page of the text. Both show the
-  text, where a selection with the mouse fills the positions, which can
+  title or id, or by its exact id, or "Ask to erase" beside the text in
+  the workspace. Both show the text, where a selection with the mouse fills the positions, which can
   also be typed, or the whole text can be named.
   Anyone can make a request.
 - To a depot's maintainer, at the takedown contact its `about` table

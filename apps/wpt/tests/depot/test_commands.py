@@ -199,6 +199,11 @@ def test_a_problem_is_reported_on_a_locked_library_and_a_fork_can_leave_texts_ou
     assert opened.sql("SELECT id FROM texts WHERE list_contains(libraries, 'test-depot-2')")["id"].to_pylist() == ["test-depot-1"]
     assert depot_command("library", "report", "test-depot-1", "x", "id = 99", *ME) == 2  # no such text in the library
 
+    assert depot_command("library", "take-out", "test-depot-1", "true") == 2  # locked: the way out is a fork
+    assert depot_command("library", "take-out", "test-depot-2", "list_contains(tags, 'a')") == 0
+    assert opened.sql("SELECT id FROM texts WHERE list_contains(libraries, 'test-depot-2')").num_rows == 0
+    assert opened.show("test-depot-1")["status"] == "admitted"
+
 
 def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_datasets_texts_and_locks_it(depot, tmp_path, monkeypatch,
                                                                                     capsys):

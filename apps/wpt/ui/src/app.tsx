@@ -10,7 +10,7 @@ export function App() {
   const { about } = useAbout();
   const page = pages.find((p) => p.path === (place.parts[0] ?? "")) ?? pages[0];
   return (
-    <div className="wrap">
+    <div className={`wrap${page.path === "texts" ? " full" : ""}`}>
       <header className="top">
         <a className="home wic-focus" href={href([])} aria-label="Overview of the depot" aria-current={page.path === "" ? "page" : undefined}>
           <Mark name="wpt" height={24} />

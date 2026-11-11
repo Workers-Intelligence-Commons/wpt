@@ -368,8 +368,9 @@ Bun installs these when `wpt depot web` builds its interface. The root
 `package.json` makes one workspace of the interface (`apps/wpt/ui`) and the
 packages of the organization's design system, a git submodule at
 `vendor/wic-design-system` pinned to commit 99ca81f. React, React DOM,
-scheduler and the design system's tokens, fonts and components end up in
-the built files the browser loads; the others build them. lightningcss's
+scheduler, the CodeMirror packages with what they use, and the design
+system's tokens, fonts and components end up in the built files the
+browser loads; the others build them. lightningcss's
 MPL-2.0 names the AGPL as a Secondary License (its section 1.12).
 
 The design system's NOTICE gives three licenses. Its tokens, components and
@@ -387,6 +388,19 @@ through Mark, so its built files hold that drawing.
 | react | 19.3.1 | MIT | in the built files |
 | react-dom | 19.3.1 | MIT | in the built files |
 | scheduler | 0.28.0 | MIT | in the built files, through react-dom |
+| @codemirror/state | 6.7.6 | MIT | in the built files (the text editor) |
+| @codemirror/view | 6.43.15 | MIT | in the built files (the text editor) |
+| @codemirror/commands | 6.11.1 | MIT | in the built files (the text editor's keys and undo) |
+| @codemirror/search | 6.7.2 | MIT | in the built files (the text editor's find and replace) |
+| @codemirror/language | 6.13.1 | MIT | through @codemirror/commands |
+| @codemirror/streamparser | 6.0.0 | MIT | through @codemirror/language |
+| @lezer/common | 1.5.5 | MIT | through @codemirror/commands |
+| @lezer/highlight | 1.2.5 | MIT | through @codemirror/language |
+| @lezer/lr | 1.4.12 | MIT | through @codemirror/language |
+| @marijn/find-cluster-break | 1.0.4 | MIT | through @codemirror/state |
+| crelt | 1.0.7 | MIT | through @codemirror/view and @codemirror/search |
+| style-mod | 4.1.4 | MIT | through @codemirror/view |
+| w3c-keyname | 2.2.8 | MIT | through @codemirror/view |
 | vite | 8.3.6 | MIT | builds the interface |
 | rolldown | 1.2.16 | MIT | through vite |
 | @rolldown/binding-* | 1.2.16 | MIT | one per platform (15), through rolldown |
@@ -696,8 +710,9 @@ when it is:
 People decide. Every decision is a row of the depot's `decisions` table,
 with one of three statuses (`under review`, `admitted` or `refused`), the
 time it was made, and the decider's declaration: their legal name, their
-contact email, and their confirmation, with a clearly worded button or
-`--accept`, that they read the [requirements](requirements.md), accept them, and that what
+contact email, and their confirmation, with a clearly worded button, a
+deciding key whose legend shows the confirmation, or `--accept`, that they
+read the [requirements](requirements.md), accept them, and that what
 they submit meets them. The declaration is recorded on each decision, is
 public, and is not verified; the form says so before anyone confirms.
 
@@ -710,8 +725,8 @@ public, and is not verified; the form says so before anyone confirms.
 - `wpt depot decide admit|refuse WHERE` makes one decision, admitted or
   refused, and appends it to every text the SQL condition `WHERE`
   matches.
-- `wpt depot relicense ID ... --license L ...` (or "Change licenses" on
-  a text's page, and "Change their licenses" in the review of an
+- `wpt depot relicense ID ... --license L ...` (or "Change licenses" beside
+  a text in the workspace, and "Change their licenses" in the review of an
   admission) changes the licenses of texts as a new revision of each, their
   ids kept ([data-selection.md](data-selection.md), "Texts"). Every new
   license is one the depot holds. A locked library goes on reading the
@@ -721,7 +736,7 @@ public, and is not verified; the form says so before anyone confirms.
   licenses. Texts whose old lists differ get one decision each. A text
   that names the new licenses already is left out and reported, so a
   change never only wipes its decisions.
-- `wpt depot content ID FILE` (or "Edit content" on a text's page) changes
+- `wpt depot content ID FILE` (or saving a text in the workspace's editor) changes
   a text's content as a new content version and a new revision of it, its
   id kept ([data-selection.md](data-selection.md), "Texts"). A locked
   library goes on reading the revision it pinned, with its content. The
@@ -729,7 +744,7 @@ public, and is not verified; the form says so before anyone confirms.
   declaration and a reason the depot writes itself, `content changed from
   version OLD to version NEW`. A content that changes nothing writes
   nothing.
-- `wpt depot credits ID` (or "Edit credits" on a text's page) changes a
+- `wpt depot credits ID` (or "Edit credits" beside a text in the workspace) changes a
   text's credits as a new revision of it: its title, authors, tags,
   address or notice. A locked library goes on reading the revision it
   pinned. The change is a decision

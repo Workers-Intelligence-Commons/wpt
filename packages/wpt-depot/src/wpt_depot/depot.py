@@ -34,8 +34,8 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   stores it. Every license a text names is a
   row of licenses (one of them is enough to allow it), and its notice is
   stored once.
-- An operation on texts (a decision, a put, a fork's texts left out, a
-  report) takes them as a selection: an SQL condition over the texts
+- An operation on texts (a decision, a put, a take-out, a fork's texts
+  left out, a report) takes them as a selection: an SQL condition over the texts
   view (the current state), matched when the operation runs, or the exact
   ids of chosen texts, every one of which must be a text of the depot.
 - A decision on texts is appended to every text selected, as a new
@@ -85,9 +85,11 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   change brought it (Depot.bounds). Locking a library pins the revision
   of each text it holds: it reads those revisions for good, whatever
   revisions its texts take later, takes no new text and loses none but by
-  an erasure. Its name is not what it holds, so it can be renamed, open or
-  locked. A fork is a new open library holding the same texts that are
-  admitted now, less those selected to leave out when it is given any.
+  an erasure. A text taken out of an open library leaves it and keeps its
+  status, admitted included. Its name is not what it holds, so it can be
+  renamed, open or locked. A fork is a new open library holding the same
+  texts that are admitted now, less those selected to leave out when it is
+  given any.
 - An erasure request is decided like a text, and several requests can be
   decided together, each checked before any is decided. Each needle names
   a place in one content version of its text, which the request records
@@ -128,8 +130,8 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   a content change of or an edit of the credits or scores of an upstream text, a request to erase one,
   a decision on an erasure request that is the upstream's or names an
   upstream text, renaming, locking, reporting
-  on or putting texts into an upstream library, editing an upstream
-  dataset. An operation on several texts is refused whole when one of
+  on, putting texts into or taking texts out of an upstream library,
+  editing an upstream dataset. An operation on several texts is refused whole when one of
   them is the upstream's, and Depot.blocked names them. The depot's own
   rows stay fully changeable: its own library may hold upstream texts,
   reading their current revisions while it is open and the revisions it
@@ -487,12 +489,7 @@ class Depot:
         licenses, libraries, status, whether a locked library holds it, and
         its length in characters. BadQuery for a condition that is not one;
         Refused for an order that is none of ORDERS."""
-        if order not in ORDERS:
-            raise Refused(f"the texts are ordered by one of {', '.join(ORDERS)}, not {order!r}")
-        direction = " DESC" if descending else ""
-        by = ", ".join([f"{one}{direction}" for one in ORDERS[order]] + [ids.order_sql()])
-        matched = (f"SELECT *, {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked, "
-                   f"length(coalesce(text, content)) AS length FROM texts WHERE ({where})")
+        matched, by = self._ordered(where, order, descending)
         counts = self.sql(f"SELECT status, locked, count(*) AS n FROM ({matched}) GROUP BY ALL").to_pylist()
         statuses = {status: sum(one["n"] for one in counts if one["status"] == status)
                     for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
@@ -506,6 +503,49 @@ class Depot:
         if every_id:
             answer["ids"] = self.matching(where)
         return answer
+
+    def passages(self, where: str, offset: int = 0, limit: int = 50, characters: int = 200_000, order: str = "id",
+                 descending: bool = False) -> dict:
+        """The texts the SQL condition where matches with their text, a page
+        at a time, in the order of search: {rows: from offset, at most limit
+        texts holding at most characters characters together, each {id,
+        kind, title, length: its length in characters, passage: its text, or
+        an item's content, from its start, whole, or cut at characters for a
+        first text longer than that}, next: the offset of the text after the
+        page, None when the page ends the texts matched}. A later text that
+        does not fit whole starts the next page. BadQuery for a condition
+        that is not one; Refused for an order that is none of ORDERS or a
+        bound below 1."""
+        if limit < 1 or characters < 1:
+            raise Refused("a page holds at least one text and one character")
+        matched, by = self._ordered(where, order, descending)
+        found = self.sql(f"SELECT id, kind, title, length FROM ({matched}) ORDER BY {by} "
+                         f"LIMIT {int(limit) + 1} OFFSET {int(offset)}").to_pylist()
+        page, left = [], characters
+        for one in found[:limit]:
+            if page and one["length"] > left:
+                break
+            page.append({**one, "shown": min(one["length"], left)})
+            left -= page[-1]["shown"]
+        cut = {row["id"]: row["passage"] for row in self.tables.query(
+            "SELECT t.id, substr(coalesce(t.text, t.content), 1, s.shown) AS passage FROM texts t "
+            "JOIN (SELECT unnest(?) AS id, unnest(?) AS shown) s ON s.id = t.id",
+            [[one["id"] for one in page], [one["shown"] for one in page]]).to_pylist()} if page else {}
+        found_rows = [{"id": one["id"], "kind": one["kind"], "title": one["title"], "length": one["length"],
+                       "passage": cut[one["id"]]} for one in page]
+        return {"rows": found_rows, "next": int(offset) + len(page) if len(page) < len(found) else None}
+
+    def _ordered(self, where: str, order: str, descending: bool) -> tuple[str, str]:
+        """(a query of the texts where matches, with their status, whether a
+        locked library holds them and their length; the ORDER BY list of
+        order, then by id). Refused for an order that is none of ORDERS."""
+        if order not in ORDERS:
+            raise Refused(f"the texts are ordered by one of {', '.join(ORDERS)}, not {order!r}")
+        direction = " DESC" if descending else ""
+        by = ", ".join([f"{one}{direction}" for one in ORDERS[order]] + [ids.order_sql()])
+        matched = (f"SELECT *, {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked, "
+                   f"length(coalesce(text, content)) AS length FROM texts WHERE ({where})")
+        return matched, by
 
     def tags(self) -> list[dict]:
         """Every tag a text has, with how many texts have it, by name."""
@@ -971,6 +1011,26 @@ class Depot:
             if joining:
                 self._change({"kind": "put", "library": library, "texts": joining})
             return joining, left_out
+
+    def take_out(self, library: str, texts: Selection) -> tuple[list[str], list[str]]:
+        """Take out of an open library every text selected that it holds,
+        each staying as it is, admitted included: (the ids that left it, the
+        ids selected that it did not hold). Locked when the library is
+        locked; NotFound when a given id is no text."""
+        with self._writes():
+            found = self._library(library)
+            self._refuse_upstream("libraries", [library], FORK)
+            if found["locked_at"] is not None:
+                raise Locked(f"the library {library} is locked: no text leaves it")
+            matched = self.selected(texts)
+            if not matched:
+                return [], []
+            held = set(self.tables.query("SELECT text FROM memberships WHERE library = ? AND left_change IS NULL "
+                                         "AND list_contains(?, text)", [library, matched])["text"].to_pylist())
+            leaving = [text for text in matched if text in held]
+            if leaving:
+                self._change({"kind": "take out", "library": library, "texts": leaving})
+            return leaving, [text for text in matched if text not in held]
 
     def lock(self, library: str):
         """Lock an open library for good, as a new revision: it pins the
@@ -1549,6 +1609,8 @@ class Depot:
             self._revise("libraries", [change["library"]], number, lambda row: {"name": change["name"]})
         elif kind == "put":
             self._join(change["texts"], change["library"], number)
+        elif kind == "take out":
+            self._leave(change["texts"], [change["library"]], number)
         elif kind == "lock":
             library = change["library"]
             self._write("pins", self.tables.query(
