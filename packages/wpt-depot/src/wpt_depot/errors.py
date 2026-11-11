@@ -10,6 +10,13 @@ class NotADepot(DepotError):
     """The address holds no depot, or a depot missing one of its tables."""
 
 
+class OtherFormat(DepotError):
+    """The depot's layout is of another format than the one this code
+    reads (wpt_depot.schema.FORMAT): an older one, which `wpt depot
+    upgrade` brings up to it, or a newer one, which only a newer wpt reads.
+    The message names the depot's address, its format and the code's."""
+
+
 class DepotExists(DepotError):
     """A new depot or a clone was asked for at an address that already holds tables."""
 

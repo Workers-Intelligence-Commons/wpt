@@ -101,6 +101,9 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   its name never does, since it begins every id. A library's name, a
   dataset and the depot's facts change with no declaration: they are no
   decision on a text.
+- The depot's format (wpt_depot.schema) changes only through
+  Depot.upgrade, as a new revision of its about row; opening or reading a
+  depot of another format than the code's is refused (OtherFormat).
 - A depot that follows an upstream (a clone, wpt_depot.follow) only reads
   the rows its upstream owns: those whose id does not carry the depot's
   own name, that is, is not exactly the name, a hyphen and digits
@@ -137,12 +140,12 @@ import pyarrow as pa
 
 from . import erasure, ids, kinds, licenses, policy
 from .erasure import Needle
-from .errors import (BadQuery, BelongsToUpstream, DepotExists, JournalUnfinished, Locked, NotADepot, NotFound, Refused,
-                     UnsupportedAddress)
+from .errors import (BadQuery, BelongsToUpstream, DepotExists, JournalUnfinished, Locked, NotADepot, NotFound,
+                     OtherFormat, Refused, UnsupportedAddress)
 from .filters import IN_LOCKED, literal, strings
 from .journal import Journal
-from .schema import (ADMITTED, CHANGES, CONTENT_JOIN, REFUSED, TABLES, TEXT_COLUMNS, UNDER_REVIEW, latest, rows,
-                     sql_name)
+from .schema import (ADMITTED, CHANGES, CONTENT_JOIN, FORMAT, REFUSED, STEPS, TABLES, TEXT_COLUMNS, UNDER_REVIEW, latest,
+                     rows, sql_name)
 from .settings import bucket_settings
 from .tables import Tables
 
@@ -233,31 +236,88 @@ class Depot:
             raise DepotExists(f"{depot.address} already holds a depot's tables")
         depot.tables.create()
         depot.tables.append("kinds", rows("kinds", kinds.starting_rows()))
-        depot.tables.append("about", rows("about", [{"revision": 1, "change": 1, **vars(about)}]))
+        depot.tables.append("about", rows("about", [{"revision": 1, "change": 1, **vars(about), "format": FORMAT}]))
         return depot
 
     @classmethod
     def view(cls, address: str, settings: dict | None = None) -> "Depot":
         """The depot at address, to read: nothing is written, so a change
         its journal holds undone stays undone. For a depot another app
-        owns, which only that app writes. NotADepot when a table is missing."""
-        depot = cls(address, settings)
-        missing = [name for name in TABLES if name not in depot.tables.exist()]
-        if missing:
-            raise NotADepot(f"{depot.address} is not a depot: no table {', '.join(missing)}")
-        if not depot.tables.read("about").num_rows:
-            raise NotADepot(f"{depot.address} is not a depot: its about table holds no row")
+        owns, which only that app writes. NotADepot when a table is missing;
+        OtherFormat when its format is not this code's (schema.FORMAT)."""
+        depot = cls.find(address, settings)
+        found = depot.format()
+        if found != FORMAT:
+            raise OtherFormat(depot._other_format(found))
         return depot
 
     @classmethod
     def open(cls, address: str, settings: dict | None = None) -> "Depot":
         """The depot at address, to write: every change the journal holds
         undone applied first, or cut short when its content versions were
-        never written. NotADepot when a table is missing."""
+        never written. NotADepot when a table is missing; OtherFormat when
+        its format is not this code's (schema.FORMAT)."""
         depot = cls.view(address, settings)
         with depot._writing:
             depot._finish()
         return depot
+
+    @classmethod
+    def upgrade(cls, address: str, settings: dict | None = None) -> tuple["Depot", int]:
+        """(the depot at address brought up to this code's format,
+        schema.FORMAT; the format its about row gave): every change its
+        journal holds undone finished (or cut short) first, with this code,
+        then, from its format on, the step of schema.STEPS to the next
+        format, each followed by the format it reached recorded as a new
+        revision of its about row, a change of the journal like any other.
+        An upgrade cut short resumes after the last format it recorded; a
+        depot at FORMAT is left as opening it leaves it. NotADepot when a
+        table is missing; OtherFormat for a newer format, which no code
+        brings down."""
+        depot = cls.find(address, settings)
+        with depot._writing:
+            start = depot.refuse_newer()
+            depot._finish()  # an older format's undone changes, or the record of a format an upgrade cut short
+            while (reached := depot.format()) < FORMAT:
+                STEPS[reached](depot.tables)
+                depot._change({"kind": "about", "values": {"format": reached + 1}})
+        return depot, start
+
+    @classmethod
+    def find(cls, address: str, settings: dict | None = None) -> "Depot":
+        """The depot at address, whatever its format: for what copies it as
+        it is (wpt_depot.backup) or upgrades it, never to read or change its
+        rows. NotADepot when a table is missing."""
+        depot = cls(address, settings)
+        missing = [name for name in TABLES if name not in depot.tables.exist()]
+        if missing:
+            raise NotADepot(f"{depot.address} is not a depot: no table {', '.join(missing)}")
+        if not depot.tables.read("about", columns=["revision"]).num_rows:
+            raise NotADepot(f"{depot.address} is not a depot: its about table holds no row")
+        return depot
+
+    def format(self) -> int:
+        """The format of the depot's layout (wpt_depot.schema): its current
+        about row's, or 0 when its about table has no format column."""
+        if "format" not in self.tables.columns("about"):
+            return 0
+        return self.tables.query('SELECT "format" FROM about')["format"][0].as_py()
+
+    def refuse_newer(self) -> int:
+        """The depot's format. OtherFormat when it is newer than this code's
+        (schema.FORMAT): no code brings a depot down to an older format."""
+        found = self.format()
+        if found > FORMAT:
+            raise OtherFormat(self._other_format(found))
+        return found
+
+    def _other_format(self, found: int) -> str:
+        """Why a depot of the format found is not read: what OtherFormat says."""
+        if found < FORMAT:
+            return (f"{self.address} is a depot of format {found}, older than the format {FORMAT} this wpt reads: "
+                    f"run `wpt depot upgrade` to bring it up to format {FORMAT}")
+        return (f"{self.address} is a depot of format {found}, newer than the format {FORMAT} this wpt reads: "
+                "update wpt to read it; a depot is never brought down to an older format")
 
     def _finish(self):
         """Apply every change the journal holds undone, or cut it short when
@@ -1363,11 +1423,12 @@ class Depot:
             self._write("decisions", rows("decisions", [_decision_row(change["decision"])]))
         if "decisions" in change:
             self._write("decisions", rows("decisions", [_decision_row(one) for one in change["decisions"]]))
-        if kind == "about":
+        if kind == "about":  # in the columns the about table has, an older format's during an upgrade
             current = self.about()
             if current["change"] != number:
-                self._write("about", rows("about", [{**current, **change["values"],
-                                                            "revision": current["revision"] + 1, "change": number}]))
+                self._write("about", pa.Table.from_pylist(
+                    [{**current, **change["values"], "revision": current["revision"] + 1, "change": number}],
+                    schema=self.tables.layout("about")))
         elif kind == "license":
             self._write("licenses", rows("licenses", [change["license"]]))
         elif kind == "add":

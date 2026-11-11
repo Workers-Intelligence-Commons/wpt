@@ -5,6 +5,8 @@ import threading
 import pytest
 
 from wpt_depot import About, Depot, clone
+from wpt_depot.schema import FORMAT
+from wpt_utils.lines import bare
 from wpt.depot import main
 from wpt.depot.shared import CONFIRMATION, REQUIREMENTS
 from wpt.depot.web.routes import routes
@@ -456,3 +458,32 @@ def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_
     assert shown() == ([], [], [False])
     assert mine("POST", "/api/pull", {})[0] == 200
     assert shown() == (["test-depot-1"], ["test-depot-1"], [True])
+
+
+def test_a_pull_from_an_upstream_of_another_format_is_refused_with_its_status_and_problem(web, serve, tmp_path):
+    _, upstream = web
+    follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
+    mine = serve(follower)
+    upstream.tables.rewrite("about", upstream.tables.read("about").drop_columns(["format"]))  # format 0's layout
+    change = follower.change()
+
+    assert mine("POST", "/api/pull", {}) == (422, {"problems": [
+        f"OtherFormat: {upstream.address} is a depot of format 0, older than the format {FORMAT} this wpt reads: "
+        f"run `wpt depot upgrade` to bring it up to format {FORMAT}"]})
+    assert follower.change() == change
+
+
+def test_the_web_command_refuses_a_depot_of_another_format_before_serving(tmp_path, monkeypatch, capsys):
+    address = str(tmp_path / "depot")
+    depot = Depot.new(address, About("served", "Ada Lovelace", "ada@example.org"))
+    depot.tables.update("about", {"format": str(FORMAT + 1)}, "true")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WPT_DEPOT", address)
+    monkeypatch.setattr("wpt.depot.web.ui.built", lambda: tmp_path)
+    monkeypatch.setattr("wpt.depot.web.make_server", lambda *args: pytest.fail("a depot of another format is served"))
+    capsys.readouterr()
+
+    assert main(["web"]) == 1
+    assert bare(capsys.readouterr().err).strip() == (
+        f"wpt depot web: OtherFormat: {address} is a depot of format {FORMAT + 1}, newer than the format {FORMAT} "
+        "this wpt reads: update wpt to read it; a depot is never brought down to an older format")

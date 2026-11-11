@@ -174,13 +174,17 @@ class Tables:
 
     def read(self, name: str, version: int | None = None, columns: list[str] | None = None) -> pa.Table:
         """Every row of a table, at its current state or at version, in its
-        schema now (only the columns named, when given): a field a struct of
-        an older state lacks is null."""
-        schema = SCHEMAS[name] if columns is None else pa.schema([SCHEMAS[name].field(one) for one in columns])
+        schema now (only the columns named, when given): a column that state
+        lacks (an older format's layout, wpt_depot.schema) is null and may
+        be, and so is a field a struct of an older state lacks."""
+        wanted = SCHEMAS[name] if columns is None else pa.schema([SCHEMAS[name].field(one) for one in columns])
+        table = self.table(name, version)
+        held = set(pa.schema(table.schema()).names)
+        schema = pa.schema([one if one.name in held else one.with_nullable(True) for one in wanted])
         con = self._connect()
         try:
-            self._view(con, name, self.table(name, version))
-            listed = ", ".join(f'"{one}"' for one in schema.names)
+            self._view(con, name, table)
+            listed = ", ".join(f'"{one}"' if one in held else f'NULL AS "{one}"' for one in schema.names)
             return con.sql(f'SELECT {listed} FROM "{name}"').to_arrow_table().cast(schema)
         finally:
             con.close()
@@ -236,6 +240,24 @@ class Tables:
                      writer_properties=_properties(name))
          .when_matched_update(updates, predicate=predicate).execute())
         self._compact(name, table)
+
+    def columns(self, name: str) -> list[str]:
+        """The names of the columns the table's current state has, which an
+        older format of the depot's layout may lack (wpt_depot.schema)."""
+        return self.layout(name).names
+
+    def layout(self, name: str) -> pa.Schema:
+        """The schema of the table's current state: schema.SCHEMAS[name], or
+        an older format's layout of it."""
+        return pa.schema(self.table(name).schema())
+
+    def rewrite(self, name: str, found: pa.Table):
+        """Replace every row of the table with found, its columns becoming
+        found's (a step of an upgrade, wpt_depot.schema.STEPS): one commit,
+        so the table holds either its old rows or these. Its settings and
+        constraints stay."""
+        write_deltalake(self.table(name), found, mode="overwrite", schema_mode="overwrite",
+                        writer_properties=_properties(name))
 
     def update(self, name: str, updates: dict, predicate: str):
         table = self.table(name)

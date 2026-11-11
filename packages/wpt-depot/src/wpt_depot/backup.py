@@ -29,6 +29,13 @@ its log after its data and newest entry first: Delta Lake reads a table
 only from its first log entry or a checkpoint, and every entry after it
 has landed by then, so a copy cut short holds no about table and is no
 depot.
+
+A backup and a restore copy a depot of the code's format or of an older
+one (wpt_depot.schema) as it is, so the copy keeps its format, and an
+older copy needs `wpt depot upgrade` before anything else reads it. They
+refuse a newer format, which only a newer code reads. They read only what
+every format holds: the journal's id and done, the about table's change
+and name, and every table's storage versions.
 """
 
 import json
@@ -50,9 +57,11 @@ LOG = re.compile(r"(\d{20})\.(json|checkpoint(\.\d+\.\d+)?\.parquet)")  # a log 
 
 def backup(depot: Depot, to: str, settings: dict | None = None) -> Depot:
     """A new backup of depot in a new folder under the address `to`, as of
-    its settled change, read with nothing written. DepotExists when that
-    folder holds anything; BackupCut when an erasure dropped what it was
-    copying or the copy stopped."""
+    its settled change, read with nothing written, of the depot's format.
+    DepotExists when that folder holds anything; BackupCut when an erasure
+    dropped what it was copying or the copy stopped; OtherFormat when the
+    depot's format is newer than the code's."""
+    depot.refuse_newer()
     versions = _versions(depot.tables)
     settled = depot.journal.settled(versions["journal"])
     name = f"{depot.name()}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-change{settled}"
@@ -66,20 +75,22 @@ def backup(depot: Depot, to: str, settings: dict | None = None) -> Depot:
         raise BackupCut(f"{depot.address}: an erasure dropped the storage states the backup was copying ({error}); "
                         f"{target.address} is no depot, back up again") from None
     _copy(source, root, target.tables, paths)
-    return Depot.view(target.address, target.settings)
+    return Depot.find(target.address, target.settings)
 
 
 def restore(address: str, to: str, settings: dict | None = None) -> Depot:
-    """A copy, at the address `to`, of the backup at address, as it is.
-    DepotExists when `to` holds anything; NotADepot when address holds no
-    depot; BackupCut when the copy stopped."""
-    found = Depot.view(address, settings)
+    """A copy, at the address `to`, of the backup at address, as it is, of
+    its format. DepotExists when `to` holds anything; NotADepot when address
+    holds no depot; BackupCut when the copy stopped; OtherFormat when its
+    format is newer than the code's."""
+    found = Depot.find(address, settings)
+    found.refuse_newer()
     target = Depot(to, settings or found.settings)
     source, root = found.tables.filesystem()
     paths = [info.path[len(root) + 1:] for info in source.get_file_info(pafs.FileSelector(root, recursive=True))
              if info.type == pafs.FileType.File]
     _copy(source, root, target.tables, paths)
-    return Depot.view(target.address, target.settings)
+    return Depot.find(target.address, target.settings)
 
 
 def _versions(tables: Tables) -> dict[str, int]:

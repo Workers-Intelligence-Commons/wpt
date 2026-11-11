@@ -12,6 +12,7 @@ from wpt_depot import erasure, tables
 from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, JournalUnfinished, Locked,
                               NoDepotSetting, NotFound, Refused, VersionGone)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
+from wpt_depot.schema import FORMAT
 from wpt_depot.settings import depot_address
 from wpt_depot.tables import Tables
 
@@ -1265,7 +1266,8 @@ def test_the_depots_maintainer_and_takedown_contact_change_and_its_name_does_not
     depot.edit_about(maintainer="Grace Hopper", takedown_contact="takedown@example.org")
 
     assert {key: value for key, value in depot.about().items() if key not in ("change", "revision")} == {
-        "name": "depot", "maintainer": "Grace Hopper", "takedown_contact": "takedown@example.org", "upstream": None}
+        "name": "depot", "maintainer": "Grace Hopper", "takedown_contact": "takedown@example.org", "upstream": None,
+        "format": FORMAT}
     assert depot.about()["revision"] == 2
     depot.edit_about(maintainer="Ada Lovelace")
     assert depot.about()["takedown_contact"] == "takedown@example.org"

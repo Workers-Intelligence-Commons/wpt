@@ -5,6 +5,7 @@ import pytest
 import wpt
 from wpt_depot import Declaration, Depot, NewText
 from wpt_depot.corpus import read_table
+from wpt_depot.schema import FORMAT
 from wpt_recipes import Recipes
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
@@ -340,3 +341,24 @@ def test_a_texts_credits_a_librarys_name_a_dataset_and_the_depots_facts_change_f
     after = Depot.open(depot).show(other)
     assert (after["text"]["title"], after["text"]["tags"], after["notice"]) == ("Hen", ["en", "birds"], "(c) Ann")
     assert after["decisions"][-1]["reason"].startswith("title changed from none to Hen; tags changed from en to en, birds")
+
+
+def test_a_depot_of_an_older_format_is_refused_until_the_upgrade_command_brings_it_up(depot, tmp_path, capsys):
+    found = Depot.open(depot)
+    found.tables.rewrite("about", found.tables.read("about").drop_columns(["format"]))  # format 0's layout
+    capsys.readouterr()
+
+    assert depot_command("sql", "SELECT name FROM about") == 2
+    assert bare(capsys.readouterr().err).strip() == (f"OtherFormat: {depot} is a depot of format 0, older than the format "
+                                             f"{FORMAT} this wpt reads: run `wpt depot upgrade` to bring it up to "
+                                             f"format {FORMAT}")
+    assert depot_command("backup", str(tmp_path / "backups")) == 0  # copied as it is, before the upgrade
+    assert bare(capsys.readouterr().out).strip().endswith(
+        f"; it is of format 0, older than the format {FORMAT} this wpt reads: run `wpt depot upgrade` on it before "
+        "any other command")
+    assert depot_command("upgrade") == 0
+    assert bare(capsys.readouterr().out).startswith(f"{depot}: format 0 brought up to format {FORMAT}, at its change ")
+    assert depot_command("sql", "SELECT name, format FROM about") == 0
+    assert printed_rows(capsys) == [{"name": "test-depot", "format": FORMAT}]
+    assert depot_command("upgrade") == 0
+    assert bare(capsys.readouterr().out).strip() == f"{depot}: at format {FORMAT} already, nothing to upgrade"

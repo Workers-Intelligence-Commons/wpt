@@ -134,6 +134,43 @@ A query opens only the tables it reads. A text's content is stored once,
 in `contents`, whose content columns are written without statistics, so
 no file footer or table log holds a copy of a text's first characters.
 
+**Format.** The depot's layout, its tables and their columns, has a
+number: its format. The code holds the format it reads and writes
+(`FORMAT` in `wpt_depot/schema.py`). Each `about` row records the depot's
+format when it was written, so the current row gives the depot's format. A
+depot whose `about` table has no `format` column is of format 0.
+
+Every way into a depot that reads or changes its rows refuses one of
+another format than the code's, older or newer: every `wpt depot` command
+but backup, restore and upgrade, `wpt depot web`, the reading of another
+depot's library, and a clone or a pull, which need both the upstream and
+the clone at the code's format. The refusal names the depot's address,
+its format and the code's, and says to run `wpt depot upgrade` for an
+older depot or to update wpt for a newer one.
+
+A backup and a restore copy a depot of the code's format or of an older
+one as it is, so the copy keeps its format, and they say when it needs
+`wpt depot upgrade`. They refuse a newer format.
+
+`wpt depot upgrade` runs only when asked. It first finishes every change
+the journal holds undone, with the current code, on the layout the depot
+has then. Then it runs, in order, the step from the depot's format to the
+next up to the code's. It records each format reached as a new revision of
+`about`, a change of the journal like any other. An upgrade cut short is
+finished by running the command again, which resumes after the last format
+it recorded. A newer depot is never brought down: the command refuses it.
+
+Every change to the depot's layout raises `FORMAT` and adds the upgrade
+step from the format before, with its test. A step names the columns it
+reads and writes itself, never through the current layout, which is a
+later format's. It changes only the tables its layout change touches, and
+run again on the layout it leaves it changes nothing more. A layout change
+keeps the current code able to apply an older format's undone journal
+changes on that older layout. A step that changes the journal table keeps
+backups and restores of older formats working: they read the journal's id
+and done, the `about` table's change and name, and every table's storage
+versions.
+
 **Following an upstream.** A depot can follow another, its upstream, the
 way a Git clone follows its remote. `wpt depot clone ADDRESS TO --name NAME --maintainer M --takedown-contact C` copies
 every row of every table but the journal, revisions, contents,
@@ -199,8 +236,9 @@ as a depot's address is. The folder's name is the depot's name, the UTC
 time and the change number the copy holds:
 `my-depot-20261110T153000Z-change1234`. The copy holds every table with
 its log and its kept older storage states, as of the depot's settled
-change number, so a change written during the copy is not in it. It
-opens as an ordinary depot (`wpt_depot/backup.py`).
+change number, so a change written during the copy is not in it. It is
+an ordinary depot of the format the depot had, "Format" above
+(`wpt_depot/backup.py`).
 
 The app never cuts, erases or removes a backup, and keeps no list of
 backups. An erasure does not reach them ([erasure.md](erasure.md)).
@@ -360,6 +398,7 @@ refused change writes nothing.
 | --- | --- | --- |
 | a new depot, a clone | `new ADDRESS`, `clone ADDRESS TO` | none |
 | a pull | `pull` | `POST /api/pull`; page "Depot" |
+| the depot's layout brought up to the code's format | `upgrade` | none |
 | the depot's maintainer and takedown contact | `about [--maintainer M] [--takedown-contact C]` | `POST /api/about`; page "Depot" |
 | a read query | `sql QUERY` | `POST /api/sql` |
 | the depot at a glance | none | `GET /api/decisions/latest`; pages "Overview" and "Settings" |

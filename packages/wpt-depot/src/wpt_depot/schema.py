@@ -31,9 +31,37 @@ In SQL (Tables.connection), each revised table's rows are
 `<name>_revisions`, and `<name>` is a view of the current state (CURRENT):
 the highest revision of each id, and for texts the content of the version
 their current revision reads and the libraries holding them now
-(`libraries`). `contents` shows every content version."""
+(`libraries`). `contents` shows every content version.
+
+The layout above has a number, its format (FORMAT), which each about row
+records: the depot's format when the row was written, so the current row
+holds the depot's format now. A depot whose about table has no format
+column is of format 0. The code reads and writes a depot of its own FORMAT
+only (Depot.view); a backup and a restore copy an older one as it is
+(wpt_depot.backup).
+
+`wpt depot upgrade` (Depot.upgrade) brings an older depot up to FORMAT. It
+first finishes every change its journal holds undone, with the code of
+FORMAT, on the layout the depot has then. Then it runs, in order, the step
+of STEPS from the depot's format to the next, and records each format
+reached as a new revision of the about row, a change of the journal, so an
+upgrade cut short resumes after the last step it recorded. The about row a
+change of the journal writes takes the columns the about table has then.
+
+Every change to this layout raises FORMAT and adds the step from the format
+before, with its test. A step names the columns it reads and writes itself,
+never from SCHEMAS, since SCHEMAS is the layout of a later format. It
+changes only the tables its layout change touches, and run again on the
+layout it leaves it changes nothing more. A layout change keeps the code of
+FORMAT able to apply an older format's undone journal changes
+(wpt_depot.journal) on that older layout. A step that changes the journal
+table keeps backups and restores of older formats working: they read the
+journal's id and done, the about table's change and every table's storage
+versions."""
 
 import pyarrow as pa
+
+FORMAT = 1  # the format of the layout below: what a depot this code reads and writes is written at
 
 TIME = pa.timestamp("us", tz="UTC")
 NAMES = pa.list_(pa.string())
@@ -59,7 +87,7 @@ def _schema(*fields) -> pa.Schema:
 
 SCHEMAS = {
     "about": _schema(*REVISION, ("name", pa.string()), ("maintainer", pa.string()),
-                     ("takedown_contact", pa.string()), ("upstream", pa.string(), True)),
+                     ("takedown_contact", pa.string()), ("upstream", pa.string(), True), ("format", pa.int64())),
     "journal": _schema(("id", pa.int64()), ("change", pa.string()), ("done", pa.bool_())),
     "licenses": _schema(("id", pa.string()), ("name", pa.string()), ("text", pa.string())),
     "notices": _schema(("id", pa.string()), ("text", pa.string())),
@@ -132,3 +160,24 @@ CURRENT = {
 def rows(table: str, found: list[dict]) -> pa.Table:
     """found as a table of the depot's table's schema."""
     return pa.Table.from_pylist(found, schema=SCHEMAS[table])
+
+
+# the about table at format 1: format 0's columns, then format
+ABOUT_1 = _schema(*REVISION, ("name", pa.string()), ("maintainer", pa.string()), ("takedown_contact", pa.string()),
+                  ("upstream", pa.string(), True), ("format", pa.int64()))
+
+
+def _add_format(tables):
+    """Format 0 to 1: the about table gets the column format, every row it
+    holds of format 0, in one commit that rewrites it; nothing when it has
+    the column already."""
+    if "format" in tables.columns("about"):
+        return
+    held = [name for name in ABOUT_1.names if name != "format"]
+    found = tables.query(f"SELECT {', '.join(held)} FROM about_revisions")
+    tables.rewrite("about", found.append_column("format", pa.array([0] * found.num_rows, pa.int64())).cast(ABOUT_1))
+
+
+# the step from each format to the next, by the format it starts from: a function over the depot's tables
+# (wpt_depot.tables.Tables) that changes them to the next format's layout, and changes nothing more when run again
+STEPS = {0: _add_format}

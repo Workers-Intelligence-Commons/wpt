@@ -11,7 +11,9 @@ takedown contact, and the upstream's address, at a change number past
 every one it received; its own changes number on from there. Its pulls
 table records the clone as its first pull (wpt_depot.schema). It only
 reads the upstream: whatever the upstream's journal holds undone, only its
-own app finishes.
+own app finishes. A clone is written at the code's format
+(wpt_depot.schema), and clone and pull read only an upstream of that
+format: one of another format is refused (OtherFormat), so both upgrade.
 
 A clone is read-only on the rows its upstream owns, those whose id does
 not carry the clone's name (is not exactly that name, a hyphen and digits,
@@ -74,7 +76,7 @@ from . import ids, policy
 from .depot import About, Depot, location
 from .errors import DepotExists, NoUpstream, Refused, VersionGone
 from .journal import Journal
-from .schema import REFUSED, TABLES, rows
+from .schema import FORMAT, REFUSED, TABLES, rows
 from .tables import Tables
 
 COPIED = tuple(name for name in TABLES if name not in ("about", "journal"))
@@ -101,7 +103,7 @@ def clone(address: str, to: str, about: About, settings: dict | None = None) -> 
     target.append("pulls", rows("pulls", [{"depot": about.name, "change": number, "upstream": upstream.name(),
                                             "upstream_change": received}]))
     target.append("about", rows("about", [{"revision": 1, "change": number, **vars(about),
-                                            "upstream": upstream.address}]))
+                                            "upstream": upstream.address, "format": FORMAT}]))
     return Depot.open(to, upstream.settings)
 
 
@@ -173,8 +175,9 @@ def apply_pull(depot: Depot, change: dict, number: int):
     that number. It records the pull in pulls: its number, and the upstream
     change number its change carries; when a version it names is gone, it
     reads every table again as a pull begins (_capture) and records the
-    higher of the two."""
-    upstream = Tables(location(change["upstream"]), depot.settings)
+    higher of the two. OtherFormat when the upstream's format is no longer
+    the code's (wpt_depot.schema.FORMAT)."""
+    upstream = Depot.view(change["upstream"], depot.settings).tables
     try:
         before = _carried_out(depot.tables.read("erasures", change["own_erasures"]))
     except VersionGone:

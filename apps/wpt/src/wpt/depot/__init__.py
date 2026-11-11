@@ -9,11 +9,18 @@ and items, the decisions on them, its libraries, datasets and erasures.
     wpt depot backup TO                   a new full copy of the depot, every table with its log and its
                                           kept older states, as of its settled change, in a new folder under
                                           TO (a folder or a bucket) named NAME-UTCTIME-changeN; the app never
-                                          cuts, erases or removes a backup
+                                          cuts, erases or removes a backup; a depot of an older format is
+                                          copied as it is, keeping its format
     wpt depot restore BACKUP TO           a copy of the backup BACKUP, as it is, at TO, which must hold
-                                          nothing; erasures carried out after the backup are not carried out
+                                          nothing; erasures carried out after the backup are not carried out;
+                                          a backup of an older format keeps it
     wpt depot pull                        fetch the updates of the depot this one follows, admitted
                                           erasures included
+    wpt depot upgrade                     bring the depot's layout up to the format this wpt reads, from an
+                                          older one, step by step, each format reached recorded as a change;
+                                          every other subcommand, the web pages, clone and pull refuse a
+                                          depot of another format, and backup and restore a newer one; run
+                                          it again after a crash
     wpt depot sql "SELECT ..."            any read query over the depot's tables; one JSON row per line:
                                           texts, libraries, datasets, about and erasures are the current
                                           state (texts with their current content and the libraries holding
@@ -123,14 +130,14 @@ from pathlib import Path
 from wpt_depot import About, Declaration, Depot, NewText, backup, clone, restore
 from wpt_depot import remote as remotes
 from wpt_depot.errors import DepotError
-from wpt_depot.schema import ADMITTED, REFUSED
+from wpt_depot.schema import ADMITTED, FORMAT, REFUSED
 from wpt_depot.settings import depot_address
 from wpt_recipes import RecipeError
 from wpt_store import StoreError
 from wpt_utils.lines import ERROR, say
 
 from .shared import (CONFIRMATION, NoSample, NoVocabulary, TokenizerLocked, bucket, build_corpus, decide_erasures,
-                     env_file, jsonable, opened, pulled, train_vocabulary, viewed)
+                     env_file, jsonable, opened, pulled, train_vocabulary)
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED}
 
@@ -148,16 +155,24 @@ def cmd_clone(args):
 
 
 def cmd_backup(args):
-    depot = viewed(depot_address(env_file=env_file()))
+    depot = Depot.find(depot_address(env_file=env_file()), bucket())  # an older format is copied as it is
     found = backup(depot, args.to, bucket())
-    say(f"{found.address}: a backup of {depot.address}, at its change {found.journal.settled()}")
+    say(f"{found.address}: a backup of {depot.address}, at its change {found.journal.settled()}{_older(found)}")
     return 0
 
 
 def cmd_restore(args):
     found = restore(args.backup, args.to, bucket())
-    say(f"{found.address}: a copy of the backup {args.backup}, at its change {found.journal.settled()}")
+    say(f"{found.address}: a copy of the backup {args.backup}, at its change {found.journal.settled()}"
+        f"{_older(found)}")
     return 0
+
+
+def _older(copy: Depot) -> str:
+    """What a copy of an older format needs before anything else reads it; nothing for one of FORMAT."""
+    found = copy.format()
+    return "" if found == FORMAT else (f"; it is of format {found}, older than the format {FORMAT} this wpt reads: "
+                                       "run `wpt depot upgrade` on it before any other command")
 
 
 def cmd_pull(args):
@@ -165,6 +180,13 @@ def cmd_pull(args):
     brought = pulled(depot, say)
     say(f"{depot.address}: pulled from {depot.about()['upstream']}, now at its change {depot.change()}"
         + (f"; carried out the erasures {', '.join(brought)}" if brought else ""))
+    return 0
+
+
+def cmd_upgrade(args):
+    depot, start = Depot.upgrade(depot_address(env_file=env_file()), bucket())
+    say(f"{depot.address}: format {start} brought up to format {FORMAT}, at its change {depot.change()}"
+        if start < FORMAT else f"{depot.address}: at format {FORMAT} already, nothing to upgrade")
     return 0
 
 
@@ -404,7 +426,9 @@ def parser() -> argparse.ArgumentParser:
     restoring.add_argument("to", help="the new depot's folder, which must hold nothing")
     restoring.set_defaults(run=cmd_restore)
     commands.add_parser("pull", help="fetch the updates of the depot this one follows").set_defaults(run=cmd_pull)
-    query = commands.add_parser("sql", help="any read query over the depot's tables")
+    commands.add_parser("upgrade", help="bring the depot's layout up to the format this wpt reads").set_defaults(
+        run=cmd_upgrade)
+    query =commands.add_parser("sql", help="any read query over the depot's tables")
     query.add_argument("query", help="one SELECT statement")
     query.set_defaults(run=cmd_sql)
 
