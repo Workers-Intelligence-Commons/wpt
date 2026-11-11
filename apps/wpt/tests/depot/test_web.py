@@ -310,6 +310,30 @@ def test_a_content_change_from_the_page_of_a_text_takes_a_plain_text_or_an_item_
     assert (json.loads(shown["text"]["content"]), shown["content_versions"]) == (changed, 2)
 
 
+def test_scores_from_the_pages_change_many_texts_under_one_decision_and_the_text_s_page_shows_them(web):
+    request, depot = web
+    for words in ("one", "two"):
+        request("POST", "/api/texts", {"text": words, "licenses": ["CC0-1.0"], "declaration": ME})
+    rank = {"name": "rank", "value": 2.5, "content_version": 1}
+
+    assert request("POST", "/api/texts/scores", {"texts": [{"id": "test-depot-1", "scores": [{"name": "rank"}]}],
+                                                 "declaration": ME})[0] == 400
+    assert request("POST", "/api/texts/scores", {"texts": [{"id": "test-depot-1", "scores": [
+        {**rank, "content_version": 2}]}], "declaration": ME})[0] == 422
+    assert request("POST", "/api/texts/scores", {"texts": [{"id": "test-depot-9", "scores": [rank]}],
+                                                 "declaration": ME})[0] == 404
+    assert request("POST", "/api/texts/scores", {"texts": [{"id": "test-depot-1", "scores": [rank]},
+                                                           {"id": "test-depot-2", "scores": [rank]}],
+                                                 "declaration": ME}) == (
+        200, {"decision": "test-depot-3", "reason": "scores changed: set rank", "changed": 2, "left_out": 0})
+    shown = request("GET", "/api/texts/test-depot-2")[1]
+    assert (shown["text"]["scores"], shown["revisions"]) == ([rank], 2)
+    assert request("POST", "/api/texts/scores", {"texts": [{"id": "test-depot-1", "remove": ["rank"]},
+                                                           {"id": "test-depot-2", "scores": [rank]}],
+                                                 "declaration": ME})[1]["left_out"] == 1
+    assert request("GET", "/api/texts/test-depot-1")[1]["text"]["scores"] is None
+
+
 def test_a_failure_no_route_names_is_answered_with_its_problem(tmp_path):
     # without an answer the browser gets a closed connection, and the page could show nothing
     def broken(values, body):

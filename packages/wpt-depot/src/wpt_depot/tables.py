@@ -17,7 +17,14 @@ current (or named) state lists, never through delta-rs's Arrow reader,
 whose file system keeps the Python interpreter from exiting once it read
 rows. That reader is right for these tables because only this app writes
 them and delta-rs writes no deletion vectors and no column mapping: the
-listed files hold exactly the table's rows. A query opens only the
+listed files hold exactly the table's rows. Each view gives every column
+of the table's schema (schema.SCHEMAS), null where its files lack it (a
+table of an older format's layout). The files of a table a format step
+widened in place (schema.WIDENED, Tables.add_column) do not all hold the
+same columns, since the files written before the step lack the column it
+added: its view matches each file's columns by name, which reads every
+file's footer before the query runs. Every other table's files hold the
+same columns, and its view reads them by the first file's. A query opens only the
 tables it reads, as DuckDB's parser names them, since opening a table
 replays its log and lists its files.
 
@@ -49,6 +56,8 @@ its storage options and to DuckDB as an S3 secret.
 """
 
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
@@ -58,10 +67,11 @@ import pyarrow as pa
 import pyarrow.fs as pafs
 from deltalake import ColumnProperties, DeltaTable, WriterProperties, write_deltalake
 from deltalake.exceptions import DeltaError, TableNotFoundError
+from deltalake.schema import Field
 from wpt_utils.lines import WARNING, say
 
 from .errors import NotADepot, VersionGone
-from .schema import CONSTRAINTS, CURRENT, KEYS, SCHEMAS, TABLES, sql_name
+from .schema import CONSTRAINTS, CURRENT, KEYS, SCHEMAS, TABLES, WIDENED, sql_name
 from .settings import DEFAULT_REGION
 
 KEPT = "interval 36500 days"  # how long a table keeps older states: until drop_history
@@ -191,14 +201,21 @@ class Tables:
 
     @staticmethod
     def _view(con, name: str, table: DeltaTable, as_name: str | None = None):
-        """The rows of the table name, in this state, as the view as_name (name by default)."""
+        """The rows of the table name, in this state, as the view as_name
+        (name by default), with every column of SCHEMAS[name]: a column its
+        files lack (of an older format's layout, or, for a table of WIDENED,
+        written before the column was added) is null in their rows."""
         as_name = as_name or name
+        layout = f"{as_name}__layout"
+        con.register(layout, SCHEMAS[name].empty_table())
         files = table.file_uris()
         if files:
             listed = ", ".join("'" + file.replace("'", "''") + "'" for file in files)
-            con.execute(f'CREATE TEMP VIEW "{as_name}" AS SELECT * FROM read_parquet([{listed}])')
+            by_name = ", union_by_name = true" if name in WIDENED else ""
+            con.execute(f'CREATE TEMP VIEW "{as_name}" AS SELECT * FROM "{layout}" UNION ALL BY NAME '
+                        f'SELECT * FROM read_parquet([{listed}]{by_name})')
         else:
-            con.register(as_name, SCHEMAS[name].empty_table())
+            con.execute(f'CREATE TEMP VIEW "{as_name}" AS SELECT * FROM "{layout}"')
 
     def append(self, name: str, found: pa.Table):
         """Add the rows in one commit, reading none of the rows the table
@@ -208,6 +225,13 @@ class Tables:
             table = self.table(name)
             write_deltalake(table, found, mode="append", writer_properties=_properties(name))
             self._compact(name, table)
+
+    def append_stream(self, name: str, found: pa.RecordBatchReader):
+        """Add the rows of a stream in one commit, as append does, holding
+        only a part of them in memory at a time."""
+        table = self.table(name)
+        write_deltalake(table, found, mode="append", writer_properties=_properties(name))
+        self._compact(name, table)
 
     def insert(self, name: str, found: pa.Table):
         """Add the rows whose key the table does not hold yet: adding the
@@ -250,6 +274,13 @@ class Tables:
         """The schema of the table's current state: schema.SCHEMAS[name], or
         an older format's layout of it."""
         return pa.schema(self.table(name).schema())
+
+    def add_column(self, name: str, column: pa.Field):
+        """Add a column that may be null to the table (a step of an upgrade,
+        wpt_depot.schema.STEPS): one commit that changes only its log, no
+        data file, so its cost does not grow with the rows it holds. Every
+        row it holds then reads the column as null."""
+        self.table(name).alter.add_columns([Field.from_arrow(column.with_nullable(True))])
 
     def rewrite(self, name: str, found: pa.Table):
         """Replace every row of the table with found, its columns becoming
@@ -307,10 +338,13 @@ class Tables:
         return self._database.cursor()
 
     def _start(self) -> duckdb.DuckDBPyConnection:
-        """An in-memory DuckDB database that gives times in UTC and, for a
-        bucket, reads it with the bucket's settings."""
+        """An in-memory DuckDB database that gives times in UTC, writes what
+        does not fit in memory into a folder of its own under the system's
+        temporary folder (never the folder the command runs from) and, for
+        a bucket, reads it with the bucket's settings."""
         con = duckdb.connect()
         con.execute("SET TimeZone = 'UTC'")
+        con.execute("SET temp_directory = ?", [str(Path(tempfile.gettempdir()) / f"wpt-depot-{os.getpid()}")])
         if isinstance(self.root, str):
             found = self.settings
             con.execute("INSTALL httpfs")

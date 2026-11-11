@@ -6,9 +6,11 @@ Depot is the only code that changes a depot's tables. Each operation
 checks the whole change against the depot's rules first, so a refused
 change writes nothing. Every change goes through the journal: written
 first under the next change number (the content versions it adds right
-after it, outside the journal), applied to each table, then marked done;
-Depot.open applies again whatever a crash left undone, or cuts short a
-change whose content versions were never written (wpt_depot.journal).
+after it, outside the journal, and so a change of scores' decision and
+new revisions), applied to each table, then marked done; Depot.open
+applies again whatever a crash left undone, or cuts short a change whose
+content versions or revisions of scores were never written
+(wpt_depot.journal).
 A new row (a text, a revision, a decision, a membership...) is appended,
 reading none of the rows a table holds, so adding texts costs no more
 for the text the depot holds already; only what changes in place (a membership
@@ -62,6 +64,20 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   review' made by the person's declaration, whose reason the depot writes,
   naming each credit's old and new value. The decisions before it keep
   counting, so the text keeps its status and its libraries.
+- A text's scores (each a name, a number and the content version it was
+  made from) change as a new revision of every text a change names, their
+  ids kept: one decision 'under review' made by the person's declaration
+  covers them all, whose reason the depot writes naming the scores set and
+  removed. The decisions before it keep counting, as for credits. A score
+  set under a name the text has replaces it; a text whose scores stay as
+  they are is left out, and a change that leaves out every text writes
+  nothing. The change is checked and made by queries over its lines where
+  they are (wpt_depot.scoring), its journal entry holds its decision and
+  its count of texts only, and its revisions are written outside the
+  journal in one append, so its cost in memory does not grow with the
+  texts it names. Every other change of a text (its content, licenses, credits,
+  decisions) keeps its scores as they are, each still naming the content
+  version it was made from.
 - Only admitted texts join a library. An open library reads the current
   revision of each text it holds, and can be read as it stood at any past
   change number of the depot that owns it (Depot.library_texts); a text
@@ -109,7 +125,7 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   own name, that is, is not exactly the name, a hyphen and digits
   (wpt_depot.ids). Every operation that would change one is refused,
   writing nothing (BelongsToUpstream): a decision on, a license change of,
-  a content change of or an edit of the credits of an upstream text, a request to erase one,
+  a content change of or an edit of the credits or scores of an upstream text, a request to erase one,
   a decision on an erasure request that is the upstream's or names an
   upstream text, renaming, locking, reporting
   on or putting texts into an upstream library, editing an upstream
@@ -138,7 +154,7 @@ from urllib.parse import unquote, urlparse
 import duckdb
 import pyarrow as pa
 
-from . import erasure, ids, kinds, licenses, policy
+from . import erasure, ids, kinds, licenses, policy, scoring
 from .erasure import Needle
 from .errors import (BadQuery, BelongsToUpstream, DepotExists, JournalUnfinished, Locked, NotADepot, NotFound,
                      OtherFormat, Refused, UnsupportedAddress)
@@ -325,7 +341,7 @@ class Depot:
         self._again = True
         try:
             for entry, change in self.journal.pending():
-                if _content_ids(change) and not self._contents_written(entry, change):
+                if _writes_outside(change) and not self._outside_written(entry, change):
                     self._cut_short(entry, change)
                     continue
                 self._apply(change, entry)
@@ -386,15 +402,17 @@ class Depot:
             return "false"
         return f"NOT {ids.carries_sql(self.name(), column)}"
 
-    def _refuse_upstream(self, what: str, row_ids: Sequence[str], instead: str = ""):
+    def _refuse_upstream(self, what: str, row_ids: Sequence[str], instead: str = "", total: int | None = None):
         """BelongsToUpstream when one of the rows named is the upstream's:
         what names their kind in the plural ('texts'), instead what else
-        can be done, after asking the upstream."""
+        can be done, after asking the upstream; total, when given, how many
+        of the rows the upstream owns, of which row_ids are the first."""
         theirs = self.upstream_owned(row_ids)
         if theirs:
-            listed = ", ".join(theirs[:NAMED]) + (f" and {len(theirs) - NAMED} more" if len(theirs) > NAMED else "")
-            subject = (f"the {SINGULAR[what]} {listed} belongs" if len(theirs) == 1
-                       else f"{len(theirs)} of the {what} belong ({listed})")
+            total = len(theirs) if total is None else total
+            listed = ", ".join(theirs[:NAMED]) + (f" and {total - NAMED} more" if total > NAMED else "")
+            subject = (f"the {SINGULAR[what]} {listed} belongs" if total == 1
+                       else f"{total} of the {what} belong ({listed})")
             raise BelongsToUpstream(f"{subject} to the upstream {self.upstream()}: this depot follows it and changes "
                                     f"none of its rows, so nothing is written; ask the upstream{instead}")
 
@@ -864,6 +882,53 @@ class Depot:
                           "notices": new_notices})
             return decision["id"], reason
 
+    def edit_scores(self, changes: str | Path | pa.Table, declaration: Declaration) -> tuple[str, str, int, int]:
+        """Change the scores of many texts at once, each as a new revision,
+        its id kept. changes is a JSON-lines file, or an Arrow table with one
+        such line per row in its column json (wpt_depot.scoring.lines): one
+        {id, scores, remove} per text, scores a list of {name, value,
+        content_version} (a name it has already is replaced, value a finite
+        number, content_version one of the text's content versions, the one
+        the score was made from) and remove a list of the names of scores to
+        take away (a name it does not have changes nothing); both may be
+        absent. The change is recorded as one decision 'under review' made
+        by declaration, on every text it changes, whose reason the depot
+        writes naming the scores set and removed (policy.scores_change); the
+        decisions before it keep counting, so each text keeps its status and
+        its libraries, and a locked library keeps reading the revision it
+        pinned. A text whose scores would stay as they are is left out.
+        Every check and the new revisions are queries over changes where
+        they are (wpt_depot.scoring), so the memory it takes and its journal
+        entry stay the same whatever the number of texts. (the decision's
+        id, its reason, how many texts changed, how many were left out).
+        NotFound for a text the depot does not hold; BelongsToUpstream for a
+        text its upstream owns; Refused for changes that are not JSON lines
+        of that shape, a text named twice, a name both set and removed or
+        set twice, an empty name, a value that is not a finite number, a
+        content version the text does not have, or when no text would
+        change."""
+        with self._writes():
+            con = self.tables.connection("SELECT * FROM texts_revisions, contents")
+            try:
+                scoring.open_changes(con, changes)
+                total, theirs = scoring.check(con, self.upstream_sql(), NAMED)
+                if total:
+                    self._refuse_upstream("texts", theirs, total=total)
+                changed, left_out, set_names, removed = scoring.score(con)
+                if not changed:
+                    raise Refused("the scores of every text named are those already: nothing changes")
+                reason = policy.scores_change(set_names, removed)
+                decision = self._recorded(UNDER_REVIEW, declaration, reason, self._next("decisions"))
+
+                def write(number: int):
+                    self.tables.append("decisions", rows("decisions", [_decision_row(decision)]))
+                    self.tables.append_stream("texts", scoring.revisions(con, number, decision["id"]))
+
+                self._change({"kind": "scores", "decision": decision, "texts": changed}, outside=write)
+            finally:
+                con.close()
+            return decision["id"], reason, changed, left_out
+
     # Libraries
 
     def new_library(self, name: str) -> str:
@@ -1329,19 +1394,25 @@ class Depot:
             for one in found]
         return [{"id": text, "reasons": held} for text, held in reasons if held]
 
-    def _change(self, change: dict, past: int = 0, contents: Sequence[dict] = ()):
+    def _change(self, change: dict, past: int = 0, contents: Sequence[dict] = (),
+                outside: Callable[[int], None] | None = None):
         """Write change to the journal under the next change number (past
-        past too), then the content versions it adds (contents: rows of
-        contents but their change number, which the journal does not hold),
-        apply it, mark it done. When the content versions cannot be written,
-        the change is cut short and the error raised: nothing of it is
-        visible."""
+        past too), then what it writes outside the journal: the content
+        versions it adds (contents: rows of contents but their change
+        number, which the journal does not hold), or, for a change of
+        scores, outside(its number), which writes its decision and then the
+        texts' new revisions in one append; then apply it, mark it done.
+        When what it writes outside cannot be written, the change is cut
+        short and the error raised: nothing of it is visible."""
         entry = max(self.change(), past) + 1
         self._unfinished = True  # until it is done or cut short
         self.journal.write(change, entry)
-        if contents:
+        if contents or outside:
             try:
-                self.tables.append("contents", rows("contents", [{**one, "change": entry} for one in contents]))
+                if contents:
+                    self.tables.append("contents", rows("contents", [{**one, "change": entry} for one in contents]))
+                if outside:
+                    outside(entry)
             except Exception:
                 with contextlib.suppress(Exception):  # when this fails too, the next write or opening cuts it short
                     self._cut_short(entry, change)
@@ -1362,23 +1433,39 @@ class Depot:
         else:
             self.journal.done(entry)
 
-    def _contents_written(self, entry: int, change: dict) -> bool:
-        """Whether the content versions the change adds are in contents, numbered by its entry."""
+    def _outside_written(self, entry: int, change: dict) -> bool:
+        """Whether what the change writes outside the journal is written,
+        numbered by its entry: the content versions it adds, or, for a
+        change of scores, the texts' new revisions, written in one append
+        after its decision."""
+        if change["kind"] == "scores":
+            return bool(self.tables.query("SELECT count(*) AS n FROM texts_revisions WHERE change = ?",
+                                          [entry])["n"][0].as_py())
         found = _content_ids(change)
         return self.tables.query("SELECT count(*) AS n FROM contents WHERE change = ? AND list_contains(?, id)",
                                  [entry, found])["n"][0].as_py() == len(found)
 
     def _cut_short(self, entry: int, change: dict):
-        """End a change whose content versions are not all written: those
-        written go (they are written in one commit, so normally none is),
-        then its entry is marked done as cut short."""
-        listed = ", ".join(map(literal, _content_ids(change)))
-        self.tables.delete("contents", f"change = {int(entry)} AND id IN ({listed})")
+        """End a change whose rows outside the journal are not all written:
+        those written go (content versions and revisions are written in one
+        commit, so normally none is; a change of scores may have written its
+        decision), then its entry is marked done as cut short."""
+        if change["kind"] == "scores":
+            self.tables.delete("texts", f"change = {int(entry)}")
+            self.tables.delete("decisions", f"id = {literal(change['decision']['id'])}")
+        else:
+            listed = ", ".join(map(literal, _content_ids(change)))
+            self.tables.delete("contents", f"change = {int(entry)} AND id IN ({listed})")
         self.journal.cut_short(entry, change)
 
     def _write(self, table: str, found: pa.Table):
         """Add new rows to a table: appended, or, when a change is applied
-        again, only those whose key it does not hold yet."""
+        again, only those whose key it does not hold yet, in the columns the
+        table has (an older format's undone change, which an upgrade applies
+        on that format's layout, holds nothing for a column added later)."""
+        if self._again:
+            held = self.tables.columns(table)
+            found = found.select([name for name in found.schema.names if name in held])
         (self.tables.insert if self._again else self.tables.append)(table, found)
 
     # Applying a change: each step leaves the tables as they are when it is applied again
@@ -1419,7 +1506,7 @@ class Depot:
         """Apply a change of the journal, numbered number, to the tables;
         applying it again changes nothing more."""
         kind = change["kind"]
-        if "decision" in change:
+        if "decision" in change and kind != "scores":  # a change of scores writes its decision outside the journal
             self._write("decisions", rows("decisions", [_decision_row(change["decision"])]))
         if "decisions" in change:
             self._write("decisions", rows("decisions", [_decision_row(one) for one in change["decisions"]]))
@@ -1453,6 +1540,8 @@ class Depot:
             decision = change["decision"]["id"]
             self._revise("texts", [change["text"]], number,
                          lambda row: {**change["values"], "decisions": [*row["decisions"], decision]})
+        elif kind == "scores":  # its decision and revisions are written outside the journal, before it is applied
+            pass
         elif kind == "library":  # a new library, or a fork with its texts
             self._write("libraries", rows("libraries", [{**change["library"], "change": number}]))
             self._join(change["texts"], change["library"]["id"], number)
@@ -1536,6 +1625,11 @@ def _without(entries: list[tuple[int, dict]], removed: set[str]) -> dict[int, di
         if kept != change["texts"]:
             changed[entry] = {**change, "texts": kept}
     return changed
+
+
+def _writes_outside(change: dict) -> bool:
+    """Whether a change of the journal writes rows outside it: content versions, or a change of scores' revisions."""
+    return change["kind"] == "scores" or bool(_content_ids(change))
 
 
 def _content_ids(change: dict) -> list[str]:

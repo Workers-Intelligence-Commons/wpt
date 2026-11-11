@@ -1,5 +1,6 @@
 import hashlib
 import json
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream
                               NoDepotSetting, NotFound, Refused, VersionGone)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
 from wpt_depot.schema import FORMAT
+from wpt_depot.scoring import lines
 from wpt_depot.settings import depot_address
 from wpt_depot.tables import Tables
 
@@ -1192,6 +1194,224 @@ def test_a_credits_change_that_changes_nothing_writes_nothing(make_depot, me):
     assert depot.sql("SELECT count(*) AS n FROM decisions")["n"].to_pylist() == [1]
 
 
+def score(name, value, version=1):
+    return {"name": name, "value": value, "content_version": version}
+
+
+def scores_of(depot, changes, me):
+    """depot.edit_scores over changes given as objects, as the web route gives them."""
+    return depot.edit_scores(lines(changes), me)
+
+
+def test_one_scores_change_is_one_decision_on_many_texts_which_keep_their_status_and_libraries(make_depot, me):
+    depot = make_depot()
+    first, second, third = depot.add([plain("one"), plain("two"), plain("three")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("open")
+    depot.put(library, "true")
+    locked = depot.new_library("locked")
+    depot.put(locked, "true")
+    depot.lock(locked)
+
+    decision, reason, changed, left_out = scores_of(
+        depot, [{"id": second, "scores": [score("machine-made", 0.03), score("source-rank", 4)]},
+                {"id": first, "scores": [score(" machine-made ", 0.5)]}], me)
+
+    assert (reason, changed, left_out) == ("scores changed: set machine-made, source-rank", 2, 0)
+    assert depot.show(second)["text"]["scores"] == [
+        {"name": "machine-made", "value": 0.03, "content_version": 1},
+        {"name": "source-rank", "value": 4.0, "content_version": 1}]
+    assert depot.show(third)["text"]["scores"] is None
+    for text in (first, second):
+        shown = depot.show(text)
+        assert (shown["status"], shown["text"]["libraries"]) == ("admitted", [library, locked])
+        assert [(one["id"], one["status"], one["reason"]) for one in shown["decisions"]][-1] == (
+            decision, "under review", reason)
+    assert depot.sql(f"SELECT count(*) AS n FROM texts WHERE list_contains(decisions, '{decision}')")["n"].to_pylist() \
+        == [2]
+    assert depot.library_texts(locked, depot.change())["scores"].to_pylist() == [None, None, None]
+    assert depot.sql("SELECT id, list_transform(scores, lambda s: s.name) AS names FROM texts WHERE scores IS NOT NULL "
+                     "ORDER BY id").to_pylist() == [{"id": first, "names": ["machine-made"]},
+                                                    {"id": second, "names": ["machine-made", "source-rank"]}]
+    assert json.loads(depot.sql(f"SELECT change FROM journal WHERE id = {depot.change()}")["change"][0].as_py())[
+        "texts"] == 2
+
+
+def test_a_score_set_again_replaces_it_one_is_removed_by_name_and_an_unchanged_text_is_left_out(make_depot, me):
+    depot = make_depot()
+    first, second = depot.add([plain("one"), plain("two")], me)
+    scores_of(depot, [{"id": first, "scores": [score("a", 1), score("b", 2)]},
+                      {"id": second, "scores": [score("a", 1)]}], me)
+
+    _, reason, changed, left_out = scores_of(
+        depot, [{"id": first, "scores": [score("a", 5)], "remove": ["b", "never-set"]},
+                {"id": second, "scores": [score("a", 1)]}], me)
+
+    assert (reason, changed, left_out) == ("scores changed: set a; removed b", 1, 1)
+    assert depot.show(first)["text"]["scores"] == [{"name": "a", "value": 5.0, "content_version": 1}]
+    scores_of(depot, [{"id": first, "remove": ["a"]}], me)
+    assert depot.show(first)["text"]["scores"] is None
+    assert depot.show(second)["revisions"] == 2
+
+
+def test_scores_keep_the_content_version_they_were_made_from_across_a_content_licenses_and_credits_change(
+        make_depot, me):
+    depot = make_depot()
+    depot.add_license("MIT", "MIT License", "text")
+    [text] = depot.add([plain("one")], me)
+    scores_of(depot, [{"id": text, "scores": [score("rank", 3)]}], me)
+
+    depot.change_content(text, "one, again", None, me)
+    depot.relicense([text], ["MIT"], me)
+    depot.edit_credits(text, {"title": "One"}, me)
+
+    shown = depot.show(text)["text"]
+    assert (shown["content_version"], shown["scores"]) == (2, [{"name": "rank", "value": 3.0, "content_version": 1}])
+    scores_of(depot, [{"id": text, "scores": [score("rank", 4, 2)]}], me)
+    assert depot.show(text)["text"]["scores"] == [{"name": "rank", "value": 4.0, "content_version": 2}]
+
+
+@pytest.mark.parametrize("change, error", [
+    ([], Refused),
+    ([{"id": "depot-99", "scores": [score("a", 1)]}], NotFound),
+    ([{"id": "depot-1", "scores": [score("a", 1, 2)]}], Refused),  # no content version 2
+    ([{"id": "depot-1", "scores": [score("a", float("nan"))]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", float("inf"))]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", "high")]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", True)]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", 1, 1.5)]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", 1, 0)]}], Refused),
+    ([{"id": "depot-1", "scores": [score("", 1)]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", 1), score("a", 2)]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", 1)], "remove": ["a"]}], Refused),
+    ([{"id": "depot-1", "scores": [score("a", 1)]}, {"id": "depot-1", "scores": [score("b", 1)]}], Refused),
+    ([{"id": "depot-1", "scores": [{"name": "a", "value": 1}]}], Refused),
+    ([{"id": "depot-1", "remvoe": ["a"]}], Refused),
+    ([{"id": 1, "scores": [score("a", 1)]}], Refused),
+    ([{"id": "depot-1", "remove": [""]}], Refused),
+    ([{"id": "depot-1", "remove": ["a"]}], Refused),  # nothing changes
+    ([{"id": "depot-1", "scores": [score("a", 1)]}, {"id": "depot-99", "scores": [score("a", 1)]}], NotFound),
+])
+def test_a_scores_change_that_breaks_a_rule_or_changes_nothing_writes_nothing(make_depot, me, change, error):
+    depot = make_depot()
+    [text] = depot.add([plain("one")], me)
+    assert text == "depot-1"
+    before = depot.change(), depot.tables.version("decisions")
+
+    with pytest.raises(error):
+        scores_of(depot, change, me)
+
+    assert (depot.change(), depot.tables.version("decisions")) == before and depot.show(text)["revisions"] == 1
+
+
+def test_scores_read_from_a_json_lines_file_and_a_file_that_is_not_json_lines_is_refused(make_depot, me, tmp_path):
+    depot = make_depot()
+    first, second = depot.add([plain("one"), plain("two")], me)
+    path = tmp_path / "scores.jsonl"
+    path.write_text(json.dumps({"id": first, "scores": [score("a", 1)]}) + "\n\n"
+                    + json.dumps({"id": second, "scores": [score("a", 2)]}) + "\n", encoding="utf-8")
+
+    assert depot.edit_scores(path, me)[2:] == (2, 0)
+
+    assert [depot.show(one)["text"]["scores"][0]["value"] for one in (first, second)] == [1.0, 2.0]
+    path.write_text(json.dumps({"id": first, "remove": ["a"]}) + "\nnot json\n", encoding="utf-8")
+    with pytest.raises(Refused, match="not JSON lines"):
+        depot.edit_scores(path, me)
+    assert depot.show(first)["revisions"] == 2
+
+
+def test_a_scores_change_over_many_texts_keeps_its_journal_entry_and_python_memory_the_same_size(
+        make_depot, me, tmp_path):
+    depot = make_depot()
+    texts = depot.add([plain(f"text {number}") for number in range(4000)], me)
+
+    def scored(count: int) -> tuple[int, int]:
+        """(the length of the journal entry, the peak of Python's memory) of scoring the first count texts."""
+        path = tmp_path / f"{count}.jsonl"
+        path.write_text("".join(json.dumps({"id": one, "scores": [score(f"rank-{count}", 1.5), score("other", 2)]})
+                                + "\n" for one in texts[:count]), encoding="utf-8")
+        tracemalloc.start()
+        try:
+            depot.edit_scores(path, me)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        entry = depot.sql(f"SELECT length(change) AS n FROM journal WHERE id = {depot.change()}")["n"][0].as_py()
+        return entry, peak
+
+    scored(10)  # the first call starts the database and loads its extensions
+    small, large = scored(40), scored(4000)
+
+    assert depot.sql("SELECT count(*) AS n FROM texts WHERE list_contains(list_transform(scores, lambda s: s.name), "
+                     "'rank-4000')")["n"].to_pylist() == [4000]
+    assert abs(large[0] - small[0]) <= 4  # only the count's digits grow
+    assert large[1] < 2 * small[1]  # no Python object per text
+
+
+def test_a_scores_change_whose_revisions_are_missing_is_cut_short_when_the_depot_is_opened_again(
+        make_depot, me, monkeypatch):
+    depot = make_depot()
+    first, second = depot.add([plain("one"), plain("two")], me)
+    decisions = depot.sql("SELECT count(*) AS n FROM decisions")["n"].to_pylist()
+
+    def fails(*args):
+        raise OSError("the disk went away")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Tables, "append_stream", fails)  # the decision is written, the revisions are not
+        patch.setattr(Depot, "_cut_short", fails)  # and the process stops before it cuts the change short
+        with pytest.raises(OSError):
+            scores_of(depot, [{"id": first, "scores": [score("a", 1)]}], me)
+    assert depot.sql("SELECT count(*) AS n FROM journal WHERE NOT done")["n"].to_pylist() == [1]
+
+    opened = Depot.open(depot.address)
+
+    assert opened.show(first)["revisions"] == 1 and opened.show(first)["text"]["scores"] is None
+    assert opened.sql("SELECT count(*) AS n FROM decisions")["n"].to_pylist() == decisions  # its decision went too
+    assert json.loads(opened.sql("SELECT change FROM journal ORDER BY id DESC LIMIT 1")["change"][0].as_py()) == {
+        "kind": "cut short", "was": "scores"}
+    assert scores_of(opened, [{"id": first, "scores": [score("a", 1)]}], me)[2] == 1
+
+
+def test_a_scores_change_whose_revisions_are_written_but_not_marked_done_is_finished_when_opened_again(
+        make_depot, me, monkeypatch):
+    depot = make_depot()
+    first, second = depot.add([plain("one"), plain("two")], me)
+
+    def fails(*args):
+        raise OSError("the disk went away")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Depot, "_done", fails)  # the revisions are written, the entry is not marked done
+        with pytest.raises(JournalUnfinished):
+            scores_of(depot, [{"id": first, "scores": [score("a", 1)]}, {"id": second, "scores": [score("a", 2)]}],
+                      me)
+
+    opened = Depot.open(depot.address)
+
+    assert [opened.show(one)["text"]["scores"][0]["value"] for one in (first, second)] == [1.0, 2.0]
+    assert [opened.show(one)["revisions"] for one in (first, second)] == [2, 2]
+    assert opened.sql("SELECT count(*) AS n FROM journal WHERE NOT done")["n"].to_pylist() == [0]
+    assert opened.sql("SELECT count(*) AS n FROM decisions")["n"].to_pylist() == [2]  # the add's and this one's
+
+
+def test_a_clone_receives_the_upstream_s_scores_and_a_pull_brings_their_changes(make_depot, me, tmp_path):
+    upstream = make_depot("upstream")
+    first, second = upstream.add([plain("one"), plain("two")], me)
+    scores_of(upstream, [{"id": first, "scores": [score("rank", 1)]}], me)
+    follower = clone(upstream.address, str(tmp_path / "follower"), About("follower", "Grace Hopper", "grace@example.org"))
+    assert follower.show(first)["text"]["scores"] == [{"name": "rank", "value": 1.0, "content_version": 1}]
+
+    scores_of(upstream, [{"id": first, "remove": ["rank"]}, {"id": second, "scores": [score("rank", 2)]}], me)
+    pull(follower)
+
+    assert follower.show(first)["text"]["scores"] is None
+    assert follower.show(second)["text"]["scores"] == [{"name": "rank", "value": 2.0, "content_version": 1}]
+    assert follower.show(second)["decisions"][-1]["reason"] == "scores changed: set rank; removed rank"
+    [mine] = follower.add([plain("mine")], me)
+    assert scores_of(follower, [{"id": mine, "scores": [score("rank", 3)]}], me)[2] == 1
+
+
 def test_a_library_open_or_locked_takes_a_new_name_and_keeps_its_texts(make_depot, me):
     depot = make_depot()
     [text] = depot.add([plain("one")], me)
@@ -1300,6 +1520,9 @@ REFUSED_ON_UPSTREAM_ROWS = {
     "relicense": lambda depot, me, ids: depot.relicense([ids["text"]], ["MIT"], me),
     "edit credits": lambda depot, me, ids: depot.edit_credits(ids["text"], {"title": "Mine"}, me),
     "change content": lambda depot, me, ids: depot.change_content(ids["text"], "my text", None, me),
+    "score": lambda depot, me, ids: depot.edit_scores(lines(
+        [{"id": ids["mine"], "scores": [{"name": "rank", "value": 1, "content_version": 1}]},
+         {"id": ids["text"], "scores": [{"name": "rank", "value": 2, "content_version": 1}]}]), me),
     "ask to erase": lambda depot, me, ids: depot.ask_erasure("why", [(ids["text"], 0, 8)], me),
     "decide an erasure": lambda depot, me, ids: depot.decide_erasure(ids["request"], "admitted", me),
     "rename a library": lambda depot, me, ids: depot.rename_library(ids["library"], "mine"),

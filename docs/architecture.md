@@ -86,7 +86,8 @@ the id and the revision number and recording its change number; the
 highest revision is the current one. A text's content versions are
 rows of `contents`, keyed by the text's id and the version number and
 recording their change number, and each revision of the text names the
-content version it reads. Memberships record the change
+content version it reads. A revision of a text also holds its scores,
+each with the content version it was made from. Memberships record the change
 numbers a text joined and left a library at. A depot can so be read as it
 was at any change number, which a dataset names for each library it
 reads. Delta Lake's own table history plays no part: an admitted erasure
@@ -104,10 +105,15 @@ as they are.
 touches several tables is written into the journal first, and that write
 makes it certain. The journal holds no text's content: the content
 versions a change adds are written to `contents` in one commit right
-after its entry, numbered by its change number. The depot then applies
+after its entry, numbered by its change number. A change of scores holds
+only its decision and the number of texts it changes: its decision and
+then the texts' new revisions, made by one query over the lines of the
+change and the current texts, are written right after its entry, the
+revisions in one streamed commit numbered by its change number. The depot then applies
 the change to each table and marks it done. Opening a depot applies
 again every change left undone, and cuts short a change whose content
-versions were never written, writing nothing of it, so a crash never
+versions, or whose revisions of a change of scores, were never written,
+writing nothing of it, so a crash never
 leaves a change half applied. A change that fails while the depot stays
 open is finished the same way before its next write, so no later change
 takes the ids or the change number of an undone one (`wpt_depot/journal.py`). The decision that
@@ -139,6 +145,17 @@ number: its format. The code holds the format it reads and writes
 (`FORMAT` in `wpt_depot/schema.py`). Each `about` row records the depot's
 format when it was written, so the current row gives the depot's format. A
 depot whose `about` table has no `format` column is of format 0.
+
+Each format adds one change of layout to the one before. Format 1 adds the
+`format` column of `about`. Format 2 adds the `scores` column of `texts`,
+null for a text without scores. Its upgrade step adds the column to the
+table's log alone and rewrites no data file, so it costs the same whatever
+the number of texts. A data file written before a column was added lacks
+that column, and every read gives it as null in that file's rows: the SQL
+view of a table a step widened this way (`WIDENED` in
+`wpt_depot/schema.py`) matches the columns of its files by name, which
+reads the footer of each of its files before a query runs, and every other
+table's view reads its files by the first one's columns.
 
 Every way into a depot that reads or changes its rows refuses one of
 another format than the code's, older or newer: every `wpt depot` command
@@ -211,7 +228,8 @@ name, a hyphen and digits, so `wpt-eu-3` carries `wpt-eu` and never
 `wpt`, and a clone whose name begins its upstream's name owns none of the
 upstream's rows. Every operation that would change one is refused and
 writes nothing, with a message that it belongs to the upstream: a
-decision, a license change, a content change, an edit of credits or an erasure request on
+decision, a license change, a content change, an edit of credits or
+scores, or an erasure request on
 an upstream text, a decision on an erasure request that is the upstream's
 or names an upstream text,
 renaming, locking, reporting on or putting texts into an upstream
@@ -412,6 +430,7 @@ refused change writes nothing.
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on named texts; the review of an admission, for texts with no allowed license, and the page of the text |
 | a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; the page of the text |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the page of the text |
+| a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
 | libraries | `library new`, `put`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|pins\|lock\|forks\|problems\|name]`; page "Libraries" with each library's page, a locked one's with its pinned revisions, and the view of each reported problem |
 | datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/tokenizers`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`, `POST /api/remotes`; page "Datasets" with the view of each dataset |
 | a corpus | `build DATASET` | `POST /api/datasets/{name}/corpus`; page "Datasets" |
@@ -426,7 +445,7 @@ license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
 decision (`#/decisions/ID`) and a tag (`#/tags/TAG`).
 
 Every decision, an added text's, an erasure request's, a reported
-problem's, a change of content's and a change of credits' included, carries
+problem's, a change of content's, of credits' and of scores' included, carries
 the decider's declaration: a legal name, an email, and the confirmation
 that they read the requirements, accept them, and that what they submit
 meets them. The commands take it as `--name`, `--email` and `--accept`.

@@ -808,6 +808,9 @@ such as a repository's code, even when its authors used an AI assistant:
 the license of the person who published it decides, and repositories are
 not filtered for signs of such tools.
 
-It does not cover a text's tags either: an AI assistant may choose them
-([data-selection.md](data-selection.md), "Tags"), since a tag labels a
-text and adds nothing to it.
+It does not cover work an AI assistant carries out on the data as a
+person directs it, nor a text's tags, which an AI assistant may choose
+([data-selection.md](data-selection.md), "Models in training"): what
+enters the data is then what the person decided, or a tag that labels a
+text and adds nothing to it. The assistant never judges: it chooses no
+score by its own judgment and admits or refuses no text.

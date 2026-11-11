@@ -88,9 +88,9 @@ Each file of a repository or a collection is its own text.
    ```
 
    It joins the depot under review, with your declaration as its first
-   decision ("Decisions", below). Take tags only from the list of
-   [docs/data-selection.md](docs/data-selection.md), "Tags". The "Add"
-   page of `uv run wpt depot web` does the same.
+   decision ("Decisions", below). Tags are free text; the tags in use and
+   their meanings are in [docs/data-selection.md](docs/data-selection.md),
+   "Tags". The "Add" page of `uv run wpt depot web` does the same.
 
 The depot refuses a text that names a license it does not hold, and
 nothing is written.
@@ -179,15 +179,16 @@ drafts"), and the `finish-tasks` step's reward on a task's one-line form
 compares an attempt with the model's own attempt at the full form
 ([docs/training.md](docs/training.md), "Rewards").
 
-An AI assistant (a coding agent helping you) never reads or writes the
-words of people's texts and items: it works on their metadata only
-(licenses, notices' ids, tags, credits, decisions, libraries), except that
-it may read a text to choose its tags, and then changes only the tags.
-People write and add their texts themselves. When a person asks an
-assistant only to change the form of a text they wrote (line endings,
-spacing, splitting into files), the assistant may move it with scripts
-that transform whole files mechanically and report only its shape, never
-its words; it never reads or writes the words itself.
+An AI assistant (a coding agent helping you) carries out only the work
+on the data that you direct: it sets the scores or other fields you
+decided, runs the program you chose to compute scores, applies an edit
+you described exactly, finds texts and shows them to you for review, or
+sums up what a text says. It may also choose a text's tags. It never
+acts as a judge: it chooses no score by its own judgment, admits or
+refuses nothing, and does not decide what a text is worth. It writes no
+text into the data unless you said exactly what to write, and you review
+what it wrote. People write and add their texts themselves
+([docs/data-selection.md](docs/data-selection.md), "Models in training").
 
 ## Training records
 

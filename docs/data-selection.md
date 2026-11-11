@@ -23,6 +23,7 @@ or a code file, with its metadata. Each text is a row of a depot's
 - its credits: a title, its authors, and the address it came from, each
   optional;
 - its tags ("Tags", below);
+- its scores ("Scores", below);
 - its decisions, in order, and the libraries that hold it.
 
 A text holds final text only. Plain text stays as written, with no
@@ -39,8 +40,8 @@ Every change of a text makes a new revision of it: a new row under the
 same id, with the next revision number (1, 2, 3...) and the depot's
 change number ("Change numbers", below). Its rows before stay as they
 were, and the highest revision is the current one. A revision holds the
-small fields (licenses, notice, credits, tags, decisions) and the number
-of the content version it reads, never the content itself.
+small fields (licenses, notice, credits, tags, scores, decisions) and the
+number of the content version it reads, never the content itself.
 
 A text's content is stored apart, as content versions numbered 1, 2,
 3..., each with the change number it was made at. A content version never
@@ -69,6 +70,46 @@ naming each credit's old and new value. The decisions before it keep
 counting, so the text keeps its status and its libraries
 ([licenses.md](licenses.md), "Who decides"). A changed notice is stored
 once, as on an add.
+
+### Scores
+
+A text's scores are pairs of a name and a decimal number, under any name,
+such as `machine-made` 0.03 or `source-rank` 4. Each score also records the
+content version of the text it was made from. A text has at most one score
+of each name, and a text without scores has none at all.
+
+Scores change through `wpt depot scores FILE`, or `POST /api/texts/scores`
+([architecture.md](architecture.md), "Two interfaces"). One change covers
+many texts: FILE holds one JSON object per line, one line per text,
+
+    {"id": "my-depot-17", "scores": [{"name": "source-rank", "value": 4, "content_version": 1}], "remove": ["old-rank"]}
+
+with the scores to set and the names of the scores to remove, each part
+optional. A score set under a name the text has already replaces it. Each
+text the change changes gets a new revision, and the change is one
+decision under review on all of them, with the person's declaration, whose
+reason the depot writes naming the scores set and removed. Scoring a whole
+depot is so one decision and one new revision per text. As for credits,
+the decisions before it keep counting, so the texts keep their status and
+their libraries, and a locked library keeps reading the revision it
+pinned. A text whose scores would stay as they are is left out of the
+change, and the command and the route report how many texts changed and
+how many were left out. The depot refuses the whole change, writing
+nothing, when a line is not of that shape, when no text would change, when
+a text is named twice or is no text of the depot, when a value is not a
+finite number, when a score names a content version the text does not
+have, or when a text belongs to the upstream of a clone. The depot checks
+and applies a change where its lines are, so scoring every text of a large
+depot takes no more of the program's memory and no larger record of the
+change than scoring a few.
+
+A score's value comes from a person or from a program a person chose,
+never from the judgment of another company's AI assistant ("Models in
+training", below).
+
+Every other change of a text, a new content version included, keeps its
+scores as they are, each still naming the content version it was made
+from.
 
 ### Change numbers
 
@@ -108,13 +149,14 @@ plain text.
 
 ## Tags
 
-Tags say what a text is. A tag is a language code or one of the words
-below. Names are flat: a tag has no parent, and a share for a wider area
-names one of its tags ("Shares", below).
+Tags say what a text is. A tag is a language code or a word. Names are
+flat: a tag has no parent, and a share for a wider area names one of its
+tags ("Shares", below).
 
-An AI assistant takes tags only from this list and never makes one up. A
-tag it finds missing stays a suggestion for the maintainer, written apart
-from the depot.
+Tags are free text for everyone, AI assistants included: a text takes any
+tag that says what it is, and a new tag needs no change anywhere first.
+The table below lists tags in use, and the notes after it give the meaning
+each of them has.
 
 | Family | What it says | Tags |
 | --- | --- | --- |
@@ -282,8 +324,8 @@ tokenizer recipe at its version and the vocabulary that lock names in the
 store ([tokenizer.md](tokenizer.md)); without them it builds nothing.
 
 The build takes every text of the dataset's libraries, each library at
-the change number the dataset names; a text two libraries hold is taken once. It
-then keeps:
+the change number the dataset names; a text two libraries hold is taken
+once. It chooses nothing by score. It then keeps:
 
 - every plain text, as its tokens followed by the end-of-document token,
   in token files;
@@ -304,9 +346,10 @@ these tables:
 
 - `dataset`: the dataset's row, copied, with the time of the build;
 - `texts`: every text it took, with its depot's address, its id there,
-  its kind, its credits, licenses and tags copied, its notice, and where
-  its tokens start (the steps that read conversations and tasks pick them
-  by tag from this table);
+  its kind, its credits, licenses and tags copied, its scores copied with
+  the content version each was made from, its notice, and where its
+  tokens start (the steps that read conversations and tasks pick them by
+  tag from this table);
 - `licenses` and `notices`: the license texts and notices those texts
   name, copied from their depots (ids carry their depot's name, so they never
   repeat across depots).
@@ -315,8 +358,10 @@ Everything goes under `corpora/<dataset name>-<first 8 hex characters of
 the corpus id>/` in the store, with the record, `corpus.json`, written
 last, so a build that fails leaves no corpus. The corpus id covers the
 dataset's id and its row (without its revision and change), the
-vocabulary and every file's content, so building the same corpus again
-finds it and writes nothing, and another dataset with the same content
+vocabulary and every file's content (of each text: its depot, id, notice,
+where its tokens start and, when it has any, its scores), so building the
+same corpus again finds it and writes nothing, and another dataset with
+the same content
 gets a corpus of its own. The record also gives a
 fingerprint of each part a training step reads, `text`, `conversations`
 and `tasks` ([training.md](training.md), "Step results and reuse").
@@ -350,12 +395,19 @@ confirms ([chat-format.md](chat-format.md), "Model drafts"), or as
 their task's check. Every such use says exactly what the WPT model did, so
 it is open to review.
 
-Other companies' models stay completely forbidden: no output of theirs
-enters the data or the training, and they take no role in it, not as
-data, a simulator or a judge. Setting a text's tags is the one exception:
-an AI assistant may choose them, and only the tag words enter the depot.
-Synthetic data not made by a WPT model is forbidden too; puzzles and tasks
-a program generates are not that kind of synthetic data
+Other companies' models stay forbidden as a source and as a judge: no
+text they write of their own enters the data or the training, and they
+take no role in it as data, a simulator or a judge. Another company's AI
+assistant may carry out work on the data that a person directs: set the
+scores or other fields that person decided, run the program the person
+chose to compute scores, apply an edit the person described exactly (for
+example removing stray backslashes), find texts and show them for review,
+or sum up what a text says. It may also choose a text's tags. It never
+acts as a judge: it does not choose a score by its own judgment, admit or
+refuse a text, or decide what a text is worth. It writes no text into the
+data unless a person said exactly what to write, and a person reviews what
+it wrote. Synthetic data not made by a WPT model is forbidden too; puzzles
+and tasks a program generates are not that kind of synthetic data
 ([licenses.md](licenses.md), "No distillation from another company's
 model").
 

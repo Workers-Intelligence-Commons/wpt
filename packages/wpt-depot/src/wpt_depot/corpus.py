@@ -2,8 +2,9 @@
 says everything about what it holds even once the depots it read change or
 vanish.
 
-The build takes every text of the dataset's libraries, each library as it
-stood at the change number of its depot the dataset names
+The build takes every text of the dataset's libraries, choosing nothing by
+score, each library as it stood at the change number of its depot the
+dataset names
 (Depot.library_texts: its members then, each at its revision then, with
 its content now), a text two libraries hold once. Duplicate texts are
 kept. The texts go in a seeded order, the seed being the dataset's row
@@ -34,9 +35,10 @@ id there, its `pool` the share's tag (empty without shares) and its
 other kind are no training data and are left out.
 
 The corpus's tables are Parquet files (CORPUS_SCHEMAS): the dataset's row
-(its id and revision included) copied with the time of the build; every text taken with its credits and
-its tags copied and `tokens`, the position of its first token over the
-token files of its own kind in order (a task's: its line in tasks.jsonl);
+(its id and revision included) copied with the time of the build; every
+text taken with its credits, its tags and its scores (each with the
+content version it was made from) copied and `tokens`, the position of its
+first token over the token files of its own kind in order (a task's: its line in tasks.jsonl);
 the licenses its texts name; the notices (ids carry their depot's name, so
 they are copied as they are). Every text taken is in the corpus once
 (shares_tokens in the record says how many tokens each share holds).
@@ -45,7 +47,9 @@ Everything goes under corpora/<dataset name>-<first 8 hex characters of the
 corpus id>/ in the store, the record corpus.json last, so a build that
 fails leaves no corpus. The corpus id covers the dataset's id and its
 row (without its revision and change), the vocabulary and every file's
-content, so building the same corpus again finds it and writes nothing,
+content (of each text: its depot, id, notice, first token and, when it has
+any, its scores), so building the same corpus again finds it and writes
+nothing,
 and another dataset with the same content gets a corpus of its own (the
 seed leaves the id out, so both draw their texts in the same order). The
 record names the depot that holds the
@@ -84,7 +88,7 @@ from wpt_utils.lines import say
 
 from .depot import Depot, location
 from .errors import Refused
-from .schema import LIBRARY_REF, NAMES, SHARE, TIME
+from .schema import LIBRARY_REF, NAMES, SCORES, SHARE, TIME
 
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
 FOLDER = "corpora"
@@ -99,7 +103,7 @@ CORPUS_SCHEMAS = {
                         pa.field("kind", pa.string()), pa.field("title", pa.string()), pa.field("authors", NAMES),
                         pa.field("address", pa.string()), pa.field("licenses", NAMES, False),
                         pa.field("tags", NAMES, False), pa.field("notice", pa.string()),
-                        pa.field("tokens", pa.int64(), False)]),
+                        pa.field("tokens", pa.int64(), False), pa.field("scores", SCORES)]),
     "licenses": pa.schema([pa.field("id", pa.string(), False), pa.field("name", pa.string(), False),
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
@@ -137,7 +141,8 @@ def build(depot: Depot, name: str, store, tokenizer, tokenizer_version: int | No
                                         ensure_ascii=False, sort_keys=True))
             texts.append({"depot": depot_address, "id": row["id"], "kind": row["kind"], "title": row["title"],
                           "authors": row["authors"], "address": row["address"], "licenses": row["licenses"],
-                          "tags": row["tags"], "notice": row["notice"], "tokens": position})
+                          "tags": row["tags"], "notice": row["notice"], "tokens": position,
+                          "scores": row["scores"]})
         text_shards.close()
         conversation_shards.close()
         named = sorted({license_id for one in texts for license_id in one["licenses"]})
@@ -147,7 +152,7 @@ def build(depot: Depot, name: str, store, tokenizer, tokenizer_version: int | No
         tasks_bytes = "".join(f"{line}\n" for line in tasks).encode("utf-8")
         corpus_id = _fingerprint({"dataset": _content(dataset), "dataset_id": dataset["id"],
                                   "vocabulary": hashlib.sha256(vocabulary).hexdigest(),
-                                  "texts": [[one["depot"], one["id"], one["notice"], one["tokens"]] for one in texts],
+                                  "texts": [_text_entry(one) for one in texts],
                                   "text_shards": [s["token_sha256"] for s in text_shards.done],
                                   "conversation_shards": [s["token_sha256"] for s in conversation_shards.done],
                                   "tasks": hashlib.sha256(tasks_bytes).hexdigest(),
@@ -325,6 +330,12 @@ def _parquet(folder: Path, table: str, found: list[dict]) -> Path:
     path = folder / f"{table}.parquet"
     pq.write_table(pa.Table.from_pylist(found, schema=CORPUS_SCHEMAS[table]), path, compression="zstd")
     return path
+
+
+def _text_entry(one: dict) -> list:
+    """What the corpus id covers of a text of the corpus: its depot, id,
+    notice and first token, then its scores when it has any."""
+    return [one["depot"], one["id"], one["notice"], one["tokens"], *([one["scores"]] if one["scores"] else [])]
 
 
 def _shares_tokens(dataset: dict, pools: dict) -> list[dict] | None:

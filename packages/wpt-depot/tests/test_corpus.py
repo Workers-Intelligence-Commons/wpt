@@ -10,6 +10,7 @@ from wpt_depot import NewText
 from wpt_depot.corpus import build, mark_stale, read_table, records, sample
 from wpt_depot.errors import Refused
 from wpt_depot.notice import model_notice
+from wpt_depot.scoring import lines
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
 CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
@@ -209,3 +210,25 @@ def test_a_dataset_keeps_its_corpora_through_a_rename_and_a_new_dataset_of_its_o
     assert own["id"] != record["id"] and own["dataset"]["id"] == newcomer
     assert latest(store, depot.address, newcomer)["id"] == own["id"]
     assert latest(store, depot.address, dataset)["id"] == record["id"]
+
+
+def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_chooses_nothing_by_them(
+        make_depot, me, tmp_path):
+    depot = make_depot()
+    scored, unscored = depot.add([NewText(text="the fox", licenses=("CC0-1.0",)),
+                                  NewText(text="the dog", licenses=("CC0-1.0",))], me)
+    depot.change_content(scored, "the quick fox", None, me)
+    depot.edit_scores(lines([{"id": scored, "scores": [{"name": "rank", "value": -1.5, "content_version": 1},
+                                                       {"name": "machine-made", "value": 0.03,
+                                                        "content_version": 2}]}]), me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    depot.new_dataset("scored", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "scored", store, TOKENIZER, log=lambda *_: None)
+
+    texts = {one["id"]: one["scores"] for one in read_table(store, record, "texts").to_pylist()}
+    assert texts == {scored: [{"name": "machine-made", "value": 0.03, "content_version": 2},
+                              {"name": "rank", "value": -1.5, "content_version": 1}], unscored: None}

@@ -63,7 +63,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
     shown = json.loads(capsys.readouterr().out)
     assert shown["text"] | {"decisions": None} == {
         "id": "test-depot-1", "revision": 2, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": None, "content": None, "content_version": 1, "licenses": ["CC0-1.0"],
-        "notice": "test-depot-1", "title": "Fox", "authors": ["Ann"], "tags": ["en"], "address": "https://example.org/fox",
+        "notice": "test-depot-1", "title": "Fox", "authors": ["Ann"], "tags": ["en"], "address": "https://example.org/fox", "scores": None,
         "decisions": None, "libraries": ["test-depot-1", "test-depot-2"]}
     assert [(one["status"], one["name"], one["email"]) for one in shown["decisions"]] == [
         ("under review", "Ada Lovelace", "ada@example.org"), ("admitted", "Ada Lovelace", "ada@example.org")]
@@ -343,9 +343,48 @@ def test_a_texts_credits_a_librarys_name_a_dataset_and_the_depots_facts_change_f
     assert after["decisions"][-1]["reason"].startswith("title changed from none to Hen; tags changed from en to en, birds")
 
 
+def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path, capsys):
+    opened = Depot.open(depot)
+    first, second = opened.add([NewText(text="one", licenses=("CC0-1.0",)), NewText(text="two", licenses=("CC0-1.0",))],
+                               _declaration())
+    lines = [{"id": first, "scores": [{"name": "rank", "value": 4, "content_version": 1}]},
+             {"id": second, "scores": [{"name": "rank", "value": 0.5, "content_version": 1},
+                                       {"name": "machine-made", "value": 0.03, "content_version": 1}]}]
+    (tmp_path / "scores.jsonl").write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+    capsys.readouterr()
+
+    assert depot_command("scores", str(tmp_path / "scores.jsonl"), *ME) == 0
+
+    assert bare(capsys.readouterr().out).strip() == (
+        "decision test-depot-2: under review, scores changed: set machine-made, rank, on 2 texts")
+    assert depot_command("show", second) == 0
+    assert json.loads(capsys.readouterr().out)["text"]["scores"] == [
+        {"name": "machine-made", "value": 0.03, "content_version": 1},
+        {"name": "rank", "value": 0.5, "content_version": 1}]
+    assert depot_command("sql", "SELECT id, scores[1].value AS first FROM texts ORDER BY id") == 0
+    assert printed_rows(capsys) == [{"id": first, "first": 4.0}, {"id": second, "first": 0.03}]
+
+    (tmp_path / "again.jsonl").write_text(json.dumps({"id": first, "remove": ["rank"]}) + "\n"
+                                          + json.dumps(lines[1]) + "\n", encoding="utf-8")
+    assert depot_command("scores", str(tmp_path / "again.jsonl"), *ME) == 0
+    assert bare(capsys.readouterr().out).strip() == (
+        "decision test-depot-3: under review, scores changed: removed rank, on 1 texts; 1 texts left out, their scores "
+        "unchanged")
+    (tmp_path / "broken.jsonl").write_text('{"id": "test-depot-1", "remove": ["x"]}\nnot json\n', encoding="utf-8")
+    assert depot_command("scores", str(tmp_path / "broken.jsonl"), *ME) == 2
+    assert "not JSON lines" in bare(capsys.readouterr().err)
+    assert depot_command("scores", str(tmp_path / "missing.jsonl"), *ME) == 2
+    (tmp_path / "broken.jsonl").write_text('{"id": "test-depot-2", "scores": [{"name": "rank", "value": NaN, '
+                                           '"content_version": 1}]}\n', encoding="utf-8")
+    assert depot_command("scores", str(tmp_path / "broken.jsonl"), *ME) == 2
+    assert "not a finite number" in bare(capsys.readouterr().err)
+    assert Depot.open(depot).show(first)["revisions"] == 3
+
+
 def test_a_depot_of_an_older_format_is_refused_until_the_upgrade_command_brings_it_up(depot, tmp_path, capsys):
     found = Depot.open(depot)
-    found.tables.rewrite("about", found.tables.read("about").drop_columns(["format"]))  # format 0's layout
+    found.tables.rewrite("texts", found.tables.read("texts").drop_columns(["scores"]))  # format 0's layout
+    found.tables.rewrite("about", found.tables.read("about").drop_columns(["format"]))
     capsys.readouterr()
 
     assert depot_command("sql", "SELECT name FROM about") == 2

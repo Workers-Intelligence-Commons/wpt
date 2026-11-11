@@ -4,13 +4,23 @@ from wpt_depot import About, Depot, NewText, backup, clone, pull, restore
 from wpt_depot import depot as depots
 from wpt_depot.errors import JournalUnfinished, OtherFormat
 from wpt_depot.schema import FORMAT, STEPS
+from wpt_depot.scoring import lines
 from wpt_depot.tables import Tables
 
 ABOUT = "SELECT * EXCLUDE (format) FROM about_revisions ORDER BY revision"
 
 
+def at_format_1(depot):
+    """The depot as format 1 lays it out: its texts table without the column
+    scores, and every about row of format 1."""
+    depot.tables.rewrite("texts", depot.tables.read("texts").drop_columns(["scores"]))
+    at_format(depot, 1)
+
+
 def at_format_0(depot):
-    """The depot's about table as format 0 lays it out: without the column format."""
+    """The depot as format 0 lays it out: format 1's layout, its about table
+    without the column format."""
+    at_format_1(depot)
     depot.tables.rewrite("about", depot.tables.read("about").drop_columns(["format"]))
 
 
@@ -71,15 +81,16 @@ def test_an_upgrade_keeps_every_about_revision_adds_one_at_a_new_change_and_run_
     assert start == 0 and upgraded.format() == FORMAT
     found = upgraded.sql("SELECT * FROM about_revisions ORDER BY revision").to_pylist()
     assert [{name: value for name, value in row.items() if name != "format"} for row in found] == [
-        *before, {**before[-1], "revision": 3, "change": change + 1}]
-    assert [row["format"] for row in found] == [0, 0, FORMAT]
+        *before, *({**before[-1], "revision": 2 + reached, "change": change + reached}
+                   for reached in range(1, FORMAT + 1))]
+    assert [row["format"] for row in found] == [0, 0, *range(1, FORMAT + 1)]  # each format reached, in turn
     opened = Depot.open(depot.address)
     assert opened.show(text)["text"]["text"] == "one"
 
     again, start = Depot.upgrade(depot.address)
 
-    assert start == FORMAT and again.change() == change + 1
-    assert again.sql("SELECT count(*) AS n FROM about_revisions")["n"].to_pylist() == [3]
+    assert start == FORMAT and again.change() == change + FORMAT
+    assert again.sql("SELECT count(*) AS n FROM about_revisions")["n"].to_pylist() == [2 + FORMAT]
 
 
 def test_an_upgrade_whose_change_was_left_undone_is_finished_by_running_it_again(make_depot, monkeypatch):
@@ -98,7 +109,8 @@ def test_an_upgrade_whose_change_was_left_undone_is_finished_by_running_it_again
 
     assert start == 0 and upgraded.format() == FORMAT
     assert upgraded.sql("SELECT revision, change, format FROM about_revisions ORDER BY revision").to_pylist() == [
-        {"revision": 1, "change": 1, "format": 0}, {"revision": 2, "change": change + 1, "format": FORMAT}]
+        {"revision": 1, "change": 1, "format": 0},
+        *({"revision": 1 + reached, "change": change + reached, "format": reached} for reached in range(1, FORMAT + 1))]
     assert upgraded.sql("SELECT bool_and(done) AS done FROM journal")["done"].to_pylist() == [True]
 
 
@@ -116,7 +128,8 @@ def test_an_upgrade_finishes_a_change_its_older_format_left_undone_before_record
     assert upgraded.sql("SELECT revision, maintainer, format FROM about_revisions ORDER BY revision").to_pylist() == [
         {"revision": 1, "maintainer": "Ada Lovelace", "format": 0},
         {"revision": 2, "maintainer": "Grace Hopper", "format": 0},
-        {"revision": 3, "maintainer": "Grace Hopper", "format": FORMAT}]
+        *({"revision": 2 + reached, "maintainer": "Grace Hopper", "format": reached}
+          for reached in range(1, FORMAT + 1))]
 
 
 def test_a_depot_of_a_newer_format_is_refused_everywhere_and_never_brought_down(make_depot, tmp_path):
@@ -203,3 +216,62 @@ def test_backup_and_restore_refuse_a_depot_of_a_newer_format(make_depot, tmp_pat
         restore(copy.address, str(tmp_path / "restored"))
 
     assert len(list((tmp_path / "backups").iterdir())) == 1 and not (tmp_path / "restored").exists()
+
+
+def test_an_upgrade_from_format_1_adds_scores_to_every_text_without_writing_its_rows_again_then_scores_are_set(
+        make_depot, me):
+    depot = make_depot()
+    first, second = depot.add([NewText(text="one", licenses=("CC0-1.0",), tags=("x",)),
+                               NewText(text="two", licenses=("CC0-1.0",))], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("open")
+    depot.put(library, "true")
+    at_format_1(depot)
+    before = depot.sql("SELECT * FROM texts_revisions ORDER BY id, revision").to_pylist()
+    files = depot.tables.table("texts").file_uris()
+
+    upgraded, start = Depot.upgrade(depot.address)
+
+    assert start == 1 and upgraded.format() == FORMAT
+    assert sorted(upgraded.tables.table("texts").file_uris()) == sorted(files)  # only the table's log changed
+    assert upgraded.sql("SELECT * FROM texts_revisions ORDER BY id, revision").to_pylist() == before
+    assert {row["scores"] for row in before} == {None}
+    version = upgraded.tables.version("texts")
+    STEPS[1](upgraded.tables)  # run again, as after a stop just before its format was recorded
+    assert upgraded.tables.version("texts") == version
+
+    upgraded.edit_scores(lines([{"id": first, "scores": [{"name": "rank", "value": 2, "content_version": 1}]}]), me)
+
+    assert upgraded.show(first)["text"]["scores"] == [{"name": "rank", "value": 2.0, "content_version": 1}]
+    assert (upgraded.show(first)["status"], upgraded.show(first)["text"]["libraries"]) == ("admitted", [library])
+    assert upgraded.show(second)["text"]["scores"] is None
+    again, start = Depot.upgrade(depot.address)
+    assert start == FORMAT and again.show(first)["revisions"] == 3
+
+
+def test_an_upgrade_from_format_1_finishes_an_add_left_undone_on_the_layout_without_scores(make_depot, me, monkeypatch):
+    depot = make_depot()
+    with monkeypatch.context() as patch:
+        patch.setattr(Tables, "append", fails_on("texts"))
+        with pytest.raises(JournalUnfinished):
+            depot.add([NewText(text="one", licenses=("CC0-1.0",))], me)
+    at_format_1(depot)
+
+    upgraded, _ = Depot.upgrade(depot.address)
+
+    assert upgraded.sql("SELECT id, text, scores FROM texts").to_pylist() == [
+        {"id": "depot-1", "text": "one", "scores": None}]
+
+
+def test_a_depot_of_format_1_is_backed_up_and_restored_as_it_is_and_the_copy_then_upgrades(make_depot, me, tmp_path):
+    depot = make_depot()
+    [text] = depot.add([NewText(text="one", licenses=("CC0-1.0",))], me)
+    at_format_1(depot)
+
+    copy = backup(Depot.find(depot.address), str(tmp_path / "backups"))
+    restored = restore(copy.address, str(tmp_path / "restored"))
+
+    assert (copy.format(), restored.format()) == (1, 1)
+    assert "scores" not in restored.tables.columns("texts")
+    upgraded, start = Depot.upgrade(restored.address)
+    assert start == 1 and upgraded.show(text)["text"]["scores"] is None

@@ -12,6 +12,7 @@ from wpt_depot.depot import BELONGS_TO_UPSTREAM, CREDITS, NO_ALLOWED_LICENSE, OR
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter, condition
 from wpt_depot.remote import from_remote
+from wpt_depot.scoring import lines as score_lines
 from wpt_depot.schema import ADMITTED, REFUSED
 from wpt_recipes import InvalidRecipe, Recipes
 from wpt_recipes import NotFound as RecipeNotFound
@@ -115,6 +116,11 @@ def routes(depot: Depot) -> list[Route]:
         decision, reason = depot.edit_credits(values["id"], {name: body[name] for name in CREDITS if name in body},
                                               declared(body))
         return 200, {"decision": decision, "reason": reason}
+
+    @refusals
+    def scores(values, body):
+        decision, reason, changed, left_out = depot.edit_scores(score_lines(body["texts"]), declared(body))
+        return 200, {"decision": decision, "reason": reason, "changed": changed, "left_out": left_out}
 
     @refusals
     def content(values, body):
@@ -374,6 +380,27 @@ def routes(depot: Depot) -> list[Route]:
                                    "tags": NAMES, "address": nullable, "notice": nullable,
                                    "declaration": DECLARATION}},
               answer={"type": "object", "required": ["decision", "reason"]}),
+        Route("POST", "/api/texts/scores", scores, "change the scores of many texts at once, each as a new "
+              "revision, its id kept (wpt depot scores): for each text named once, the scores to set (a name it has "
+              "already is replaced; the value a finite number, the content version one of the text's, the one the "
+              "score was made from) and the names of the scores to remove; the depot records it as one decision "
+              "under review on every text it changes, whose reason names the scores set and removed, and the "
+              "decisions before it keep counting; a locked library keeps the revision it pinned; a text whose "
+              "scores stay as they are is left out, and the change is refused when every text is: the decision's "
+              "id, its reason, how many texts changed and how many were left out",
+              body={"type": "object", "required": ["texts", "declaration"],
+                    "properties": {"texts": {"type": "array", "minItems": 1, "items": {
+                        "type": "object", "required": ["id"], "additionalProperties": False,
+                        "properties": {"id": TEXT, "scores": {"type": "array", "items": {
+                            "type": "object", "required": ["name", "value", "content_version"],
+                            "additionalProperties": False,
+                            "properties": {"name": TEXT, "value": {"type": "number"},
+                                           "content_version": {"type": "integer", "minimum": 1}}}},
+                                       "remove": NAMES}}},
+                                   "declaration": DECLARATION}},
+              answer={"type": "object", "required": ["decision", "reason", "changed", "left_out"],
+                      "properties": {"decision": TEXT, "reason": TEXT, "changed": {"type": "integer"},
+                                     "left_out": {"type": "integer"}}}),
         Route("POST", "/api/texts/{id}/content", content, "change the content of one text, its plain text (text) "
               "or an item's content (content, which must match its kind), exactly one of them, the one that matches "
               "the text, as a new content version and a new revision, its id kept (wpt depot content): the depot "

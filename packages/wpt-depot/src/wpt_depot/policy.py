@@ -34,6 +34,15 @@ def content_change(old: int, new: int) -> str:
     return f"{CONTENT_CHANGE}{old} to version {new}"
 
 
+def scores_change(set_names: list[str], removed: list[str]) -> str:
+    """The reason the depot writes on the decision that records a change of
+    scores: the names of the scores set and of those removed. It never
+    starts over (starts_over)."""
+    parts = ([f"set {', '.join(set_names)}"] if set_names else []) + (
+        [f"removed {', '.join(removed)}"] if removed else [])
+    return f"scores changed: {'; '.join(parts)}"
+
+
 def starts_over(reason: str | None) -> bool:
     """Whether a decision's reason is in the form of license_change or
     content_change: the decisions before it no longer count."""

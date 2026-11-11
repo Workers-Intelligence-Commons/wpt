@@ -14,7 +14,9 @@ at; the highest revision is the current one. A text's big part (its plain
 text, or an item's kind and JSON content) is stored in contents, one row per
 content version (1, 2, 3...), each with the change number it was made at,
 and each revision of a text holds only the small fields and the number of
-the content version it reads (content_version). Which texts a library holds is
+the content version it reads (content_version). A text's scores (SCORE) are
+pairs of a name and a number, in the order of their names, each with the
+content version it was made from; null means none. Which texts a library holds is
 memberships: the change a text joined at and the change it left at (null
 while it is in). A locked library also has pins: the exact revision of each
 text it locked.
@@ -50,7 +52,9 @@ change of the journal writes takes the columns the about table has then.
 
 Every change to this layout raises FORMAT and adds the step from the format
 before, with its test. A step names the columns it reads and writes itself,
-never from SCHEMAS, since SCHEMAS is the layout of a later format. It
+never from SCHEMAS, since SCHEMAS is the layout of a later format. A step
+that adds a column to a table without writing its rows again lists the
+table in WIDENED. It
 changes only the tables its layout change touches, and run again on the
 layout it leaves it changes nothing more. A layout change keeps the code of
 FORMAT able to apply an older format's undone journal changes
@@ -61,7 +65,7 @@ versions."""
 
 import pyarrow as pa
 
-FORMAT = 1  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 2  # the format of the layout below: what a depot this code reads and writes is written at
 
 TIME = pa.timestamp("us", tz="UTC")
 NAMES = pa.list_(pa.string())
@@ -77,6 +81,9 @@ PROBLEM = pa.struct([("texts", NAMES), ("problem", pa.string()), ("decision", pa
 # a library a dataset reads: its depot's address, its id and the change number of that depot it is read at
 LIBRARY_REF = pa.struct([("depot", pa.string()), ("library", pa.string()), ("change", pa.int64())])
 SHARE = pa.struct([("tag", pa.string()), ("share", pa.float64())])
+# a score of a text: its name (any name), its value, and the content version of the text it was made from
+SCORE = pa.struct([("name", pa.string()), ("value", pa.float64()), ("content_version", pa.int64())])
+SCORES = pa.list_(SCORE)
 REVISION = (("revision", pa.int64()), ("change", pa.int64()))
 
 
@@ -96,7 +103,8 @@ SCHEMAS = {
                          ("accepted", pa.bool_()), ("made_at", TIME), ("reason", pa.string(), True)),
     "texts": _schema(("id", pa.string()), *REVISION, ("licenses", NAMES), ("notice", pa.string(), True),
                      ("title", pa.string(), True), ("authors", NAMES, True), ("tags", NAMES),
-                     ("address", pa.string(), True), ("decisions", NAMES), ("content_version", pa.int64())),
+                     ("address", pa.string(), True), ("decisions", NAMES), ("content_version", pa.int64()),
+                     ("scores", SCORES, True)),
     "contents": _schema(("id", pa.string()), ("version", pa.int64()), ("change", pa.int64()),
                         ("text", pa.string(), True), ("kind", pa.string(), True), ("content", pa.string(), True)),
     "libraries": _schema(("id", pa.string()), *REVISION, ("name", pa.string()), ("forked_from", pa.string(), True),
@@ -146,7 +154,7 @@ def latest(table: str) -> str:
 
 # a text at one revision, with the content of the version it reads
 TEXT_COLUMNS = ("t.id, t.revision, t.change, c.text, c.kind, c.content, t.content_version, t.licenses, t.notice, "
-                "t.title, t.authors, t.tags, t.address, t.decisions")
+                "t.title, t.authors, t.tags, t.address, t.decisions, t.scores")
 # how a revision of texts (t) meets the content version it reads (c)
 CONTENT_JOIN = "JOIN contents c ON c.id = t.id AND c.version = t.content_version"
 CURRENT = {
@@ -178,6 +186,24 @@ def _add_format(tables):
     tables.rewrite("about", found.append_column("format", pa.array([0] * found.num_rows, pa.int64())).cast(ABOUT_1))
 
 
+# the column the texts table gets at format 2: its scores, null for none
+SCORES_2 = pa.field("scores", pa.list_(pa.struct([("name", pa.string()), ("value", pa.float64()),
+                                                   ("content_version", pa.int64())])), nullable=True)
+
+
+def _add_scores(tables):
+    """Format 1 to 2: the texts table gets the column scores, null in every
+    row it holds, which means no scores. Only the table's log changes (one
+    commit that adds the column): no row is read or written again, whatever
+    the number of texts, since a read fills the column with null in the
+    data files written before it (wpt_depot.tables). Nothing when the table
+    has the column already."""
+    if SCORES_2.name not in tables.columns("texts"):
+        tables.add_column("texts", SCORES_2)
+
+
 # the step from each format to the next, by the format it starts from: a function over the depot's tables
 # (wpt_depot.tables.Tables) that changes them to the next format's layout, and changes nothing more when run again
-STEPS = {0: _add_format}
+STEPS = {0: _add_format, 1: _add_scores}
+# the tables a step widened in place (Tables.add_column): their data files do not all hold the same columns
+WIDENED = ("texts",)

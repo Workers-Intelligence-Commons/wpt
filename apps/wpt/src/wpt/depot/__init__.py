@@ -35,9 +35,9 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           ID may be a license with an exception ('Apache-2.0 WITH
                                           LLVM-exception') or licenses that apply together ('MIT AND
                                           CC-BY-4.0')
-    wpt depot show ID                     one text or item as it is now, with its decisions, libraries, how
-                                          many revisions it has and the revision each locked library
-                                          holding it pinned, as JSON
+    wpt depot show ID                     one text or item as it is now (its scores included), with its
+                                          decisions, libraries, how many revisions it has and the revision
+                                          each locked library holding it pinned, as JSON
     wpt depot decide admit|refuse WHERE DECLARATION [--reason TEXT]
                                           one decision on every text the SQL condition WHERE matches;
                                           admitting is refused when a text has no allowed license; the
@@ -68,6 +68,18 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           a locked library keeps the revision it pinned; an option given
                                           replaces that credit (--tag and --author: the whole list), --clear
                                           empties it (title, authors, tags, address, notice)
+    wpt depot scores FILE DECLARATION     change the scores of many texts at once, each as a new revision:
+                                          FILE (UTF-8) holds one JSON object per line, one line per text,
+                                          {"id": ID, "scores": [{"name": N, "value": V, "content_version":
+                                          C}, ...], "remove": [N, ...]}: each score set (a name the text has
+                                          already is replaced; V a finite number, C the content version of
+                                          the text it was made from), each name removed; the depot records
+                                          it as one decision under review on every text it changes, whose
+                                          reason names the scores set and removed; the decisions before it
+                                          keep counting, so the texts keep their status and libraries, and a
+                                          locked library keeps the revision it pinned; a text whose scores
+                                          stay as they are is left out; prints how many texts changed and
+                                          how many were left out
     wpt depot decide admit|refuse --erasure ID DECLARATION [--reason TEXT]
                                           one decision on the erasure request ID; once it is admitted,
                                           the depot carries it out at once and marks stale every corpus
@@ -259,6 +271,15 @@ def cmd_credits(args):
     changes.update({name: value for name, value in given.items() if value is not None})
     decision, reason = opened().edit_credits(args.id, changes, _declaration(args))
     say(f"decision {decision}: under review, {reason}")
+    return 0
+
+
+def cmd_scores(args):
+    if not Path(args.file).is_file():
+        raise FileNotFoundError(f"no file {args.file}")
+    decision, reason, changed, left_out = opened().edit_scores(Path(args.file), _declaration(args))
+    say(f"decision {decision}: under review, {reason}, on {changed:,} texts"
+        + (f"; {left_out:,} texts left out, their scores unchanged" if left_out else ""))
     return 0
 
 
@@ -486,6 +507,13 @@ def parser() -> argparse.ArgumentParser:
                            help="empty that credit")
     _declares(crediting)
     crediting.set_defaults(run=cmd_credits)
+
+    scoring = commands.add_parser("scores", help="change the scores of many texts as new revisions, recorded as one "
+                                                 "decision under review")
+    scoring.add_argument("file", help="one JSON object per line: {\"id\": ID, \"scores\": [{\"name\": N, "
+                                      "\"value\": V, \"content_version\": C}], \"remove\": [N]}")
+    _declares(scoring)
+    scoring.set_defaults(run=cmd_scores)
 
     licensing = commands.add_parser("license", help="the licenses the depot holds")
     licenses = licensing.add_subparsers(dest="action", required=True)
