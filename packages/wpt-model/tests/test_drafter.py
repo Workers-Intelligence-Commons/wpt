@@ -12,10 +12,10 @@ from wpt_model.notice import WEIGHT_METADATA, documents
 from wpt_utils.device import select_device
 
 VOCABULARY = b'{"format":"wpt-bpe","merges":[],"tokenizer_version":"0.2.0"}\n'
-TINY = dict(vocab_size=50, block_size=16, n_layer=4, global_attention=["CSA"], d_model=16, kda_heads=2, kda_head_dim=8,
-            attention_heads=2, attention_head_dim=128, query_rank=8, output_groups=1, output_rank=8, index_heads=2,
-            index_head_dim=128, index_top_k=2, n_experts=4, top_k=2, expert_width=8, latent_width=8, shared_width=16,
-            engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4, engram_table_size=31)
+TINY = dict(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
+            attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+            shared_width=16, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4, engram_table_size=31,
+            residual_groups=3)
 
 
 def test_a_drafter_saved_with_its_model_folder_loads_back_identical(tmp_path):
@@ -93,17 +93,18 @@ def test_the_markov_head_s_rank_follows_the_model_s_width():
 def test_the_drafter_s_matrices_take_muon_as_the_model_s_and_its_heads_take_adamw():
     # docs/model.md, "The drafter": the fusing projection, attention and
     # experts by the model's rule (heads apart, experts apart); the mask,
-    # norms, mHC's biases and gates, the Markov and confidence heads under
+    # norms, the queries of Attention Residuals, the Markov and confidence heads under
     # AdamW, as the model's embedding and output head; every parameter once
     config = ModelConfig(**TINY)
     drafter = Drafter(config, DrafterConfig.for_model(config))
     roles = {name: (role, view) for name, _, role, view in drafter.optimizer_roles()}
     assert list(roles) == [name for name, _ in drafter.named_parameters()]
-    assert roles["fuse.weight"] == ("matrix", (1, 16, 16))
-    assert roles["layers.0.attention.q_up.weight"] == ("matrix", (2, 128, 8))  # 2 heads
+    assert roles["fuse.weight"] == ("matrix", (1, 16, 32))  # 2 feature layers
+    assert roles["layers.0.attention.q.weight"] == ("matrix", (2, 64, 16))  # 2 heads
+    assert roles["layers.0.attention.k.weight"] == ("matrix", (1, 64, 16))  # the one key-value head
     assert roles["layers.0.experts.w_gate"] == ("matrix", (4, 8, 8))  # 4 experts
-    vectors = ["mask", "fuse_norm.weight", "final_norm.weight", "layers.0.attention_streams.b_res",
-               "layers.0.attention_streams.a_pre", "layers.0.attention.sink", "markov_in.weight", "markov_out.weight",
+    vectors = ["mask", "fuse_norm.weight", "final_norm.weight", "residuals.mixes.0.query",
+               "residuals.mixes.5.norm_weight", "layers.0.attention.sink", "markov_in.weight", "markov_out.weight",
                "confidence.weight", "confidence.bias"]
     assert [roles[name] for name in vectors] == [("vector", None)] * len(vectors)
 
@@ -124,9 +125,32 @@ def test_on_a_gpu_the_drafter_scores_as_on_the_cpu():
     context = torch.randn(3, 128, len(drafter.features) * config.d_model)
     context[0, :125] = 0  # 3 tokens read, zeros before the text
     lengths, anchors = torch.tensor([3, 200, 1000]), torch.tensor([4, 7, 9])
-    with torch.no_grad():
-        _, expected = drafter.backbone(model, context, lengths, anchors, drafter.block)
-        gpu = select_device()
-        _, found = drafter.to(gpu).backbone(model.to(gpu), context.to(gpu), lengths.to(gpu), anchors.to(gpu),
-                                            drafter.block)
-    assert (found.cpu() - expected).abs().max() <= 3e-2 * expected.abs().max()
+    chosen = []  # per run, per routed layer: the experts each place chose
+
+    def watch(experts, run):
+        def hook(_, __, logits):
+            top = torch.topk(torch.sigmoid(logits.float()) + experts.bias, experts.k).indices
+            run.append(top.sort(-1).values.cpu())
+        return hook
+
+    def read(device):
+        run, hooks = [], []
+        for layer in drafter.layers:
+            hooks.append(layer.experts.router.register_forward_hook(watch(layer.experts, run)))
+        try:
+            with torch.no_grad():
+                _, out = drafter.to(device).backbone(model.to(device), context.to(device), lengths.to(device),
+                                                     anchors.to(device), drafter.block)
+        finally:
+            for hook in hooks:
+                hook.remove()
+        chosen.append(run)
+        return out.cpu()
+
+    expected, found = read(torch.device("cpu")), read(select_device())
+    # a near tie in a router may go the other way in BF16: compare the blocks whose routing agreed
+    agree = torch.ones(len(anchors), dtype=torch.bool)
+    for cpu, gpu in zip(*chosen):
+        agree &= (cpu == gpu).all(-1).view(len(anchors), -1).all(-1)
+    assert agree.any()
+    assert (found[agree] - expected[agree]).abs().max() <= 3e-2 * expected[agree].abs().max()

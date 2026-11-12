@@ -104,7 +104,7 @@ class Conversations(Environment):
         self.stage_list = (Stage(settings["epochs"] * self.per_epoch, settings["batch"]),)
         order = torch.Generator().manual_seed(data.step_seed)
         self.orders = [torch.randperm(len(self.examples), generator=order).tolist() for _ in range(settings["epochs"])]
-        self.losses, self.indexers = [], []
+        self.losses = []
 
     def batch(self, step, model, strategy):
         epoch, index = divmod(step - 1, self.per_epoch)
@@ -118,25 +118,22 @@ class Conversations(Environment):
         for a in range(math.ceil(share / micro)):
             examples = mine[a * micro:(a + 1) * micro]
             # a pass that learns nothing: every process makes as many passes, each process's gradients shared at once
-            passes.append((*_batch(examples or chosen[:1], strategy.device, learn=bool(examples)), learned,
-                           1.0 if examples else 0.0))
+            passes.append((*_batch(examples or chosen[:1], strategy.device, learn=bool(examples)), learned))
         return passes
 
-    def after_update(self, step, loss, indexer):
+    def after_update(self, step, loss):
         self.losses.append(loss)
-        self.indexers.append(indexer)
         epoch, index = divmod(step - 1, self.per_epoch)
         if index == self.per_epoch - 1:
             self.data.log(f"{self.data.step} epoch {epoch + 1}/{self.settings['epochs']}: mean loss "
-                          f"{sum(self.losses) / len(self.losses):.4f}, indexer loss "
-                          f"{sum(self.indexers) / len(self.indexers):.4f} over {len(self.examples)} conversations")
-            self.losses, self.indexers = [], []
+                          f"{sum(self.losses) / len(self.losses):.4f} over {len(self.examples)} conversations")
+            self.losses = []
 
     def state_dict(self):
-        return {"losses": list(self.losses), "indexers": list(self.indexers)}
+        return {"losses": list(self.losses)}
 
     def load_state_dict(self, state):
-        self.losses, self.indexers = list(state["losses"]), list(state["indexers"])
+        self.losses = list(state["losses"])
 
 
 def _asked(data, name):

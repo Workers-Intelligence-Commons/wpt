@@ -1,6 +1,6 @@
 """Engram memory (docs/model.md, "Engram memory"): embeddings of the last
-tokens' N-grams, read from hashed tables, mixed into each residual stream
-through a learned gate.
+tokens' N-grams, read from hashed tables, added to the input of its layer's
+attention through a learned gate.
 
 The hash is multiplicative-XOR, as DeepSeek describes it; DeepSeek does not
 publish its constants, so HASH_MULTIPLIERS are WPT's. Each (order, head)
@@ -49,7 +49,7 @@ def primes_from(start, count) -> list[int]:
 
 
 class Engram(nn.Module):
-    def __init__(self, config, streams):
+    def __init__(self, config):
         super().__init__()
         D, self.order, heads = config.d_model, config.engram_order, config.engram_heads
         if heads > len(HASH_MULTIPLIERS):
@@ -58,10 +58,10 @@ class Engram(nn.Module):
         self.sizes = primes_from(config.engram_table_size, (self.order - 1) * heads)
         self.tables = nn.ModuleList(nn.Embedding(size, config.engram_dim) for size in self.sizes)
         width = len(self.sizes) * config.engram_dim
-        self.value = nn.Linear(width, D, bias=False)                                           # W_V, shared
-        self.keys = nn.ModuleList(nn.Linear(width, D, bias=False) for _ in range(streams))     # W_K per stream
+        self.value = nn.Linear(width, D, bias=False)  # W_V
+        self.key = nn.Linear(width, D, bias=False)    # W_K
         self.hidden_norm, self.key_norm, self.value_norm = (nn.RMSNorm(D, eps=EPS) for _ in range(3))
-        self.conv = ShortConv(D, kernel=CONV_KERNEL, dilation=self.order, streams=streams)
+        self.conv = ShortConv(D, kernel=CONV_KERNEL, dilation=self.order)
         nn.init.zeros_(self.conv.conv.weight)  # the module starts as nothing
 
     def lookup(self, canonical, earlier):
@@ -83,20 +83,16 @@ class Engram(nn.Module):
 
     def passes_on(self):
         """Its last order - 1 canonical ids (the pad id before the text);
-        its convolution passes on each stream's last inputs (layers.ShortConv)."""
+        its convolution passes on its last inputs (layers.ShortConv)."""
         return {"ids": Tail(self.order - 1, lambda empty: empty.fill_(self.pad))}
 
-    def forward(self, streams, canonical, sequence):
-        """streams (B, T, n, D) -> streams with each one's Y added. sequence:
-        where these tokens sit (sequence.py), which gives the earlier ids and
-        convolution inputs."""
+    def forward(self, hidden, canonical, sequence):
+        """hidden (B, T, D) -> Y (B, T, D), what Engram adds to it.
+        sequence: where these tokens sit (sequence.py), which gives the
+        earlier ids and convolution inputs."""
         e = self.lookup(canonical, sequence.before(self, "ids", canonical))
-        value = self.value(e)
-        scale = streams.shape[-1] ** -0.5
-        added = []
-        for s, key in enumerate(self.keys):
-            a = torch.sigmoid((self.hidden_norm(streams[:, :, s]) * self.key_norm(key(e))).sum(-1, keepdim=True) * scale)
-            V = a * value
-            normed = self.value_norm(V)
-            added.append(F.silu(self.conv(normed, sequence.before(self.conv, f"inputs {s}", normed))) + V)
-        return streams + torch.stack(added, 2)
+        scale = hidden.shape[-1] ** -0.5
+        a = torch.sigmoid((self.hidden_norm(hidden) * self.key_norm(self.key(e))).sum(-1, keepdim=True) * scale)
+        V = a * self.value(e)
+        normed = self.value_norm(V)
+        return F.silu(self.conv(normed, sequence.before(self.conv, "inputs", normed))) + V

@@ -6,23 +6,12 @@
     "total_tokens": 2925565920
   },
   "model": {
-    "n_layer": 10,
-    "global_attention": [
-      "CSA",
-      "HCA",
-      "CSA"
-    ],
+    "window_layers": 4,
+    "sparse_groups": 2,
+    "sparse_layers": 5,
     "d_model": 512,
-    "kda_heads": 4,
-    "kda_head_dim": 128,
     "attention_heads": 8,
     "attention_head_dim": 128,
-    "query_rank": 128,
-    "output_groups": 2,
-    "output_rank": 256,
-    "index_heads": 8,
-    "index_head_dim": 128,
-    "index_top_k": 64,
     "n_experts": 32,
     "top_k": 4,
     "expert_width": 256,
@@ -34,7 +23,9 @@
     "engram_order": 3,
     "engram_heads": 8,
     "engram_dim": 16,
-    "engram_table_size": 50021
+    "engram_table_size": 50021,
+    "residual_groups": 42,
+    "loops": 0
   },
   "seed": 1337,
   "steps": [
@@ -66,5 +57,5 @@
     "batch": 8,
     "seed": 0
   },
-  "note": "The smallest of a series of models for watching behaviors appear as size grows, not for release: 146M parameters (the 102M recipe's width of 512 and its experts, 10 layers; layers 4 and 10 CSA, layer 8 HCA), the admitted mixture's 32,768-token vocabulary, whose two tables are 33.6M of them, and 20 tokens per parameter (about 2.93B), read as 2,790 updates of 32 windows of 32K tokens (1M tokens each). Muon keeps its defaults, the 2,000-update warm-up included. Untested in a full run. Both heads' scores over a 32K window take about 8 GiB in 32-bit, four times those of an 8,192-token vocabulary, so one 16 GB GPU is estimated to need --recompute --micro-batch 1 --segment 8192 (not measured)."
+  "note": "The smallest of a series of models for watching behaviors appear as size grows, not for release: 255M parameters (width 512, 21 layers: four window layers on each side of an exact layer, then two groups of one exact layer and five sparse layers), the admitted mixture's 32,768-token vocabulary, whose two tables are 33.6M of them, and about 2.93B tokens, read as 2,790 updates of 32 windows of 32K tokens (1M tokens each). NorMuon keeps its defaults, the 2,000-update warm-up included. Untested in a full run. Both heads' scores over a 32K window take about 8 GiB in 32-bit, four times those of an 8,192-token vocabulary, so one 16 GB GPU is estimated to need --recompute --micro-batch 1 --segment 8192 (not measured)."
 }

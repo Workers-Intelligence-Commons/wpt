@@ -33,6 +33,8 @@ from pathlib import Path
 
 from wpt_utils.programs import code_name
 
+from .config import layer_kinds
+
 LICENSE = "AGPL-3.0-or-later"
 OUTPUT_LICENSE = "CC0-1.0"
 REPOSITORY = "https://github.com/Workers-Intelligence-Commons/wpt"
@@ -107,7 +109,10 @@ def card(config, provenance, evals, drafter=None) -> str:
         "## Model", "",
         *_model_kind(provenance),
         f"- Parameters: {provenance['parameters']:,}",
-        f"- Layers: {config['n_layer']}, width {config['d_model']}; experts: {config['n_experts']} routed "
+        f"- Layers: {len(layer_kinds(config['window_layers'], config['sparse_groups'], config['sparse_layers']))} "
+        f"({config['window_layers']} window layers on each side of an exact layer, then {config['sparse_groups']} "
+        f"groups of an exact layer and {config['sparse_layers']} sparse layers), width {config['d_model']}; "
+        f"experts: {config['n_experts']} routed "
         f"(top {config['top_k']}) and 2 shared per layer; Engram memory in layers "
         f"{', '.join(map(str, config['engram_layers'])) or 'none'}",
         f"- Context: {config['block_size']} tokens; vocabulary: {config['vocab_size']:,} tokens", "",
@@ -170,11 +175,11 @@ TEXT = "windows"  # what a step that reads text reads, as provenance.json's step
 
 def _model_kind(provenance):
     if all(step["reads"] == TEXT for step in provenance["steps"]):
-        return ["A WPT mixture-of-experts model (KDA, CSA and HCA attention, mHC residual",
-                "streams, Engram memory). It is trained on text only: it continues text and",
-                "follows no instructions.", ""]
-    return ["A WPT mixture-of-experts model (KDA, CSA and HCA attention, mHC residual",
-            "streams, Engram memory), trained by the steps below.", ""]
+        return ["A WPT mixture-of-experts model (window, exact and sparse attention,",
+                "Attention Residuals, Engram memory). It is trained on text only: it continues",
+                "text and follows no instructions.", ""]
+    return ["A WPT mixture-of-experts model (window, exact and sparse attention,",
+            "Attention Residuals, Engram memory), trained by the steps below.", ""]
 
 
 def _step(step):

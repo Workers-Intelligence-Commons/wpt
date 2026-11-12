@@ -708,7 +708,6 @@ gets noticed.
 | `lock` | under 1 s | under 1 s |
 | `tests`, every test | 12 min on 5 workers, 41 min on 1 | 21 min on 3 workers |
 | `tests`, nothing changed | 7 s | |
-| `tests`, an edit in `wpt_model/kda.py` | 9 min, 103 tests on 4 workers | |
 | `rust` | 3 s, its build done | 12 s |
 | `data` | under 1 s | |
 | `commits` | as long as the range; under 1 s for one ordinary commit | |

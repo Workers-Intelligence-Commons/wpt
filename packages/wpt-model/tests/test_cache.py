@@ -4,36 +4,36 @@ rounding, for each kind of layer and the whole model, past block_size; and
 so do a prompt shared by several rows, rows read together at different
 places, and undoing rejected draft tokens."""
 
-import sys
-import types
-
 import pytest
 import torch
 
 from wpt_model import WPT, ModelConfig
-from wpt_model.attention import CSA_RATIO, HCA_RATIO, Attention
+from wpt_model import attention
+from wpt_model.attention import ExactAttention, SparseAttention, WindowAttention
 from wpt_model.cache import Rows
 from wpt_model.engram import Engram
-from wpt_model import kda
-from wpt_model.kda import KDA, _fla_kernels, delta_step, fla_failure, recurrent_kda
-from wpt_model.mhc import STREAMS
 from wpt_model.sequence import WHOLE, Carried
 from wpt_utils.device import select_device
 
-CONFIG = ModelConfig(vocab_size=50, block_size=16, n_layer=8, global_attention=["CSA", "HCA"], d_model=32,
-                     kda_heads=2, kda_head_dim=8, attention_heads=4, attention_head_dim=128, query_rank=16,
-                     output_groups=2, output_rank=16, index_heads=8, index_head_dim=128, index_top_k=8, n_experts=4,
-                     top_k=2, expert_width=8, latent_width=8, shared_width=16, engram_layers=[2], engram_order=3,
-                     engram_heads=2, engram_dim=4, engram_table_size=31)
-# a prompt, single tokens, a few, a long piece and the rest: 300 tokens, past block_size (16), the window
-# (128) and HCA's first entries (128 and 256 tokens), with pieces that end inside blocks of 4 and of 128
+CONFIG = ModelConfig(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=2, d_model=32,
+                     attention_heads=4, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+                     shared_width=16, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4,
+                     engram_table_size=31, residual_groups=3)
+# a prompt, single tokens, a few, a long piece and the rest: 300 tokens, past block_size (16) and the window
+# (128), with pieces that end inside and across the window's blocks
 PIECES = [37, 1, 1, 5, 100, 1, 155]
+
+
+@pytest.fixture(autouse=True)
+def few_chosen(monkeypatch):
+    """Exact layers pick 16 tokens instead of 1,024, so that the choice
+    matters within these 300 tokens."""
+    monkeypatch.setattr(attention, "TOP_K", 16)
 
 
 def close(got, expected, share=1e-3):
     """Equal within share of the expected values' largest magnitude: the
-    same computation in another order (and FP8 and FP4 roundings that may
-    then fall the other way)."""
+    same computation in another order."""
     return (got - expected).abs().max() <= share * expected.abs().max()
 
 
@@ -51,7 +51,7 @@ def in_pieces(read, x, pieces=PIECES):
 
 
 def randomized(module):
-    """module with its zero-started parameters (sinks, merging biases, Engram's convolution) made to count."""
+    """module with its zero-started parameters (sinks, Engram's convolution) made to count."""
     torch.manual_seed(1)
     with torch.no_grad():
         for name, p in module.named_parameters():
@@ -60,7 +60,7 @@ def randomized(module):
     return module
 
 
-# on a GPU, through its kernels (flash-linear-attention's, the attention's) in BF16, within a wider share
+# on a GPU, through the attention's form there, in BF16, within a wider share
 DEVICES = ["cpu", pytest.param("gpu", marks=pytest.mark.skipif(select_device().type != "cuda", reason="needs a GPU"))]
 
 
@@ -72,39 +72,44 @@ def on(device):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_a_kda_layer_reads_through_its_memory_as_through_the_whole_text(device):
+def test_a_window_layer_reads_through_its_last_keys_and_values_as_through_the_whole_text(device):
     device, share, autocast = on(device)
     torch.manual_seed(0)
-    layer = randomized(KDA(CONFIG)).eval().to(device)
+    layer = randomized(WindowAttention(CONFIG)).eval().to(device)
     x = torch.randn(2, 300, CONFIG.d_model, device=device)
     with torch.no_grad(), autocast:
         got = in_pieces(lambda piece, _, reading: layer(piece, reading), x)
-        assert close(got.float(), layer(x, WHOLE).float(), share)
+        assert close(got.float(), layer(x).float(), share)
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("ratio", [CSA_RATIO, HCA_RATIO, 0])
-def test_csa_hca_and_the_window_read_through_v4_s_cache_as_through_the_whole_text(ratio, device):
-    # the window's last 128 entries, the merged entries, the indexer's keys
-    # and the rows not merged yet carry everything later tokens read
+def test_exact_and_sparse_layers_read_through_the_exact_layer_s_keys_and_values_as_through_the_whole_text(device):
+    # the exact layer keeps every token's key and value; the sparse layer
+    # reads them, at the tokens the exact layer chose and its last 128,
+    # and keeps nothing of its own
     device, share, autocast = on(device)
     torch.manual_seed(0)
-    layer = randomized(Attention(CONFIG, ratio)).eval().to(device)
+    exact, sparse = (randomized(kind(CONFIG)).eval().to(device) for kind in (ExactAttention, SparseAttention))
     x = torch.randn(2, 300, CONFIG.d_model, device=device)
+
+    def both(piece, place):
+        out, handoff = exact(piece, piece, place)
+        return torch.cat([out, sparse(piece, handoff, place)], -1)
+
     with torch.no_grad(), autocast:
-        got = in_pieces(lambda piece, _, reading: layer(piece, sequence=reading)[0], x)
-        assert close(got.float(), layer(x)[0].float(), share)
+        got = in_pieces(lambda piece, _, reading: both(piece, reading), x)
+        assert close(got.float(), both(x, WHOLE).float(), share)
 
 
 def test_engram_reads_through_its_last_ids_and_convolution_inputs_as_through_the_whole_text():
     torch.manual_seed(0)
-    engram = randomized(Engram(CONFIG, STREAMS)).eval()
-    streams = torch.randn(2, 300, STREAMS, CONFIG.d_model)
+    engram = randomized(Engram(CONFIG)).eval()
+    hidden = torch.randn(2, 300, CONFIG.d_model)
     canonical = torch.randint(50, (2, 300))
     with torch.no_grad():
         got = in_pieces(lambda piece, start, reading: engram(piece, canonical[:, start:start + piece.shape[1]],
-                                                             reading), streams)
-        assert close(got, engram(streams, canonical, WHOLE))
+                                                             reading), hidden)
+        assert close(got, engram(hidden, canonical, WHOLE))
 
 
 def model():
@@ -146,12 +151,12 @@ def test_segments_and_the_cache_carry_exactly_what_each_module_says_it_passes_on
     described = {(id(module), name) for module in wpt.modules() if hasattr(module, "passes_on")
                  for name in module.passes_on()}
     assert {name for module in wpt.modules() if hasattr(module, "passes_on") for name in module.passes_on()} == {
-        "memory", "inputs", "ids", *(f"inputs {s}" for s in range(STREAMS)), "rows", "keys", "window", "entries"}
+        "inputs", "ids", "window", "entries", "tokens", "state"}
     ids = torch.randint(50, (2, 41), generator=torch.Generator().manual_seed(0))
     segment = Carried(0, {})
     with torch.no_grad():
         wpt(ids[:, :40], next_tokens=ids[:, 1:], sequence=segment)
-    assert set(segment.passed) | set(segment.added) == described
+    assert set(segment.passed) | set(segment.added) == {(*key, 0) for key in described}  # its one pass's
     cache = wpt.new_cache(2)
     with torch.no_grad():
         _, hidden = wpt.extend(ids[:, :40], cache)
@@ -231,42 +236,3 @@ def test_undoing_rejected_draft_tokens_leaves_the_cache_as_if_only_the_kept_ones
             routed = wpt(torch.tensor([texts[row][:place[row]]]), replay=cache.routes[row])
             assert close(routed[0, :n], whole[:n])
             assert all(len(chosen) == place[row] for chosen in cache.routes[row].chosen.values())
-
-
-@pytest.mark.skipif(select_device().type != "cuda" or not _fla_kernels(),
-                    reason="needs a GPU where flash-linear-attention imports")
-def test_the_gpu_kernels_carry_kda_s_memory_as_the_formula():
-    # from a memory, with padding past each row's own tokens, by the fused
-    # recurrent kernel (a few tokens) and the chunked one (more)
-    device = select_device()
-    generator = torch.Generator().manual_seed(0)
-
-    def rand(*shape):
-        return torch.randn(*shape, generator=generator)
-
-    for T in (3, 100):
-        q, k = (torch.nn.functional.normalize(rand(2, T, 2, 64), dim=-1) for _ in range(2))
-        v, g = rand(2, T, 2, 64), -5 * torch.sigmoid(rand(2, T, 2, 64) * 3)
-        beta, initial = torch.sigmoid(rand(2, T, 2)), rand(2, 2, 64, 64) * 0.1
-        valid = torch.arange(T)[None] < torch.tensor([[T], [T - 2]])
-        beta, g = beta * valid[..., None], g * valid[..., None, None]
-        expected, S = recurrent_kda(q, k, v, g, beta, initial=initial, final=True)
-        out, got_S = delta_step(*(t.to(device) for t in (q, k, v, g, beta, initial)))
-        assert torch.allclose(out.cpu(), expected, atol=5e-2) and torch.allclose(got_S.cpu(), S, atol=5e-2)
-
-
-def test_a_failed_import_of_flash_linear_attention_keeps_its_reason(monkeypatch):
-    # the reason is what tells a run that KDA is on its slow form, and why
-    monkeypatch.setattr(kda, "_fla", None)
-    monkeypatch.setitem(sys.modules, "fla.ops.kda", None)  # an import of it then fails
-    assert _fla_kernels() is False
-    assert fla_failure() == "ModuleNotFoundError: import of fla.ops.kda halted; None in sys.modules"
-
-    monkeypatch.setattr(kda, "_fla", None)
-    present = types.ModuleType("fla.ops.kda")
-    present.chunk_kda = present.fused_recurrent_kda = object()
-    monkeypatch.setitem(sys.modules, "fla.ops.kda", present)
-    loss = types.ModuleType("fla.modules.fused_linear_cross_entropy")  # the real one needs Triton
-    loss.fused_linear_cross_entropy_loss = object()
-    monkeypatch.setitem(sys.modules, "fla.modules.fused_linear_cross_entropy", loss)
-    assert _fla_kernels() and fla_failure() is None

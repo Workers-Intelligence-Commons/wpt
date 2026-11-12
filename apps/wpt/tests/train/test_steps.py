@@ -73,9 +73,8 @@ def test_answer_as_assistant_learns_from_the_corpus_s_conversations_and_credits_
     # the step learns the assistant's turns of the conversations of its
     # corpus; a corpus without any is refused before any step trains. A recipe
     # that shares its first step with an earlier run reuses that step's
-    # result; the step changes the weights, the CSA indexers learning by
-    # their own loss, but never the routers' balancing biases, which it
-    # locks; the model's CREDITS name the conversation, and its drafter's
+    # result; the step changes the weights, but never the routers'
+    # balancing biases, which it locks; the model's CREDITS name the conversation, and its drafter's
     # answers stop at the end of a turn too
     chat_step = [{"step": "answer-as-assistant"}]
     err = refused(capsys, [built.recipe("no-talk", training=one_stage(1, 64), steps=chat_step), built.corpus_id,
@@ -95,8 +94,6 @@ def test_answer_as_assistant_learns_from_the_corpus_s_conversations_and_credits_
     assert "step 1 read-text: reused" in capsys.readouterr().out
     base, tuned = load_file(tmp_path / "base" / "model.safetensors"), load_file(tmp_path / "model" / "model.safetensors")
     assert any(not torch.equal(base[name], tuned[name]) for name in base)
-    indexers = [name for name in base if ".attention.indexer." in name]
-    assert indexers and any(not torch.equal(base[name], tuned[name]) for name in indexers)
     biases = [name for name in base if name.endswith("experts.bias")]
     assert biases and all(torch.equal(base[name], tuned[name]) for name in biases)
 
@@ -253,7 +250,7 @@ GIVES, SETTINGS, check, context = text.GIVES, text.SETTINGS, text.check, text.co
 
 
 class FailsOnce(text.TextWindows):
-    def after_update(self, step, loss, indexer):
+    def after_update(self, step, loss):
         marker = Path(os.environ["WPT_TEST_FAIL"])
         if step == 2 and marker.exists():
             marker.unlink()

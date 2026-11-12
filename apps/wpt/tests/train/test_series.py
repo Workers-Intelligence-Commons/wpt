@@ -10,20 +10,18 @@ from wpt_training import WINDOWS
 from wpt_worker.training import drafter_shards
 from wpt.train import main as train
 
-# a series of two sizes of the application tests' tiny model; laws chosen so that C = M and D = M / 2000:
-# the small size (66,266 parameters, M 397,596) reads 199 tokens as 3 updates of 4 windows of 16 tokens, the
-# large one (314,548, M 1,887,288) 944 tokens as 15 updates
+# a series of two sizes of the application tests' tiny model; laws chosen so that C = M and D = M / 1600:
+# the small size (60,880 parameters, M 371,616) reads 232 tokens as 4 updates of 4 windows of 16 tokens, the
+# large one (219,744, M 1,302,720) 814 tokens as 13 updates
 TINY = {
     "data": {"depot": "", "dataset": "d", "tokenizer": "t"},  # the depot: the test's
-    "reference": {"n_layer": 4, "d_model": 16, "kda_heads": 2, "kda_head_dim": 8, "attention_heads": 2,
-                  "attention_head_dim": 128, "query_rank": 8, "output_groups": 1, "output_rank": 8, "index_heads": 2,
-                  "index_head_dim": 128, "index_top_k": 2, "n_experts": 4, "top_k": 2, "expert_width": 8,
-                  "latent_width": 8, "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2,
-                  "engram_dim": 4, "engram_table_size": 31},
-    "global_attention": ["CSA", "HCA"],
+    "reference": {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 16, "attention_heads": 2,
+                  "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
+                  "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
+                  "engram_table_size": 31, "residual_groups": 8, "loops": 0},
     "block_size": 16,
     "laws": {"learning_rate": {"coefficient": 0.002, "exponent": 0}, "batch_tokens": {"coefficient": 64, "exponent": 0},
-             "model_flops": {"coefficient": 1, "exponent": 1}, "tokens": {"coefficient": 0.0005, "exponent": 1}},
+             "model_flops": {"coefficient": 1, "exponent": 1}, "tokens": {"coefficient": 0.000625, "exponent": 1}},
     "warmup_share": 0.04,
     "seed": 1337,
     "sizes": [{"name": "small", "d_model": 16}, {"name": "large", "d_model": 32}],
@@ -53,16 +51,16 @@ def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(
     recipes = Recipes(tmp_path)
     data = recipes.model_recipe("tiny:small")["data"]
     assert data == recipes.model_recipe("tiny:large")["data"]
-    assert data["total_tokens"] == 15 * 4 * 17  # the large size's prefix
+    assert data["total_tokens"] == 13 * 4 * 17  # the large size's prefix
     train(["tiny:small", "--out", "model"])  # the corpus last built for the series' dataset
     provenance = json.loads((Path("model") / "provenance.json").read_text())
     assert provenance["recipe_name"] == "tiny:small" and provenance["corpus"]["id"] == built.corpus_id
     assert provenance["recipe"] == recipes.model_recipe("tiny:small")
     [step] = provenance["recipe"]["steps"]
-    assert step["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
-    assert step["settings"]["prefix_tokens"] == 3 * 4 * 17 == provenance["learned"]["text"]  # the corpus's start
+    assert step["settings"]["stages"] == [{"block_size": 16, "steps": 4, "batch_size": 4}]
+    assert step["settings"]["prefix_tokens"] == 4 * 4 * 17 == provenance["learned"]["text"]  # the corpus's start
     assert step["optimizer"]["settings"] == {"lr": 0.002, "warmup": 1}
-    assert provenance["model"]["n_layer"] == 4 and provenance["model"]["d_model"] == 16
+    assert provenance["model"]["window_layers"] == 1 and provenance["model"]["d_model"] == 16
 
 
 def test_train_series_prints_every_size_and_trains_nothing(built, tmp_path, capsys):
@@ -73,6 +71,6 @@ def test_train_series_prints_every_size_and_trains_nothing(built, tmp_path, caps
     train(["series", "tiny"])
 
     printed = capsys.readouterr().out
-    assert f"series tiny: one corpus of {15 * 4 * 17:,} training tokens" in printed
-    assert "small: width 16" in printed and "large: width 32" in printed and "prefix 204 tokens" in printed
+    assert f"series tiny: one corpus of {13 * 4 * 17:,} training tokens" in printed
+    assert "small: width 16" in printed and "large: width 32" in printed and "prefix 272 tokens" in printed
     assert not (tmp_path / "model").exists()

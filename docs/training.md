@@ -120,9 +120,9 @@ The built-in steps:
 | step | method | environment | optimizer | locked |
 | --- | --- | --- | --- | --- |
 | `read-text` | `next-token` | `text-windows` | `by-part`, its defaults | none |
-| `answer-as-assistant` | `assistant-tokens` | `conversations` | `by-part`, lr 1e-4, no weight decay, constant schedule, early stop on (no evaluations, so it never fires) | `balancing` |
-| `finish-tasks` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires) | `routers`, `balancing` |
-| `finish-tasks-with-less-writing` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires) | `routers`, `balancing` |
+| `answer-as-assistant` | `assistant-tokens` | `conversations` | `by-part`, lr 1e-4, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `balancing` |
+| `finish-tasks` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `routers`, `balancing` |
+| `finish-tasks-with-less-writing` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `routers`, `balancing` |
 
 A recipe whose steps are `read-text` alone makes a base model. The model's
 context (`config.json`'s `block_size`) is the last window length of the
@@ -206,17 +206,16 @@ built this way ([model.md](model.md), "Model series").
 A method file defines `READS`, the kind of examples it learns from,
 `SETTINGS` and `start(settings)`, which returns a `wpt_training.Method`.
 Its `learn` runs one pass's forward and backward passes; the runner adds
-the passes of an update up, and `update_loss` gives the update's loss and
-indexer loss, the same in every process. `begin` may refuse options the
+the passes of an update up, and `update_loss` gives the update's loss,
+the same in every process. `begin` may refuse options the
 method cannot train with, and `unreached` names the parts its loss never
 reaches.
 
 - `next-token` (reads `windows`): the next-token loss of every position,
   plus the multi-token prediction loss at `mtp_weight`, then at
   `mtp_late_weight` after `mtp_switch` of the step's updates (DeepSeek-V3:
-  after 10T of 14.8T tokens), plus the gradient, not the value, of the CSA
-  indexers' loss, which reaches only the indexers. Evaluations compare the
-  next-token loss alone. Settings: `mtp_weight` 0.3, `mtp_late_weight`
+  after 10T of 14.8T tokens). Evaluations compare the next-token loss
+  alone. Settings: `mtp_weight` 0.3, `mtp_late_weight`
   0.1, `mtp_switch` 0.676.
 - `assistant-tokens` (reads `conversations`): the next-token loss of the
   tokens the assistant wrote only ("The answer-as-assistant step", below).
@@ -224,16 +223,16 @@ reaches.
   attempts ("The finish-tasks step", below).
 
 A method on text windows is a `wpt_training.TextMethod`: its
-`loss(model, x, y)` returns (training loss, indexer loss), the model
-giving the indexer loss when asked (`model(x, next_tokens=y,
-indexer_loss=True)` returns the scores, the multi-token prediction scores
-and that loss); a method that does not ask leaves the indexers untrained.
-With `targets=(y, after_next)` in that call, the model returns the two
+`loss(model, x, y)` returns the training loss (`model(x, next_tokens=y)`
+returns the scores and the multi-token prediction scores). With
+`targets=(y, after_next)` in that call, the model returns the two
 cross-entropies summed over the tokens instead of the scores, 4,096 tokens
 at a time: the built-in loss never holds every token's scores at once. On
 a GPU where flash-linear-attention imports, a pass with gradients runs its
-fused head and loss, which computes the gradients in its forward pass;
-elsewhere each chunk's scores are computed again in the backward pass.
+fused head and loss on each 4,096 tokens, which computes the gradients in
+its forward pass. Each chunk's head gradient is then one BF16 product, as
+autocast gives any weight's, and the chunks' add up in FP32. Elsewhere
+each chunk's scores are computed again in the backward pass.
 A method that defines its own `loss` defines `part_loss(model, x, y,
 following, window)` too, the share of a part of the windows (`following`:
 the token after `y`'s last, or None at the windows' end; `window`: the
@@ -276,11 +275,13 @@ which returns a `wpt_training.Optimizer`: its torch optimizer over the
 parameters the step trains, and optionally what happens just before each
 update (a learning-rate schedule, gradient clipping) and just after it, at
 the start of each stage after the first (`stage`), which evaluation is the
-best and when to stop, and the state a resumed step needs. `run` gives the
+best and when to stop, the weights the step keeps in place of those
+(`kept`), and the state a resumed step needs. `run` gives the
 tokens of the step's examples, the parameters it trains, its number of
 updates and the log. The file may also define `check(settings)`, which
 raises `ValueError` for settings that cannot go together, so the run is
-refused before any step trains. The step keeps the weights of the
+refused before any step trains. The step keeps the weights its optimizer
+gives once the updates are done; without them, the weights of the
 evaluation its optimizer judged best in its last stage, or its last
 weights when it has no evaluation.
 
@@ -288,25 +289,45 @@ The built-in optimizer is `by-part`: each kind of weight under its own
 update rule, the rule the model names for each of its parameters (model.md,
 "Training"). It needs a model that names its parameters' roles.
 
-- Muon for matrix weights as DeepSeek-V4 runs it (8 then 2 Newton-Schulz
-  steps, updates of RMS 0.18), per head for the query, key and value
-  projections, per expert for routed experts and per output group or
-  merging projection in CSA and HCA; no QK-Clip (DeepSeek-V4).
-- AdamW for the embedding, the output head, norms, mHC's biases and gating
-  factors, attention sinks and merging biases.
+- NorMuon for matrix weights: DeepSeek-V4's 8 then 2 Newton-Schulz steps,
+  each output neuron's row normalized by a running mean of its squares,
+  updates of RMS 0.18. It runs per head for the attention's query
+  projections and output gates and per expert for routed experts; no
+  QK-Clip (every attention layer normalizes its queries and keys).
+- AdamW for the embedding, the output head, norms, the queries of
+  Attention Residuals and attention sinks.
 - Adam at `table_lr_factor` times the rate, without weight decay, for
   Engram's tables.
 
-On a CUDA device (an NVIDIA or AMD GPU, the two PyTorch names `cuda`), AdamW
-and Adam run as PyTorch's fused AdamW, and Muon's momentum and weight decay
-as PyTorch's foreach operations: the same update within rounding, in fewer
-GPU kernels. The optimizer's state is the same on every
-device, so a run resumes on another.
+Weight decay is cautious: an entry of a matrix or vector decays only where
+its update and its weight have the same sign.
+
+The whole update runs as PyTorch's foreach operations, one call over every
+tensor of a group, and the matrices of the same rows and columns go
+through the Newton-Schulz steps in one batch. No value comes back from the
+GPU to the host during an update. The update is the same on every device
+within rounding, and the optimizer's state is the same on every device, so
+a run resumes on another.
 
 `schedule` chooses how the learning rate moves. With `steps`, it warms up
 over `warmup` updates to `lr`, then falls to `first_factor` of it after
 `first_drop` of the step's updates and to `second_factor` after
 `second_drop`. With `constant`, every update uses `lr`.
+
+With `average_states` above 0, the step keeps an average of the model's
+last states (IMU-1). The states are the model's whole state at the step's
+last update and every `average_every` updates before it, at most
+`average_states` of them; a step with fewer updates takes the states it
+has. The average starts from the oldest state and takes in each later one
+with weight 1 - `average_beta`, an exponential moving average: with 10
+states and 0.8, the newest weighs 0.2 and the oldest 0.8^9. It is held in
+FP32 on the model's device from the oldest state on, one copy of the
+weights, and saved with the optimizer's state, so a resumed step goes on
+with it. With the average, no evaluation is the best. A continued step
+whose oldest state comes before its first update has no whole average and
+keeps its last weights. The average and early stop cannot go together,
+since the states count back from the step's last update: a step with both
+is refused.
 
 Early stop and the best evaluation need evaluations, and only an
 environment that makes them gives them: among the built-in ones,
@@ -325,7 +346,8 @@ full.
 Settings and defaults: `lr` 0.002, `weight_decay` 0.1, `momentum` 0.95,
 `beta1` 0.9, `beta2` 0.95, `eps` 1e-8, `table_lr_factor` 5, `schedule`
 `steps`, `warmup` 2000, `first_drop` 0.8, `first_factor` 0.316,
-`second_drop` 0.9, `second_factor` 0.1, `patience` 0, `min_improve` 0.01,
+`second_drop` 0.9, `second_factor` 0.1, `average_states` 10,
+`average_every` 500, `average_beta` 0.8, `patience` 0, `min_improve` 0.01,
 `smoothing` 3, `chinchilla` 20.
 
 ### Writing a step
@@ -443,7 +465,8 @@ Each stage is evaluated at its first and last updates and every
 better, so losses are compared within a stage only. When a stage after
 the first starts, the optimizer hears of it (`Optimizer.stage`) and the
 best evaluation so far is forgotten: `by-part` starts counting again, and
-the step keeps the best weights of its last stage. An optimizer's early
+the step keeps the best weights of its last stage when it keeps no
+average. An optimizer's early
 stop (`by-part`'s `patience`) ends its stage, and the next
 stage starts.
 
@@ -456,58 +479,32 @@ run started at), each update's event names its window length, and
 each made (`stages`). The recipes keep one stage (model.md, "Model
 recipes").
 
-DeepSeek-V4 trains dense attention first and turns sparse attention on at
-64K tokens; WPT is sparse from the first update, at every stage (model.md,
-"Attention").
+The sparse layers read their chosen tokens from the first update, at every
+stage (model.md, "Attention").
 
 The log shows, at each evaluation, the update's loss over the whole batch,
-every micro-batch of every process, then the indexer loss, then the
-validation loss; `provenance.json` records the indexer loss of the update
-whose weights the step leaves.
+every micro-batch of every process, then the validation loss.
 
 ## Recomputing layers: long windows on a small GPU
 
-`--recompute` (or `WPT_RECOMPUTE=1`) keeps only each layer's input during a
-pass and runs the layer again during the backward pass, instead of keeping
-everything the layer computed. The result is the same; memory drops and
-each update takes about a third longer. Measured with `watery-tardigrade`
-(102M parameters, 8 layers, width 512, CSA and HCA, an indexer of 8 heads
-and top 64, Muon as DeepSeek-V4 runs it) on an integrated Radeon 860M,
-where the Triton kernels compute the attention (model.md, "Attention"), one
-window of random tokens with it:
+`--recompute` (or `WPT_RECOMPUTE=1`) keeps only each sublayer's input
+during a pass and runs the sublayer again during the backward pass, instead
+of keeping everything the sublayer computed. The result is the same; memory drops and
+each update takes longer. Its memory and time with the window, exact and
+sparse layers are not measured.
 
-| Tokens | First update's peak | Later updates' peak | Time of a later update |
-| --- | --- | --- | --- |
-| 4K | 1.48 GiB | 1.95 GiB | 9.7 s |
-| 8K | 2.26 GiB | 2.75 GiB | 14.7 s |
-| 16K | 4.09 GiB | 4.58 GiB | 27.1 s |
-| 32K | 7.74 GiB | 8.24 GiB | 53.2 s |
-
-Later updates add Muon's momentum, about 0.5 GiB. `unimpaired-axolotl` (50M
-parameters) at 32K tokens peaked at 6.28 GiB on its first update and 6.57 GiB
-on the next, which took 29.0 s. With the PyTorch form of the attention, the
-same runs peaked at 1.94, 2.77, 4.62 and 8.33 GiB (9.2, 16.9, 25.2 and 47.1
-s), and `unimpaired-axolotl` at 6.62 GiB (25.2 s): on this GPU the kernels
-save under 0.1 GiB and are not faster in training, since their backward
-pass adds each entry's gradients by atomic additions, which this GPU runs
-slowly (about 0.7 s of the 1.6 s the backward kernel takes on 32K queries
-of 8 heads and 192 entries each). Without gradients, at 8K tokens, a CSA
-layer's attention took 15% less time with them and an HCA layer's half.
-These times were measured with `HIP_LAUNCH_BLOCKING=1`, which makes the CPU
-wait for each GPU kernel: without it, on this GPU (gfx1152, which ROCm
-supports only through `HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz
-steps on the 32-expert recipes crash the process (a segmentation fault in
-the GPU stack) in the first update, while 8 steps do not; the memory is the
-same either way, and the times are an upper bound. With the small
-`classics-test` the crash does not occur. On the Radeon 860M, a 4K window
-without `--recompute` crashes the process (a segmentation fault in the GPU
-stack). The `watery-tardigrade` and `unimpaired-axolotl` recipes, 32K-token
-windows on one 16 GB or one 8 GB GPU, need it with `--micro-batch 1`.
+On an integrated Radeon 860M (gfx1152, which ROCm supports only through
+`HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz steps on the
+32-expert recipes crash the process (a segmentation fault in the GPU
+stack) in the first update unless `HIP_LAUNCH_BLOCKING=1` makes the CPU
+wait for each GPU kernel; 8 steps do not, and the small `classics-test`
+does not crash.
 
 ## Compiling the passes
 
-`--compile` (or `WPT_COMPILE=1`) runs each layer and the multi-token
-prediction block through `torch.compile`, forward and backward, which joins
+`--compile` (or `WPT_COMPILE=1`) runs each layer, the sums of Attention
+Residuals between them and the multi-token prediction block through
+`torch.compile`, forward and backward, which joins
 the model's many small operations into few GPU kernels. It trains the same
 way within rounding. It covers the passes over whole text windows, whose
 shape stays the same for a stage. Evaluations, windows in segments or
@@ -517,9 +514,21 @@ compile again. The run's log says so when the option is on. The option needs
 a C++ compiler where the run happens: a gpu worker installs `g++` when it
 starts, and on Windows the run starts from the Visual Studio build tools' shell.
 
-The attention kernels, flash-linear-attention's KDA kernel, the routing and
-the routed experts stay out of the compiled graphs: each is marked with
+The exact and sparse layers' attention, the routing and the routed experts
+stay out of the compiled graphs: each is marked with
 `torch.compiler.disable`, and computes what it computes without the option.
+
+On a CUDA GPU the whole pass over a window, forward to the two summed losses
+and backward, is then recorded once per window shape as two CUDA graphs,
+which every later window of that shape replays (`wpt_model/graphs.py`): the
+GPU launches the pass's kernels itself, so the CPU's time per window no
+longer grows with their number. Nothing in the pass waits on the host. The
+losses, the gradients and the routers' balancing counts are kept apart from
+the graphs' memory, which the next replay writes over, so a run trains the
+same way with the graphs or without them. The graphs hold one pass's memory
+between windows. A pass with `--recompute`, or that records or replays
+routes, runs without them.
+
 The first update takes longer, and so does the first update at a new window
 length. `--stop-after-updates` with and without the option compares the
 speeds, since what it measures leaves the first update out.
@@ -562,42 +571,42 @@ once (model.md, "Long windows"):
   fewer are split without segments.
 
 These are options of the hardware, not of the recipe: a run may resume with
-another `--segment`, or none. The training loss and the indexer loss are
-the parts' shares of the whole window's (`TextMethod.part_loss`, "Methods", above); the
+another `--segment`, or none. The training loss is the parts' share of the whole window's (`TextMethod.part_loss`, "Methods", above); the
 validation loss in parts is each part's validation loss weighted by its
 share of the window's tokens. The tests check, on the CPU, that 448 tokens
 in segments of 128 (three boundaries, the last segment shorter), 512 tokens
 split over 2 and 4 processes (gloo), and 768 tokens split over 2 processes
 in segments of 128 (three parts) give the whole window's losses, gradients,
 validation loss and expert balancing, each with the layers' activations
-kept and with `--recompute`, for a model with every layer kind (KDA, CSA
-with its indexer choosing, HCA, the windows, Engram, the experts, mHC, the
-MTP block). Split windows are checked in FP32 to `2e-4` of the largest
-gradient, against `1e-6` for segments, since KDA's composed transforms
-round differently (model.md, "Long windows"; the split tests keep that
-tolerance in FP32). A run of `wpt train` with `--strategy split --processes
+kept and with `--recompute`, for a model with every layer kind (window
+layers, exact layers choosing 8 tokens per query, sparse layers, Engram,
+the experts, In-Place TTT in chunks of 96 tokens over texts whose documents
+end within the window, Attention Residuals, two passes of the loop, the
+MTP block). A run of `wpt train` with `--strategy split --processes
 2 --segment 128` trains the same model as one process on whole windows.
 
-Measured on a Radeon 860M (an integrated AMD GPU sharing the machine's
-memory; `HIP_LAUNCH_BLOCKING=1`, which its 32-expert recipes need), with
-watery-tardigrade's model, Muon, `--recompute`, one window of random
-tokens, the second update of each:
+Not measured with the window, exact and sparse layers: the memory and
+time of segments and slices on a GPU, `split` on GPUs (NCCL, rented NVIDIA
+machines), and real runs on real data; `split` was only run on the CPU, by the tests.
 
-| window | parts | peak memory | time of an update |
-| --- | --- | --- | --- |
-| 32,768 | whole | 8.24 GiB | 53 s |
-| 32,768 | segments of 8,192 | 7.46 GiB | 61 s |
-| 65,536 | segments of 8,192 | 8.43 GiB | 121 s |
-| 131,072 | segments of 8,192 | 10.39 GiB | 289 s |
+## In-Place TTT and loops in training
 
-Most of that memory is the weights and the optimizer's state, the same at
-every length; what grows with the window, about 31 KiB per token, is what
-the segments hand on (the merged entries and each segment's starting
-state, kept for the backward pass). The first update's loss is the same
-whole or in segments (11.922). Not measured: 1M-token windows (about 37
-GiB by that growth, an estimate), the RTX 5080, `split` on GPUs (NCCL,
-rented NVIDIA machines, DeepSeek's TileLang kernels), and real runs on
-real data; `split` was only run on the CPU, by the tests.
+In-Place TTT (model.md, "In-Place TTT") trains with the rest of the model:
+its convolution and `W_target` get their gradients through every chunk's
+update that a later chunk reads, from the first update. Its chunks of
+1,024 tokens are counted from the window's first token, and a window that
+packs several documents starts each one, after its end-of-document token,
+from the trained matrix. A window no longer than 1,024 tokens completes
+one chunk at most and reads no update, so TTT changes nothing in it and
+its parts get a zero gradient. Segments and slices hand on the unfinished
+chunk and the sum of updates, so a window in parts trains as the whole
+window, also where a chunk crosses their boundaries.
+
+A model that loops (model.md, "Loops") runs every pass in each training
+pass, and the loss reads the last one. Its cost per token is `loops + 1`
+times one pass's, and so is its memory of activations, with `--recompute`
+too. Segments and slices hand on each pass's values apart. R3 records and
+replays each pass's routed experts apart.
 
 ## Comparing routing in tests
 
@@ -750,7 +759,8 @@ goes on. The other updates run without any of it.
 Inside a step, every `--checkpoint-every` updates (default 500, 0 for none
 during a step), the gpu worker's main process writes a checkpoint: the step's
 fingerprint, the update, the weights, the optimizer's, method's and
-environment's state and the best weights so far. After the step's last
+environment's state and the best weights so far (from the step's last
+update on, the weights its optimizer keeps, such as an average). After the step's last
 update it always writes one, unless that update's own was just written,
 and that checkpoint, as it is, becomes the step's kept state ("Step
 results and reuse", above); the checkpoint's place is then emptied: the
@@ -1010,10 +1020,7 @@ chat template ([chat-format.md](chat-format.md)), and the loss
 (`assistant-tokens`) is the next-token loss of the tokens the assistant
 wrote only (thinking, text, tool calls and the closing `<|im_end|>`),
 averaged over every such token of the update's conversations: the other
-turns are context the model reads and does not learn to write. The CSA
-indexers go on learning by their own loss, as in `read-text` (model.md,
-"Attention"): its gradient joins the update's, and its value is shown
-beside the loss of each epoch. The multi-token prediction block is not
+turns are context the model reads and does not learn to write. The multi-token prediction block is not
 used, so it does not change, and the routers' balancing biases are locked.
 
 Each epoch (`epochs`, 3) goes over every conversation once, in an order
@@ -1645,9 +1652,7 @@ instead of choosing again (routing replay, "R3"), so the loss scores the
 tokens through the experts that wrote them. The routers' weights do not
 change during the step, and their balancing biases do not either: the
 step locks both. The
-hash-routed layers choose from the token alone and need neither. The CSA
-indexers go on learning by their own loss in each loss pass, as in
-`answer-as-assistant`. The multi-token prediction block is not used, so it
+hash-routed layers choose from the token alone and need neither. The multi-token prediction block is not used, so it
 does not change.
 
 ### Runs
@@ -1663,8 +1668,7 @@ the attempts then depend on the seed alone, never on this machine's times.
 A task's attempts are written together in one batch, from one reading of
 the task's opening (model.md, "Generation"). The step prints one line per
 round (`rounds`, passes over every task): the mean reward, the number of
-attempts and of updates, and the indexers' mean loss over the round's loss
-passes.
+attempts and of updates.
 
 Every attempt is kept in the run's record folder
 ([observability.md](observability.md)), as one line of
@@ -1840,6 +1844,6 @@ any program may. Around it, everything possible is checked:
   fingerprint and result, whether it was reused, its stages with the last
   update each made, the updates made and skipped, the update whose
   weights it left, which the model card shows, its best validation loss
-  and the CSA indexers' loss at that update, and what it learned), the
+  at that update, and what it learned), the
   repository commit (and whether the working tree had
   uncommitted changes), the device and the tool versions.

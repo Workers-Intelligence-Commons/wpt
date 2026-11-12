@@ -6,12 +6,15 @@ import pytest
 import torch
 
 from wpt_model import PARTS, WPT, ModelConfig
-from wpt_training import PluginError, Run, load_step
+from wpt_telemetry import Telemetry
+from wpt_training import (Data, FolderCheckpoint, Interrupted, Limit, PluginError, Run, Strategy, load_state, load_step,
+                          train, weights)
 
-TINY = dict(vocab_size=50, block_size=16, n_layer=4, global_attention=["CSA"], d_model=16, kda_heads=2, kda_head_dim=8,
-            attention_heads=2, attention_head_dim=128, query_rank=8, output_groups=1, output_rank=8, index_heads=2,
-            index_head_dim=128, index_top_k=2, n_experts=4, top_k=2, expert_width=8, latent_width=8, shared_width=16,
-            engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4, engram_table_size=31)
+TINY = dict(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
+            attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+            shared_width=16, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4, engram_table_size=31,
+            residual_groups=3)
+CPU = Strategy(torch.device("cpu"))
 
 
 def read_text(**settings):
@@ -46,15 +49,19 @@ def test_a_constant_schedule_keeps_the_learning_rate_at_every_update():
 
 
 def test_early_stop_is_off_unless_patience_turns_it_on():
-    # docs/training.md, "Optimizers": without patience every new lowest loss
-    # is the best and nothing stops; with it, a stage stops once the
-    # smoothed loss has not improved by min_improve for patience
-    # evaluations, and an improvement is the best
+    # docs/training.md, "Optimizers": with the average, no evaluation is the
+    # best; without it or patience every new lowest loss is the best and
+    # nothing stops; with patience, a stage stops once the smoothed loss has
+    # not improved by min_improve for patience evaluations, and an
+    # improvement is the best
     losses = [3.0, 2.0, 2.0, 2.0, 2.0, 1.9]
-    plain = by_part(WPT(ModelConfig(**TINY)))
+    averaging = by_part(WPT(ModelConfig(**TINY)))
+    assert [(v.best, v.stop) for v in (averaging.evaluated(i, loss) for i, loss in enumerate(losses))] == [
+        (False, False)] * 6
+    plain = by_part(WPT(ModelConfig(**TINY)), average_states=0)
     assert [(v.best, v.stop) for v in (plain.evaluated(i, loss) for i, loss in enumerate(losses))] == [
         (True, False), (True, False), (False, False), (False, False), (False, False), (True, False)]
-    stopping = by_part(WPT(ModelConfig(**TINY)), patience=2, smoothing=1)  # 1000 tokens per parameter: 1%
+    stopping = by_part(WPT(ModelConfig(**TINY)), patience=2, smoothing=1, average_states=0)  # 1000 tokens/param: 1%
     verdicts = [stopping.evaluated(i, loss) for i, loss in enumerate(losses[:4])]
     assert [(v.best, v.stop) for v in verdicts] == [(True, False), (True, False), (False, False), (False, True)]
     # a stage after the first starts counting again
@@ -62,23 +69,80 @@ def test_early_stop_is_off_unless_patience_turns_it_on():
     assert stopping.evaluated(5, 2.5).best
     with pytest.raises(PluginError, match=r"schedule 'cosine': one of steps, constant"):
         read_text(schedule="cosine")
+    with pytest.raises(PluginError, match=r"average_states and patience"):
+        read_text(patience=2)
+
+
+def test_the_step_keeps_an_exponential_average_of_its_last_states():
+    # IMU-1's post-hoc EMA: the states at the last update and every average_every updates before it, at most
+    # average_states of them, from the oldest, each later one taken in with weight 1 - average_beta
+    torch.manual_seed(0)
+    model = torch.nn.Linear(4, 3)
+    model.optimizer_roles = lambda: [("weight", model.weight, "matrix", (1, 3, 4)),
+                                     ("bias", model.bias, "vector", None)]
+    method = by_part(model, steps=10, average_states=3, average_every=3, average_beta=0.8)
+    states = {}
+    for update in range(1, 11):
+        with torch.no_grad():
+            for p in model.parameters():
+                p.add_(torch.randn_like(p))  # what an update would do
+        method.after_update(update, None)
+        assert method.kept() is None or update == 10  # not whole before the last update
+        states[update] = {name: t.clone() for name, t in model.state_dict().items()}
+    kept = method.kept()
+    for name in kept:
+        expected = 0.8 * (0.8 * states[4][name] + 0.2 * states[7][name]) + 0.2 * states[10][name]
+        assert torch.allclose(kept[name], expected, atol=1e-6)
+    # a step shorter than the states counts only the updates it has
+    short = by_part(model, steps=5, average_states=3, average_every=3)
+    for update in range(1, 6):
+        short.after_update(update, None)
+    assert all(torch.equal(t, model.state_dict()[name]) for name, t in short.kept().items())
+
+
+def test_a_step_stopped_and_resumed_keeps_the_average_of_its_states(dataset, tmp_path):
+    # through the runner: a step of 6 updates averaging 3 states 2 updates apart, stopped after updates 2, 4 and
+    # 6 and resumed each time from its checkpoint (the average with it); its result, the state its checkpoint
+    # keeps, holds the average of the weights at updates 2, 4 and 6, and so does the model
+    store, record = dataset
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {
+        "lr": 0.01, "warmup": 2, "average_states": 3, "average_every": 2}}, "settings": {
+        "stages": [{"block_size": 16, "steps": 6, "batch_size": 2}], "prefix_tokens": 500}}, PARTS)
+    torch.manual_seed(1337)
+    model = WPT(ModelConfig(**TINY))
+    checkpoint, states = FolderCheckpoint(tmp_path / "checkpoint"), []
+    for resume in (False, True, True, True):
+        environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(),
+                                                  lambda _: None, 1337, 1))
+        try:
+            train(model, CPU, step, step.start_method(), environment, 1337, 1, checkpoint=checkpoint, resume=resume,
+                  identity=1, log=lambda *_: None, save_last=True, limit=Limit(updates=2))
+        except Interrupted:
+            pass
+        finally:
+            environment.close()
+        states.append(load_state(checkpoint.path))
+    assert [state["step"] for state in states] == [2, 4, 6, 6]
+    s2, s4, s6 = (state["model"] for state in states[:3])
+    for name, value in weights(states[3]).items():
+        if value.is_floating_point():
+            expected = 0.8 * (0.8 * s2[name] + 0.2 * s4[name]) + 0.2 * s6[name]
+            assert torch.allclose(value, expected, atol=1e-6), name
+            assert torch.allclose(model.state_dict()[name], expected, atol=1e-6), name
 
 
 @pytest.mark.parametrize("weight", [
-    lambda m: m.layers[0].attention.q.weight,                     # KDA queries, 2 heads
-    lambda m: m.layers[3].attention.q_up.weight,                  # CSA queries, 2 heads
-    lambda m: m.layers[3].attention.indexer.q.weight,             # indexer queries, 2 heads
-    lambda m: m.layers[3].attention.out_down.weight,              # 2 output groups
-    lambda m: m.layers[3].attention.compressor.value.weight,      # C^b and C^a
-    lambda m: m.layers[3].attention.indexer.keys.score.weight,    # the indexer's Z^b and Z^a
+    lambda m: m.layers[0].attention.q.weight,     # a window layer's queries, 2 heads
+    lambda m: m.layers[0].attention.gate.weight,  # its output gate, 2 heads
+    lambda m: m.layers[1].attention.q.weight,     # an exact layer's queries
+    lambda m: m.layers[4].attention.q.weight,     # a sparse layer's queries
+    lambda m: m.layers[4].attention.gate.weight,  # and its output gate
 ])
 def test_each_head_moves_as_much_whatever_its_gradient_size(weight):
-    # per-head Muon (K3, DeepSeek-V4.1), and V4's "logically independent"
-    # matrices apart: a part with tiny gradients is not swamped by a part
-    # with large ones; each part's step is an orthogonal matrix, whose
-    # singular values V4's last two Newton-Schulz steps settle at 1
+    # per-head NorMuon (K3, DeepSeek-V4.1): a part with tiny gradients is not swamped by a part
+    # with large ones; each part's step has an RMS of 0.18
     torch.manual_seed(0)
-    model = WPT(ModelConfig(**{**TINY, "output_groups": 2}))
+    model = WPT(ModelConfig(**TINY))
     method = by_part(model, lr=0.01, warmup=1, weight_decay=0.0)
     weight = weight(model)
     for p in model.parameters():
@@ -89,17 +153,17 @@ def test_each_head_moves_as_much_whatever_its_gradient_size(weight):
     before = weight.detach().clone()
     method.before_update(1)
     method.optimizer.step()
-    step = (weight.detach() - before) / (0.01 * 0.18 * math.sqrt(max(rows, weight.shape[1])))
+    step = (weight.detach() - before) / 0.01
     for part in (step[:rows], step[rows:]):
-        singular = torch.linalg.svdvals(part)
-        assert singular.min() > 0.98 and singular.max() < 1.02
+        assert abs(part.pow(2).mean().sqrt().item() - 0.18) < 1e-4
 
 
 @pytest.mark.parametrize("shape", [(64, 256), (256, 64), (96, 96)])
 def test_a_matrix_s_update_has_an_rms_of_0_18(shape):
-    # DeepSeek-V4: O = O' sqrt(max(n, m)) 0.18, so AdamW's learning rates
-    # carry over: before weight decay, a matrix moves by lr times an update
-    # whose root mean square is 0.18, whatever its shape and gradient size
+    # DeepSeek-V4's RMS of 0.18, which NorMuon's scaling sets exactly, so
+    # AdamW's learning rates carry over: before weight decay, a matrix moves
+    # by lr times an update whose root mean square is 0.18, whatever its
+    # shape and gradient size
     torch.manual_seed(0)
     model = torch.nn.Linear(shape[1], shape[0], bias=False)
     model.optimizer_roles = lambda: [("weight", model.weight, "matrix", (1, *shape))]
@@ -113,8 +177,8 @@ def test_a_matrix_s_update_has_an_rms_of_0_18(shape):
 
 
 def test_every_parameter_takes_a_step():
-    # the new attention's parameters (sinks, merging biases, indexers, the
-    # MTP block's window attention) each belong to one optimizer group, once
+    # the attention's parameters (sinks, gates, QK-norm weights, the MTP
+    # block's window attention) each belong to one optimizer group, once
     torch.manual_seed(0)
     model = WPT(ModelConfig(**TINY))
     method = by_part(model, lr=0.01, warmup=1)
@@ -132,7 +196,7 @@ def test_every_parameter_takes_a_step():
 def test_the_classics_test_recipe_trains_with_a_falling_loss():
     # the test recipe's architecture (data/recipes/models/classics-test.json),
     # on a repeating text it can learn in a few steps: the loss stays finite
-    # and falls, through every part including CSA's indexer
+    # and falls, through every part
     path = Path(__file__).parents[3] / "data/recipes/models/classics-test.json"
     recipe = json.loads(path.read_text(encoding="utf-8"))
     torch.manual_seed(0)
@@ -141,10 +205,10 @@ def test_the_classics_test_recipe_trains_with_a_falling_loss():
     loss_of = read_text().start_method()  # next-token, with its multi-token prediction schedule
     text = torch.arange(129).remainder(13)[None].expand(4, -1)  # a period of 13 tokens
     x, y = text[:, :-1], text[:, 1:]
-    losses, indexer_losses = [], []
+    losses = []
     for step in range(1, 13):
         method.optimizer.zero_grad()
-        loss, indexer = loss_of.loss(model, x, y)
+        loss = loss_of.loss(model, x, y)
         loss.backward()
         method.before_update(step)
         method.optimizer.step()
@@ -152,7 +216,6 @@ def test_the_classics_test_recipe_trains_with_a_falling_loss():
         method.after_update(step, lambda tensor, op: tensor)
         loss_of.after_update(step)
         losses.append(loss.item())
-        indexer_losses.append(indexer.item())
-    assert all(math.isfinite(value) for value in losses + indexer_losses)
+    assert all(math.isfinite(value) for value in losses)
     assert losses[-1] < 0.5 * losses[0]
 

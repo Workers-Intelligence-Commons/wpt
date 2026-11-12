@@ -11,18 +11,31 @@ import torch
 import torch.nn.functional as F
 
 from wpt_model import WPT, ModelConfig
+from wpt_model import attention, ttt
 from wpt_model import model as wpt_model
 from wpt_model.experts import BINS, WINDOW, Experts
+from wpt_model.ttt import END_OF_DOCUMENT
 from wpt_training import Strategy, TextMethod, parts
 from wpt_training.launch import launch
 
-# every layer kind: KDA (layers 1-3, 5-7), CSA (4) with an indexer choosing 8 of its entries, HCA (8), the window of
-# each attention, Engram (layers 2 and 5), the experts (hash-routed, then routed and balanced), mHC and the MTP block
-MODEL = dict(vocab_size=50, block_size=448, n_layer=8, global_attention=["CSA", "HCA"], d_model=16, kda_heads=2,
-             kda_head_dim=8, attention_heads=2, attention_head_dim=128, query_rank=8, output_groups=1, output_rank=8,
-             index_heads=4, index_head_dim=128, index_top_k=8, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+# every layer kind: window layers (1 and 3), exact layers (2, 4 and 6; the second half's read the first half's
+# output) each choosing 8 tokens per query beyond the window of 128 (TOP_K below), sparse layers (5 and 7), Engram
+# (layers 2 and 5), the experts (hash-routed, then routed and balanced), In-Place TTT (layers 1 and 7) in chunks of 96
+# tokens (CHUNK below) over texts whose documents end here and there, Attention Residuals in its full form (the
+# recipes' form), two passes of the loop and the MTP block
+MODEL = dict(vocab_size=300, block_size=448, loops=1, window_layers=1, sparse_groups=2, sparse_layers=1, d_model=16,
+             attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
              shared_width=16, engram_layers=[2, 5], engram_order=3, engram_heads=2, engram_dim=4,
-             engram_table_size=31)
+             engram_table_size=31, residual_groups=14)
+TOP_K = 8
+PASSES = MODEL["loops"] + 1
+CHUNK = 96  # crosses the segments of 128 and the slices of 128 and 256 at other places than their boundaries
+
+
+@pytest.fixture(autouse=True)
+def few_chosen(monkeypatch):
+    monkeypatch.setattr(attention, "TOP_K", TOP_K)
+    monkeypatch.setattr(ttt, "CHUNK", CHUNK)
 
 
 # ROUNDING (2^-14, about 6.1e-5) and ARITHMETIC are the `routing` fixture's (conftest.py; docs/training.md, "Comparing
@@ -35,45 +48,54 @@ def model_and_window(T):
     model = WPT(ModelConfig(**{**MODEL, "block_size": T})).train()
     generator = torch.Generator().manual_seed(1)
     tokens = torch.randint(50, (2, T + 1), generator=generator)
+    tokens[0, 150::200] = END_OF_DOCUMENT
+    tokens[1, 333::200] = END_OF_DOCUMENT
     return model, tokens[:, :-1], tokens[:, 1:]
 
 
 @contextlib.contextmanager
 def counted_scores():
     """While open, keeps what each routed layer counts for balancing: per
-    Experts module, one (scores, cutoffs, bias) per counted batch, in the
-    order counted (a window's positions in order, whole or in parts)."""
-    kept, count = {}, Experts._count
+    (Experts module, pass of the loop), one (scores, cutoffs, bias) per
+    counted batch, in the order counted (a window's positions in order,
+    whole or in parts)."""
+    kept, count, route, loop = {}, Experts._count, Experts.route, [0]
+
+    def routing(experts, *args):
+        loop[0] = args[-1]
+        return route(experts, *args)
 
     def keep(experts, s, cutoff):
-        kept.setdefault(experts, []).append((s.clone(), cutoff.clone(), experts.bias.clone()))
+        kept.setdefault((experts, loop[0]), []).append((s.clone(), cutoff.clone(), experts.bias.clone()))
         count(experts, s, cutoff)
 
     with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Experts, "route", routing)
         patch.setattr(Experts, "_count", keep)
         yield kept
 
 
-def results(model, loss, indexer, kept=None, rows=2):
-    """The pass's losses, every gradient, and, with kept (counted_scores),
+def results(model, loss, kept=None, rows=2):
+    """The pass's loss, every gradient, and, with kept (counted_scores),
     each routed layer's scores, cutoffs, bias, k and balancing counts, the
-    scores in the order of the window's tokens (rows of the batch, then
-    positions)."""
+    scores in the order of the passes, then of the window's tokens (rows of
+    the batch, then positions)."""
     routed = []
     for experts in [layer.experts for layer in model.layers if not layer.experts.hashed] if kept is not None else []:
-        batches = kept[experts]
-        s = torch.cat([s.view(rows, -1, s.shape[-1]) for s, _, _ in batches], 1).reshape(-1, experts.n)
-        cutoff = torch.cat([c.view(rows, -1) for _, c, _ in batches], 1).reshape(-1)
-        routed.append((s, cutoff, batches[0][2], experts.k, experts.histogram.clone()))
-    return float(loss), float(indexer), [p.grad.clone() for p in model.parameters()], routed
+        passes = [kept[experts, loop] for loop in range(PASSES)]
+        s = torch.cat([torch.cat([s.view(rows, -1, experts.n) for s, _, _ in batches], 1).reshape(-1, experts.n)
+                       for batches in passes])
+        cutoff = torch.cat([torch.cat([c.view(rows, -1) for _, c, _ in batches], 1).reshape(-1) for batches in passes])
+        routed.append((s, cutoff, passes[0][0][2], experts.k, experts.histogram.clone()))
+    return float(loss), [p.grad.clone() for p in model.parameters()], routed
 
 
 def whole_window(T):
     model, x, y = model_and_window(T)
     with counted_scores() as kept:
-        loss, indexer = TextMethod().loss(model, x, y)
+        loss = TextMethod().loss(model, x, y)
         loss.backward()
-    return results(model, loss.detach(), indexer, kept)
+    return results(model, loss.detach(), kept)
 
 
 def balancing_counts(bins, n):
@@ -126,9 +148,8 @@ def assert_routed_alike(got, expected, routing):
 def assert_same(got, expected, routing, tolerance=2e-5):
     # tolerance: of the largest gradient; whole and in segments differ by up to 8.3e-7
     # on GitHub's AMD runners and 8.2e-6 on its Intel ones (docs/training.md)
-    (loss, indexer, grads, routed), (loss_w, indexer_w, grads_w, routed_w) = got, expected
-    assert abs(loss - loss_w) < 1e-5 * abs(loss_w) and abs(indexer - indexer_w) < 1e-4 * abs(indexer_w)
-    assert indexer_w > 0
+    (loss, grads, routed), (loss_w, grads_w, routed_w) = got, expected
+    assert abs(loss - loss_w) < 1e-5 * abs(loss_w)
     scale = max(g.abs().max().item() for g in grads_w)  # FP32 rounding, measured against the largest gradient
     for g, g_w in zip(grads, grads_w, strict=True):
         assert torch.allclose(g, g_w, rtol=1e-3, atol=tolerance * scale)
@@ -181,11 +202,11 @@ def test_routing_and_balancing_counts_may_differ_only_at_near_ties(routing):
 def plain_window(T):
     """The loss and gradients of a window with every token's scores held at once: full scores, then the cross-entropies."""
     model, x, y = model_and_window(T)
-    logits, ahead, indexers = model(x, next_tokens=y, indexer_loss=True)
+    logits, ahead = model(x, next_tokens=y)
     B = x.shape[0]
     ce = lambda scores, targets: F.cross_entropy(scores.reshape(-1, scores.shape[-1]), targets.reshape(-1), reduction="sum")
     loss = ce(logits, y) / (B * T) + TextMethod.mtp_weight * ce(ahead[:, :T - 1], y[:, 1:]) / (B * (T - 1))
-    (loss + indexers).backward()
+    loss.backward()
     return float(loss.detach()), [p.grad.clone() for p in model.parameters()]
 
 
@@ -197,10 +218,10 @@ def test_the_loss_in_chunks_is_the_loss_of_all_the_scores(segment, monkeypatch):
     expected_loss, expected_grads = plain_window(448)
     model, x, y = model_and_window(448)
     if segment is None:
-        loss, indexer = TextMethod().loss(model, x, y)
+        loss = TextMethod().loss(model, x, y)
         loss.backward()
     else:
-        loss, indexer = parts.learn(TextMethod(), model, model, x, y, 1.0, Strategy(torch.device("cpu")), segment,
+        loss = parts.learn(TextMethod(), model, model, x, y, 1.0, Strategy(torch.device("cpu")), segment,
                                     lambda last: contextlib.nullcontext())
     assert abs(float(loss.detach()) - expected_loss) < 1e-5 * abs(expected_loss)
     scale = max(g.abs().max().item() for g in expected_grads)
@@ -214,17 +235,17 @@ RECOMPUTE = pytest.mark.parametrize("recompute", [False, True], ids=["kept", "re
 
 @RECOMPUTE
 def test_a_window_in_segments_trains_as_the_whole_window(recompute, routing):
-    # 448 tokens in segments of 128, 128, 128 and 64: KDA memories,
-    # convolution tails, windows, Engram's earlier ids and the merged entries
+    # 448 tokens in segments of 128, 128, 128 and 64: convolution tails,
+    # windows, Engram's earlier ids and the exact layers' keys and values
     # cross three boundaries, and every gradient flows back across them,
     # with each layer's activations kept or recomputed in the backward pass
     expected = whole_window(448)
     model, x, y = model_and_window(448)
     model.recompute = recompute
     with counted_scores() as kept:
-        loss, indexer = parts.learn(TextMethod(), model, model, x, y, 1.0, Strategy(torch.device("cpu")), 128,
-                                    lambda last: contextlib.nullcontext())
-    assert_same(results(model, loss, indexer, kept), expected, routing)
+        loss = parts.learn(TextMethod(), model, model, x, y, 1.0, Strategy(torch.device("cpu")), 128,
+                           lambda last: contextlib.nullcontext())
+    assert_same(results(model, loss, kept), expected, routing)
 
     model.eval()  # and the validation loss in segments is the whole window's
     with torch.no_grad():
@@ -235,24 +256,26 @@ def test_a_window_in_segments_trains_as_the_whole_window(recompute, routing):
 WORKER = '''
 import json, os, sys, torch
 sys.path.insert(0, sys.argv[2])
-from test_parts import counted_scores, model_and_window, results
+from test_parts import CHUNK, TOP_K, counted_scores, model_and_window, results
+from wpt_model import attention, ttt
 from wpt_training import TextMethod, load_strategy, parts
+attention.TOP_K, ttt.CHUNK = TOP_K, CHUNK
 _, strategy = load_strategy("split")
 model, x, y = model_and_window(int(sys.argv[3]))
 segment, model.recompute = int(sys.argv[4]), sys.argv[5] == "1"
 with counted_scores() as kept:
-    loss, indexer = parts.learn(TextMethod(), model, strategy.wrap(model), x, y, 1.0, strategy, segment,
-                                lambda last: strategy.no_sync(model))
+    loss = parts.learn(TextMethod(), model, strategy.wrap(model), x, y, 1.0, strategy, segment,
+                       lambda last: strategy.no_sync(model))
 strategy.synchronize(model)
-loss, indexer = strategy.mean(float(loss)) * strategy.world_size, strategy.mean(float(indexer)) * strategy.world_size
-found = results(model, loss, indexer, kept)
-torch.save(found[3], f"{sys.argv[1]}.{strategy.rank}")  # this process's slice: its scores and balancing counts
+loss = strategy.mean(float(loss)) * strategy.world_size
+found = results(model, loss, kept)
+torch.save(found[2], f"{sys.argv[1]}.{strategy.rank}")  # this process's slice: its scores and balancing counts
 model.after_update(strategy.reduce)  # the balancing counts, added over the processes
 model.eval()
 with torch.no_grad():
     validation = strategy.mean(float(parts.validation_loss(TextMethod(), model, model, x, y, strategy, segment)))
 if strategy.rank == 0:
-    torch.save((found[:3], validation * strategy.world_size), sys.argv[1])
+    torch.save((found[:2], validation * strategy.world_size), sys.argv[1])
 strategy.close()
 '''
 
@@ -269,7 +292,8 @@ def slice_of(model, routed, rank, processes, T, segment):
     positions = positions_of(model, rank, processes, T, segment)
     sliced = []
     for s, cutoff, bias, k, _ in routed:
-        s, cutoff = s.view(2, T, -1)[:, positions].reshape(-1, s.shape[-1]), cutoff.view(2, T)[:, positions].reshape(-1)
+        s = s.view(PASSES, 2, T, -1)[:, :, positions].reshape(-1, s.shape[-1])
+        cutoff = cutoff.view(PASSES, 2, T)[:, :, positions].reshape(-1)
         sliced.append((s, cutoff, bias, k, balancing_counts(balancing_bins(s, cutoff, bias)[0], s.shape[-1])))
     return sliced
 
@@ -281,12 +305,12 @@ def assert_counts_add_up(found, model, routed, processes, T, segment, routing):
     window's as two passes over the same tokens (assert_routed_alike)."""
     added = []
     for layer, (_, _, bias, k, _) in enumerate(routed):
-        s = torch.full_like(routed[layer][0], torch.nan).view(2, T, -1)
-        cutoff = torch.full_like(routed[layer][1], torch.nan).view(2, T)
+        s = torch.full_like(routed[layer][0], torch.nan).view(PASSES, 2, T, -1)
+        cutoff = torch.full_like(routed[layer][1], torch.nan).view(PASSES, 2, T)
         for rank in range(processes):
             positions = positions_of(model, rank, processes, T, segment)
-            s[:, positions] = found[rank][layer][0].view(2, len(positions), -1)
-            cutoff[:, positions] = found[rank][layer][1].view(2, len(positions))
+            s[:, :, positions] = found[rank][layer][0].view(PASSES, 2, len(positions), -1)
+            cutoff[:, :, positions] = found[rank][layer][1].view(PASSES, 2, len(positions))
         assert not s.isnan().any() and not cutoff.isnan().any()  # every token trained by one process
         added.append((s.view(-1, s.shape[-1]), cutoff.view(-1), bias, k, sum(part[layer][4] for part in found)))
     assert_routed_alike(added, routed, routing)
@@ -303,9 +327,9 @@ def split_runs(tmp_path, recompute, runs, routing):
     for processes, T, segment in runs:
         model, x, y = model_and_window(T)
         with counted_scores() as kept:
-            loss, indexer = TextMethod().loss(model, x, y)
+            loss = TextMethod().loss(model, x, y)
             loss.backward()
-        loss, indexer, grads, routed = results(model, loss.detach(), indexer, kept)
+        loss, grads, routed = results(model, loss.detach(), kept)
         model.after_update(lambda tensor, op: tensor)
         model.eval()
         with torch.no_grad():
@@ -313,10 +337,8 @@ def split_runs(tmp_path, recompute, runs, routing):
         out = tmp_path / f"{processes}-{T}-{segment}.pt"
         assert launch(processes, [str(script), str(out), str(Path(__file__).parent), str(T), str(segment),
                                   "1" if recompute else "0"]) == 0
-        (got_loss, got_indexer, got_grads), got_validation = torch.load(out)
-        # KDA's slices compose their memories' transforms in FP32 (the same algebra in float64 agrees to 1e-15):
-        # its gradients differ from the whole window's by up to 6e-5 of the largest gradient
-        assert_same((got_loss, got_indexer, got_grads, []), (loss, indexer, grads, []), routing, 2e-4)
+        (got_loss, got_grads), got_validation = torch.load(out)
+        assert_same((got_loss, got_grads, []), (loss, grads, []), routing)
         found = [torch.load(f"{out}.{rank}") for rank in range(processes)]
         for rank in range(processes):  # each process's counts are those of its tokens, up to near ties
             assert_routed_alike(found[rank], slice_of(model, routed, rank, processes, T, segment), routing)
@@ -327,8 +349,8 @@ def split_runs(tmp_path, recompute, runs, routing):
 @RECOMPUTE
 def test_a_window_split_across_processes_trains_as_the_whole_window(tmp_path, on_the_cpu, recompute, routing):
     # DeepSeek-V4's contextual parallelism on 2 and 4 CPU processes: 512
-    # tokens in slices of 256 or 128, the KDA memory combined from every
-    # slice's transform, the merged entries gathered
+    # tokens in slices of 256 or 128, the exact layers' keys and values
+    # gathered
     split_runs(tmp_path, recompute, [(2, 512, 0), (4, 512, 0)], routing)
 
 

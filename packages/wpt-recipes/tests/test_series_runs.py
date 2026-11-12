@@ -28,13 +28,13 @@ def without_continues(step):
 
 
 def test_a_branch_is_the_trunk_up_to_its_start_then_its_decay_to_its_own_updates(ladder):
-    # 256x5 makes 9,271 updates of 8 windows after a warm-up of 371; its branches make 2,318 (a quarter, 2,317.75
-    # rounded), 4,636 (half, 4,635.5) and 9,271 updates, and each starts its decay after the last update at the
-    # peak: 80% of its updates, 1,854, 3,708 and 7,416
+    # 256x5 makes 15,049 updates of 18 windows after a warm-up of 602; its branches make 3,762, 7,525 (a half,
+    # 7,524.5 rounded) and 15,049 updates, and each starts its decay after the last update at the
+    # peak: 80% of its updates, 3,009, 6,020 and 12,039
     plan = series.plan(ladder, "256x5", 32768)
-    assert (plan.updates, plan.warmup, plan.batch_size) == (9271, 371, 8)
+    assert (plan.updates, plan.warmup, plan.batch_size) == (15049, 602, 18)
     assert [(b.name, b.updates, b.start) for b in series.branches(ladder, plan)] == [
-        ("branch-0.25", 2318, 1854), ("branch-0.5", 4636, 3708), ("branch-1", 9271, 7416)]
+        ("branch-0.25", 3762, 3009), ("branch-0.5", 7525, 6020), ("branch-1", 15049, 12039)]
     [own] = series.run_recipe(ladder, plan)["steps"]
     half = series.run_recipe(ladder, plan, "branch-0.5")
     full = series.run_recipe(ladder, plan, "branch-1")
@@ -47,21 +47,21 @@ def test_a_branch_is_the_trunk_up_to_its_start_then_its_decay_to_its_own_updates
         # the size's step at the peak rate and the early weight of multi-token prediction to its end, reading the
         # size's own prefix (no branch is longer than the size)
         step = {"step": "read-text",
-                "optimizer": {"name": "by-part", "settings": {"lr": plan.learning_rate, "warmup": 371,
+                "optimizer": {"name": "by-part", "settings": {"lr": plan.learning_rate, "warmup": 602,
                                                               "first_drop": 1.0, "second_drop": 1.0}},
-                "settings": {"stages": [{"block_size": WINDOW, "steps": updates, "batch_size": 8}],
+                "settings": {"stages": [{"block_size": WINDOW, "steps": updates, "batch_size": 18}],
                              "prefix_tokens": plan.prefix_tokens, "mtp_switch": 1.0},
                 "locked": []}
         return {**step, "continues": True} if continues else step
 
-    # the trunk cut at every shorter branch's start: the half branch holds the trunk to 3,708, then decays
-    assert half["steps"][:2] == [trunk(1854, False), trunk(3708, True)]
+    # the trunk cut at every shorter branch's start: the half branch holds the trunk to 6,020, then decays
+    assert half["steps"][:2] == [trunk(3009, False), trunk(6020, True)]
     assert half["steps"][2]["continues"] is True
     assert without_continues(half["steps"][2]) == {**own, "settings": {**own["settings"], "stages": [
-        {"block_size": WINDOW, "steps": 4636, "batch_size": 8}]}}
-    # the full branch shares those trunk steps (wpt train reuses their results), goes on to 7,416, and decays as
+        {"block_size": WINDOW, "steps": 7525, "batch_size": 18}]}}
+    # the full branch shares those trunk steps (wpt train reuses their results), goes on to 12,039, and decays as
     # the size's own step does
-    assert full["steps"][:3] == [trunk(1854, False), trunk(3708, True), trunk(7416, True)]
+    assert full["steps"][:3] == [trunk(3009, False), trunk(6020, True), trunk(12039, True)]
     assert without_continues(full["steps"][3]) == own and full["steps"][3]["continues"] is True
 
 
@@ -82,13 +82,13 @@ def test_at_every_size_the_full_length_branch_decays_as_the_size_s_own_run_does(
 
 def test_the_learning_rate_check_runs_the_smallest_size_at_multiples_of_the_law_s_rate(ladder):
     plan = series.plan(ladder, "256x5", 32768)
-    assert series.smallest(ladder) == "256x5" and plan.learning_rate == 0.001694
+    assert series.smallest(ladder) == "256x5" and plan.learning_rate == 0.001205
     assert series.runs(ladder, "256x5") == ["branch-0.25", "branch-0.5", "branch-1",
                                             "lr-0.25", "lr-0.5", "lr-1", "lr-2", "lr-4"]
     assert series.runs(ladder, "512x10") == ["branch-0.25", "branch-0.5", "branch-1"]
     own = series.run_recipe(ladder, plan)
-    for run, rate in (("lr-0.25", 0.0004235), ("lr-0.5", 0.000847), ("lr-1", 0.001694), ("lr-2", 0.003388),
-                      ("lr-4", 0.006776)):
+    for run, rate in (("lr-0.25", 0.0003012), ("lr-0.5", 0.0006025), ("lr-1", 0.001205), ("lr-2", 0.00241),
+                      ("lr-4", 0.00482)):
         recipe = series.run_recipe(ladder, plan, run)
         [step] = recipe["steps"]
         assert step["optimizer"]["settings"]["lr"] == rate
@@ -101,16 +101,16 @@ def test_the_learning_rate_check_runs_the_smallest_size_at_multiples_of_the_law_
 
 
 def test_a_branch_longer_than_its_size_makes_the_series_dataset_hold_its_trunk(ladder):
-    # twice 768x15's 18,585 updates of 32 windows: the one dataset holds the tokens of 37,170 updates
+    # twice 768x15's 20,966 updates of 39 windows: the one dataset holds the tokens of 41,932 updates
     longer = {**ladder, "branches": [0.5, 2]}
-    assert series.data_part(longer)["total_tokens"] == 37170 * 32 * (WINDOW + 1)
+    assert series.data_part(longer)["total_tokens"] == 41932 * 39 * (WINDOW + 1)
     assert series.data_part(ladder)["total_tokens"] == series.plan(ladder, "768x15", 0).prefix_tokens
 
 
 def test_a_branch_whose_decay_would_start_inside_the_warm_up_is_refused(ladder):
-    # 4% of 256x5's updates is 371 updates; 80% of them, 296, is inside the warm-up of 371
-    with pytest.raises(ValueError, match="size 256x5: branch-0.04 has 371 updates, so its decay would start after "
-                                         "update 296, inside the warm-up of 371"):
+    # 4% of 256x5's updates is 602 updates; 80% of them, 481, is inside the warm-up of 602
+    with pytest.raises(ValueError, match="size 256x5: branch-0.04 has 602 updates, so its decay would start after "
+                                         "update 481, inside the warm-up of 602"):
         series.check({**ladder, "branches": [0.04, 0.5]})
 
 

@@ -10,7 +10,6 @@ import pytest
 import torch
 
 from wpt_model import PARTS, ModelConfig, WPT
-from wpt_model.config import global_layers
 from wpt_model.engram import Engram
 from wpt_model.experts import Experts
 from wpt_recipes import Recipes, series
@@ -36,7 +35,7 @@ def test_the_series_counts_the_parameters_of_the_model_it_derives():
         tables = sum(p.numel() for part in ("embedding", "output-head") for p in parts[part])
         everything = sum(p.numel() for p in built.parameters())
         assert series.parameters(model, 32768) == (everything - tables, everything), size
-        assert series.global_layers(model["n_layer"]) == global_layers(model["n_layer"])
+        assert tuple(series.layer_kinds(model)) == config.kinds and series.layer_count(model) == config.n_layer
 
 
 def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives_has_them():

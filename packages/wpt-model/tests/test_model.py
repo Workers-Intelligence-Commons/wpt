@@ -1,84 +1,39 @@
 import shutil
+import sys
+import types
 
 import pytest
 import torch
 
 from wpt_model import BALANCING, MULTI_TOKEN_PREDICTION, PARTS, ROUTERS, WPT, ModelConfig, Routes
-from wpt_model.attention import CSA_RATIO, HCA_RATIO, Attention
+from wpt_model import attention
 from wpt_model.experts import Experts
 from wpt_model.layers import expert_forward, grouped_experts
-from wpt_model.kda import _fla_chunk_kda, _fla_fused_loss, chunked_kda, delta_attention, recurrent_kda
 from wpt_model import model as model_module
-from wpt_model import optimizer as update_rule
-from wpt_model.optimizer import UPDATE_RMS, MuonAdamW, orthogonalize
+from wpt_model.model import _fla_fused_loss, fla_failure
 from wpt_utils.device import select_device
 
-TINY = dict(vocab_size=50, block_size=16, n_layer=4, global_attention=["CSA"], d_model=16, kda_heads=2, kda_head_dim=8,
-            attention_heads=2, attention_head_dim=128, query_rank=8, output_groups=1, output_rank=8, index_heads=2,
-            index_head_dim=128, index_top_k=2, n_experts=4, top_k=2, expert_width=8, latent_width=8, shared_width=16,
-            engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4, engram_table_size=31)
+TINY = dict(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
+            attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+            shared_width=16, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4, engram_table_size=31,
+            residual_groups=3)
 
 
-def kda_inputs(B=2, T=37, H=3, d=8, device="cpu", dtype=torch.float32):
-    generator = torch.Generator().manual_seed(0)
-
-    def rand(*shape):
-        return torch.randn(*shape, generator=generator).to(device, dtype)
-
-    q = torch.nn.functional.normalize(rand(B, T, H, d), dim=-1)
-    k = torch.nn.functional.normalize(rand(B, T, H, d), dim=-1)
-    g = (-5 * torch.sigmoid(rand(B, T, H, d).float() * 3)).to(device)  # decays down to the bound
-    return q, k, rand(B, T, H, d), g, torch.sigmoid(rand(B, T, H))
+@pytest.fixture
+def few_chosen(monkeypatch):
+    """Exact layers pick 16 tokens instead of 1,024, so that the choice
+    matters within a few hundred tokens."""
+    monkeypatch.setattr(attention, "TOP_K", 16)
 
 
-def test_the_chunked_kda_gives_the_formula_s_result():
-    # docs/model.md: the step-by-step formula is the reference, and the
-    # faster form must agree with it, over several chunks and a partial one
-    q, k, v, g, beta = kda_inputs()
-    assert torch.allclose(chunked_kda(q, k, v, g, beta)[0], recurrent_kda(q, k, v, g, beta), atol=1e-4)
-
-
-def test_the_chunked_kda_starts_from_a_given_memory_and_returns_the_last():
-    # a window in segments (docs/model.md, "Long windows"): the memory the
-    # first part leaves, given to the second, gives the whole's output
-    q, k, v, g, beta = kda_inputs(T=64)
-    whole, last = chunked_kda(q, k, v, g, beta)
-    first, memory = chunked_kda(*(t[:, :32] for t in (q, k, v, g, beta)))
-    second, end = chunked_kda(*(t[:, 32:] for t in (q, k, v, g, beta)), initial=memory)
-    assert torch.allclose(torch.cat([first, second], 1), whole, atol=1e-5)
-    assert torch.allclose(end, last, atol=1e-5)
-    assert torch.allclose(second, recurrent_kda(*(t[:, 32:] for t in (q, k, v, g, beta)), initial=memory), atol=1e-4)
-
-
-@pytest.mark.skipif(select_device().type != "cuda" or not _fla_chunk_kda(),  # select_device: AMD GPUs need it
-                    reason="needs a GPU where flash-linear-attention imports")
-def test_the_gpu_kernel_gives_the_formula_s_result():
-    q, k, v, g, beta = kda_inputs(T=300, H=2, d=64, device=select_device(), dtype=torch.bfloat16)
-    out, _ = _fla_chunk_kda()(q, k, v, g, beta, scale=1.0, safe_gate=True, lower_bound=-5.0)
-    assert torch.allclose(out.float(), recurrent_kda(q, k, v, g, beta), atol=3e-2)
-
-
-@pytest.mark.skipif(select_device().type != "cuda" or not _fla_chunk_kda(),
-                    reason="needs a GPU where flash-linear-attention imports")
-def test_the_gpu_kernel_starts_from_a_given_memory_and_returns_the_last():
-    # segments and slices of a long window (docs/model.md, "Long windows")
-    # hand the kernel the memory earlier tokens left, and read the one it leaves
-    q, k, v, g, beta = kda_inputs(T=300, H=2, d=64, device=select_device(), dtype=torch.bfloat16)
-    initial = torch.randn(2, 2, 64, 64, generator=torch.Generator().manual_seed(1)).to(q.device) * 0.1
-    out, last = delta_attention(q, k, v, g, beta, initial)
-    expected, expected_last = chunked_kda(*(t.float() for t in (q, k, v, g, beta)), initial=initial)
-    assert torch.allclose(out.float(), expected, atol=3e-2)
-    assert torch.allclose(last.float(), expected_last, atol=3e-2)
-
-
-def test_a_token_never_changes_the_scores_before_it():
+def test_a_token_never_changes_the_scores_before_it(few_chosen):
     # a language model must not see ahead: changing token 150 leaves every
-    # score at positions 0 .. 149 as it was, through KDA, CSA (its merged
-    # entries, among them the one of tokens 148 .. 151, and its indexer's
-    # choice), HCA, Engram, the experts and the streams; 300 tokens let the
-    # window slide and every kind of entry merge
+    # score at positions 0 .. 149 as it was, through the window layers, the
+    # exact layers (their choice of tokens too), the sparse layers, Engram,
+    # the experts and Attention Residuals; 300 tokens let the window slide
+    # and the exact layers choose
     torch.manual_seed(0)
-    model = WPT(ModelConfig(**{**TINY, "n_layer": 8, "global_attention": ["CSA", "HCA"], "block_size": 300})).eval()
+    model = WPT(ModelConfig(**{**TINY, "block_size": 300})).eval()
     ids = torch.randint(50, (2, 300))
     changed = ids.clone()
     changed[:, 150] = (ids[:, 150] + 1) % 50
@@ -113,10 +68,12 @@ def test_quantile_balancing_gives_each_expert_its_share():
 def test_grouped_experts_equal_each_expert_on_its_own_tokens_with_an_expert_that_has_none():
     # the CUDA path of Experts._routed (BF16 tokens) must give what the loop
     # over experts gives, in outputs and in every weight's gradient, the
-    # gradient of an expert no token chose being zero
+    # gradient of an expert no token chose being zero; on a GPU where
+    # grouped.py's kernels run, the experts' tokens span several of their
+    # tiles of 64 rows, the last one part empty
     torch.manual_seed(0)
     n, E, L = 4, 16, 8
-    sizes = [5, 0, 7, 3]  # expert 1 has no token
+    sizes = [5, 0, 150, 64]  # expert 1 has no token
     weights = [torch.randn(n, E, L, device="cuda") for _ in range(2)] + [torch.randn(n, L, E, device="cuda")]
     x = torch.randn(sum(sizes), L, device="cuda").bfloat16()
 
@@ -156,27 +113,26 @@ def test_a_replayed_pass_routes_each_token_through_the_experts_recorded_while_wr
             experts.bias.copy_(torch.tensor([0.0, 0.0, 10.0, 10.0]))  # experts 2 and 3 for every token now
         assert not torch.allclose(model(ids), written, atol=1e-4)
         assert torch.allclose(model(ids, replay=routes), written, atol=1e-5)
-    assert [len(routes.chosen[experts]) for experts in routed] == [12]
+    assert [len(routes.chosen[experts, 0]) for experts in routed] == [12, 12]
 
 
-def test_recomputing_layers_trains_the_same_and_counts_each_token_once():
-    # --recompute only trades time for memory: the same gradients (the
-    # indexers' too), the indexers' loss counted once, and the layers'
-    # second run adds nothing to balancing
+def test_recomputing_layers_trains_the_same_and_counts_each_token_once(few_chosen):
+    # --recompute only trades time for memory: the same gradients, the
+    # exact layers' keys and values reaching the sparse layers included,
+    # and the layers' second run adds nothing to balancing
     torch.manual_seed(0)
     model = WPT(ModelConfig(**{**TINY, "block_size": 256})).train()
-    ids, after = torch.randint(50, (2, 64)), torch.randint(50, (2, 64))
+    ids, after = torch.randint(50, (2, 200)), torch.randint(50, (2, 200))
     results = []
     for recompute in (False, True):
         model.recompute = recompute
         model.zero_grad()
-        logits, ahead, indexers = model(ids, next_tokens=after, indexer_loss=True)
-        (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean() + indexers).backward()
+        logits, ahead = model(ids, next_tokens=after)
+        (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean()).backward()
         experts = model.layers[3].experts
-        results.append(([p.grad.clone() for p in model.parameters()], experts.histogram.clone(), indexers.detach()))
+        results.append(([p.grad.clone() for p in model.parameters()], experts.histogram.clone()))
         experts.histogram = None
-    (grads, counts, loss), (grads_again, counts_again, loss_again) = results
-    assert loss > 0 and torch.allclose(loss, loss_again)
+    (grads, counts), (grads_again, counts_again) = results
     assert all(torch.allclose(a, b, atol=1e-6) for a, b in zip(grads, grads_again))
     assert torch.equal(counts, counts_again)
 
@@ -185,8 +141,8 @@ def training_pass(model, ids, after):
     """One forward and backward pass as text windows train: (scores, gradients
     by name, the last layer's balancing counts)."""
     model.zero_grad()
-    logits, ahead, indexers = model(ids, next_tokens=after, indexer_loss=True)
-    (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean() + indexers).backward()
+    logits, ahead = model(ids, next_tokens=after)
+    (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean()).backward()
     experts = model.layers[3].experts
     found = logits.detach(), {name: p.grad.clone() for name, p in model.named_parameters()}, experts.histogram.clone()
     experts.histogram = None
@@ -226,56 +182,91 @@ def test_a_compiled_training_pass_trains_as_the_uncompiled_one_under_the_same_na
         assert torch.equal(model.eval()(ids), carried[1])
 
 
-def test_the_one_pass_update_moves_the_weights_as_the_plain_one_and_their_states_are_interchangeable(monkeypatch):
-    # docs/training.md, "Optimizers": a CUDA device's fused and foreach forms give
-    # the same update within rounding, and a checkpoint of one continues in
-    # the other (a run resumes on other hardware); a weight without a
-    # gradient is left alone. PyTorch offers both forms on the CPU too
-    def trained(*forms):
-        torch.manual_seed(0)
-        model = WPT(ModelConfig(**TINY)).train()
-        rule = MuonAdamW(model.optimizer_roles(), 0.01, 0.1, table_lr_factor=5.0)
-        for number, form in enumerate(forms):
-            monkeypatch.setattr(update_rule, "ONE_PASS", form)
-            for parameter in model.parameters():
-                parameter.grad = torch.randn_like(parameter)
-            if number == 0:
-                model.embedding.weight.grad = None
-            rule.step()
-        return model, rule
-
-    plain, rule = trained((), (), ())
-    one_pass, one_pass_rule = trained(("cpu",), ("cpu",), ("cpu",))
-    mixed, _ = trained((), ("cpu",), ())
-    for other in (one_pass, mixed):
-        assert all(torch.allclose(a, b, atol=1e-5) for a, b in zip(plain.parameters(), other.parameters()))
-    state, state_again = rule.state_dict()["state"], one_pass_rule.state_dict()["state"]
-    assert state.keys() == state_again.keys()
-    assert all(type(state[p]["step"]) is int and state[p]["step"] == state_again[p]["step"]
-               for p in state if "step" in state[p])
-    embedding = rule.state[plain.embedding.weight]
-    assert embedding["step"] == 2  # the update without its gradient does not count
-
-
-def test_muon_orthogonalizes_matrices_of_one_shape_together_as_it_does_one_by_one():
-    # docs/model.md, "Training": each matrix of a view is orthogonalized on its own, so
-    # grouping the matrices of the same rows and columns changes nothing but speed
+@pytest.mark.skipif(select_device().type != "cuda" or not torch.version.cuda,
+                    reason="needs an NVIDIA GPU, where torch.compile writes Triton code (on the AMD Radeon 860M the "
+                           "model's uncompiled pass already stops with a segmentation fault)")
+def test_a_compiled_training_pass_on_a_gpu_trains_as_the_uncompiled_one():
+    # docs/training.md, "Compiling the passes": on a GPU, through the
+    # attention kernels installed there and over a window in which In-Place
+    # TTT completes a chunk of 1,024 tokens, the same scores and gradients
+    # within BF16 rounding. The compiled pass replays the uncompiled one's
+    # routes: rounding alone may route a token another way, which changes
+    # it by more than rounding
+    device = select_device()
     torch.manual_seed(0)
-    views = [(1, 6, 4), (1, 6, 4), (3, 6, 4), (2, 4, 6), (1, 8, 8), (1, 3, 8), (2, 3, 8)]
-    parameters = [torch.nn.Parameter(torch.randn(view[0] * view[1], view[2])) for view in views]
-    lr, wd, mu = 0.1, 0.1, 0.95
-    rule = MuonAdamW([(str(i), p, "matrix", view) for i, (p, view) in enumerate(zip(parameters, views))], lr, wd, mu)
-    weights, momenta = [p.detach().clone() for p in parameters], [torch.zeros_like(p) for p in parameters]
-    for _ in range(2):
-        for i, p in enumerate(parameters):
-            p.grad = torch.randn_like(p)
-            momenta[i] = mu * momenta[i] + p.grad
-        rule.step()
-        for i, view in enumerate(views):
-            nesterov = (parameters[i].grad + mu * momenta[i]).view(view)
-            update = torch.cat([orthogonalize(matrix[None]) for matrix in nesterov]).view(weights[i].shape)
-            weights[i] = weights[i] * (1 - lr * wd) - lr * UPDATE_RMS * max(view[1:]) ** 0.5 * update
-    assert all(torch.allclose(p, w, atol=1e-5) for p, w in zip(parameters, weights))
+    model = WPT(ModelConfig(**{**TINY, "block_size": 1280})).to(device).train()
+    ids, after = torch.randint(50, (1, 1280)).to(device), torch.randint(50, (1, 1280)).to(device)
+    routes = Routes()
+
+    def run(**route):
+        model.zero_grad()
+        logits, ahead = model(ids, next_tokens=after, **route)
+        (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean()).backward()
+        for layer in model.layers:  # the routed layers' balancing counts
+            if hasattr(layer.experts, "histogram"):
+                layer.experts.histogram = None
+        return logits.detach().float(), {name: p.grad.clone() for name, p in model.named_parameters()}
+
+    scores, grads = run(record=routes)
+    model.compile_training()
+    scores_again, grads_again = run(replay=routes)
+    # The bounds are BF16 rounding's, measured on an NVIDIA GPU with the same routes: the compiled pass rounds
+    # elsewhere than the uncompiled one (it keeps fused intermediates in FP32), and the two differ by about 1% in the
+    # scores and up to 6% in one parameter's gradient (Engram's tables, the first layers' attention norms), each
+    # within the 5% to 7% by which either lies from the same pass in FP32; in FP32, autocast off, they differ by
+    # under 1e-4. Per parameter, so that a wrong gradient of a small one (the residual mixes, the TTT conv and
+    # target) does not hide behind the embedding's and the head's, the test catches a gradient that is zeroed, of
+    # the wrong sign, missing a term worth more than a tenth of it, or scaled by a factor off 1 by more than a tenth; an
+    # error of a few percent hides inside BF16 rounding
+    assert (scores - scores_again).norm() <= 2e-2 * scores.norm()
+    for name, grad in grads.items():
+        assert (grad - grads_again[name]).norm() <= 1e-1 * grad.norm() + 1e-6, name
+
+
+@pytest.mark.skipif(select_device().type != "cuda" or not torch.version.cuda,
+                    reason="needs an NVIDIA GPU, where torch.compile writes Triton code")
+def test_a_recorded_training_pass_trains_as_the_same_pass_run_as_it_is():
+    # docs/training.md, "Compiling the passes": the compiled pass over whole
+    # windows, recorded as CUDA graphs and replayed, gives what the same
+    # compiled pass gives without them, over several windows whose
+    # gradients add up in one update, and in the updates after it, which
+    # start with no gradients and no balancing counts: the same losses, kept
+    # after the later windows' replays, the same balancing counts, and the
+    # same gradients within the rounding by which two runs of the sparse
+    # layers' backward pass differ (their atomic additions)
+    device = select_device()
+    torch.manual_seed(0)
+    config = ModelConfig(**{**TINY, "block_size": 1280})
+    recorded, unrecorded = WPT(config).to(device).train(), WPT(config).to(device).train()
+    recorded.compile_training()
+    unrecorded.compile_training()
+    unrecorded.graphs = None
+    generator = torch.Generator().manual_seed(1)
+    windows = [torch.randint(50, (2, 2, 1280), generator=generator).to(device) for _ in range(3)]
+    for update in range(2):
+        unrecorded.load_state_dict(recorded.state_dict())  # the same weights and balancing biases
+        losses = {}
+        for model in (recorded, unrecorded):
+            kept = []
+            for x, y in windows:
+                first, after = model(x, next_tokens=y, targets=(y, y[:, 1:]))
+                ((first + 0.3 * after) / 3).backward()
+                kept.append((first.detach(), after.detach()))
+            losses[model] = torch.stack([torch.stack(pair) for pair in kept])
+        assert torch.allclose(losses[recorded], losses[unrecorded], rtol=1e-3)
+        for (name, mine), theirs in zip(recorded.named_parameters(), unrecorded.parameters()):
+            assert (mine.grad - theirs.grad).norm() <= 1e-1 * theirs.grad.norm() + 1e-6, (update, name)
+        for mine, theirs in zip(recorded.layers, unrecorded.layers):
+            if not mine.experts.hashed:
+                assert torch.equal(mine.experts.histogram, theirs.experts.histogram)
+                assert mine.experts.histogram.sum() == len(windows) * 2 * 1280 * mine.experts.n
+        for model in (recorded, unrecorded):
+            with torch.no_grad():
+                for parameter in model.parameters():
+                    parameter -= 1e-2 * parameter.grad
+            model.zero_grad(set_to_none=True)
+            model.after_update(lambda tensor, op: tensor)
+    assert recorded.graphs.key is not None  # the passes did replay recorded graphs
 
 
 @pytest.mark.skipif(select_device().type != "cuda" or not _fla_fused_loss(),
@@ -304,47 +295,19 @@ def test_the_fused_head_and_loss_give_the_checkpointed_form_s_loss_and_gradients
         assert (grads[name] - expected_grads[name]).abs().max() <= 0.05 * expected_grads[name].abs().max(), name
 
 
-def test_the_recipe_names_the_kind_of_each_global_layer():
-    # docs/model.md: every 4th layer and the last is global, CSA or HCA as
-    # the recipe's list says, in order; a list that does not match is refused
-    model = WPT(ModelConfig(**{**TINY, "n_layer": 9, "global_attention": ["HCA", "CSA", "CSA"]}))
-    ratios = {n: layer.attention.ratio for n, layer in enumerate(model.layers, 1)
-              if isinstance(layer.attention, Attention)}
-    assert ratios == {4: HCA_RATIO, 8: CSA_RATIO, 9: CSA_RATIO}
-    with pytest.raises(ValueError, match="global_attention"):
-        ModelConfig(**{**TINY, "n_layer": 8, "global_attention": ["CSA"]})
-
-
-def test_the_indexers_learn_only_when_the_caller_asks_for_their_loss():
-    # the indexer's loss is returned by the pass that asks for it, and is
-    # the only thing that trains the indexers; a pass that does not ask
-    # returns the scores alone and leaves the indexers without a gradient
-    torch.manual_seed(0)
-    model = WPT(ModelConfig(**{**TINY, "block_size": 256})).train()
-    ids, after = torch.randint(50, (2, 64)), torch.randint(50, (2, 64))
-    indexer = model.layers[3].attention.indexer
-    logits, ahead = model(ids, next_tokens=after)
-    (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean()).backward()
-    assert all(p.grad is None for p in indexer.parameters())
-
-    logits, indexers = model(ids, indexer_loss=True)
-    assert logits.shape == (2, 64, 50) and indexers > 0
-    indexers.backward()
-    assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in indexer.parameters())
-
-
-def test_the_same_pass_gives_the_same_gradients_every_time():
+def test_the_same_pass_gives_the_same_gradients_every_time(few_chosen):
     # a resumed run trains exactly as a run never interrupted only if every
-    # gradient adds up in a fixed order: CSA's merging biases by place among
-    # them, which indexing by place would add up in any order
+    # gradient adds up in a fixed order: the sparse layers' gradients added
+    # into the exact layer's keys and values at the tokens they read among
+    # them
     torch.manual_seed(0)
     model = WPT(ModelConfig(**{**TINY, "block_size": 256}))
     ids = torch.randint(50, (2, 257), generator=torch.Generator().manual_seed(0))
 
     def gradients():
         model.zero_grad()
-        scores, ahead, indexer = model(ids[:, :-1], next_tokens=ids[:, 1:], indexer_loss=True)
-        (scores.float().logsumexp(-1).mean() + ahead.float().logsumexp(-1).mean() + indexer).backward()
+        scores, ahead = model(ids[:, :-1], next_tokens=ids[:, 1:])
+        (scores.float().logsumexp(-1).mean() + ahead.float().logsumexp(-1).mean()).backward()
         return {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
 
     first, second = gradients(), gradients()
@@ -365,3 +328,21 @@ def test_every_parameter_belongs_to_exactly_one_named_part():
         name for name in names.values() if ".experts.router." in name)
     assert parts[MULTI_TOKEN_PREDICTION] and all(names[id(p)].startswith("mtp") for p in parts[MULTI_TOKEN_PREDICTION])
     assert parts[BALANCING] == []  # the balancing biases are set after each update, never by a gradient
+
+
+def test_a_failed_import_of_flash_linear_attention_keeps_its_reason(monkeypatch):
+    # the reason is what tells a run that the output head and its loss run
+    # in checkpointed chunks instead of the fused kernel, and why
+    monkeypatch.setattr(model_module, "_fla", None)
+    monkeypatch.setitem(sys.modules, "fla.modules.fused_linear_cross_entropy", None)  # an import of it then fails
+    assert _fla_fused_loss() is False
+    assert fla_failure() == ("ModuleNotFoundError: import of fla.modules.fused_linear_cross_entropy halted; "
+                             "None in sys.modules")
+
+    monkeypatch.setattr(model_module, "_fla", None)
+    loss = types.ModuleType("fla.modules.fused_linear_cross_entropy")  # the real one needs Triton
+    for name in ("MAX_FUSED_SIZE", "STATIC_WARPS", "cross_entropy_kernel", "logsumexp_fwd"):  # what head_loss.py reads
+        setattr(loss, name, object())
+    monkeypatch.delitem(sys.modules, "wpt_model.head_loss", raising=False)
+    monkeypatch.setitem(sys.modules, "fla.modules.fused_linear_cross_entropy", loss)
+    assert _fla_fused_loss() and fla_failure() is None

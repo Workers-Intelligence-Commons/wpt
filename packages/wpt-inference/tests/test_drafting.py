@@ -11,11 +11,10 @@ from wpt_inference.drafting import DrafterFailed, Settings, settings, train_draf
 from wpt_model import WPT, DrafterConfig, ModelConfig
 from wpt_utils.device import processor_name
 
-CONFIG = ModelConfig(vocab_size=50, block_size=16, n_layer=4, global_attention=["CSA"], d_model=16, kda_heads=2,
-                     kda_head_dim=8, attention_heads=2, attention_head_dim=128, query_rank=8, output_groups=1,
-                     output_rank=8, index_heads=4, index_head_dim=128, index_top_k=4, n_experts=4, top_k=2,
-                     expert_width=8, latent_width=8, shared_width=16, engram_layers=[2], engram_order=3,
-                     engram_heads=2, engram_dim=4, engram_table_size=31)
+CONFIG = ModelConfig(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
+                     attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+                     shared_width=16, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4,
+                     engram_table_size=31, residual_groups=3)
 END = 0
 SMALL = Settings(epochs=1, prompts=4, prompt_tokens=5, answer_tokens=6, batch=2, anchors=4, held_out=0.25)
 
@@ -127,8 +126,8 @@ def test_the_recipe_s_drafter_section_gives_the_shape_and_the_training():
     # feature layers the model does not have are refused with the settings,
     # before any training
     assert settings(CONFIG, {"features": [1, 4]})[0].features == (1, 4)
-    with pytest.raises(ValueError, match=r"features \[2, 5\]: 5 is not a layer of a 4-layer model \(layers 1 to 4\)"):
-        settings(CONFIG, {"features": [2, 5]})
+    with pytest.raises(ValueError, match=r"features \[2, 6\]: 6 is not a layer of a 5-layer model \(layers 1 to 5\)"):
+        settings(CONFIG, {"features": [2, 6]})
     with pytest.raises(ValueError, match="0 is not a layer"):
         settings(CONFIG, {"features": [0]})
 

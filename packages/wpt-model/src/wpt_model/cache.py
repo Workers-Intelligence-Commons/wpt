@@ -9,38 +9,45 @@ The cache keeps what each layer says it passes on to later tokens
 (carry.py), the same description training's segments and splits carry
 (sequence.py):
 
-    KDA          its memory S and the last 3 inputs of each short convolution
-    CSA, HCA     DeepSeek-V4's inference layout: the window's last 127
-                 entries (V4 keeps 128, the new token's included), the
-                 merged entries (FP8 but their rotary dimensions), CSA's
-                 indexer keys (FP4, held in FP8), and each merging's rows
-                 not merged into an entry yet
-    Engram       the last order - 1 canonical ids and each stream's last
-                 inputs of its convolution; the tables stay where they are
-    MTP block    its window, like CSA's and HCA's, for the pairs it read
+    window layer  the last 127 keys and values (the window holds 128, the
+                  new token's included)
+    exact layer   the key and value of every token read
+    sparse layer  nothing: it reads the exact layer's
+    Engram        the last order - 1 canonical ids and the last inputs of
+                  its convolution; the tables stay where they are
+    In-Place TTT  the tokens of its unfinished chunk (at most 1,023) and
+                  its sum of chunk updates: each row its own copy of the
+                  changed matrix
+    MTP block     its window, like a window layer's, for the pairs it read
 
-Nothing grows with the text but the merged entries, a quarter of the tokens
-in CSA (and as many indexer keys) and 1/128 in HCA, so generation goes on
-past block_size. The experts keep nothing, but a cache made with routes
-records each row's routed experts (R3) as its tokens are read.
+Nothing grows with the text but the exact layers' keys and values, one of
+each per token and exact layer, so generation goes on past block_size. The
+experts keep nothing, but a cache made with routes records each row's
+routed experts (R3) as its tokens are read.
 
 New tokens are read by the model's own forward pass, through a Reading:
 the place (sequence.py) of B rows each at its own length, which gives each
 module what the cache keeps and keeps what the pass leaves. An extend may
 give each row its own number of new tokens (counts), the rest of its row
-being padding: a tail keeps the last steps of a row's own tokens, KDA's
-padding writes nothing, and only the blocks a row's own tokens complete
-are merged. Undoing goes back to what an undoable reading started from and
-keeps the first kept[b] tokens of row b, as each kind of carried value
-says (carry.py): tails cut, the memory replayed, entries left (one past a
-row's tokens is never read, and is merged again when the row reaches it).
+being padding: a tail keeps the last steps of a row's own tokens, and only
+a row's own tokens write entries. Undoing goes back to what an undoable
+reading started from and keeps the first kept[b] tokens of row b, as each
+kind of carried value says (carry.py): tails cut, entries left (one past a
+row's tokens is never read, and is written again when the row reaches
+it).
+
+A model that loops (docs/model.md, "Loops") reads a call's tokens once per
+pass, and the cache keeps one value per module and name, the last pass's.
+Every pass starts from what the cache held when the call began, and reads
+its own entries and tails for the call's tokens: a prompt read in one call
+gives what the model's forward pass gives, and a token read later reads,
+in every pass, the last pass's values of the earlier tokens.
 """
 
 import torch
 
-from .carry import described, padded
+from .carry import Tail, described
 from .experts import Routes
-from .kda import delta_step
 from .sequence import Place
 
 
@@ -81,29 +88,32 @@ class Reading(Place):
     def __init__(self, rows, counts, undoable):
         self.rows, self.counts = rows, counts
         self.start = rows.lengths
-        self.latest = int(rows.lengths.max()) if len(rows.lengths) else 0
         self.saved = {} if undoable else None
+        self.began = {}  # what each tail or fold held when the reading began, which every pass starts from
 
-    def blocks(self, ratio, T):
-        first = self.start // ratio
-        return first, int(((self.start + self.counts) // ratio - first).max()) if len(first) else 0
+    def key(self, module, name):
+        return id(module), name
 
     def before(self, module, name, x):
-        key, tail = (id(module), name), described(module, name)
-        earlier = self.rows.values.get(key)
-        earlier = tail.start(x, x.shape[0]) if earlier is None else earlier.to(x.dtype)
-        self.rows.values[key] = tail.undo(earlier, x, self.counts)  # the last steps of each row's own tokens
+        key, item = self.key(module, name), described(module, name)
+        if key not in self.began:
+            held = self.rows.values.get(key)
+            self.began[key] = item.start(x, x.shape[0]) if held is None else held
+        earlier = self.began[key]
+        if isinstance(item, Tail):  # a tail in the pass's dtype; a fold stays FP32
+            earlier = earlier.to(x.dtype)
+        self.rows.values[key] = item.undo(earlier, x, self.counts)  # what each row's own tokens leave
         if self.saved is not None:
-            self.saved[key] = (tail, earlier, x)
+            self.saved[key] = (item, earlier, x)
         return earlier
 
     def everything(self, module, name, new):
-        """Writes the entries each row's own tokens complete after its
-        earlier ones; returns every row's entries so far (B, N, ...), N the
-        most any row has, a row's entries past its own number stale."""
-        key, ratio = (id(module), name), described(module, name).ratio
-        first = self.start // ratio
-        made = (self.start + self.counts) // ratio - first
+        """Writes the entries of each row's own tokens after its earlier
+        ones; returns every row's entries so far (B, N, ...), N the most any
+        row has, a row's entries past its own number stale."""
+        key = self.key(module, name)
+        described(module, name)
+        first, made = self.start, self.counts
         need = int((first + made).max()) if len(first) else 0
         held = self.rows.values.get(key)
         if held is None:
@@ -116,17 +126,6 @@ class Reading(Place):
         held[row, first[row] + j] = new[row, j]
         self.rows.values[key] = held
         return held[:, :need]
-
-    def delta(self, module, q, k, v, g, beta):
-        key, memory = (id(module), "memory"), described(module, "memory")
-        beta, g = padded(beta, g, self.counts)
-        before = self.rows.values.get(key)
-        if before is None:
-            before = q.new_zeros(q.shape[0], q.shape[2], q.shape[3], v.shape[3], dtype=torch.float32)
-        out, self.rows.values[key] = delta_step(q, k, v, g, beta, before)
-        if self.saved is not None:
-            self.saved[key] = (memory, before, (k, v, g, beta))
-        return out
 
     def finish(self):
         """The rows have read their tokens."""

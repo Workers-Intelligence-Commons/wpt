@@ -75,7 +75,7 @@ def test_a_change_is_what_differs_from_the_base_committed_or_not(ci, clone, monk
     ("packages/wpt-recipes/src/wpt_recipes/recipes.py", {"data"}),
     ("packages/wpt-recipes/tests/test_recipes.py", set()),
     ("apps/wpt/src/wpt/__init__.py", set()),
-    ("packages/wpt-model/src/wpt_model/kda.py", set()),
+    ("packages/wpt-model/src/wpt_model/attention.py", set()),
     ("docs/architecture.md", set()),
     ("ci/common.py", {"lock", "rust", "data"}),
     ("ci/rust.py", {"rust"}),
