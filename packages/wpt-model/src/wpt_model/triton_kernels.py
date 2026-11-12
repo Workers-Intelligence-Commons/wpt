@@ -45,21 +45,42 @@ open to review on a trained model's scores.
 
 Sparse attention is one program per query, which gathers its chosen rows
 and its last `window` rows in blocks of BLOCK and keeps an online softmax
-in FP32, the sink added to the denominator at the end. Its backward pass
+in FP32, the sink added to the denominator at the end. Its tiles are
+(rows, heads), the heads padded to at least 8: the matrix units' smallest
+tile is 8 wide in a product's last dimension and 16 in its first, so a
+query's few heads waste less of each product there. The program for a
+query's gradient loads its next block of rows while it computes on the
+current one. Its backward pass
 takes the window rows in tiles, as exact attention does with a band mask,
 since neighbouring queries share them: one program per block of keys
 writes their key and value gradients and one per block of queries its
 queries' gradients, with no atomic additions. The chosen rows differ from
 query to query. One program per query sums its gradient over its chosen
-rows. For the rows' gradients, the backward pass first inverts the
+rows.
+
+The chosen rows' gradients take one of two paths, by the number of heads,
+since their cost is moving data. With more than GATHER_HEADS heads, the
+program of each query also computes its share of its chosen rows' key and
+value gradients, (rows, heads) x (heads, CP) products with the heads
+padded to 16 (the products' middle dimension), and adds them by
+atomic additions of 4 FP32 values onto the window's share; the order of
+those additions, and with it the rounding, may differ from run to run.
+That moves 2 x CP FP32 values per (query, row) pair, whatever the heads.
+With GATHER_HEADS heads or fewer, the backward pass first inverts the
 choice: for each row, the list of queries that chose it (a count per row,
-its running sum, then each query written into its rows' lists). One
+its running sum, then each query written into its rows' lists), made
+once for every sparse layer that reads the same choice
+(pytorch_kernels.inverse). One
 program per row then sums its key and value gradients over that list,
 adds the window's share and writes them once, with no atomic additions
 on the gradients; the queries' weights are computed again there, from
 their q, d_out, lse and delta, on the vector units, since one row against
 a few queries fills no matrix tile. Each pass gathers from memory: a
-query's chosen rows of k and v, a row's choosers' q and d_out.
+query's chosen rows of k and v, a row's choosers' q and d_out. That
+moves 2 x heads x CP BF16 values per pair, which costs less than the atomic
+additions at 2 heads and more at 4 heads, measured at 32K tokens on an RTX
+5080 laptop GPU; 3 heads were not measured, and that limit is open to
+review.
 
 The lists are filled by atomic additions on their counters, so the order
 of the queries in a list, and with it the rounding of a row's sum, may
@@ -79,7 +100,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .pytorch_kernels import chosen_columns
+from .pytorch_kernels import chosen_columns, inverse
 
 NAME = "Triton"
 LOG2E = tl.constexpr(1.4426950408889634)  # scores are kept in base 2 inside the kernels, for exp2
@@ -90,6 +111,7 @@ BINS = 64  # bins per counting pass of the choice of rows, a power of 2 of at le
 SPAN = 8.0  # the first counting pass's bins span about this many bits (base-2 log-weights) below its start
 CANDIDATES = 512  # the most rows a query's last bin may hold to be ordered exactly between them
 LEVELS = 16  # the most counting passes
+GATHER_HEADS = 2  # the most heads for which each chosen row gathers its queries; above, the queries scatter
 
 
 def _configs(shapes):
@@ -589,7 +611,7 @@ class _Sparse(torch.autograd.Function):
         lse = torch.empty(B, T, H, dtype=torch.float32, device=q.device)
         _sparse_forward_kernel[(B * T,)](q, k, v, sink.contiguous(), idx, positions, out, lse, scale * LOG2E.value, T,
                                          k.shape[1], idx.shape[-1], window, k.stride(0), k.stride(1), v.stride(0),
-                                         v.stride(1), **_heads(H, c, 16))
+                                         v.stride(1), **_heads(H, c, 8))
         ctx.save_for_backward(q, k, v, sink, idx, positions, out, lse)
         ctx.scale, ctx.window = scale, window
         return out
@@ -614,13 +636,18 @@ class _Sparse(torch.autograd.Function):
         _window_queries_backward_kernel[lambda meta: (triton.cdiv(T, meta["ROWS"] // shape["HP"]), B)](
             q, k, v, d_out, lse, delta, positions, near_dq, qk_scale, T, N, ctx.window, *strides, **shape)
         dq = torch.empty_like(q)
-        _sparse_queries_backward_kernel[(B * T,)](q, k, v, d_out, idx, lse, delta, near_dq, dq, qk_scale, ctx.scale,
-                                                  T, N, idx.shape[-1], *strides, **_heads(H, c, 16))
-        starts, choosers = _choosers(idx, N)
-        dk = torch.empty(B, N, c, dtype=k.dtype, device=q.device)
-        dv = torch.empty(B, N, c, dtype=v.dtype, device=q.device)
-        _sparse_keys_backward_kernel[(B * N,)](q, k, v, d_out, lse, delta, starts, choosers, near_dk, near_dv, dk, dv,
-                                               qk_scale, ctx.scale, N, *strides, **shape)
+        scatter = H > GATHER_HEADS  # near_dk and near_dv then receive the chosen rows' shares too
+        _sparse_queries_backward_kernel[(B * T,)](q, k, v, d_out, idx, lse, delta, near_dq, dq, near_dk, near_dv,
+                                                  qk_scale, ctx.scale, T, N, idx.shape[-1], *strides,
+                                                  SCATTER=scatter, **_heads(H, c, 16 if scatter else 8))
+        if scatter:
+            dk, dv = near_dk.to(k.dtype), near_dv.to(v.dtype)
+        else:
+            starts, choosers = inverse(idx, N, lambda: _choosers(idx, N))
+            dk = torch.empty(B, N, c, dtype=k.dtype, device=q.device)
+            dv = torch.empty(B, N, c, dtype=v.dtype, device=q.device)
+            _sparse_keys_backward_kernel[(B * N,)](q, k, v, d_out, lse, delta, starts, choosers, near_dk, near_dv,
+                                                   dk, dv, qk_scale, ctx.scale, N, *strides, **shape)
         d_sink = -((sink.float() - lse).exp() * delta).sum((0, 1))  # the sink carries no value
         return dq, dk, dv, d_sink.to(sink.dtype), None, None, None, None
 
@@ -667,10 +694,11 @@ def _sparse_rows(idx_ptr, row, p, j0, N, K, window, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def _query_heads(ptr, row, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr):
-    """A query's (HP, CP) values, 0 for padded heads and dimensions."""
+def _query_columns(ptr, row, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr):
+    """A query's (CP, HP) values, its heads as columns, 0 for padded heads
+    and dimensions."""
     heads, d = tl.arange(0, HP), tl.arange(0, CP)
-    return tl.load(ptr + (row * H + heads)[:, None] * C + d[None, :], mask=(heads[:, None] < H) & (d[None, :] < C),
+    return tl.load(ptr + (row * H + heads)[None, :] * C + d[:, None], mask=(heads[None, :] < H) & (d[:, None] < C),
                    other=0.0)
 
 
@@ -679,63 +707,77 @@ def _query_heads(ptr, row, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, C
 def _sparse_forward_kernel(q_ptr, k_ptr, v_ptr, sink_ptr, idx_ptr, pos_ptr, out_ptr, lse_ptr, qk_scale, T, N, K,
                            window, stride_kb, stride_kn, stride_vb, stride_vn, H: tl.constexpr, HP: tl.constexpr,
                            C: tl.constexpr, CP: tl.constexpr, BLOCK: tl.constexpr):
+    """One query: its tiles are (rows, heads) and its sums (CP, HP), the
+    heads as the matrix products' last dimension, where the matrix units'
+    smallest tile is narrowest."""
     row = tl.program_id(0).to(tl.int64)
     b = row // T
     p = tl.load(pos_ptr + row)
-    q = _query_heads(q_ptr, row, H, HP, C, CP)
+    q = _query_columns(q_ptr, row, H, HP, C, CP)
     m = tl.full([HP], float("-inf"), tl.float32)
     l = tl.zeros([HP], tl.float32)
-    acc = tl.zeros([HP, CP], tl.float32)
+    acc = tl.zeros([CP, HP], tl.float32)
     for j0 in range(0, K + window, BLOCK):
         n, there = _sparse_rows(idx_ptr, row, p, j0, N, K, window, BLOCK)
         keys = _load_keys(k_ptr, b, tl.where(there, n, N), N, stride_kb, stride_kn, C, CP)
-        z = tl.where(there[None, :], tl.dot(q, tl.trans(keys)) * qk_scale, float("-inf"))
-        m_new = tl.maximum(m, tl.max(z, 1))
+        z = tl.where(there[:, None], tl.dot(keys, q) * qk_scale, float("-inf"))
+        m_new = tl.maximum(m, tl.max(z, 0))
         safe = tl.where(m_new == float("-inf"), 0.0, m_new)
         alpha = tl.exp2(m - safe)
-        w = tl.exp2(z - safe[:, None])
+        w = tl.exp2(z - safe[None, :])
         values = _load_keys(v_ptr, b, tl.where(there, n, N), N, stride_vb, stride_vn, C, CP)
-        acc = acc * alpha[:, None] + tl.dot(w.to(values.dtype), values)
-        l = l * alpha + tl.sum(w, 1)
+        acc = acc * alpha[None, :] + tl.dot(tl.trans(values), w.to(values.dtype))
+        l = l * alpha + tl.sum(w, 0)
         m = m_new
     heads, d = tl.arange(0, HP), tl.arange(0, CP)
     sink = tl.load(sink_ptr + heads, mask=heads < H, other=0.0) * LOG2E
     top = tl.maximum(m, sink)
     kept = tl.exp2(m - top)
     total = l * kept + tl.exp2(sink - top)  # the sink joins the denominator
-    out = acc * (kept / total)[:, None]
-    tl.store(out_ptr + (row * H + heads)[:, None] * C + d[None, :], out.to(out_ptr.dtype.element_ty),
-             mask=(heads[:, None] < H) & (d[None, :] < C))
+    out = acc * (kept / total)[None, :]
+    tl.store(out_ptr + (row * H + heads)[None, :] * C + d[:, None], out.to(out_ptr.dtype.element_ty),
+             mask=(heads[None, :] < H) & (d[:, None] < C))
     tl.store(lse_ptr + row * H + heads, (top + tl.log2(total)) * LN2, mask=heads < H)
 
 
-@triton.autotune(configs=_SPARSE_BACKWARD, key=["H", "C", "K"])
+@triton.autotune(configs=_SPARSE_BACKWARD, key=["H", "C", "K"], restore_value=["dk_ptr", "dv_ptr"])
 @triton.jit
 def _sparse_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, idx_ptr, lse_ptr, delta_ptr, near_dq_ptr, dq_ptr,
-                                    qk_scale, scale, T, N, K, stride_kb, stride_kn, stride_vb, stride_vn,
-                                    H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr,
-                                    BLOCK: tl.constexpr):
+                                    dk_ptr, dv_ptr, qk_scale, scale, T, N, K, stride_kb, stride_kn, stride_vb,
+                                    stride_vn, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr,
+                                    BLOCK: tl.constexpr, SCATTER: tl.constexpr):
     """One query's dq through its chosen rows, the window rows' share
-    near_dq added."""
+    near_dq added; tiles (rows, heads) and sums (CP, HP), as the forward
+    pass. SCATTER: also adds its share of each chosen row's dk and dv
+    (B, N, C) in FP32, both rows of a (rows, heads) x (heads, CP) product,
+    by atomic additions; HP is then at least 16, a product's middle
+    dimension."""
     row = tl.program_id(0).to(tl.int64)
     b = row // T
-    q = _query_heads(q_ptr, row, H, HP, C, CP)
-    do = _query_heads(do_ptr, row, H, HP, C, CP)
+    q = _query_columns(q_ptr, row, H, HP, C, CP)
+    do = _query_columns(do_ptr, row, H, HP, C, CP)
     heads, d = tl.arange(0, HP), tl.arange(0, CP)
     lse = tl.load(lse_ptr + row * H + heads, mask=heads < H, other=0.0) * LOG2E
     delta = tl.load(delta_ptr + row * H + heads, mask=heads < H, other=0.0)
-    rows = (row * H + heads)[:, None] * C + d[None, :]
-    there_q = (heads[:, None] < H) & (d[None, :] < C)
+    rows = (row * H + heads)[None, :] * C + d[:, None]
+    there_q = (heads[None, :] < H) & (d[:, None] < C)
     dq = tl.load(near_dq_ptr + rows, mask=there_q, other=0.0)
-    q_t, do_t = tl.trans(q), tl.trans(do)
+    n, there = _sparse_rows(idx_ptr, row, 0, 0, N, K, 0, BLOCK)
+    keys = _load_keys(k_ptr, b, tl.where(there, n, N), N, stride_kb, stride_kn, C, CP)
+    values = _load_keys(v_ptr, b, tl.where(there, n, N), N, stride_vb, stride_vn, C, CP)
     for j0 in range(0, K, BLOCK):
-        n, there = _sparse_rows(idx_ptr, row, 0, j0, N, K, 0, BLOCK)
-        keys = _load_keys(k_ptr, b, tl.where(there, n, N), N, stride_kb, stride_kn, C, CP)
-        values = _load_keys(v_ptr, b, tl.where(there, n, N), N, stride_vb, stride_vn, C, CP)
-        # (BLOCK, HP) tiles, rows by heads, so that only ds is transposed
-        w = tl.where(there[:, None], tl.exp2(tl.dot(keys, q_t) * qk_scale - lse[None, :]), 0.0)
-        ds = w * (tl.dot(values, do_t) - delta[None, :])
-        dq += tl.dot(tl.trans(ds.to(keys.dtype)), keys)
+        n2, there2 = _sparse_rows(idx_ptr, row, 0, j0 + BLOCK, N, K, 0, BLOCK)
+        keys2 = _load_keys(k_ptr, b, tl.where(there2, n2, N), N, stride_kb, stride_kn, C, CP)
+        values2 = _load_keys(v_ptr, b, tl.where(there2, n2, N), N, stride_vb, stride_vn, C, CP)
+        w = tl.where(there[:, None], tl.exp2(tl.dot(keys, q) * qk_scale - lse[None, :]), 0.0)
+        ds = w * (tl.dot(values, do) - delta[None, :])
+        dq += tl.dot(tl.trans(keys), ds.to(keys.dtype))
+        if SCATTER:
+            out = (b * N + n)[:, None] * C + d[None, :]
+            there_out = there[:, None] & (d[None, :] < C)
+            tl.atomic_add(dk_ptr + out, tl.dot((ds * scale).to(q.dtype), tl.trans(q)), mask=there_out, sem="relaxed")
+            tl.atomic_add(dv_ptr + out, tl.dot(w.to(do.dtype), tl.trans(do)), mask=there_out, sem="relaxed")
+        keys, values, there, n = keys2, values2, there2, n2
     tl.store(dq_ptr + rows, (dq * scale).to(dq_ptr.dtype.element_ty), mask=there_q)
 
 

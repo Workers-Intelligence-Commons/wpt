@@ -20,8 +20,10 @@ sparse_attention): q (B, T, H, c) and the table's k and v (B, N, c) in one
 dtype; positions (B, T) int64, each query's position, which is also its own
 row; sink (H,) FP32; indices (B, T, K) int64, -1 for none. A query of a
 generation cache's padding may sit past the table's last row: it reads
-the rows up to the last. Each operation is differentiable in its
-floating-point inputs and returns its output in q's dtype.
+the rows up to the last. Indices are read at the positions they were
+chosen at, so the GPU kernels invert a tensor of indices once (inverse).
+Each operation is differentiable in its floating-point inputs and returns
+its output in q's dtype.
 
 A row's weight for a query is its softmax probability in one head, and a
 row's score is its largest weight over the heads: HySparse's group-wise
@@ -37,6 +39,7 @@ its last query sees.
 """
 
 import torch
+from torch.utils.weak import WeakIdKeyDictionary
 
 NAME = "PyTorch"
 BLOCK_VALUES = 1 << 24  # scores or gathered values per block of queries: 64 MiB in FP32
@@ -72,6 +75,24 @@ def chosen_columns(top_k, window, N):
     rows at least window tokens before the table's last when fewer. It
     reads no tensor, so no kernel waits on the GPU for it."""
     return max(0, min(top_k, N - window))
+
+
+_INVERSES = WeakIdKeyDictionary()  # each choice of rows still alive -> (its version and settings, its inverse)
+
+
+def inverse(idx, settings, make):
+    """The GPU kernels' inverse of a choice of rows idx (for each row, the
+    queries that chose it), as make() gives it, made once while the tensor
+    idx lives and keeps its version: the sparse layers that read one exact
+    layer's choice share it in their backward passes. settings: what else
+    the inverse depends on (the table's rows, the window). The positions
+    are not compared: a choice is read at the positions it was made for."""
+    held = _INVERSES.get(idx)
+    key = (idx._version, settings)
+    if held is None or held[0] != key:
+        held = (key, make())
+        _INVERSES[idx] = held
+    return held[1]
 
 
 class _Exact(torch.autograd.Function):

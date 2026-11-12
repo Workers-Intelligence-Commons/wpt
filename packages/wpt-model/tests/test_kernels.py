@@ -133,8 +133,11 @@ def runnable_kernels():
 KERNELS = runnable_kernels()
 each_kernel = pytest.mark.parametrize("chosen", KERNELS, ids=lambda module: module.NAME)
 # (heads, head width, tokens, top k): the recipes' heads and head width over windows where the choice matters,
-# with the window and the top k of the model (128 and 1,024) in the last
-SHAPES = [(4, 128, 300, 16, 32), (8, 128, 700, 64, 128), (8, 128, 2000, 1024, 128)]
+# with the window and the top k of the model (128 and 1,024) in the last; 12 heads, the series' widest size, fill
+# more than the sparse kernels' 8 head columns; 2 heads take the sparse backward pass where each row gathers its
+# queries, more heads the one where each query adds its share to its rows
+SHAPES = [(2, 128, 700, 64, 128), (4, 128, 300, 16, 32), (12, 128, 300, 16, 32), (8, 128, 700, 64, 128),
+          (8, 128, 2000, 1024, 128)]
 
 
 def relative_error(got, expected):
@@ -193,6 +196,32 @@ def test_the_sparse_attention_kernel_gives_the_pytorch_result(chosen, heads, wid
     expected = pytorch_kernels.sparse_attention(q, k, v, sink, idx, positions, width ** -0.5, window)
     want = torch.autograd.grad((expected.float() * weights).sum(), (q, k, v, sink))
     assert out.dtype == q.dtype and relative_error(out, expected) < 1e-2
+    assert all(relative_error(a, b) < 1e-2 for a, b in zip(got, want))
+
+
+@each_kernel
+def test_sparse_layers_that_read_one_choice_get_the_pytorch_gradients(chosen):
+    # two sparse layers reading the same rows idx with their own queries
+    # and sinks, as the sparse layers after one exact layer do: with 2
+    # heads the kernels invert idx once for both backward passes
+    # (pytorch_kernels.inverse), and the gradients of both outputs together
+    # stay the reference's
+    device = select_device()
+    heads, width, T, top_k, window = 2, 128, 300, 16, 32
+    q, k, v, sink, positions = inputs(B=2, T=T, H=heads, c=width, dtype=torch.bfloat16, device=device)
+    q2 = (q.detach() * 0.5).flip(1).requires_grad_()
+    sink = sink.detach().float().requires_grad_()
+    sink2 = (sink.detach() - 1).requires_grad_()
+    with torch.no_grad():
+        _, idx = pytorch_kernels.exact_attention(q, k, v, positions, width ** -0.5, top_k, window)
+    weights = torch.randn(q.shape, device=device, generator=torch.Generator(device).manual_seed(1))
+
+    def gradients(form):
+        first = written(form.sparse_attention, q, k, v, sink, idx, positions, width ** -0.5, window)
+        second = written(form.sparse_attention, q2, k, v, sink2, idx, positions, width ** -0.5, window)
+        return torch.autograd.grad(((first.float() + 2 * second.float()) * weights).sum(), (q, q2, k, v, sink, sink2))
+
+    got, want = gradients(chosen), gradients(pytorch_kernels)
     assert all(relative_error(a, b) < 1e-2 for a, b in zip(got, want))
 
 

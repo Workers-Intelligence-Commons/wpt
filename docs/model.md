@@ -117,11 +117,15 @@ above that bin and ranks the bin's rows exactly. The rows chosen are an
 exact top-`k` of the kernel's scores, the order among equal scores aside.
 The first half's exact layer runs no choice at all. The sparse layer runs one program per
 query that gathers its chosen rows and its window in blocks. Its backward
-pass first lists, for each table row, the queries that read it, then sums
-each row's key and value gradients over its list, one program per row, and
-each query's gradient over its rows, one program per query. The lists take
-the order in which the GPU's atomic additions fill them, and TileLang's
-exact layer adds its query gradients with FP32 atomic additions, so the
+pass sums each query's gradient over its rows, one program per query. For
+the rows' key and value gradients it takes the path that moves less data.
+With more than 2 heads, each query's program also adds its share to its
+rows' gradients by FP32 atomic additions. With 2 heads or fewer, it first
+lists, for each table row, the queries that read it (once for all the
+sparse layers that read one exact layer's choice), then sums each row's
+gradients over its list, one program per row. Both the atomic additions
+and the order in which they fill the lists vary, and TileLang's exact
+layer adds its query gradients with FP32 atomic additions, so the
 gradients can differ in the last bits from run to run.
 
 Which form runs is decided once, before the first use (`wpt train` decides
@@ -428,8 +432,10 @@ RMS `r_i`. Since `w_l . RMSNorm_l(v_i) = ((w_l * g_l) . v_i) r_i`, with
 tensor, one for the scores and one for the weighted sum. The scores and
 the softmax are FP32. The backward pass is written out, so that it keeps
 nothing per sublayer but the scores and weights: the sources stay only in
-that tensor. A test checks the sums and every gradient against the
-formula over stacked sources.
+that tensor. The sources' gradients sit side by side in one tensor too:
+each sum's backward pass adds its share to all of them at once, and each
+source takes its own when every sum that reads it is done. A test checks
+the sums and every gradient against the formula over stacked sources.
 
 ## Multi-token prediction
 

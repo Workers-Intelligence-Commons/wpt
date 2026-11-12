@@ -31,9 +31,16 @@ since RMSNorm_l(v_i) = g_l * v_i * r_i, with g_l the norm's weight and r_i
 the inverse RMS of v_i, the score is ((w_l * g_l) . v_i) r_i. Scores and
 softmax are FP32. The backward pass is written out (_Mixing) so that it
 keeps nothing per sublayer but the FP32 scores and weights of the sources:
-the sources themselves stay only in that one tensor. In a compiled training
-pass (WPT.compile_training), the math of both passes runs through
-torch.compile, which fuses it into a few kernels.
+the sources themselves stay only in that one tensor. The sources'
+gradients sit side by side the same way, in one tensor of the compute
+dtype (_Gradients): each sum's backward pass adds its share to every
+source's place there at once, and each source takes its place's sum when
+every sum that reads it is done, so autograd adds up no gradient source
+by source. A pass's graph is gone through backward once (each sum
+refuses a second time). In a compiled training pass
+(WPT.compile_training), the math of both passes runs through
+torch.compile, which fuses it into a few kernels, the backward pass's
+adding into the gradients' tensor included.
 """
 
 import torch
@@ -94,6 +101,7 @@ class Sources:
         self.values = embedding.new_empty((residuals.groups + 1, *embedding.shape), dtype=self.dtype)
         self.scales = embedding.new_empty((residuals.groups + 1, *embedding.shape[:-1]), dtype=torch.float32)
         self.added = []    # a stand-in for each complete source, which carries its gradient (_Add)
+        self.gradients = _Gradients(self.values)
         self.partial = None  # the sum of the current group's outputs so far
         self.embedding = embedding.to(self.dtype)
         self.add(self.embedding)
@@ -108,7 +116,7 @@ class Sources:
             return self.embedding
         mix = self.residuals.mixes[j - 1]
         return _Mixing.apply(mix.query * mix.norm_weight, self.values, self.scales, self.partial, self.compiled,
-                             *self.added)
+                             self.gradients, *self.added)
 
     def output(self, j, out):
         """Sublayer j's output joins its group's sum, which becomes a source
@@ -124,25 +132,44 @@ class Sources:
         return self.input(len(self.residuals.ends))
 
 
+class _Gradients:
+    """The sources' gradients of one pass, a place per source as in
+    Sources.values: the sums' backward passes add to them (_Mixing), and
+    each source takes its own (_Add). Made at the first sum's backward pass."""
+
+    def __init__(self, values):
+        self.values = values
+        self.sums = None
+
+    def places(self, n):
+        """The first n sources' gradients so far, to add to in place."""
+        if self.sums is None:
+            self.sums = torch.zeros_like(self.values)
+        return self.sums[:n]
+
+
 class _Add(torch.autograd.Function):
     """Writes a source into its place of sources.values (and its inverse
     RMS into sources.scales), and returns a stand-in of its shape that holds
-    no memory (one zero, expanded): autograd routes the gradient a sum gives
-    the stand-in back to the source, while only the place keeps its
-    values."""
+    no memory (one zero, expanded): autograd runs its backward pass once
+    every sum that reads the stand-in has run its own, and it hands the
+    source its place's sum of sources.gradients, while only the place keeps
+    its values."""
 
     @staticmethod
     def forward(ctx, value, sources, index):
         place = sources.values[index]
         place.copy_(value)
         sources.scales[index] = _inverse_rms(place)
-        ctx.dtype = value.dtype
+        ctx.gradients, ctx.index, ctx.dtype = sources.gradients, index, value.dtype
+        ctx.set_materialize_grads(False)  # the sums hand the stand-in nothing (_Mixing)
         return place.new_zeros(()).expand(place.shape)
 
     @staticmethod
     @once_differentiable
-    def backward(ctx, grad):
-        return grad.to(ctx.dtype), None, None
+    def backward(ctx, _nothing):
+        sums = ctx.gradients.sums
+        return (None if sums is None else sums[ctx.index].to(ctx.dtype)), None, None
 
 
 def _mix(u, values, scales, partial):
@@ -162,8 +189,9 @@ def _mix(u, values, scales, partial):
     return h, scores, weights, partial_scale
 
 
-def _unmix(grad, u, values, scales, scores, weights, partial, partial_scale):
-    """_Mixing's backward pass: (d_u, d_partial or None, d_values (n, B, T, D))."""
+def _unmix(grad, u, values, scales, scores, weights, partial, partial_scale, d_values_sum):
+    """_Mixing's backward pass: (d_u, d_partial or None), the sources'
+    gradients d_values (n, B, T, D) added into d_values_sum in place."""
     n, dtype, width = len(values), values.dtype, values.shape[-1]
     if partial is not None:
         scales = torch.cat([scales, partial_scale[None]])
@@ -177,13 +205,14 @@ def _unmix(grad, u, values, scales, scores, weights, partial, partial_scale):
     d_values = values * along_v[:n, ..., None].to(dtype)
     d_values = torch.addcmul(d_values, weights[:n, ..., None].to(dtype), g)
     d_values = torch.addcmul(d_values, along_u[:n, ..., None].to(dtype), w)
+    d_values_sum.add_(d_values)
     d_u = torch.einsum("nbt,nbtd->d", along_u[:n].to(dtype), values).float()
     d_partial = None
     if partial is not None:
         d_partial = (partial * along_v[n, ..., None].to(dtype)
                      + weights[n, ..., None].to(dtype) * g + along_u[n, ..., None].to(dtype) * w)
         d_u = d_u + (along_u[n, ..., None].to(dtype) * partial).sum((0, 1), dtype=torch.float32)
-    return d_u, d_partial, d_values
+    return d_u, d_partial
 
 
 _compiled = {}  # _mix and _unmix through torch.compile, made at first use
@@ -201,27 +230,33 @@ class _Mixing(torch.autograd.Function):
     """h = sum_i alpha_i v_i over the n complete sources (the first n places
     of values) and the partial sum when there is one, alpha the softmax of
     the scores (u . v_i) r_i; u = w * g. `added` are the complete sources as
-    autograd sees them, for their gradients. compiled: both passes' math
-    runs through torch.compile (_mix, _unmix), which fuses it into a few
-    kernels."""
+    autograd sees them: its backward pass adds their gradients into
+    gradients (_Gradients) and hands them nothing. compiled: both passes'
+    math runs through torch.compile (_mix, _unmix), which fuses it into a
+    few kernels."""
 
     @staticmethod
-    def forward(ctx, u, values, scales, partial, compiled, *added):
+    def forward(ctx, u, values, scales, partial, compiled, gradients, *added):
         n = len(added)
         values, scales = values[:n], scales[:n]
         mix = _through_compile(_mix) if compiled else _mix
         with torch.autocast(values.device.type, enabled=False):
             h, scores, weights, partial_scale = mix(u, values, scales, partial)
         # the places are no saved tensors: later places are written after this, while these never change
-        ctx.values, ctx.scales, ctx.compiled = values, scales, compiled
+        ctx.values, ctx.scales, ctx.compiled, ctx.gradients, ctx.done = values, scales, compiled, gradients, False
         ctx.save_for_backward(u, scores, weights, partial, partial_scale)
         return h
 
     @staticmethod
     @once_differentiable
     def backward(ctx, grad):
+        if ctx.done:  # the gradients' sums hold the first time's shares
+            raise RuntimeError("attention residuals: a pass's graph is gone through backward once")
+        ctx.done = True
         u, scores, weights, partial, partial_scale = ctx.saved_tensors
+        n = len(ctx.values)
         unmix = _through_compile(_unmix) if ctx.compiled else _unmix
         with torch.autocast(ctx.values.device.type, enabled=False):
-            d_u, d_partial, d_values = unmix(grad, u, ctx.values, ctx.scales, scores, weights, partial, partial_scale)
-        return (d_u.to(u.dtype), None, None, d_partial, None, *d_values.unbind(0))
+            d_u, d_partial = unmix(grad, u, ctx.values, ctx.scales, scores, weights, partial, partial_scale,
+                                   ctx.gradients.places(n))
+        return (d_u.to(u.dtype), None, None, d_partial, None, None, *([None] * n))

@@ -24,20 +24,34 @@ and softmax, and never hold more than one tile of scores:
                            rows for the matrix units
     sparse_queries_backward_kernel
                            its query gradients: one program per query, as
-                           the forward pass reads its rows, written once
+                           the forward pass reads its rows, written once;
+                           its tiles are (rows, heads), heads padded to 8
+                           columns, the matrix units' narrowest tile, and
+                           its blocks of rows are gathered by asynchronous
+                           copies; with more than GATHER_HEADS heads, it
+                           also adds its share of its rows' key and value
+                           gradients by atomic additions in FP32
     choosers_kernel        the inverse of the rows each query reads (its
                            chosen rows and its window): for each table row,
                            the list of queries that read it, from a count per
                            row, its running sum, then each query written
-                           into its rows' lists
+                           into its rows' lists; made once for every sparse
+                           layer that reads the same choice
+                           (pytorch_kernels.inverse)
     sparse_keys_backward_kernel
-                           its key and value gradients: one program per
-                           table row, over its list of queries, written once
+                           its key and value gradients with GATHER_HEADS
+                           heads or fewer: one program per table row, over
+                           its list of queries, written once
 
-The sparse backward pass adds up no gradient by atomic additions. The lists
-are filled by atomic additions on their counters, so the order of the
-queries in a list, and with it the rounding of a row's gradient, may differ
-from run to run. The keys' kernel gathers each listed query's q and d_out
+The rows' gradients in the sparse backward pass take one of two paths, by
+the number of heads, as in the Triton form (triton_kernels.py), whose
+docstring gives the measured costs. With more heads than GATHER_HEADS, the
+queries' kernel adds each query's share of its rows' gradients in FP32
+by atomic additions, and their order, with it the rounding, may differ
+from run to run. With GATHER_HEADS heads or fewer, the choosers' lists are
+filled by atomic additions on their counters, so the order of the queries
+in a list, and with it the rounding of a row's gradient, may differ from
+run to run. The keys' kernel gathers each listed query's q and d_out
 and computes its weights again: the products with the row's key and value
 on the matrix units, as two columns of a 16-column tile whose others are 0,
 and the sums of the row's gradients over its queries on the vector units,
@@ -81,7 +95,7 @@ import tilelang
 import tilelang.language as T
 import tvm
 
-from .pytorch_kernels import chosen_columns
+from .pytorch_kernels import chosen_columns, inverse
 
 NAME = "TileLang"
 BF16, FP32, INT32, INT64 = "bfloat16", "float32", "int32", "int64"
@@ -94,6 +108,7 @@ CANDIDATES = 512  # the most rows a query's last bin may hold to be ordered exac
 LEVELS = 16  # the most counting passes
 NONE = 1 - (1 << 31)  # the key of a row a query may not choose, below every score's (_key)
 ALL = 1 << 62  # above every score's key
+GATHER_HEADS = 2  # the most heads for which each table row gathers its queries; above, the queries scatter
 KEYS_ROWS = 32  # (query, head) rows per step of the sparse keys' backward kernel
 KEYS_THREADS = 128
 # Kernels whose warps are not specialized and that copy without the Tensor Memory Accelerator: the sparse kernels,
@@ -106,7 +121,11 @@ PLAIN = {tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True, tilelang.Pass
 class Tiles:
     """One GPU class's tile sizes: rows of (token, head) pairs and keys per
     tile of each exact kernel, the most tokens per block of the selection,
-    rows per block of the sparse kernels, pipeline stages and threads.
+    rows per block of the sparse kernels, pipeline stages, threads, and
+    the threads of the sparse queries' backward kernel: one warp per 16
+    rows of its block, since the rows are its matrix products' first
+    dimension and the heads, 8 columns or more, cannot be split between
+    warps.
 
     The selection's shared memory grows with its tokens per block (a
     histogram and a tile of keys per token), and a block of few heads
@@ -122,10 +141,11 @@ class Tiles:
     sparse_block: int
     stages: int
     threads: int
+    sparse_threads: int
 
 
-TILES_LARGE = Tiles(128, 128, 128, 64, 64, 64, 64, 64, 2, 256)
-TILES_SMALL = Tiles(64, 64, 64, 64, 32, 64, 32, 32, 2, 128)
+TILES_LARGE = Tiles(128, 128, 128, 64, 64, 64, 64, 64, 2, 256, 128)
+TILES_SMALL = Tiles(64, 64, 64, 64, 32, 64, 32, 32, 2, 128, 64)
 
 
 def tiles(device):
@@ -139,9 +159,10 @@ def _tiles(index):
     return TILES_LARGE if properties.shared_memory_per_block_optin >= 200 * 1024 else TILES_SMALL
 
 
-def _padded_heads(H):
-    """Query heads padded to the matrix units' 16 rows."""
-    return max(16, -(-H // 16) * 16)
+def _padded_heads(H, size):
+    """Query heads padded to a multiple of size: 16 as a matrix product's
+    rows, 8 as its columns (the matrix units' narrowest tile)."""
+    return max(size, -(-H // size) * size)
 
 
 def _tokens(chosen_tiles, H):
@@ -513,7 +534,7 @@ def _rows_of(idx, pos, kc, n, window, BLK, blk, nb1, by, bx, j):
 def sparse_forward_kernel(H: int, c: int, scale: float, window: int, BLK: int, stages: int, threads: int):
     """o (B, T, H, c) and lse (B, T, H), natural, the sink included, of
     each query over its rows idx (B, T, K) and its last window rows."""
-    HP = _padded_heads(H)
+    HP = _padded_heads(H, 16)
     b, t, n, kc = T.symbolic("b"), T.symbolic("t"), T.symbolic("n"), T.symbolic("kc")
     scale2 = scale * LOG2E
 
@@ -580,30 +601,44 @@ def sparse_forward_kernel(H: int, c: int, scale: float, window: int, BLK: int, s
 
 
 @tilelang.jit(pass_configs=PLAIN)
-def sparse_queries_backward_kernel(H: int, c: int, scale: float, window: int, BLK: int, threads: int):
+def sparse_queries_backward_kernel(H: int, c: int, scale: float, window: int, BLK: int, threads: int, scatter: bool):
     """dq (B, T, H, c) from q, kv, idx, pos, d_out (B, T, H, c), lse and
     delta (B, T, H): each query's gradient over its chosen rows and its
-    window, written once."""
-    HP = _padded_heads(H)
+    window, written once; tiles (rows, heads) and sums (c, heads).
+    scatter: also adds each query's share of its rows' key and value
+    gradients into dkv (B, N, 2c) in FP32, zeroed before, by atomic
+    additions of 4 values; the heads are then padded to 16, the middle
+    dimension of the products (rows, heads) x (heads, c) that make it."""
+    HP = _padded_heads(H, 16 if scatter else 8)
+    # the scatter's 17 statements of the loop over blocks, run in their order: its own analysis fails on them
+    order, stages = (list(range(17)), [0] * 17) if scatter else (None, None)
     b, t, n, kc = T.symbolic("b"), T.symbolic("t"), T.symbolic("n"), T.symbolic("kc")
+    b2, n2 = T.symbolic("b2"), T.symbolic("n2")  # dkv's, of any size when not scatter
     scale2 = scale * LOG2E
 
     @T.prim_func
     def kernel(q: T.Tensor((b, t, H, c), BF16), kv: T.Tensor((b, n, 2 * c), BF16), idx: T.Tensor((b, t, kc), INT64),
                pos: T.Tensor((b, t), INT32), d_out: T.Tensor((b, t, H, c), BF16), lse: T.Tensor((b, t, H), FP32),
-               delta: T.Tensor((b, t, H), FP32), dq: T.Tensor((b, t, H, c), BF16)):
+               delta: T.Tensor((b, t, H), FP32), dq: T.Tensor((b, t, H, c), BF16),
+               dkv: T.Tensor((b2, n2, 2 * c), FP32)):
         with T.Kernel(t, b, threads=threads) as (bx, by):
             q_s = T.alloc_shared((HP, c), BF16)
             do_s = T.alloc_shared((HP, c), BF16)
             k_s = T.alloc_shared((BLK, c), BF16)
             v_s = T.alloc_shared((BLK, c), BF16)
-            ds_s = T.alloc_shared((HP, BLK), BF16)
+            ds_s = T.alloc_shared((BLK, HP), BF16)
             rows = T.alloc_shared((BLK,), INT32)
-            s = T.alloc_fragment((HP, BLK), FP32)
-            dp = T.alloc_fragment((HP, BLK), FP32)
-            dq_f = T.alloc_fragment((HP, c), FP32)
+            s = T.alloc_fragment((BLK, HP), FP32)
+            dp = T.alloc_fragment((BLK, HP), FP32)
+            dq_f = T.alloc_fragment((c, HP), FP32)
             lse_f = T.alloc_fragment((HP,), FP32)
             delta_f = T.alloc_fragment((HP,), FP32)
+            if scatter:
+                p_s = T.alloc_shared((BLK, HP), BF16)
+                dk_f = T.alloc_fragment((BLK, c), FP32)
+                dv_f = T.alloc_fragment((BLK, c), FP32)
+                dk_s = T.alloc_shared((BLK, c), FP32)
+                dv_s = T.alloc_shared((BLK, c), FP32)
             nb1 = T.ceildiv(kc, BLK)
 
             for i, j in T.Parallel(HP, c):
@@ -613,24 +648,37 @@ def sparse_queries_backward_kernel(H: int, c: int, scale: float, window: int, BL
                 lse_f[i] = T.if_then_else(i < H, lse[by, bx, T.min(i, H - 1)] * LOG2E, T.infinity(FP32))
                 delta_f[i] = T.if_then_else(i < H, delta[by, bx, T.min(i, H - 1)], 0)
             T.clear(dq_f)
-            for blk in T.serial(nb1 + T.ceildiv(window, BLK)):
+            # one stage still makes the gathers asynchronous copies, which T.serial does not
+            for blk in T.Pipelined(nb1 + T.ceildiv(window, BLK), num_stages=1, order=order, stage=stages):
                 for j in T.Parallel(BLK):
                     rows[j] = _rows_of(idx, pos, kc, n, window, BLK, blk, nb1, by, bx, j)
                 for j, d in T.Parallel(BLK, c):
                     k_s[j, d] = T.if_then_else(rows[j] >= 0, kv[by, T.max(rows[j], 0), d], 0)
                     v_s[j, d] = T.if_then_else(rows[j] >= 0, kv[by, T.max(rows[j], 0), c + d], 0)
                 T.clear(s)
-                T.gemm(q_s, k_s, s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                T.gemm(k_s, q_s, s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 T.clear(dp)
-                T.gemm(do_s, v_s, dp, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                for i, j in T.Parallel(HP, BLK):
-                    dp[i, j] = T.if_then_else(rows[j] >= 0, T.exp2(s[i, j] * scale2 - lse_f[i]), 0) * (
-                        dp[i, j] - delta_f[i]) * scale
+                T.gemm(v_s, do_s, dp, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                for j, i in T.Parallel(BLK, HP):
+                    s[j, i] = T.if_then_else(rows[j] >= 0, T.exp2(s[j, i] * scale2 - lse_f[i]), 0)  # the weights
+                    dp[j, i] = s[j, i] * (dp[j, i] - delta_f[i]) * scale
                 T.copy(dp, ds_s)
-                T.gemm(ds_s, k_s, dq_f, policy=T.GemmWarpPolicy.FullRow)
-            for i, j in T.Parallel(HP, c):
+                T.gemm(k_s, ds_s, dq_f, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
+                if scatter:
+                    T.copy(s, p_s)
+                    T.clear(dk_f)
+                    T.gemm(ds_s, q_s, dk_f, policy=T.GemmWarpPolicy.FullRow)
+                    T.clear(dv_f)
+                    T.gemm(p_s, do_s, dv_f, policy=T.GemmWarpPolicy.FullRow)
+                    T.copy(dk_f, dk_s)
+                    T.copy(dv_f, dv_s)
+                    for j, d4 in T.Parallel(BLK, c // 4):
+                        if rows[j] >= 0:
+                            T.atomic_addx4(dkv[by, rows[j], d4 * 4], dk_s[j, d4 * 4])
+                            T.atomic_addx4(dkv[by, rows[j], c + d4 * 4], dv_s[j, d4 * 4])
+            for d, i in T.Parallel(c, HP):
                 if i < H:
-                    dq[by, bx, i, j] = T.Cast(BF16, dq_f[i, j])
+                    dq[by, bx, i, d] = T.Cast(BF16, dq_f[d, i])
 
     return kernel
 
@@ -846,12 +894,17 @@ class _Sparse(torch.autograd.Function):
         d_out = d_out.to(torch.bfloat16).contiguous()
         delta = (d_out.float() * o.float()).sum(-1)  # (B, T, H)
         dq = torch.empty_like(qb)
-        sparse_queries_backward_kernel(H, c, ctx.scale, ctx.window, chosen_tiles.sparse_block, chosen_tiles.threads)(
-            qb, table, idx, pos, d_out, lse, delta, dq)
-        starts, choosers = _choosers(idx, pos, table.shape[1], ctx.window, chosen_tiles)
-        dkv = torch.empty(table.shape, dtype=torch.bfloat16, device=qb.device)
-        sparse_keys_backward_kernel(H, c, ctx.scale, KEYS_ROWS, KEYS_THREADS)(
-            qb.view(-1, c), table, d_out.view(-1, c), lse.view(-1), delta.view(-1), starts, choosers, dkv)
+        scatter = H > GATHER_HEADS
+        dkv = torch.zeros(table.shape, dtype=torch.float32, device=qb.device) if scatter else torch.empty(
+            table.shape, dtype=torch.bfloat16, device=qb.device)
+        sparse_queries_backward_kernel(H, c, ctx.scale, ctx.window, chosen_tiles.sparse_block,
+                                       chosen_tiles.sparse_threads, scatter)(
+            qb, table, idx, pos, d_out, lse, delta, dq, dkv if scatter else dkv.new_empty(1, 1, 2 * c).float())
+        if not scatter:
+            N = table.shape[1]
+            starts, choosers = inverse(idx, (N, ctx.window), lambda: _choosers(idx, pos, N, ctx.window, chosen_tiles))
+            sparse_keys_backward_kernel(H, c, ctx.scale, KEYS_ROWS, KEYS_THREADS)(
+                qb.view(-1, c), table, d_out.view(-1, c), lse.view(-1), delta.view(-1), starts, choosers, dkv)
         d_sink = -((sink.float() - lse).exp() * delta).sum((0, 1))  # the sink carries no value
         q_dtype, k_dtype, v_dtype = ctx.dtypes
         return (dq.to(q_dtype), dkv[..., :c].to(k_dtype), dkv[..., c:].to(v_dtype), d_sink.to(sink.dtype),
