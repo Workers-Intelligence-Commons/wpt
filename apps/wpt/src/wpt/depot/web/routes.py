@@ -356,6 +356,7 @@ def routes(depot: Depot) -> list[Route]:
               "content, and libraries, the libraries holding them now), <name>_revisions every revision row of "
               "each (its id, revision and the change number it was made at; a text's revision names the content version "
               "it reads), contents every content version of each text with the change number it was made at, "
+              "content_lists each content version as the list of its parts, parts each part of each text, "
               "memberships each library's texts with the change numbers they joined and left at, pins the "
               "revision each locked library holds of each of its texts, and pulls, for a depot that follows "
               "another, each pull's change number with the upstream's change number it brought; licenses, notices, kinds, decisions and "

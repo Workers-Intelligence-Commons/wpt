@@ -7,21 +7,24 @@ failed write) is applied again before the depot's next write or when it
 is next opened, so applying a change twice must leave the tables as
 applying it once does.
 
-An entry holds no text's content: the content versions a change adds are
-written to contents right after its entry, numbered by it, and the entry
-names them by their text ids. They are written in one commit, so they are
-all there or none is. A change of scores holds its decision and the
+An entry holds no text's content: the parts and the content versions a
+change adds are written to parts and to contents right after its entry,
+numbered by it, and the entry names the versions by their text ids. The
+parts go in one commit, then the versions in one commit, so the versions
+are all there or none is, and a version is there only with every part it
+lists. An erasure's entry holds the lists of parts of the versions it cuts
+and the number of new parts, which are written right after it in one
+commit. A change of scores holds its decision and the
 number of texts it changes, never the texts: its decision and then the
 texts' new revisions, numbered by its entry, are written right after it,
-the revisions in one commit. A change whose content versions, or whose
-revisions of scores, are not there when it is applied again was cut
-before anything visible: it is cut short, its entry marked done as
-CUT_SHORT, and nothing of it is written (a change of scores' decision
-goes). Only an
-erasure's entry holds contents while it is undone, the versions it cut,
-and loses them when it is marked done, with every older state of the
-journal's storage (wpt_depot.depot). So each content is stored once, in
-contents.
+the revisions in one commit. A change whose content versions, new parts of
+an erasure or revisions of scores are not there when it is applied again
+was cut before anything visible: it is cut short, its entry marked done as
+CUT_SHORT, and nothing of it is written (a change of scores' decision and
+the parts of versions never listed go). So each content is stored once, in
+parts. An erasure's entry of an older format, which holds the versions it
+cut, loses them when it is marked done, with every older state of the
+journal's storage (wpt_depot.depot).
 
 Rows numbered at a change left undone may already be written in some
 tables and not in others, so a reader of a depot that another app writes

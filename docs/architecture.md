@@ -53,7 +53,8 @@ and its takedown contact.
 
 Its tables are `about` (the depot's name, maintainer, takedown contact
 and upstream), `licenses`, `notices`, `kinds`, `decisions`, `texts`,
-`contents` (every content version of each text), `libraries`,
+`contents` (every content version of each text, as the list of its
+parts), `parts` (the parts of each text's content versions), `libraries`,
 `memberships` (when each text joined and left each library), `pins` (the
 revision of each text a locked library reads), `erasures`, `datasets`,
 `pulls` (for a depot that follows another, how its change numbers meet
@@ -93,19 +94,53 @@ was at any change number, which a dataset names for each library it
 reads. Delta Lake's own table history plays no part: an admitted erasure
 drops it.
 
+**Contents.** A content version, a plain text or an item's JSON, is the
+ordered list of its parts, and its row of `contents` holds that list,
+each part's SHA-256 and length, with the version's length in characters
+and in UTF-8 bytes. The same rule cuts every text, whatever its size, so
+a text of many gigabytes, such as a repository with all its files and its
+history, is one text (`wpt_depot/parts.py`). A text shorter than a part's
+least size is one part. A cut falls only right after a line end, at a line
+end that a hash of the bytes ending there chooses, so a part holds a few
+megabytes on average, and a cut depends only on the bytes around it. A
+part never holds more than a fixed maximum, far under the 2 GiB that one
+stored string holds: past it, the part ends at its last line end, or,
+with none, at its last whole character. A row of `parts` holds one part,
+keyed by the text's id and the part's hash, stored once for that text and
+shared by none other. An edit changes only the parts around it, so a new
+content version stores only the parts no version of the text held
+before. An erasure writes again only the parts that hold a character it
+cuts, and the versions list the new parts instead. A part that no version
+lists any longer goes. A text bigger than memory is added from a file read
+as a stream. An erasure, a clone and a pull read and write a text's parts a
+few at a time, and the corpus build reads the parts of all the texts it
+takes in one pass over `parts`. The corpus build holds the tokens of one
+text whole in memory while it encodes it, and `wpt depot show` and the web
+pages give a text whole, so they hold it in memory.
+
 **SQL.** A read query sees each revised table's current state under its
 plain name (`texts`, `libraries`, `datasets`, `about`, `erasures`) and
 every one of its rows under `<name>_revisions`. The `texts` view joins
-each text with the content version its current revision reads and the
-libraries that hold it now. The other
-tables, `contents`, `memberships`, `pins` and `pulls` included, are seen
-as they are.
+each text with the content version its current revision reads, its length
+and the libraries that hold it now. The `contents` view gives each content
+version's whole text, its parts joined in order, and `content_lists` its
+rows as they are. The other
+tables, `parts`, `memberships`, `pins` and `pulls` included, are seen
+as they are. A query that names no text column reads the views without
+joining any part, so a query over the texts' other columns costs the same
+whatever their size. DuckDB holds a string of at most 4294967295 bytes: a
+query that reads the text of a content version bigger than that fails
+with an error that names the version, and such a text is read from its
+parts, as `wpt depot show` reads it.
 
 **The journal.** Delta Lake commits one table at a time, so a change that
 touches several tables is written into the journal first, and that write
-makes it certain. The journal holds no text's content: the content
-versions a change adds are written to `contents` in one commit right
-after its entry, numbered by its change number. A change of scores holds
+makes it certain. The journal holds no text's content: right after its
+entry, the parts a change adds are written to `parts` in one streamed
+commit, and then its content versions to `contents` in one commit, both
+numbered by its change number. An erasure's entry holds the lists of parts
+of the versions it cuts and the number of new parts, and its new parts are
+written the same way. A change of scores holds
 only its decision and the number of texts it changes: its decision and
 then the texts' new revisions, made by one query over the lines of the
 change and the current texts, are written right after its entry, the
@@ -134,11 +169,14 @@ number of small files whatever the number of writes before. A merge
 that fails leaves the write it follows as committed. The files a merge
 replaces stay with the older states, and every checkpoint records them,
 so opening a table still grows slowly with the files it replaced.
-`contents` is never merged: its replaced files would hold each content a
-second time, so its file count grows with the writes that add contents.
-A query opens only the tables it reads. A text's content is stored once,
-in `contents`, whose content columns are written without statistics, so
-no file footer or table log holds a copy of a text's first characters.
+`parts` and `contents` are never merged: the replaced files of `parts`
+would hold each content a second time, so their file counts grow with the
+writes that add contents. A query opens only the tables it reads. A text's
+content is stored once, in `parts`, whose content column is written
+without statistics and without a dictionary, so no file footer or table
+log holds a copy of a text's first characters. The Parquet writer checks
+a page's size every 16 rows of `parts`, so a page holds at most 16 parts
+past its size limit and stays under the 2 GiB a Parquet page holds.
 
 **Format.** The depot's layout, its tables and their columns, has a
 number: its format. The code holds the format it reads and writes
@@ -156,6 +194,20 @@ view of a table a step widened this way (`WIDENED` in
 `wpt_depot/schema.py`) matches the columns of its files by name, which
 reads the footer of each of its files before a query runs, and every other
 table's view reads its files by the first one's columns.
+
+Format 3 stores each content version as the list of its parts, in the new
+table `parts` ("Contents" above). Its upgrade step reads the data files of
+`contents` in batches of a bounded size, a few rows at a time, and never
+holds the table in memory. It stores each batch's parts in one commit of
+`parts`, which records the batch's number as a Delta Lake transaction, so
+a step cut short resumes after the last batch stored and stores no part
+twice. It keeps each batch's lists in the folder `format-3-lists` of the
+depot's folder, then replaces the rows of `contents` in one commit, drops
+the older states of `contents`, which hold every text a second time, and
+removes that folder, also when it runs again after a stop. Until it drops
+those older states, the depot needs free space about the size of its
+texts' content, since `parts` holds them a second time. A query of a table a
+later format added reads it as empty in a depot of an older format.
 
 Every way into a depot that reads or changes its rows refuses one of
 another format than the code's, older or newer: every `wpt depot` command
@@ -194,7 +246,11 @@ every row of every table but the journal, revisions, contents,
 memberships and pins included, with their change numbers, into a new
 depot whose `about` row names the upstream. `wpt depot pull` fetches the
 upstream's updates: each upstream row replaces the row of the same key,
-and a row only the depot holds stays. Its change number is past the
+and a row only the depot holds stays. A part never changes once stored, so
+a clone and a pull copy only the parts the depot lacks that the rows of
+contents they bring list, a few at a time,
+and a pull drops the parts that the versions an erasure it brings cut no
+longer list. Its change number is past the
 upstream's, so the depot's later changes come after every change it
 received. The texts the upstream's admitted erasures removed are removed
 too, and an erasure the depot had not carried out is carried out there

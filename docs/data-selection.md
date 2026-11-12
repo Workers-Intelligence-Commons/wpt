@@ -9,7 +9,7 @@ carry and how decisions work is in [licenses.md](licenses.md).
 ## Texts
 
 A text is one piece of final training text, such as an article, a book
-or a code file, with its metadata. Each text is a row of a depot's
+or a repository with all its files, with its metadata. Each text is a row of a depot's
 `texts` table:
 
 - its text, or, for a structured item, its kind and its content
@@ -46,7 +46,9 @@ number of the content version it reads, never the content itself.
 A text's content is stored apart, as content versions numbered 1, 2,
 3..., each with the change number it was made at. A content version never
 changes but by an erasure, which cuts its passages from every version
-([erasure.md](erasure.md)).
+([erasure.md](erasure.md)). Each content version is stored as the ordered
+list of its parts, so a text of any size is one text
+([architecture.md](architecture.md), "Contents").
 
 Its licenses change only through `wpt depot relicense`, which starts its
 decisions over ([licenses.md](licenses.md), "Who decides").

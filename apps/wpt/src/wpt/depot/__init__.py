@@ -25,8 +25,9 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           texts, libraries, datasets, about and erasures are the current
                                           state (texts with their current content and the libraries holding
                                           them now), <name>_revisions every revision of each, contents every
-                                          content version of each text, and memberships, pins and pulls as
-                                          they are
+                                          content version of each text, content_lists each version as the
+                                          list of its parts, and parts, memberships, pins and pulls as they
+                                          are
     wpt depot add FILE [--kind KIND] --license L [...] [--notice FILE] [--tag T ...] [--title T]
                 [--author A ...] [--address A] DECLARATION
                                           a plain text (FILE, UTF-8) or an item of KIND (FILE, its JSON),
@@ -145,6 +146,8 @@ from pathlib import Path
 from wpt_depot import About, Declaration, Depot, NewText, backup, clone, restore
 from wpt_depot import remote as remotes
 from wpt_depot.errors import DepotError
+from wpt_depot.filters import literal
+from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED
 from wpt_depot.settings import depot_address
 from wpt_recipes import RecipeError
@@ -211,9 +214,10 @@ def cmd_sql(args):
 
 
 def cmd_add(args):
-    content = Path(args.file).read_text(encoding="utf-8")
+    # a plain text is read as a stream, so a file of any size is added; an item's JSON is read whole
+    content = Path(args.file).read_text(encoding="utf-8") if args.kind else None
     notice = None if args.notice is None else Path(args.notice).read_text(encoding="utf-8")
-    one = NewText(text=None if args.kind else content, kind=args.kind, content=content if args.kind else None,
+    one = NewText(text=None if args.kind else FileText(Path(args.file)), kind=args.kind, content=content,
                   licenses=tuple(args.license), notice=notice, title=args.title,
                   authors=tuple(args.author) if args.author else None, tags=tuple(args.tag), address=args.address)
     [added] = opened().add([one], _declaration(args))
@@ -255,8 +259,8 @@ def cmd_relicense(args):
 
 def cmd_content(args):
     depot = opened()
-    new = Path(args.file).read_text(encoding="utf-8")
-    item = depot.show(args.id)["text"]["kind"] is not None
+    item = depot.sql(f"SELECT kind FROM texts WHERE id = {literal(args.id)}")["kind"].to_pylist() not in ([None], [])
+    new = Path(args.file).read_text(encoding="utf-8") if item else FileText(Path(args.file))  # a plain text as a stream
     changed = depot.change_content(args.id, None if item else new, new if item else None, _declaration(args))
     if changed is None:
         say(f"{args.id}: its content is this already, nothing written")

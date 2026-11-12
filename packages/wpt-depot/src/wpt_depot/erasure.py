@@ -33,6 +33,12 @@ DOMAIN and a name. Anyone can compute them for a guess, so they confirm a
 guess at a short passage; hash_b can be slid over a later text to find the
 passage there.
 
+A plain text's content version may be far bigger than memory: it is read
+as its parts (wpt_depot.parts.Parted), each cut a pass over its parts that
+finds a passage across part boundaries, and what is cut of it is told as the
+places of its characters that stay (pieces), so only the parts that lose a
+character are written again.
+
 What a request asks to erase can be looked at without sending a whole text:
 for each needle, at most CONTEXT characters on each side of its passage, and
 the passage (only its two ends when it is long), or once the request is
@@ -41,6 +47,7 @@ carried out, the passage's length at the place it left (shown).
 
 import hashlib
 import json
+from collections.abc import Callable, Iterable, Iterator
 from typing import NamedTuple
 
 from .errors import Refused
@@ -133,14 +140,18 @@ def merged(needles: list[Needle]) -> list[Passage]:
     return sorted(found, key=lambda one: one.needles[0])
 
 
-def carried_out(documents: dict[str, dict[int, str]], needles: list[Needle], items=frozenset()
-                ) -> tuple[dict[str, dict[int, str]], list[str], list[tuple[Passage, str, int | None]]]:
-    """(the cut content versions, {id: {version: its text cut}} for each
-    version the erasure changes, the ids of texts removed whole, (passage,
-    its text, its place after the cut) for each passage of merged(needles)
-    in order): what an erasure of needles leaves of documents, every content
-    version of every id they name ({id: {version: its text}}; for an id of
-    items, its content as JSON text).
+def carried_out(documents: dict[str, dict[int, object]], needles: list[Needle], items=frozenset()
+                ) -> tuple[dict[str, dict[int, object]], list[str], list[tuple[Passage, object, int | None]]]:
+    """(the cut content versions, {id: {version: what is left of it}} for
+    each version the erasure changes, the ids of texts removed whole,
+    (passage, its text, its place after the cut) for each passage of
+    merged(needles) in order): what an erasure of needles leaves of
+    documents, every content version of every id they name ({id: {version:
+    its text}}: a plain text as a str or a wpt_depot.parts.Parted; for an id
+    of items, its content as JSON text). What is left of an item is its cut
+    content as JSON text; of a plain text, the places [(start, end)] of its
+    characters that stay, in order (pieces). A passage's text is a str, or
+    for a whole plain text the text itself, as documents gives it.
 
     In the content version a needle names, the string it counts in first loses the characters of its named
     passages, so none of them remains; then every passage of a text is
@@ -177,10 +188,11 @@ def carried_out(documents: dict[str, dict[int, str]], needles: list[Needle], ite
                 if value != json.dumps(content, ensure_ascii=False):
                     cut.setdefault(text, {})[version] = value
             else:
-                value, found = _cut_string(document, [(one.start, one.end, at) for at, one in here], removing)
+                pieces, found = _cut_pieces(_blocks_of(document), len(document),
+                                            [(one.start, one.end, at) for at, one in here], removing)
                 places.update(found)
-                if value != document:
-                    cut.setdefault(text, {})[version] = value
+                if pieces != [(0, len(document))]:
+                    cut.setdefault(text, {})[version] = pieces
     return cut, removed, [(one, texts[at], places.get(at)) for at, one in enumerate(passages)]
 
 
@@ -211,27 +223,96 @@ def _cut_json(value, path: tuple, named: dict, removing: list[str], places: dict
 
 
 def _cut_string(value: str, named: list[tuple[int, int, int]], removing: list[str]) -> tuple[str, dict[int, int]]:
-    """(value cut, {number: place}): value without the characters of each
-    named passage (start, end, number), then without each passage of
-    removing at its leftmost places that do not overlap, in order; each
-    named passage's place is how many characters of the cut value stood
-    before its start."""
-    if not named and not any(one in value for one in removing):
-        return value, {}
-    # what is left, as the places in value of its pieces, in order: (start, end)
-    pieces = [(0, len(value))]
+    """(value cut, {number: place}), as _cut_pieces cuts it."""
+    pieces, places = _cut_pieces(_blocks_of(value), len(value), named, removing)
+    return "".join(value[a:b] for a, b in pieces), places
+
+
+def _blocks_of(document) -> Callable[[], Iterator[tuple[int, str]]]:
+    """How to read a str or a wpt_depot.parts.Parted again and again, as
+    (its first character's place, a block of text), in order: a str whole,
+    a Parted part by part."""
+    if isinstance(document, str):
+        return lambda: iter([(0, document)])
+
+    def blocks():
+        for start, value in zip(document.starts, document):
+            yield start, value
+    return blocks
+
+
+def _cut_pieces(blocks: Callable[[], Iterable[tuple[int, str]]], length: int, named: list[tuple[int, int, int]],
+                removing: list[str]) -> tuple[list[tuple[int, int]], dict[int, int]]:
+    """(pieces, {number: place}): what is left of a string of length
+    characters, read as blocks() gives it, once it loses the characters of
+    each named passage (start, end, number), then each passage of removing
+    at its leftmost places that do not overlap (as str.replace finds them),
+    one passage after the other: the places [(start, end)] in the string of
+    the characters that stay, in order. Each named passage's place is how
+    many characters that stay stood before its start. Each passage of
+    removing reads the string once, a block at a time."""
+    pieces = [(0, length)]
     for start, end, _ in sorted(named):
         pieces = _without_range(pieces, start, end)
     for passage in removing:
-        current = "".join(value[a:b] for a, b in pieces)
-        spans, at = [], current.find(passage)
-        while at != -1:
-            spans.append((at, at + len(passage)))
-            at = current.find(passage, at + len(passage))
-        for start, end in reversed(spans):  # each span in the places of current, the last first
-            pieces = _without_current(pieces, start, end)
+        spans = _spans(_kept(blocks(), pieces), passage)
+        if spans:
+            pieces = _without_spans(pieces, spans)
     places = {number: sum(max(0, min(b, start) - a) for a, b in pieces) for start, _, number in named}
-    return "".join(value[a:b] for a, b in pieces), places
+    return pieces, places
+
+
+def _kept(blocks: Iterable[tuple[int, str]], pieces: list[tuple[int, int]]) -> Iterator[str]:
+    """The characters of the blocks that pieces keep, in order, a piece of a block at a time."""
+    first = 0
+    for start, value in blocks:
+        end = start + len(value)
+        while first < len(pieces) and pieces[first][1] <= start:
+            first += 1
+        at = first
+        while at < len(pieces) and pieces[at][0] < end:
+            a, b = pieces[at]
+            yield value[max(a, start) - start:min(b, end) - start]
+            at += 1
+
+
+def _spans(segments: Iterable[str], passage: str) -> list[tuple[int, int]]:
+    """The places [(start, end)] of passage in the string the segments make
+    one after the other, leftmost first and not overlapping, as repeated
+    str.find gives them; at most a segment and the passage's length are
+    held at a time."""
+    spans, held, offset, at = [], "", 0, 0  # offset: the place of held's first character; at: where to look on
+    for segment in segments:
+        held += segment
+        found = held.find(passage, at)
+        while found != -1:
+            spans.append((offset + found, offset + found + len(passage)))
+            at = found + len(passage)
+            found = held.find(passage, at)
+        kept = max(at, len(held) - len(passage) + 1)  # a place before it cannot start a passage not found yet
+        held, offset, at = held[kept:], offset + kept, 0
+    return spans
+
+
+def _without_spans(pieces: list[tuple[int, int]], spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """pieces less the characters of each span [start, end) of the string
+    they make now, the spans in order and apart."""
+    found, offset, next_ = [], 0, 0
+    for a, b in pieces:
+        low_end, at = offset + b - a, a  # at: the first place of this piece not handled yet
+        while next_ < len(spans) and spans[next_][0] < low_end:
+            start, end = spans[next_]
+            low, high = a + max(start, offset) - offset, a + min(end, low_end) - offset
+            if low > at:
+                found.append((at, low))
+            at = max(at, high)
+            if end > low_end:
+                break
+            next_ += 1
+        if at < b:
+            found.append((at, b))
+        offset = low_end
+    return found
 
 
 def _without_range(pieces: list[tuple[int, int]], start: int, end: int) -> list[tuple[int, int]]:
@@ -245,22 +326,6 @@ def _without_range(pieces: list[tuple[int, int]], start: int, end: int) -> list[
             found.append((a, start))
         if b > end:
             found.append((end, b))
-    return found
-
-
-def _without_current(pieces: list[tuple[int, int]], start: int, end: int) -> list[tuple[int, int]]:
-    """pieces less the characters [start, end) of the string they make now."""
-    found, offset = [], 0
-    for a, b in pieces:
-        low, high = max(start - offset, 0), min(end - offset, b - a)
-        if low >= high:
-            found.append((a, b))
-        else:
-            if low > 0:
-                found.append((a, a + low))
-            if high < b - a:
-                found.append((a + high, b))
-        offset += b - a
     return found
 
 
@@ -351,21 +416,48 @@ def _entries(needles: list[Needle], erased: list[dict]) -> list[dict | None]:
     return found
 
 
-def named(passage: str) -> dict:
-    """{length, hash_a, hash_b} of a passage."""
-    return {"length": len(passage), "hash_a": hashlib.sha256(passage.encode()).digest(),
-            "hash_b": rolling(passage).to_bytes(8, "big")}
+def named(passage) -> dict:
+    """{length, hash_a, hash_b} of a passage: a str, or an iterable of the
+    str blocks it is made of (as a wpt_depot.parts.Parted gives them), read
+    once, a block at a time."""
+    blocks = [passage] if isinstance(passage, str) else passage
+    length, digest, value = 0, hashlib.sha256(), 0
+    for block in blocks:
+        length += len(block)
+        digest.update(block.encode())
+        value = rolling(block, value)
+    return {"length": length, "hash_a": digest.digest(), "hash_b": value.to_bytes(8, "big")}
 
 
-def holds_erased(strings: list[str], erased: list[dict]) -> bool:
+def holds_erased(strings: Iterable, erased: list[dict]) -> bool:
     """Whether one of the strings holds a passage whose {length, hash_a}
-    is one of erased: every window of each length is hashed and compared."""
+    is one of erased: every window of each length is hashed and compared.
+    Each string is a str, or an iterable of the str blocks it is made of,
+    read once, holding a block and the longest length at a time."""
     wanted: dict[int, set[bytes]] = {}
     for one in erased:
         wanted.setdefault(one["length"], set()).add(bytes(one["hash_a"]))
-    return any(hashlib.sha256(string[start:start + length].encode("utf-8", "surrogatepass")).digest() in hashes
-               for string in strings for length, hashes in wanted.items()
-               for start in range(len(string) - length + 1))
+    if not wanted:
+        return False
+    longest = max(wanted)
+    for string in strings:
+        held, seen = "", 0  # seen: the characters of held whose windows were compared already
+        for block in [string] if isinstance(string, str) else string:
+            held += block
+            if _holds(held, seen, wanted):
+                return True
+            kept = max(0, len(held) - longest + 1)
+            held = held[kept:]
+            seen = len(held)
+    return False
+
+
+def _holds(held: str, seen: int, wanted: dict[int, set[bytes]]) -> bool:
+    """Whether a window of held of a length wanted names, that ends past its
+    first seen characters, hashes to one of its hash_a."""
+    return any(hashlib.sha256(held[start:start + length].encode("utf-8", "surrogatepass")).digest() in hashes
+               for length, hashes in wanted.items()
+               for start in range(max(0, seen - length + 1), len(held) - length + 1))
 
 
 def strings_of(value) -> list[str]:
@@ -379,11 +471,12 @@ def strings_of(value) -> list[str]:
     return []
 
 
-def rolling(passage: str) -> int:
+def rolling(passage: str, value: int = 0) -> int:
     """The polynomial hash of passage: the sum of number(c_k) x
-    base^(L-1-k) modulo MODULUS, for its L characters c_k."""
+    base^(L-1-k) modulo MODULUS, for its L characters c_k; with value, the
+    hash of a string that goes on from one whose hash is value."""
     base = _number(b"base") or 1
-    value, numbers = 0, {}
+    numbers = {}
     for character in passage:
         if character not in numbers:
             numbers[character] = _number(b"character" + character.encode("utf-8", "surrogatepass"))

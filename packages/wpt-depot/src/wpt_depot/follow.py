@@ -22,7 +22,15 @@ refused (wpt_depot.depot), so only the upstream changes them and a pull
 never meets a clone's revision of one. The clone's own rows stay fully
 changeable, and its own libraries may hold upstream texts.
 
-A pull puts every row the upstream holds into the depot: a row of the same
+The parts of the texts' content versions (wpt_depot.parts) are read and
+written a few at a time, never whole in memory. A part never changes once
+stored (its key is its text's id and the hash of its bytes), so a pull
+adds only the parts that the upstream's rows of contents the depot does
+not hold as they are list and the depot lacks, before those rows, and, for
+each text an erasure it brings cut, drops every part no content version of
+the text lists any longer, as carrying the erasure out here would.
+
+A pull puts every other row the upstream holds into the depot: a row of the same
 key (an id and a revision or a content version, a license's or a kind's name, a membership's
 library, text and joining change) is replaced by the upstream's, which
 brings what the upstream changed in place (a content version an erasure cut, a
@@ -75,11 +83,13 @@ import pyarrow.compute as pc
 from . import ids, policy
 from .depot import About, Depot, location
 from .errors import DepotExists, NoUpstream, Refused, VersionGone
+from .filters import literal
 from .journal import Journal
 from .schema import FORMAT, REFUSED, TABLES, rows
 from .tables import Tables
 
-COPIED = tuple(name for name in TABLES if name not in ("about", "journal"))
+# parts first, so a content version a pull brings finds every part it lists
+COPIED = ("parts", *(name for name in TABLES if name not in ("about", "journal", "parts")))
 
 
 def clone(address: str, to: str, about: About, settings: dict | None = None) -> Depot:
@@ -98,7 +108,10 @@ def clone(address: str, to: str, about: About, settings: dict | None = None) -> 
     target.create()
     received = upstream.journal.settled()  # before any row is read: what is numbered up to it is whole
     for name in COPIED:
-        target.append(name, upstream.tables.read(name))
+        if name == "parts":
+            target.append_stream(name, upstream.tables.stream(name))
+        else:
+            target.append(name, upstream.tables.read(name))
     number = Depot(to, upstream.settings).change() + 1  # past every change number it received
     target.append("pulls", rows("pulls", [{"depot": about.name, "change": number, "upstream": upstream.name(),
                                             "upstream_change": received}]))
@@ -198,23 +211,69 @@ def apply_pull(depot: Depot, change: dict, number: int):
         depot.tables.drop_history()
 
 
+def _bring_parts(depot: Depot, upstream: Tables, version: int, contents: pa.Table):
+    """Add to depot every part that a row of the upstream's contents
+    (contents, read at the version the pull reads) lists and the depot does
+    not hold, read from the upstream's parts at version a few at a time:
+    only the rows of contents the depot does not hold as they are can list
+    one, whatever change numbers the parts carry, so a clone of a clone gets
+    them too."""
+    con = depot.tables.bare()
+    try:
+        con.register("theirs", contents.select(["id", "version", "parts"]))
+        con.register("ours", depot.tables.read("contents", columns=["id", "version", "parts"]))
+        listed = con.sql("SELECT DISTINCT id, unnest(parts).hash AS hash FROM theirs t WHERE NOT EXISTS "
+                         "(SELECT 1 FROM ours o WHERE o.id = t.id AND o.version = t.version AND o.parts = t.parts)"
+                         ).to_arrow_table().to_pylist()
+    finally:
+        con.close()
+    texts = sorted({one["id"] for one in listed})
+    if not texts:
+        return
+    named = ", ".join(map(literal, texts))
+    held = {(one["id"], one["hash"]) for one in depot.tables.query(
+        f"SELECT id, hash FROM parts WHERE id IN ({named})").to_pylist()}
+    wanted = {(one["id"], one["hash"]) for one in listed} - held
+    if not wanted:
+        return
+
+    def missing(found):
+        for batch in found:
+            keep = [(one, key) in wanted for one, key in zip(batch.column("id").to_pylist(),
+                                                           batch.column("hash").to_pylist())]
+            if any(keep):
+                yield batch.filter(pa.array(keep))
+    named = ", ".join(map(literal, sorted({text for text, _ in wanted})))
+    depot.tables.append_stream("parts", missing(upstream.stream("parts", version, f"id IN ({named})")))
+
+
 def _bring(depot: Depot, upstream: Tables, versions: dict[str, int], before: set[str] | None) -> tuple[bool, dict]:
-    """Put into depot every row of the upstream's tables at versions,
-    removing the texts the erasures read removed: (whether the erasures read
-    hold one carried out that is not in before, True when before is None;
-    {texts, decisions: the rows read of those tables}). VersionGone when a
-    version is no longer kept; bringing again is harmless."""
+    """Put into depot every row of the upstream's tables at versions (of
+    parts, those its rows of contents list that it lacks, before those rows),
+    removing the texts the erasures read removed and the parts no content
+    version lists any longer of the texts they cut: (whether the erasures
+    read hold one carried out that is not in before, True when before is
+    None; {texts, decisions: the rows read of those tables}). VersionGone
+    when a version is no longer kept; bringing again is harmless."""
     fresh, read = before is None, {}
     for name in COPIED:
+        if name == "parts":
+            continue  # brought with contents, before its rows
         found = upstream.read(name, versions[name])
+        if name == "contents":
+            _bring_parts(depot, upstream, versions["parts"], found)
         if name in ("texts", "decisions"):
             read[name] = found
         depot.tables.upsert(name, found)
         if name == "erasures":
             fresh = fresh or bool(_carried_out(found) - before)
-            gone = sorted({needle["text"] for one in found.to_pylist() if one["erased"] is not None
-                           for needle in one["needles"] if needle["start"] is None})
+            carried = [one for one in found.to_pylist() if one["erased"] is not None]
+            gone = sorted({needle["text"] for one in carried for needle in one["needles"] if needle["start"] is None})
             depot._remove_texts(gone)
+            cut = sorted({needle["text"] for one in carried if before is None or one["id"] not in before
+                          for needle in one["needles"] if needle["start"] is not None} - set(gone))
+            if cut:
+                depot._drop_unlisted(cut)
     return fresh, read
 
 

@@ -1,6 +1,11 @@
+import hashlib
+import shutil
+from pathlib import Path
+
+import pyarrow as pa
 import pytest
 
-from wpt_depot import About, Depot, NewText, backup, clone, pull, restore
+from wpt_depot import About, Depot, NewText, backup, clone, format3, parts, pull, restore
 from wpt_depot import depot as depots
 from wpt_depot.errors import JournalUnfinished, OtherFormat
 from wpt_depot.schema import FORMAT, STEPS
@@ -10,9 +15,30 @@ from wpt_depot.tables import Tables
 ABOUT = "SELECT * EXCLUDE (format) FROM about_revisions ORDER BY revision"
 
 
+def at_format_2(depot):
+    """The depot as format 2 lays it out: each row of contents holding its
+    version's whole text (text, or an item's content), no parts table, and
+    every about row of format 2."""
+    found = depot.tables.query("SELECT id, version, change, text, kind, content FROM contents")
+    schema = pa.schema([pa.field("id", pa.string(), False), pa.field("version", pa.int64(), False),
+                        pa.field("change", pa.int64(), False), pa.field("text", pa.string()),
+                        pa.field("kind", pa.string()), pa.field("content", pa.string())])
+    found = found.cast(schema)
+    depot.tables.rewrite("contents", found.slice(0, 1))
+    for at in range(1, found.num_rows):  # a data file for each row, as appends at format 2 left them
+        depot.tables.append("contents", found.slice(at, 1))
+    depot.tables.table("contents").alter.add_constraint({format3.CONSTRAINT_2: (
+        "(kind IS NULL AND text IS NOT NULL AND content IS NULL) "
+        "OR (kind IS NOT NULL AND text IS NULL AND content IS NOT NULL)")})
+    depot.tables.drop_history(["contents"])
+    shutil.rmtree(Path(depot.address) / "parts")
+    at_format(depot, 2)
+
+
 def at_format_1(depot):
-    """The depot as format 1 lays it out: its texts table without the column
-    scores, and every about row of format 1."""
+    """The depot as format 1 lays it out: format 2's layout, its texts table
+    without the column scores, and every about row of format 1."""
+    at_format_2(depot)
     depot.tables.rewrite("texts", depot.tables.read("texts").drop_columns(["scores"]))
     at_format(depot, 1)
 
@@ -275,3 +301,105 @@ def test_a_depot_of_format_1_is_backed_up_and_restored_as_it_is_and_the_copy_the
     assert "scores" not in restored.tables.columns("texts")
     upgraded, start = Depot.upgrade(restored.address)
     assert start == 1 and upgraded.show(text)["text"]["scores"] is None
+
+
+def hex_lines(count: int) -> str:
+    return "".join(hashlib.sha256(str(number).encode()).hexdigest() + "\n" for number in range(count))
+
+
+def format_2_depot(make_depot, me, monkeypatch):
+    """A depot at format 2 holding a text of many parts in two versions, a small text and an item, and what
+    each version reads as before: {(id, version): (text, content)}."""
+    monkeypatch.setattr(parts, "SIZES", parts.Sizes(64, 256, 1024))
+    depot = make_depot()
+    big, small = depot.add([NewText(text=hex_lines(200), licenses=("CC0-1.0",)),
+                            NewText(text="one line", licenses=("CC0-1.0",))], me)
+    depot.add([NewText(kind="probe", content='{"question": "q?", "patterns": ["x"]}', licenses=("CC0-1.0",))], me)
+    depot.change_content(big, hex_lines(200).replace(hashlib.sha256(b"100").hexdigest(), "edited"), None, me)
+    before = {(row["id"], row["version"]): (row["text"], row["content"]) for row in depot.sql(
+        "SELECT id, version, text, content FROM contents").to_pylist()}
+    at_format_2(depot)
+    return depot, big, before
+
+
+def test_an_upgrade_from_format_2_stores_every_content_version_as_its_parts_each_part_once(make_depot, me, monkeypatch):
+    depot, big, before = format_2_depot(make_depot, me, monkeypatch)
+    assert "text" in depot.tables.columns("contents") and "parts" not in depot.tables.exist()
+
+    upgraded, start = Depot.upgrade(depot.address)
+
+    assert start == 2 and upgraded.format() == FORMAT
+    assert {(row["id"], row["version"]): (row["text"], row["content"]) for row in upgraded.sql(
+        "SELECT id, version, text, content FROM contents").to_pylist()} == before
+    stored = upgraded.sql("SELECT count(*) AS n, count(DISTINCT (id, hash)) AS distinct_ FROM parts").to_pylist()
+    listed = upgraded.sql("SELECT count(DISTINCT (id, hash)) AS n FROM "
+                          "(SELECT id, unnest(parts).hash AS hash FROM content_lists)")["n"].to_pylist()
+    assert stored == [{"n": listed[0], "distinct_": listed[0]}]  # every part listed is stored once, none else
+    versions = upgraded.sql(f"SELECT version, parts FROM content_lists WHERE id = '{big}' ORDER BY version").to_pylist()
+    shared = {bytes(one["hash"]) for one in versions[0]["parts"]} & {bytes(one["hash"]) for one in versions[1]["parts"]}
+    assert len(shared) >= len(versions[0]["parts"]) - 3  # the second version reuses the parts it did not change
+    assert "text" not in upgraded.tables.columns("contents")
+    assert files_holding_text(depot.address, hashlib.sha256(b"100").hexdigest()) == ["parts"]  # no old copy kept
+
+    format3.to_parts(upgraded.tables)  # run again, as after a stop just before its format was recorded
+
+    assert upgraded.sql("SELECT count(*) AS n FROM parts").to_pylist() == [{"n": listed[0]}]
+    assert Depot.open(depot.address).show(big)["text"]["text"] == before[big, 2][0]
+
+
+def files_holding_text(folder, passage: str) -> list[str]:
+    """The tables some file of which holds passage."""
+    return sorted({path.relative_to(folder).parts[0] for path in Path(folder).rglob("*")
+                   if path.is_file() and passage.encode() in path.read_bytes()})
+
+
+def test_an_upgrade_from_format_2_cut_short_between_two_batches_resumes_and_stores_no_part_twice(
+        make_depot, me, monkeypatch, tmp_path):
+    depot, big, before = format_2_depot(make_depot, me, monkeypatch)
+    monkeypatch.setattr(format3, "BATCH_BYTES", 1)  # a batch for each data file of contents
+    assert len(depot.tables.table("contents").file_uris()) > 1
+    real = Tables.append_stream
+    calls = []
+
+    def stops(self, name, found, transaction=None, **written):
+        calls.append(transaction)
+        if len(calls) == 2:
+            raise OSError("the machine stopped")
+        return real(self, name, found, transaction, **written)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Tables, "append_stream", stops)
+        with pytest.raises(OSError):
+            Depot.upgrade(depot.address)
+    assert Depot.find(depot.address).format() == 2
+    assert len(list((Path(depot.address) / format3.LISTS).glob("*.parquet"))) == 1  # the first batch's lists, kept
+
+    upgraded, start = Depot.upgrade(depot.address)
+
+    assert start == 2 and upgraded.format() == FORMAT
+    assert {(row["id"], row["version"]): (row["text"], row["content"]) for row in upgraded.sql(
+        "SELECT id, version, text, content FROM contents").to_pylist()} == before
+    assert upgraded.sql("SELECT count(*) = count(DISTINCT (id, hash)) AS once FROM parts")["once"].to_pylist() == [True]
+    assert not (Path(depot.address) / format3.LISTS).exists()
+
+
+def test_an_upgrade_from_format_2_stopped_after_contents_is_replaced_removes_the_kept_lists_when_run_again(
+        make_depot, me, monkeypatch):
+    depot, big, before = format_2_depot(make_depot, me, monkeypatch)
+    real = format3._remove
+
+    def stops(system, folder):
+        if (Path(depot.address) / format3.LISTS).exists():
+            raise OSError("the machine stopped")
+        real(system, folder)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(format3, "_remove", stops)
+        with pytest.raises(OSError):
+            Depot.upgrade(depot.address)
+    assert (Path(depot.address) / format3.LISTS).exists()
+
+    upgraded, _ = Depot.upgrade(depot.address)
+
+    assert not (Path(depot.address) / format3.LISTS).exists()
+    assert upgraded.format() == FORMAT and upgraded.content(big, 2) == before[big, 2][0]

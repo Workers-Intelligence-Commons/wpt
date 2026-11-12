@@ -62,7 +62,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
     assert depot_command("show", "test-depot-1") == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["text"] | {"decisions": None} == {
-        "id": "test-depot-1", "revision": 2, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": None, "content": None, "content_version": 1, "licenses": ["CC0-1.0"],
+        "id": "test-depot-1", "revision": 2, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": None, "content": None, "content_version": 1, "length": 21, "licenses": ["CC0-1.0"],
         "notice": "test-depot-1", "title": "Fox", "authors": ["Ann"], "tags": ["en"], "address": "https://example.org/fox", "scores": None,
         "decisions": None, "libraries": ["test-depot-1", "test-depot-2"]}
     assert [(one["status"], one["name"], one["email"]) for one in shown["decisions"]] == [

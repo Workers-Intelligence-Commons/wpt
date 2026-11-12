@@ -58,8 +58,10 @@ together.
 ## Adding a text
 
 A text is one piece of final training text, such as an article, a book or
-a code file ([docs/data-selection.md](docs/data-selection.md), "Texts").
-Each file of a repository or a collection is its own text.
+a repository ([docs/data-selection.md](docs/data-selection.md), "Texts").
+A repository is one text: all its files and its git history joined,
+each under a `=== path` line. Each record of a collection is its own
+text.
 
 1. Check the license against [docs/licenses.md](docs/licenses.md). It must
    be on the allowed list, clearly; its "What to check" column says where

@@ -24,7 +24,12 @@ text and are all taken, whatever the shares. The vocabulary's sample
 (`sample`) trims the same way, counting UTF-8 bytes, since the vocabulary
 does not exist yet to count tokens.
 
-A plain text becomes tokens followed by END; a conversation becomes the
+A text is read from its parts (wpt_depot.parts), so a text bigger than
+memory is read as a stream: a plain text is encoded a block at a time, each
+block ending right before a line's first byte that is not whitespace, a
+place where the tokenizer's chunks always break, so its tokens are those
+of the whole text; only its tokens are held whole, the row of a token file
+being one text. A plain text becomes tokens followed by END; a conversation becomes the
 tokens of the chat template (wpt_tokenizer.chat), which start with END
 and mark nothing: what the assistant wrote is told by the template's
 special tokens. Both go into token files in the store's shard format
@@ -79,6 +84,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from wpt_store.names import as_record_name
@@ -88,9 +94,12 @@ from wpt_utils.lines import say
 
 from .depot import Depot, location
 from .errors import Refused
+from .parts import scan
 from .schema import LIBRARY_REF, NAMES, SCORES, SHARE, TIME
 
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
+WHITESPACE = b" \t\n\r\x0b\x0c"  # the bytes the tokenizer's chunks treat as whitespace (wpt_tokenizer)
+WHITESPACE_BYTES = np.frombuffer(WHITESPACE, np.uint8)
 FOLDER = "corpora"
 RECORD = "corpus.json"
 TRAINING_KINDS = ("conversation", "task")
@@ -119,30 +128,33 @@ def build(depot: Depot, name: str, store, tokenizer, tokenizer_version: int | No
     (NotFound, NotADepot) and shares that cannot be met
     (Refused) leave nothing in the store."""
     dataset = depot.dataset(name)
-    taken, credits, left_out = _taken(depot, dataset, lambda row: len(tokenizer.encode(row["text"].encode("utf-8"))) + 1)
+    taken, credits, left_out = _taken(depot, dataset)
     vocabulary = tokenizer.to_bytes()
     with tempfile.TemporaryDirectory(prefix="wpt-corpus-") as folder:
         work = Path(folder)
+        held = _tokenized(taken, tokenizer, work)
+        taken, left_out["trimmed"] = _shared(taken, dataset["shares"], lambda one: one["held"][1])
         texts = []
         text_shards = _Shards(work, "text", shard_tokens)
         conversation_shards = _Shards(work, "conversation", shard_tokens)
         tasks = []
         for one in taken:
             depot_address, row = one["depot"], one["row"]
-            if row["kind"] is None:
-                tokens = [*tokenizer.encode(row["text"].encode("utf-8")), END]
-                position = text_shards.add(tokens, depot_address, row["id"], one["pool"])
-            elif row["kind"] == "conversation":
-                tokens = chat.encode(tokenizer, json.loads(row["content"]))[0]
-                position = conversation_shards.add(tokens, depot_address, row["id"], one["pool"])
+            at, count = one["held"]
+            if row["kind"] in (None, "conversation"):
+                tokens = np.array(held["tokens"][at:at + count])
+                shards = text_shards if row["kind"] is None else conversation_shards
+                position = shards.add(tokens, depot_address, row["id"], one["pool"])
             else:
                 position = len(tasks)
-                tasks.append(json.dumps({"depot": depot_address, "id": row["id"], "content": json.loads(row["content"])},
+                content = bytes(held["tasks"][at:at + count]).decode("utf-8")
+                tasks.append(json.dumps({"depot": depot_address, "id": row["id"], "content": json.loads(content)},
                                         ensure_ascii=False, sort_keys=True))
             texts.append({"depot": depot_address, "id": row["id"], "kind": row["kind"], "title": row["title"],
                           "authors": row["authors"], "address": row["address"], "licenses": row["licenses"],
                           "tags": row["tags"], "notice": row["notice"], "tokens": position,
                           "scores": row["scores"]})
+        held = None  # its files close before the work folder goes
         text_shards.close()
         conversation_shards.close()
         named = sorted({license_id for one in texts for license_id in one["licenses"]})
@@ -205,25 +217,125 @@ def sample(depot: Depot, name: str, sample_bytes: int) -> list[dict]:
     within sample_bytes: a text that no longer fits is passed over. Items
     are no sample."""
     dataset = depot.dataset(name)
-    taken, _, _ = _taken(depot, dataset, lambda row: len(row["text"].encode("utf-8")))
-    found, size = [], 0
+    taken, _, _ = _taken(depot, dataset)
+    taken, _ = _shared(taken, dataset["shares"], lambda one: one["row"]["bytes"])
+    chosen, size = [], 0
     for one in taken:
         row = one["row"]
-        if row["kind"] is not None:
-            continue
-        text = row["text"].encode("utf-8")
-        if size + len(text) <= sample_bytes:
-            found.append({"depot": one["depot"], "id": row["id"], "text": text})
-            size += len(text)
-    return found
+        if row["kind"] is None and size + row["bytes"] <= sample_bytes:
+            chosen.append(one)
+            size += row["bytes"]
+    read = {}
+    for source, entries in _by_depot(chosen):
+        pieces = {}
+        for text, value in scan(source.tables, {text: one["row"]["parts"] for text, one in entries.items()}):
+            if value is not None:
+                pieces.setdefault(text, []).append(value)
+            else:
+                read[source.address, text] = "".join(pieces.pop(text, [])).encode("utf-8")
+    return [{"depot": one["depot"], "id": one["row"]["id"], "text": read[one["depot"], one["row"]["id"]]}
+            for one in chosen]
 
 
-def _taken(depot: Depot, dataset: dict, size) -> tuple[list[dict], tuple[dict, dict], dict]:
-    """(the texts the corpus takes, each {depot, row, pool}, in the corpus's
-    order; ({license id: its row}, {notice id: its text}) of the depots
-    read; what was left out: {"no share": count, "trimmed": count, "kinds":
-    {kind: count}}). size(row) is the size of a plain text that the shares
-    count: its tokens, or its bytes."""
+def _by_depot(taken: list[dict]):
+    """(the depot read, {id: its entry}) for each depot the entries of taken come from."""
+    found = {}
+    for one in taken:
+        found.setdefault(one["depot"], (one["source"], {}))[1][one["row"]["id"]] = one
+    return found.values()
+
+
+def _tokenized(taken: list[dict], tokenizer, work: Path) -> dict:
+    """Read every text of taken in one pass over each depot's parts
+    (wpt_depot.parts.scan) and keep what the corpus takes of it in files of
+    work: a plain text's tokens followed by END, a conversation's tokens,
+    a task's content as UTF-8 bytes. Each entry gains `held`, (where its
+    tokens or bytes start in their file, how many there are). The files,
+    read as arrays: {tokens, tasks}. A text's tokens are held whole in
+    memory until it is read whole, and every text is read once."""
+    paths = {"tokens": work / "tokens.bin", "tasks": work / "tasks.bin"}
+    written = dict.fromkeys(paths, 0)
+    with open(paths["tokens"], "wb") as tokens_file, open(paths["tasks"], "wb") as tasks_file:
+        for source, entries in _by_depot(taken):
+            reading = {}  # of each text begun: its encoder (a plain text) or its pieces (an item)
+            for text, value in scan(source.tables, {text: one["row"]["parts"] for text, one in entries.items()}):
+                kind = entries[text]["row"]["kind"]
+                if value is not None:
+                    if kind is None:
+                        reading.setdefault(text, _Encoder(tokenizer)).feed(value)
+                    else:
+                        reading.setdefault(text, []).append(value)
+                    continue
+                found = reading.pop(text, None)
+                if kind is None:
+                    data = np.concatenate([(found or _Encoder(tokenizer)).finish(), np.array([END], np.uint32)])
+                elif kind == "conversation":
+                    data = np.asarray(chat.encode(tokenizer, json.loads("".join(found or [])))[0], np.uint32)
+                else:
+                    data = "".join(found or []).encode("utf-8")
+                    entries[text]["held"] = (written["tasks"], len(data))
+                    tasks_file.write(data)
+                    written["tasks"] += len(data)
+                    continue
+                entries[text]["held"] = (written["tokens"], len(data))
+                data.astype("<u4").tofile(tokens_file)
+                written["tokens"] += len(data)
+    return {"tokens": np.memmap(paths["tokens"], "<u4", "r") if written["tokens"] else np.zeros(0, "<u4"),
+            "tasks": np.memmap(paths["tasks"], np.uint8, "r") if written["tasks"] else np.zeros(0, np.uint8)}
+
+
+class _Encoder:
+    """The tokens of a plain text fed a piece at a time: each piece is
+    encoded up to its last place where the tokenizer's chunks always break
+    (_boundary), so the tokens are those of the whole text, and only the
+    bytes after that place are held, whatever the text's lines."""
+
+    def __init__(self, tokenizer):
+        self.tokenizer, self.pending, self.last, self.tokens = tokenizer, [], None, []
+
+    def feed(self, value: str):
+        data = value.encode("utf-8")
+        if not data:
+            return
+        cut = _boundary(data, self.last)
+        if cut is None:
+            self.pending.append(data)
+        else:
+            left = b"".join(self.pending) + data[:cut]
+            if left:
+                self.tokens.append(np.asarray(self.tokenizer.encode(left), np.uint32))
+            self.pending = [data[cut:]]
+        self.last = data[-1]
+
+    def finish(self) -> np.ndarray:
+        left = b"".join(self.pending)
+        if left:
+            self.tokens.append(np.asarray(self.tokenizer.encode(left), np.uint32))
+        return np.concatenate(self.tokens) if self.tokens else np.zeros(0, np.uint32)
+
+
+def _boundary(data: bytes, last: int | None) -> int | None:
+    """The last place of data, read right after the bytes that end with
+    last (None at a text's start), where a byte that is not whitespace is
+    followed by whitespace (WHITESPACE): the tokenizer's chunk of that byte
+    ends there whatever follows, so the bytes before it encode as they would
+    within the whole text. None for no such place."""
+    spaces = np.isin(np.frombuffer(data, np.uint8), WHITESPACE_BYTES)
+    found = np.flatnonzero(~spaces[:-1] & spaces[1:])
+    if len(found):
+        return int(found[-1]) + 1
+    if last is not None and last not in WHITESPACE and spaces[0]:
+        return 0
+    return None
+
+
+def _taken(depot: Depot, dataset: dict) -> tuple[list[dict], tuple[dict, dict], dict]:
+    """(the texts the corpus may take, each {depot, source: the depot read,
+    row, pool}, in the corpus's order, before the shares trim them
+    (_shared); ({license id: its row}, {notice id: its text}) of the depots
+    read; what was left out: {"no share": count, "kinds": {kind: count}}).
+    Each row is as Depot.library_texts gives it, without its text, which is
+    read from its parts."""
     seen, taken, licenses, notices = set(), [], {}, {}
     no_share, other_kinds = 0, {}
     shares = dataset["shares"]
@@ -246,7 +358,7 @@ def _taken(depot: Depot, dataset: dict, size) -> tuple[list[dict], tuple[dict, d
                 if pool is None:
                     no_share += 1
                     continue
-            taken.append({"depot": source.address, "row": row, "pool": pool})
+            taken.append({"depot": source.address, "source": source, "row": row, "pool": pool})
     for address, source in opened.items():
         for row in source.tables.read("licenses").to_pylist():
             licenses.setdefault(row["id"], row)
@@ -254,11 +366,17 @@ def _taken(depot: Depot, dataset: dict, size) -> tuple[list[dict], tuple[dict, d
             notices[row["id"]] = row["text"]
     seed = _fingerprint(_content(dataset))
     taken.sort(key=lambda one: hashlib.sha256(f"{seed}\0{one['depot']}\0{one['row']['id']}".encode()).digest())
-    before = len(taken)
-    if shares is not None:
-        taken = _trimmed(taken, shares, size)
-    return taken, (licenses, notices), {"no share": no_share, "trimmed": before - len(taken),
-                                        "kinds": dict(sorted(other_kinds.items()))}
+    return taken, (licenses, notices), {"no share": no_share, "trimmed": 0, "kinds": dict(sorted(other_kinds.items()))}
+
+
+def _shared(taken: list[dict], shares: list[dict] | None, size) -> tuple[list[dict], int]:
+    """(taken trimmed to the shares, none trimmed without shares; how many
+    texts the shares left out). size(one) is the size of a plain text that
+    the shares count: its tokens, or its bytes."""
+    if shares is None:
+        return taken, 0
+    kept = _trimmed(taken, shares, size)
+    return kept, len(taken) - len(kept)
 
 
 def _trimmed(taken: list[dict], shares: list[dict], size) -> list[dict]:
@@ -271,7 +389,7 @@ def _trimmed(taken: list[dict], shares: list[dict], size) -> list[dict]:
     total_share = sum(share["share"] for share in shares)
     plain = [one for one in taken if one["row"]["kind"] is None]
     for one in plain:
-        one["size"] = size(one["row"])
+        one["size"] = size(one)
     available = {share["tag"]: sum(one["size"] for one in plain if one["pool"] == share["tag"]) for share in shares}
     empty = [tag for tag, count in available.items() if not count]
     if empty:

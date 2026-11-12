@@ -69,7 +69,7 @@ def backup(depot: Depot, to: str, settings: dict | None = None) -> Depot:
     target = Depot(Depot(to, settings).tables.uri(name), settings)
     source, root = depot.tables.filesystem()
     try:
-        paths = [f"{table}/{path}" for table in TABLES
+        paths = [f"{table}/{path}" for table in versions
                  for path in _files(source, f"{root}/{table}", versions[table])]
     except (FileNotFoundError, VersionGone) as error:
         raise BackupCut(f"{depot.address}: an erasure dropped the storage states the backup was copying ({error}); "
@@ -96,8 +96,10 @@ def restore(address: str, to: str, settings: dict | None = None) -> Depot:
 def _versions(tables: Tables) -> dict[str, int]:
     """{table: its storage version as of the depot's settled change}."""
     first = tables.version("journal")
+    held = set(tables.exist())
     settled = Journal(tables).settled(first)
-    versions = {name: tables.version(name) for name in TABLES if name != "journal"}
+    # a table a later format added (schema.ADDED) is missing from a depot of an older format
+    versions = {name: tables.version(name) for name in TABLES if name != "journal" and name in held}
     history = sorted((one["version"], one["timestamp"]) for one in tables.table("journal").history())
     if _highest(tables, history[-1][0]) <= settled:
         return {**versions, "journal": first}

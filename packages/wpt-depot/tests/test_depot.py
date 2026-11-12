@@ -23,6 +23,15 @@ def plain(text, *tags, notice=None):
     return NewText(text=text, licenses=("CC0-1.0",), tags=tags, notice=notice)
 
 
+def with_text(depot, table) -> list[dict]:
+    """The rows of a library's texts (Depot.library_texts) with the text of the content version each reads."""
+    return [{**one, "text": depot.content(one["id"], one["content_version"])} for one in table.to_pylist()]
+
+
+def texts_of(depot, table) -> list[dict]:
+    return [{"id": one["id"], "text": one["text"]} for one in with_text(depot, table)]
+
+
 def files_holding(folder, passage: str) -> list[Path]:
     """Every file under folder whose bytes hold passage: what an erasure must leave none of."""
     return [path for path in Path(folder).rglob("*") if path.is_file() and passage.encode() in path.read_bytes()]
@@ -284,7 +293,7 @@ def test_a_text_s_content_is_held_by_one_file_of_the_depot_only(make_depot, me, 
 
     [held] = files_holding(depot.address, passage)
 
-    assert held.parent.name == "contents"
+    assert held.parent.name == "parts"
     assert depot.show(texts[0])["text"]["text"] == f"{passage}in  text"
 
 
@@ -362,7 +371,7 @@ def test_an_open_library_read_at_a_past_change_gives_its_members_and_revisions_t
 
     def read(change):
         return [(one["id"], one["revision"], one["title"], one["text"]) for one in
-                depot.library_texts(library, change).to_pylist()]
+                with_text(depot, depot.library_texts(library, change))]
 
     assert read(then) == [(first, 2, None, "one 123"), (second, 2, None, "two")]
     assert read(depot.change()) == [(first, 3, "One", "one 123"), (third, 2, None, "three")]
@@ -581,7 +590,7 @@ def test_a_clone_reads_its_locked_library_at_its_state_after_a_pulled_erasure(ma
 
     pull(follower)
 
-    assert follower.library_texts(library, state).select(["id", "text"]).to_pylist() == [{"id": text, "text": "one "}]
+    assert texts_of(follower, follower.library_texts(library, state)) == [{"id": text, "text": "one "}]
 
 
 def upstream_and_clone_holding(make_depot, me, tmp_path):
@@ -1720,9 +1729,9 @@ def test_a_content_change_starts_the_text_over_and_a_locked_library_keeps_readin
     assert depot.put(new, [changed]) == ([], [changed])
     depot.decide("admitted", [changed], me)
     assert depot.put(new, [changed]) == ([changed], [])
-    assert depot.library_texts(new, depot.change()).select(["id", "text"]).to_pylist() == [
+    assert texts_of(depot, depot.library_texts(new, depot.change())) == [
         {"id": changed, "text": "The fox jumps high."}, {"id": kept, "text": "The dog sleeps."}]
-    assert depot.library_texts(old, depot.change()).select(["id", "text"]).to_pylist() == [
+    assert texts_of(depot, depot.library_texts(old, depot.change())) == [
         {"id": changed, "text": "The fox jumps."}, {"id": kept, "text": "The dog sleeps."}]
     assert contents_of(depot, changed) == ["The fox jumps.", "The fox jumps high."]
     assert depot.sql(f"SELECT text FROM texts WHERE id = '{changed}'")["text"].to_pylist() == ["The fox jumps high."]
@@ -1740,9 +1749,9 @@ def test_an_open_library_read_before_a_content_change_gives_the_old_content(make
     depot.decide("admitted", [text], me)
     depot.put(library, [text])
 
-    assert depot.library_texts(library, before)["text"].to_pylist() == ["first words"]
+    assert [one["text"] for one in texts_of(depot, depot.library_texts(library, before))] == ["first words"]
     assert depot.library_texts(library, left).num_rows == 0
-    assert depot.library_texts(library, depot.change())["text"].to_pylist() == ["second words"]
+    assert [one["text"] for one in texts_of(depot, depot.library_texts(library, depot.change()))] == ["second words"]
 
 
 def test_an_erasure_after_a_content_change_cuts_the_passage_from_every_version_and_stays_exact_for_the_one_named(
@@ -1761,7 +1770,7 @@ def test_an_erasure_after_a_content_change_cuts_the_passage_from_every_version_a
     depot.decide_erasure(request, "admitted", me)
 
     assert contents_of(depot, text) == ["call  now", "Please, call  or  today."]
-    assert depot.library_texts(library, depot.change())["text"].to_pylist() == ["call  now"]
+    assert [one["text"] for one in texts_of(depot, depot.library_texts(library, depot.change()))] == ["call  now"]
     [erased] = depot.erasures().to_pylist()[0]["erased"]
     assert (erased["length"], erased["at"]) == (len(secret), 5)
     [needle] = depot.erasure_shown(request)["needles"]
@@ -1838,5 +1847,5 @@ def test_a_pulled_content_change_takes_the_text_out_of_the_clone_s_own_open_libr
     pull(follower)
 
     assert follower.library_texts(open_library, follower.change())["id"].to_pylist() == [kept]
-    assert follower.library_texts(locked_library, follower.change()).select(["id", "text"]).to_pylist() == [
+    assert texts_of(follower, follower.library_texts(locked_library, follower.change())) == [
         {"id": changed, "text": "to be refused"}, {"id": kept, "text": "to be relicensed"}]

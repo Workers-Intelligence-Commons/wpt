@@ -30,7 +30,9 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
 - Every id is the depot's name, a hyphen and a number (wpt_depot.ids).
 - A new text or item comes with one decision 'under review' and joins no
   library. Its text, or an item's kind and content, is its content version
-  1. An item's content matches its kind's schema, as the kinds table
+  1, stored as its parts (wpt_depot.parts): a plain text may come from a
+  file read as a stream (FileText), so no text is ever too big to add. An
+  item's content matches its kind's schema, as the kinds table
   stores it. Every license a text names is a
   row of licenses (one of them is enough to allow it), and its notice is
   stored once.
@@ -53,7 +55,8 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
 - A text's content (its plain text, or an item's content, which still
   matches its kind's schema) changes as a new content version stored next
   to the old ones, and a new revision of the text that reads it, its id
-  kept. The change is recorded as a decision 'under review' made by the
+  kept. The new version stores only the parts its text holds that no
+  version of the text held before. The change is recorded as a decision 'under review' made by the
   person's declaration, whose reason the depot writes naming the old and
   new versions; the decisions before it no longer count (wpt_depot.policy),
   so the text leaves every open library. A content that changes nothing
@@ -95,11 +98,14 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   a place in one content version of its text, which the request records
   (its current one when the request is asked, unless it names one). Once
   admitted, the app carries it out at once (wpt_depot.erasure): every content version of the texts its needles
-  name is cut in place in contents, the passage at the place named and
-  every occurrence of it in each version, so the cut reaches every
-  revision (an item is cut at a field of its JSON and every cut version is
-  validated against its kind's schema again), or removed with every
-  revision, content version, membership and pin; its
+  name is cut in place, the passage at the place named and every
+  occurrence of it in each version, so the cut reaches every revision: of
+  a plain text, each part that holds a character cut is replaced by its
+  cut text, a new part, and each version lists the new parts instead (an
+  item is cut at a field of its JSON, every cut version is validated
+  against its kind's schema again and its parts cut again); a part no
+  version lists any longer goes. A text named whole is removed with every
+  revision, content version, part, membership and pin; its
   `erased` gets each passage's length and hashes, the journal's rows of
   the texts removed go, and every older state of every table's storage is
   dropped. The hashes are public and keyless (wpt_depot.erasure),
@@ -144,6 +150,7 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   (Depot.reads_here).
 """
 
+import bisect
 import contextlib
 import json
 import threading
@@ -162,8 +169,9 @@ from .errors import (BadQuery, BelongsToUpstream, DepotExists, JournalUnfinished
                      OtherFormat, Refused, UnsupportedAddress)
 from .filters import IN_LOCKED, literal, strings
 from .journal import Journal
-from .schema import (ADMITTED, CHANGES, CONTENT_JOIN, FORMAT, REFUSED, STEPS, TABLES, TEXT_COLUMNS, UNDER_REVIEW, latest,
-                     rows, sql_name)
+from .parts import WINDOW, WRITTEN, FileText, Parted, Reader, Source, listed, made, parted, split
+from .schema import (ADDED, ADMITTED, CHANGES, CONTENT_JOIN, FORMAT, LISTED_COLUMNS, REFUSED, STEPS, TABLES,
+                     UNDER_REVIEW, latest, rows, sql_name)
 from .settings import bucket_settings
 from .tables import Tables
 
@@ -184,6 +192,9 @@ CREDITS = ("title", "authors", "tags", "address", "notice")
 # what the rows of a search can be ordered by: each an ORDER BY list over the searched rows
 ORDERS = {"id": [ids.order_sql()], "title": ["title"], "kind": ["kind"], "status": ["status"], "tags": ["tags"],
           "licenses": ["licenses"], "libraries": ["libraries"], "length": ["length"]}
+# the columns of the texts view but those that hold a text: what a query reads that never joins a text's parts
+FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
+          "decisions, scores, libraries")
 
 
 @dataclass(frozen=True)
@@ -206,9 +217,10 @@ class About:
 
 @dataclass(frozen=True)
 class NewText:
-    """A plain text (text) or a structured item (kind and its JSON content),
-    with its credits. notice is the notice's text, stored once."""
-    text: str | None = None
+    """A plain text (text: a string, or a FileText read as a stream) or a
+    structured item (kind and its JSON content), with its credits. notice
+    is the notice's text, stored once."""
+    text: Source | None = None
     kind: str | None = None
     content: str | None = None
     licenses: tuple[str, ...] = ()
@@ -267,6 +279,9 @@ class Depot:
         found = depot.format()
         if found != FORMAT:
             raise OtherFormat(depot._other_format(found))
+        missing = [name for name in ADDED if name not in depot.tables.exist()]
+        if missing:
+            raise NotADepot(f"{depot.address} is not a depot: no table {', '.join(missing)}")
         return depot
 
     @classmethod
@@ -305,9 +320,10 @@ class Depot:
     def find(cls, address: str, settings: dict | None = None) -> "Depot":
         """The depot at address, whatever its format: for what copies it as
         it is (wpt_depot.backup) or upgrades it, never to read or change its
-        rows. NotADepot when a table is missing."""
+        rows. NotADepot when a table is missing (but one a format added, which
+        an older depot lacks, schema.ADDED)."""
         depot = cls(address, settings)
-        missing = [name for name in TABLES if name not in depot.tables.exist()]
+        missing = [name for name in TABLES if name not in depot.tables.exist() and name not in ADDED]
         if missing:
             raise NotADepot(f"{depot.address} is not a depot: no table {', '.join(missing)}")
         if not depot.tables.read("about", columns=["revision"]).num_rows:
@@ -453,11 +469,14 @@ class Depot:
         library holding it and the revision it pinned, content_versions: how
         many content versions it has (its current revision reads the one
         its row's content_version names), upstream: whether the upstream of
-        this clone owns it}. NotFound without such a text."""
-        found = self.tables.query("SELECT * FROM texts WHERE id = ?", [text]).to_pylist()
+        this clone owns it}. Its text, or an item's content, is read from its
+        parts, whatever its size. NotFound without such a text."""
+        found = self.tables.query(f"SELECT {FIELDS} FROM texts WHERE id = ?", [text]).to_pylist()
         if not found:
             raise NotFound(f"no text {text}")
         row = found[0]
+        whole = self.content(text, row["content_version"])
+        row = {**row, "text": whole if row["kind"] is None else None, "content": None if row["kind"] is None else whole}
         decided = {one["id"]: one for one in self.tables.query(
             "SELECT * FROM decisions WHERE list_contains(?, id)", [row["decisions"]]).to_pylist()}
         held = self.tables.query(f"SELECT *, {self.upstream_sql()} AS upstream FROM libraries "
@@ -465,7 +484,7 @@ class Depot:
         notice = None if row["notice"] is None else self.tables.query(
             "SELECT text FROM notices WHERE id = ?", [row["notice"]])["text"][0].as_py()
         revisions = self.tables.query("SELECT count(*) AS n FROM texts_revisions WHERE id = ?", [text])["n"][0].as_py()
-        versions = self.tables.query("SELECT count(*) AS n FROM contents WHERE id = ?", [text])["n"][0].as_py()
+        versions = self.tables.query("SELECT count(*) AS n FROM content_lists WHERE id = ?", [text])["n"][0].as_py()
         pins = self.tables.query("SELECT p.library, l.name, p.revision FROM pins p JOIN libraries l ON l.id = p.library "
                                  "WHERE p.text = ? ORDER BY p.library", [text]).to_pylist()
         decisions = [decided[one] for one in row["decisions"]]
@@ -527,12 +546,12 @@ class Depot:
                 break
             page.append({**one, "shown": min(one["length"], left)})
             left -= page[-1]["shown"]
-        cut = {row["id"]: row["passage"] for row in self.tables.query(
-            "SELECT t.id, substr(coalesce(t.text, t.content), 1, s.shown) AS passage FROM texts t "
-            "JOIN (SELECT unnest(?) AS id, unnest(?) AS shown) s ON s.id = t.id",
-            [[one["id"] for one in page], [one["shown"] for one in page]]).to_pylist()} if page else {}
-        found_rows = [{"id": one["id"], "kind": one["kind"], "title": one["title"], "length": one["length"],
-                       "passage": cut[one["id"]]} for one in page]
+        listed = {one["id"]: one["parts"] for one in self.tables.query(
+            "SELECT c.id, c.parts FROM texts t JOIN content_lists c ON c.id = t.id AND c.version = t.content_version "
+            "WHERE list_contains(?, t.id)", [[one["id"] for one in page]]).to_pylist()} if page else {}
+        with Reader(self.tables) as reader:
+            found_rows = [{"id": one["id"], "kind": one["kind"], "title": one["title"], "length": one["length"],
+                           "passage": Parted(reader, one["id"], listed[one["id"]])[:one["shown"]]} for one in page]
         return {"rows": found_rows, "next": int(offset) + len(page) if len(page) < len(found) else None}
 
     def _ordered(self, where: str, order: str, descending: bool) -> tuple[str, str]:
@@ -543,8 +562,8 @@ class Depot:
             raise Refused(f"the texts are ordered by one of {', '.join(ORDERS)}, not {order!r}")
         direction = " DESC" if descending else ""
         by = ", ".join([f"{one}{direction}" for one in ORDERS[order]] + [ids.order_sql()])
-        matched = (f"SELECT *, {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked, "
-                   f"length(coalesce(text, content)) AS length FROM texts WHERE ({where})")
+        matched = (f"SELECT {FIELDS}, {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked "
+                   f"FROM texts WHERE ({where})")
         return matched, by
 
     def tags(self) -> list[dict]:
@@ -622,35 +641,36 @@ class Depot:
         depot that owns it (the one its id names), each at its revision
         then, with the content version that revision reads, as it is now (an
         erasure's cut reaches every version, and a text an erasure removed is
-        in no past): for a library locked
+        in no past), as the list of its parts and its bytes, never its text
+        (read from its parts, wpt_depot.parts): for a library locked
         at that change, the revisions it pinned; for an open one, the texts
         that had joined and not left it, each at its latest revision of that
         state (bounds: a text of another depot, such as one a pull brought
         to a clone, at its latest revision numbered within what the pulls
-        up to that change brought). The columns of the texts view but
-        libraries, in the numeric order of ids. NotFound without such a
-        library, or when it did not exist yet at that change."""
+        up to that change brought). The columns of schema.LISTED_COLUMNS, in
+        the numeric order of ids. NotFound without such a library, or when
+        it did not exist yet at that change."""
+        columns = LISTED_COLUMNS
         self._library(library)
         state = self.tables.query("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
                                   "ORDER BY revision DESC LIMIT 1", [library, change]).to_pylist()
         if not state:
             raise NotFound(f"the library {library} did not exist yet at the change {change}")
         if state[0]["locked_at"] is not None:
-            held = "SELECT text, revision FROM pins WHERE library = $library"
+            held = "SELECT p.text AS member, p.revision FROM pins p WHERE p.library = $library"
         else:
-            held = (f"SELECT m.text, (SELECT max(r.revision) FROM texts_revisions r JOIN bounds b ON "
+            held = (f"SELECT m.text AS member, (SELECT max(r.revision) FROM texts_revisions r JOIN bounds b ON "
                     f"b.depot = {ids.owner_sql('r.id')} WHERE r.id = m.text AND r.change <= b.change) AS revision "
                     "FROM memberships m WHERE m.library = $library "
                     "AND m.joined_change <= $change AND (m.left_change IS NULL OR m.left_change > $change)")
-        con = self.tables.connection()
+        query = (f"SELECT {columns} FROM ({held}) h JOIN texts_revisions t ON t.id = h.member "
+                 f"AND t.revision = h.revision {CONTENT_JOIN} ORDER BY {ids.order_sql('t.id')}")
+        con = self.tables.connection(query)
         try:
             found = self.bounds(ids.owner(library), change)
             con.register("bounds", pa.table({"depot": pa.array(list(found), pa.string()),
                                              "change": pa.array(list(found.values()), pa.int64())}))
-            return con.sql(f"SELECT {TEXT_COLUMNS} FROM ({held}) h JOIN texts_revisions t ON t.id = h.text "
-                           f"AND t.revision = h.revision {CONTENT_JOIN} "
-                           f"ORDER BY {ids.order_sql('t.id')}",
-                           params={"library": library, **({"change": change} if "$change" in held else {})}
+            return con.sql(query, params={"library": library, **({"change": change} if "$change" in held else {})}
                            ).to_arrow_table()
         finally:
             con.close()
@@ -726,8 +746,8 @@ class Depot:
                     new_notices.append({"id": notices[one.notice], "text": one.notice})
                     next_notice += 1
                 text_id = self._id(first + number)
-                contents.append({"id": text_id, "version": 1, "text": one.text, "kind": one.kind,
-                                 "content": one.content})
+                contents.append({"id": text_id, "version": 1, "kind": one.kind,
+                                 "source": one.text if one.kind is None else one.content})
                 new_texts.append({
                     "id": text_id, "revision": 1, "licenses": list(one.licenses),
                     "notice": None if one.notice is None else notices[one.notice], "title": one.title,
@@ -815,10 +835,10 @@ class Depot:
                                      for decision, texts_of in zip(decisions, groups.values())]})
             return [(decision["id"], texts_of) for decision, texts_of in zip(decisions, groups.values())], skipped
 
-    def change_content(self, text: str, plain: str | None, content: str | None,
+    def change_content(self, text: str, plain: Source | None, content: str | None,
                        declaration: Declaration) -> tuple[str, int] | None:
         """Change the content of a text: a plain text takes its new text as
-        plain and no content; an item takes its new content as JSON text as
+        plain (a string, or a FileText read as a stream) and no content; an item takes its new content as JSON text as
         content and no plain, which must still match its kind's schema (its
         kind never changes). It is stored as a new content version next to
         the old ones, and a new revision of the text, its id kept, reads it.
@@ -837,35 +857,38 @@ class Depot:
         content holds a passage an erasure removed from this text (matched
         by its public hash)."""
         with self._writes():
-            found = self.tables.query("SELECT kind, text, content, content_version FROM texts WHERE id = ?",
+            found = self.tables.query("SELECT t.kind, t.content_version, c.parts FROM texts t JOIN content_lists c "
+                                      "ON c.id = t.id AND c.version = t.content_version WHERE t.id = ?",
                                       [text]).to_pylist()
             if not found:
                 raise NotFound(f"no text {text}")
             self._refuse_upstream("texts", [text])
             row = found[0]
             if row["kind"] is None:
-                if not isinstance(plain, str) or content is not None:
+                if not isinstance(plain, (str, FileText)) or content is not None:
                     raise Refused("a plain text's new content is its text, with no item content")
-                if plain == row["text"]:
+                if listed(plain).parts == [(one["hash"], one["length"]) for one in row["parts"]]:
                     return None
+                strings = [plain if isinstance(plain, str) else plain.blocks()]
             else:
                 if not isinstance(content, str) or plain is not None:
                     raise Refused("an item's new content is its content as JSON text, with no plain text")
                 schema = self.tables.query("SELECT schema FROM kinds WHERE id = ?", [row["kind"]])["schema"][0].as_py()
                 kinds.check_content(row["kind"], schema, content)
-                if _same_json(content, row["content"]):
+                if _same_json(content, self.content(text, row["content_version"])):
                     return None
-            if erasure.holds_erased([plain] if row["kind"] is None else erasure.strings_of(json.loads(content)),
-                                    self._erased_from(text)):
+                strings = erasure.strings_of(json.loads(content))
+            erased = self._erased_from(text)
+            if erasure.holds_erased(strings, erased):
                 raise Refused(f"the new content of {text} holds a passage an erasure removed from it")
-            version = self.tables.query("SELECT max(version) AS n FROM contents WHERE id = ?",
+            version = self.tables.query("SELECT max(version) AS n FROM content_lists WHERE id = ?",
                                         [text])["n"][0].as_py() + 1
             decision = self._recorded(UNDER_REVIEW, declaration,
                                       policy.content_change(row["content_version"], version), self._next("decisions"))
             self._change({"kind": "content", "decision": decision, "text": text, "version": version,
                           "leave": self._open_libraries()},
-                         contents=[{"id": text, "version": version, "kind": row["kind"], "text": plain,
-                                    "content": content}])
+                         contents=[{"id": text, "version": version, "kind": row["kind"],
+                                    "source": plain if row["kind"] is None else content}])
             return decision["id"], version
 
     def edit_credits(self, text: str, changes: dict, declaration: Declaration) -> tuple[str, str]:
@@ -891,7 +914,7 @@ class Depot:
             elif value is not None:
                 _filled(**{name: value})
         with self._writes():
-            found = self.tables.query("SELECT * FROM texts WHERE id = ?", [text]).to_pylist()
+            found = self.tables.query(f"SELECT {FIELDS} FROM texts WHERE id = ?", [text]).to_pylist()
             if not found:
                 raise NotFound(f"no text {text}")
             self._refuse_upstream("texts", [text])
@@ -948,7 +971,7 @@ class Depot:
         content version the text does not have, or when no text would
         change."""
         with self._writes():
-            con = self.tables.connection("SELECT * FROM texts_revisions, contents")
+            con = self.tables.connection("SELECT * FROM texts_revisions, content_lists")
             try:
                 scoring.open_changes(con, changes)
                 total, theirs = scoring.check(con, self.upstream_sql(), NAMED)
@@ -1121,14 +1144,17 @@ class Depot:
                 if one[0] not in current:
                     raise NotFound(f"no text {one[0]}")
             self._refuse_upstream("texts", named)
-            found = {(one["id"], one["version"]): one for one in self.tables.query(
-                "SELECT id, version, text, kind, content FROM contents WHERE list_contains(?, id)", [named]).to_pylist()}
+            kinds_of = self._kinds(named)
             needles = [Needle(text, start, end, field, current[text] if version is None else version)
                        for text, start, end, field, version in asked]
-            for one in needles:
-                if (one.text, one.version) not in found:
-                    raise Refused(f"the text {one.text} has no content version {one.version}")
-                erasure.check_needle(found[one.text, one.version], one)
+            with Reader(self.tables) as reader:
+                documents = self._versions(named, reader)
+                for one in needles:
+                    if one.version not in documents.get(one.text, {}):
+                        raise Refused(f"the text {one.text} has no content version {one.version}")
+                    document, item = documents[one.text][one.version], kinds_of[one.text] is not None
+                    erasure.check_needle({"kind": kinds_of[one.text], "text": None if item else document,
+                                          "content": str(document) if item else None}, one)
             self._erased(self._request(reason, needles, "dry run"))  # a cut that breaks an item is refused now
             decision = self._decision(UNDER_REVIEW, declaration)
             row = self._request(reason, needles, self._id(self._next("erasures")), [decision["id"]])
@@ -1181,7 +1207,12 @@ class Depot:
             for request in requests:
                 decision = self._decision(status, declaration, reason)
                 if carry_out[request]:
-                    self._change({"kind": "erase", "decision": decision, **self._erased(found[request])})
+                    change, plan = self._erased(found[request])
+
+                    def store(number: int, plan=plan):
+                        self._store_cut(plan, number)
+                    self._change({"kind": "erase", "decision": decision, **change},
+                                 outside=store if change["stored"] else None)
                 else:
                     self._change({"kind": "decide erasure", "decision": decision, "erasure": request})
             return carry_out
@@ -1207,8 +1238,9 @@ class Depot:
         held = {one["id"]: one for one in self.tables.query(
             "SELECT id, title, kind FROM texts WHERE list_contains(?, id)", [named]).to_pylist()}
         erased = row["erased"]
-        places = erasure.shown(needles, self._versions(named),
-                               {text for text, one in held.items() if one["kind"] is not None}, erased)
+        with Reader(self.tables) as reader:
+            places = erasure.shown(needles, self._versions(named, reader),
+                                   {text for text, one in held.items() if one["kind"] is not None}, erased)
         return {"id": row["id"], "reason": row["reason"], "status": row["status"], "carried_out": erased is not None,
                 "needles": [{"text": one.text, "field": one.field, "start": one.start, "end": one.end,
                              "version": one.version, "title": held[one.text]["title"] if one.text in held else None,
@@ -1221,40 +1253,137 @@ class Depot:
                 "needles": [{"text": one.text, "field": one.field, "start": one.start, "end": one.end,
                              "version": one.version} for one in needles], "erased": None}
 
-    def _erased(self, request: dict) -> dict:
-        """What carrying out the erasure request leaves: the erasure's id and
-        the rest of an 'erase' change (the decision that admits it is added
-        by the caller, so one journal entry holds both). BadContent when a
-        cut item no longer matches its kind's schema."""
+    def _erased(self, request: dict) -> tuple[dict, list[tuple]]:
+        """What carrying out the erasure request leaves: (the erasure's id and
+        the rest of an 'erase' change, which the decision that admits it
+        joins so one journal entry holds both; its plan, what _store_cut
+        reads to write the new parts outside the journal). The change lists
+        the parts of each version it cuts (`lists`) and counts the new parts
+        (`stored`), never their text. A plain text's version keeps its parts
+        before the first one that loses a character, and the rest of it is
+        cut again by the rule of wpt_depot.parts from there, so it lists the
+        parts that rule gives the cut text; its parts are read a few at a
+        time. BadContent when a cut item no longer matches its kind's
+        schema."""
         needles = _needles(request)
-        found = {one["id"]: one["kind"] for one in self.tables.query(
-            "SELECT DISTINCT id, kind FROM contents WHERE list_contains(?, id)",
-            [sorted({one.text for one in needles})]).to_pylist()}
+        found = self._kinds(sorted({one.text for one in needles}))
         kept = [at for at, one in enumerate(needles) if one.text in found]  # a text removed before has nothing left
         held = [needles[at] for at in kept]
         items = {text for text, kind in found.items() if kind is not None}
-        cut, removed, passages = erasure.carried_out(self._versions(sorted(found)), held, items)
         schemas = {one["id"]: one["schema"] for one in self.tables.query("SELECT id, schema FROM kinds").to_pylist()}
-        for text, versions in cut.items():
-            if text in items:
-                for content in versions.values():
-                    kinds.check_content(found[text], schemas[found[text]], content)
-        # needle: the place among the request's needles of the first needle the passage covers
-        erased = [{**{name: value.hex() if isinstance(value, bytes) else value
-                      for name, value in erasure.named(passage).items()},
-                   "at": at, "needle": kept[merged.needles[0]]} for merged, passage, at in passages]
-        return {"erasure": request["id"], "removed": removed, "erased": erased,
-                "cut": [{"id": text, "version": version, "content" if text in items else "text": value}
-                        for text, versions in cut.items() for version, value in sorted(versions.items())]}
+        lists, plan, stored = [], [], 0
+        with Reader(self.tables) as reader:
+            documents = self._versions(sorted(found), reader)
+            sizes = {(one["id"], one["version"]): one["bytes"] for one in self.tables.query(
+                "SELECT id, version, bytes FROM content_lists WHERE list_contains(?, id)", [sorted(found)]).to_pylist()}
+            cut, removed, passages = erasure.carried_out(documents, held, items)
+            for text, versions in cut.items():
+                known = self._held_parts(text)
+                for version, value in sorted(versions.items()):
+                    if text in items:
+                        kinds.check_content(found[text], schemas[found[text]], value)
+                        new = list(parted(value))
+                        listed_parts = [(one.hash, one.length) for one in new]
+                        length, size = sum(one.length for one in new), sum(one.bytes for one in new)
+                        plan.append((text, version, "item", new))
+                    else:
+                        document = documents[text][version]
+                        listed_parts, old, recut = _recut(reader, text, document, value)
+                        size = sizes[text, version]
+                        new = []
+                        for one in recut:
+                            listed_parts.append((one.hash, one.length))
+                            size += one.bytes
+                            new.append(one._replace(value=None))  # its hash alone: the text is read again to store
+                        size -= old[0]
+                        length = sum(part_length for _, part_length in listed_parts)
+                        plan.append((text, version, "plain", value))
+                    lists.append({"id": text, "version": version, "length": length, "bytes": size,
+                                  "parts": [[hash_.hex(), part_length] for hash_, part_length in listed_parts]})
+                    for one in new:
+                        if one.hash not in known:
+                            known.add(one.hash)
+                            stored += 1
+            # needle: the place among the request's needles of the first needle the passage covers
+            erased = [{**{name: value.hex() if isinstance(value, bytes) else value
+                          for name, value in erasure.named(passage).items()},
+                       "at": at, "needle": kept[merged.needles[0]]} for merged, passage, at in passages]
+        return {"erasure": request["id"], "removed": removed, "erased": erased, "lists": lists,
+                "stored": stored}, plan
 
-    def _versions(self, texts: list[str]) -> dict[str, dict[int, str]]:
+    def _store_cut(self, plan: list[tuple], entry: int):
+        """Write the new parts of an erasure numbered entry, in one streamed
+        commit of parts: for each version its plan names (text, version, and
+        an item's parts or a plain text's pieces, as _erased made them), in
+        order, each part its text did not hold yet, a plain text's version
+        cut again as _erased cut it, its parts read a few at a time."""
+        texts = sorted({text for text, _, _, _ in plan})
+        known = {text: self._held_parts(text) for text in texts}
+        lists = {(one["id"], one["version"]): one["parts"] for one in self.tables.query(
+            "SELECT id, version, parts FROM content_lists WHERE list_contains(?, id)", [texts]).to_pylist()}
+        reader = Reader(self.tables).open()  # before the write starts: no table opens during it
+
+        def batches():
+            pending, size = [], 0
+            for text, version, kind, found in plan:
+                parts = found if kind == "item" else _recut(
+                    reader, text, Parted(reader, text, lists[text, version]), found)[2]
+                for one in parts:
+                    if one.hash not in known[text]:
+                        known[text].add(one.hash)
+                        pending.append({"id": text, "hash": one.hash, "change": entry, "value": one.value})
+                        size += one.bytes
+                        if size >= WRITTEN:
+                            yield from rows("parts", pending).to_batches()
+                            pending, size = [], 0
+            if pending:
+                yield from rows("parts", pending).to_batches()
+        try:
+            self.tables.append_stream("parts", batches())
+        finally:
+            reader.close()
+
+    def _kinds(self, texts: list[str]) -> dict[str, str | None]:
+        """{id: its kind, None for a plain text} of the texts named that the depot holds content of."""
+        return {one["id"]: one["kind"] for one in self.tables.query(
+            "SELECT DISTINCT id, kind FROM content_lists WHERE list_contains(?, id)", [texts]).to_pylist()}
+
+    def _held_parts(self, text: str) -> set[bytes]:
+        """The hashes of the parts the depot holds of the text."""
+        return set(self.tables.query("SELECT hash FROM parts WHERE id = ?", [text])["hash"].to_pylist())
+
+    def _versions(self, texts: list[str], reader: Reader) -> dict[str, dict[int, Parted | str]]:
         """Every content version of the texts named that the depot holds:
-        {id: {version: its plain text, or an item's content as JSON text}}."""
+        {id: {version: its plain text, read lazily (parts.Parted), or an
+        item's content as JSON text}}."""
         found = {}
-        for one in self.tables.query("SELECT id, version, text, kind, content FROM contents WHERE list_contains(?, id) "
+        for one in self.tables.query("SELECT id, version, kind, parts FROM content_lists WHERE list_contains(?, id) "
                                      "ORDER BY version", [texts]).to_pylist():
-            found.setdefault(one["id"], {})[one["version"]] = one["text"] if one["kind"] is None else one["content"]
+            document = Parted(reader, one["id"], one["parts"])
+            found.setdefault(one["id"], {})[one["version"]] = document if one["kind"] is None else str(document)
         return found
+
+    def content(self, text: str, version: int | None = None) -> str:
+        """The whole content of one content version of a text (its current
+        one by default), read from its parts: its plain text, or an item's
+        JSON. NotFound without such a text or version."""
+        with Reader(self.tables) as reader:
+            return str(self.parted(text, version, reader))
+
+    def parted(self, text: str, version: int | None, reader: Reader) -> Parted:
+        """One content version of a text (its current one for None), read
+        lazily from its parts through reader. NotFound without such a text
+        or version."""
+        if version is None:
+            found = self.tables.query("SELECT content_version FROM texts WHERE id = ?", [text])["content_version"]
+            if not len(found):
+                raise NotFound(f"no text {text}")
+            version = found[0].as_py()
+        found = self.tables.query("SELECT parts FROM content_lists WHERE id = ? AND version = ?",
+                                  [text, version])["parts"].to_pylist()
+        if not found:
+            raise NotFound(f"the text {text} has no content version {version}")
+        return Parted(reader, text, found[0])
 
     # Datasets
 
@@ -1458,19 +1587,20 @@ class Depot:
                 outside: Callable[[int], None] | None = None):
         """Write change to the journal under the next change number (past
         past too), then what it writes outside the journal: the content
-        versions it adds (contents: rows of contents but their change
-        number, which the journal does not hold), or, for a change of
-        scores, outside(its number), which writes its decision and then the
-        texts' new revisions in one append; then apply it, mark it done.
-        When what it writes outside cannot be written, the change is cut
-        short and the error raised: nothing of it is visible."""
+        versions it adds (contents: {id, version, kind, source: its plain
+        text or an item's JSON, wpt_depot.parts.Source}, which the journal
+        does not hold), or outside(its number), which writes a change of
+        scores' decision and then the texts' new revisions in one append, or
+        an erasure's new parts; then apply it, mark it done. When what it
+        writes outside cannot be written, the change is cut short and the
+        error raised: nothing of it is visible."""
         entry = max(self.change(), past) + 1
         self._unfinished = True  # until it is done or cut short
         self.journal.write(change, entry)
         if contents or outside:
             try:
                 if contents:
-                    self.tables.append("contents", rows("contents", [{**one, "change": entry} for one in contents]))
+                    self._store(contents, entry)
                 if outside:
                     outside(entry)
             except Exception:
@@ -1486,8 +1616,39 @@ class Depot:
             raise JournalUnfinished(f"the journal's change {entry} ({change['kind']}) is not applied to every "
                                     "table yet; the depot's next write or opening it again finishes it") from error
 
+    def _store(self, contents: Sequence[dict], entry: int):
+        """Write the content versions a change numbered entry adds: the parts
+        of each that its text does not hold yet, in one commit of parts, then
+        the versions' rows in one commit of contents, so a version is there
+        only once every part it lists is."""
+        lists = []
+        known = {text: self._held_parts(text) for text in {one["id"] for one in contents if one["version"] > 1}}
+
+        def batches():
+            pending, size = [], 0
+            for one in contents:
+                found, own = [], known.setdefault(one["id"], set())
+                for part in parted(one["source"]):
+                    found.append(part._replace(value=None))
+                    if part.hash not in own:
+                        own.add(part.hash)
+                        pending.append({"id": one["id"], "hash": part.hash, "change": entry, "value": part.value})
+                        size += part.bytes
+                        if size >= WRITTEN:
+                            yield from rows("parts", pending).to_batches()
+                            pending, size = [], 0
+                lists.append({"id": one["id"], "version": one["version"], "change": entry, "kind": one["kind"],
+                              "parts": [{"hash": part.hash, "length": part.length} for part in found],
+                              "length": sum(part.length for part in found),
+                              "bytes": sum(part.bytes for part in found)})
+            if pending:
+                yield from rows("parts", pending).to_batches()
+
+        self.tables.append_stream("parts", batches())
+        self.tables.append("contents", rows("contents", lists))
+
     def _done(self, entry: int, change: dict):
-        if change["kind"] == "erase":  # its cut contents leave the journal, and the states that held them go
+        if change["kind"] == "erase" and "cut" in change:  # an older format's: its cut contents leave the journal
             self.journal.done(entry, {name: value for name, value in change.items() if name != "cut"})
             self.tables.drop_history(["journal"])
         else:
@@ -1495,27 +1656,36 @@ class Depot:
 
     def _outside_written(self, entry: int, change: dict) -> bool:
         """Whether what the change writes outside the journal is written,
-        numbered by its entry: the content versions it adds, or, for a
-        change of scores, the texts' new revisions, written in one append
+        numbered by its entry: the content versions it adds (their rows of
+        contents, written after their parts), an erasure's new parts, or, for
+        a change of scores, the texts' new revisions, written in one append
         after its decision."""
         if change["kind"] == "scores":
             return bool(self.tables.query("SELECT count(*) AS n FROM texts_revisions WHERE change = ?",
                                           [entry])["n"][0].as_py())
+        if change["kind"] == "erase":
+            return self.tables.query("SELECT count(*) AS n FROM parts WHERE change = ?",
+                                     [entry])["n"][0].as_py() == change["stored"]
         found = _content_ids(change)
-        return self.tables.query("SELECT count(*) AS n FROM contents WHERE change = ? AND list_contains(?, id)",
+        return self.tables.query("SELECT count(*) AS n FROM content_lists WHERE change = ? AND list_contains(?, id)",
                                  [entry, found])["n"][0].as_py() == len(found)
 
     def _cut_short(self, entry: int, change: dict):
         """End a change whose rows outside the journal are not all written:
-        those written go (content versions and revisions are written in one
-        commit, so normally none is; a change of scores may have written its
-        decision), then its entry is marked done as cut short."""
+        those written go (content versions, an erasure's parts and revisions
+        are each written in one commit, so normally none is, but the parts
+        of content versions whose rows were not written; a change of scores
+        may have written its decision), then its entry is marked done as cut
+        short."""
         if change["kind"] == "scores":
             self.tables.delete("texts", f"change = {int(entry)}")
             self.tables.delete("decisions", f"id = {literal(change['decision']['id'])}")
         else:
-            listed = ", ".join(map(literal, _content_ids(change)))
-            self.tables.delete("contents", f"change = {int(entry)} AND id IN ({listed})")
+            if change["kind"] != "erase":
+                listed = ", ".join(map(literal, _content_ids(change)))
+                self.tables.delete("contents", f"change = {int(entry)} AND id IN ({listed})")
+            if "parts" in self.tables.exist():  # an older format's change, applied during an upgrade, has none
+                self.tables.delete("parts", f"change = {int(entry)}")
         self.journal.cut_short(entry, change)
 
     def _write(self, table: str, found: pa.Table):
@@ -1643,23 +1813,59 @@ class Depot:
             raise ValueError(f"no change of kind {kind!r}")
 
     def _apply_erase(self, change: dict):
+        """Carry out an erasure's change: each version it cuts lists its new
+        parts, every part of a text it cut that no version lists any longer
+        goes, and the texts it names whole go. An older format's change holds
+        the cut versions' text itself (cut), put in place on that format's
+        layout."""
         for column in ("text", "content"):
-            found = [one for one in change["cut"] if column in one]
+            found = [one for one in change.get("cut", []) if column in one]
             if found:
                 source = pa.table({"id": pa.array([one["id"] for one in found], pa.string()),
                                    "version": pa.array([one["version"] for one in found], pa.int64()),
                                    column: pa.array([one[column] for one in found], pa.string())})
                 self.tables.merge_update("contents", source, {column: f"source.{column}"})
+        lists = change.get("lists", [])
+        if lists:
+            source = pa.table({"id": [one["id"] for one in lists], "version": [one["version"] for one in lists],
+                               "parts": [[{"hash": bytes.fromhex(hash_), "length": length}
+                                          for hash_, length in one["parts"]] for one in lists],
+                               "length": [one["length"] for one in lists], "bytes": [one["bytes"] for one in lists]},
+                              schema=rows("contents", []).select(["id", "version", "parts", "length", "bytes"]).schema)
+            self.tables.merge_update("contents", source, {name: f"source.{name}" for name in ("parts", "length", "bytes")})
+            self._drop_unlisted(sorted({one["id"] for one in lists}))
         self._remove_texts(change["removed"])
         self.journal.rewrite(_without(self.journal.entries("add"), set(change["removed"])))
         self.tables.drop_history()
 
+    def _drop_unlisted(self, texts: list[str]):
+        """Remove every part of the texts named that none of their content
+        versions lists. Both reads and the delete name the texts by value, so
+        the files' statistics leave out every file that holds none of them."""
+        if not texts:
+            return
+        named = ", ".join(map(literal, texts))
+        held = self.tables.query(f"SELECT id, hash FROM parts WHERE id IN ({named})").to_pylist()
+        listed = {(one["id"], one["hash"]) for one in self.tables.query(
+            f"SELECT id, unnest(parts).hash AS hash FROM content_lists WHERE id IN ({named})").to_pylist()}
+        unlisted = {}
+        for one in held:
+            if (one["id"], one["hash"]) not in listed:
+                unlisted.setdefault(one["id"], []).append(one["hash"])
+        if unlisted:
+            self.tables.delete("parts", " OR ".join(
+                f"(id = {literal(text)} AND hash IN ({', '.join(f"X'{hash_.hex()}'" for hash_ in hashes)}))"
+                for text, hashes in sorted(unlisted.items())))
+
     def _remove_texts(self, texts: list[str]):
-        """Remove the texts whole: every revision, every content version, memberships and pins (an erasure's part)."""
+        """Remove the texts whole: every revision, every content version and part, memberships and pins (an
+        erasure's part)."""
         if texts:
             listed = ", ".join(map(literal, texts))
-            for table, column in (("texts", "id"), ("contents", "id"), ("memberships", "text"), ("pins", "text")):
-                self.tables.delete(table, f"{column} IN ({listed})")
+            for table, column in (("texts", "id"), ("contents", "id"), ("parts", "id"), ("memberships", "text"),
+                                  ("pins", "text")):
+                if table != "parts" or "parts" in self.tables.exist():  # an older format has no parts
+                    self.tables.delete(table, f"{column} IN ({listed})")
 
 
 def location(address: str) -> Path | str:
@@ -1690,8 +1896,60 @@ def _without(entries: list[tuple[int, dict]], removed: set[str]) -> dict[int, di
 
 
 def _writes_outside(change: dict) -> bool:
-    """Whether a change of the journal writes rows outside it: content versions, or a change of scores' revisions."""
-    return change["kind"] == "scores" or bool(_content_ids(change))
+    """Whether a change of the journal writes rows outside it: content
+    versions, an erasure's new parts, or a change of scores' revisions."""
+    return change["kind"] == "scores" or bool(change.get("stored")) or bool(_content_ids(change))
+
+
+def _recut(reader: Reader, text: str, document: Parted, pieces: list[tuple[int, int]]):
+    """(the parts [(hash, length)] a plain text's version keeps, before the
+    first one that loses a character; [the bytes of the parts from that one
+    on], filled as they are read; the parts of the rest of the cut text, a
+    parts.Part each, as the rule of wpt_depot.parts cuts the whole cut text
+    from there): document less its characters that pieces (the places
+    [(start, end)] of those that stay, in order, as wpt_depot.erasure gives
+    them) do not keep. The parts from that one on are read a few at a time
+    as the last value is iterated."""
+    kept = [[] for _ in document.parts]  # the pieces of each part, in its own places
+    for a, b in pieces:
+        first = bisect.bisect_right(document.starts, a) - 1
+        for index in range(max(first, 0), len(document.parts)):
+            start, end = document.starts[index], document.starts[index + 1]
+            if start >= b:
+                break
+            if end > a and min(b, end) > max(a, start):
+                kept[index].append((max(a, start) - start, min(b, end) - start))
+    first = next((index for index, (_, length) in enumerate(document.parts) if kept[index] != [(0, length)]),
+                 len(document.parts))
+    old = [0]
+
+    def rest():
+        for index, value in enumerate(reader.stream(text, document.parts[first:]), first):
+            old[0] += len(value.encode("utf-8"))
+            yield "".join(value[a:b] for a, b in kept[index]).encode("utf-8")
+
+    def recut():
+        before, line = _before(reader, text, document, first)
+        for data in split(rest(), before=before, line=line):
+            yield made(data)
+    return list(document.parts[:first]), old, recut()
+
+
+def _before(reader: Reader, text: str, document: Parted, first: int) -> tuple[bytes, int]:
+    """(the bytes just before the part first of document, at most a cut's
+    window, and the place of the last line end before it, counted from it):
+    what wpt_depot.parts.split cuts on with from that part."""
+    before, line, walked = b"", None, 0
+    for index in range(first - 1, -1, -1):
+        data = reader.values(text, [document.parts[index][0]])[document.parts[index][0]].encode("utf-8")
+        if line is None and (end := data.rfind(b"\n")) >= 0:
+            line = -(walked + len(data) - end)
+        walked += len(data)
+        before = (data + before)[-(WINDOW - 1):]
+        if line is not None and len(before) >= WINDOW - 1:
+            break
+    return before, -1 - walked if line is None else line
+
 
 
 def _content_ids(change: dict) -> list[str]:

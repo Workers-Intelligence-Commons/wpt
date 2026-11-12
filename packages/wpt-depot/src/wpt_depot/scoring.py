@@ -117,7 +117,7 @@ def check(con: duckdb.DuckDBPyConnection, upstream_sql: str, named: int) -> tupl
             f"SELECT id FROM changes WHERE {upstream_sql} ORDER BY id LIMIT {int(named)}").fetchall()]
     late = con.sql("""SELECT c.id, c.s.name, c.s.content_version, v.last
         FROM (SELECT id, unnest(scores) AS s FROM changes) c
-        JOIN (SELECT id, max(version) AS last FROM contents GROUP BY id) v ON v.id = c.id
+        JOIN (SELECT id, max(version) AS last FROM content_lists GROUP BY id) v ON v.id = c.id
         WHERE c.s.content_version > v.last ORDER BY c.id LIMIT 1""").fetchall()
     if late:
         text, name, version, last = late[0]

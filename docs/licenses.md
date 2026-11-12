@@ -509,7 +509,7 @@ Only exceptions that add permissions are accepted:
 Apache-2.0) and `GCC-exception-3.1` (GCC's runtime libraries, after
 GPL-3.0-or-later). A repository that states the choice (its README or
 `Cargo.toml` says "MIT OR Apache-2.0", "MIT/Apache-2.0" or "at your
-option") gives each of its texts both licenses.
+option") gives its text both licenses.
 
 Licenses that all apply to one text together, such as a repository with
 two license files and no statement that one may choose, are one combined
@@ -623,11 +623,15 @@ when it is:
   distributor writes on content it did not make does not count. The text's
   license is `LicenseRef-public-domain`, with the statement quoted in its
   notice.
-- **Every text names its own licenses.** Each file of a repository or a
-  collection is its own text, so a file can carry another license than
-  the rest of its collection.
+- **Every text names its own licenses.** A repository is one text: every
+  file it lets in, joined with its git history. Each file still comes in
+  under the license that covers it, and a file without an allowed one
+  stays out, its changes in the git history too. The text's licenses are then all of its files' licenses at
+  once, each choice of the depot's list joining them with `AND`, and its
+  notice holds every one of their notices. Each record of a collection
+  is its own text ("Records", below).
 - **Every file whose license allows it comes in.** Configuration, build
-  files, license files and edition pages are texts like any other. Only
+  files, license files and edition pages come in like any other file. Only
   the rules on this page leave a file out.
 - **A file is covered by the license its publication gives it**, such as
   a repository's license file for every file of the repository. A file no
