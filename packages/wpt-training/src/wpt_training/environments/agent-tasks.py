@@ -283,13 +283,11 @@ class AgentTasks:
         self.ending = ending
         return {"items": items, "count": count, "ending": ending}
 
-    def after_update(self, step, loss, indexer):
+    def after_update(self, step, loss):
         round_ = self.round
         if loss is not None:
             self.updates += 1
             round_.updates += 1
-            if indexer is not None:
-                round_.indexers.append(indexer)
         ending, self.ending = self.ending, None
         if ending is None:
             return
@@ -302,9 +300,7 @@ class AgentTasks:
                              f"times; the last time: {ending['last_dropped']}")
         self.data.log(f"{self.data.step} round {ending['round']}/{self.settings['rounds']}: mean reward "
                       f"{ending['mean']:.4f} over {ending['rewards']} attempts at {len(self.kept)} tasks, "
-                      f"{round_.updates} updates"
-                      + (f", indexer loss {sum(round_.indexers) / len(round_.indexers):.4f}" if round_.indexers
-                         else ""))
+                      f"{round_.updates} updates")
         self.round = _Round()
 
     def finished(self, last):
@@ -384,8 +380,8 @@ class Attempts(Environment):
                            routes_in(model, routes, device), advantage, payload["count"], weight))
         return passes
 
-    def after_update(self, step, loss, indexer):
-        self._ask("after_update", step, loss, indexer)
+    def after_update(self, step, loss):
+        self._ask("after_update", step, loss)
 
     def finished(self, last):
         self._ask("finished", last)
@@ -400,27 +396,28 @@ class Attempts(Environment):
 
 
 def routes_out(model, routes: Routes) -> dict:
-    """{index of the layer: its recorded choices, on the CPU}: the routes of
-    an attempt, without the model's modules, to send to another process."""
-    return {index: routes.chosen[layer.experts].cpu() for index, layer in enumerate(model.layers)
-            if layer.experts in routes.chosen}
+    """{(index of the layer, pass): its recorded choices, on the CPU}: the
+    routes of an attempt, without the model's modules, to send to another
+    process."""
+    index = {layer.experts: number for number, layer in enumerate(model.layers)}
+    return {(index[experts], loop): chosen.cpu() for (experts, loop), chosen in routes.chosen.items()}
 
 
 def routes_in(model, found: dict, device) -> Routes:
     """The Routes routes_out gave, on this process's model."""
     routes = Routes()
-    routes.chosen = {model.layers[index].experts: chosen.to(device) for index, chosen in found.items()}
+    routes.chosen = {(model.layers[number].experts, loop): chosen.to(device)
+                     for (number, loop), chosen in found.items()}
     return routes
 
 
 class _Round:
     """What the main process gathers over a round: its attempts' rewards,
-    their lines, the errors that dropped some, its updates and their
-    indexer losses."""
+    their lines, the errors that dropped some and its updates."""
 
-    def __init__(self, rewards=(), lines=(), dropped=(), updates=0, indexers=()):
+    def __init__(self, rewards=(), lines=(), dropped=(), updates=0):
         self.rewards, self.lines, self.dropped = list(rewards), list(lines), list(dropped)
-        self.updates, self.indexers = updates, list(indexers)
+        self.updates = updates
 
 
 def start(settings, data):

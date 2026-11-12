@@ -11,10 +11,11 @@ token the model wrote (and has not read yet):
     context   the hidden states of FEATURES target layers at each of the last
               WINDOW tokens the model read, side by side, projected to the
               model's width and RMS-normalized (DFlash's fused context)
-    backbone  LAYERS layers, each window attention over the context and the
-              block, then experts, joined to 4 streams by mHC (DSpark's
-              production backbone: 3 MoE layers with mHC and a sliding
-              window of 128). The block is the anchor's embedding then mask
+    backbone  LAYERS layers, each a window layer's attention over the
+              context and the block, then experts (DSpark's production backbone: 3 MoE
+              layers and a sliding window of 128), linked as the model's
+              sublayers are, by Attention Residuals in its full form: every
+              sublayer's output a source of its own (residuals.py). The block is the anchor's embedding then mask
               vectors, all read in one pass (DSpark's anchor-first block);
               the block's places see each other both ways (DFlash), and
               each sees the context entries within WINDOW tokens of it.
@@ -54,18 +55,17 @@ import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
-from .attention import WINDOW, Attention, frequencies, rotate, stored
+from .attention import WINDOW, WindowAttention, dense_attention
 from .checkpoint import TokenizerMismatch, check_drafter, tokenizer_identity
 from .config import ModelConfig
 from .experts import Experts
 from .layers import EPS
-from .mhc import STREAMS, Connection
 from .notice import DRAFTER_NAME
 from .optimizer import roles
-from .sparse import sparse_attention
+from .residuals import Residuals
 
 BLOCK = 5            # the most drafts per round: DSpark-5, the production drafter
-LAYERS = 3           # the production backbone's MoE layers with mHC
+LAYERS = 3           # the production backbone's MoE layers
 MARKOV_RANK = 256    # the Markov head's rank r at a width of 4096 (DSpark's), in proportion to the width below
 MARKOV_WIDTH = 4096
 FEATURES = 5         # target layers read, uniformly from the 2nd to the third-to-last (DFlash)
@@ -85,8 +85,7 @@ def feature_layers(n_layer, count=FEATURES):
 
 def default_markov_rank(width):
     """The Markov head's default rank for a model of that width: 256 at
-    4096, in proportion to it (as the indexer's sizes, docs/model.md), at
-    least 1."""
+    4096, in proportion to it, at least 1."""
     return max(1, MARKOV_RANK * width // MARKOV_WIDTH)
 
 
@@ -128,30 +127,31 @@ class DrafterConfig:
 
 
 class DrafterLayer(nn.Module):
-    """One backbone layer: window attention (V4's attention with no merged
-    entries, as the multi-token prediction block's) over the context and
-    the block, then routed and shared experts, each joined by mHC."""
+    """One backbone layer: a window layer's attention (as the multi-token
+    prediction block's) over the context and the block, then routed and
+    shared experts; Attention Residuals gives each its input."""
 
     def __init__(self, config):
         super().__init__()
         D = config.d_model
-        self.attention = Attention(config, ratio=0)
+        self.attention = WindowAttention(config)
         self.experts = Experts(config, hashed=False)
         self.attention_norm, self.experts_norm = nn.RMSNorm(D, eps=EPS), nn.RMSNorm(D, eps=EPS)
-        self.attention_streams, self.experts_streams = Connection(D), Connection(D)
 
-    def forward(self, streams, ids, context, positions, context_positions, idx, collect):
-        def attend(h):
-            a = self.attention
-            h = self.attention_norm(h)
-            turning = frequencies(False, h.device)
-            _, q, block = a._queries_and_window(h, positions, turning)
-            injected = stored(rotate(a.kv_norm(a.kv(context.to(h.dtype))), context_positions, turning))
-            table = torch.cat([block, injected.to(block.dtype)], 1)
-            o, _ = sparse_attention(q, table, a.sink, idx, a.head_dim ** -0.5)
-            return a._output(o, positions, turning, h.dtype)
-        streams = self.attention_streams(streams, attend)
-        return self.experts_streams(streams, lambda h: self.experts(self.experts_norm(h), ids, collect))
+    def attend(self, h, context, positions, context_positions, visible):
+        """visible (R, count, count + WINDOW): which of the block's places
+        and context entries each place reads."""
+        a = self.attention
+        h = self.attention_norm(h)
+        block = a.entries(h, positions)
+        injected = a.entries(context.to(h.dtype), context_positions)
+        table = torch.cat([block, injected.to(block.dtype)], 1)
+        c = a.head_dim
+        o = dense_attention(a.queries(h, positions), table[..., :c], table[..., c:], a.sink, visible, c ** -0.5)
+        return a.output(o, h)
+
+    def feed(self, h, ids, collect):
+        return self.experts(self.experts_norm(h), ids, collect)
 
 
 class Drafter(nn.Module):
@@ -167,6 +167,7 @@ class Drafter(nn.Module):
         self.fuse_norm = nn.RMSNorm(D, eps=EPS)
         self.mask = nn.Parameter(torch.randn(D))  # the masked places' input, at the embedding's scale
         self.layers = nn.ModuleList(DrafterLayer(model_config) for _ in range(config.layers))
+        self.residuals = Residuals(D, 2 * config.layers, 2 * config.layers)
         self.final_norm = nn.RMSNorm(D, eps=EPS)
         self.markov_in = nn.Embedding(V, config.markov_rank)  # W1
         self.markov_out = nn.Linear(config.markov_rank, V, bias=False)  # W2
@@ -187,17 +188,19 @@ class Drafter(nn.Module):
         context_positions = lengths[:, None] - WINDOW + torch.arange(WINDOW, device=device)
         # each place sees the whole block, then the context entries within WINDOW tokens of it
         seen = (context_positions[:, None, :] >= 0) & (context_positions[:, None, :] > positions[..., None] - WINDOW)
-        idx = torch.cat([torch.arange(count, device=device).expand(R, count, count),
-                         torch.where(seen, count + torch.arange(WINDOW, device=device), -1)], -1)
+        visible = torch.cat([seen.new_ones(R, count, count), seen], -1)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=anchors.is_cuda):
             fused = self.fuse_norm(self.fuse(context))
             x = torch.cat([F.embedding(anchors, model.embedding.weight.detach())[:, None],
                            self.mask.expand(R, count - 1, -1).to(model.embedding.weight.dtype)], 1)
             ids = torch.cat([anchors[:, None], anchors.new_zeros(R, count - 1)], 1)
-            streams = x.float().unsqueeze(2).expand(-1, -1, STREAMS, -1)
-            for layer in self.layers:
-                streams = layer(streams, ids, fused, positions, context_positions.clamp(min=0), idx, collect)
-            h = self.final_norm(streams.sum(2))
+            sources = self.residuals.start(x)
+            for number, layer in enumerate(self.layers):
+                j = 2 * number
+                sources.output(j, layer.attend(sources.input(j), fused, positions, context_positions.clamp(min=0),
+                                               visible))
+                sources.output(j + 1, layer.feed(sources.input(j + 1), ids, collect))
+            h = self.final_norm(sources.end())
             return h.float(), F.linear(h, model.head.weight.detach()).float()
 
     def _markov(self, previous):
@@ -257,9 +260,9 @@ class Drafter(nn.Module):
     def optimizer_roles(self):
         """(name, parameter, role, view) for every parameter, by the model's
         rule (optimizer.roles, WPT.optimizer_roles): the fusing projection
-        and the attention and expert matrices take Muon, head by head and
-        expert by expert; the mask vector, the norms, mHC's biases and
-        gating factors, the Markov head's two matrices and the confidence
+        and the attention and expert matrices take NorMuon, head by head and
+        expert by expert; the mask vector, the norms, the queries of
+        Attention Residuals, the Markov head's two matrices and the confidence
         head take AdamW, as the model's embedding and output head."""
         return roles(self, (self.mask, self.markov_in.weight, self.markov_out.weight, self.confidence.weight))
 

@@ -175,20 +175,17 @@ class Method:
         """One pass on examples, one of the update's `passes` passes in this
         process: the loss's backward pass, under quiet(last) for its last
         backward call (the gradients are exchanged at the update's last).
-        Returns (its share of the update's loss, its indexer loss), as
-        floats or detached tensors."""
+        Returns its share of the update's loss, a float or a detached
+        tensor."""
         raise NotImplementedError
 
-    def update_loss(self, losses, indexers, strategy) -> tuple[float, float | None]:
-        """(the update's loss, its indexer loss) from this process's passes'
-        values, the same in every process: by default, the shares of every
-        pass of every process added up, and the mean of the indexer losses
-        that are not None (None when none is)."""
-        values = [float(value) for value in indexers if value is not None]
-        total = strategy.reduce(torch.tensor([sum(float(value) for value in losses), sum(values), len(values)],
-                                             dtype=torch.float64, device=strategy.device))
-        loss, indexer, count = total.tolist()
-        return loss, (indexer / count if count else None)
+    def update_loss(self, losses, strategy) -> float:
+        """The update's loss from this process's passes' values, the same in
+        every process: by default, the shares of every pass of every
+        process added up."""
+        total = strategy.reduce(torch.tensor([sum(float(value) for value in losses)], dtype=torch.float64,
+                                             device=strategy.device))
+        return total.item()
 
     def after_update(self, step: int):
         """Called after the optimizer steps, with the update's number."""
@@ -204,7 +201,7 @@ class Method:
 class TextMethod(Method):
     """A method on text windows, x and y the tokens after them: by default
     the next-token loss plus the multi-token prediction loss at
-    mtp_weight, plus the gradient of the model's indexer loss. Windows
+    mtp_weight. Windows
     longer than the options' segment, or split across processes, train in
     parts (parts.py), which need part_loss."""
 
@@ -217,44 +214,32 @@ class TextMethod(Method):
     def learn(self, model, wrapped, examples, passes, strategy, segment, quiet):
         from . import parts
         x, y = examples
-        loss, indexer = parts.learn(self, model, wrapped, x, y, 1 / passes, strategy, segment, quiet)
-        return loss, indexer
+        return parts.learn(self, model, wrapped, x, y, 1 / passes, strategy, segment, quiet)
 
-    def update_loss(self, losses, indexers, strategy):
+    def update_loss(self, losses, strategy):
         """The loss over the whole batch, every micro-batch of every process
-        (the sum of their shares with split windows), and the indexer loss
-        of the last micro-batch (with split windows, the processes' shares
-        of it added up)."""
-        splits = strategy.splits_windows
+        (the sum of their shares with split windows)."""
         whole = torch.stack([torch.as_tensor(value).float() for value in losses]).mean().item()
-        whole = strategy.mean(whole) * (strategy.world_size if splits else 1)
-        indexer = float(indexers[-1])
-        return whole, strategy.mean(indexer) * strategy.world_size if splits else indexer
+        return strategy.mean(whole) * (strategy.world_size if strategy.splits_windows else 1)
 
     def loss(self, model, x, y):
-        """The losses of a batch, windows x and y, the tokens after them:
-        (training loss, indexer loss). The training loss is what the
-        backward pass starts from: its value is the language-model loss,
-        which the log shows next to the validation loss, and it carries the
-        gradient of the CSA indexers' loss too, which reaches only the
-        indexers (DeepSeek-V3.2). The indexer loss is that loss's value,
-        which the log shows beside it."""
+        """The training loss of a batch, windows x and y, the tokens after
+        them: what the backward pass starts from, the language-model loss
+        that the log shows next to the validation loss."""
         return self.part_loss(model, x, y, None, x.shape[1])
 
     def part_loss(self, model, x, y, following, window):
-        """The share of a part of the windows, x and y (B, t), in loss()'s
-        two values over the whole windows, so that the parts' shares add up
-        to them (parts.py): model computes the part where it sits in the
-        windows; following is the token after y's last (B, 1), None at the
-        windows' end; window is the windows' length. A method that defines
-        its own loss defines this too, or trains whole windows only."""
+        """The share of a part of the windows, x and y (B, t), in loss()
+        over the whole windows, so that the parts' shares add up to it
+        (parts.py): model computes the part where it sits in the windows;
+        following is the token after y's last (B, 1), None at the windows'
+        end; window is the windows' length. A method that defines its own
+        loss defines this too, or trains whole windows only."""
         B, t = y.shape
         targets = y[:, 1:] if following is None else torch.cat([y[:, 1:], following], 1)  # the token after next
         # the model sums the two cross-entropies without holding every token's scores at once
-        next_sum, ahead_sum, indexers = model(x, next_tokens=y, indexer_loss=True, targets=(y, targets))
-        loss = next_sum / (B * window) + self.mtp_weight * ahead_sum / (B * (window - 1))
-        share = indexers * (t / window)  # the model's is the mean over the part's queries
-        return loss + (share - share.detach()), share.detach()
+        next_sum, ahead_sum = model(x, next_tokens=y, targets=(y, targets))
+        return next_sum / (B * window) + self.mtp_weight * ahead_sum / (B * (window - 1))
 
     def validation_loss(self, model, x, y):
         """The next-token loss alone, which evaluations compare."""
@@ -284,6 +269,13 @@ class Optimizer:
 
     def evaluated(self, step: int, val_loss: float) -> Verdict:
         return Verdict(best=True, stop=False)
+
+    def kept(self) -> dict | None:
+        """Called once the step's updates are done: the weights the step
+        keeps (a whole state_dict of the model) in place of its best
+        evaluation's or its last ones, such as an average of its last
+        states; None keeps those."""
+        return None
 
     def state_dict(self) -> dict:
         """Everything a resumed step needs: tensors, numbers, strings, lists, dicts."""
@@ -410,9 +402,9 @@ class Environment:
         examples (attempts) in eval mode; it is in training mode after."""
         raise NotImplementedError
 
-    def after_update(self, step, loss, indexer):
-        """Called after update `step`, with its loss and indexer loss (None
-        when it was skipped); may raise StepFailed."""
+    def after_update(self, step, loss):
+        """Called after update `step`, with its loss (None when it was
+        skipped); may raise StepFailed."""
 
     def finished(self, last):
         """Called once the step's last update `last` is done; may raise StepFailed."""

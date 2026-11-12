@@ -13,243 +13,144 @@ sizes) are not fixed here: each size is a model recipe, or a size of a
 model series (below), since a small model may not want the ratios of a
 large one.
 
-**Weights whose global layers use gated MLA do not load.** Their
-`config.json` names MLA numbers that `ModelConfig` refuses, and their
-weights have no counterpart in CSA and HCA layers. Such a model must be
-trained again from its recipe (see "Model recipes").
-
 ## The shape
 
 ```
 token ids
-  -> embedding, copied into 4 residual streams (mHC)
+  -> embedding
   -> layer 1 .. L, each:
-       attention sublayer: KDA, or CSA or HCA every 4th layer and the
-         last, the kind of each named by the recipe (global_attention)
+       attention sublayer: a window, exact or sparse layer, in the layout
+         the recipe names (first half: window layers on each side of an
+         exact layer; second half: groups of an exact layer and sparse
+         layers); Engram memory added to its input in the layers the
+         recipe names
        feed-forward sublayer: experts (hash-routed in the first 3 expert
-         layers, router-chosen after), 2 shared experts
-       Engram memory added before the sublayers of the layers the recipe names
-       every sublayer joined to the streams by mHC
-  -> streams summed, RMSNorm, output head          (next-token scores)
+         layers, router-chosen after), 2 shared experts, whose down
+         projection changes while the text is read in every sixth layer
+         (In-Place TTT)
+       every sublayer's input a weighted sum of the embedding and the
+         earlier sublayers' outputs (Attention Residuals)
+  -> `loops` more times through layers 1 .. L, each pass starting from the
+     one before's output (Loops)
+  -> one more such sum, RMSNorm, output head        (next-token scores)
   -> one multi-token prediction block, window attention (the token after next)
 ```
 
 ## Attention
 
-**KDA layers** (Kimi Delta Attention; [Kimi Linear][kimi-linear], [Kimi K3][k3]). Three layers
-out of four keep, per head, a fixed-size memory matrix `S` updated token by
-token, so nothing grows with the text's length:
+The attention is [HySparse2][hysparse2]'s, as published, with a window of
+128 tokens, aiming at a context of 1M tokens. Its layers are of three
+kinds, and the recipe sets their layout with three numbers
+(`window_layers`, `sparse_groups`, `sparse_layers`):
 
-```
-S_t = (I - beta_t k_t k_t^T) Diag(alpha_t) S_{t-1} + beta_t k_t v_t^T
-o_t = S_t^T q_t
-```
+- **the first half**: `window_layers` window layers, one exact layer, then
+  `window_layers` window layers again;
+- **the second half**: `sparse_groups` groups, each one exact layer
+  followed by `sparse_layers` sparse layers.
 
-- `q`, `k`, `v`: per-head projections, each through a short causal
-  convolution (kernel 4) and SiLU; `q` and `k` are L2-normalized.
-- `beta_t = sigmoid(W_beta x_t)`, one per head.
-- Decay per channel, bounded as in K3 so tiles stay inside BF16 range:
-  `g_t = -5 * sigmoid(exp(A_h) * z_t)`, `alpha_t = exp(g_t)`, where `z_t` is
-  a low-rank projection of `x_t` (rank = head dimension) and `A_h` a
-  learned scalar per head, starting at 0.
-- Output: `W_o(sigmoid(W_g x_t) * RMSNorm_head(o_t))`.
-- Head dimension 128 for keys and values in the papers; the recipe sets it.
+The full layout is `(4, 2, 5)`: 21 layers, 4 window, 1 exact, 4 window,
+then twice 1 exact and 5 sparse. A model for a single small GPU uses `(2,
+1, 5)`: 11 layers.
 
-KDA layers have no positional encoding: their memory is ordered by
-construction. Kimi Linear's ablation found 3 KDA to 1 full attention best
-among 0:1, 1:1, 3:1, 7:1 and 15:1, and the hybrid beat full attention at
-1.4T tokens (MMLU-Pro 51.0 against 47.2). WPT keeps that ratio of 3 KDA
-layers to 1 global layer.
+Every attention layer has one key-value head shared by all its query heads
+(MQA), normalizes each query head and each key by an RMSNorm with a learned
+weight before comparing them (QK-norm, as [IMU-1][imu1]), and scales the
+scores by `1/sqrt(c)`, `c` the head width. The scores and the softmax run
+in FP32.
 
-Training uses the chunked form (chunks of 64 tokens) from the
-flash-linear-attention library on GPUs; a step-by-step version of the
-formula above is the reference, used in tests, and the two must agree.
-Where flash-linear-attention cannot run (it needs Triton: torch brings it on
-Linux, triton-windows on Windows, and CPUs have no kernel), the same chunked
-computation runs in plain PyTorch, 16 tokens at a time, factored at each chunk's middle token so no exponential leaves FP32's
-range; it agrees with the reference too, and is much slower.
-A training run on a GPU logs which form KDA runs; when it is the PyTorch one, the line is a WARNING
-with the type and message of the error that stopped flash-linear-attention from importing.
+- **Window layers** read, for each query, its last 128 tokens, itself
+  included. Rotary position encoding (base 10,000) turns the last 64
+  dimensions of each query and key, the only position encoding in the
+  model. Positions count from the text's first token, also in a segment
+  or slice of a long window ("Long windows", below).
+- **Exact layers** read every token up to the query, without position
+  encoding. Each query also picks its 1,024 tokens with the highest score
+  among those at least 128 tokens back (HySparse2's oracle selection): a
+  token's weight in one head is its softmax probability, and its score is
+  its largest weight over the heads ([HySparse][hysparse]'s maximum over a
+  group of heads, where MQA makes all heads one group). A query with fewer
+  such tokens picks all of them. Equal scores go to whichever token the
+  top-`k` operation returns first. The choice has no gradient. The first
+  half's exact layer, which no sparse layer follows, picks none.
+- **Sparse layers** have no keys or values of their own. Each query reads
+  the keys and values of the exact layer before it at that query's 1,024
+  chosen tokens and its last 128 tokens, through the sparse layer's own
+  query projection, without position encoding.
 
-**CSA and HCA layers** ([DeepSeek-V4][v4], section 2.3). Every fourth layer,
-and the last, reads the whole text, but through merged entries, so its cost
-grows far slower than full attention's and a 1M-token context stays
-affordable. The recipe names the kind of each global layer, in order, in
-its `global_attention` list: `["CSA", "HCA"]` in an 8-layer model makes
-layer 4 CSA and layer 8 HCA, as V4 interleaves them. A 4-layer model has one
-global layer, so one kind.
+The window and sparse layers multiply each head's output by a sigmoid gate
+of their input, one value per dimension of each head ([gated
+attention][gated]), and add a learned sink logit per head, starting at 0,
+to the softmax's denominator, so a head can give almost no weight to
+anything. HySparse2 names the gate and the sink for those two kinds only,
+and the exact layers have neither.
 
-- **Merged entries.** From the layer input `h_t`, each token gives values
-  `C_t = W^KV h_t` and scores `Z_t = W^Z h_t` (one value per channel), and
-  every `m` tokens become one entry: per channel, the block's values
-  weighted by a softmax of `Z + B` over the block, `B` a learned bias for
-  each place in the block (starting at 0 in WPT; V4 does not publish its
-  start). CSA merges `m = 4` tokens, and each entry also takes the block
-  before it through a second pair `W^bKV, W^bZ, B^b`: 8 tokens in one
-  softmax, in 1/4 as many entries. HCA merges `m' = 128` tokens without
-  overlap. Each entry is RMS-normalized. Tokens after the last full block
-  make no entry yet.
-- **One key-value head.** Each entry serves as both key and value of every
-  query head (V4's shared key-value MQA): one key-value vector per entry,
-  shared by every head.
-- **Queries** come from a latent, `c^Q_t = RMSNorm(W^DQ h_t)`,
-  `q_t = W^UQ c^Q_t`, split into heads, and each head is RMS-normalized
-  (without a learned weight, as V4's code) before the scores.
-- **The indexer (CSA only)** chooses, for each query, which merged entries
-  it attends to ([DeepSeek-V3.2][v32]'s lightning indexer). It merges its own
-  keys `K^I` the same way, takes its queries from the same latent,
-  `q^I_t = W^IUQ c^Q_t` (`n^I` heads), and head weights `w_t = W^w h_t`
-  (scaled by `1/sqrt(n^I c^I)`, as V4's code), and scores every visible
-  entry `I_{t,s} = sum_h w_{t,h} ReLU(q^I_{t,h} . K^I_s)`. The top `k`
-  entries are kept; HCA keeps all of its entries. The indexer's queries
-  and keys are rotated, then kept in FP4 (below), so `c^I` is a power of
-  2. Equal scores, frequent with FP4 values and with ReLU's zeros in small
-  indexers, go to the earliest entries (WPT's choice: V4 does not say),
-  so the choice depends only on the visible entries, never on how many
-  follow: a window in parts and the generation cache ("Generation",
-  below) choose as the whole window does. One rule serves all three
-  (`sparse.py`).
-- **The window.** Merged entries alone would hide a query's own block, so
-  each query also attends to the last 128 tokens uncompressed (itself
-  included), each token's entry `RMSNorm(W^win h_j)` from a projection of
-  its own (V4's code).
-- **Causality.** A query at position `t` sees a merged entry only when the
-  entry's last token is at or before `t` (entry `s` of ratio `m` when
-  `s < (t + 1) / m`); the indexer scores only those, so neither the
-  merging nor the selection lets a token see a later one.
-- **Attention.** One softmax over the window and the chosen entries, scaled
-  by `1/sqrt(c)`, with an attention sink: a learned logit `z'_h` per head
-  whose `exp` joins the denominator, so a head can give almost no weight
-  to anything (starting at 0 in WPT). The scores and the softmax run in
-  FP32.
-- **Position.** Rotary encoding on the last 64 dimensions of every query
-  and entry (V4's partial RoPE): a token's at its position, a merged
-  entry's at its block's first token. CSA and HCA (their window, merged
-  entries and indexer included) use base 160,000 (V4's
-  `compress_rope_theta`) stretched by YaRN with V4's values: over an
-  original length of 65,536 tokens, the pairs that turn more than 32 times
-  (`beta_fast`) keep their frequency, those that turn fewer than once
-  (`beta_slow`) turn 16 times slower (`rope_factor`), and a linear ramp
-  joins the two; with 64 rotary dimensions, pairs 0 to 15 are kept and 25
-  to 31 slowed. As in V4's code, YaRN changes only the frequencies, not the
-  softmax scale. The window-only block uses base 10,000 (V4's `rope_theta`)
-  without YaRN, as V4 does for its window-only layers. Since entries are
-  also the values, each output head is rotated back by its query's
-  position, so what an entry adds depends on the distance, not the
-  absolute place. KDA layers stay without position encoding. Positions
-  count from the window's first token, also in a segment or slice of a
-  long window (below, "Long windows").
-- **Storage formats** (V4, section 2.3.4 and its inference code). Every
-  key-value entry, of the window and merged, is kept in FP8 (E4M3) except
-  its 64 rotary dimensions, which keep their precision: each block of 64
-  values shares a scale, the power of 2 at or above the block's largest
-  magnitude divided by 448. The indexer's queries and merged keys are
-  rotated by a Hadamard matrix (Sylvester's, scaled by `1/sqrt(c^I)`: it
-  leaves their dot products unchanged and spreads each vector over every
-  dimension), then kept in FP4 (E2M1), each block of 32 values with a
-  power-of-2 scale at or above its largest magnitude divided by 6, then
-  held in FP8 with one such scale per vector, the form DeepSeek's FP8
-  indexer kernel reads; V4 notes that this step loses nothing while the
-  blocks' scales stay within a bound, here a factor of 2^13. The
-  queries of the main attention are not rounded. Each value is rounded to
-  its format and turned back, as V4's code simulates its quantization;
-  training passes the gradient through the rounding unchanged (the
-  straight-through estimator of V4's quantization-aware training). So the
-  non-rotary part of `c` is a multiple of 64.
-- **Grouped output.** The `n_h` head outputs form `g` groups; each group's
-  `c n_h / g` values are projected to `d_g`, and the `g d_g` results to the
-  model width. V4 puts no gate on the output, and WPT adds none.
+**The second half reads the first half's output** (HySparse2's KV
+bridging). The second half's exact layers make their keys and values from
+the first half's output, while their queries come from their own input.
+That output is the input Attention Residuals gives the first sublayer of
+the second half ("Attention Residuals", below), normalized by the exact
+layer's own attention norm. The first half's exact layer makes its keys
+and values from its own input.
 
-The indexer's choice has no gradient, so it learns by its own loss
-(DeepSeek-V3.2's sparse stage): for each query, the KL divergence from the
-main attention's weights on the chosen entries (summed over heads, then
-normalized over those entries) to the softmax of its scores, averaged over
-queries and added over CSA layers (WPT's choice: V3.2 sums over queries,
-a scale that Muon's and Adam's normalized steps mostly cancel). Its inputs
-are cut off from the rest of the model, so this loss trains only the
-indexer, and the language-model loss only the rest. The model computes it
-only when its caller asks (`model(x, indexer_loss=True)` returns it after
-the scores): every built-in training step asks, and a pass that does not
-ask leaves the indexers untrained. The training loss adds the gradient of
-this loss but not its value, so the logged training loss stays comparable
-with the validation loss; the log shows the indexer loss beside it at each
-evaluation, and `provenance.json` records its value at the step whose
-weights the folder holds (`indexer_loss`). WPT is sparse from its first
-step: V4 and V3.2 first train with dense attention and warm the indexer up
-on all entries, a stage WPT leaves out.
+Two operations grow with the text: the exact layers' attention, which also
+gives each query's chosen tokens, and the sparse layers' attention over
+given tokens and the window (`kernels.py`). The window layers' attention
+runs in PyTorch, in blocks of 128 queries that each read two blocks of keys,
+so its cost grows with the text times 128.
 
-V4's values, which WPT uses as they are: merging ratios 4 and 128, window
-128, 64 rotary dimensions, the rotary bases and YaRN above, the FP8 and FP4
-formats. The recipe sets the kind of each global layer and the numbers
-that change with size (heads, head width, query latent, output groups and
-their width, indexer heads and width, top `k`); V4-Flash has 64 heads of
-512, a query latent of 1024, 8 groups of 1024, an indexer of 64 heads of
-128 and a top 512. A head is 64 rotary dimensions and a multiple of 64
-more (the FP8 blocks); an indexer head is a power of 2 above 64 (the
-Hadamard rotation).
+`pytorch_kernels.py` states the two operations' contract and computes them
+in plain PyTorch: the reference, which runs on every device. It computes in
+FP32 one block of queries at a time, in the forward and the backward pass,
+so its memory grows with the text and never with its square, and its
+backward pass is written out. Two GPU forms keep the same contract:
+**TileLang** (`tilelang_kernels.py`), on an NVIDIA GPU under Linux with
+TileLang and the CUDA compiler `nvcc`, and **Triton** (`triton_kernels.py`),
+on an NVIDIA or AMD GPU where Triton is installed. Both GPU forms run the
+exact layer as flash attention whose tiles stack a block of queries' heads
+as rows, so a few heads still fill the matrix units, followed by a kernel
+that picks each query's top 1,024 from the scores and the forward pass's
+softmax denominators, with no scores written and nothing waiting on the
+GPU from the host. It streams the keys again, recomputing the scores:
+passes that count each query's scores in bins until the 1,024th lies in a
+bin of a few hundred rows or of one score, then one that writes the rows
+above that bin and ranks the bin's rows exactly. The rows chosen are an
+exact top-`k` of the kernel's scores, the order among equal scores aside.
+The first half's exact layer runs no choice at all. The sparse layer runs one program per
+query that gathers its chosen rows and its window in blocks. Its backward
+pass first lists, for each table row, the queries that read it, then sums
+each row's key and value gradients over its list, one program per row, and
+each query's gradient over its rows, one program per query. The lists take
+the order in which the GPU's atomic additions fill them, and TileLang's
+exact layer adds its query gradients with FP32 atomic additions, so the
+gradients can differ in the last bits from run to run.
 
-Two forms compute the attention and the indexer's scores. A PyTorch form,
-which runs on every device (CPUs and any GPU, native Windows included),
-gathers each query's entries a block of queries at a time, in the forward
-and the backward pass, so memory holds one block's entries rather than all
-of them; its backward pass is written out and tested against the formula,
-and it computes the FP8 and FP4 formats in FP32 by rounding, so every
-device gives the same values. On a GPU, kernels compute every pass instead,
-training included, in one of two languages:
-
-- **TileLang**, DeepSeek's own, on an NVIDIA GPU under Linux (the `cuda`
-  build installs it): DeepSeek's sparse attention kernel
-  (`deepseek_kernels.py`, from V4-Flash's inference code) and its FP8
-  indexer kernel (`deepseek_index_kernel.py`, from V3.2's), both copied
-  unchanged, and WPT's own kernels for training (`tilelang_kernels.py`),
-  since DeepSeek published no backward pass: one gives each head's softmax
-  denominator and each entry's weight (the indexer's target), the other the
-  gradients of the queries and entries.
-- **Triton**, on any NVIDIA or AMD GPU where it is installed (Linux,
-  where PyTorch brings Triton, and Windows through `triton-windows` in the
-  `cuda` build), chosen where TileLang is not installed, or when named:
-  translations of the same four kernels (`triton_kernels.py`).
-
-The indexer's loss stays in PyTorch, since it reads only the chosen
-entries. Which form runs is decided once, before the first use
-(`wpt train` decides it before training and logs it). `wpt train`,
-`wpt eval` and `wpt chat` each take `--kernels` (or `WPT_KERNELS`) to name
-it: `triton`, `tilelang` or `pytorch`. Unnamed, TileLang runs where it is installed on an NVIDIA GPU under Linux,
-else Triton where it is installed, else the PyTorch form. The training
-and the evaluation `wpt manager` runs on rented machines name `triton`
-unless its settings name the form. A form named after the decision must be the one decided. A
-kernel form that cannot work stops the run with its reason, never a switch
-to another form: one named but not installed, TileLang named off an NVIDIA
-GPU under Linux, kernels named on a machine with no GPU, TileLang without
-the CUDA compiler `nvcc` it needs (on `PATH`, or under `CUDA_HOME` or
+Which form runs is decided once, before the first use (`wpt train` decides
+it before training and logs it). `wpt train`, `wpt eval` and `wpt chat`
+each take `--kernels` (or `WPT_KERNELS`) to name it: `triton`, `tilelang`
+or `pytorch`. Unnamed, TileLang runs where it is installed on an NVIDIA GPU
+under Linux, else Triton where it is installed, else the PyTorch form. The
+training and the evaluation `wpt manager` runs on rented machines name
+`triton` unless its settings name the form. A form named after the decision
+must be the one decided. A kernel form that cannot work stops the run with
+its reason, never a switch to another form: one named but not installed,
+TileLang named off an NVIDIA GPU under Linux, kernels named on a machine
+with no GPU, TileLang without `nvcc` (on `PATH`, or under `CUDA_HOME` or
 `CUDA_PATH`), a TileLang or Triton that fails to import, or a kernel that
-does not compile or run on this GPU (each is compiled and run once on a
-small input). A failure inside a later call is an error, never a switch to
-the PyTorch form.
+does not compile or run on this GPU (each is compiled and run once, forward
+and backward, on a small input). A failure inside a later call is an error,
+never a switch to the PyTorch form.
 
-The kernels compute from BF16 queries and entries (the entries' FP8 values
-are exact in BF16) and FP8 indexer queries and keys, where the PyTorch
-form computes in FP32, and they add up the entries' gradients across
-queries in whatever order the GPU's atomic additions take; so training and
-evaluations on a machine where kernels run may give slightly different
-numbers from those of a machine where they do not, and from one run to the
-next. Tests check each kernel against the PyTorch form at the recipes'
-head counts and top `k`, on index rows as each layer kind makes them
-(CSA's: the window, with its gaps mid-row, then the chosen entries; HCA's:
-the window, then every merged entry, those not yet complete left out; the
-MTP block's: the window alone): the attention's output within 1% of its
-largest value, its gradients within 1%, the weights and softmax
-denominators within 0.01%, and the indexer's scores within 0.1%, its top
-`k` as good. Whole CSA and HCA layers and the MTP block's attention give
-their output, CSA's indexer loss, and their gradients within 1% of the
-PyTorch form on the CPU. They check the PyTorch form against the formulas
-of the paper.
+Tests check the PyTorch form against the formulas, and each kind of layer
+against HySparse2's formulas one token at a time. The tests of a kernel
+form against the PyTorch form sit in one place
+(`packages/wpt-model/tests/test_kernels.py`), at the recipes' head widths
+and 1,024 chosen tokens, and run for every form that runs on the machine.
 
 ## Long windows
 
 Training targets 1M tokens and reaches it by stages in the recipe, with
-segments on one GPU, windows split across several GPUs, and sparse
-attention from the start (above). The stages are in training.md, "Stages".
+segments on one GPU, windows split across several GPUs, and sparse layers
+from the start (above). The stages are in training.md, "Stages".
 A window too long for one GPU runs in parts, and both ways give exactly the
 loss and gradients of the whole window at once, so they are hardware
 options (training.md, "Long windows"), never part of the recipe:
@@ -261,14 +162,14 @@ options (training.md, "Long windows"), never part of the recipe:
 - **Slices**, across processes (`wpt train --strategy split`):
   DeepSeek-V4's two-stage contextual parallelism ([V4][v4], section
   3.4.3). Each process holds a contiguous slice of `s` tokens; stage 1,
-  process `i` sends what the next one needs of its last tokens (for CSA,
-  its last block of uncompressed entries, which process `i + 1` merges
-  with its own); stage 2, an all-gather of every process's merged entries
-  and indexer keys gives each process the window's full set, in order,
-  and the causal masks and the indexer's top `k` name the entries each
-  query sees. V4 pads that set at the tail because its slices hold packed
-  documents of varying lengths; WPT's slices are equal and hold whole
-  blocks, so none is needed.
+  each process sends the later ones what they need of its last tokens
+  (the window layers' last 127 keys and values, Engram's tails, In-Place
+  TTT's unfinished chunk and its updates); stage 2, an
+  all-gather of every process's exact-layer keys and values gives each
+  process the window's full set, in order, and each query's position
+  names the tokens it sees. V4 pads that set at the tail because its
+  slices hold packed documents of varying lengths; WPT's slices are equal,
+  so none is needed.
 - **Slices in segments**, both at once (`--strategy split --segment N`):
   when a slice is longer than `N`, the window runs as consecutive parts of
   `N` tokens per process, each split across the processes; process `i`
@@ -280,26 +181,10 @@ What crosses a boundary is what each layer passes on to later tokens
 ("What a layer passes on", below), the same description the generation
 cache keeps.
 
-Across processes, KDA's memory cannot wait for the slice before.
-DeepSeek-V4's two stages (above) exchange tails and merged entries, nothing
-for a KDA memory; WPT combines the slices' transforms of it itself. The
-memory's update is linear in the memory, `S_end = A S_start + B`, so each
-process computes, in one pass over its slice, how the slice transforms a
-memory (its own `A` and `B`, by starting from `[I | 0]` with values `[0 |
-v]`), the processes exchange these transforms, and each composes those of
-the slices before its own into its starting memory (after the memory the
-part before handed on, with segments) and corrects its output. Every
-process works at once, and the result is exact; it costs a pass with the
-memory as wide as `dk + dv` instead of `dv`. In FP32 the composed
-transforms round differently from the token-by-token memory: on the CPU,
-gradients through KDA differ by up to about `6e-5` of the model's largest
-gradient (the same algebra in float64 agrees to `1e-15`), and the tests of
-split windows keep a tolerance of `2e-4` in FP32 (training.md, "Long
-windows").
-
-A segment or slice holds a multiple of 128 tokens (HCA's merging), so no
-merged entry straddles two of them; a window's last segment may be
-shorter. The losses are the parts' shares of the whole window's
+A segment or slice holds a multiple of 128 tokens (the window layers'
+window); a window's last segment may be shorter. A tail longer than a
+slice (In-Place TTT's 1,023 tokens) is read from as many processes before
+as it reaches. The losses are the parts' shares of the whole window's
 (training.md, "Long windows").
 
 ### What a layer passes on
@@ -312,27 +197,32 @@ kinds:
 
 - **a tail**: the last `n` time steps of a value each token has, with what
   stands before the text (zeros, or Engram's padding id);
-- **entries**: merged from every `m` tokens, every one kept;
-- **a memory**: a state updated token by token.
+- **entries**: one per token, every one kept;
+- **a fold**: a running value that some tokens change, zero before the
+  text; each pass gives its changes, each at the token after which it
+  applies.
 
 | Layer | What it passes on |
 | --- | --- |
-| KDA | its memory `S` per head; a tail of the last 3 inputs of each short convolution |
-| CSA, HCA, the MTP block's window | a tail of the last 127 window entries; a tail of the rows not merged into an entry yet (CSA's last 8 rows, the block before the current one included; HCA's last 128); every merged entry, and in CSA every indexer key |
-| Engram | a tail of the last `N - 1` canonical ids; a tail of the last `3N` inputs of its convolution, per stream |
-| experts, mHC | nothing: they work token by token |
+| window layer, the MTP block's window | a tail of the last 127 keys and values |
+| exact layer | the key and value of every token |
+| sparse layer | nothing: it reads the exact layer's |
+| Engram | a tail of the last `N - 1` canonical ids; a tail of the last `3N` inputs of its convolution |
+| In-Place TTT | a tail of the last 1,023 tokens' hidden states, embeddings and end-of-document marks; a fold of the chunks' updates since the document began |
+| experts, Attention Residuals | nothing: they work token by token |
 
-A query sees itself and the 127 entries before it in the window, so 127
-is all a later token needs (DeepSeek-V4's inference code keeps 128, one
-more than is read). A segment, a slice and a cache take the same values
-from the same description, so they cannot drift apart: a test checks that
-a segment and a cache carry exactly the described values and no other,
-and that both give the whole window's results. The merging of rows into
-entries is one computation for all of them: the rows passed on from
-before, then this part's rows, gathered block by block. Taking tokens back
-(generation, below) needs one rule per kind: a tail is cut back to the
-tokens kept, a memory is replayed from the one before, and entries past a
-row's tokens are never read, so they need nothing.
+A query of a window layer sees itself and the 127 tokens before it, so 127
+is all a later token needs. A segment, a slice and a cache take the same
+values from the same description, so they cannot drift apart: a test
+checks that a segment and a cache carry exactly the described values and
+no other, and that both give the whole window's results. Taking tokens
+back (generation, below) needs one rule per kind: a tail is cut back to
+the tokens kept, entries past a row's tokens are never read, so they
+need nothing, and a fold keeps the changes at the tokens kept.
+
+A model that loops ("Loops", below) reads a window once per pass, and
+training's segments and slices carry each pass's values apart, so they
+still give the whole window's results.
 
 ## Experts
 
@@ -385,10 +275,89 @@ publish its function; WPT uses, for token id `t` and `j = 0 .. k-1`:
 `h(t) = (t * 2654435761 mod 2^32) mod n`. These layers have no router and
 no bias.
 
+## In-Place TTT
+
+In every sixth layer, from the first (layers 1, 7, 13 and 19 of 21), one
+weight matrix changes while the model reads a text, as in [In-Place
+TTT][ttt]. The paper changes the last projection of a gated feed-forward
+block. WPT's feed-forward is a mixture of experts, so the matrix is the
+down projection of the two shared experts, which are always active: their
+two down projections side by side, `W` (`d_model x 2 shared_width`), and
+their hidden states side by side, `z`.
+
+The text is cut into chunks of 1,024 tokens, counted from its first
+token. Each chunk reads the matrix that the chunks before it left, then
+changes it by one step:
+
+```
+output of token t   z_t (W_0 + 0.3 S)^T, S the sum of the updates so far
+update of a chunk   d = sum over its tokens of v_t z_t^T
+target              v = W_target Conv1D(e)
+```
+
+`e` is the token embeddings, and `Conv1D` a depthwise convolution of 5
+taps centred on the token, zero beyond the chunk. The update is one
+gradient step of the paper's loss aligned with next-token prediction, the
+negative inner product of `z W^T` and `v`; its rate is 0.3. The
+convolution starts at zero and `W_target` as a diagonal of `N(0, 0.02^2)`
+values, so the model starts as one without the change. Both are trained
+with the model from the first update, with the experts' part.
+
+Each document starts from the trained matrix `W_0`. The end-of-document
+token closes its document. A token reads `S` only when no document ended
+in its chunk before it. A chunk's update counts only its tokens after its
+last end of document, the convolution reading none of the tokens before
+that end. `S` starts over at a chunk that holds an end.
+
+A pass computes the updates of the chunks it completes in one batch, `S`
+at each chunk start by a running sum (the paper's prefix sum), and the
+change for each run of tokens that reads the same `S` in one batched
+product. That costs about two more down projections in each of these
+layers. `S` is FP32. While no chunk ends within a pass, the convolution
+and `W_target` get a zero gradient, so every process of DDP has one.
+
+The paper's published code gives the chunk size, the centred convolution,
+the rate, the layers and the initialization; the paper itself says "causal
+padding" and "every sixth layer", and reports chunks of 512 to 1,024 best.
+Counting chunks from the text's first token rather than from each
+document's, and the shared experts' down projection as the matrix, are
+WPT's own. All of these are open to review. Trained from scratch at 4B
+parameters, a model with only window layers went from 9.91 to 26.80 on
+RULER at 8,000 tokens, and one with full attention from 38.09 to 43.82.
+The smallest model the paper measured has 500M parameters, and it was
+never tested with a window of 128 tokens or with HySparse2.
+
+## Loops
+
+A recipe number, `loops`, sets how many more times the text passes
+through every layer with the same weights, as in [Ouro][ouro]. At 0 the
+model is one pass: nothing of the loop is in its weights or its cost.
+
+- Each pass after the first takes the pass before's output, the input the
+  output head would read, as its first source, where the first pass takes
+  the embedding. Its sums of Attention Residuals cover its own sources
+  only.
+- The output head, the multi-token prediction block and the drafter's
+  features read the last pass. In-Place TTT's targets are the token
+  embeddings in every pass.
+- The routed experts route each pass on its own, and R3 records and
+  replays each pass's choices apart.
+- The loss reads the last pass only. Ouro also trains an exit gate that
+  learns when to stop looping; WPT has none. Both are open to review.
+
+The evidence is mixed, which is why this is a number and not a fixed
+choice. In the paper's test at equal compute, from 53M to 1.36B
+parameters, the plain model had the lower loss in every case, by 0.015 to
+0.039; accuracy by number of passes peaks at 3 to 4. No paper combines
+loops with HySparse2 or with Attention Residuals, so the rule for the
+sources above and the cache's rule (Generation, below) are open to review.
+A size of a series computes `loops + 1` times the work per token of one
+pass ("Model series").
+
 ## Engram memory
 
 [Engram][engram] (DeepSeek) adds a lookup that costs almost no compute: embeddings of
-the last few tokens' N-grams, read from hashed tables, mixed into the
+the last few tokens' N-grams, read from hashed tables, added to the
 hidden state through a learned gate.
 
 - Token ids first map to a canonical id: tokens whose decoded text is the
@@ -403,12 +372,14 @@ hidden state through a learned gate.
   `e_t`. DeepSeek describes its hash only as multiplicative-XOR; WPT's
   constants are in the code.
 - Gate: `k_t = W_K e_t`, `v_t = W_V e_t`,
-  `a_t = sigmoid(RMSNorm(h_t) . RMSNorm(k_t) / sqrt(d))`, value `a_t v_t`.
-  With mHC's 4 streams, `W_V` is shared and each stream has its own `W_K`.
+  `a_t = sigmoid(RMSNorm(h_t) . RMSNorm(k_t) / sqrt(d))`, value `a_t v_t`,
+  where `h_t` is the input Attention Residuals gives the layer's attention.
 - Then `Y = SiLU(Conv1D(RMSNorm(V))) + V`, a depthwise causal convolution
   of kernel 4 and dilation N, starting at zero so the module starts as
-  nothing; `Y` is added before the layer's sublayers. WPT shares this
-  convolution across the 4 streams.
+  nothing. The attention reads `h_t + Y`, and the sublayer's output is
+  `Y` plus the attention's output, the share a residual sum would add
+  (the papers place Engram on a residual stream, never between
+  Attention Residuals' sums).
 - The recipe names the layers (Engram-27B: layers 2 and 15; the 3B
   reference: 2 and 6).
 
@@ -417,28 +388,48 @@ sparse parameter budget (everything not active per token) from experts to
 Engram gave the lowest loss. Lookups depend only on input tokens, so large
 tables can stay in CPU memory and be fetched ahead.
 
-## Residual streams: mHC
+## Attention Residuals
 
-[mHC][mhc] (DeepSeek, used in [DeepSeek-V4][v4]) replaces the single residual sum with
-`n = 4` streams. Each sublayer (attention, feed-forward) has its own
-mappings, computed from the RMS-normalized, flattened streams `x'`:
+[Attention Residuals][attnres] (Kimi) replaces the running residual sum
+with softmax attention over depth. The paper counts each attention and
+each feed-forward block as a layer; this section calls them sublayers.
+Each sublayer `l` reads
 
 ```
-H_pre  = sigmoid(a_pre  * x' phi_pre  + b_pre)            1 x n
-H_post = 2 sigmoid(a_post * x' phi_post + b_post)         1 x n
-H_res  = SinkhornKnopp(a_res * mat(x' phi_res) + b_res)   n x n
-x_next = H_res x + H_post^T F(H_pre x)
+h_l = sum_i alpha_(i->l) v_i
+alpha_(i->l) = softmax_i(w_l . RMSNorm_l(v_i))
 ```
 
-Sinkhorn-Knopp starts from `exp` of the matrix and alternates column and
-row normalization 20 times, so rows and columns sum to 1 and the product of
-many layers stays stable. The gating factors `a` start at 0.01. The papers
-do not say how the embedding becomes 4 streams or how they end; WPT copies
-the embedding into each stream and sums the streams before the final
-RMSNorm. Nor do they give the biases' starting values; WPT starts with
-`H_pre` averaging the streams (`b_pre = logit(1/4)`), `H_post` adding the
-output to each stream in full (`b_post = 0`) and `H_res` near the identity
-(`b_res` = 4 on the diagonal, 0 elsewhere).
+over its sources `v_i`. `w_l` is the sublayer's own learned vector, its
+query. Every query starts at zero, so training begins from a plain average
+of the sources, as the paper requires. The RMSNorm keeps a source of large
+magnitude from taking every weight. The first sublayer has one source,
+the embedding, and reads it as it is.
+
+The sublayers are cut into `residual_groups` consecutive groups, a recipe
+number (the paper's Block AttnRes). A sublayer's sources are the
+embedding, the sum of the outputs of each earlier group, and the sum of
+the outputs of its own group so far, when the group already holds one.
+With twice as many groups as layers, one per sublayer, every output is a source of
+its own: the paper's full form, which WPT's recipes use. Sublayer `j` (from
+0) belongs to group `j x groups // sublayers`, so groups differ by at most
+one sublayer; the paper leaves the split of uneven groups open. The output
+head reads one more sum, with its own query, over every group. Each sum
+adds `2 x d_model` parameters: its query and its RMSNorm's weight.
+
+At 194M to 528M active parameters, the paper's full form scores slightly
+above mHC and the grouped form matches it; it also reports that the design
+prefers more, narrower layers.
+
+The sources of one pass are kept side by side in one tensor of the compute
+dtype (BF16 on a GPU), each written once, when complete, with its inverse
+RMS `r_i`. Since `w_l . RMSNorm_l(v_i) = ((w_l * g_l) . v_i) r_i`, with
+`g_l` the RMSNorm's weight, a sum is two batched products over that
+tensor, one for the scores and one for the weighted sum. The scores and
+the softmax are FP32. The backward pass is written out, so that it keeps
+nothing per sublayer but the scores and weights: the sources stay only in
+that tensor. A test checks the sums and every gradient against the
+formula over stacked sources.
 
 ## Multi-token prediction
 
@@ -447,9 +438,8 @@ it joins the final hidden state and the next token's embedding (each
 RMS-normalized, concatenated, projected back to the model width), runs one
 layer, and uses the shared output head. WPT's layer is attention over the
 last 128 tokens alone and a dense SiTU-GLU as wide as the two shared
-experts together, on one stream. Its attention is V4's (above) with no
-merged entries and rotary base 10,000, as V4's own MTP block in its
-published code; [MiMo-V2-Flash][mimo] chose a sliding window for its MTP
+experts together, on one stream. Its attention is a window layer's
+(above); [MiMo-V2-Flash][mimo] chose a sliding window for its MTP
 block too, so that the block stays light when it drafts tokens. It never
 sees further back than 128 tokens. Its loss is added with weight 0.3,
 then 0.1 (DeepSeek-V3 switched after 10T of 14.8T tokens; the recipe sets
@@ -467,37 +457,42 @@ The cache is forward's own pass, with the tokens at each row's place: the
 same code as training, which reads the earlier tokens' values from the
 cache instead of from a segment before.
 
-- **KDA** keeps its memory `S` and the last 3 inputs of each short
-  convolution: a fixed size, whatever the text's length.
-- **CSA, HCA and the MTP block's window** keep the window's last 127
-  entries, the merged entries (FP8 but their rotary dimensions), CSA's
-  merged indexer keys (FP4, held in FP8), and the rows not merged into an
-  entry yet (as V4's `kv_state` and `score_state`: the current block's
-  rows, and in CSA the block before it, whose second projection pair the
-  next entry reads).
+- **Window layers and the MTP block's window** keep the last 127 keys and
+  values.
+- **Exact layers** keep the key and value of every token; the sparse
+  layers read them.
 - **Engram** keeps each attempt's last `N - 1` canonical ids and the last
   inputs of its convolution; its tables stay on the model's device.
+- **In-Place TTT** keeps each attempt's unfinished chunk and its sum of
+  updates: every attempt holds its own copy of the changed matrix.
 - The experts keep nothing, but a cache can record each attempt's routed
   experts as its tokens are read, for R3 (training.md).
 
-Only the merged entries grow, a quarter of the tokens in CSA (and as many
-indexer keys) and 1/128 in HCA, so generation goes on past `block_size`
-with no limit. It is the same computation as reading the whole text, so the
-same scores within rounding: on the CPU, tests check each kind of layer
-(KDA, CSA, HCA, the window alone, Engram, the MTP block) and the whole
-model over 300 tokens read in pieces (past `block_size`, the window and
-HCA's first entries) within 0.1% of the largest score, and the tokens that
-sampling draws with one seed; on a GPU, each kind of attention layer
-within 3% (BF16). A rounding can still fall the other way (an FP8 or FP4
-value, a near tie in the indexer's or the routers' choice), which changes
-a score by more than the rounding itself; the tests allow for that.
+A model that loops keeps one value per layer, the last pass's. Each call
+runs every pass over its new tokens; every pass starts from what the cache
+held when the call began, and reads its own keys, values and tails for the
+call's tokens. A prompt read in one call so gives what the forward pass
+gives, and a token read later reads, in every pass, the last pass's values
+of the earlier tokens. Ouro measured this sharing at 78.85 against 78.92
+on GSM8K. Every pass reads the prompt through every layer: stopping the
+last pass after the first half for the tokens whose scores are not needed
+is not built.
+
+Only the exact layers' keys and values grow, one key and one value per
+token and exact layer, so generation goes on past `block_size` with no
+limit. It is the same computation as reading the whole text, so the same
+scores within rounding: on the CPU, tests check each kind of layer and
+the whole model read in pieces against reading it whole, and the tokens
+that sampling draws with one seed. A rounding can still fall the other way
+(a near tie in an exact layer's choice or the routers'), which changes a
+score by more than the rounding itself; the tests allow for that. A prompt
+is read through every layer, the second half included.
 
 A cache holds several rows, the attempts of one task, read together in one
 batch: each row has its own length, and each call gives each row its own
 number of new tokens, the rest of the row being padding that changes
-nothing (KDA's padded tokens write nothing and do not decay). A prompt
-shared by the attempts is read once and copied into every row: KDA's
-states and V4's entries alike.
+nothing. A prompt shared by the attempts is read once and copied into
+every row.
 
 **Speculative decoding.** A drafter proposes a few tokens for each row
 (`DRAFT`, 5, the most DSpark's production drafter proposes); the model
@@ -507,19 +502,15 @@ probability, `q` the drafter's), a rejected one is replaced by a draw from
 `max(0, p - q)`, normalized, and when all are kept the model adds one more
 token. This leaves the model's own distribution unchanged.
 The cache then undoes the rejected tokens, by kind ("What a layer passes
-on"): KDA replays the kept tokens' cached inputs from the `S` before the
-pass ([Kimi K3][k3]'s way; flash-linear-attention's chunked kernel on a
-GPU where it imports), each tail is cut back to the kept tokens, merged
-entries past a row's tokens are left unread and merged again when the row
-reaches them, and the recorded routes are cut. WPT's drafter is DSpark's
+on"): each tail is cut back to the kept tokens, keys and values past a
+row's tokens are left unread and written again when the row reaches them,
+and the recorded routes are cut. WPT's drafter is DSpark's
 ("The drafter", below); the machinery takes any drafter (`wpt_inference`
 says what one gives), and generation without one samples a token at a
 time through the cache.
 
-**Kernels.** Plain PyTorch on every device; on a GPU where
-flash-linear-attention imports, its fused recurrent KDA kernel for fewer
-than 16 new tokens and its chunked kernel for more; the attention through
-the same TileLang or Triton kernels as training, where they run.
+**Kernels.** The exact and sparse layers' attention runs through the same
+form as training ("Attention"); the window layers' runs in PyTorch.
 
 `wpt_inference.Writer` writes through the cache (`sample_tokens` for one
 text); `wpt chat`, the sample `wpt train` prints, the drafter's training
@@ -568,7 +559,7 @@ recipes") gives the drafter's shape (`features`, `layers`, `block`,
 setting left out keeps its default below. The three recipes state the
 training values explicitly ("Model recipes"), equal to today's defaults, so
 a later change of a default does not change their drafters. `features`
-numbers the model's layers from 1 to its `n_layer`;
+numbers the model's layers from 1 to its last;
 `DrafterConfig.for_model` checks them against the model's layers when a run
 starts, so `wpt train` refuses a layer the model does not have before
 any step runs.
@@ -577,11 +568,11 @@ A round drafts a block after the anchor, the last token the model wrote
 and has not read yet:
 
 - **Context** (DFlash). The hidden states of 5 target layers, spread evenly
-  from the 2nd to the third-to-last (fewer in a short model: the 2nd alone
-  in 4 layers), at each of the last 128 tokens the model read, side by
+  from the 2nd to the third-to-last (fewer in a short model: the 2nd and 3rd
+  in 5 layers), at each of the last 128 tokens the model read, side by
   side, projected to the model's width and RMS-normalized.
-- **Backbone** (DSpark's production values). 3 layers, each with mHC's 4
-  streams, a window attention of 128 tokens and experts. The block is the
+- **Backbone** (DSpark's production values). 3 layers, each a window
+  attention of 128 tokens and experts. The block is the
   anchor's embedding and 4 mask vectors (DSpark's anchor-first block: 5
   places give 5 drafts), read in one pass. Every layer reads the context as
   keys and values through its own key-value projection (DFlash's KV
@@ -592,7 +583,7 @@ and has not read yet:
   softmax(U_k + W1[x_{k-1}] W2)`, sampled from left to right, `x_0` the
   anchor. DSpark's rank is 256 at V4's width of 4096; WPT's default rank
   follows the width, `256 * d / 4096`: 8 at width 128, 20 at 320 and 32 at
-  512, as the indexer scales with the width. With a vocabulary of 8,192,
+  512. With a vocabulary of 8,192,
   the head holds 131K of the drafter's 1.5M parameters at width 128, 328K
   of 11.7M at 320 and 524K of 28.9M at 512; at rank 256 it held 4.2M of
   5.6M, 4.2M of 15.6M and 4.2M of 32.6M.
@@ -666,13 +657,15 @@ frozen; only the drafter learns.
 Details DSpark leaves open, and WPT's choice for each:
 
 - Width: the model's, which sharing its embedding and head requires.
-- The backbone's layers: V4's attention with no merged entries, as the
-  multi-token prediction block's (rotary base 10,000), and the model's
+- The backbone's layers: a window layer's attention, as the multi-token
+  prediction block's, and the model's
   experts (latent SiTU-GLU experts, 2 shared, the model's numbers), every
   layer routed by its router and balanced by Quantile Balancing (no hash
   routing); DSpark says only "MoE layers with mHC".
-- Each target layer's hidden state: its 4 output streams summed, as the
-  model's last layer is read.
+- The links between the backbone's sublayers: Attention Residuals in its
+  full form, as the model's.
+- Each target layer's hidden state: the input Attention Residuals gives
+  the next layer's attention; the last layer's is the output head's input.
 - What each place sees: the whole block both ways (DFlash), and the context
   tokens within 128 positions of it, so the window is each place's own.
 - The mask vector: learned, starting from a normal draw at the embedding's
@@ -703,9 +696,9 @@ Details DSpark leaves open, and WPT's choice for each:
   has them read in a pass of their own, so the drafter's context reaches
   its anchor.
 - The update rule: the model's ("Training"). The fusing projection, the
-  attention matrices and the expert matrices take Muon, head by head and
-  expert by expert as in the model; the mask vector, the norms, mHC's
-  biases and gating factors, the Markov head's `W1` and `W2` and the
+  attention matrices and the expert matrices take NorMuon, head by head and
+  expert by expert as in the model; the mask vector, the norms, the
+  queries of Attention Residuals, the Markov head's `W1` and `W2` and the
   confidence projection take AdamW, as the model's embedding and output
   head do. AdamW's part keeps the model's betas, 0.9 and 0.95.
 - Training values DSpark does not give come from DFlash: a learning rate
@@ -731,54 +724,68 @@ A training step locks parts of the model by name ([training.md](training.md),
 and every parameter belongs to exactly one of them (`WPT.parts`):
 
 - `embedding`: the token embedding;
-- `attention`: every layer's attention (KDA, CSA or HCA, with its norm),
-  its indexer aside;
-- `indexers`: the CSA indexers;
+- `attention`: every layer's attention (window, exact or sparse, with its
+  norm);
 - `routers`: the routers of the experts layers;
 - `balancing`: the routers' balancing biases, which no gradient trains:
   Quantile Balancing sets them after each update, unless a step locks
   them;
-- `experts`: the experts, shared and routed, with their norm;
+- `experts`: the experts, shared and routed, with their norm and In-Place
+  TTT's convolution and `W_target`;
 - `engram`: the Engram memories;
-- `streams`: mHC's mappings of the residual streams;
+- `residuals`: the queries and norm weights of Attention Residuals;
 - `final-norm`: the last norm;
 - `output-head`: the output head;
 - `multi-token-prediction`: the MTP block.
 
 ## Training
 
-**Optimizer.** Muon for matrix weights ([Moonlight][moonlight]), as
-[DeepSeek-V4][v4] runs it (its Algorithm 1): the momentum (with Nesterov's
-trick) is divided by its Frobenius norm and orthogonalized by hybrid
-Newton-Schulz steps, 8 with coefficients `(3.4445, -4.7750, 2.0315)` that
-bring the singular values near 1, then 2 with `(2, -1.5, 0.5)` that settle
-them at 1; the result is scaled by `0.18 * sqrt(max(A, B))` for an
-`A x B` matrix, so the update's RMS is 0.18 and AdamW's learning rates
-carry over, with decoupled weight decay:
-`W = W - lr * (0.18 sqrt(max(A, B)) O + wd * W)`. Moonlight reports
-AdamW's quality with about 52% of the compute.
+**Optimizer.** NorMuon for matrix weights ([NorMuon][normuon], as
+[IMU-1][imu1] uses it), built on Muon as [DeepSeek-V4][v4] runs it (its
+Algorithm 1). The momentum (with Nesterov's trick) is divided by its
+Frobenius norm and orthogonalized by hybrid Newton-Schulz steps, 8 with
+coefficients `(3.4445, -4.7750, 2.0315)` that bring the singular values
+near 1, then 2 with `(2, -1.5, 0.5)` that settle them at 1, into `O`.
+Each row of `O`, one output neuron, is divided by the root of a running
+mean of its squares, `v = 0.95 v + 0.05 mean(O^2)` over the row, plus
+1e-8. The result is scaled to an RMS of 0.18, DeepSeek-V4's, so AdamW's
+learning rates carry over. Moonlight reports Muon reaching AdamW's quality
+with about 52% of the compute ([Moonlight][moonlight]); IMU-1 measured
+NorMuon with cautious weight decay lowering the loss of a 70M model from
+3.250 to 3.125 for about 3% more time.
 
-- Per-head Muon ([K3][k3], [DeepSeek-V4.1][v41]): KDA's query, key and value
-  projections, and the query projections of CSA, HCA and the indexer, are
-  orthogonalized head by head, so heads with large gradients do not
-  dominate the others. CSA and HCA have one key-value head, so their
-  key-value projection is one matrix.
-- Each logically separate matrix apart, as DeepSeek-V4's Muon takes "each
-  logically independent weight": each output group's projection, and a
-  merging's two projection pairs (`W^aKV` and `W^bKV`, `W^aZ` and `W^bZ`).
-- No QK-Clip: DeepSeek-V4 leaves it out, since CSA and HCA RMS-normalize
-  their queries and entries, which keeps the scores from exploding. KDA
-  has no softmax scores.
-- AdamW for the embedding, the output head, RMSNorm weights, and mHC's
-  biases and gating factors (DeepSeek-V4's split), and for the attention
-  sinks and the merging's positional biases (biases and scaling factors
-  take AdamW in [DeepSeek-V4.1][v41]); Adam with 5 times the base learning
+Weight decay is cautious ([cautious weight decay][cwd], IMU-1's rule): with
+`u` the update of a matrix or vector, `W = W - lr * (u + wd * [u W > 0] W)`,
+an entry decaying only where its update and its weight have the same sign.
+NorMuon's paper gives no Nesterov momentum, no epsilon and an RMS of 0.2,
+and IMU-1 orthogonalizes with 7 Polar Express steps: the momentum, the
+steps and the RMS here are DeepSeek-V4's, which the learning rates were
+fitted with, and the epsilon is WPT's own, all open to review.
+
+- Per-head NorMuon ([K3][k3], [DeepSeek-V4.1][v41]): the query projections
+  and the output gates of every attention layer are orthogonalized head by
+  head, so heads with large gradients do not dominate the others. Each
+  layer has one key-value head, so its key and value projections are one
+  matrix each.
+- No QK-Clip: every attention layer RMS-normalizes its queries and keys
+  (QK-norm), which keeps the scores from exploding.
+- AdamW for the embedding, the output head, RMSNorm weights (DeepSeek-V4's
+  split), the queries of Attention Residuals, the convolutions (Engram's
+  and In-Place TTT's), and for the attention
+  sinks (biases and scaling factors take AdamW in
+  [DeepSeek-V4.1][v41]); Adam with 5 times the base learning
   rate and no weight decay for Engram tables (DeepSeek's Engram setting).
 
 The kind of weight chooses the rule, never the training step: every
 built-in step trains under this rule, through the `by-part` optimizer
 ([training.md](training.md), "Optimizers"), and so does the drafter ("The
 drafter").
+
+**Average.** `read-text` keeps an exponential moving average of the
+model's last 10 states, 500 updates apart, with a factor of 0.8, as IMU-1
+averages its last checkpoints ([training.md](training.md), "Optimizers");
+IMU-1 measured its 430M model's mean benchmark score rising from 0.560 to
+0.574 with it. The steps after it keep no average.
 
 **Schedule.** Multi-step for `read-text` ([DeepSeek LLM][llm], also used in the [mHC paper][mhc]): linear
 warm-up to the maximum over the recipe's `warmup` updates (2,000 by
@@ -792,18 +799,18 @@ environments make no evaluations, so it never stops them and they keep
 their last weights.
 
 **Numbers.** BF16 for weights' computations on GPUs, FP32 for the weights
-themselves, the optimizer state, the attention scores and output, the
-merging of entries, KDA's memory, routing scores and mHC's mapping
-coefficients; the attention's entries in the FP8 and FP4 formats above,
-simulated in FP32. The kernels, where they run, read queries and entries
-in BF16 and the indexer's in FP8. CPUs compute in FP32. Training on a CUDA
+themselves, the optimizer state, the attention scores and softmax, routing
+scores, the scores of Attention Residuals and In-Place TTT's sum of
+updates; the sources of Attention
+Residuals are BF16 on GPUs. CPUs compute in FP32. Training on a CUDA
 device computes FP32 matrix products in TF32. No layer uses dropout, as in the
 papers.
 
-**Memory.** `wpt train --recompute` keeps only each layer's input during a
-pass and runs the layer again during the backward pass: the same result
-with much less memory, about a third slower (training.md). The layers'
-second run records no balancing counts, and the indexer loss counts once.
+**Memory.** `wpt train --recompute` keeps only each sublayer's input during a
+pass and runs the sublayer again during the backward pass: the same result
+with much less memory, and slower (training.md). The sources of
+Attention Residuals stay in memory either way: each is a sublayer's output.
+The sublayers' second run records no balancing counts.
 
 **Repeatability.** Runs stay the same for one seed on any hardware
 (training.md): routing ties, balancing quantiles and expert gradient sums
@@ -819,12 +826,12 @@ repository ("Model series", below). A model recipe holds:
 
 - the data: the address of a depot (`depot`), the name of a dataset there
   (`dataset`), the tokenizer recipe and the total tokens;
-- the architecture's numbers: layers, width, KDA heads and
-  dimensions, the kind of each global layer (`global_attention`), the
-  attention heads and dimensions of CSA and HCA (query
-  latent, output groups and their width, indexer heads and dimensions, the
-  top `k` entries), expert counts and widths, top `k`, latent width,
-  Engram orders, heads, table sizes and layers;
+- the architecture's numbers: the layout of the layers (`window_layers`,
+  `sparse_groups`, `sparse_layers`, "Attention"), width, attention heads
+  and head width, expert counts and widths, top `k`, latent width,
+  Engram orders, heads, table sizes and layers, the groups of Attention
+  Residuals (`residual_groups`), the extra passes of the loop (`loops`,
+  "Loops"; every recipe sets 0);
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
   file's, its optimizer and that optimizer's settings, its settings and
@@ -841,8 +848,9 @@ options remain only for what does not: device strategy (splitting windows
 across processes included), number of processes, streaming, output folder,
 run name, resuming, micro-batch, recomputing, segments, checkpoints, weight
 file size and restarts. Tokenizer recipes stay separate files, since
-several models share them. A model has at least 2 layers: the last is
-CSA or HCA, the others start with KDA. The recipes' `drafter` sections
+several models share them. A model has at least 5 layers: one window
+layer on each side of an exact layer, then one exact and one sparse layer.
+A head is at least 64 wide and even, for the 64 rotary dimensions. The recipes' `drafter` sections
 state the same training values: 256 prompts of at most 64 tokens, answers
 of at most 256 tokens, 10 epochs, learning rate 6e-4, 10% held out, 512
 anchors, 8 answers per update, seed 0; the settings a section leaves out
@@ -859,44 +867,30 @@ that. Four recipes exist, each of one stage (none yet sets V4's 4K, 16K,
 64K and 1M stages). The first three read the admitted public-domain books
 (about 4.3M tokens); `interstitial-pecker` reads every admitted document:
 
-- `classics-test`: 4.8M parameters, 256-token windows, a test to see every
-  step work on one machine. Its one global layer is CSA (4 heads of 128, an
-  indexer of 2 heads of 128), with a top 16 of its 64 entries so the choice
-  is exercised even in short windows. With 4 layers it has only one global
-  layer, so it never runs HCA.
-- `watery-tardigrade`: 102M parameters (8 layers, width 512, 32 experts
-  with top 4; layer 4 CSA and layer 8 HCA with 8 heads of 128, a query
-  latent of 128, 2 output groups of 256, an indexer of 8 heads of 128 and
-  top 64), 32K-token windows, sized for one 16 GB GPU with `--recompute
-  --micro-batch 1`. One 32K window of random tokens peaked at 8.24 GiB on
-  an integrated Radeon 860M (training.md). It is untested in a full run:
-  see below.
-- `unimpaired-axolotl`: half of `watery-tardigrade`, 50M parameters (the
-  same 8 layers and 32 experts, width 320, KDA heads of 80; layer 4 CSA and
-  layer 8 HCA with 4 heads of 128, a query latent of 80, 1 output group of
-  320, an indexer of 5 heads of 128 and top 40), 32K-token windows, sized
-  for about 8 GB with `--recompute --micro-batch 1`. On an integrated
-  Radeon 860M, one 32K window of random tokens peaked at 6.57 GiB
-  (training.md); it is meant for a stronger GPU. No full run yet.
-- `interstitial-pecker`: 146M parameters, the smallest of a series for
+- `classics-test`: 8.7M parameters, 256-token windows, a test to see every
+  step work on one machine. Its 11 layers are laid out `(2, 1, 5)`, with 4
+  heads of 128. In windows this short, every sparse layer reads every
+  earlier token: the exact layer picks 1,024 of them outside the last 128.
+- `watery-tardigrade`: 132M parameters (11 layers laid out `(2, 1, 5)`,
+  width 512, 8 heads of 128, 32 experts with top 4), 32K-token windows,
+  meant for one 16 GB GPU with `--recompute --micro-batch 1`. Its memory is
+  not measured. It is untested in a full run: see below.
+- `unimpaired-axolotl`: 60M parameters (the same 11 layers and 32 experts,
+  width 320, 4 heads of 128), 32K-token windows, meant to need less GPU
+  memory with `--recompute --micro-batch 1`. Its memory is not measured.
+  No full run yet.
+- `interstitial-pecker`: 255M parameters, the smallest of a series for
   watching behaviors appear as size grows, not for release. It keeps
-  `watery-tardigrade`'s width of 512 and its experts and has 10 layers
-  (layers 4 and 10 CSA, layer 8 HCA), since depth matters more than width
-  below 1B parameters ([MobileLLM](https://arxiv.org/abs/2402.14905)). Its
-  vocabulary is the `admitted` recipe's 32,768 tokens, whose two tables
-  take 33.6M parameters. It reads 20 tokens per parameter (about 2.93B) as
-  2,790 updates of 32 windows of 32K tokens. Both heads' scores over one
-  32K window take about 8 GiB in 32-bit, so one 16 GB GPU is estimated to
-  need `--recompute --micro-batch 1 --segment 8192`; nothing is measured
-  yet. No full run yet.
+  `watery-tardigrade`'s width of 512 and its experts and has the full
+  layout, 21 layers laid out `(4, 2, 5)`. Its vocabulary is the `admitted`
+  recipe's 32,768 tokens, whose two tables take 33.6M parameters. It reads
+  about 2.93B tokens as 2,790 updates of 32 windows of 32K tokens. Both
+  heads' scores over one 32K window take about 8 GiB in 32-bit, so one
+  16 GB GPU is estimated to need `--recompute --micro-batch 1 --segment
+  8192`; nothing is measured yet. No full run yet.
 
-V4's head width of 512 and its ratios (a latent of a quarter of the width,
-8 heads per output group) do not fit widths of 128 to 512, so the heads are
-128 wide (64 of them rotary), the query latent a quarter of the width, and
-the output groups together as wide as the model. The indexer follows
-V4-Flash's in proportion to the width (4096 there): `64 * d / 4096` heads
-and a top `512 * d / 4096` entries, each head 128 wide as V4's; so 2 heads
-and top 16 at width 128, 5 and 40 at 320, 8 and 64 at 512.
+Every recipe uses attention heads 128 wide, of which the window layers
+rotate the last 64.
 
 ### Model series
 
@@ -910,21 +904,17 @@ size its first part (its prefix). The code derives
 each size's model recipe (`wpt_recipes.series`):
 
 - the shape: the series' `reference` model scaled to the size's width.
-  Every width inside the model scales with it (KDA heads, attention heads,
-  query latent, output width, indexer heads and top `k`, expert, latent
-  and shared widths), and every count stays (head dimensions, output
-  groups, experts and top `k`, Engram's heads, order and row width).
-  Engram's table size grows with the cube of the width, as the parameters
-  do (the layers grow with the width too), so its tables keep the
-  reference's share of them: the size is the reference's times
+  Every width inside the model scales with it (attention heads, expert,
+  latent and shared widths), and every count stays (the layout of the
+  layers, head width, experts and top `k`, Engram's layers, heads, order
+  and row width, the groups of Attention Residuals, the loops), so every
+  size has the reference's layers. Engram's table size grows with the cube of the
+  width: the size is the reference's times
   `(d_model / the reference's d_model)^3`, rounded to the nearest prime
   (the model hashes into tables of prime size and gives each table the
   smallest prime at or above this one), which is the reference's own size
   at the reference's width. A width at which one
-  of the widths is not a whole number is refused. The layers keep the reference's
-  width per layer, rounded half up, and the Engram layers its fractions of
-  depth. The global layers sit where the model puts them, every 4th layer
-  and the last, and take the series' `global_attention` kinds in turn.
+  of the widths is not a whole number is refused.
 - the parameters, counted as `wpt_model` builds the model: without the two
   vocabulary tables (the embedding and the output head), the usual
   scaling-law convention, and with them.
@@ -933,19 +923,22 @@ each size's model recipe (`wpt_recipes.series`):
   `B_opt = 0.2920 C^0.3271` tokens, `M_opt = 0.1715 C^0.5243` and
   `D_opt = 5.8316 C^0.4757`, for the compute `C` in FLOPs. A size's
   non-embedding compute per token is the paper's form,
-  `M = 6 N + 12 n_layer d_model l`, with `N` the parameters one token
+  `M = 6 N + 12 L d_model l`, with `L` the layers, `N` the parameters one token
   uses and `l` the series' `block_size`. `N` leaves out the two
   vocabulary tables, counts only the `top_k` routed experts of the
   `n_experts` in each layer (the others do not run for the token), counts
   the shared experts and every other weight, and leaves out Engram's
   lookup tables (a row is read, not multiplied) while counting its
   projections. The attention term is the paper's, applied as the paper
-  writes it: CSA, HCA and KDA attend less than full attention over the
-  window, so it overstates their attention compute, and the series keeps
-  the paper's form rather than a count of its own. The size's compute is
+  writes it: the window and sparse layers attend less than full attention
+  over the window, so it overstates their attention compute, and the series keeps
+  the paper's form rather than a count of its own. In-Place TTT adds its
+  update and its change, counted as `6 x 2 x d_model x 2 shared_width`
+  per token in each layer that has it. A model that loops does all of
+  this `loops + 1` times per token, and `M` counts every pass. The size's compute is
   the `C` whose `M_opt` is that `M`, and its tokens the `D_opt` of that `C`
   (DeepSeek's split of compute between model and data). The learning rate is the law's, rounded to 4
-  significant digits, and AdamW's rates carry over to Muon ("Training").
+  significant digits, and AdamW's rates carry over to NorMuon ("Training").
   The batch is the law's in whole windows of the series' `block_size`, at
   least 1, and the updates read `D` tokens. The warm-up is the series'
   `warmup_share` of the updates, at least 1; the drops stay at 80% and 90%.
@@ -990,7 +983,7 @@ recipe's name goes:
 - `lr-FACTOR`, at the smallest size only (the fewest parameters), one per
   factor of the series' `learning_rate_check`: the size's own run at
   FACTOR times the law's learning rate, rounded to 4 significant digits.
-  It checks whether the laws' learning rate holds for Muon at that size.
+  It checks whether the laws' learning rate holds for NorMuon at that size.
 
 Each run's model folder and record are those of any `wpt train` run.
 
@@ -999,26 +992,28 @@ Each run's model folder and record are those of any `wpt train` run.
 each run of a size, and trains nothing.
 
 One series exists, `eldest-titmouse`: `interstitial-pecker`'s shape as its
-reference (width 512, 10 layers, 51.2 of width per layer), CSA and HCA in
-turn, the `admitted` vocabulary of 32,768 tokens and 32K-token windows,
-and five sizes. The parameters are counted without the vocabulary tables,
+reference (width 512, 21 layers laid out `(4, 2, 5)`, Attention Residuals
+in its full form), the `admitted` vocabulary of 32,768 tokens and 32K-token
+windows, and five sizes. Every size has the reference's 21 layers: the
+first number of a size's name is its width, and the second is not its
+layer count. The parameters are counted without the vocabulary tables,
 then with them; the learning rate is AdamW's peak:
 
-| size | layers | global layers | parameters | with the tables | one token uses | tokens | learning rate | batch (windows) | updates | warm-up |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `256x5` | 5 | CSA, HCA | 15.1M | 31.9M | 6.6M | 2.43B | 1.694e-3 | 8 | 9,271 | 371 |
-| `384x8` | 8 | CSA, HCA | 51.3M | 76.5M | 21.1M | 5.50B | 1.367e-3 | 13 | 12,902 | 516 |
-| `512x10` | 10 | CSA, HCA, CSA | 112.7M | 146.3M | 44.9M | 8.94B | 1.203e-3 | 18 | 15,161 | 606 |
-| `640x13` | 13 | CSA, HCA, CSA, HCA | 224.2M | 266.1M | 87.3M | 14.19B | 1.065e-3 | 25 | 17,317 | 693 |
-| `768x15` | 15 | CSA, HCA, CSA, HCA | 371.7M | 422.1M | 142.7M | 19.49B | 9.801e-4 | 32 | 18,585 | 743 |
+| size | layers | parameters | with the tables | one token uses | tokens | learning rate | batch (windows) | updates | warm-up |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `256x5` | 21 | 54.4M | 71.2M | 23.9M | 8.88B | 1.205e-3 | 18 | 15,049 | 602 |
+| `384x8` | 21 | 123.4M | 148.6M | 53.0M | 13.19B | 1.086e-3 | 24 | 16,772 | 671 |
+| `512x10` | 21 | 221.9M | 255.4M | 93.4M | 17.60B | 1.007e-3 | 29 | 18,521 | 741 |
+| `640x13` | 21 | 351.0M | 392.9M | 145.3M | 22.13B | 9.479e-4 | 34 | 19,863 | 795 |
+| `768x15` | 21 | 511.9M | 562.3M | 208.6M | 26.79B | 9.014e-4 | 39 | 20,966 | 839 |
 
-Its data part asks for the 19.49B training tokens of `768x15`. Engram's
-tables are 10.7% to 11.6% of every size's parameters (1.6M at `256x5`,
-12.8M at `512x10`, 43.2M at `768x15`). Every size has three decay
-branches, `branch-0.25`, `branch-0.5` and `branch-1`, shares of its own
-updates, and the smallest size, `256x5`, has the learning-rate check at
-0.25, 0.5, 1, 2 and 4 times the law's rate (`lr-1` is its own run). None of
-these sizes has trained yet.
+Its data part asks for the 26.79B training tokens of `768x15`. Engram's
+tables are 3.0% to 8.4% of the sizes' parameters (1.6M at `256x5`, 12.8M
+at `512x10`, 43.2M at `768x15`). Every size has three decay branches,
+`branch-0.25`, `branch-0.5` and `branch-1`, shares of its own updates, and
+the smallest size, `256x5`, has the learning-rate check at 0.25, 0.5, 1, 2
+and 4 times the law's rate (`lr-1` is its own run). None of these sizes has
+trained yet.
 
 ## Limits of the evidence
 
@@ -1026,52 +1021,63 @@ Every result above was measured on models of 3B parameters or more, most at
 27B to 2.8T, by the labs that built them; none was measured at the sizes a
 single 16 GB GPU trains. A first recipe sized for such a GPU carries the
 papers' ratios untested, and its first runs are the first check of whether
-they hold small. CSA and HCA in particular were built for a million
-tokens and trained by DeepSeek with a dense stage first; WPT trains them
-sparse from the first step, at 32K tokens and fewer, which no paper has
+they hold small. HySparse2 in particular was built for long contexts at
+larger sizes; WPT trains it at 32K tokens and fewer, at sizes no paper has
 measured. No WPT model has yet trained beyond 32K tokens: the stages to
 1M, the segments and the slices are measured only in tests and in single
 steps on random tokens (training.md, "Long windows"). The drafter's
 production values were set for V4-Flash and V4-Pro; WPT scales its Markov
 head with the width ("The drafter"), and no drafter has yet been measured
-on a real WPT run. YaRN's values and the indexer's FP4 were set by DeepSeek for
-its sizes and contexts; the indexer scaled down in proportion to the width
-is WPT's choice. The memory of both 32K recipes is measured on one window
-of random tokens (training.md), not in a real run. The details
+on a real WPT run. The memory of the 32K recipes is not measured. The
+details
 the papers leave out (the hash routing function, Engram's hash constants
-and tables, how mHC's streams start and end, the histogram behind Quantile
-Balancing, the MTP layer, the starting values of the attention sinks and
-merging biases, how the indexer's loss is scaled) are WPT's own choices,
+and tables, how uneven groups of Attention Residuals split, the histogram behind Quantile
+Balancing, the MTP layer, the starting values of the attention sinks)
+are WPT's own choices,
 marked as such above.
 
 ## Sources
 
-- [Kimi Linear: hybrid linear attention (KDA)](https://arxiv.org/abs/2510.26692)
 - [Kimi K3: Open Frontier Intelligence](https://arxiv.org/abs/2607.24653)
 - [DeepSeekMoE: expert specialization](https://arxiv.org/abs/2401.06066)
 - [DeepSeek-V3](https://arxiv.org/abs/2412.19437)
 - [DeepSeek-V4: a million-token context](https://arxiv.org/abs/2606.19348)
 - [DeepSeek-V4.1-Flash: KV cache compression](https://arxiv.org/abs/2609.19969)
-- [DeepSeek-V3.2: DeepSeek Sparse Attention and its lightning indexer](https://arxiv.org/abs/2512.02556)
+- [HySparse2](https://arxiv.org/abs/2609.26368)
+- [HySparse: hybrid sparse attention with oracle token selection](https://arxiv.org/abs/2602.03560)
+- [IMU-1: QK-norm, NorMuon, cautious weight decay and a checkpoint average](https://arxiv.org/abs/2602.02522)
+- [Gated attention for large language models](https://arxiv.org/abs/2505.06708)
 - [MiMo-V2-Flash: a sliding-window MTP block](https://arxiv.org/abs/2601.02780)
 - [Engram: conditional memory via lookup](https://arxiv.org/abs/2601.07372)
 - [mHC: Manifold-Constrained Hyper-Connections](https://arxiv.org/abs/2512.24880)
+- [Attention Residuals](https://arxiv.org/abs/2603.15031)
+- [In-Place Test-Time Training](https://arxiv.org/abs/2604.06169)
+- [Ouro: scaling latent reasoning via looped language models](https://arxiv.org/abs/2510.25741)
 - [Moonlight: Muon at scale](https://arxiv.org/abs/2502.16982)
+- [NorMuon: neuron-wise normalized Muon](https://arxiv.org/abs/2510.05491)
+- [Cautious weight decay](https://arxiv.org/abs/2510.12402)
 - [DeepSeek LLM: scaling laws](https://arxiv.org/abs/2401.02954)
 - [DSpark: confidence-scheduled speculative decoding](https://arxiv.org/abs/2607.05147)
 - [DFlash: block diffusion for flash speculative decoding](https://arxiv.org/abs/2602.06036)
 
-[kimi-linear]: https://arxiv.org/abs/2510.26692
 [k3]: https://arxiv.org/abs/2607.24653
 [moe]: https://arxiv.org/abs/2401.06066
 [v3]: https://arxiv.org/abs/2412.19437
 [v4]: https://arxiv.org/abs/2606.19348
 [v41]: https://arxiv.org/abs/2609.19969
-[v32]: https://arxiv.org/abs/2512.02556
+[hysparse2]: https://arxiv.org/abs/2609.26368
+[hysparse]: https://arxiv.org/abs/2602.03560
+[imu1]: https://arxiv.org/abs/2602.02522
+[gated]: https://arxiv.org/abs/2505.06708
 [mimo]: https://arxiv.org/abs/2601.02780
 [engram]: https://arxiv.org/abs/2601.07372
 [mhc]: https://arxiv.org/abs/2512.24880
+[attnres]: https://arxiv.org/abs/2603.15031
+[ttt]: https://arxiv.org/abs/2604.06169
+[ouro]: https://arxiv.org/abs/2510.25741
 [moonlight]: https://arxiv.org/abs/2502.16982
+[normuon]: https://arxiv.org/abs/2510.05491
+[cwd]: https://arxiv.org/abs/2510.12402
 [llm]: https://arxiv.org/abs/2401.02954
 [dspark]: https://arxiv.org/abs/2607.05147
 [dflash]: https://arxiv.org/abs/2602.06036

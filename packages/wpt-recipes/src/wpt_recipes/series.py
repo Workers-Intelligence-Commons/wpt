@@ -8,11 +8,10 @@ functions of the series document:
 
     shape         the reference model scaled to the size's width: every
                   width inside the model (WIDTHS) in proportion, every count
-                  kept, the layers in the reference's width per layer
-                  (rounded half up), the Engram layers at the reference's
-                  fractions of depth, the global layers' kinds taken in turn
-                  from the series' `global_attention`, Engram's table size
-                  in proportion to the cube of the width (the nearest prime)
+                  kept (the layout of the layers, the Engram layers, the
+                  groups of Attention Residuals and the loops among them, so every size
+                  has the same layers), Engram's table size in proportion
+                  to the cube of the width (the nearest prime)
     parameters    counted as wpt_model builds them, without and with the
                   two vocabulary tables (the embedding and the output head)
     active_parameters
@@ -21,8 +20,9 @@ functions of the series document:
                   and without Engram's lookup tables
     plan          the size's training from the series' `laws` (DeepSeek
                   LLM's scaling laws): the non-embedding compute per token
-                  M = 6 x the active parameters + 12 x n_layer x d_model x
-                  block_size (the paper's attention term), the
+                  M = 6 x the active parameters + 12 x layers x d_model x
+                  block_size (the paper's attention term), plus In-Place
+                  TTT's work, times the passes of the loop, the
                   compute C the model law pairs with M, the tokens D the
                   data law pairs with C, the learning rate and the batch at
                   C; the batch in whole windows (at least 1), the updates
@@ -67,16 +67,13 @@ from dataclasses import dataclass, replace
 from fractions import Fraction
 
 # what wpt_model fixes for every size, as docs/model.md says (wpt-training's tests check this count against the model)
-GLOBAL_EVERY = 4                 # a global layer every 4th layer and the last (wpt_model.config.global_layers)
-CSA_RATIO, HCA_RATIO = 4, 128    # tokens merged into one entry (wpt_model.attention)
-STREAMS = 4                      # mHC's residual streams
 SHARED_EXPERTS = 2
 HASH_LAYERS = 3                  # the first 3 layers' experts are hash-routed, without a router
-CONV_KERNEL = 4                  # the short convolutions of KDA and Engram
+CONV_KERNEL = 4                  # Engram's short convolution
+TTT_EVERY, TTT_KERNEL = 6, 5     # In-Place TTT in layers 1, 7, 13, ...; its target's convolution
 
 # the reference model's numbers that are widths: they scale with d_model; every other number is a count, kept
-WIDTHS = ("kda_heads", "attention_heads", "query_rank", "output_rank", "index_heads", "index_top_k",
-          "expert_width", "latent_width", "shared_width")
+WIDTHS = ("attention_heads", "expert_width", "latent_width", "shared_width")
 FLOPS_PER_PARAMETER = 6          # a training token's forward and backward pass through each weight
 ATTENTION_FLOPS = 12             # the paper's attention term: 12 x layers x width x window
 MTP_SWITCH = 0.8                 # a size's own run switches the multi-token prediction's weight after this share of its updates
@@ -118,9 +115,18 @@ def _exact(number) -> Fraction:
     return Fraction(str(number))
 
 
-def global_layers(n_layer: int) -> list[int]:
-    """The numbers (from 1) of the global layers of an n_layer model."""
-    return [n for n in range(1, n_layer + 1) if n % GLOBAL_EVERY == 0 or n == n_layer]
+def layer_kinds(model: dict) -> list[str]:
+    """The kind of each layer of a model recipe's `model`, in order
+    (wpt_model.config.layer_kinds): window_layers window layers on each
+    side of an exact layer, then sparse_groups groups of an exact layer
+    and sparse_layers sparse layers."""
+    window, groups, sparse = model["window_layers"], model["sparse_groups"], model["sparse_layers"]
+    return ["window"] * window + ["exact"] + ["window"] * window + (["exact"] + ["sparse"] * sparse) * groups
+
+
+def layer_count(model: dict) -> int:
+    """The layers of a model recipe's `model`."""
+    return len(layer_kinds(model))
 
 
 def sizes(series: dict) -> list[str]:
@@ -149,15 +155,6 @@ def shape(series: dict, size: str) -> dict:
                              "number; choose a width that scales every width of the reference to whole numbers")
         model[key] = int(value)
     model["engram_table_size"] = _nearest_prime(reference["engram_table_size"] * scale ** 3)
-    n_layer = max(2, _half_up(reference["n_layer"] * scale))
-    model["n_layer"] = n_layer
-    depth = Fraction(n_layer, reference["n_layer"])
-    model["engram_layers"] = sorted({max(1, _half_up(layer * depth)) for layer in reference["engram_layers"]})
-    kinds = series["global_attention"]
-    model["global_attention"] = [kinds[i % len(kinds)] for i in range(len(global_layers(n_layer)))]
-    if model["attention_heads"] % model["output_groups"]:
-        raise ValueError(f"size {size}: {model['attention_heads']} attention heads do not split into "
-                         f"{model['output_groups']} output groups")
     return model
 
 
@@ -203,29 +200,17 @@ def active_parameters(model: dict) -> int:
 
 
 def _count(model: dict, active: bool) -> int:
-    D, n_layer = model["d_model"], model["n_layer"]
-    norm, connection = D, STREAMS * D * (2 * STREAMS + STREAMS ** 2) + 2 * STREAMS + STREAMS ** 2 + 3
+    D = model["d_model"]
+    H, c = model["attention_heads"], model["attention_head_dim"]
+    norm, mix = D, 2 * D  # a sum of Attention Residuals: its query and its norm's weight
+    queries, keys = D * H * c + c, D * c + c  # each with its norm, per head or for the one key-value head
+    gated = D * H * c + H  # a window or sparse layer's gate and sinks
+    attention = {"window": queries + keys + D * c + gated + H * c * D,
+                 "exact": queries + keys + D * c + H * c * D,
+                 "sparse": queries + gated + H * c * D}
 
     def feed_forward(width, hidden):
         return 3 * width * hidden
-
-    def compressor(width, ratio, parts):
-        return 2 * D * parts * width + ratio * parts * width + width
-
-    def attention(ratio):
-        H, c, q = model["attention_heads"], model["attention_head_dim"], model["query_rank"]
-        g, r = model["output_groups"], model["output_rank"]
-        count = D * q + q + q * H * c + D * c + c + H + (H * c // g) * g * r + g * r * D
-        if ratio:
-            count += compressor(c, ratio, 2 if ratio == CSA_RATIO else 1)
-        if ratio == CSA_RATIO:
-            n, ci = model["index_heads"], model["index_head_dim"]
-            count += q * n * ci + D * n + compressor(ci, CSA_RATIO, 2)
-        return count
-
-    def kda():
-        H, d = model["kda_heads"], model["kda_head_dim"]
-        return 3 * D * H * d + 3 * H * d * CONV_KERNEL + D * H + D * d + d * H * d + H + D * H * d + d + H * d * D
 
     def experts(hashed):
         L, E, n = model["latent_width"], model["expert_width"], model["n_experts"]
@@ -237,18 +222,23 @@ def _count(model: dict, active: bool) -> int:
         tables = (model["engram_order"] - 1) * model["engram_heads"]
         width = tables * model["engram_dim"]
         rows = 0 if active else sum(_primes_from(model["engram_table_size"], tables))
-        return rows * model["engram_dim"] + (1 + STREAMS) * width * D + 3 * D + D * CONV_KERNEL
+        return rows * model["engram_dim"] + 2 * width * D + 3 * D + D * CONV_KERNEL
 
-    kinds = dict(zip(global_layers(n_layer), model["global_attention"]))
+    ttt = D * TTT_KERNEL + D * D  # In-Place TTT's convolution and W_target
     count = 0
-    for number in range(1, n_layer + 1):
-        kind = kinds.get(number)
-        count += kda() if kind is None else attention(CSA_RATIO if kind == "CSA" else HCA_RATIO)
-        count += experts(number <= HASH_LAYERS) + 2 * norm + 2 * connection
+    for number, kind in enumerate(layer_kinds(model), start=1):
+        count += attention[kind] + experts(number <= HASH_LAYERS) + 2 * norm + 2 * mix
         count += engram() if number in model["engram_layers"] else 0
-    multi_token = (2 * norm + 2 * D * D + norm + attention(0) + norm
+        count += ttt if _changes(number) else 0
+    multi_token = (2 * norm + 2 * D * D + norm + attention["window"] + norm
                    + feed_forward(D, SHARED_EXPERTS * model["shared_width"]) + norm)
+    # the first sublayer reads the embedding without a sum, and the output head reads one: 2 sums per layer
     return count + norm + multi_token  # the final norm, the multi-token prediction block
+
+
+def _changes(number: int) -> bool:
+    """Whether layer `number` (from 1) has In-Place TTT (wpt_model.ttt.changes)."""
+    return (number - 1) % TTT_EVERY == 0
 
 
 def _law(series: dict, name: str, value: float) -> float:
@@ -259,10 +249,16 @@ def _law(series: dict, name: str, value: float) -> float:
 def flops_per_token(model: dict, block_size: int) -> int:
     """M, the non-embedding compute per token of the model trained on
     windows of block_size tokens: the paper's form with the active
-    parameters, 6 x them + 12 x n_layer x d_model x block_size (the
-    attention term, whatever the layers attend to)."""
-    return (FLOPS_PER_PARAMETER * active_parameters(model)
-            + ATTENTION_FLOPS * model["n_layer"] * model["d_model"] * block_size)
+    parameters, 6 x them + 12 x layers x d_model x block_size (the
+    attention term, whatever the layers attend to), plus In-Place TTT's
+    work, its update and its change counted as two more d_model x
+    2 shared_width matrices in each layer that has it; times the passes
+    of the loop (loops + 1)."""
+    ttt = sum(_changes(number) for number in range(1, layer_count(model) + 1))
+    per_pass = (FLOPS_PER_PARAMETER * active_parameters(model)
+                + ATTENTION_FLOPS * layer_count(model) * model["d_model"] * block_size
+                + FLOPS_PER_PARAMETER * ttt * 2 * model["d_model"] * SHARED_EXPERTS * model["shared_width"])
+    return (model["loops"] + 1) * per_pass
 
 
 def plan(series: dict, size: str, vocab_size: int) -> Plan:

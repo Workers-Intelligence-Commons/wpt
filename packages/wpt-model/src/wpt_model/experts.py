@@ -6,7 +6,9 @@ space,
     y = sum of the shared experts(x) + W_up RMSNorm(u)
 
 chosen by a fixed hash of the token id in the first 3 layers, and by a
-router balanced with Quantile Balancing after.
+router balanced with Quantile Balancing after. In the layers In-Place TTT
+names (ttt.py), the shared experts' down projections, side by side, change
+while the text is read.
 
 Quantile Balancing's quantile is read from a histogram of each expert's
 s_j - alpha, which processes can add up: 4096 bins within 0.5 of the
@@ -25,13 +27,18 @@ A forward pass can record the experts its routers chose for each position
 of one sequence (Routes), and a later pass can replay them instead of
 choosing again: a learner then scores the tokens through the experts that
 wrote them (R3, docs/training.md). Replayed weights still come from
-the current router scores. Hash-routed layers need no record.
+the current router scores. Hash-routed layers need no record. A model that
+loops routes each pass on its own, so the choices are kept by (Experts
+module, pass).
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from .layers import EPS, FeedForward, expert_forward, grouped_experts
+from .layers import EPS, FeedForward, expert_forward, grouped_experts, situ_glu
+from .sequence import WHOLE
+from .ttt import InPlaceTTT
 
 SHARED_EXPERTS = 2
 HASH_MULTIPLIER = 2654435761  # h(t) = (t * 2654435761 mod 2^32) mod n
@@ -40,7 +47,7 @@ BINS, WINDOW = 4096, 0.5      # balancing histograms: 4096 bins within 0.5 of ea
 
 class Routes:
     """The experts each routed layer chose for each position of one
-    sequence (batch of 1), in position order: a forward pass given
+    sequence (batch of 1), in position order, by (Experts module, pass): a forward pass given
     record=routes adds the positions it has not recorded yet, one given
     replay=routes routes its positions as recorded. A recording pass must
     start at the sequence's first token. A cache (cache.py) records its
@@ -81,11 +88,15 @@ class Routes:
 
 
 class Experts(nn.Module):
-    def __init__(self, config, hashed):
+    """ttt: the shared experts' down projections change while a text is
+    read (ttt.py)."""
+
+    def __init__(self, config, hashed, ttt=False):
         super().__init__()
         D, L, E, n = config.d_model, config.latent_width, config.expert_width, config.n_experts
         self.n, self.k, self.hashed = n, config.top_k, hashed
         self.shared = nn.ModuleList(FeedForward(D, config.shared_width) for _ in range(SHARED_EXPERTS))
+        self.ttt = InPlaceTTT(D) if ttt else None
         self.down = nn.Linear(D, L, bias=False)
         self.up = nn.Linear(L, D, bias=False)
         self.latent_norm = nn.RMSNorm(L, eps=EPS)
@@ -98,11 +109,12 @@ class Experts(nn.Module):
             self.register_buffer("bias", torch.zeros(n))  # Quantile Balancing's b; saved, frozen for inference
             self.histogram = None  # this step's counts so far; not a buffer, which DDP would overwrite
 
-    def route(self, x, ids, collect=True, record=None, replay=None):
+    def route(self, x, ids, collect=True, record=None, replay=None, loop=0):
         """(chosen experts (m, k), their weights (m, k)) for m tokens; in
         training with collect, the scores also go into the histogram. With
         replay (Routes), the chosen experts are the recorded ones and nothing
-        is collected; with record, the choices are added to it."""
+        is collected; with record, the choices are added to it. loop: the
+        pass of a looping model, under which they are kept."""
         if self.hashed:
             h = (ids * HASH_MULTIPLIER) % 2**32 % self.n
             spread = torch.arange(self.k, device=ids.device) * self.n // self.k
@@ -110,7 +122,7 @@ class Experts(nn.Module):
         with torch.autocast(x.device.type, enabled=False):
             s = torch.sigmoid(self.router(x.float()))  # routing scores in FP32
             if replay is not None:
-                chosen = replay.replay(self, len(x)).to(x.device)
+                chosen = replay.replay((self, loop), len(x)).to(x.device)
                 weights = s.gather(1, chosen)
                 return chosen, weights / weights.sum(-1, keepdim=True)
             top = torch.topk(s + self.bias, self.k + 1)
@@ -119,7 +131,7 @@ class Experts(nn.Module):
             if self.training and collect:
                 self._count(s.detach(), top.values[:, self.k].detach())
             if record is not None and collect:
-                record.record(self, chosen)
+                record.record((self, loop), chosen)
             return chosen, weights / weights.sum(-1, keepdim=True)
 
     def _count(self, s, cutoff):
@@ -129,8 +141,11 @@ class Experts(nn.Module):
         offset = s - cutoff[:, None] + self.bias  # s_j - alpha_i minus the previous quantile -b_j
         bins = ((offset + WINDOW) * (BINS / (2 * WINDOW))).floor().long().clamp(0, BINS - 1)
         flat = (bins + torch.arange(self.n, device=s.device) * BINS).reshape(-1)
-        counts = torch.bincount(flat, minlength=self.n * BINS).view(self.n, BINS)
-        self.histogram = counts if self.histogram is None else self.histogram + counts
+        if self.histogram is None:
+            self.histogram = torch.zeros(self.n, BINS, dtype=torch.long, device=s.device)
+        # added up in place into the step's histogram (a CUDA graph's replay adds into the one it was recorded
+        # with: model.py), with no size for the host to read (as torch.bincount's)
+        self.histogram.view(-1).index_add_(0, flat, torch.ones_like(flat))
 
     @torch.no_grad()
     def balance(self, reduce):
@@ -150,30 +165,39 @@ class Experts(nn.Module):
         bias = -quantile
         self.bias.copy_(bias - bias.mean())
 
-    def forward(self, x, ids, collect=True, record=None, replay=None):
+    def forward(self, x, ids, collect=True, record=None, replay=None, loop=0, embedding=None, sequence=WHOLE):
+        """x (B, T, D) -> (B, T, D). embedding: the tokens' embeddings, and
+        sequence: where these tokens sit (sequence.py), which In-Place TTT
+        reads."""
         B, T, D = x.shape
         if B != 1 and (isinstance(record, Routes) or replay is not None):  # a cache's recorder takes rows
             raise ValueError("routes are recorded and replayed for one sequence at a time")
         flat = x.reshape(-1, D)
-        y = sum(expert(flat) for expert in self.shared)
-        u = self._routed(flat, self.down(flat), ids.reshape(-1), collect, record, replay)
+        if self.ttt is None:
+            y = sum(expert(flat) for expert in self.shared)
+        else:  # the two down projections as one matrix, which In-Place TTT changes
+            z = torch.cat([situ_glu(expert.gate(flat), expert.up(flat)) for expert in self.shared], -1)
+            y = F.linear(z, torch.cat([expert.down.weight for expert in self.shared], 1))
+            y = y + self.ttt(z.view(B, T, -1), embedding, ids, sequence).reshape(-1, D).to(y.dtype)
+        u = self._routed(flat, self.down(flat), ids.reshape(-1), collect, record, replay, loop)
         return (y + self.up(self.latent_norm(u))).view(B, T, D)
 
     @torch.compiler.disable
-    def _routed(self, x, z, ids, collect, record, replay):
+    def _routed(self, x, z, ids, collect, record, replay, loop):
         """u for the m tokens x and their latents z: the choice, the dispatch
         and the experts, whose sizes depend on the tokens, stay out of a
         compiled pass."""
-        chosen, weights = self.route(x, ids, collect, record, replay)
+        chosen, weights = self.route(x, ids, collect, record, replay, loop)
         m, k = chosen.shape
         order = chosen.reshape(-1).argsort(stable=True)  # the m * k copies, grouped by expert
         inverse = torch.empty_like(order)
         inverse[order] = torch.arange(len(order), device=order.device)
         copies = z.unsqueeze(1).expand(m, k, z.shape[-1]).reshape(m * k, -1)[order]
-        sizes = torch.bincount(chosen.reshape(-1), minlength=self.n)
+        # where each expert's copies end: no count whose size the host must read (as torch.bincount's)
+        ends = torch.searchsorted(chosen.reshape(-1)[order], torch.arange(self.n, device=order.device), right=True)
         if copies.is_cuda and copies.dtype == torch.bfloat16:  # grouped matrix multiplications: no wait for the sizes
-            out = grouped_experts(copies, sizes.cumsum(0).to(torch.int32), self.w_gate, self.w_up, self.w_down)
+            out = grouped_experts(copies, ends.to(torch.int32), self.w_gate, self.w_up, self.w_down)
         else:
             out = torch.cat([expert_forward(part, self.w_gate[j], self.w_up[j], self.w_down[j])
-                             for j, part in enumerate(copies.split(sizes.tolist()))])
+                             for j, part in enumerate(copies.split(ends.diff(prepend=ends[:1] * 0).tolist()))])
         return (out[inverse].view(m, k, -1) * weights[..., None].to(out.dtype)).sum(1)

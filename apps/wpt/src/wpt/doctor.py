@@ -7,7 +7,7 @@ check proves the store answers.
                folder exists: opening a store creates what it lacks, so a mistyped path would pass
     PyTorch    a build is installed, and a GPU it can use is here; a machine that trains
                through the gpu workers WPT_GPU_WORKERS lists needs none of its own
-    attention  what computes the attention here (wpt_model.sparse; WPT_KERNELS names it), and
+    attention  what computes the attention here (wpt_model.kernels; WPT_KERNELS names it), and
                the CUDA compiler TileLang's kernels need, on an NVIDIA GPU; nothing to check when
                WPT_GPU_WORKERS lists the gpu workers, where it is decided
     Rust       rustc and cargo, which build the tokenizer
@@ -74,7 +74,7 @@ def check_torch(environ) -> tuple[list, object]:
 def check_attention(device, environ) -> list:
     import torch
 
-    from wpt_model.sparse import KernelUnavailable, kernels, nvcc
+    from wpt_model.kernels import KernelUnavailable, kernels, nvcc
 
     try:
         chosen = kernels(device, environ.get("WPT_KERNELS"))

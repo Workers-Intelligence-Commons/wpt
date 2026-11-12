@@ -6,21 +6,12 @@
     "total_tokens": 4290110
   },
   "model": {
-    "n_layer": 4,
-    "global_attention": [
-      "CSA"
-    ],
+    "window_layers": 2,
+    "sparse_groups": 1,
+    "sparse_layers": 5,
     "d_model": 128,
-    "kda_heads": 4,
-    "kda_head_dim": 32,
     "attention_heads": 4,
     "attention_head_dim": 128,
-    "query_rank": 32,
-    "output_groups": 1,
-    "output_rank": 128,
-    "index_heads": 2,
-    "index_head_dim": 128,
-    "index_top_k": 16,
     "n_experts": 8,
     "top_k": 2,
     "expert_width": 128,
@@ -32,7 +23,9 @@
     "engram_order": 3,
     "engram_heads": 4,
     "engram_dim": 16,
-    "engram_table_size": 4099
+    "engram_table_size": 4099,
+    "residual_groups": 22,
+    "loops": 0
   },
   "seed": 1337,
   "steps": [
@@ -69,5 +62,5 @@
     "batch": 8,
     "seed": 0
   },
-  "note": "A test to see every step work on one machine: 4.8M parameters, 256-token windows. Its one global layer (layer 4) is DeepSeek-V4's CSA (4 heads of 128 sharing one key-value head, an indexer of 2 heads of 128, V4-Flash's scaled to the width) with a top 16 of its 64 merged entries, so the selection is exercised even in short windows; with 4 layers it has no room for an HCA layer. The MTP block's attention is a 128-token window. Its training is one stage: 3000 steps of 64 windows of 256 tokens; it does not reach longer windows."
+  "note": "A test to see every step work on one machine: 8.7M parameters, 256-token windows. Its 11 layers are two window layers on each side of an exact layer, then one exact layer and five sparse layers; with windows this short, every sparse layer reads every earlier token, since the exact layer chooses 1,024 of them outside the last 128. The MTP block's attention is a 128-token window. Its training is one stage: 3000 steps of 64 windows of 256 tokens; it does not reach longer windows."
 }

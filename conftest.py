@@ -97,7 +97,7 @@ def routing():
             for experts in (m for m in model.modules() if isinstance(m, Experts) and not m.hashed):
                 def gap(_, __, logits, experts=experts):
                     top = torch.topk(torch.sigmoid(logits.float()) + experts.bias, experts.k + 1).values
-                    gaps[experts] = top[:, experts.k - 1] - top[:, experts.k]
+                    gaps.setdefault(experts, []).append(top[:, experts.k - 1] - top[:, experts.k])  # one per pass
                 hooks.append(experts.router.register_forward_hook(gap))
             recorded = Routes()
             try:
@@ -107,10 +107,10 @@ def routing():
                 for hook in hooks:
                     hook.remove()
             first = None
-            for experts, chosen in recorded.chosen.items():
-                known = routes.replay(experts, len(text))
+            for (experts, loop), chosen in recorded.chosen.items():
+                known = routes.replay((experts, loop), len(text))
                 differ = (chosen.sort(-1).values != known.sort(-1).values).any(-1)
-                assert (gaps[experts][differ] <= 2 * cls.ROUNDING + cls.ARITHMETIC).all(), \
+                assert (gaps[experts][loop][differ] <= 2 * cls.ROUNDING + cls.ARITHMETIC).all(), \
                     "a token whose routing is clear went to other experts"
                 if differ.any():
                     position = int(differ.nonzero()[0])

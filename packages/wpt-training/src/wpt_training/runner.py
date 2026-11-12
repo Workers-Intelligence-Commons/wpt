@@ -112,14 +112,13 @@ class Trained:
     """What a step reached: the validation loss of the evaluation the
     optimizer judged best in the last stage (None without evaluations), the
     last update made, the update whose weights the model holds (that best
-    evaluation's, or the last one's when none was best), the indexer loss
-    of that update, each stage (its steps, its batch, its window length,
+    evaluation's, or the last one's when none was best), each stage (its
+    steps, its batch, its window length,
     its first update and the last it made: an early stop ends a stage
     before its steps), and the updates it skipped (nothing to learn)."""
     best_val: float | None
     steps: int
     weights_step: int
-    indexer_loss: float | None
     stages: tuple = ()
     skipped: int = 0
 
@@ -174,8 +173,9 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
           signals: "StopSignals | None" = None) -> Trained:
     """Run one step (a wpt_training.Step, its method and environment
     started; number, its place in the recipe from 1, which dropout reads
-    with the seed) on model, in place, then load the weights of the evaluation
-    its optimizer judged best back into it; returns a Trained. The parts
+    with the seed) on model, in place, then load the weights its optimizer
+    keeps (Optimizer.kept), else those of the evaluation it judged best, back
+    into it; returns a Trained. The parts
     the step locks, and those its method never reaches, keep their
     weights: they are left out of the optimizer and of the processes'
     gradient exchange, and with BALANCING locked the routers' biases stay
@@ -271,8 +271,8 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
 
 
 def weights(state: dict) -> dict:
-    """The weights a step's checkpoint state leaves the model with: those of
-    the evaluation judged best, else the last."""
+    """The weights a step's checkpoint state leaves the model with: those its
+    optimizer kept or of the evaluation judged best, else the last."""
     return state["best_model"] if state["best_model"] is not None else state["model"]
 
 
@@ -286,19 +286,19 @@ def _freeze(model, names) -> list:
 
 def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws, options, checkpoint, state,
           signature, log, record, save_last, stages, updates, balance, continued=None, limit=None, signals=None):
-    first_step, best_val, best_state, best_step, best_indexer, reached, skipped = 1, None, None, None, None, {}, 0
+    first_step, best_val, best_state, best_step, reached, skipped = 1, None, None, None, {}, 0
     if state is not None:
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
         method.load_state_dict(state["method"])
         first_step, best_val, best_state = state["next_step"], state["best_val"], state["best_model"]
-        best_step, best_indexer, reached = state["best_step"], state["best_indexer"], dict(state["reached"])
+        best_step, reached = state["best_step"], dict(state["reached"])
         skipped = state["skipped"]
         if continued is None:
             record.event("training.resumed", step=state["step"], checkpoint=str(checkpoint))
             log(f"{step.name}: resumed from update {state['step']}")
         else:  # the state the step before it left; its best evaluation is forgotten, as at a new stage
-            best_val, best_state, best_step, best_indexer = None, None, None, None
+            best_val, best_state, best_step = None, None, None
             index, stage, _, _ = stage_of(stages, first_step)
             optimizer.stage(index + 1, stage.block_size)
             record.event("training.continued", step=state["step"], state=str(continued))
@@ -312,16 +312,16 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
 
     def _update(update, index, first, last):
         """One update, and its evaluation when one is due; True when the optimizer says stop."""
-        nonlocal best_val, best_state, best_step, best_indexer, indexer, skipped
+        nonlocal best_val, best_state, best_step, skipped
         started, stage = time.monotonic(), stages[index]
         passes = environment.batch(update, model, strategy)
         model.train()
         if passes is None:  # nothing to learn: no update
             skipped += 1
-            environment.after_update(update, None, None)
+            environment.after_update(update, None)
             record.event("training.skipped", step=update)
             return False
-        losses, indexers = [], []
+        losses = []
         for a, examples in enumerate(passes):
             # by the pass's place in the batch, so dropout does not depend on the number of processes
             torch.manual_seed(_seed(*draws, "dropout", update, a * strategy.world_size + strategy.rank))
@@ -329,9 +329,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             def quiet(final, a=a):  # the update's gradients are shared at its very last backward pass
                 return (contextlib.nullcontext() if final and a == len(passes) - 1
                         else strategy.no_sync(wrapped))
-            loss, found = method.learn(model, wrapped, examples, len(passes), strategy, options.segment, quiet)
-            losses.append(loss)
-            indexers.append(found)
+            losses.append(method.learn(model, wrapped, examples, len(passes), strategy, options.segment, quiet))
         strategy.synchronize(model)
         optimizer.before_update(update)
         optimizer.optimizer.step()
@@ -340,10 +338,9 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             model.after_update(strategy.reduce, balance)
         optimizer.after_update(update, strategy.reduce)
         method.after_update(update)
-        train_loss, indexer = method.update_loss(losses, indexers, strategy)
-        environment.after_update(update, train_loss, indexer)
-        record.event("training.step", values=_known({"train_loss": train_loss, "indexer_loss": indexer,
-                                                    "seconds": time.monotonic() - started}),
+        train_loss = method.update_loss(losses, strategy)
+        environment.after_update(update, train_loss)
+        record.event("training.step", values={"train_loss": train_loss, "seconds": time.monotonic() - started},
                      step=update, block_size=stage.block_size,
                      learning_rates=[group["lr"] for group in optimizer.optimizer.param_groups])
 
@@ -351,13 +348,12 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             val_loss = evaluate(update)
             verdict = optimizer.evaluated(update, val_loss)
             if verdict.best:
-                best_val, best_step, best_indexer = val_loss, update, indexer
+                best_val, best_step = val_loss, update
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             record.event("training.evaluation", values={"val_loss": val_loss}, step=update, best=verdict.best,
                          stop=verdict.stop, note=verdict.note)
-            log(f"update {update:5d} | train loss {train_loss:.4f}"
-                + ("" if indexer is None else f" | indexer loss {indexer:.4f}")
-                + f" | val loss {val_loss:.4f} | {time.time() - t0:.0f}s{verdict.note}")
+            log(f"update {update:5d} | train loss {train_loss:.4f} | val loss {val_loss:.4f} | "
+                f"{time.time() - t0:.0f}s{verdict.note}")
             return verdict.stop
         return False
 
@@ -369,7 +365,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
                                      "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                                      "method": method.state_dict(), "environment": environment.state_dict(),
                                      "best_val": best_val, "best_model": best_state, "best_step": best_step,
-                                     "best_indexer": best_indexer, "reached": list(reached.items()),
+                                     "reached": list(reached.items()),
                                      "skipped": skipped})
                 except RecordError as error:  # saved all the same; see Checkpoint.save
                     record.broken = record.broken or error
@@ -378,12 +374,12 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
     keeps = checkpoint is not None and options.checkpoint_every > 0
     model.train()
     t0 = time.time()
-    last, indexer, update = first_step - 1, None, first_step
+    last, update = first_step - 1, first_step
     with contextlib.nullcontext(signals) if signals is not None else StopSignals(log) as signals:
         while update <= updates:
             index, stage, begin, end = stage_of(stages, update)
             if update == begin and index:  # longer windows: the best so far is no longer comparable
-                best_val, best_state, best_step, best_indexer = None, None, None, None
+                best_val, best_state, best_step = None, None, None
                 optimizer.stage(index + 1, stage.block_size)
             log(f"{step.name}: "
                 + (f"stage {index + 1} of {len(stages)}: windows of {stage.block_size:,} tokens, "
@@ -399,6 +395,8 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
                           if update == options.profile_update and strategy.is_main else contextlib.nullcontext()):
                         stop = _update(update, index, begin, end)
                     last, reached[index] = update, update
+                    if update == updates and (own := optimizer.kept()) is not None:
+                        best_state = own  # the optimizer's own weights (an average), in every save from here on
                     if limit is not None:
                         limit.count(stage.batch_size * (stage.block_size or 0))
                     next_step = end + 1 if stop else update + 1  # an optimizer's stop ends the stage
@@ -426,6 +424,9 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
                         break
     if last >= first_step:  # a resumed step that had every update done already heard its end then
         environment.finished(last)
+    own = optimizer.kept()  # a resumed step that had every update done finds it in its state too
+    if own is not None:
+        best_state = own
     saved = keeps and last % options.checkpoint_every == 0  # the last update's own save
     if save_last and checkpoint is not None and last >= first_step and not saved:
         save(last, updates + 1)  # every update is done: a resumed step takes none
@@ -437,8 +438,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
         found.append({"block_size": stage.block_size, "steps": stage.steps, "batch_size": stage.batch_size,
                       "first_step": begin, "last_step": reached.get(index)})
         begin += stage.steps
-    trained = Trained(best_val, last, best_step if kept else last,
-                      best_indexer if kept else (indexer if indexer is not None else None), tuple(found), skipped)
+    trained = Trained(best_val, last, best_step if kept else last, tuple(found), skipped)
     record.event("training.finished", values=_known({"best_validation_loss": best_val}), steps=trained.steps,
                  weights_step=trained.weights_step, stages=found, skipped=skipped)
     if record.broken is not None:  # at the last event, once training ended: the last checkpoint written stays
@@ -448,7 +448,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
 
 def _known(values: dict) -> dict:
     """The values that are numbers: a step without evaluations has no
-    validation loss, and a method without indexers no indexer loss."""
+    validation loss."""
     return {name: value for name, value in values.items() if value is not None}
 
 

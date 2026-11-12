@@ -5,18 +5,12 @@
     "tokenizer": "admitted"
   },
   "reference": {
-    "n_layer": 10,
+    "window_layers": 4,
+    "sparse_groups": 2,
+    "sparse_layers": 5,
     "d_model": 512,
-    "kda_heads": 4,
-    "kda_head_dim": 128,
     "attention_heads": 8,
     "attention_head_dim": 128,
-    "query_rank": 128,
-    "output_groups": 2,
-    "output_rank": 256,
-    "index_heads": 8,
-    "index_head_dim": 128,
-    "index_top_k": 64,
     "n_experts": 32,
     "top_k": 4,
     "expert_width": 256,
@@ -28,12 +22,10 @@
     "engram_order": 3,
     "engram_heads": 8,
     "engram_dim": 16,
-    "engram_table_size": 50021
+    "engram_table_size": 50021,
+    "residual_groups": 42,
+    "loops": 0
   },
-  "global_attention": [
-    "CSA",
-    "HCA"
-  ],
   "block_size": 32768,
   "laws": {
     "learning_rate": {
@@ -100,5 +92,5 @@
     2,
     4
   ],
-  "note": "A ladder of five sizes for a clean scaling test: interstitial-pecker's shape (width 512, 10 layers) scaled in width by multiples of 128, the layers kept at its 51.2 of width per layer, every size on the admitted mixture's 32,768-token vocabulary and 32K-token windows. One dataset, built for the largest size, serves all five: each reads its start. Untested in a full run."
+  "note": "A ladder of five sizes for a clean scaling test: interstitial-pecker's shape (width 512, 21 layers) scaled in width by multiples of 128, every size with the same 21 layers, on the admitted mixture's 32,768-token vocabulary and 32K-token windows. The first number of a size's name is its width; the second is not its layer count. One dataset, built for the largest size, serves all five: each reads its start. Untested in a full run."
 }

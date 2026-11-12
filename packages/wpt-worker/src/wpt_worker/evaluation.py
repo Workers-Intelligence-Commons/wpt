@@ -6,7 +6,7 @@ through the link. It deals only in token ids, as every job does.
 
 The manager's spec holds the model's config, the weight files it offers
 and the form of the attention it names (spec["kernels"], one of
-wpt_model.sparse.FORMS, or None); the job decides the attention's form
+wpt_model.kernels.FORMS, or None); the job decides the attention's form
 first, as wpt train's does (docs/model.md, "Attention"), and a form that
 cannot work here ends it with exit code 2 and the reason on its standard
 error. It then downloads the files (checked against their sha256), loads the
@@ -36,7 +36,7 @@ import torch
 from safetensors.torch import load_file
 
 from wpt_model import WPT, ModelConfig
-from wpt_model.sparse import KernelUnavailable, kernels
+from wpt_model.kernels import KernelUnavailable, kernels
 from wpt_training.launch import REFUSED
 from wpt_utils.device import describe, select_device
 from wpt_utils.lines import ERROR, say

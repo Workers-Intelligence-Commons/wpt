@@ -5,11 +5,10 @@ from wpt_inference import DRAFT, Writer, sample_tokens, schedule
 from wpt_model import WPT, Drafter, DrafterConfig, ModelConfig
 from wpt_model.drafter import training_blocks
 
-CONFIG = ModelConfig(vocab_size=50, block_size=16, n_layer=4, global_attention=["CSA"], d_model=16, kda_heads=2,
-                     kda_head_dim=8, attention_heads=2, attention_head_dim=128, query_rank=8, output_groups=1,
-                     output_rank=8, index_heads=4, index_head_dim=128, index_top_k=4, n_experts=4, top_k=2,
-                     expert_width=8, latent_width=8, shared_width=16, engram_layers=[2], engram_order=3,
-                     engram_heads=2, engram_dim=4, engram_table_size=31)
+CONFIG = ModelConfig(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
+                     attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
+                     shared_width=16, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=4,
+                     engram_table_size=31, residual_groups=3)
 
 
 def test_a_seeded_generator_draws_the_same_tokens_again():
@@ -144,14 +143,14 @@ def dspark(model):
 
 
 def test_the_dspark_drafter_keeps_the_model_s_own_distribution():
-    # 4000 rows from one prompt, the drafts' confidences scheduling how many
+    # 8000 rows from one prompt, the drafts' confidences scheduling how many
     # are verified under passes that cost more the wider they are: the first
     # and second written tokens still follow the model's own probabilities
     model = wpt()
     prompt = [0, 5, 7, 9]
-    rows = 4000
+    rows = 8000
     writer = Writer(model, prompt, rows, temperature=1.0, top_k=None, generator=torch.Generator().manual_seed(0),
-                    drafter=dspark(model), costs=[1.0, 1.3, 1.6, 1.9, 2.2, 2.5])
+                    drafter=dspark(model), costs=[1.0, 1.1, 1.2, 1.3, 1.4, 1.5])
     while needed := {row: 2 - (len(history) - len(prompt)) for row, history in enumerate(writer.histories)
                      if len(history) < len(prompt) + 2}:
         writer.write({}, needed)

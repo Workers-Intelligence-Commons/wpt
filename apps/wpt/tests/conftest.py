@@ -26,11 +26,10 @@ TOKENIZER = "t"  # the tokenizer recipe every test dataset names
 VOCAB_SIZE = 556
 
 
-TINY_MODEL = {"n_layer": 4, "global_attention": ["CSA"], "d_model": 16, "kda_heads": 2,
-              "kda_head_dim": 8, "attention_heads": 2, "attention_head_dim": 128, "query_rank": 8, "output_groups": 1,
-              "output_rank": 8, "index_heads": 2, "index_head_dim": 128, "index_top_k": 2, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
+TINY_MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 16, "attention_heads": 2,
+              "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
               "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
-              "engram_table_size": 31}
+              "engram_table_size": 31, "residual_groups": 3, "loops": 0}
 # the read-text step of the recipe "d": the optimizer, its settings, the step's text windows, the recipe's seed
 ONE_STEP = {"optimizer": "by-part", "settings": {}, "stages": [{"block_size": 16, "steps": 1, "batch_size": 4}],
             "eval_every": 2, "eval_batches": 20, "seed": 1337}

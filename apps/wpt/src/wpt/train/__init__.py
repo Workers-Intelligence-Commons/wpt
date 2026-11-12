@@ -68,7 +68,7 @@ one GPU, --segment runs a longer window as consecutive segments of that
 many tokens; with `split`, each process runs its slice of a longer window
 in segments of that many tokens. Each gives the same training as whole
 windows. --kernels names what computes the attention on the gpu worker
-(wpt_model.sparse; docs/model.md, "Attention"); one that cannot work there
+(wpt_model.kernels; docs/model.md, "Attention"); one that cannot work there
 refuses the run. --compile runs the passes over whole text windows through
 torch.compile on a CUDA device, and anywhere else refuses the run; a
 checkpoint resumes with it or without it (docs/training.md, "Compiling
@@ -199,9 +199,10 @@ from wpt_inference import COSTS_FILE
 from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig, canonical_ids, save_drafter, save_model, weight_files, weight_hashes
 from wpt_model.drafter import Drafter
+from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
-from wpt_model.sparse import FORMS, named_form
 from wpt_recipes import RecipeError, Recipes
+from wpt_recipes.series import layer_count
 from wpt_store import NAME as STORE_NAME
 from wpt_store import StoreError, read_env_file, store_from_settings
 from wpt_store.models import checkpoint_key, state_key
@@ -557,8 +558,9 @@ def print_series(name) -> int:
         say(f"series {name}: one corpus of {total:,} training tokens; wpt train {name}:SIZE reads its first prefix tokens")
         for plan in plans:
             model = plan.model
-            say(f"{plan.size}: width {model['d_model']}, {model['n_layer']} layers, global "
-                f"{'/'.join(model['global_attention'])}, Engram at {', '.join(map(str, model['engram_layers']))}; "
+            say(f"{plan.size}: width {model['d_model']}, {layer_count(model)} layers ({model['window_layers']} "
+                f"window layers on each side of an exact layer, {model['sparse_groups']} groups of an exact layer "
+                f"and {model['sparse_layers']} sparse layers), Engram at {', '.join(map(str, model['engram_layers']))}; "
                 f"{plan.parameters:,} parameters without the vocabulary tables, {plan.total_parameters:,} with them; "
                 f"M {plan.flops_per_token:.4g} FLOPs per token, C {plan.compute:.4g}, D {plan.tokens:.4g} tokens; "
                 f"learning rate {plan.learning_rate:g}, batch {plan.batch_size} windows of {plan.block_size:,} "

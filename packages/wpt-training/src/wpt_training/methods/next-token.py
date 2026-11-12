@@ -3,8 +3,7 @@
 The loss of a window is the next-token loss of every position, plus the
 multi-token prediction loss (the token after next) at mtp_weight, then at
 mtp_late_weight after mtp_switch of the step's updates (DeepSeek-V3: after
-10T of 14.8T tokens), plus the gradient of the CSA indexers' own loss,
-which reaches only the indexers (wpt_training.TextMethod). Evaluations
+10T of 14.8T tokens) (wpt_training.TextMethod). Evaluations
 compare the next-token loss alone. Windows longer than --segment, or split
 across processes, train in parts with the same loss (parts.py).
 """

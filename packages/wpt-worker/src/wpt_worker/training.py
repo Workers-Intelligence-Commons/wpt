@@ -73,8 +73,8 @@ from wpt_inference import COSTS_FILE, costs_file, costs_setup, measure_costs, sa
 from wpt_inference.drafting import DrafterFailed, train_drafter
 from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig
-from wpt_model.kda import fla_failure
-from wpt_model.sparse import KernelUnavailable, kernels
+from wpt_model.kernels import KernelUnavailable, kernels
+from wpt_model.model import fla_failure
 from wpt_store import StoreError
 from wpt_store.shards import documents, prefix_shards
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
@@ -337,10 +337,10 @@ def _train(spec, link, store, work, strategy, telemetry):
                              else "PyTorch (neither TileLang nor Triton is installed)"))
     if strategy.device.type == "cuda":
         if failure := fla_failure():
-            log("KDA: flash-linear-attention does not import, so KDA runs its slow PyTorch form "
-                f"({failure})", WARNING)
+            log("output head: flash-linear-attention does not import, so the head and its loss run in "
+                f"checkpointed chunks ({failure})", WARNING)
         else:
-            log("KDA: flash-linear-attention's kernel")
+            log("output head: flash-linear-attention's fused head and loss")
     if options["compile"]:
         if strategy.device.type != "cuda":
             raise Refused(f"--compile runs on a CUDA device, and this process runs on {strategy.device.type}: "
@@ -492,7 +492,6 @@ def _reached(trained) -> dict:
             "updates": trained.steps,  # the last update made: fewer than its stages' when the optimizer stopped
             "stages": list(trained.stages),  # each stage's window length, updates, batch, first and last update
             "weights_update": trained.weights_step,  # the update whose weights the step leaves
-            "indexer_loss": trained.indexer_loss,  # the CSA indexers' loss at that update (docs/model.md, "Attention")
             "skipped": trained.skipped}  # updates with nothing to learn
 
 

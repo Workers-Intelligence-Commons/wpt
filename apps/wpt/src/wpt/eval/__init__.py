@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from wpt_model import DrafterMismatch, TokenizerMismatch, check_drafter, load_tokenizer, weight_hashes
-from wpt_model.sparse import FORMS, named_form
+from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CARD_NAME, EVALS_NAME, documents
 from wpt_store import Store, StoreError, read_env_file, store_from_settings
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, short

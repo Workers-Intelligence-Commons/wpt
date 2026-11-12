@@ -16,7 +16,7 @@ tests, which hold the tokenizer, the store and the sandboxes, run here.
                                                 after its first (wpt_worker.evaluation.losses)
 
 kernels names what computes the model's attention there (one of
-wpt_model.sparse.FORMS, or None to choose): a form that cannot work on the
+wpt_model.kernels.FORMS, or None to choose): a form that cannot work on the
 worker ends the job before the model loads, and the block raises LinkError.
 
 wpt_worker.evaluation.Served has the same names for a model in this

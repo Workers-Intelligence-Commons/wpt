@@ -53,9 +53,8 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     monkeypatch.setenv("WPT_CORPUS", corpus_id)
     main(["--out", "model"])
 
-    assert "| indexer loss " in capsys.readouterr().out  # beside the training loss, at each evaluation
     model = load_model(tmp_path / "model")
-    assert model.config.n_layer == 4 and model.config.block_size == 16  # the recipe's numbers
+    assert model.config.n_layer == 5 and model.config.block_size == 16  # the recipe's numbers
     record = corpora.find(store, corpus_id)
     # the weights name the corpus's vocabulary, and only that file loads with them
     assert tokenizer_identity(tmp_path / "model") == ("t version 1", record["tokenizer"]["vocabulary"]["sha256"])
@@ -69,7 +68,6 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     assert provenance["recipe"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
     [step] = provenance["steps"]
     assert step["step"]["name"] == "read-text" and step["updates"] == 3 and not step["reused"]
-    assert isinstance(step["indexer_loss"], float)  # the CSA indexers' loss at the kept update
     # the step's result is kept in the store, under its fingerprint
     assert hashlib.sha256(store.get_result("steps", step["fingerprint"])[0]).hexdigest() == step["result"]
     assert [s["token_sha256"] for s in provenance["shards"]] == [s["token_sha256"] for s in record["shards"]]

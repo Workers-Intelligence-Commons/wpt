@@ -4,8 +4,8 @@ loss and gradients of the whole window at once.
 Segments, on one process: a window longer than the segment length runs as
 consecutive segments. A first pass without gradients runs every segment
 but the last, each handing the next what it passes on (the model's
-sequence.Carried: KDA memories, convolution and window tails, merged
-entries); then the segments run again from the last to the first, each
+sequence.Carried: convolution and window tails, the exact layers' keys
+and values); then the segments run again from the last to the first, each
 with gradients, starting from what the one before passed on, and its
 backward pass starts from its loss plus the gradient that the later
 segments sent back to what it passed on. So memory holds one segment's
@@ -47,7 +47,7 @@ def check(model, method, stages, segment, strategy):
         raise PluginError("the method defines its own loss but not part_loss, so it cannot train a window in parts")
     part = getattr(model, "PART", 1)
     if segment % part:
-        raise ValueError(f"--segment {segment} is not a multiple of {part} tokens, the longest merging")
+        raise ValueError(f"--segment {segment} is not a multiple of {part} tokens, the window layers' window")
     for stage in stages:
         if splits and stage.block_size % (strategy.world_size * part):
             raise ValueError(f"a window of {stage.block_size} tokens does not split into {strategy.world_size} slices "
@@ -73,16 +73,15 @@ def _pieces(model, T, strategy, segment):
 
 def learn(method, model, wrapped, x, y, scale, strategy, segment, quiet):
     """Forward and backward passes of windows x, y (B, T) with the loss
-    times scale; returns (this process's loss, its indexer loss), detached:
-    the whole window's, or with split windows, this process's share. quiet(last)
+    times scale; returns this process's loss, detached: the whole window's, or with split windows, this process's share. quiet(last)
     is the context of a backward pass, last for the last of the
     micro-batch."""
     pieces = _pieces(model, x.shape[1], strategy, segment)
     if pieces is None:
         with quiet(True):
-            loss, indexer = method.loss(wrapped, x, y)
+            loss = method.loss(wrapped, x, y)
             (loss * scale).backward()
-        return loss.detach(), indexer
+        return loss.detach()
     return _in_pieces(method, wrapped, x, y, scale, pieces, quiet)
 
 
@@ -107,26 +106,25 @@ def _in_pieces(method, wrapped, x, y, scale, pieces, quiet):
     def run(i, carried, collect):
         a, b, place_of = pieces[i]
         place = place_of(carried, collect)
-        loss, indexer = method.part_loss(partial(wrapped, sequence=place), x[:, a:b], y[:, a:b], _following(y, b), T)
-        return place, loss, indexer
+        return place, method.part_loss(partial(wrapped, sequence=place), x[:, a:b], y[:, a:b], _following(y, b), T)
 
     passed, added, carried = [], [], {}
     with torch.no_grad(), quiet(False):  # what each part passes on; balancing counts them here
         for i in range(len(pieces) - 1):
-            place, _, _ = run(i, carried, True)
+            place, _ = run(i, carried, True)
             passed.append(place.passed)
             added.append(place.added)
             carried = _handed_on(carried, place)
     del carried
     grown = set(added[0]) if added else set()
-    grads, total, indexer_total = {}, 0.0, 0.0
+    grads, total = {}, 0.0
     for i in reversed(range(len(pieces))):
         leaves = {}
         if i:
             leaves = {key: _leaf(t) for key, t in passed[i - 1].items()}
             leaves.update({key: _leaf(torch.cat([added[j][key] for j in range(i)], 1)) for key in grown})
         with quiet(i == 0):
-            place, loss, indexer = run(i, leaves, i == len(pieces) - 1)
+            place, loss = run(i, leaves, i == len(pieces) - 1)
             roots, given = [loss * scale], [torch.ones_like(loss)]
             for key, t in [*place.passed.items(), *place.added.items()]:
                 if key in grads and t.requires_grad:  # what later parts sent back
@@ -143,8 +141,7 @@ def _in_pieces(method, wrapped, x, y, scale, pieces, quiet):
             sent[key] = g
         grads = sent
         total = total + loss.detach()
-        indexer_total = indexer_total + indexer
-    return total, indexer_total
+    return total
 
 
 def _leaf(t):

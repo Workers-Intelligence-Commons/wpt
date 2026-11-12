@@ -1,12 +1,14 @@
 """Finish tasks: learn to finish the agentic tasks tagged `finish-tasks` by
 group relative policy optimization on the model's own scored attempts
 (docs/training.md, "The finish-tasks step"), under by-part at a constant
-learning rate of 1e-6, without weight decay, with its early stop. A task
+learning rate of 1e-6, without weight decay, with its early stop and no
+average of its last states. A task
 with a one-line form is played in both forms. The routers' weights and
 balancing biases stay as they are."""
 
 METHOD = "grpo"
 ENVIRONMENT = "agent-tasks"
-OPTIMIZER = {"name": "by-part", "settings": {"lr": 1e-6, "weight_decay": 0.0, "schedule": "constant", "patience": 10}}
+OPTIMIZER = {"name": "by-part", "settings": {"lr": 1e-6, "weight_decay": 0.0, "schedule": "constant", "patience": 10,
+                                         "average_states": 0}}
 LOCKED = ("routers", "balancing")
 SETTINGS = {"tag": "finish-tasks", "terse": True}

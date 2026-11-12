@@ -64,7 +64,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | duckdb | 2.0.0 | MIT | SQL reads over the depot's tables (wpt-depot); its metadata gives the license as a classifier only |
 | einops | 0.8.2 | MIT | through fla-core |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
-| fla-core | 0.5.2 | MIT | KDA's GPU kernel (flash-linear-attention), used where Triton runs |
+| fla-core | 0.5.2 | MIT | the fused output head and loss (flash-linear-attention), used where Triton runs |
 | googleapis-common-protos | 1.75.5 | Apache-2.0 | through opentelemetry-exporter-otlp-proto-http |
 | idna | 3.20 | BSD-3-Clause | through requests |
 | iniconfig | 2.3.1 | MIT | through pytest |
@@ -172,7 +172,7 @@ agreement for NVIDIA software development kits).
 | nvidia-nvshmem-cu13 | 3.4.5 | NVIDIA proprietary | CUDA Toolkit license agreement, from its license file |
 | nvidia-nvtx | 13.0.85 | Apache-2.0 | from its license file (its metadata also says proprietary) |
 | psutil | 7.2.2 | BSD-3-Clause | through tilelang |
-| tilelang | 0.1.8 | MIT | compiles the attention kernels, DeepSeek's among them ("Code copied from other projects", below); its compiled part bundles TVM (Apache-2.0) and the headers of CUTLASS (BSD-3-Clause) and Composable Kernel (MIT), whose license files the wheel does not carry |
+| tilelang | 0.1.8 | MIT | compiles the TileLang attention kernels; its compiled part bundles TVM (Apache-2.0) and the headers of CUTLASS (BSD-3-Clause) and Composable Kernel (MIT), whose license files the wheel does not carry |
 | tqdm | 4.70.1 | MPL-2.0 AND MIT | through tilelang |
 | triton | 3.8.0 | MIT | Python below 3.15 |
 | z3-solver | 4.15.4.0 | MIT | through tilelang |
@@ -181,7 +181,7 @@ agreement for NVIDIA software development kits).
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
-| triton-windows | 3.8.0.post29 | MIT | compiles the Triton attention kernels and flash-linear-attention's KDA kernel. It bundles, with no license file of theirs, NVIDIA's GPU compiler `ptxas.exe` (NVIDIA proprietary, CUDA Toolkit license agreement) and the TinyCC C compiler (`tcc.exe`, `libtcc.dll`; LGPL-2.1-or-later) |
+| triton-windows | 3.8.0.post29 | MIT | compiles the Triton attention and grouped expert kernels and flash-linear-attention's fused output head and loss. It bundles, with no license file of theirs, NVIDIA's GPU compiler `ptxas.exe` (NVIDIA proprietary, CUDA Toolkit license agreement) and the TinyCC C compiler (`tcc.exe`, `libtcc.dll`; LGPL-2.1-or-later) |
 
 ### ROCm build, Linux only
 
@@ -332,28 +332,6 @@ kept in `scripts/names/LICENSE` as it asks):
   4,619 words.
 - `animals.txt`: the nouns under `animal.n.01` that are one lowercase
   ASCII word, minus the same marks: 2,497 words.
-
-### Code copied from other projects
-
-- `packages/wpt-model/src/wpt_model/deepseek_kernels.py`: DeepSeek's
-  sparse attention kernel for TileLang, copied unchanged from
-  `inference/kernel.py` of DeepSeek-V4-Flash
-  (https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash, revision
-  `60d8d70770c6776ff598c94bb586a859a38244f1`), without its other kernels.
-  MIT (Copyright (c) 2023 DeepSeek); the file keeps the license text, as
-  the license asks.
-- `packages/wpt-model/src/wpt_model/deepseek_index_kernel.py`: DeepSeek's
-  FP8 lightning-indexer kernel for TileLang (`fp8_index_kernel` and
-  `fp8_index`), copied unchanged from `inference/kernel.py` of
-  DeepSeek-V3.2 (https://huggingface.co/deepseek-ai/DeepSeek-V3.2,
-  revision `a7e62ac04ecb2c0a54d736dc46601c5606cf10a6`), without its other
-  kernels; its compiler settings come from the file above, since the ones
-  it names no longer exist in TileLang 0.1.8. MIT (Copyright (c) 2023
-  DeepSeek); the file keeps the license text.
-- `packages/wpt-model/src/wpt_model/triton_kernels.py` translates both
-  kernels to Triton; it keeps DeepSeek's MIT notice for the translated
-  parts. `tilelang_kernels.py` adds WPT's own backward kernels, written in
-  the shape of DeepSeek's.
 
 ### Distribution
 
