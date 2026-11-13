@@ -124,8 +124,8 @@ rows' gradients by FP32 atomic additions. With 2 heads or fewer, it first
 lists, for each table row, the queries that read it (once for all the
 sparse layers that read one exact layer's choice), then sums each row's
 gradients over its list, one program per row. Both the atomic additions
-and the order in which they fill the lists vary, and TileLang's exact
-layer adds its query gradients with FP32 atomic additions, so the
+and the order in which they fill the lists vary, and both forms' exact
+layers add their query gradients with FP32 atomic additions, so the
 gradients can differ in the last bits from run to run.
 
 Which form runs is decided once, before the first use (`wpt train` decides
@@ -429,12 +429,19 @@ The sources of one pass are kept side by side in one tensor of the compute
 dtype (BF16 on a GPU), each written once, when complete, with its inverse
 RMS `r_i`. Since `w_l . RMSNorm_l(v_i) = ((w_l * g_l) . v_i) r_i`, with
 `g_l` the RMSNorm's weight, a sum is two batched products over that
-tensor, one for the scores and one for the weighted sum. The scores and
-the softmax are FP32. The backward pass is written out, so that it keeps
+tensor, one for the scores and one for the weighted sum. In a compiled
+training pass on a GPU, each sum's forward and backward passes are Triton
+kernels instead, which read each source from memory once
+(`wpt_model/residual_kernels.py`). The scores and the softmax are FP32. The backward pass is written out, so that it keeps
 nothing per sublayer but the scores and weights: the sources stay only in
 that tensor. The sources' gradients sit side by side in one tensor too:
 each sum's backward pass adds its share to all of them at once, and each
-source takes its own when every sum that reads it is done. A test checks
+source takes its own when every sum that reads it is done. The Triton
+kernels keep no scores or weights, only per token the log of the
+softmax's denominator, and compute them again from the sources; they add
+nothing into the gradients' tensor: each sum's backward pass keeps its output's
+gradient, and a source's gradient is one FP32 sum over the sums that read
+it, made when every one of them is done. A test checks
 the sums and every gradient against the formula over stacked sources.
 
 ## Multi-token prediction

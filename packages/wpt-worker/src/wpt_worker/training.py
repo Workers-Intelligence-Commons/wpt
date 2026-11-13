@@ -74,7 +74,7 @@ from wpt_inference.drafting import DrafterFailed, train_drafter
 from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig
 from wpt_model.kernels import KernelUnavailable, kernels
-from wpt_model.model import fla_failure
+from wpt_model.model import fused_loss_failure
 from wpt_store import StoreError
 from wpt_store.shards import documents, prefix_shards
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
@@ -336,11 +336,11 @@ def _train(spec, link, store, work, strategy, telemetry):
                              else "PyTorch (--kernels pytorch)" if named
                              else "PyTorch (neither TileLang nor Triton is installed)"))
     if strategy.device.type == "cuda":
-        if failure := fla_failure():
-            log("output head: flash-linear-attention does not import, so the head and its loss run in "
+        if failure := fused_loss_failure():
+            log("output head: the fused head and loss does not import, so the head and its loss run in "
                 f"checkpointed chunks ({failure})", WARNING)
         else:
-            log("output head: flash-linear-attention's fused head and loss")
+            log("output head: the fused head and loss")
     if options["compile"]:
         if strategy.device.type != "cuda":
             raise Refused(f"--compile runs on a CUDA device, and this process runs on {strategy.device.type}: "

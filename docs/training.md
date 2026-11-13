@@ -228,10 +228,11 @@ returns the scores and the multi-token prediction scores). With
 `targets=(y, after_next)` in that call, the model returns the two
 cross-entropies summed over the tokens instead of the scores, 4,096 tokens
 at a time: the built-in loss never holds every token's scores at once. On
-a GPU where flash-linear-attention imports, a pass with gradients runs its
-fused head and loss on each 4,096 tokens, which computes the gradients in
-its forward pass. Each chunk's head gradient is then one BF16 product, as
-autocast gives any weight's, and the chunks' add up in FP32. Elsewhere
+a GPU where Triton imports, a pass with gradients runs the fused head and
+loss on each 4,096 tokens, which computes the gradients in its forward
+pass, the losses and the scores' gradients in one kernel. Each chunk's
+head gradient is then one BF16 product, as autocast gives any weight's,
+and the chunks' add up in FP32. Elsewhere
 each chunk's scores are computed again in the backward pass.
 A method that defines its own `loss` defines `part_loss(model, x, y,
 following, window)` too, the share of a part of the windows (`following`:
@@ -506,8 +507,10 @@ does not crash.
 Residuals between them and the multi-token prediction block through
 `torch.compile`, forward and backward, which joins
 the model's many small operations into few GPU kernels. It trains the same
-way within rounding. It covers the passes over whole text windows, whose
-shape stays the same for a stage. Evaluations, windows in segments or
+way within rounding. On a GPU, the sums of Attention Residuals run as
+Triton kernels of their own instead of through `torch.compile`
+(docs/model.md, "Attention Residuals"). It covers the passes over whole
+text windows, whose shape stays the same for a stage. Evaluations, windows in segments or
 slices, conversations and task attempts run uncompiled, since their length
 or their place in a window changes from pass to pass and each new one would
 compile again. The run's log says so when the option is on. The option needs

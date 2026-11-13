@@ -10,9 +10,18 @@ queries stacks its queries' heads as rows (ROWS = queries x heads, heads
 padded to a power of 2), so the matrix units get full tiles even at 4 or
 8 heads. Scores are in FP32 from BF16 products, and the weights are cast
 to the inputs' dtype before they multiply the values, as in flash
-attention. The backward pass is two kernels with no atomic additions: one
-program per block of keys sums its keys' and values' gradients over every
-query that sees them, and one per block of queries its queries' gradients.
+attention. These kernels are bound by the matrix units: at 32K tokens on
+an RTX 5080 laptop GPU they run near its measured BF16 peak. So the
+backward pass is one kernel, as in FlashAttention-2, which computes each
+tile's scores and weights once: one program per block of keys sums its
+keys' and values' gradients over every query that sees them, and adds the
+block's share of those queries' gradients into an FP32 sum by atomic
+additions. That is 5 tile products per tile against 7 for a kernel per
+block of keys and one per block of queries; the order of the additions,
+and with it the rounding of the queries' gradients, may differ from run to
+run. A query sees the rows up to its own, so later queries cost more: the
+forward pass and the choice below take their tiles of queries from the
+last, which keeps the GPU from waiting on the costliest ones at the end.
 
 The choice of each query's top_k rows is one kernel after the forward
 pass, since a row's score (its largest weight over the heads) needs each
@@ -91,7 +100,19 @@ GPU, against about 2 ms for the atomic lists; that trade is open to review.
 Tile sizes are chosen by Triton's autotuner, per head count and head width
 (and, for the exact passes, per power of 2 of the queries, for the sparse passes per number of chosen rows), from configs
 that fit both an H100 (sm_90) and an RTX 5080 laptop GPU (sm_120, about
-100 KB of shared memory per block); a config that does not fit is skipped.
+100 KB of shared memory per block), plus, for the exact forward and
+backward passes, tiles of 128 queries' heads by 128 keys, the size
+FlashAttention-2 and -3 use on an H100 (the backward one fits only an
+H100's shared memory, about 227 KB per block); a config that does not fit
+is skipped. Every config of the exact passes compiles for sm_90 with its
+warpgroup matrix instructions (wgmma), but none was timed on an H100, so
+the H100's choice among them is open to review there. The sparse forward
+pass and the queries' gradients with GATHER_HEADS heads or fewer, bound
+by their gathers, ran fastest on an RTX 5080 laptop GPU with one warp
+per query and its rows in blocks of 16 or 32: the most programs at once
+on each multiprocessor. Their configs also hold blocks of 2 to 4 warps,
+for a GPU with more registers and memory bandwidth per multiprocessor,
+such as an H100, where none was timed (open to review).
 """
 
 import math
@@ -126,18 +147,21 @@ def _fits(configs, _arguments, **constants):
 
 
 _PRUNE = {"early_config_prune": _fits}
-_FORWARD = _configs([(128, 64, 8, 2), (128, 32, 4, 2), (64, 64, 4, 2), (64, 32, 4, 3), (256, 32, 8, 2)])
+_FORWARD = _configs([(128, 64, 8, 2), (128, 32, 4, 2), (64, 64, 4, 2), (64, 32, 4, 3), (256, 32, 8, 2), (128, 128, 8, 3)])
 _CHOICE = _configs([(64, 64, 4, 2), (64, 32, 4, 2), (128, 64, 8, 2), (64, 128, 4, 2), (32, 64, 4, 2)])
-_BACKWARD_KEYS = _configs([(16, 64, 4, 2), (32, 64, 4, 2), (32, 128, 4, 2), (64, 64, 4, 2), (64, 128, 8, 2)])
 _SPARSE = [triton.Config({"BLOCK": block}, num_warps=warps, num_stages=stages)
-           for block, warps, stages in [(32, 2, 2), (64, 4, 2), (64, 2, 3), (128, 4, 2), (128, 8, 2)]]
+           for block, warps, stages in [(32, 1, 1), (32, 1, 3), (16, 1, 1), (64, 2, 1), (32, 2, 2), (64, 4, 2),
+                                        (128, 4, 2)]]
 _SPARSE_BACKWARD = [triton.Config({"BLOCK": block}, num_warps=warps, num_stages=stages)
-                    for block, warps, stages in [(16, 4, 2), (32, 2, 2), (32, 4, 1), (32, 4, 2), (32, 8, 2),
-                                                 (64, 4, 1), (64, 4, 2), (64, 8, 2), (128, 8, 1)]]
-_SPARSE_KEYS_BACKWARD = [triton.Config({"E": e}, num_warps=warps, num_stages=stages)
-                         for e, warps, stages in [(8, 2, 1), (8, 4, 2), (16, 2, 2), (16, 2, 3), (16, 4, 2),
-                                                  (32, 4, 2), (32, 4, 3), (32, 8, 2), (64, 8, 2)]]
-_BACKWARD_QUERIES = _configs([(128, 64, 8, 2), (128, 32, 4, 2), (64, 64, 4, 2), (64, 32, 4, 3)])
+                    for block, warps, stages in [(16, 1, 1), (16, 1, 2), (16, 4, 2), (32, 2, 2), (32, 4, 1),
+                                                 (32, 4, 2), (32, 8, 2), (64, 4, 1), (64, 4, 2), (64, 8, 2),
+                                                 (128, 8, 1)]]
+_SPARSE_KEYS_BACKWARD = [triton.Config({"E": e}, num_warps=warps, num_stages=1)  # its loop prefetches by itself
+                         for e, warps in [(4, 2), (4, 4), (8, 2), (8, 4), (8, 8), (16, 4), (16, 8), (32, 8)]]
+_BACKWARD = _configs([(64, 64, 4, 2), (64, 64, 8, 2), (32, 64, 4, 2), (32, 128, 8, 2), (64, 128, 8, 2),
+                      (128, 64, 8, 2), (16, 64, 4, 2), (32, 64, 4, 3), (128, 128, 8, 2)])
+_WINDOW_KEYS = _configs([(16, 64, 4, 2), (32, 64, 4, 2), (32, 128, 4, 2), (64, 64, 4, 2), (64, 128, 8, 2)])
+_WINDOW_QUERIES = _configs([(128, 64, 8, 2), (128, 32, 4, 2), (64, 64, 4, 2), (64, 32, 4, 3)])
 
 
 def _size_class(T):
@@ -220,16 +244,14 @@ def _exact_backward(q, k, v, positions, out, lse, d_out, scale):
     N = k.shape[1]
     delta = (d_out.float() * out.float()).sum(-1)  # (B, T, H): sum_j p_j dp_j
     reach = positions.cummax(1).values.contiguous()  # (B, T): the farthest row any query up to t sees
-    dq = torch.empty_like(q)
+    dq = torch.zeros(B, T, H, c, dtype=torch.float32, device=q.device)  # FP32, the atomic additions' sum
     dk = torch.empty(B, N, c, dtype=k.dtype, device=k.device)
     dv = torch.empty(B, N, c, dtype=v.dtype, device=v.device)
     shape, qk_scale = _heads(H, c), scale * LOG2E.value
-    strides = (k.stride(0), k.stride(1), v.stride(0), v.stride(1))
-    _exact_keys_backward_kernel[lambda meta: (triton.cdiv(N, meta["KEYS"]), B)](
-        q, k, v, d_out, lse, delta, positions, reach, dk, dv, qk_scale, scale, T, N, *strides, _size_class(T), **shape)
-    _exact_queries_backward_kernel[lambda meta: (triton.cdiv(T, meta["ROWS"] // shape["HP"]), B)](
-        q, k, v, d_out, lse, delta, positions, dq, qk_scale, scale, T, N, *strides, _size_class(T), **shape)
-    return dq, dk, dv
+    _exact_backward_kernel[lambda meta: (triton.cdiv(N, meta["KEYS"]), B)](
+        q, k, v, d_out, lse, delta, positions, reach, dq, dk, dv, qk_scale, scale, T, N, k.stride(0),
+        k.stride(1), v.stride(0), v.stride(1), _size_class(T), **shape)
+    return (dq * scale).to(q.dtype), dk, dv
 
 
 @triton.jit
@@ -282,7 +304,8 @@ def _exact_forward_kernel(q_ptr, k_ptr, v_ptr, pos_ptr, out_ptr, lse_ptr, top_pt
                           CP: tl.constexpr, ROWS: tl.constexpr, KEYS: tl.constexpr):
     QT: tl.constexpr = ROWS // HP
     b = tl.program_id(1).to(tl.int64)
-    t, h, valid, p = _query_rows(pos_ptr, b, tl.program_id(0) * QT, T, T, H, HP, ROWS)
+    t0 = (tl.num_programs(0) - 1 - tl.program_id(0)) * QT  # the last queries, which see the most rows, first
+    t, h, valid, p = _query_rows(pos_ptr, b, t0, T, T, H, HP, ROWS)
     q = _load_rows(q_ptr, b, t, h, valid, T, H, C, CP)
     end = tl.minimum(tl.max(tl.where(valid, p, 0)) + 1, N)
     full = tl.minimum(tl.min(tl.where(valid, p, N)) + 1, N) // KEYS * KEYS  # tiles every row sees whole
@@ -381,7 +404,7 @@ def _exact_choice_kernel(q_ptr, k_ptr, pos_ptr, lse_ptr, top_ptr, chosen_ptr, bi
     the bin's best rows by their exact order."""
     QT: tl.constexpr = ROWS // HP
     b = tl.program_id(1).to(tl.int64)
-    t0 = tl.program_id(0) * QT
+    t0 = (tl.num_programs(0) - 1 - tl.program_id(0)) * QT  # the last queries, which see the most rows, first
     t, h, valid, p = _head_rows(pos_ptr, b, t0, T, H, HP, ROWS)
     q = _load_rows(q_ptr, b, t, h, valid, T, H, C, CP)
     rows = (b * T + t) * H + h
@@ -499,14 +522,11 @@ def _first_at_least(ptr, T, value):
 
 
 @triton.jit
-def _keys_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, b, t0, T, N, qk_scale, window,
-               H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr, ROWS: tl.constexpr,
-               WINDOWED: tl.constexpr):
-    """One tile of queries' share of a block's dk and dv. Every tile is
-    masked: tiles split into masked and whole ones, as the queries' kernel
-    does, ran 3 to 5 times slower on the one GPU this was measured on (an
-    AMD Radeon 860M), and this choice is open to review on NVIDIA GPUs.
-    WINDOWED: each query sees only its last `window` rows."""
+def _exact_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, dq_ptr, b, t0, T, N, qk_scale,
+                H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr, ROWS: tl.constexpr):
+    """One tile of queries' share of a block's dk and dv, and the block's
+    share of the tile's dq, added into dq_ptr in FP32 by atomic additions.
+    Every tile is masked (_window_keys_tile says why)."""
     t, h, valid, p = _query_rows(pos_ptr, b, t0, T, T, H, HP, ROWS)
     q = _load_rows(q_ptr, b, t, h, valid, T, H, C, CP)
     do = _load_rows(do_ptr, b, t, h, valid, T, H, C, CP)
@@ -514,23 +534,25 @@ def _keys_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, b, t
     lse = tl.load(lse_ptr + rows, mask=valid, other=0.0) * LOG2E
     delta = tl.load(delta_ptr + rows, mask=valid, other=0.0)
     seen = (n[:, None] <= p[None, :]) & (n[:, None] < N) & valid[None, :]
-    if WINDOWED:
-        seen = seen & (p[None, :] - n[:, None] < window)
     w = tl.where(seen, tl.exp2(tl.dot(k, tl.trans(q)) * qk_scale - lse[None, :]), 0.0)  # (KEYS, ROWS)
     dv += tl.dot(w.to(do.dtype), do)
-    ds = w * (tl.dot(v, tl.trans(do)) - delta[None, :])
-    return dk + tl.dot(ds.to(q.dtype), q), dv
+    ds = (w * (tl.dot(v, tl.trans(do)) - delta[None, :])).to(q.dtype)
+    d = tl.arange(0, CP)
+    tl.atomic_add(dq_ptr + rows[:, None] * C + d[None, :], tl.dot(tl.trans(ds), k),
+                  mask=valid[:, None] & (d[None, :] < C), sem="relaxed")
+    return dk + tl.dot(ds, q), dv
 
 
-@triton.autotune(configs=_BACKWARD_KEYS, key=["H", "C", "size"], prune_configs_by=_PRUNE)
+@triton.autotune(configs=_BACKWARD, key=["H", "C", "size"], prune_configs_by=_PRUNE, reset_to_zero=["dq_ptr"])
 @triton.jit
-def _exact_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, reach_ptr, dk_ptr, dv_ptr,
-                                qk_scale, scale, T, N, stride_kb, stride_kn, stride_vb, stride_vn, size,
-                                H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr,
-                                ROWS: tl.constexpr, KEYS: tl.constexpr):
+def _exact_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, reach_ptr, dq_ptr, dk_ptr, dv_ptr,
+                           qk_scale, scale, T, N, stride_kb, stride_kn, stride_vb, stride_vn, size, H: tl.constexpr,
+                           HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr, ROWS: tl.constexpr,
+                           KEYS: tl.constexpr):
     """dk and dv of one block of KEYS rows, over every query that sees one
-    of them: those from the first whose reach (the largest position up to
-    it) gets to the block."""
+    of them (those from the first whose reach, the largest position up to
+    it, gets to the block), and the block's share of those queries' dq
+    (FP32, without the scale)."""
     QT: tl.constexpr = ROWS // HP
     b = tl.program_id(1).to(tl.int64)
     n = tl.program_id(0) * KEYS + tl.arange(0, KEYS)
@@ -540,59 +562,13 @@ def _exact_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr,
     dv = tl.zeros([KEYS, CP], tl.float32)
     first = _first_at_least(reach_ptr + b * T, T, tl.program_id(0) * KEYS)  # the first query that sees the block
     for t0 in range(first // QT * QT, T, QT):
-        dk, dv = _keys_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, b, t0, T, N, qk_scale, 0, H,
-                            HP, C, CP, ROWS, False)
+        dk, dv = _exact_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, dq_ptr, b, t0, T, N, qk_scale,
+                             H, HP, C, CP, ROWS)
     d = tl.arange(0, CP)
     there = (n[:, None] < N) & (d[None, :] < C)
     offsets = (b * N + n)[:, None] * C + d[None, :]
     tl.store(dk_ptr + offsets, (dk * scale).to(dk_ptr.dtype.element_ty), mask=there)
     tl.store(dv_ptr + offsets, dv.to(dv_ptr.dtype.element_ty), mask=there)
-
-
-@triton.jit
-def _queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_scale, window, stride_kb, stride_kn, stride_vb,
-                  stride_vn, C: tl.constexpr, CP: tl.constexpr, KEYS: tl.constexpr, MASKED: tl.constexpr,
-                  WINDOWED: tl.constexpr):
-    """One tile of keys' share of a tile of queries' dq, without the scale.
-    WINDOWED: each query sees only its last `window` rows."""
-    n = n0 + tl.arange(0, KEYS)
-    k = _load_keys(k_ptr, b, n, N, stride_kb, stride_kn, C, CP)
-    v = _load_keys(v_ptr, b, n, N, stride_vb, stride_vn, C, CP)
-    w = tl.exp2(tl.dot(q, tl.trans(k)) * qk_scale - lse[:, None])
-    if MASKED:
-        w = tl.where((n[None, :] <= p[:, None]) & (n[None, :] < N), w, 0.0)
-    if WINDOWED:
-        w = tl.where(p[:, None] - n[None, :] < window, w, 0.0)
-    ds = w * (tl.dot(do, tl.trans(v)) - delta[:, None])
-    return dq + tl.dot(ds.to(k.dtype), k)
-
-
-@triton.autotune(configs=_BACKWARD_QUERIES, key=["H", "C", "size"], prune_configs_by=_PRUNE)
-@triton.jit
-def _exact_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, dq_ptr, qk_scale, scale,
-                                   T, N, stride_kb, stride_kn, stride_vb, stride_vn, size, H: tl.constexpr,
-                                   HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr, ROWS: tl.constexpr,
-                                   KEYS: tl.constexpr):
-    QT: tl.constexpr = ROWS // HP
-    b = tl.program_id(1).to(tl.int64)
-    t, h, valid, p = _query_rows(pos_ptr, b, tl.program_id(0) * QT, T, T, H, HP, ROWS)
-    q = _load_rows(q_ptr, b, t, h, valid, T, H, C, CP)
-    do = _load_rows(do_ptr, b, t, h, valid, T, H, C, CP)
-    rows = (b * T + t) * H + h
-    lse = tl.load(lse_ptr + rows, mask=valid, other=0.0) * LOG2E
-    delta = tl.load(delta_ptr + rows, mask=valid, other=0.0)
-    end = tl.minimum(tl.max(tl.where(valid, p, 0)) + 1, N)
-    full = tl.minimum(tl.min(tl.where(valid, p, N)) + 1, N) // KEYS * KEYS
-    dq = tl.zeros([ROWS, CP], tl.float32)
-    for n0 in range(0, full, KEYS):
-        dq = _queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_scale, 0, stride_kb, stride_kn,
-                           stride_vb, stride_vn, C, CP, KEYS, False, False)
-    for n0 in range(full, end, KEYS):
-        dq = _queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_scale, 0, stride_kb, stride_kn,
-                           stride_vb, stride_vn, C, CP, KEYS, True, False)
-    d = tl.arange(0, CP)
-    tl.store(dq_ptr + rows[:, None] * C + d[None, :], (dq * scale).to(dq_ptr.dtype.element_ty),
-             mask=valid[:, None] & (d[None, :] < C))
 
 
 # -- sparse attention --
@@ -788,9 +764,13 @@ def _sparse_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr
                                  stride_vb, stride_vn, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr,
                                  CP: tl.constexpr, E: tl.constexpr):
     """One table row's dk and dv: the window rows' share near_dk and
-    near_dv plus every query that chose it, E queries' heads at a time on
-    the vector units (one row against a few queries fills no matrix
-    tile), written once in the table's dtype."""
+    near_dv plus every query that chose it, written once in the table's
+    dtype. E queries' heads at a time on the vector units (one row against
+    a few queries fills no matrix tile), the next E loaded while the
+    current ones compute, since the loop waits on these gathers; each
+    (query, head) row's products add up in its own row of an (E HP, CP)
+    sum, reduced to one row at the end, so no step waits on a reduction
+    across threads."""
     key = tl.program_id(0).to(tl.int64)
     b = key // N
     n = key % N
@@ -801,29 +781,77 @@ def _sparse_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr
     end = tl.load(starts_ptr + key + 1)
     r = tl.arange(0, E * HP)
     e, h = r // HP, r % HP
-    dk = tl.zeros([CP], tl.float32)
-    dv = tl.zeros([CP], tl.float32)
+    dk = tl.zeros([E * HP, CP], tl.float32)
+    dv = tl.zeros([E * HP, CP], tl.float32)
+    q, do, lse, delta, there = _chooser_rows(q_ptr, do_ptr, lse_ptr, delta_ptr, choosers_ptr, start + e, end, h, d,
+                                             H, C)
     for i0 in range(start, end, E):
-        i = i0 + e
-        there = (i < end) & (h < H)
-        rows = tl.load(choosers_ptr + i, mask=i < end, other=0).to(tl.int64) * H + h  # (query, head) rows
-        mask = there[:, None] & (d[None, :] < C)
-        q = tl.load(q_ptr + rows[:, None] * C + d[None, :], mask=mask, other=0.0).to(tl.float32)
-        do = tl.load(do_ptr + rows[:, None] * C + d[None, :], mask=mask, other=0.0).to(tl.float32)
-        lse = tl.load(lse_ptr + rows, mask=there, other=0.0) * LOG2E
-        delta = tl.load(delta_ptr + rows, mask=there, other=0.0)
-        w = tl.where(there, tl.exp2(tl.sum(q * k[None, :], 1) * qk_scale - lse), 0.0)
+        q2, do2, lse2, delta2, there2 = _chooser_rows(q_ptr, do_ptr, lse_ptr, delta_ptr, choosers_ptr, i0 + E + e,
+                                                      end, h, d, H, C)
+        q, do = q.to(tl.float32), do.to(tl.float32)
+        w = tl.where(there, tl.exp2(tl.sum(q * k[None, :], 1) * qk_scale - lse * LOG2E), 0.0)
         ds = w * (tl.sum(do * v[None, :], 1) - delta)
-        dk += tl.sum(ds[:, None] * q, 0)
-        dv += tl.sum(w[:, None] * do, 0)
+        dk += ds[:, None] * q
+        dv += w[:, None] * do
+        q, do, lse, delta, there = q2, do2, lse2, delta2, there2
     out = key * C + d
-    dk = dk * scale + tl.load(near_dk_ptr + out, mask=d < C, other=0.0)
-    dv += tl.load(near_dv_ptr + out, mask=d < C, other=0.0)
+    dk = tl.sum(dk, 0) * scale + tl.load(near_dk_ptr + out, mask=d < C, other=0.0)
+    dv = tl.sum(dv, 0) + tl.load(near_dv_ptr + out, mask=d < C, other=0.0)
     tl.store(dk_ptr + out, dk.to(dk_ptr.dtype.element_ty), mask=d < C)
     tl.store(dv_ptr + out, dv.to(dv_ptr.dtype.element_ty), mask=d < C)
 
 
-@triton.autotune(configs=_BACKWARD_KEYS, key=["H", "C"], prune_configs_by=_PRUNE)
+@triton.jit
+def _chooser_rows(q_ptr, do_ptr, lse_ptr, delta_ptr, choosers_ptr, i, end, h, d, H: tl.constexpr, C: tl.constexpr):
+    """The (query, head) rows of the list entries i (rows past end are
+    not there): their q and d_out in the inputs' dtype, lse, delta, and
+    whether each is there."""
+    there = (i < end) & (h < H)
+    rows = tl.load(choosers_ptr + i, mask=i < end, other=0).to(tl.int64) * H + h
+    mask = there[:, None] & (d[None, :] < C)
+    q = tl.load(q_ptr + rows[:, None] * C + d[None, :], mask=mask, other=0.0)
+    do = tl.load(do_ptr + rows[:, None] * C + d[None, :], mask=mask, other=0.0)
+    lse = tl.load(lse_ptr + rows, mask=there, other=0.0)
+    delta = tl.load(delta_ptr + rows, mask=there, other=0.0)
+    return q, do, lse, delta, there
+
+
+@triton.jit
+def _window_keys_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, b, t0, T, N, qk_scale, window,
+                      H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr, CP: tl.constexpr, ROWS: tl.constexpr):
+    """One tile of queries' share of a block's dk and dv, each query seeing
+    only its last `window` rows. Every tile is masked: tiles split into
+    masked and whole ones ran 3 to 5 times slower on the one GPU this was
+    measured on (an AMD Radeon 860M), and this choice is open to review on
+    NVIDIA GPUs."""
+    t, h, valid, p = _query_rows(pos_ptr, b, t0, T, T, H, HP, ROWS)
+    q = _load_rows(q_ptr, b, t, h, valid, T, H, C, CP)
+    do = _load_rows(do_ptr, b, t, h, valid, T, H, C, CP)
+    rows = (b * T + t) * H + h
+    lse = tl.load(lse_ptr + rows, mask=valid, other=0.0) * LOG2E
+    delta = tl.load(delta_ptr + rows, mask=valid, other=0.0)
+    seen = (n[:, None] <= p[None, :]) & (n[:, None] < N) & valid[None, :] & (p[None, :] - n[:, None] < window)
+    w = tl.where(seen, tl.exp2(tl.dot(k, tl.trans(q)) * qk_scale - lse[None, :]), 0.0)  # (KEYS, ROWS)
+    dv += tl.dot(w.to(do.dtype), do)
+    ds = w * (tl.dot(v, tl.trans(do)) - delta[None, :])
+    return dk + tl.dot(ds.to(q.dtype), q), dv
+
+
+@triton.jit
+def _window_queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_scale, window, stride_kb, stride_kn,
+                         stride_vb, stride_vn, C: tl.constexpr, CP: tl.constexpr, KEYS: tl.constexpr):
+    """One tile of keys' share of a tile of queries' dq, without the scale,
+    each query seeing only its last `window` rows."""
+    n = n0 + tl.arange(0, KEYS)
+    k = _load_keys(k_ptr, b, n, N, stride_kb, stride_kn, C, CP)
+    v = _load_keys(v_ptr, b, n, N, stride_vb, stride_vn, C, CP)
+    w = tl.exp2(tl.dot(q, tl.trans(k)) * qk_scale - lse[:, None])
+    w = tl.where((n[None, :] <= p[:, None]) & (n[None, :] < N) & (p[:, None] - n[None, :] < window), w, 0.0)
+    ds = w * (tl.dot(do, tl.trans(v)) - delta[:, None])
+    return dq + tl.dot(ds.to(k.dtype), k)
+
+
+@triton.autotune(configs=_WINDOW_KEYS, key=["H", "C"], prune_configs_by=_PRUNE)
 @triton.jit
 def _window_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, reach_ptr, floor_ptr, dk_ptr,
                                  dv_ptr, qk_scale, scale, T, N, window, stride_kb, stride_kn, stride_vb, stride_vn,
@@ -844,8 +872,8 @@ def _window_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr
     first = _first_at_least(reach_ptr + b * T, T, tl.program_id(0) * KEYS)
     stop = _first_at_least(floor_ptr + b * T, T, tl.program_id(0) * KEYS + KEYS - 1 + window)
     for t0 in range(first // QT * QT, stop, QT):
-        dk, dv = _keys_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, b, t0, T, N, qk_scale, window,
-                            H, HP, C, CP, ROWS, True)
+        dk, dv = _window_keys_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, b, t0, T, N, qk_scale,
+                                   window, H, HP, C, CP, ROWS)
     d = tl.arange(0, CP)
     there = (n[:, None] < N) & (d[None, :] < C)
     offsets = (b * N + n)[:, None] * C + d[None, :]
@@ -853,7 +881,7 @@ def _window_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr
     tl.store(dv_ptr + offsets, dv, mask=there)
 
 
-@triton.autotune(configs=_BACKWARD_QUERIES, key=["H", "C"], prune_configs_by=_PRUNE)
+@triton.autotune(configs=_WINDOW_QUERIES, key=["H", "C"], prune_configs_by=_PRUNE)
 @triton.jit
 def _window_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, dq_ptr, qk_scale, T, N,
                                     window, stride_kb, stride_kn, stride_vb, stride_vn, H: tl.constexpr,
@@ -874,7 +902,7 @@ def _window_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_
     end = tl.minimum(tl.max(tl.where(valid, p, 0)) + 1, N)
     dq = tl.zeros([ROWS, CP], tl.float32)
     for n0 in range(start, end, KEYS):
-        dq = _queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_scale, window, stride_kb, stride_kn,
-                           stride_vb, stride_vn, C, CP, KEYS, True, True)
+        dq = _window_queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_scale, window, stride_kb,
+                                  stride_kn, stride_vb, stride_vn, C, CP, KEYS)
     d = tl.arange(0, CP)
     tl.store(dq_ptr + rows[:, None] * C + d[None, :], dq, mask=valid[:, None] & (d[None, :] < C))

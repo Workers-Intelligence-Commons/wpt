@@ -62,9 +62,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | the gpu worker's certificate (wpt-worker), and tests through moto; its compiled part includes OpenSSL (Apache-2.0), statically linked |
 | deltalake | 1.6.6 | Apache-2.0 | reading a depot of format 3 or older, which `wpt depot upgrade` brings to format 4 (wpt-depot) |
 | deprecated | 3.0.1 | MIT | through deltalake |
-| einops | 0.8.2 | MIT | through fla-core |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
-| fla-core | 0.5.2 | MIT | the fused output head and loss (flash-linear-attention), used where Triton runs |
 | googleapis-common-protos | 1.75.5 | Apache-2.0 | through opentelemetry-exporter-otlp-proto-http |
 | idna | 3.20 | BSD-3-Clause | through requests |
 | iniconfig | 2.3.1 | MIT | through pytest |
@@ -181,7 +179,7 @@ agreement for NVIDIA software development kits).
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
-| triton-windows | 3.8.0.post29 | MIT | compiles the Triton attention and grouped expert kernels and flash-linear-attention's fused output head and loss. It bundles, with no license file of theirs, NVIDIA's GPU compiler `ptxas.exe` (NVIDIA proprietary, CUDA Toolkit license agreement) and the TinyCC C compiler (`tcc.exe`, `libtcc.dll`; LGPL-2.1-or-later) |
+| triton-windows | 3.8.0.post29 | MIT | compiles the Triton attention, grouped expert, Attention Residuals and fused output head and loss kernels. It bundles, with no license file of theirs, NVIDIA's GPU compiler `ptxas.exe` (NVIDIA proprietary, CUDA Toolkit license agreement) and the TinyCC C compiler (`tcc.exe`, `libtcc.dll`; LGPL-2.1-or-later) |
 
 ### ROCm build, Linux only
 

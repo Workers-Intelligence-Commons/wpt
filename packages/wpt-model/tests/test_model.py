@@ -4,13 +4,14 @@ import types
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from wpt_model import BALANCING, MULTI_TOKEN_PREDICTION, PARTS, ROUTERS, WPT, ModelConfig, Routes
 from wpt_model import attention
 from wpt_model.experts import Experts
 from wpt_model.layers import expert_forward, grouped_experts
 from wpt_model import model as model_module
-from wpt_model.model import _fla_fused_loss, fla_failure
+from wpt_model.model import _fused_loss, fused_loss_failure
 from wpt_utils.device import select_device
 
 TINY = dict(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
@@ -269,8 +270,8 @@ def test_a_recorded_training_pass_trains_as_the_same_pass_run_as_it_is():
     assert recorded.graphs.key is not None  # the passes did replay recorded graphs
 
 
-@pytest.mark.skipif(select_device().type != "cuda" or not _fla_fused_loss(),
-                    reason="needs a GPU where flash-linear-attention imports")
+@pytest.mark.skipif(select_device().type != "cuda" or not _fused_loss(),
+                    reason="needs a GPU where the fused head and loss imports")
 def test_the_fused_head_and_loss_give_the_checkpointed_form_s_loss_and_gradients(monkeypatch):
     # docs/model.md, "Training": the summed loss and its gradients, scaled by the incoming gradient
     # as training scales them, are the checkpointed chunks' within BF16 rounding
@@ -281,7 +282,7 @@ def test_the_fused_head_and_loss_give_the_checkpointed_form_s_loss_and_gradients
     def run(fused):
         torch.manual_seed(0)
         model = WPT(ModelConfig(**TINY)).to(device).train()
-        monkeypatch.setattr(model_module, "_fla_fused_loss", _fla_fused_loss if fused else lambda: False)
+        monkeypatch.setattr(model_module, "_fused_loss", _fused_loss if fused else lambda: False)
         next_sum, ahead_sum = model(ids[0], next_tokens=ids[1], targets=(ids[1], ids[2, :, :15]))
         (next_sum / 3 + 0.3 * ahead_sum / 7).backward()
         return next_sum.item(), ahead_sum.item(), {n: p.grad for n, p in model.named_parameters()}
@@ -293,6 +294,30 @@ def test_the_fused_head_and_loss_give_the_checkpointed_form_s_loss_and_gradients
     # already (atomic additions in the kernels), whichever form computes the loss
     for name in ("head.weight", "final_norm.weight", "embedding.weight"):
         assert (grads[name] - expected_grads[name]).abs().max() <= 0.05 * expected_grads[name].abs().max(), name
+
+
+@pytest.mark.skipif(select_device().type != "cuda" or not _fused_loss(),
+                    reason="needs a GPU where the fused head and loss imports")
+def test_the_fused_head_and_loss_follow_the_cross_entropy_over_rows_of_several_blocks():
+    # head_loss.py: a vocabulary of more than one block of the kernel and a part block, and the
+    # ignored target -100, give F.cross_entropy's summed loss and gradients within BF16 rounding
+    from wpt_model import head_loss as module
+
+    device = select_device()
+    generator = torch.Generator(device).manual_seed(0)
+    V = 2 * module.BLOCK + 1000
+    hidden = torch.randn(64, 32, device=device, generator=generator).bfloat16().requires_grad_()
+    weight = (torch.randn(V, 32, device=device, generator=generator) * 0.5).bfloat16().requires_grad_()
+    targets = torch.randint(0, V, (64,), device=device, generator=generator)
+    targets[::7] = -100
+    loss = module.head_loss(hidden, targets, weight)
+    (2 * loss).backward()
+    hidden_f, weight_f = hidden.detach().float().requires_grad_(), weight.detach().float().requires_grad_()
+    expected = F.cross_entropy(hidden_f @ weight_f.t(), targets, reduction="sum")
+    (2 * expected).backward()
+    assert loss.item() == pytest.approx(expected.item(), rel=1e-3)
+    for got, want in ((hidden.grad, hidden_f.grad), (weight.grad, weight_f.grad)):
+        assert (got.float() - want).abs().max() <= 2e-2 * want.abs().max()
 
 
 def test_the_same_pass_gives_the_same_gradients_every_time(few_chosen):
@@ -330,19 +355,16 @@ def test_every_parameter_belongs_to_exactly_one_named_part():
     assert parts[BALANCING] == []  # the balancing biases are set after each update, never by a gradient
 
 
-def test_a_failed_import_of_flash_linear_attention_keeps_its_reason(monkeypatch):
+def test_a_failed_import_of_the_fused_head_and_loss_keeps_its_reason(monkeypatch):
     # the reason is what tells a run that the output head and its loss run
     # in checkpointed chunks instead of the fused kernel, and why
-    monkeypatch.setattr(model_module, "_fla", None)
-    monkeypatch.setitem(sys.modules, "fla.modules.fused_linear_cross_entropy", None)  # an import of it then fails
-    assert _fla_fused_loss() is False
-    assert fla_failure() == ("ModuleNotFoundError: import of fla.modules.fused_linear_cross_entropy halted; "
-                             "None in sys.modules")
+    monkeypatch.setattr(model_module, "_fused", None)
+    monkeypatch.setitem(sys.modules, "wpt_model.head_loss", None)  # an import of it then fails
+    assert _fused_loss() is False
+    assert fused_loss_failure() == "ModuleNotFoundError: import of wpt_model.head_loss halted; None in sys.modules"
 
-    monkeypatch.setattr(model_module, "_fla", None)
-    loss = types.ModuleType("fla.modules.fused_linear_cross_entropy")  # the real one needs Triton
-    for name in ("MAX_FUSED_SIZE", "STATIC_WARPS", "cross_entropy_kernel", "logsumexp_fwd"):  # what head_loss.py reads
-        setattr(loss, name, object())
-    monkeypatch.delitem(sys.modules, "wpt_model.head_loss", raising=False)
-    monkeypatch.setitem(sys.modules, "fla.modules.fused_linear_cross_entropy", loss)
-    assert _fla_fused_loss() and fla_failure() is None
+    monkeypatch.setattr(model_module, "_fused", None)
+    loss = types.ModuleType("wpt_model.head_loss")  # the real one needs Triton
+    loss.head_loss = object()
+    monkeypatch.setitem(sys.modules, "wpt_model.head_loss", loss)
+    assert _fused_loss() is loss.head_loss and fused_loss_failure() is None

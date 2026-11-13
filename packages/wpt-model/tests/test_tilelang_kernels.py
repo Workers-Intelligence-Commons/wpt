@@ -50,7 +50,7 @@ def test_every_kernel_builds_for_both_gpus(arch, size):
                                   t.threads, tl.CANDIDATES, -3)),
         (tl.rank_kernel, (tl.CANDIDATES, t.threads)),
         (tl.exact_backward_kernel, (H, c, scale, t.backward_rows, t.backward_keys, t.stages, t.threads)),
-        (tl.sparse_forward_kernel, (H, c, scale, window, t.sparse_block, t.stages, t.threads)),
+        (tl.sparse_forward_kernel, (H, c, scale, window, t.sparse_forward_block)),
         (tl.sparse_queries_backward_kernel, (H, c, scale, window, t.sparse_block, t.sparse_threads, False)),
         (tl.sparse_queries_backward_kernel, (H, c, scale, window, t.sparse_block, t.sparse_threads, True)),
         (tl.choosers_kernel, (window, t.sparse_block, t.threads, False)),

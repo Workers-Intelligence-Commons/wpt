@@ -1,13 +1,18 @@
 """Attention Residuals (docs/model.md, "Attention Residuals"): the sources
 of one pass, read through one tensor with a written-out backward pass,
 give what the paper's formula gives over stacked sources, in the inputs
-of the sublayers and in every gradient, in the full form and in groups."""
+of the sublayers and in every gradient, in the full form and in groups;
+and a compiled pass's sums, Triton kernels on a GPU, give it within BF16
+rounding."""
+
+import importlib.util
 
 import pytest
 import torch
 
 from wpt_model.layers import EPS
 from wpt_model.residuals import Residuals
+from wpt_utils.device import select_device
 
 
 def formula(residuals, embedding, sublayers):
@@ -35,8 +40,8 @@ def formula(residuals, embedding, sublayers):
     return inputs + [mixed(len(sublayers))]
 
 
-def through_sources(residuals, embedding, sublayers):
-    sources, inputs = residuals.start(embedding), []
+def through_sources(residuals, embedding, sublayers, compiled=False):
+    sources, inputs = residuals.start(embedding, compiled), []
     for j, sublayer in enumerate(sublayers):
         inputs.append(sources.input(j))
         sources.output(j, sublayer(inputs[-1]))
@@ -85,3 +90,42 @@ def test_with_its_queries_at_zero_every_sum_is_the_plain_average_of_its_sources(
                 (embedding + first + outputs[2]) / 3, (embedding + first + outputs[2] + outputs[3]) / 3]
     for a, b in zip(inputs + [sources.end()], expected):
         torch.testing.assert_close(a, b)
+
+
+@pytest.mark.skipif(select_device().type != "cuda" or importlib.util.find_spec("triton") is None,
+                    reason="needs a GPU where Triton runs")
+@pytest.mark.parametrize("groups", [6, 3])
+def test_a_compiled_pass_s_sums_on_a_gpu_are_as_close_to_the_paper_s_as_the_uncompiled_sums(groups):
+    # the full form, as the recipes have it, through the Triton kernels of
+    # a compiled pass, its sources in BF16: against the formula in FP32 on
+    # the same inputs, every input and gradient is as close as the same
+    # pass uncompiled; the sublayers read their inputs, so every gradient
+    # goes through the sums of later sublayers. In groups, the sums with a
+    # partial sum run through torch.compile and the others through the
+    # kernels, and a source's gradient joins both
+    torch.manual_seed(0)
+    device, sublayers, width = select_device(), 6, 96  # a width that is no power of 2
+    residuals = Residuals(width, sublayers, groups).to(device)
+    with torch.no_grad():
+        for mix in residuals.mixes:
+            mix.query.normal_(0, 0.3)
+            mix.norm_weight.uniform_(0.5, 1.5)
+    embedding = torch.randn(2, 300, width, device=device).to(torch.bfloat16).requires_grad_()
+    weights = [(torch.randn(width, width, device=device) / width ** 0.5).requires_grad_() for _ in range(sublayers)]
+    layers = [lambda h, w=w: torch.tanh(h @ w.to(h.dtype)) for w in weights]
+    parameters = [embedding, *weights, *residuals.parameters()]
+    expected = formula(residuals, embedding.float(), layers)
+    directions = [torch.randn_like(h) for h in expected]
+
+    def everything(inputs):
+        loss = sum((h.float() * d).sum() for h, d in zip(inputs, directions))
+        return [*inputs, *torch.autograd.grad(loss, parameters)]
+
+    def gap(a, b):
+        return float((a.float() - b.float()).norm() / b.float().norm())
+
+    expected = everything(expected)
+    compiled = everything(through_sources(residuals, embedding, layers, compiled=True))
+    uncompiled = everything(through_sources(residuals, embedding, layers))
+    for got, plain, reference in zip(compiled, uncompiled, expected):
+        assert gap(got, reference) <= 2 * gap(plain, reference) + 1e-3

@@ -10,9 +10,13 @@ and softmax, and never hold more than one tile of scores:
                            every row a query sees. The query heads share one
                            key-value head, so a tile's rows are (token, head)
                            pairs, M of them, and a few heads still fill the
-                           matrix units
+                           matrix units. A query sees the rows up to its
+                           own, so the blocks of the last rows, the
+                           costliest, run first, which keeps the GPU from
+                           waiting on them at the end
     exact_select_kernel    each query's top rows, in streaming passes over
-                           the same scores (below)
+                           the same scores (below), the last tokens first
+                           for the same reason
     rank_kernel            the last of them, among a few rows per query
     exact_backward_kernel  the exact layer's gradients: one program per tile
                            of keys, its key and value gradients held until
@@ -20,8 +24,10 @@ and softmax, and never hold more than one tile of scores:
                            additions in FP32
     sparse_forward_kernel  the sparse layer's attention: one program per
                            query, its chosen rows and its window gathered
-                           into shared memory in blocks, heads padded to 16
-                           rows for the matrix units
+                           into shared memory in blocks by asynchronous
+                           copies; its tiles are (rows, heads), heads
+                           padded to 8 columns, the matrix units' narrowest
+                           tile, and one warp per 16 rows of a block
     sparse_queries_backward_kernel
                            its query gradients: one program per query, as
                            the forward pass reads its rows, written once;
@@ -52,11 +58,14 @@ from run to run. With GATHER_HEADS heads or fewer, the choosers' lists are
 filled by atomic additions on their counters, so the order of the queries
 in a list, and with it the rounding of a row's gradient, may differ from
 run to run. The keys' kernel gathers each listed query's q and d_out
-and computes its weights again: the products with the row's key and value
-on the matrix units, as two columns of a 16-column tile whose others are 0,
-and the sums of the row's gradients over its queries on the vector units,
-each thread its columns. Its rows per step (KEYS_ROWS) and threads are a
-first choice from a few measured, open to review.
+and computes its weights again, all on the vector units, since one row
+against a few queries fills no matrix tile: each (query, head) row's
+products add up in its own row of a sum the size of a step, reduced to
+one row at the end, so a step waits on no reduction but its two dot
+products, and the next step's rows are loaded while the current one
+computes. Its rows per step (KEYS_ROWS) and threads were chosen among a
+few measured on an RTX 5080 laptop GPU at 4K and 32K tokens; an H100 runs
+the same, open to review there.
 
 Top rows. A row's score is its largest log-weight over the heads,
 s = max_h (z_h - lse_h), and its key the bits of s as an int32 in the same
@@ -109,8 +118,8 @@ LEVELS = 16  # the most counting passes
 NONE = 1 - (1 << 31)  # the key of a row a query may not choose, below every score's (_key)
 ALL = 1 << 62  # above every score's key
 GATHER_HEADS = 2  # the most heads for which each table row gathers its queries; above, the queries scatter
-KEYS_ROWS = 32  # (query, head) rows per step of the sparse keys' backward kernel
-KEYS_THREADS = 128
+KEYS_ROWS = 8  # (query, head) rows per step of the sparse keys' backward kernel
+KEYS_THREADS = 64
 # Kernels whose warps are not specialized and that copy without the Tensor Memory Accelerator: the sparse kernels,
 # which read their rows by index, the selection, which TileLang 0.1.8 fails to build with either one, and the
 # backward pass, whose registers spill on an H100 once its warps are specialized
@@ -121,11 +130,18 @@ PLAIN = {tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True, tilelang.Pass
 class Tiles:
     """One GPU class's tile sizes: rows of (token, head) pairs and keys per
     tile of each exact kernel, the most tokens per block of the selection,
-    rows per block of the sparse kernels, pipeline stages, threads, and
-    the threads of the sparse queries' backward kernel: one warp per 16
-    rows of its block, since the rows are its matrix products' first
-    dimension and the heads, 8 columns or more, cannot be split between
-    warps.
+    rows per block of the sparse kernels, pipeline stages, threads, the
+    threads of the sparse queries' backward kernel: one warp per 16 rows
+    of its block, since the rows are its matrix products' first dimension
+    and the heads, 8 columns or more, cannot be split between warps; and
+    the rows per block of the sparse forward kernel, which takes one warp
+    per 16 of them for the same reason.
+
+    The sparse forward kernel, bound by its gathers, ran fastest on an
+    RTX 5080 laptop GPU with blocks of 16 rows and one warp, the most
+    programs at once on each multiprocessor. TILES_LARGE takes blocks of
+    32 and two warps, for an H100's more registers per multiprocessor and
+    its higher limit of warps; that choice was not timed (open to review).
 
     The selection's shared memory grows with its tokens per block (a
     histogram and a tile of keys per token), and a block of few heads
@@ -142,10 +158,11 @@ class Tiles:
     stages: int
     threads: int
     sparse_threads: int
+    sparse_forward_block: int
 
 
-TILES_LARGE = Tiles(128, 128, 128, 64, 64, 64, 64, 64, 2, 256, 128)
-TILES_SMALL = Tiles(64, 64, 64, 64, 32, 64, 32, 32, 2, 128, 64)
+TILES_LARGE = Tiles(128, 128, 128, 64, 64, 64, 64, 64, 2, 256, 128, 32)
+TILES_SMALL = Tiles(64, 64, 64, 64, 32, 64, 32, 32, 2, 128, 64, 16)
 
 
 def tiles(device):
@@ -193,7 +210,10 @@ def exact_forward_kernel(H: int, c: int, scale: float, M: int, BN: int, stages: 
     def kernel(q: T.Tensor((b, r, c), BF16), kv: T.Tensor((b, n, 2 * c), BF16), pos: T.Tensor((b, t), INT32),
                ends: T.Tensor((b, blocks), INT32), o: T.Tensor((b, r, c), BF16), lse: T.Tensor((b, r), FP32),
                mx: T.Tensor((b, r), FP32)):
-        with T.Kernel(T.ceildiv(r, M), b, threads=threads) as (bx, by):
+        with T.Kernel(T.ceildiv(r, M), b, threads=threads) as (block, by):
+            # the last rows, which see the most keys, first; counted from ends' blocks, since the same order from
+            # T.ceildiv(r, M) hung on the GPU when one compiled kernel ran again at another size
+            bx = blocks - 1 - block
             q_s = T.alloc_shared((M, c), BF16)
             k_s = T.alloc_shared((BN, c), BF16)
             v_s = T.alloc_shared((BN, c), BF16)
@@ -288,7 +308,8 @@ def exact_select_kernel(H: int, c: int, scale: float, window: int, M: int, BT: i
     def kernel(q: T.Tensor((b, r, c), BF16), kv: T.Tensor((b, n, 2 * c), BF16), pos: T.Tensor((b, t), INT32),
                lse: T.Tensor((b, r), FP32), mx: T.Tensor((b, r), FP32), ends: T.Tensor((b, blocks), INT32),
                idx: T.Tensor((b, t, kc), INT64), bins: T.Tensor((b, t, cap), INT64), state: T.Tensor((b, t, 3), INT32)):
-        with T.Kernel(T.ceildiv(t, BT), b, threads=threads) as (bx, by):
+        with T.Kernel(T.ceildiv(t, BT), b, threads=threads) as (block, by):
+            bx = blocks - 1 - block  # the last tokens, which have the most candidates, first (see exact_forward_kernel)
             q_s = T.alloc_shared((M, c), BF16)
             k_s = T.alloc_shared((BN, c), BF16)
             z_s = T.alloc_shared((M, BN), FP32)  # each (token, head) row's log-weights, in base 2
@@ -531,10 +552,12 @@ def _rows_of(idx, pos, kc, n, window, BLK, blk, nb1, by, bx, j):
 
 
 @tilelang.jit(pass_configs=PLAIN)
-def sparse_forward_kernel(H: int, c: int, scale: float, window: int, BLK: int, stages: int, threads: int):
+def sparse_forward_kernel(H: int, c: int, scale: float, window: int, BLK: int):
     """o (B, T, H, c) and lse (B, T, H), natural, the sink included, of
-    each query over its rows idx (B, T, K) and its last window rows."""
-    HP = _padded_heads(H, 16)
+    each query over its rows idx (B, T, K) and its last window rows; tiles
+    (rows, heads) and sums (c, heads), as the queries' backward pass, and
+    one warp per 16 rows of a block of BLK."""
+    HP = _padded_heads(H, 8)
     b, t, n, kc = T.symbolic("b"), T.symbolic("t"), T.symbolic("n"), T.symbolic("kc")
     scale2 = scale * LOG2E
 
@@ -542,14 +565,14 @@ def sparse_forward_kernel(H: int, c: int, scale: float, window: int, BLK: int, s
     def kernel(q: T.Tensor((b, t, H, c), BF16), kv: T.Tensor((b, n, 2 * c), BF16), sink: T.Tensor((H,), FP32),
                idx: T.Tensor((b, t, kc), INT64), pos: T.Tensor((b, t), INT32), o: T.Tensor((b, t, H, c), BF16),
                lse: T.Tensor((b, t, H), FP32)):
-        with T.Kernel(t, b, threads=threads) as (bx, by):
+        with T.Kernel(t, b, threads=2 * BLK) as (bx, by):
             q_s = T.alloc_shared((HP, c), BF16)
             k_s = T.alloc_shared((BLK, c), BF16)
             v_s = T.alloc_shared((BLK, c), BF16)
             rows = T.alloc_shared((BLK,), INT32)
-            s = T.alloc_fragment((HP, BLK), FP32)
-            p_s = T.alloc_shared((HP, BLK), BF16)
-            acc = T.alloc_fragment((HP, c), FP32)
+            s = T.alloc_fragment((BLK, HP), FP32)
+            p_s = T.alloc_shared((BLK, HP), BF16)
+            acc = T.alloc_fragment((c, HP), FP32)
             m = T.alloc_fragment((HP,), FP32)
             m_prev = T.alloc_fragment((HP,), FP32)
             alpha = T.alloc_fragment((HP,), FP32)
@@ -563,36 +586,36 @@ def sparse_forward_kernel(H: int, c: int, scale: float, window: int, BLK: int, s
             T.fill(acc, 0)
             T.fill(l, 0)
             T.fill(m, -T.infinity(FP32))
-            for blk in T.Pipelined(nb1 + T.ceildiv(window, BLK), num_stages=stages):
+            # one stage still makes the gathers asynchronous copies; more measured slower
+            for blk in T.Pipelined(nb1 + T.ceildiv(window, BLK), num_stages=1):
                 for j in T.Parallel(BLK):
                     rows[j] = _rows_of(idx, pos, kc, n, window, BLK, blk, nb1, by, bx, j)
                 for j, d in T.Parallel(BLK, c):
                     k_s[j, d] = T.if_then_else(rows[j] >= 0, kv[by, T.max(rows[j], 0), d], 0)
-                for i, j in T.Parallel(HP, BLK):
-                    s[i, j] = T.if_then_else(rows[j] >= 0, 0, -T.infinity(FP32))
-                T.gemm(q_s, k_s, s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                    v_s[j, d] = T.if_then_else(rows[j] >= 0, kv[by, T.max(rows[j], 0), c + d], 0)
+                for j, i in T.Parallel(BLK, HP):
+                    s[j, i] = T.if_then_else(rows[j] >= 0, 0, -T.infinity(FP32))
+                T.gemm(k_s, q_s, s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 T.copy(m, m_prev)
-                T.reduce_max(s, m, dim=1, clear=False)
+                T.reduce_max(s, m, dim=0, clear=False)
                 for i in T.Parallel(HP):
                     safe[i] = T.if_then_else(m[i] == -T.infinity(FP32), 0, m[i])
                     alpha[i] = T.exp2((m_prev[i] - safe[i]) * scale2)
-                for i, j in T.Parallel(HP, BLK):
-                    s[i, j] = T.exp2(s[i, j] * scale2 - safe[i] * scale2)
-                T.reduce_sum(s, total, dim=1)
+                for j, i in T.Parallel(BLK, HP):
+                    s[j, i] = T.exp2(s[j, i] * scale2 - safe[i] * scale2)
+                T.reduce_sum(s, total, dim=0)
                 for i in T.Parallel(HP):
                     l[i] = l[i] * alpha[i] + total[i]
                 T.copy(s, p_s)
-                for i, j in T.Parallel(HP, c):
-                    acc[i, j] *= alpha[i]
-                for j, d in T.Parallel(BLK, c):
-                    v_s[j, d] = T.if_then_else(rows[j] >= 0, kv[by, T.max(rows[j], 0), c + d], 0)
-                T.gemm(p_s, v_s, acc, policy=T.GemmWarpPolicy.FullRow)
+                for d, i in T.Parallel(c, HP):
+                    acc[d, i] *= alpha[i]
+                T.gemm(v_s, p_s, acc, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
             for i in T.Parallel(HP):  # the sink joins the denominator: l + e^(sink - m)
                 safe[i] = T.if_then_else(m[i] == -T.infinity(FP32), 0, m[i] * scale)
                 l[i] = l[i] + T.exp2((sink[T.min(i, H - 1)] - safe[i]) * LOG2E)
-            for i, j in T.Parallel(HP, c):
+            for d, i in T.Parallel(c, HP):
                 if i < H:
-                    o[by, bx, i, j] = T.Cast(BF16, acc[i, j] / l[i])
+                    o[by, bx, i, d] = T.Cast(BF16, acc[d, i] / l[i])
             for i in T.Parallel(HP):
                 if i < H:
                     lse[by, bx, i] = safe[i] + T.log2(l[i]) * LN2
@@ -729,54 +752,74 @@ def sparse_keys_backward_kernel(H: int, c: int, scale: float, rows_per_step: int
                lse: T.Tensor((r,), FP32), delta: T.Tensor((r,), FP32), starts: T.Tensor((s1,), INT32),
                choosers: T.Tensor((m,), INT32), dkv: T.Tensor((b, n, 2 * c), BF16)):
         with T.Kernel(n, b, threads=threads) as (bx, by):
-            kv_s = T.alloc_shared((16, c), BF16)  # the row's key, then its value, then 0: a matrix tile's columns
-            q_s = T.alloc_shared((EH, c), BF16)
-            do_s = T.alloc_shared((EH, c), BF16)
-            rows = T.alloc_shared((EH,), INT32)  # (query, head) rows, -1 for none
-            w_s = T.alloc_shared((EH,), FP32)
-            ds_s = T.alloc_shared((EH,), FP32)
-            lse_s = T.alloc_shared((EH,), FP32)
-            delta_s = T.alloc_shared((EH,), FP32)
-            z = T.alloc_fragment((EH, 16), FP32)
-            dp = T.alloc_fragment((EH, 16), FP32)
-            z_s = T.alloc_shared((EH, 16), FP32)
-            dp_s = T.alloc_shared((EH, 16), FP32)
-            dk = T.alloc_fragment((c,), FP32)
-            dv = T.alloc_fragment((c,), FP32)
+            k_s = T.alloc_shared((c,), FP32)
+            v_s = T.alloc_shared((c,), FP32)
+            rows = T.alloc_fragment((EH,), INT32)  # (query, head) rows, -1 for none
+            q_f = T.alloc_fragment((EH, c), BF16)
+            do_f = T.alloc_fragment((EH, c), BF16)
+            q_n = T.alloc_fragment((EH, c), BF16)  # the next step's, loaded while this one computes
+            do_n = T.alloc_fragment((EH, c), BF16)
+            lse_f = T.alloc_fragment((EH,), FP32)
+            delta_f = T.alloc_fragment((EH,), FP32)
+            lse_n = T.alloc_fragment((EH,), FP32)
+            delta_n = T.alloc_fragment((EH,), FP32)
+            prod = T.alloc_fragment((EH, c), FP32)
+            z = T.alloc_fragment((EH,), FP32)
+            dp = T.alloc_fragment((EH,), FP32)
+            dk = T.alloc_fragment((EH, c), FP32)  # each (query, head) row's own sum, reduced over rows at the end
+            dv = T.alloc_fragment((EH, c), FP32)
+            dk_sum = T.alloc_fragment((c,), FP32)
+            dv_sum = T.alloc_fragment((c,), FP32)
             first = starts[by * n + bx]
             count = starts[by * n + bx + 1] - first
 
-            for j, d in T.Parallel(16, c):
-                kv_s[j, d] = T.if_then_else(j < 2, kv[by, bx, T.min(j, 1) * c + d], 0)
+            for d in T.Parallel(c):
+                k_s[d] = T.Cast(FP32, kv[by, bx, d])
+                v_s[d] = T.Cast(FP32, kv[by, bx, c + d])
             T.clear(dk)
             T.clear(dv)
+            for i in T.Parallel(EH):
+                e = i // HQ
+                rows[i] = T.if_then_else((e < count) & (i % HQ < H), choosers[first + T.min(e, count - 1)] * H + i % HQ,
+                                         -1)
+            for i, d in T.Parallel(EH, c):
+                q_n[i, d] = T.if_then_else(rows[i] >= 0, q[T.max(rows[i], 0), d], 0)
+                do_n[i, d] = T.if_then_else(rows[i] >= 0, d_out[T.max(rows[i], 0), d], 0)
+            for i in T.Parallel(EH):
+                lse_n[i] = T.if_then_else(rows[i] >= 0, lse[T.max(rows[i], 0)] * LOG2E, T.infinity(FP32))
+                delta_n[i] = T.if_then_else(rows[i] >= 0, delta[T.max(rows[i], 0)], 0)
             for step in T.serial(T.ceildiv(count, E)):
+                T.copy(q_n, q_f)
+                T.copy(do_n, do_f)
+                T.copy(lse_n, lse_f)
+                T.copy(delta_n, delta_f)
                 for i in T.Parallel(EH):
-                    e = step * E + i // HQ
+                    e = (step + 1) * E + i // HQ
                     rows[i] = T.if_then_else((e < count) & (i % HQ < H),
                                              choosers[first + T.min(e, count - 1)] * H + i % HQ, -1)
                 for i, d in T.Parallel(EH, c):
-                    q_s[i, d] = T.if_then_else(rows[i] >= 0, q[T.max(rows[i], 0), d], 0)
-                    do_s[i, d] = T.if_then_else(rows[i] >= 0, d_out[T.max(rows[i], 0), d], 0)
+                    q_n[i, d] = T.if_then_else(rows[i] >= 0, q[T.max(rows[i], 0), d], 0)
+                    do_n[i, d] = T.if_then_else(rows[i] >= 0, d_out[T.max(rows[i], 0), d], 0)
                 for i in T.Parallel(EH):
-                    lse_s[i] = T.if_then_else(rows[i] >= 0, lse[T.max(rows[i], 0)] * LOG2E, 0)
-                    delta_s[i] = T.if_then_else(rows[i] >= 0, delta[T.max(rows[i], 0)], 0)
-                T.clear(z)
-                T.gemm(q_s, kv_s, z, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)  # column 0: q . k
-                T.clear(dp)
-                T.gemm(do_s, kv_s, dp, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)  # column 1: d_out . v
-                T.copy(z, z_s)
-                T.copy(dp, dp_s)
-                for i in T.Parallel(EH):
-                    w_s[i] = T.if_then_else(rows[i] >= 0, T.exp2(z_s[i, 0] * scale2 - lse_s[i]), 0)
-                    ds_s[i] = w_s[i] * (dp_s[i, 1] - delta_s[i])
-                for d in T.Parallel(c):  # each thread its columns, over the rows: no reduction across threads
-                    for i in T.serial(EH):
-                        dk[d] += ds_s[i] * T.Cast(FP32, q_s[i, d])
-                        dv[d] += w_s[i] * T.Cast(FP32, do_s[i, d])
+                    lse_n[i] = T.if_then_else(rows[i] >= 0, lse[T.max(rows[i], 0)] * LOG2E, T.infinity(FP32))
+                    delta_n[i] = T.if_then_else(rows[i] >= 0, delta[T.max(rows[i], 0)], 0)
+                for i, d in T.Parallel(EH, c):
+                    prod[i, d] = T.Cast(FP32, q_f[i, d]) * k_s[d]
+                T.reduce_sum(prod, z, dim=1)  # q . k
+                for i, d in T.Parallel(EH, c):
+                    prod[i, d] = T.Cast(FP32, do_f[i, d]) * v_s[d]
+                T.reduce_sum(prod, dp, dim=1)  # d_out . v
+                for i in T.Parallel(EH):  # a missing row has lse = inf: weight 0
+                    z[i] = T.exp2(z[i] * scale2 - lse_f[i])
+                    dp[i] = z[i] * (dp[i] - delta_f[i])
+                for i, d in T.Parallel(EH, c):
+                    dk[i, d] += dp[i] * T.Cast(FP32, q_f[i, d])
+                    dv[i, d] += z[i] * T.Cast(FP32, do_f[i, d])
+            T.reduce_sum(dk, dk_sum, dim=0)
+            T.reduce_sum(dv, dv_sum, dim=0)
             for d in T.Parallel(c):
-                dkv[by, bx, d] = T.Cast(BF16, dk[d] * scale)
-                dkv[by, bx, c + d] = T.Cast(BF16, dv[d])
+                dkv[by, bx, d] = T.Cast(BF16, dk_sum[d] * scale)
+                dkv[by, bx, c + d] = T.Cast(BF16, dv_sum[d])
 
     return kernel
 
@@ -880,8 +923,8 @@ class _Sparse(torch.autograd.Function):
         idx = idx.contiguous() if idx.shape[-1] else idx.new_full((B, T_, 1), -1)  # no rows chosen yet
         o = torch.empty_like(qb)
         lse = q.new_empty(B, T_, H, dtype=torch.float32)
-        sparse_forward_kernel(H, c, scale, window, chosen_tiles.sparse_block, chosen_tiles.stages,
-                              chosen_tiles.threads)(qb, table, sink.float().contiguous(), idx, pos, o, lse)
+        sparse_forward_kernel(H, c, scale, window, chosen_tiles.sparse_forward_block)(
+            qb, table, sink.float().contiguous(), idx, pos, o, lse)
         ctx.save_for_backward(qb, table, sink, idx, pos, o, lse)
         ctx.scale, ctx.window, ctx.dtypes = scale, window, (q.dtype, k.dtype, v.dtype)
         return o.to(q.dtype)

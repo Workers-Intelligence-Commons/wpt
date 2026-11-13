@@ -179,31 +179,29 @@ def _counts(ids, counts):
     return torch.as_tensor(counts, dtype=torch.long, device=ids.device)
 
 
-_fla = None
-_fla_error = None  # why _fla is False
+_fused = None
+_fused_error = None  # why _fused is False
 
 
-def _fla_fused_loss():
-    """The fused head and loss through flash-linear-attention's kernels
-    (head_loss.py), or False when flash-linear-attention does not import
-    here; imported once."""
-    global _fla, _fla_error
-    if _fla is None:
+def _fused_loss():
+    """The fused head and loss (head_loss.py, a Triton kernel), or False
+    when it does not import here; imported once."""
+    global _fused, _fused_error
+    if _fused is None:
         try:
-            import fla.modules.fused_linear_cross_entropy  # noqa: F401 (imported again here: head_loss may be loaded)
             from .head_loss import head_loss
-            _fla = head_loss
+            _fused = head_loss
         except Exception as error:  # an ImportError, or an error of Triton's own while it starts
-            _fla, _fla_error = False, error
-    return _fla
+            _fused, _fused_error = False, error
+    return _fused
 
 
-def fla_failure():
-    """None when flash-linear-attention's fused head and loss imports here;
-    else why it does not."""
-    if _fla_fused_loss():
+def fused_loss_failure():
+    """None when the fused head and loss imports here; else why it does
+    not."""
+    if _fused_loss():
         return None
-    return f"{type(_fla_error).__name__}: {_fla_error}"
+    return f"{type(_fused_error).__name__}: {_fused_error}"
 
 
 def _chunk_loss(head, hidden, targets):
@@ -364,8 +362,8 @@ class WPT(nn.Module):
     def _summed(self, hidden, targets):
         """The cross-entropy of the head's scores for hidden (B, t, d_model)
         against targets (B, t), summed, CHUNK tokens at a time. With
-        gradients on a GPU where flash-linear-attention imports, its fused
-        head and loss does it, one call per chunk: the gradients come out of
+        gradients on a GPU where Triton imports, the fused head and loss
+        (head_loss.py) does it, one call per chunk: the gradients come out of
         its forward pass, and the head weight is cast to the autocast dtype
         (the hidden states' without autocast) for each call, so that each
         chunk's gradient is one product in that dtype and the chunks' add up
@@ -377,8 +375,8 @@ class WPT(nn.Module):
         hidden, targets = hidden.reshape(-1, hidden.shape[-1]), targets.reshape(-1)
         grads = torch.is_grad_enabled()
         total = 0
-        if grads and hidden.is_cuda and (fused := _fla_fused_loss()):
-            # flash-linear-attention's kernel, which computes the gradients inside its forward pass: only with
+        if grads and hidden.is_cuda and (fused := _fused_loss()):
+            # the fused head and loss, which computes the gradients inside its forward pass: only with
             # gradients, and outside autocast so that its matrix products keep the dtypes given here. A chunk's
             # weight gradient is one product in the autocast dtype, as autocast gives any weight's; one call over
             # every chunk would add them up through FP32 products, several times slower
