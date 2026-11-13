@@ -3,6 +3,9 @@ import json
 import tracemalloc
 from pathlib import Path
 
+import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from deltalake.exceptions import DeltaError
 from deltalake.table import TableOptimizer
@@ -337,6 +340,45 @@ def test_sql_reads_and_refuses_anything_else(make_depot, me):
     for query in ("DELETE FROM texts", "SELECT 1; SELECT 2", "COPY (SELECT 1) TO 'out.csv'"):
         with pytest.raises(BadQuery):
             depot.sql(query)
+
+
+def test_the_depot_s_queries_reach_nothing_outside_its_folder_and_cannot_change_what_they_may_reach(
+        make_depot, me, tmp_path):
+    # a person's query runs on the depot's DuckDB connection (wpt depot sql, and the web routes that take a query
+    # or a condition): it must read no other file of the machine, reach no address, write nothing and lift no limit
+    depot = make_depot()
+    depot.add([plain("one")], me)
+    secret = "the server's secret"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text(secret, encoding="utf-8")
+    (outside / "secret.csv").write_text(f"value\n{secret}\n", encoding="utf-8")
+    (outside / "secret.json").write_text(json.dumps({"value": secret}), encoding="utf-8")
+    pq.write_table(pa.table({"value": [secret]}), outside / "secret.parquet")
+    escaped = f"{depot.address}/../outside/secret.txt"  # a path that starts in the depot's folder and leaves it
+
+    for read in (f"read_text('{outside / 'secret.txt'}')", f"read_csv('{outside / 'secret.csv'}')",
+                 f"read_json('{outside / 'secret.json'}')", f"read_parquet('{outside / 'secret.parquet'}')",
+                 f"glob('{outside}/*')", f"read_text('{escaped}')", "read_text('https://example.org/')"):
+        with pytest.raises(BadQuery, match="Permission Error"):
+            depot.sql(f"SELECT * FROM {read}")
+        with pytest.raises(BadQuery, match="Permission Error"):  # a condition is a query as well
+            depot.search(f"id IN (SELECT * FROM {read})")
+
+    con = depot.tables.bare()  # the statements no query may be: refused by DuckDB itself, not only by depot.sql
+    try:
+        for statement in (f"COPY (SELECT 1) TO '{outside / 'written.csv'}'",
+                          f"ATTACH '{outside / 'other.duckdb'}' AS other", "INSTALL httpfs", "LOAD httpfs",
+                          "SET enable_external_access = true", f"SET allowed_directories = ['{outside}/']",
+                          "RESET lock_configuration", "SET autoload_known_extensions = true",
+                          "PRAGMA enable_profiling"):
+            with pytest.raises(duckdb.Error, match="Permission Error|configuration has been locked"):
+                con.execute(statement)
+    finally:
+        con.close()
+    assert sorted(path.name for path in outside.iterdir()) == ["secret.csv", "secret.json", "secret.parquet",
+                                                                "secret.txt"]
+    assert depot.sql("SELECT count(*) AS n FROM texts")["n"].to_pylist() == [1]  # the depot's own reads still work
 
 
 def test_a_dataset_exported_as_a_remote_is_imported_as_the_same_dataset(make_depot, me):

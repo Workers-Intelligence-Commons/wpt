@@ -1,7 +1,10 @@
 """The routes of `wpt depot web`: the operations of the `wpt depot`
 subcommands, each a controller over wpt_depot that reads its request, calls
 the depot and turns its result, or its failure, into an answer. The depot
-applies every rule, so the pages and the subcommands cannot disagree."""
+applies every rule, so the pages and the subcommands cannot disagree. A
+pull, a corpus build, a remote's import and a change of the depot's
+maintainer or takedown contact have no route: they are commands only
+(docs/architecture.md, "Two interfaces")."""
 
 import json
 from functools import wraps
@@ -11,7 +14,6 @@ from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, CREDITS, NO_ALLOWED_LICENSE, ORDERS
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter, condition
-from wpt_depot.remote import from_remote
 from wpt_depot.scoring import lines as score_lines
 from wpt_depot.schema import ADMITTED, REFUSED
 from wpt_recipes import InvalidRecipe, Recipes
@@ -20,13 +22,14 @@ from wpt_store import StoreError
 from wpt_utils.lines import say
 
 from .. import shared
-from ..shared import CONFIRMATION, REQUIREMENTS, NoVocabulary, build_corpus, jsonable
+from ..shared import CONFIRMATION, REQUIREMENTS, jsonable
+from . import readers as limits
+from .readers import Readers
 from .server import Route
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
-STATUSES = {errors.NotFound: 404, RecipeNotFound: 404,
-            errors.BadQuery: 400, errors.BadRemote: 400, errors.JournalUnfinished: 500, StoreError: 503,
-            NoVocabulary: 503, errors.DepotError: 422, InvalidRecipe: 422}
+STATUSES = {errors.NotFound: 404, RecipeNotFound: 404, errors.BadQuery: 400, errors.JournalUnfinished: 500,
+            StoreError: 503, errors.DepotError: 422, InvalidRecipe: 422}
 
 TEXT = {"type": "string", "minLength": 1}
 NAMES = {"type": "array", "items": TEXT}
@@ -55,7 +58,9 @@ def refusals(handler):
 
 
 def routes(depot: Depot) -> list[Route]:
-    """Every route over depot."""
+    """Every route over depot; a person's SQL runs in reader processes
+    (wpt.depot.web.readers)."""
+    readers = Readers(depot.address, depot.settings)
 
     def declared(body) -> Declaration:
         found = body["declaration"]
@@ -67,18 +72,8 @@ def routes(depot: Depot) -> list[Route]:
                      "confirmation": CONFIRMATION, "requirements": REQUIREMENTS}
 
     @refusals
-    def edit_about(values, body):
-        depot.edit_about(body.get("maintainer"), body.get("takedown_contact"))
-        return 200, {"about": depot.about()}
-
-    @refusals
-    def pulled(values, body):
-        return 200, {"erasures": shared.pulled(depot, say), "change": depot.change()}
-
-    @refusals
     def sql(values, body):
-        found = depot.sql(body["query"])
-        return 200, {"columns": found.column_names, "rows": jsonable(found.to_pylist())}
+        return 200, jsonable(readers.run("sql", body["query"]))
 
     @refusals
     def kinds(values, body):
@@ -143,15 +138,15 @@ def routes(depot: Depot) -> list[Route]:
     @refusals
     def search(values, body):
         where = filtered(body["filter"])
-        return 200, {"where": where, **jsonable(depot.search(where, body.get("offset", 0), body.get("limit", 50),
-                                                             body.get("order", "id"), body.get("descending", False),
-                                                             body.get("every_id", False)))}
+        return 200, {"where": where, **jsonable(readers.run(
+            "search", where, body.get("offset", 0), body.get("limit", 50), body.get("order", "id"),
+            body.get("descending", False), body.get("every_id", False)))}
 
     @refusals
     def passages(values, body):
-        return 200, jsonable(depot.passages(filtered(body["filter"]), body.get("offset", 0), body.get("limit", 50),
-                                            body.get("characters", PASSAGE_CHARACTERS), body.get("order", "id"),
-                                            body.get("descending", False)))
+        return 200, jsonable(readers.run(
+            "passages", filtered(body["filter"]), body.get("offset", 0), body.get("limit", 50),
+            body.get("characters", PASSAGE_CHARACTERS), body.get("order", "id"), body.get("descending", False)))
 
     @refusals
     def blocked(values, body):
@@ -245,11 +240,23 @@ def routes(depot: Depot) -> list[Route]:
         held = held_libraries()
         return 200, jsonable([with_here(row, held) for row in found])
 
+    def own(libraries) -> list[tuple[str | None, str]]:
+        """The libraries a dataset of the body names, as (depot address,
+        library id). Refused, before any depot is opened, for a library
+        named by another depot's address: the server answers any client, so
+        it opens no address a client gives (`wpt depot dataset` names them)."""
+        others = sorted({one["depot"] for one in libraries
+                         if one.get("depot") is not None and not depot.is_here(one["depot"])})
+        if others:
+            raise errors.Refused(f"a dataset made or changed here reads only this depot's libraries, not those of "
+                                 f"{', '.join(others)}: use wpt depot dataset new or edit")
+        return [(one.get("depot"), one["library"]) for one in libraries]
+
     @refusals
     def new_dataset(values, body):
         shares = body.get("shares")
         return 200, {"id": depot.new_dataset(
-            body["name"], body["tokenizer"], [(one.get("depot"), one["library"]) for one in body["libraries"]],
+            body["name"], body["tokenizer"], own(body["libraries"]),
             None if shares is None else [(one["tag"], one["share"]) for one in shares])}
 
     @refusals
@@ -274,22 +281,13 @@ def routes(depot: Depot) -> list[Route]:
     @refusals
     def edit_dataset(values, body):
         shares = body.get("shares")
-        depot.edit_dataset(values["id"], body["name"],
-                           [(one.get("depot"), one["library"]) for one in body["libraries"]],
+        depot.edit_dataset(values["id"], body["name"], own(body["libraries"]),
                            None if shares is None else [(one["tag"], one["share"]) for one in shares])
         return 200, {"id": values["id"]}
 
     @refusals
     def export(values, body):
         return 200, depot.export_dataset(values["name"])
-
-    @refusals
-    def import_remote(values, body):
-        return 200, {"id": depot.import_dataset(from_remote(body["remote"]))}
-
-    @refusals
-    def build(values, body):
-        return 200, build_corpus(depot, values["name"], say)
 
     @refusals
     def erasures(values, body):
@@ -316,8 +314,9 @@ def routes(depot: Depot) -> list[Route]:
 
     status = {"enum": [ADMITTED, REFUSED]}
     library_ref = {"type": "object", "required": ["library"],
-                   "properties": {"depot": {"type": ["string", "null"], "description": "another depot's address; "
-                                            "absent or null: this depot"}, "library": TEXT}}
+                   "properties": {"depot": {"type": ["string", "null"], "description": "this depot's address, in "
+                                            "any form; absent or null: this depot; another depot's address is "
+                                            "refused (422), only the commands name one"}, "library": TEXT}}
     share = {"type": "object", "required": ["tag", "share"], "properties": {"tag": TEXT, "share": {"type": "number"}}}
     needle = {"type": "object", "required": ["text"],
               "properties": {"text": TEXT, "start": {"type": ["integer", "null"]}, "end": {"type": ["integer", "null"]},
@@ -339,18 +338,14 @@ def routes(depot: Depot) -> list[Route]:
                                   "libraries": {**NAMES, "description": "one of them holds the text"},
                                   "locked": {"type": ["boolean", "null"],
                                              "description": "whether a locked library holds the text"},
-                                  "where": {**nullable, "description": "an SQL condition over the texts table"}}}
+                                  "where": {**nullable, "description": "an SQL condition over the texts table, which "
+                                            "reaches nothing outside the depot's folder (400) and, with the "
+                                            f"rest of the request's reads, stops after {limits.SECONDS} seconds or "
+                                            f"past {limits.MEMORY} bytes of memory (422)"}}}
     return [
         Route("GET", "/api/about", about, "the depot's address, its change number, its current about row, and the "
               "words of the confirmation every decision needs",
               answer={"type": "object", "required": ["address", "change", "about", "confirmation", "requirements"]}),
-        Route("POST", "/api/about", edit_about, "change the depot's maintainer, its takedown contact or both, as a "
-              "new revision; its name never changes, since it begins every id (wpt depot about): the about row",
-              body={"type": "object", "properties": {"maintainer": TEXT, "takedown_contact": TEXT}},
-              answer={"type": "object", "required": ["about"]}),
-        Route("POST", "/api/pull", pulled, "fetch the updates of the depot this one follows, admitted erasures "
-              "included (wpt depot pull): the erasures carried out here by it, and the depot's change number",
-              body=OBJECT, answer={"type": "object", "required": ["erasures", "change"]}),
         Route("POST", "/api/sql", sql, "the rows of one read query over the depot's tables (wpt depot sql): texts, "
               "libraries, datasets, about and erasures are the current state (texts with their text, kind and "
               "content, and libraries, the libraries holding them now), <name>_revisions every revision row of "
@@ -360,7 +355,10 @@ def routes(depot: Depot) -> list[Route]:
               "memberships each library's texts with the change numbers they joined and left at, pins the "
               "revision each locked library holds of each of its texts, and pulls, for a depot that follows "
               "another, each pull's change number with the upstream's change number it brought; licenses, notices, kinds, decisions and "
-              "journal as they are; a time is ISO 8601 text and a byte string hexadecimal text",
+              "journal as they are; a time is ISO 8601 text and a byte string hexadecimal text; the query reaches "
+              "nothing outside the depot's folder (a read of another file or address is refused with 400), and "
+              f"stops after {limits.SECONDS} seconds or past {limits.MEMORY} bytes of memory (422); an answer "
+              f"of more than {limits.ANSWER_ROWS} rows or {limits.ANSWER_BYTES} bytes of JSON is refused (422)",
               body={"type": "object", "required": ["query"], "properties": {"query": TEXT}},
               answer={"type": "object", "required": ["columns", "rows"]}),
         Route("GET", "/api/kinds", kinds, "the kinds of items: each one's id, meaning and JSON Schema", answer=ROWS),
@@ -561,11 +559,6 @@ def routes(depot: Depot) -> list[Route]:
                                    "shares": {"type": ["array", "null"], "items": share}}}, answer=ID),
         Route("GET", "/api/datasets/{name}/remote", export, "the dataset as a remote (wpt depot dataset export)",
               answer=OBJECT),
-        Route("POST", "/api/remotes", import_remote, "a dataset made from a remote (wpt depot dataset import)",
-              body={"type": "object", "required": ["remote"], "properties": {"remote": {}}}, answer=ID),
-        Route("POST", "/api/datasets/{name}/corpus", build, "build the dataset's corpus into the store, with the "
-              "vocabulary its tokenizer recipe locked (wpt depot build): the corpus's record",
-              body=OBJECT, answer={"type": "object", "required": ["id"]}),
         Route("GET", "/api/erasures", erasures, "every erasure request, with its status and whether it belongs to "
               "the upstream this depot follows or names a text of it, which the upstream alone decides "
               "(wpt depot erasures)",

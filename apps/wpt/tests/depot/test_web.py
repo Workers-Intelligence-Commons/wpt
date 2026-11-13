@@ -1,14 +1,19 @@
 import http.client
 import json
+import sys
 import threading
+import time
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from wpt_depot import About, Depot, clone
+from wpt_depot import About, Depot, clone, pull
 from wpt_depot.schema import FORMAT
 from wpt_utils.lines import bare
 from wpt.depot import main
 from wpt.depot.shared import CONFIRMATION, REQUIREMENTS
+from wpt.depot.web import readers
 from wpt.depot.web.routes import routes
 from wpt.depot.web.server import Route, make_server
 
@@ -33,7 +38,7 @@ def serve(tmp_path):
         port = server.server_address[1]
 
         def request(method, target, body=None):
-            connection = http.client.HTTPConnection("127.0.0.1", port)
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=300)  # far above any answer's time
             data = None if body is None else json.dumps(body).encode()
             connection.request(method, target, data, {} if body is None else {"Content-Type": "application/json"})
             response = connection.getresponse()
@@ -95,8 +100,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
                                              "shares": [{"tag": "en", "share": 1}]}) == (200, {"id": "test-depot-1"})
     status, remote = request("GET", "/api/datasets/first/remote")
     assert status == 200 and remote["libraries"] == [{"depot": depot.address, "library": "test-depot-1", "change": change}]
-    assert request("POST", "/api/remotes", {"remote": {**remote, "name": "again"}}) == (200, {"id": "test-depot-2"})
-    assert [one["name"] for one in request("GET", "/api/datasets")[1]] == ["first", "again"]
+    assert [one["name"] for one in request("GET", "/api/datasets")[1]] == ["first"]
 
     assert request("POST", "/api/erasures", {"reason": "a name", "needles": [{"text": "test-depot-1", "start": 4, "end": 7}],
                                              "declaration": ME}) == (200, {"id": "test-depot-1"})
@@ -159,6 +163,114 @@ def test_each_refusal_answers_its_status_and_writes_nothing(web):
     assert request("POST", "/api/sql", {"query": "DELETE FROM texts"})[0] == 400
     assert request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-1"]})[0] == 400  # no declaration
     assert request("POST", "/api/decisions", {"status": "admitted", "where": "true", "declaration": ME})[0] == 400  # no ids
+
+
+def test_a_pull_a_corpus_build_a_remote_import_and_a_change_of_the_depot_s_facts_are_no_routes(web):
+    # the server is open to anyone: these reach past the depot (another address, the store) or change the depot's
+    # own facts, so only the commands do them
+    request, depot = web
+    request("POST", "/api/libraries", {"name": "first"})
+    request("POST", "/api/datasets", {"name": "first", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}]})
+    status, remote = request("GET", "/api/datasets/first/remote")
+    change, about = depot.change(), depot.about()
+
+    for target, body in (("/api/pull", {}), ("/api/datasets/first/corpus", {}),
+                         ("/api/remotes", {"remote": {**remote, "name": "again"}}),
+                         ("/api/about", {"maintainer": "Grace Hopper"})):
+        assert request("POST", target, body) == (404, {"problems": [f"no route POST {target}"]})
+
+    assert (depot.change(), depot.about()) == (change, about)
+    paths = request("GET", "/api/openapi.json")[1]["paths"]
+    assert "/api/pull" not in paths and "/api/remotes" not in paths and "/api/datasets/{name}/corpus" not in paths
+    assert list(paths["/api/about"]) == ["get"]
+    assert request("GET", "/api/about")[0] == 200
+
+
+@pytest.mark.parametrize("read", ["read_text('{outside}/secret.txt')", "read_csv('{outside}/secret.csv')",
+                                  "read_json('{outside}/secret.json')", "read_parquet('{outside}/secret.parquet')",
+                                  "glob('{outside}/*')", "read_text('https://example.org/')"])
+def test_a_query_or_a_filter_s_condition_reads_nothing_outside_the_depot(web, tmp_path, read):
+    request, depot = web
+    request("POST", "/api/texts", {"text": "fox", "licenses": ["CC0-1.0"], "declaration": ME})
+    secret = "the server's secret"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text(secret, encoding="utf-8")
+    (outside / "secret.csv").write_text(f"value\n{secret}\n", encoding="utf-8")
+    (outside / "secret.json").write_text(json.dumps({"value": secret}), encoding="utf-8")
+    pq.write_table(pa.table({"value": [secret]}), outside / "secret.parquet")
+    read = read.format(outside=outside)
+
+    for target, body in (("/api/sql", {"query": f"SELECT * FROM {read}"}),
+                         ("/api/texts/search", {"filter": {"where": f"id IN (SELECT * FROM {read})"}}),
+                         ("/api/texts/passages", {"filter": {"where": f"EXISTS (SELECT * FROM {read})"}})):
+        status, answer = request("POST", target, body)
+        assert status == 400 and "Permission Error" in answer["problems"][0] and secret not in json.dumps(answer)
+
+
+def test_a_query_can_neither_write_attach_load_nor_change_a_setting(web, tmp_path):
+    request, depot = web
+    change = depot.change()
+    for statement in (f"COPY (SELECT 1) TO '{tmp_path / 'written.csv'}'", f"COPY (SELECT 1) TO '{depot.address}/x.csv'",
+                      f"ATTACH '{tmp_path / 'other.duckdb'}' AS other", "INSTALL httpfs", "LOAD httpfs",
+                      "SET enable_external_access = true", "RESET lock_configuration", "PRAGMA enable_profiling"):
+        assert request("POST", "/api/sql", {"query": statement}) == (400, {"problems": [
+            "BadQuery: a query is one SELECT statement"]})
+    assert not (tmp_path / "written.csv").exists() and not (tmp_path / "other.duckdb").exists()
+    assert not (tmp_path / "depot" / "x.csv").exists() and depot.change() == change
+
+
+def test_a_query_or_a_condition_past_the_time_limit_is_stopped_and_the_server_answers_the_next(web, monkeypatch):
+    # one long operation inside DuckDB checks no interruption: its reader process is killed at the limit
+    request, depot = web
+    request("POST", "/api/texts", {"text": "fox", "licenses": ["CC0-1.0"], "declaration": ME})
+    monkeypatch.setattr(readers, "SECONDS", 3)
+    slow = "SELECT length(regexp_replace(repeat('ab', 50000000), 'a', 'xyz', 'g')) AS n"  # one operation of about 7 s
+
+    for target, body in (("/api/sql", {"query": slow}),
+                         ("/api/texts/search", {"filter": {"where": f"({slow}) > 0"}}),
+                         ("/api/texts/passages", {"filter": {"where": f"({slow}) > 0"}})):
+        started = time.monotonic()
+        status, answer = request("POST", target, body)
+        assert time.monotonic() - started < 3 + 2  # the limit, and the time to kill the process
+        assert (status, answer) == (422, {"problems": [
+            "TimeLimitReached: the reads ran past their limit of 3 seconds and were stopped"]})
+    assert request("POST", "/api/sql", {"query": "SELECT count(*) AS n FROM texts"}) == (
+        200, {"columns": ["n"], "rows": [{"n": 1}]})
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the memory of a reader process is capped on Linux")
+def test_a_query_past_the_memory_cap_is_stopped_and_the_server_answers_the_next(web):
+    request, depot = web
+    # one operation that DuckDB cannot write to its temporary folder: gigabytes in one list
+    status, answer = request("POST", "/api/sql", {"query": "SELECT length(list_sort(range(200000000))::VARCHAR) AS n"})
+    assert status in (400, 422) and "emory" in answer["problems"][0]  # DuckDB's own refusal, or the process lost
+    assert request("POST", "/api/sql", {"query": "SELECT 1 AS n"}) == (200, {"columns": ["n"], "rows": [{"n": 1}]})
+
+
+def test_a_query_s_answer_past_its_bounds_is_refused(web, monkeypatch):
+    request, depot = web
+    monkeypatch.setattr(readers, "ANSWER_ROWS", 1000)
+    monkeypatch.setattr(readers, "ANSWER_BYTES", 50_000)
+    assert request("POST", "/api/sql", {"query": "SELECT range AS n FROM range(1000)"})[0] == 200
+    status, answer = request("POST", "/api/sql", {"query": "SELECT range AS n FROM range(1001)"})
+    assert (status, answer["problems"][0].split(":")[0]) == (422, "AnswerTooLarge")
+    status, answer = request("POST", "/api/sql", {"query": "SELECT repeat('x', 100000) AS n"})
+    assert (status, answer["problems"][0].split(":")[0]) == (422, "AnswerTooLarge")
+
+
+def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_libraries(web, tmp_path):
+    # the server answers any client: it opens no depot at an address a client gives
+    request, depot = web
+    request("POST", "/api/libraries", {"name": "first"})
+    other = {"depot": str(tmp_path / "elsewhere"), "library": "x-1"}
+    status, answer = request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": [other]})
+    assert status == 422 and str(tmp_path / "elsewhere") in answer["problems"][0]
+    mine = {"depot": (tmp_path / "depot").as_uri(), "library": "test-depot-1"}  # this depot, in another form
+    assert request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": [mine]}) == (
+        200, {"id": "test-depot-1"})
+    assert request("POST", "/api/datasets/test-depot-1", {"name": "mix", "libraries": [mine, other]})[0] == 422
+    assert depot.dataset("mix")["revision"] == 1
 
 
 def test_the_web_command_serves_the_depot_its_setting_names(tmp_path, monkeypatch):
@@ -446,8 +558,6 @@ def test_each_thing_a_page_lists_has_a_view_and_the_details_change_through_the_r
         {"library": "test-depot-1"}, {"library": "test-depot-2"}], "shares": None}) == (200, {"id": "test-depot-1"})
     assert [one["name"] for one in request("GET", "/api/datasets/test-depot-1")[1]["libraries"]] == ["first model",
                                                                                                     "second"]
-    assert request("POST", "/api/about", {"maintainer": "Grace Hopper"})[1]["about"]["maintainer"] == "Grace Hopper"
-    assert request("POST", "/api/about", {})[0] == 422
 
 
 def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it(web, serve, tmp_path):
@@ -485,9 +595,9 @@ def test_a_clone_s_upstream_library_lists_the_datasets_naming_it_by_either_depot
     follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert mine("POST", "/api/libraries", {"name": "mine"}) == (200, {"id": "test-clone-1"})
-    for name, depot in (("by-clone", None), ("by-upstream-url", (tmp_path / "depot").as_uri())):
-        assert mine("POST", "/api/datasets", {"name": name, "tokenizer": "t",
-                                              "libraries": [{"depot": depot, "library": "test-depot-1"}]})[0] == 200
+    assert mine("POST", "/api/datasets", {"name": "by-clone", "tokenizer": "t",
+                                          "libraries": [{"library": "test-depot-1"}]})[0] == 200
+    follower.new_dataset("by-upstream-url", "t", [((tmp_path / "depot").as_uri(), "test-depot-1")], None)  # a command
 
     status, found = mine("GET", "/api/datasets")
 
@@ -520,8 +630,7 @@ def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_
     follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})  # after the clone
-    assert mine("POST", "/api/datasets", {"name": "set", "tokenizer": "t", "libraries": [
-        {"depot": (tmp_path / "depot").as_uri(), "library": "test-depot-1"}]}) == (200, {"id": "test-clone-1"})
+    assert follower.new_dataset("set", "t", [((tmp_path / "depot").as_uri(), "test-depot-1")], None) == "test-clone-1"
 
     def shown():
         listed = mine("GET", "/api/datasets")[1][0]["here"]
@@ -529,21 +638,8 @@ def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_
         return listed, page["dataset"]["here"], [one["local"] for one in page["libraries"]]
 
     assert shown() == ([], [], [False])
-    assert mine("POST", "/api/pull", {})[0] == 200
+    pull(follower)  # wpt depot pull: a command only
     assert shown() == (["test-depot-1"], ["test-depot-1"], [True])
-
-
-def test_a_pull_from_an_upstream_of_another_format_is_refused_with_its_status_and_problem(web, serve, tmp_path):
-    _, upstream = web
-    follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
-    mine = serve(follower)
-    upstream.tables.rewrite("about", upstream.tables.read("about").drop_columns(["format"]))  # format 0's layout
-    change = follower.change()
-
-    assert mine("POST", "/api/pull", {}) == (422, {"problems": [
-        f"OtherFormat: {upstream.address} is a depot of format 0, older than the format {FORMAT} this wpt reads: "
-        f"run `wpt depot upgrade` to bring it up to format {FORMAT}"]})
-    assert follower.change() == change
 
 
 def test_the_web_command_refuses_a_depot_of_another_format_before_serving(tmp_path, monkeypatch, capsys):

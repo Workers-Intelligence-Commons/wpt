@@ -3,8 +3,13 @@ and their OpenAPI description at /api/openapi.json.
 
 The server listens on 127.0.0.1 and answers any client, like the commands:
 no login and no header to send; it checks neither the Host header nor a
-request's Content-Type (what that leaves open: docs/architecture.md, "Two
-interfaces"). Each route declares the JSON Schema of the body it takes and
+request's Content-Type. A query or a filter's condition reads nothing
+outside the depot's folder and runs in a process of its own, killed at a
+time limit and capped in memory (readers.py), and a pull, a corpus build,
+a remote's import and a change of the depot's maintainer or takedown
+contact are commands only (what that leaves open:
+docs/architecture.md, "Two interfaces"). Each route declares the JSON
+Schema of the body it takes and
 of its answer: the server refuses a body that does not match with 400, and
 the OpenAPI description is made from the same declarations, so it cannot
 drift from the routes.
@@ -25,12 +30,13 @@ from wpt_utils.lines import ERROR, say
 
 PROBLEMS = {"type": "object", "required": ["problems"],
             "properties": {"problems": {"type": "array", "items": {"type": "string"}}}}
-REFUSALS = {"400": "the body does not match the route's schema, or a query or remote is not one",
+REFUSALS = {"400": "the body does not match the route's schema, or a query is not one read of the depot",
             "404": "no such text, library, dataset, erasure, recipe or route",
-            "422": "the depot's rules refuse it; nothing was written",
+            "422": "the depot's rules refuse it, or a person's SQL ran past its time or memory, or its answer past its "
+                   "size; nothing was written",
             "500": "a change is in the depot's journal and not applied to every table yet (the next write or "
                    "opening the depot again finishes it), or a failure the routes do not name, whose trace the server prints",
-            "503": "what the route needs is missing on this machine (the store, a locked vocabulary)"}
+            "503": "what the route needs is missing on this machine (the store)"}
 
 
 @dataclass(frozen=True)

@@ -64,7 +64,8 @@ class BadContent(Refused):
 
 
 class BadQuery(DepotError):
-    """A query that is not one read (one SELECT statement), or that DuckDB refuses."""
+    """A query that is not one read (one SELECT statement), or that DuckDB
+    refuses, a read outside the depot's folder included (wpt_depot.tables)."""
 
 
 class BadRemote(DepotError):

@@ -124,7 +124,10 @@ and items, the decisions on them, its libraries, datasets and erasures.
     wpt depot about [--maintainer M] [--takedown-contact C]
                                           change who maintains the depot, or where to ask for a takedown;
                                           its name never changes, since it begins every id
-    wpt depot web [--port N]              the same operations as pages, on http://127.0.0.1:N/
+    wpt depot web [--port N]              the same operations as pages, on http://127.0.0.1:N/, but
+                                          new, clone, pull, upgrade, backup, restore, about's change,
+                                          dataset import, a dataset naming another depot's library,
+                                          build and tokenizer
 
 DECLARATION is --name LEGAL_NAME --email EMAIL --accept: who decides, and
 the confirmation every decision needs (an add, an erasure request and a

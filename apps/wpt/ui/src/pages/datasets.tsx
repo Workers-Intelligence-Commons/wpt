@@ -1,8 +1,8 @@
-// Datasets: what to train on (wpt depot dataset new), written out as a remote
-// and read back in (export, import), and built into a corpus in the store
-// (wpt depot build). A new dataset's tokenizer recipe is chosen among the
-// repository's, its libraries of this depot ticked, those of another depot
-// named by address. #/datasets/ID is one dataset's view: its libraries with
+// Datasets: what to train on (wpt depot dataset new), and written out as a
+// remote (export); a remote is read back in (wpt depot dataset import) and a
+// corpus built into the store (wpt depot build) by the commands. A new dataset's tokenizer recipe is chosen among the
+// repository's, its libraries of this depot ticked; a dataset that reads a
+// library of another depot is made and changed by the commands only. #/datasets/ID is one dataset's view: its libraries with
 // the change number of their depot each is read at, its shares, the corpora
 // built from it when the store can be read (each with the revision of the
 // dataset it was built from), its remote, and the edit of its name,
@@ -26,9 +26,8 @@ function Datasets() {
   const [rows, setRows] = useState<Answer<Dataset[]> | null>(null);
   const [answer, setAnswer] = useState<Answer<any> | null>(null);
   const [said, setSaid] = useState<(d: any) => string>(() => () => "");
-  const [building, setBuilding] = useState<string | null>(null);
   const [making, setMaking] = useState(false);
-  const [remote, setRemote] = useState<{ name: string | null; text: string } | null>(null); // the remote dialog: exported (name) or to import (null)
+  const [remote, setRemote] = useState<{ name: string; text: string } | null>(null); // the dialog of an exported remote
   const load = useCallback(() => { get<Dataset[]>("/api/datasets").then(setRows); }, []);
   useEffect(load, [load]);
   const show = (a: Answer<any>, words: (d: any) => string) => { setSaid(() => words); setAnswer(a); load(); };
@@ -37,22 +36,12 @@ function Datasets() {
     const a = await get<unknown>(`/api/datasets/${part(dataset)}/remote`);
     if (a.ok) { setAnswer(null); setRemote({ name: dataset, text: JSON.stringify(a.data, null, 2) }); } else show(a, () => "");
   };
-  const built = async (dataset: string) => {
-    setBuilding(dataset);
-    setAnswer(null);
-    const a = await post(`/api/datasets/${part(dataset)}/corpus`, {});
-    setBuilding(null);
-    show(a, (d) => `Corpus ${d.id} of ${dataset}: ${d.total_tokens} tokens of plain text.`);
-  };
 
   return (
     <>
       <PageHead title="Datasets"
-        chain={<>A dataset reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training. A remote carries it to another machine.</>}
-        actions={<>
-          <Button variant="primary" onClick={() => setMaking(true)}>New dataset</Button>
-          <Button variant="quiet" onClick={() => setRemote({ name: null, text: "" })}>Import a remote</Button>
-        </>} />
+        chain={<>A dataset reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training with <span className="ledger">wpt depot build</span>. A remote carries it to another machine, where <span className="ledger">wpt depot dataset import</span> reads it.</>}
+        actions={<Button variant="primary" onClick={() => setMaking(true)}>New dataset</Button>} />
       <Outcome answer={answer} done={said} />
       {rows && !rows.ok && <Problems problems={rows.problems} />}
       {rows?.ok && (rows.data.length === 0 ? <p>No dataset yet.</p> : (
@@ -78,10 +67,7 @@ function Datasets() {
                   </td>
                   <td><Cut text={d.shares?.length ? d.shares.map((s) => `${s.tag} ${Math.round(s.share * 1000) / 10} %`).join(", ") : "every text"} /></td>
                   <td className="nowrap">
-                    <span className="row tight">
-                      <Button variant="quiet" onClick={() => exported(d.name)}>Export</Button>
-                      <Button variant="quiet" disabled={building !== null} onClick={() => built(d.name)}>{building === d.name ? "Building" : "Build its corpus"}</Button>
-                    </span>
+                    <Button variant="quiet" onClick={() => exported(d.name)}>Export</Button>
                   </td>
                 </tr>
               ))}
@@ -93,8 +79,8 @@ function Datasets() {
       <Dialog open={making} onClose={() => setMaking(false)} title="New dataset">
         {making && <DatasetForm onDone={(a, name) => { show(a, (d) => `Dataset ${d.id}: ${name}.`); if (a.ok) setMaking(false); }} />}
       </Dialog>
-      <Dialog open={remote !== null} onClose={() => setRemote(null)} title={remote?.name ? `The remote of ${remote.name}` : "Import a remote"}>
-        {remote && <Remote name={remote.name} text={remote.text} onImported={(a) => { show(a, (d) => `Dataset ${d.id}, from the remote.`); if (a.ok) setRemote(null); }} />}
+      <Dialog open={remote !== null} onClose={() => setRemote(null)} title={`The remote of ${remote?.name ?? ""}`}>
+        {remote && <Remote text={remote.text} />}
       </Dialog>
     </>
   );
@@ -108,14 +94,14 @@ function DatasetForm({ dataset, onDone }: { dataset?: Dataset; onDone: (a: Answe
   const [name, setName] = useState(dataset?.name ?? "");
   const [tokenizer, setTokenizer] = useState(dataset?.tokenizer ?? "");
   const [mine, setMine] = useState<string[]>(dataset ? dataset.libraries.filter((r) => local(dataset, r)).map((r) => r.library) : []);
-  const [others, setOthers] = useState<Other[]>(dataset ? dataset.libraries.filter((r) => !local(dataset, r)).map((r) => ({ depot: r.depot ?? "", library: r.library })) : []);
+  const [others] = useState<Other[]>(dataset ? dataset.libraries.filter((r) => !local(dataset, r)).map((r) => ({ depot: r.depot ?? "", library: r.library })) : []);
   const [shares, setShares] = useState<Share[]>(dataset?.shares?.map((s) => ({ tag: s.tag, share: String(s.share) })) ?? []);
   const [problems, setProblems] = useState<string[]>([]);
   useEffect(() => { if (!dataset) get<string[]>("/api/tokenizers").then(setRecipes); }, [dataset]);
   const send = async () => {
     const body = {
       name,
-      libraries: [...mine.map((library) => ({ library })), ...others.map((o) => ({ depot: o.depot.trim(), library: o.library.trim() }))],
+      libraries: mine.map((library) => ({ library })),
       shares: shares.length ? shares.map((s) => ({ tag: s.tag, share: Number(s.share) })) : null,
     };
     const a = dataset ? await post(`/api/datasets/${part(dataset.id)}`, body) : await post("/api/datasets", { ...body, tokenizer });
@@ -144,20 +130,10 @@ function DatasetForm({ dataset, onDone }: { dataset?: Dataset; onDone: (a: Answe
       {recipes && !recipes.ok && <Problems problems={recipes.problems} />}
       <fieldset className="form-part">
         <legend className="wic-label">{requiredGroup("Libraries")}</legend>
-        <p className="wic-field-hint">At least one, of this depot or of another.</p>
+        <p className="wic-field-hint">At least one, of this depot. A library of another depot is named with <span className="ledger">wpt depot dataset new</span> or <span className="ledger">edit</span>.</p>
       <TickList label="Of this depot" chosen={mine} onChange={setMine}
         options={libraries.map((l) => ({ value: l.id, words: `${l.id} ${l.name}`, label: <>{l.name} <span className="ledger aside">{l.id}</span>{l.locked_at ? <span className="aside"> locked</span> : null}</>, count: l.texts }))} />
-      <fieldset className="ticks">
-        <legend className="wic-label">Of another depot</legend>
-        {others.map((o, i) => (
-          <div key={i} className="entry-row">
-            <TextInput label={required("Depot address")} required value={o.depot} onChange={(e) => setOthers(others.map((x, j) => (j === i ? { ...x, depot: e.target.value } : x)))} />
-            <TextInput label={required("Library id")} required value={o.library} onChange={(e) => setOthers(others.map((x, j) => (j === i ? { ...x, library: e.target.value } : x)))} />
-            <Button variant="quiet" onClick={() => setOthers(others.filter((_, j) => j !== i))}>Remove</Button>
-          </div>
-        ))}
-        <Button variant="quiet" onClick={() => setOthers([...others, { depot: "", library: "" }])}>Add a library of another depot</Button>
-      </fieldset>
+      {others.length > 0 && <p className="form-note small">It reads libraries of another depot ({others.map((o) => `${o.depot} ${o.library}`).join(", ")}): only <span className="ledger">wpt depot dataset edit</span> changes it.</p>}
       </fieldset>
       <fieldset className="form-part">
         <legend className="wic-label">{optional("Shares, in order")}</legend>
@@ -175,7 +151,7 @@ function DatasetForm({ dataset, onDone }: { dataset?: Dataset; onDone: (a: Answe
         <Button variant="quiet" onClick={() => setShares([...shares, { tag: "", share: "" }])}>Add a share</Button>
       </fieldset>
       <Problems problems={problems} />
-      <Button type="submit" variant="primary" disabled={!name.trim() || (!dataset && !tokenizer) || count === 0 || others.some((o) => !o.depot.trim() || !o.library.trim()) || shares.some((s) => !s.tag.trim() || s.share.trim() === "")}>
+      <Button type="submit" variant="primary" disabled={!name.trim() || (!dataset && !tokenizer) || count === 0 || others.length > 0 || shares.some((s) => !s.tag.trim() || s.share.trim() === "")}>
         {dataset ? "Save the dataset" : "Make the dataset"}
       </Button>
     </form>
@@ -194,31 +170,18 @@ function OneDataset({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [answer, setAnswer] = useState<Answer<any> | null>(null);
   const [said, setSaid] = useState("");
-  const [building, setBuilding] = useState(false);
   const load = useCallback(() => { get<Shown>(`/api/datasets/${part(id)}`).then(setShown); }, [id]);
   useEffect(load, [load]);
   if (!shown) return <Skeleton lines={6} label="Reading the dataset" />;
   if (!shown.ok) return <Problems problems={shown.problems} />;
   const { dataset, libraries, corpora } = shown.data;
-  const build = async () => {
-    setBuilding(true);
-    setAnswer(null);
-    const a = await post<any>(`/api/datasets/${part(dataset.name)}/corpus`, {});
-    setBuilding(false);
-    setSaid(a.ok ? `Corpus ${a.data.id}: ${a.data.total_tokens} tokens of plain text.` : "");
-    setAnswer(a);
-    load();
-  };
   return (
     <>
       <PageHead title={dataset.name}
         meta={<><span className="ledger">{dataset.id}</span><span>revision {dataset.revision}</span><span>tokenizer <span className="ledger">{dataset.tokenizer}</span></span><span>{plural(libraries.length, "library", "libraries")}</span>{shown.data.upstream && <span className="aside">the upstream's</span>}</>}
         note={shown.data.upstream ? "It belongs to the upstream this depot follows: only the upstream edits it, and a pull brings its edits here. Its corpus can still be built here." : undefined}
-        chain={<>One of the <a href={href(["datasets"])}>datasets</a>. It reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training.</>}
-        actions={<>
-          {!shown.data.upstream && <Button variant="primary" onClick={() => { setAnswer(null); setEditing(true); }}>Edit it</Button>}
-          <Button variant={shown.data.upstream ? "primary" : "quiet"} disabled={building} onClick={build}>{building ? "Building" : "Build its corpus"}</Button>
-        </>} />
+        chain={<>One of the <a href={href(["datasets"])}>datasets</a>. It reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training with <span className="ledger">wpt depot build {dataset.name}</span>.</>}
+        actions={!shown.data.upstream && <Button variant="primary" onClick={() => { setAnswer(null); setEditing(true); }}>Edit it</Button>} />
       {!editing && <Outcome answer={answer} done={() => said} />}
       <Section title="Libraries, each at a change of its depot">
         <div className="table-scroll">
@@ -278,26 +241,14 @@ function OneDataset({ id }: { id: string }) {
   );
 }
 
-// An exported remote to copy (name given), or a remote to paste and import.
-function Remote({ name, text, onImported }: { name: string | null; text: string; onImported: (a: Answer<any>) => void }) {
-  const [value, setValue] = useState(text);
-  const [problems, setProblems] = useState<string[]>([]);
-  const imported = async () => {
-    let parsed: unknown;
-    try { parsed = JSON.parse(value); } catch (error) { return setProblems([`the remote is not JSON: ${error}`]); }
-    const a = await post("/api/remotes", { remote: parsed });
-    setProblems(a.ok ? [] : a.problems);
-    onImported(a);
-  };
+// An exported remote, to copy to another machine.
+function Remote({ text }: { text: string }) {
   return (
-    <form onSubmit={(e) => { e.preventDefault(); imported(); }}>
-      {name === null && <RequiredNote />}
-      <TextArea label={name === null ? required("Remote") : "Remote"} required={name === null} className="code" rows={14} value={value} readOnly={name !== null} onChange={(e) => setValue(e.target.value)}
-        hint={name ? "Copy it to another machine, then import it there." : "Paste a remote exported from a depot."} />
-      <Problems problems={problems} />
-      {name ? <Button variant="ink" onClick={() => navigator.clipboard?.writeText(value)}>Copy the remote</Button>
-        : <Button type="submit" variant="primary" disabled={!value.trim()}>Import it as a dataset</Button>}
-    </form>
+    <>
+      <TextArea label="Remote" className="code" rows={14} value={text} readOnly
+        hint="Copy it to another machine, then import it there with wpt depot dataset import." />
+      <Button variant="ink" onClick={() => navigator.clipboard?.writeText(text)}>Copy the remote</Button>
+    </>
   );
 }
 

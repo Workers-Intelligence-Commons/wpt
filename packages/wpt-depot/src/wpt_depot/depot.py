@@ -450,7 +450,8 @@ class Depot:
 
     def sql(self, query: str) -> pa.Table:
         """The rows of one read query (a SELECT statement) over the depot's
-        tables and views, by their names (wpt_depot.schema). BadQuery for
+        tables and views, by their names (wpt_depot.schema); it reaches
+        nothing outside the depot's folder (wpt_depot.tables). BadQuery for
         anything else."""
         _one_select(query)
         try:
@@ -1485,6 +1486,11 @@ class Depot:
         except UnsupportedAddress:
             return address
         return None if found == self.tables.root else found
+
+    def is_here(self, address: str) -> bool:
+        """Whether a depot's address leads to this depot, in any form
+        (_place), opening nothing."""
+        return self._place(address) is None
 
     def reads_here(self, address: str | None, library: str) -> bool:
         """Whether a library a dataset names (its depot's address, None for

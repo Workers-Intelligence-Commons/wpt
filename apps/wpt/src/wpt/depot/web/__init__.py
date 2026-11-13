@@ -8,7 +8,9 @@ subcommands:
                 description (/api/openapi.json), on this machine only
     ui.py       builds the interface (apps/wpt/ui) with Bun when its
                 sources are newer than the last build
-    routes.py   the routes, one per operation of the subcommands
+    routes.py   the routes, one per operation of the subcommands it serves
+    readers.py  the processes that run a person's SQL, under a time limit
+                and a memory cap
 
 A page is one TypeScript file in ui/src/pages/, over the routes.
 """

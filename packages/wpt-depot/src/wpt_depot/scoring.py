@@ -1,7 +1,8 @@
 """A change of the scores of many texts (Depot.edit_scores) as SQL over a
 DuckDB connection to the depot's tables, so its cost in memory stays the
 same whatever the number of texts it names: the changes are read where they
-are (a JSON-lines file, or an Arrow table), every check is one query, and
+are (an Arrow table) or a few lines at a time into a temporary table of
+DuckDB (a JSON-lines file), every check is one query, and
 the new revision rows come out of one query as a stream.
 
 A change names each text on one JSON object: {"id": ID, "scores": [{"name":
@@ -28,6 +29,7 @@ _TYPED = ("""json_transform(json -> 'scores', '[{"name": "VARCHAR", "value": "DO
           """json_transform(json -> 'remove', '["VARCHAR"]')""")
 # the JSON types a value and a content version may have
 _NUMBERS, _WHOLE = "('BIGINT', 'UBIGINT', 'DOUBLE')", "('BIGINT', 'UBIGINT')"
+FILE_LINES = 256  # the lines of a file of changes Python holds at a time (open_changes)
 
 
 def lines(changes: Sequence[dict]) -> pa.Table:
@@ -38,13 +40,20 @@ def lines(changes: Sequence[dict]) -> pa.Table:
 def open_changes(con: duckdb.DuckDBPyConnection, changes: str | Path | pa.Table):
     """The views given and changes over changes: a JSON-lines file (blank
     lines skipped) or an Arrow table with a column json. Refused for a file
-    that is not JSON lines, or for a change of another shape (shape)."""
+    that cannot be read or is not JSON lines, or for a change of another
+    shape (shape). The depot's DuckDB reaches no file outside its folder
+    (wpt_depot.tables), so Python reads the file, FILE_LINES lines at a
+    time, into a temporary table of the connection, which DuckDB keeps on
+    disk past its memory."""
     if isinstance(changes, pa.Table):
         con.register("given_table", changes)
-        con.execute("CREATE TEMP VIEW given AS SELECT json::JSON AS json FROM given_table")
     else:
-        path = str(changes).replace("'", "''")
-        con.execute(f"CREATE TEMP VIEW given AS SELECT json FROM read_ndjson_objects('{path}')")
+        try:
+            con.register("given_lines", _file_lines(Path(changes)))
+            con.execute("CREATE TEMP TABLE given_table AS SELECT json FROM given_lines")
+        except (OSError, UnicodeDecodeError, duckdb.Error) as error:
+            raise Refused(f"the changes of scores are not JSON lines: {error}") from None
+    con.execute("CREATE TEMP VIEW given AS SELECT json::JSON AS json FROM given_table")
     con.execute(f"""CREATE TEMP VIEW changes AS SELECT json ->> 'id' AS id,
         coalesce(list_transform({_TYPED[0]}, lambda s: {{'name': trim(s.name), 'value': s.value,
                                                          'content_version': s.content_version}}), []) AS scores,
@@ -53,6 +62,26 @@ def open_changes(con: duckdb.DuckDBPyConnection, changes: str | Path | pa.Table)
         _shape(con)
     except duckdb.Error as error:
         raise Refused(f"the changes of scores are not JSON lines: {error}") from None
+
+
+def _file_lines(path: Path) -> pa.RecordBatchReader:
+    """The lines of the file that are not blank, read as UTF-8 a few at a
+    time: one string per row in a column json. OSError when it cannot be
+    opened."""
+    found = path.open(encoding="utf-8")
+
+    def batches():
+        with found:
+            batch = []
+            for line in found:
+                if line.strip():
+                    batch.append(line)
+                if len(batch) == FILE_LINES:
+                    yield pa.record_batch([pa.array(batch, pa.string())], names=["json"])
+                    batch = []
+            if batch:
+                yield pa.record_batch([pa.array(batch, pa.string())], names=["json"])
+    return pa.RecordBatchReader.from_batches(pa.schema([("json", pa.string())]), batches())
 
 
 def _shape(con: duckdb.DuckDBPyConnection):

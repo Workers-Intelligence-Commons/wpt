@@ -64,6 +64,20 @@ page holds.
 The folder is a path or, for a depot in a bucket, an s3:// address; the
 bucket's settings (wpt_depot.settings.bucket_settings) go to delta-rs as
 its storage options and to DuckDB as an S3 secret.
+
+Every DuckDB connection of the tables, the depot's own queries and a
+person's alike, reaches only the depot's folder: once its settings are
+made, the database turns off DuckDB's access to anything outside (no file,
+no URL, no other database attached, no extension installed or loaded)
+except the folder (allowed_directories), and locks its settings, so no
+query can change them again. A query that reads elsewhere, or sets, resets
+or pragmas a setting, fails with DuckDB's own error. What does not fit in
+memory still goes to the database's temporary folder, which DuckDB writes
+itself and a query can read: it holds only the depot's rows. Data a caller
+hands over as an Arrow table is read as it is. For a depot in a bucket,
+DuckDB compares an address with the folder's without resolving `..`, so a
+query reaches every object the bucket's settings reach: settings that
+reach only the depot's prefix keep it to the depot.
 """
 
 import json
@@ -99,6 +113,9 @@ COMPACT_SIZE = 1 << 20  # bytes: a data file smaller than this is merged again a
 UNCOMPACTED = ("contents", "parts")  # merging parts would keep a second copy of each content in the files it replaced
 NONE_KEPT = {"delta.logRetentionDuration": "interval 0 seconds",
              "delta.deletedFileRetentionDuration": "interval 0 seconds"}
+# bytes DuckDB holds in memory before it writes to its temporary folder; None: DuckDB's own share of the machine's
+# memory. A process whose memory the system caps sets it below that cap before it opens a depot.
+MEMORY_LIMIT = None
 
 
 class Tables:
@@ -415,8 +432,10 @@ class Tables:
     def _start(self) -> duckdb.DuckDBPyConnection:
         """An in-memory DuckDB database that gives times in UTC, writes what
         does not fit in memory into a folder of its own under the system's
-        temporary folder (never the folder the command runs from) and, for
-        a bucket, reads it with the bucket's settings."""
+        temporary folder (never the folder the command runs from), for a
+        bucket, reads it with the bucket's settings, and reaches nothing
+        but the depot's folder, its settings locked (the module's
+        docstring)."""
         con = duckdb.connect()
         con.execute("SET TimeZone = 'UTC'")
         con.execute("SET arrow_large_buffer_size = true")
@@ -434,7 +453,24 @@ class Tables:
                 parts.update(ENDPOINT=endpoint.netloc, URL_STYLE="path", USE_SSL="true" if endpoint.scheme == "https" else "false")
             listed = ", ".join(f"{key} '{str(value).replace(chr(39), chr(39) * 2)}'" for key, value in parts.items())
             con.execute(f"CREATE SECRET ({listed})")
+        if MEMORY_LIMIT is not None:
+            con.execute(f"SET memory_limit = '{int(MEMORY_LIMIT)}B'")
+        con.execute("SET allowed_directories = ?", [self._reachable()])
+        con.execute("SET enable_external_access = false")
+        con.execute("SET autoinstall_known_extensions = false")
+        con.execute("SET autoload_known_extensions = false")
+        con.execute("SET lock_configuration = true")
         return con
+
+    def _reachable(self) -> list[str]:
+        """The depot's folder, as the prefixes DuckDB's allowed_directories
+        compares a file's path with: each ends with a separator, so a
+        neighbouring folder whose name begins with the folder's is not one;
+        on Windows, with either separator."""
+        if isinstance(self.root, str):
+            return [self.root.rstrip("/") + "/"]
+        return list(dict.fromkeys(form.rstrip("/\\") + end for form in (str(self.root), self.root.as_posix())
+                                  for end in ("/", os.sep)))
 
 
 def _read_by(con: duckdb.DuckDBPyConnection, sql: str | None, views: dict = CURRENT) -> set[str] | None:

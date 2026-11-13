@@ -472,9 +472,9 @@ refused change writes nothing.
 | Operation | `wpt depot` | `wpt depot web` |
 | --- | --- | --- |
 | a new depot, a clone | `new ADDRESS`, `clone ADDRESS TO` | none |
-| a pull | `pull` | `POST /api/pull`; page "Depot" |
+| a pull | `pull` | none |
 | the depot's layout brought up to the code's format | `upgrade` | none |
-| the depot's maintainer and takedown contact | `about [--maintainer M] [--takedown-contact C]` | `POST /api/about`; page "Depot" |
+| the depot's maintainer and takedown contact | `about [--maintainer M] [--takedown-contact C]` | `GET /api/about` reads them; page "Depot" |
 | a read query | `sql QUERY` | `POST /api/sql` |
 | the depot at a glance | none | `GET /api/decisions/latest`; pages "Overview" and "Settings" |
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on, the erasure requests it decides or the problem it records; the view of a decision, and of a reported problem |
@@ -490,8 +490,8 @@ refused change writes nothing.
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
 | libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`; the "Workspace" page lists them and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
-| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/tokenizers`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`, `POST /api/remotes`; page "Datasets" with the view of each dataset |
-| a corpus | `build DATASET` | `POST /api/datasets/{name}/corpus`; page "Datasets" |
+| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/tokenizers`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
+| a corpus | `build DATASET` | none |
 | a tokenizer's vocabulary | `tokenizer RECIPE` | none |
 | erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Workspace" page asks |
 
@@ -547,22 +547,64 @@ refuses them or changes their licenses. After a refusal or a license change
 made there, the review reads its summary again and checks its texts again,
 so a text that now has an allowed license joins the admission, ticked.
 
-The HTTP API answers 400 for a query or a remote that is not one, 404 when
-the thing does not exist, 422 for a
-change the depot's rules refuse (with their messages), and 503 when the
-store or a locked vocabulary is missing on this machine. A command
-prints the same failure's kind and message and ends with exit code 2.
+The HTTP API answers 400 for a query that is not one read of the depot,
+404 when the thing does not exist, 422 for a change the depot's rules
+refuse (with their messages) and for a person's SQL stopped by the limits
+below, and 503
+when the store is missing on this machine. A command prints the same
+failure's kind and message and ends with exit code 2.
+
+Every query the depot runs, a person's included, reaches only the
+depot's folder. The depot's DuckDB database turns off its access to
+anything else once its own settings are made, and locks those settings.
+No query reads another file of the machine or an address on the network,
+writes a file outside the folder, attaches another database, installs or
+loads an extension, or changes a setting. A filter's condition is a query
+as well, under the same rule. `wpt depot sql` follows it too. A query can
+also read DuckDB's temporary folder of its own process, which holds only
+the depot's rows that did not fit in memory.
+
+For a depot in a bucket, DuckDB compares an address with the depot's
+prefix without resolving `..`, so the lock does not hold there: a query
+reaches every object the bucket's settings reach. A web server open to
+others over a depot in a bucket needs bucket settings that reach only that
+depot's prefix.
+
+A route that runs a person's SQL (`POST /api/sql`, and the condition of
+`POST /api/texts/search` and `POST /api/texts/passages`) runs it in a
+reader process of its own (`wpt/depot/web/readers.py`), never in the
+server's process. The server kills that process once the request has run
+`SECONDS` and answers 422. On Linux, the reader's memory is capped at
+`MEMORY` bytes more than it holds once started, and a query past it ends
+with DuckDB's own refusal (400) or with the process (422). On another
+system, the reader has no memory cap. A query's answer holds at most
+`ANSWER_ROWS` rows and `ANSWER_BYTES` bytes of JSON, and a larger one is
+refused with 422. The server's process goes on after any of these, and
+the next request gets a new reader. The commands have none of these
+limits.
 
 `wpt depot web` serves the depot `WPT_DEPOT` names. It listens only on
 127.0.0.1 and checks neither the `Host` header nor a request's
-`Content-Type`: like the commands, it asks for no login and no header. What
-that leaves open while it runs: a web page open in the same browser can
-send it a cross-origin `POST` with `Content-Type: text/plain`, which the
-browser sends without asking first, so such a page can add texts and licenses,
-make libraries and datasets, build a corpus, or send a decision with a
-declaration it made up; and a site that makes its own name resolve to
-127.0.0.1 (DNS rebinding) can reach every route, reading every text of the
-depot as well.
+`Content-Type`: like the commands, it asks for no login and no header, and
+it answers any client that reaches it, through a proxy in front of it
+included. Every such client reads and changes the depot through every
+route: it adds texts and licenses, makes libraries and datasets, and sends
+decisions with a declaration it made up. A web page open in the same
+browser can do the same with a cross-origin `POST` with `Content-Type:
+text/plain`, which the browser sends without asking first, and so can a
+site that makes its own name resolve to 127.0.0.1 (DNS rebinding).
+
+A pull (which makes the machine fetch another depot), a corpus build
+(which writes to the store), a remote's import, and a change of the
+depot's maintainer or takedown contact are commands only: the server has
+no route for them. A dataset made or edited through the server reads only
+this depot's libraries: a library named by another depot's address is
+refused (422) before anything is opened, and only `wpt depot dataset new`
+and `edit` name one. Three routes reach past the depot. `POST
+/api/erasures/decisions`, once it carries out an erasure, marks stale the
+store's corpora that hold a text it cut. `GET /api/datasets/{id}` lists
+the store's corpora built from the dataset. `GET /api/tokenizers` lists
+the repository's tokenizer recipes.
 
 ## Packages
 
