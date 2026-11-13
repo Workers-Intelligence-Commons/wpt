@@ -1,153 +1,146 @@
-"""A change of the scores of many texts (Depot.edit_scores) as SQL over a
-DuckDB connection to the depot's tables, so its cost in memory stays the
-same whatever the number of texts it names: the changes are read where they
-are (an Arrow table) or a few lines at a time into a temporary table of
-DuckDB (a JSON-lines file), every check is one query, and
-the new revision rows come out of one query as a stream.
+"""A change of the scores of many texts (Depot.edit_scores), made inside
+the change's transaction over temporary tables of its connection, so its
+cost in memory stays the same whatever the number of texts it names.
 
 A change names each text on one JSON object: {"id": ID, "scores": [{"name":
 N, "value": V, "content_version": C}], "remove": [N]}, scores and remove
-each optional. The queries read it as the view `given` (one column `json`),
-then as the view `changes` (id, scores, remove, each name trimmed), then as
-the view `scored`: each text named, at its current revision, with its new
-scores (`new_scores`: its scores less those removed or set again, plus those
-set, in the order of their names, null for none) and whether they differ
-from its scores now (`changed`)."""
+each optional. Python reads the lines one at a time, checks the shape of
+each, and writes it into the temporary table `changes` (id, scores, remove:
+each name trimmed, as JSON text); every rule across texts is then one
+query. The texts whose scores change go into the temporary table `scored`
+(id, scores: its new scores, those it had less those removed or set again,
+plus those set, in the order of their names, null for none), which the
+new revisions read.
+"""
 
 import json
-from collections.abc import Sequence
+import math
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-import duckdb
-import pyarrow as pa
-
 from .errors import NotFound, Refused
-from .schema import SCHEMAS
 
-# how the depot reads the scores and the names of a change once its shape is checked
-_TYPED = ("""json_transform(json -> 'scores', '[{"name": "VARCHAR", "value": "DOUBLE", "content_version": "BIGINT"}]')""",
-          """json_transform(json -> 'remove', '["VARCHAR"]')""")
-# the JSON types a value and a content version may have
-_NUMBERS, _WHOLE = "('BIGINT', 'UBIGINT', 'DOUBLE')", "('BIGINT', 'UBIGINT')"
-FILE_LINES = 256  # the lines of a file of changes Python holds at a time (open_changes)
+SHAPE = ('a change is {"id": ID, "scores": [{"name": N, "value": V, "content_version": C}], "remove": [N]}')
+KEYS = {"id", "scores", "remove"}
+SCORE_KEYS = {"name", "value", "content_version"}
+BATCH = 1000  # the lines written into the temporary table at a time
 
 
-def lines(changes: Sequence[dict]) -> pa.Table:
-    """Changes given as objects (a web request's) as the Arrow table edit_scores reads: one JSON text per row."""
-    return pa.table({"json": pa.array([json.dumps(one, ensure_ascii=False) for one in changes], pa.string())})
+def open_changes(con, changes: str | Path | Iterable[dict]):
+    """The temporary table changes, filled from changes: a JSON-lines file
+    (blank lines skipped) or the lines as objects (a web request's).
+    Refused for a file that cannot be read or is not JSON lines, or for a
+    change of another shape (_checked)."""
+    con.execute("CREATE TEMP TABLE changes (id TEXT NOT NULL, scores TEXT NOT NULL, remove TEXT NOT NULL)")
+    batch = []
+    for one in _lines(changes):
+        batch.append(_checked(one))
+        if len(batch) == BATCH:
+            con.executemany("INSERT INTO temp.changes VALUES (?, ?, ?)", batch)
+            batch = []
+    if batch:
+        con.executemany("INSERT INTO temp.changes VALUES (?, ?, ?)", batch)
+    con.execute("CREATE INDEX temp.changes_id ON changes (id)")
 
 
-def open_changes(con: duckdb.DuckDBPyConnection, changes: str | Path | pa.Table):
-    """The views given and changes over changes: a JSON-lines file (blank
-    lines skipped) or an Arrow table with a column json. Refused for a file
-    that cannot be read or is not JSON lines, or for a change of another
-    shape (shape). The depot's DuckDB reaches no file outside its folder
-    (wpt_depot.tables), so Python reads the file, FILE_LINES lines at a
-    time, into a temporary table of the connection, which DuckDB keeps on
-    disk past its memory."""
-    if isinstance(changes, pa.Table):
-        con.register("given_table", changes)
-    else:
-        try:
-            con.register("given_lines", _file_lines(Path(changes)))
-            con.execute("CREATE TEMP TABLE given_table AS SELECT json FROM given_lines")
-        except (OSError, UnicodeDecodeError, duckdb.Error) as error:
-            raise Refused(f"the changes of scores are not JSON lines: {error}") from None
-    con.execute("CREATE TEMP VIEW given AS SELECT json::JSON AS json FROM given_table")
-    con.execute(f"""CREATE TEMP VIEW changes AS SELECT json ->> 'id' AS id,
-        coalesce(list_transform({_TYPED[0]}, lambda s: {{'name': trim(s.name), 'value': s.value,
-                                                         'content_version': s.content_version}}), []) AS scores,
-        coalesce(list_distinct(list_transform({_TYPED[1]}, lambda r: trim(r))), []) AS remove FROM given""")
+def close(con):
+    """Drop the temporary tables of a change of scores."""
+    for name in ("changes", "scored", "scored_ids"):
+        con.execute(f"DROP TABLE IF EXISTS temp.{name}")
+
+
+def _lines(changes) -> Iterator[tuple[object, str]]:
+    """(each change as an object, its line as shown in a refusal)."""
+    if not isinstance(changes, (str, Path)):
+        for one in changes:
+            yield one, json.dumps(one, ensure_ascii=False)
+        return
     try:
-        _shape(con)
-    except duckdb.Error as error:
+        with Path(changes).open(encoding="utf-8") as file:
+            for line in file:
+                if line.strip():
+                    try:
+                        yield json.loads(line, parse_constant=_no_constant), line.strip()
+                    except ValueError as error:
+                        raise Refused(f"the changes of scores are not JSON lines: {error}") from None
+    except (OSError, UnicodeDecodeError) as error:
         raise Refused(f"the changes of scores are not JSON lines: {error}") from None
 
 
-def _file_lines(path: Path) -> pa.RecordBatchReader:
-    """The lines of the file that are not blank, read as UTF-8 a few at a
-    time: one string per row in a column json. OSError when it cannot be
-    opened."""
-    found = path.open(encoding="utf-8")
-
-    def batches():
-        with found:
-            batch = []
-            for line in found:
-                if line.strip():
-                    batch.append(line)
-                if len(batch) == FILE_LINES:
-                    yield pa.record_batch([pa.array(batch, pa.string())], names=["json"])
-                    batch = []
-            if batch:
-                yield pa.record_batch([pa.array(batch, pa.string())], names=["json"])
-    return pa.RecordBatchReader.from_batches(pa.schema([("json", pa.string())]), batches())
+def _no_constant(name: str):
+    raise ValueError(f"{name} is no JSON number")
 
 
-def _shape(con: duckdb.DuckDBPyConnection):
-    """Refused for the first change that is not of the shape the module
-    says, with a value that is not a finite number, a content version that
-    is not a whole number from 1, or an empty name."""
-    found = con.sql("""SELECT json, CASE
-        WHEN json_type(json) <> 'OBJECT' THEN 'is not a JSON object'
-        WHEN NOT list_has_all(['id', 'scores', 'remove'], json_keys(json))
-            THEN 'holds a key other than id, scores and remove'
-        WHEN coalesce(json_type(json, '$.id'), '') <> 'VARCHAR' THEN 'has no id that is text'
-        WHEN coalesce(json_type(json, '$.scores'), 'NULL') NOT IN ('ARRAY', 'NULL') THEN 'has scores that are no list'
-        WHEN coalesce(json_type(json, '$.remove'), 'NULL') NOT IN ('ARRAY', 'NULL') THEN 'has remove that is no list'
-        END AS problem FROM given WHERE problem IS NOT NULL LIMIT 1""").fetchall()
-    if not found:
-        found = con.sql(f"""SELECT json, CASE
-            WHEN json_type(s) <> 'OBJECT' OR len(json_keys(s)) <> 3
-                 OR NOT list_has_all(json_keys(s), ['name', 'value', 'content_version'])
-                THEN 'has a score that is not {{name, value, content_version}}'
-            WHEN json_type(s, '$.name') <> 'VARCHAR' OR trim(s ->> 'name') = '' THEN 'has a score with no name'
-            WHEN json_type(s, '$.value') NOT IN {_NUMBERS} OR NOT isfinite(TRY_CAST(s ->> 'value' AS DOUBLE))
-                THEN 'has a score whose value is not a finite number'
-            WHEN json_type(s, '$.content_version') NOT IN {_WHOLE} OR TRY_CAST(s ->> 'content_version' AS BIGINT) < 1
-                THEN 'has a score whose content version is not a whole number from 1'
-            END AS problem
-            FROM (SELECT json, unnest(json_extract(json, '$.scores[*]')) AS s FROM given
-                  WHERE json_type(json, '$.scores') = 'ARRAY')
-            WHERE problem IS NOT NULL LIMIT 1""").fetchall()
-    if not found:
-        found = con.sql("""SELECT json, 'has a name to remove that is not text, or is empty' FROM
-            (SELECT json, unnest(json_extract(json, '$.remove[*]')) AS r FROM given
-             WHERE json_type(json, '$.remove') = 'ARRAY')
-            WHERE json_type(r) <> 'VARCHAR' OR trim(r ->> '$') = '' LIMIT 1""").fetchall()
-    if found:
-        line, problem = found[0]
+def _checked(given: tuple[object, str]) -> tuple[str, str, str]:
+    """A change as the row of changes: (id, its scores as JSON, its names to
+    remove as JSON, each name trimmed and each removal once). Refused for a
+    change that is not of the shape the module says, with a value that is
+    not a finite number, a content version that is not a whole number from
+    1, or an empty name."""
+    one, line = given
+    problem = None
+    if not isinstance(one, dict):
+        problem = "is not a JSON object"
+    elif not set(one) <= KEYS:
+        problem = "holds a key other than id, scores and remove"
+    elif not isinstance(one.get("id"), str):
+        problem = "has no id that is text"
+    elif not isinstance(one.get("scores") or [], list):
+        problem = "has scores that are no list"
+    elif not isinstance(one.get("remove") or [], list):
+        problem = "has remove that is no list"
+    else:
+        for score in one.get("scores") or []:
+            if not isinstance(score, dict) or set(score) != SCORE_KEYS:
+                problem = "has a score that is not {name, value, content_version}"
+            elif not isinstance(score["name"], str) or not score["name"].strip():
+                problem = "has a score with no name"
+            elif (isinstance(score["value"], bool) or not isinstance(score["value"], (int, float))
+                  or not math.isfinite(score["value"])):
+                problem = "has a score whose value is not a finite number"
+            elif (isinstance(score["content_version"], bool) or not isinstance(score["content_version"], int)
+                  or score["content_version"] < 1):
+                problem = "has a score whose content version is not a whole number from 1"
+            if problem:
+                break
+        if not problem and any(not isinstance(name, str) or not name.strip() for name in one.get("remove") or []):
+            problem = "has a name to remove that is not text, or is empty"
+    if problem:
         shown = line if len(line) <= 200 else line[:200] + "..."
-        raise Refused(f"a change of scores {problem} (a change is {{\"id\": ID, \"scores\": [{{\"name\": N, \"value\": "
-                      f"V, \"content_version\": C}}], \"remove\": [N]}}): {shown}")
+        raise Refused(f"a change of scores {problem} ({SHAPE}): {shown}")
+    scores = [{"name": score["name"].strip(), "value": float(score["value"]),
+               "content_version": score["content_version"]} for score in one.get("scores") or []]
+    remove = list(dict.fromkeys(name.strip() for name in one.get("remove") or []))
+    return one["id"], _json(scores), _json(remove)
 
 
-def check(con: duckdb.DuckDBPyConnection, upstream_sql: str, named: int) -> tuple[int, list[str]]:
+def check(con, upstream_sql: str, named: int) -> tuple[int, list[str]]:
     """Refused or NotFound for the first rule the changes break, each a
     query; (how many texts named the upstream owns, upstream_sql over id
     holding, and the first `named` of them by id), for the caller to
     refuse: (0, []) when none is."""
-    if not con.sql("SELECT 1 FROM changes LIMIT 1").fetchall():
+    if not con.execute("SELECT 1 FROM temp.changes LIMIT 1").fetchall():
         raise Refused("no text is named: nothing to score")
-    twice = con.sql("SELECT id FROM changes GROUP BY id HAVING count(*) > 1 ORDER BY id LIMIT 1").fetchall()
+    twice = con.execute("SELECT id FROM temp.changes GROUP BY id HAVING count(*) > 1 ORDER BY id LIMIT 1").fetchall()
     if twice:
         raise Refused(f"a change names each text once, not {twice[0][0]} several times")
-    found = con.sql("""SELECT id FROM (SELECT id, list_transform(scores, lambda s: s.name) AS names, remove FROM changes)
-        WHERE len(list_distinct(names)) < len(names) OR len(list_intersect(names, remove)) > 0
-        ORDER BY id LIMIT 1""").fetchall()
+    found = con.execute("""SELECT c.id FROM temp.changes c WHERE
+        (SELECT count(*) - count(DISTINCT s.value ->> 'name') FROM json_each(c.scores) s) > 0
+        OR EXISTS (SELECT 1 FROM json_each(c.scores) s, json_each(c.remove) r WHERE s.value ->> 'name' = r.value)
+        ORDER BY c.id LIMIT 1""").fetchall()
     if found:
         raise Refused(f"the change of {found[0][0]} sets or removes a score more than once")
-    missing = con.sql("SELECT count(*), min(c.id) FROM changes c ANTI JOIN texts_revisions t ON t.id = c.id").fetchall()
+    missing = con.execute("SELECT count(*), min(c.id) FROM temp.changes c WHERE NOT EXISTS "
+                          "(SELECT 1 FROM texts_revisions t WHERE t.id = c.id AND t.latest)").fetchall()
     if missing[0][0]:
         raise NotFound(f"{missing[0][0]} of the texts named are no text of the depot (the first: {missing[0][1]})")
-    total = con.sql(f"SELECT count(*) FROM changes WHERE {upstream_sql}").fetchall()[0][0]
+    total = con.execute(f"SELECT count(*) FROM temp.changes WHERE {upstream_sql}").fetchall()[0][0]
     if total:
-        return total, [one for (one,) in con.sql(
-            f"SELECT id FROM changes WHERE {upstream_sql} ORDER BY id LIMIT {int(named)}").fetchall()]
-    late = con.sql("""SELECT c.id, c.s.name, c.s.content_version, v.last
-        FROM (SELECT id, unnest(scores) AS s FROM changes) c
-        JOIN (SELECT id, max(version) AS last FROM content_lists GROUP BY id) v ON v.id = c.id
-        WHERE c.s.content_version > v.last ORDER BY c.id LIMIT 1""").fetchall()
+        return total, [one for (one,) in con.execute(
+            f"SELECT id FROM temp.changes WHERE {upstream_sql} ORDER BY id LIMIT {int(named)}").fetchall()]
+    late = con.execute("""SELECT c.id, s.value ->> 'name', s.value ->> 'content_version' AS version,
+        (SELECT max(v.version) FROM content_lists v WHERE v.id = c.id) AS last
+        FROM temp.changes c, json_each(c.scores) s WHERE version > last ORDER BY c.id LIMIT 1""").fetchall()
     if late:
         text, name, version, last = late[0]
         raise Refused(f"the text {text} has no content version {version} (its last is {last}), which the score "
@@ -155,36 +148,35 @@ def check(con: duckdb.DuckDBPyConnection, upstream_sql: str, named: int) -> tupl
     return 0, []
 
 
-def score(con: duckdb.DuckDBPyConnection) -> tuple[int, int, list[str], list[str]]:
-    """The view scored, and (how many texts change, how many are left out,
-    the names of the scores set, the names of the scores removed)."""
-    con.execute("""CREATE TEMP VIEW scored AS SELECT *, new_scores IS DISTINCT FROM scores AS changed FROM (
-        SELECT t.*, CASE WHEN len(kept) = 0 THEN NULL ELSE list_sort(kept) END AS new_scores FROM (
-            SELECT t.*, list_concat(list_filter(coalesce(t.scores, []), lambda s: NOT list_contains(c.remove, s.name)
-                AND NOT list_contains(list_transform(c.scores, lambda g: g.name), s.name)), c.scores) AS kept
-            FROM (SELECT * FROM texts_revisions WHERE id IN (SELECT id FROM changes)
-                  QUALIFY row_number() OVER (PARTITION BY id ORDER BY revision DESC) = 1) t
-            JOIN changes c ON c.id = t.id) t)""")
-    changed, left_out = con.sql("SELECT count(*) FILTER (WHERE changed), count(*) FILTER (WHERE NOT changed) "
-                                "FROM scored").fetchall()[0]
-    set_names = [one for (one,) in con.sql(
-        "SELECT DISTINCT s.name FROM (SELECT unnest(new_scores) AS s, scores FROM scored WHERE changed) "
-        "WHERE NOT list_contains(coalesce(scores, []), s) ORDER BY 1").fetchall()]
-    removed = [one for (one,) in con.sql(
-        "SELECT DISTINCT s.name FROM (SELECT unnest(scores) AS s, new_scores FROM scored WHERE changed) "
-        "WHERE NOT list_contains(list_transform(coalesce(new_scores, []), lambda n: n.name), s.name) "
-        "ORDER BY 1").fetchall()]
-    return changed, left_out, set_names, removed
+def score(con) -> tuple[int, int, list[str], list[str]]:
+    """The temporary table scored, and (how many texts change, how many are
+    left out, the names of the scores set, the names of the scores
+    removed). Each text's new scores are made in Python, one text at a
+    time, as the rows are read."""
+    con.execute("CREATE TEMP TABLE scored (id TEXT PRIMARY KEY, scores TEXT)")
+    changed = left_out = 0
+    set_names, removed, batch = set(), set(), []
+    cursor = con.cursor().execute("SELECT c.id, c.scores, c.remove, t.scores FROM temp.changes c "
+                                  "JOIN texts_revisions t ON t.id = c.id AND t.latest")
+    for text, given, remove, old in cursor:
+        given, remove, old = json.loads(given), set(json.loads(remove)), json.loads(old) if old else []
+        names = {one["name"] for one in given}
+        kept = [one for one in old if one["name"] not in remove and one["name"] not in names] + given
+        new = sorted(kept, key=lambda one: one["name"]) or None
+        if (new or []) == old:
+            left_out += 1
+            continue
+        changed += 1
+        set_names.update(one["name"] for one in new or [] if one not in old)
+        removed.update(one["name"] for one in old if one["name"] not in {n["name"] for n in new or []})
+        batch.append((text, _json(new)))
+        if len(batch) == BATCH:
+            con.executemany("INSERT INTO temp.scored VALUES (?, ?)", batch)
+            batch = []
+    if batch:
+        con.executemany("INSERT INTO temp.scored VALUES (?, ?)", batch)
+    return changed, left_out, sorted(set_names), sorted(removed)
 
 
-def revisions(con: duckdb.DuckDBPyConnection, number: int, decision: str) -> pa.RecordBatchReader:
-    """The new revision of every text scored changes, made at the change
-    number and carrying the decision, as a stream of rows of texts."""
-    schema = SCHEMAS["texts"]
-    columns = ", ".join(
-        {"revision": "revision + 1 AS revision", "change": "$number AS change",
-         "decisions": "list_append(decisions, $decision) AS decisions", "scores": "new_scores AS scores"}.get(
-            name, name) for name in schema.names)
-    found = con.sql(f"SELECT {columns} FROM scored WHERE changed",
-                    params={"number": number, "decision": decision}).to_arrow_reader()
-    return pa.RecordBatchReader.from_batches(schema, (batch.cast(schema) for batch in found))
+def _json(value) -> str | None:
+    return None if value is None else json.dumps(value, ensure_ascii=False, separators=(",", ":"))

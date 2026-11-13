@@ -10,8 +10,7 @@ from pathlib import Path
 
 from wpt_depot import Declaration, Depot, pull
 from wpt_depot.corpus import build, built_from, mark_stale, sample
-from wpt_depot.errors import NoBucketSetting
-from wpt_depot.settings import bucket_settings, depot_address
+from wpt_depot.settings import depot_address
 from wpt_recipes import InvalidRecipe, Recipes
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_tokenizer import Tokenizer
@@ -43,25 +42,16 @@ def env_file() -> Path:
     return Path.cwd() / ".env"
 
 
-def bucket() -> dict | None:
-    """The settings of depots in buckets (WPT_DEPOT_*, environment or .env);
-    None when they are not set."""
-    try:
-        return bucket_settings(env_file=env_file())
-    except NoBucketSetting:
-        return None
-
-
 def opened() -> Depot:
-    """The depot WPT_DEPOT names, its unfinished journal changes applied.
-    NoDepotSetting without the setting; NotADepot, UnsupportedAddress for
-    an address that holds no depot."""
-    return Depot.open(depot_address(env_file=env_file()), bucket())
+    """The depot WPT_DEPOT names, the change files a crash left pending kept
+    or dropped (wpt_depot.database). NoDepotSetting without the setting;
+    NotADepot, UnsupportedAddress for an address that holds no depot."""
+    return Depot.open(depot_address(env_file=env_file()))
 
 
 def viewed(address: str) -> Depot:
     """The depot at address, to read."""
-    return Depot.view(address, bucket())
+    return Depot.view(address)
 
 
 def corpora_store(log):
@@ -112,7 +102,7 @@ def pulled(depot: Depot, log) -> list[str]:
 def stale(depot: Depot, store, erasures: list[str], log):
     if store is None:
         return
-    texts = sorted({needle["text"] for row in depot.erasures().to_pylist() if row["id"] in erasures
+    texts = sorted({needle["text"] for row in depot.erasures() if row["id"] in erasures
                     for needle in row["needles"]})
     marked = mark_stale(store, texts, erasures)
     log(f"{len(marked)} corpora marked stale: wpt train refuses them until their datasets are built again"

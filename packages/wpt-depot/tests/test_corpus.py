@@ -10,7 +10,6 @@ from wpt_depot import NewText
 from wpt_depot.corpus import build, mark_stale, read_table, records, sample
 from wpt_depot.errors import Refused
 from wpt_depot.notice import model_notice
-from wpt_depot.scoring import lines
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
 CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
@@ -155,7 +154,7 @@ def test_an_erasure_marks_stale_every_corpus_holding_its_text_and_a_new_build_is
     depot.new_dataset("all", "classics", [(None, library)])
     store = open_store((tmp_path / "store").as_uri())
     record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
-    [text] = depot.sql("SELECT id FROM texts WHERE list_contains(tags, 'de')")["id"].to_pylist()
+    [text] = [row["id"] for row in depot.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'de')")]
     assert "stale" not in record
 
     assert mark_stale(store, ["depot-99"], ["depot-1"]) == []
@@ -218,7 +217,7 @@ def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_choo
     scored, unscored = depot.add([NewText(text="the fox", licenses=("CC0-1.0",)),
                                   NewText(text="the dog", licenses=("CC0-1.0",))], me)
     depot.change_content(scored, "the quick fox", None, me)
-    depot.edit_scores(lines([{"id": scored, "scores": [{"name": "rank", "value": -1.5, "content_version": 1},
+    depot.edit_scores(list([{"id": scored, "scores": [{"name": "rank", "value": -1.5, "content_version": 1},
                                                        {"name": "machine-made", "value": 0.03,
                                                         "content_version": 2}]}]), me)
     depot.decide("admitted", "true", me)

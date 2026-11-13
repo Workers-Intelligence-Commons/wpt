@@ -34,21 +34,15 @@ def make(name: str, number: int) -> str:
     return f"{prefix(name)}{number}"
 
 
-def _carrying(name: str) -> str:
-    """The pattern, in the syntax Python and DuckDB share, of every id that
-    carries name: name, a hyphen and digits, nothing more."""
-    return re.escape(name) + "-[0-9]+"
-
-
 def carries(name: str, one: str) -> bool:
     """Whether the id one carries the depot's name name."""
-    return re.fullmatch(_carrying(name), one) is not None
+    return re.fullmatch(re.escape(name) + "-[0-9]+", one) is not None
 
 
 def carries_sql(name: str, column: str = "id") -> str:
-    """carries as a DuckDB condition over a column of ids."""
-    pattern = _carrying(name).replace("'", "''")
-    return f"regexp_full_match({column}, '{pattern}')"
+    """carries as an SQL condition over a column of ids (a name holds no
+    character GLOB reads as a pattern, check_name)."""
+    return f"({column} GLOB '{name}-[0-9]*' AND substr({column}, {len(name) + 2}) NOT GLOB '*[^0-9]*')"
 
 
 def owner(one: str) -> str:
@@ -57,14 +51,37 @@ def owner(one: str) -> str:
     return re.sub(r"-[0-9]+\Z", "", one)
 
 
+def number(one: str) -> int | None:
+    """The number after the last hyphen of the id one, None when it has none."""
+    found = re.search(r"-([0-9]+)\Z", one)
+    return None if found is None else int(found[1])
+
+
+def _numbered(column: str) -> str:
+    """Whether the id in column ends with a hyphen and digits, as SQL."""
+    return f"(rtrim({column}, '0123456789') <> {column} AND rtrim({column}, '0123456789') GLOB '*-')"
+
+
 def owner_sql(column: str = "id") -> str:
-    """owner as a DuckDB expression over a column of ids."""
-    return f"regexp_replace({column}, '-[0-9]+$', '')"
+    """owner as an SQL expression over a column of ids."""
+    return (f"(CASE WHEN {_numbered(column)} THEN substr({column}, 1, length(rtrim({column}, '0123456789')) - 1) "
+            f"ELSE {column} END)")
+
+
+def number_sql(column: str = "id") -> str:
+    """number as an SQL expression over a column of ids."""
+    return (f"(CASE WHEN {_numbered(column)} THEN CAST(substr({column}, length(rtrim({column}, '0123456789')) + 1) "
+            "AS INTEGER) END)")
 
 
 def order_sql(column: str = "id") -> str:
     """An SQL ORDER BY list that puts ids in their numeric order: by the
     depot's name, then by number, so trial-2 comes before trial-10. An id
     with no number after its last hyphen comes after those of its name."""
-    return (f"{owner_sql(column)}, "
-            f"try_cast(regexp_extract({column}, '-([0-9]+)$', 1) AS BIGINT) NULLS LAST, {column}")
+    return f"{owner_sql(column)}, {number_sql(column)} NULLS LAST, {column}"
+
+
+def order_key(one: str) -> tuple:
+    """The same order as order_sql, as a key of Python's sort."""
+    found = number(one)
+    return owner(one), found is None, found or 0, one

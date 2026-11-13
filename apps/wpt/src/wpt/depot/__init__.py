@@ -1,33 +1,42 @@
 """wpt depot: the depot WPT_DEPOT names (environment or .env), its texts
 and items, the decisions on them, its libraries, datasets and erasures.
 
-    wpt depot new ADDRESS --name N --maintainer M --takedown-contact C
-                                          an empty depot in a new folder
-    wpt depot clone ADDRESS TO --name N --maintainer M --takedown-contact C
-                                          a copy of the depot at ADDRESS in the new folder TO, following it,
-                                          with a name of its own (it begins the ids of the rows it adds)
-    wpt depot backup TO                   a new full copy of the depot, every table with its log and its
-                                          kept older states, as of its settled change, in a new folder under
-                                          TO (a folder or a bucket) named NAME-UTCTIME-changeN; the app never
-                                          cuts, erases or removes a backup; a depot of an older format is
-                                          copied as it is, keeping its format
-    wpt depot restore BACKUP TO           a copy of the backup BACKUP, as it is, at TO, which must hold
-                                          nothing; erasures carried out after the backup are not carried out;
-                                          a backup of an older format keeps it
+    wpt depot new FILE --name N --maintainer M --takedown-contact C
+                                          an empty depot in a new SQLite file
+    wpt depot clone URL TO --name N --maintainer M --takedown-contact C
+                                          a copy of the depot whose web app (wpt depot web) is at the web
+                                          address URL, in the new file TO, following it, with a name of its
+                                          own (it begins the ids of the rows it adds); run again after it was
+                                          cut short, it goes on where it stopped
+    wpt depot backup [--full]             send the change files waiting beside the depot's file into the
+                                          store WPT_STORE names, under backups/NAME/, each deleted here once
+                                          stored; the first run, one after a clone, an upgrade or a restore,
+                                          and --full also send a full copy of the file; the app never removes
+                                          a backup, and a timer outside it says how often it runs
+    wpt depot restore TO [--at MOMENT] [--depot NAME]
+                                          a new depot file TO, which must not exist, made from the store's
+                                          backups of the depot NAME (the only one backed up, by default) as
+                                          of MOMENT, a change number or a UTC time (the latest change sent,
+                                          by default): the last full copy at or before it and every change
+                                          after it, in order; refused on any change that does not apply
     wpt depot pull                        fetch the updates of the depot this one follows, admitted
-                                          erasures included
-    wpt depot upgrade                     bring the depot's layout up to the format this wpt reads, from an
-                                          older one, step by step, each format reached recorded as a change;
-                                          every other subcommand, the web pages, clone and pull refuse a
-                                          depot of another format, and backup and restore a newer one; run
-                                          it again after a crash
-    wpt depot sql "SELECT ..."            any read query over the depot's tables; one JSON row per line:
-                                          texts, libraries, datasets, about and erasures are the current
-                                          state (texts with their current content and the libraries holding
-                                          them now), <name>_revisions every revision of each, contents every
-                                          content version of each text, content_lists each version as the
-                                          list of its parts, and parts, memberships, pins and pulls as they
-                                          are
+                                          erasures included, over the upstream's web app
+    wpt depot upgrade [--to FILE] [--upstream URL]
+                                          bring a depot of an older format, a folder, up to the format this
+                                          wpt reads: each step up to format 3 in the folder, recorded as a
+                                          change, then a new SQLite file (FILE, by default the folder's path
+                                          with .sqlite added) written from it, which leaves the folder at
+                                          format 3; a clone takes its upstream's web address (URL); every other
+                                          subcommand, the web pages, clone and pull refuse a depot of
+                                          another format; run it again after a crash, it goes on
+    wpt depot sql "SELECT ..."            any read query over the depot's tables, in SQLite's SQL; one JSON
+                                          row per line: texts, libraries, datasets, about and erasures are
+                                          the current state (texts with their current content and the
+                                          libraries holding them now, a JSON array), <name>_revisions every
+                                          revision of each, contents every content version of each text,
+                                          content_lists each version as the list of its parts, and parts,
+                                          memberships, pins, pulls and changes as they are; a list is JSON
+                                          text: EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')
     wpt depot add FILE [--kind KIND] --license L [...] [--notice FILE] [--tag T ...] [--title T]
                 [--author A ...] [--address A] DECLARATION
                                           a plain text (FILE, UTF-8) or an item of KIND (FILE, its JSON),
@@ -154,46 +163,41 @@ from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED
 from wpt_depot.settings import depot_address
 from wpt_recipes import RecipeError
-from wpt_store import StoreError
+from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_utils.lines import ERROR, say
 
-from .shared import (CONFIRMATION, NoSample, NoVocabulary, TokenizerLocked, bucket, build_corpus, decide_erasures,
-                     env_file, jsonable, opened, pulled, train_vocabulary)
+from .shared import (CONFIRMATION, NoSample, NoVocabulary, TokenizerLocked, build_corpus, decide_erasures, env_file,
+                     jsonable, opened, pulled, train_vocabulary)
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED}
 
 
 def cmd_new(args):
-    depot = Depot.new(args.address, _about(args), bucket())
+    depot = Depot.new(args.address, _about(args))
     say(f"a new depot in {depot.address}")
     return 0
 
 
 def cmd_clone(args):
-    depot = clone(args.address, args.to, _about(args), bucket())
+    depot = clone(args.address, args.to, _about(args))
     say(f"{depot.address}: a clone of {args.address}, at its change {depot.change()}")
     return 0
 
 
 def cmd_backup(args):
-    depot = Depot.find(depot_address(env_file=env_file()), bucket())  # an older format is copied as it is
-    found = backup(depot, args.to, bucket())
-    say(f"{found.address}: a backup of {depot.address}, at its change {found.journal.settled()}{_older(found)}")
+    depot = opened()
+    record = backup(depot, store_from_settings(env_file()), full=args.full)
+    full = record["full"]
+    say(f"{depot.address}: sent {len(record['changes'])} change files"
+        + (f" and a full copy at its change {full['change']}" if full else "")
+        + f" to the store, under backups/{record['depot']}/")
     return 0
 
 
 def cmd_restore(args):
-    found = restore(args.backup, args.to, bucket())
-    say(f"{found.address}: a copy of the backup {args.backup}, at its change {found.journal.settled()}"
-        f"{_older(found)}")
+    found = restore(store_from_settings(env_file()), args.to, args.at, args.depot)
+    say(f"{found.address}: restored from the store's backups of {found.name()}, at its change {found.change()}")
     return 0
-
-
-def _older(copy: Depot) -> str:
-    """What a copy of an older format needs before anything else reads it; nothing for one of FORMAT."""
-    found = copy.format()
-    return "" if found == FORMAT else (f"; it is of format {found}, older than the format {FORMAT} this wpt reads: "
-                                       "run `wpt depot upgrade` on it before any other command")
 
 
 def cmd_pull(args):
@@ -205,14 +209,17 @@ def cmd_pull(args):
 
 
 def cmd_upgrade(args):
-    depot, start = Depot.upgrade(depot_address(env_file=env_file()), bucket())
-    say(f"{depot.address}: format {start} brought up to format {FORMAT}, at its change {depot.change()}"
-        if start < FORMAT else f"{depot.address}: at format {FORMAT} already, nothing to upgrade")
+    address = depot_address(env_file=env_file())
+    depot, start = Depot.upgrade(address, args.to, args.upstream)
+    say(f"{depot.address}: format {start} of {address} brought up to format {FORMAT}, at its change "
+        f"{depot.change()}; set WPT_DEPOT to {depot.address}" if start < FORMAT
+        else f"{depot.address}: at format {FORMAT} already, nothing to upgrade")
     return 0
 
 
 def cmd_sql(args):
-    _rows(opened().sql(args.query).to_pylist())
+    columns, found = opened().answer(args.query)
+    _rows(dict(zip(columns, one)) for one in found)
     return 0
 
 
@@ -262,7 +269,7 @@ def cmd_relicense(args):
 
 def cmd_content(args):
     depot = opened()
-    item = depot.sql(f"SELECT kind FROM texts WHERE id = {literal(args.id)}")["kind"].to_pylist() not in ([None], [])
+    item = [one["kind"] for one in depot.sql(f"SELECT kind FROM texts WHERE id = {literal(args.id)}")] not in ([None], [])
     new = Path(args.file).read_text(encoding="utf-8") if item else FileText(Path(args.file))  # a plain text as a stream
     changed = depot.change_content(args.id, None if item else new, new if item else None, _declaration(args))
     if changed is None:
@@ -394,7 +401,7 @@ def cmd_erase(args):
 
 
 def cmd_erasures(args):
-    _rows(opened().erasures().to_pylist())
+    _rows(opened().erasures())
     return 0
 
 
@@ -403,7 +410,7 @@ def cmd_web(args):
     return serve(args.port)
 
 
-def _rows(found: list[dict]):
+def _rows(found):
     for row in found:
         sys.stdout.write(json.dumps(jsonable(row), ensure_ascii=False) + "\n")
 
@@ -443,29 +450,36 @@ def parser() -> argparse.ArgumentParser:
                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = found.add_subparsers(dest="command", required=True)
 
-    new = commands.add_parser("new", help="an empty depot in a new folder")
-    new.add_argument("address", help="the new depot's folder, a path or a file:// address")
+    new = commands.add_parser("new", help="an empty depot in a new SQLite file")
+    new.add_argument("address", help="the new depot's file, a path or a file:// address")
     new.add_argument("--name", required=True, help="the depot's name")
     new.add_argument("--maintainer", required=True, help="who maintains it")
     new.add_argument("--takedown-contact", required=True, help="where to ask for a takedown")
     new.set_defaults(run=cmd_new)
     cloning = commands.add_parser("clone", help="a copy of a depot, following it")
-    cloning.add_argument("address", help="the depot to copy")
-    cloning.add_argument("to", help="the new depot's folder")
+    cloning.add_argument("address", help="the web address of the web app of the depot to copy (https://...)")
+    cloning.add_argument("to", help="the new depot's file")
     cloning.add_argument("--name", required=True, help="the clone's own name, not the upstream's")
     cloning.add_argument("--maintainer", required=True, help="who maintains the clone")
     cloning.add_argument("--takedown-contact", required=True, help="where to ask for a takedown of the clone")
     cloning.set_defaults(run=cmd_clone)
-    backing = commands.add_parser("backup", help="a new full copy of the depot, as of its settled change")
-    backing.add_argument("to", help="where the new backup folder goes: a folder or a bucket")
+    backing = commands.add_parser("backup", help="send the depot's waiting change files, and a full copy when one "
+                                                 "is due, into the store")
+    backing.add_argument("--full", action="store_true", help="send a new full copy of the file too")
     backing.set_defaults(run=cmd_backup)
-    restoring = commands.add_parser("restore", help="a copy of a backup, as it is, at a new address")
-    restoring.add_argument("backup", help="the backup's folder")
-    restoring.add_argument("to", help="the new depot's folder, which must hold nothing")
+    restoring = commands.add_parser("restore", help="a new depot file made from the store's backups")
+    restoring.add_argument("to", help="the new depot's file, which must not exist")
+    restoring.add_argument("--at", metavar="MOMENT", help="a change number or a UTC time (ISO 8601); by default the "
+                                                          "latest change sent")
+    restoring.add_argument("--depot", metavar="NAME", help="the name of the depot whose backups to read; by default "
+                                                           "the only one the store holds backups of")
     restoring.set_defaults(run=cmd_restore)
     commands.add_parser("pull", help="fetch the updates of the depot this one follows").set_defaults(run=cmd_pull)
-    commands.add_parser("upgrade", help="bring the depot's layout up to the format this wpt reads").set_defaults(
-        run=cmd_upgrade)
+    upgrading = commands.add_parser("upgrade", help="bring a depot of an older format up to the format this wpt "
+                                                    "reads, as a new file")
+    upgrading.add_argument("--to", metavar="FILE", help="the new file; by default the folder's path with .sqlite added")
+    upgrading.add_argument("--upstream", metavar="URL", help="for a clone: the web address of its upstream's web app")
+    upgrading.set_defaults(run=cmd_upgrade)
     query =commands.add_parser("sql", help="any read query over the depot's tables")
     query.add_argument("query", help="one SELECT statement")
     query.set_defaults(run=cmd_sql)
@@ -488,8 +502,8 @@ def parser() -> argparse.ArgumentParser:
     showing.set_defaults(run=cmd_show)
     deciding = commands.add_parser("decide", help="one decision on every text a condition matches")
     deciding.add_argument("status", choices=list(STATUSES))
-    deciding.add_argument("where", nargs="?", help="an SQL condition over the texts table: list_contains(tags, "
-                                                   "'en')")
+    deciding.add_argument("where", nargs="?", help="an SQL condition over the texts table, in SQLite's SQL: "
+                                                   "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')")
     deciding.add_argument("--erasure", help="decide this erasure request instead of texts")
     deciding.add_argument("--reason", help="why, public (optional); never starting with 'licenses changed from ' or "
                                            "'content changed from version ', the forms the depot keeps for its "
@@ -646,7 +660,7 @@ def main(argv=None) -> int:
             found.error(f"credits takes --clear {both[0]} or a new value for it, not both")
     try:
         return args.run(args)
-    except (DepotError, RecipeError, StoreError, NoVocabulary, TokenizerLocked, NoSample, OSError, UnicodeDecodeError) as error:
+    except (DepotError, RecipeError, StoreError, StoreSettingError, NoVocabulary, TokenizerLocked, NoSample, OSError, UnicodeDecodeError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2
 

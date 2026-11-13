@@ -3,9 +3,11 @@ and their OpenAPI description at /api/openapi.json.
 
 The server listens on 127.0.0.1 and answers any client, like the commands:
 no login and no header to send; it checks neither the Host header nor a
-request's Content-Type. A query or a filter's condition reads nothing
-outside the depot's folder and runs in a process of its own, killed at a
-time limit and capped in memory (readers.py), and a pull, a corpus build,
+request's Content-Type. A query or a filter's condition only reads the
+depot's file and runs in a process of its own, stopped at a time limit
+and capped in memory (readers.py); the follow routes, which a clone or a
+pull of this depot reads, send their pages as they are made (Stream); and
+a pull, a corpus build,
 a remote's import and a change of the depot's maintainer or takedown
 contact are commands only (what that leaves open:
 docs/architecture.md, "Two interfaces"). Each route declares the JSON
@@ -22,7 +24,7 @@ import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import unquote, urlsplit
 
 import jsonschema
@@ -34,16 +36,23 @@ REFUSALS = {"400": "the body does not match the route's schema, or a query is no
             "404": "no such text, library, dataset, erasure, recipe or route",
             "422": "the depot's rules refuse it, or a person's SQL ran past its time or memory, or its answer past its "
                    "size; nothing was written",
-            "500": "a change is in the depot's journal and not applied to every table yet (the next write or "
-                   "opening the depot again finishes it), or a failure the routes do not name, whose trace the server prints",
+            "500": "a failure the routes do not name, whose trace the server prints; nothing was written",
             "503": "what the route needs is missing on this machine (the store)"}
+
+
+@dataclass(frozen=True)
+class Stream:
+    """An answer sent as it is made, chunk by chunk, of the media type kind,
+    so an answer of any size never sits whole in memory."""
+    kind: str
+    chunks: Iterator[bytes]
 
 
 @dataclass(frozen=True)
 class Route:
     """method and pattern ("/api/texts/{id}") select the handler, which
     gets the pattern's values and the request's JSON body (None for GET) and
-    returns (HTTP status, JSON payload). summary says what it does; body is
+    returns (HTTP status, JSON payload or a Stream). summary says what it does; body is
     the JSON Schema of the body it takes (None: no body); answer the JSON
     Schema of a successful answer."""
     method: str
@@ -133,6 +142,8 @@ def make_server(routes: list[Route], static: Path, port: int = 0) -> ThreadingHT
                     except Exception as error:  # answered, so that the page shows it, and its trace printed
                         say(traceback.format_exc().rstrip(), ERROR)
                         return self._json(500, {"problems": [f"{type(error).__name__}: {error}"]})
+                    if isinstance(answer[1], Stream):
+                        return self._stream(*answer)
                     return self._json(*answer)
             self._json(404, {"problems": [f"no route {method} {path}"]})
 
@@ -147,6 +158,20 @@ def make_server(routes: list[Route], static: Path, port: int = 0) -> ThreadingHT
 
         def _json(self, status, payload):
             self._send(status, json.dumps(payload, ensure_ascii=False).encode(), "application/json")
+
+        def _stream(self, status, stream: Stream):
+            """Send the stream's chunks as they come, the connection closed at its end."""
+            self.send_response(status)
+            self.send_header("Content-Type", stream.kind)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                for chunk in stream.chunks:
+                    self.wfile.write(chunk)
+            except Exception:  # the headers are sent: the client sees the answer cut short
+                say(traceback.format_exc().rstrip(), ERROR)
 
         def _send(self, status, data, kind):
             self.send_response(status)

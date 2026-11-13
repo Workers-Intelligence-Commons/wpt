@@ -4,17 +4,19 @@ the depot and turns its result, or its failure, into an answer. The depot
 applies every rule, so the pages and the subcommands cannot disagree. A
 pull, a corpus build, a remote's import and a change of the depot's
 maintainer or takedown contact have no route: they are commands only
-(docs/architecture.md, "Two interfaces")."""
+(docs/architecture.md, "Two interfaces"). The follow routes only read:
+they answer a clone or a pull of another depot (wpt_depot.follow), a page
+at a time."""
 
+import itertools
 import json
 from functools import wraps
 
-from wpt_depot import Declaration, Depot, NewText, errors
+from wpt_depot import Declaration, Depot, NewText, errors, follow
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, CREDITS, NO_ALLOWED_LICENSE, ORDERS
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter, condition
-from wpt_depot.scoring import lines as score_lines
 from wpt_depot.schema import ADMITTED, REFUSED
 from wpt_recipes import InvalidRecipe, Recipes
 from wpt_recipes import NotFound as RecipeNotFound
@@ -25,11 +27,10 @@ from .. import shared
 from ..shared import CONFIRMATION, REQUIREMENTS, jsonable
 from . import readers as limits
 from .readers import Readers
-from .server import Route
+from .server import Route, Stream
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
-STATUSES = {errors.NotFound: 404, RecipeNotFound: 404, errors.BadQuery: 400, errors.JournalUnfinished: 500,
-            StoreError: 503, errors.DepotError: 422, InvalidRecipe: 422}
+STATUSES = {errors.NotFound: 404, RecipeNotFound: 404, errors.BadQuery: 400, StoreError: 503, errors.DepotError: 422, InvalidRecipe: 422}
 
 TEXT = {"type": "string", "minLength": 1}
 NAMES = {"type": "array", "items": TEXT}
@@ -60,7 +61,7 @@ def refusals(handler):
 def routes(depot: Depot) -> list[Route]:
     """Every route over depot; a person's SQL runs in reader processes
     (wpt.depot.web.readers)."""
-    readers = Readers(depot.address, depot.settings)
+    readers = Readers(depot.address)
 
     def declared(body) -> Declaration:
         found = body["declaration"]
@@ -78,7 +79,7 @@ def routes(depot: Depot) -> list[Route]:
     @refusals
     def kinds(values, body):
         return 200, [{**one, "schema": json.loads(one["schema"])} for one in
-                     depot.sql("SELECT * FROM kinds ORDER BY id").to_pylist()]
+                     depot.rows("SELECT * FROM kinds ORDER BY id")]
 
     @refusals
     def licenses(values, body):
@@ -116,7 +117,7 @@ def routes(depot: Depot) -> list[Route]:
 
     @refusals
     def scores(values, body):
-        decision, reason, changed, left_out = depot.edit_scores(score_lines(body["texts"]), declared(body))
+        decision, reason, changed, left_out = depot.edit_scores(body["texts"], declared(body))
         return 200, {"decision": decision, "reason": reason, "changed": changed, "left_out": left_out}
 
     @refusals
@@ -177,9 +178,9 @@ def routes(depot: Depot) -> list[Route]:
 
     @refusals
     def libraries(values, body):
-        return 200, jsonable(depot.sql(
-            "SELECT l.*, (SELECT count(*) FROM texts t WHERE list_contains(t.libraries, l.id)) AS texts, "
-            f"{depot.upstream_sql('l.id')} AS upstream FROM libraries l ORDER BY l.id").to_pylist())
+        return 200, jsonable(depot.rows(
+            "SELECT l.*, (SELECT count(*) FROM memberships m WHERE m.library = l.id AND m.left_change IS NULL) "
+            f"AS texts, {depot.upstream_sql('l.id')} AS upstream FROM libraries l ORDER BY l.id"))
 
     @refusals
     def pinned(values, body):
@@ -224,7 +225,7 @@ def routes(depot: Depot) -> list[Route]:
 
     def held_libraries():
         """{id: {id, name, locked_at}} of every library this depot holds."""
-        return {one["id"]: one for one in depot.sql("SELECT id, name, locked_at FROM libraries").to_pylist()}
+        return {one["id"]: one for one in depot.rows("SELECT id, name, locked_at FROM libraries")}
 
     def with_here(row, held):
         """A dataset's row with here: the ids of the libraries it reads from
@@ -236,7 +237,7 @@ def routes(depot: Depot) -> list[Route]:
 
     @refusals
     def datasets(values, body):
-        found = depot.sql(f"SELECT *, {depot.upstream_sql()} AS upstream FROM datasets ORDER BY id").to_pylist()
+        found = depot.rows(f"SELECT *, {depot.upstream_sql()} AS upstream FROM datasets ORDER BY id")
         held = held_libraries()
         return 200, jsonable([with_here(row, held) for row in found])
 
@@ -291,7 +292,7 @@ def routes(depot: Depot) -> list[Route]:
 
     @refusals
     def erasures(values, body):
-        found = depot.erasures().to_pylist()
+        found = depot.erasures()
         theirs = set(depot.upstream_owned([one["id"] for one in found]
                                           + [needle["text"] for one in found for needle in one["needles"]]))
         return 200, jsonable([{**one, "upstream": one["id"] in theirs
@@ -311,6 +312,28 @@ def routes(depot: Depot) -> list[Route]:
     def decide_erasures(values, body):
         return 200, {"carried_out": shared.decide_erasures(depot, body["erasures"], body["status"], declared(body),
                                                            body.get("reason"), say)}
+
+    def streamed(kind: str, chunks) -> Stream:
+        """chunks as an answer sent as it is made, its first chunk made
+        already, so a refusal is answered before anything is sent."""
+        first = next(chunks)
+        return Stream(kind, itertools.chain([first], chunks))
+
+    @refusals
+    def follow_head(values, body):
+        return 200, follow.head(depot)
+
+    @refusals
+    def follow_rows(values, body):
+        return 200, streamed("application/x-ndjson", follow.rows(
+            depot, body["table"], body.get("ranges"), body.get("after"), body.get("texts")))
+
+    @refusals
+    def follow_parts(values, body):
+        keys = body["keys"]
+        if len(keys) > follow.PARTS_KEYS:
+            raise errors.BadQuery(f"a request names at most {follow.PARTS_KEYS} parts, not {len(keys)}")
+        return 200, streamed("application/octet-stream", follow.parts(depot, keys))
 
     status = {"enum": [ADMITTED, REFUSED]}
     library_ref = {"type": "object", "required": ["library"],
@@ -338,8 +361,8 @@ def routes(depot: Depot) -> list[Route]:
                                   "libraries": {**NAMES, "description": "one of them holds the text"},
                                   "locked": {"type": ["boolean", "null"],
                                              "description": "whether a locked library holds the text"},
-                                  "where": {**nullable, "description": "an SQL condition over the texts table, which "
-                                            "reaches nothing outside the depot's folder (400) and, with the "
+                                  "where": {**nullable, "description": "an SQL condition over the texts table, in "
+                                            "SQLite's SQL, which only reads the depot's file (400) and, with the "
                                             f"rest of the request's reads, stops after {limits.SECONDS} seconds or "
                                             f"past {limits.MEMORY} bytes of memory (422)"}}}
     return [
@@ -355,8 +378,10 @@ def routes(depot: Depot) -> list[Route]:
               "memberships each library's texts with the change numbers they joined and left at, pins the "
               "revision each locked library holds of each of its texts, and pulls, for a depot that follows "
               "another, each pull's change number with the upstream's change number it brought; licenses, notices, kinds, decisions and "
-              "journal as they are; a time is ISO 8601 text and a byte string hexadecimal text; the query reaches "
-              "nothing outside the depot's folder (a read of another file or address is refused with 400), and "
+              "changes (each change's number, kind and time) as they are; a list is JSON text (a tag test: EXISTS "
+              "(SELECT 1 FROM json_each(tags) WHERE value = 'book')), a time ISO 8601 text and a byte string "
+              "hexadecimal text; the query is one statement of SQLite's SQL that only reads the depot's file (a "
+              "write, an attached file, a pragma or an extension is refused with 400), and "
               f"stops after {limits.SECONDS} seconds or past {limits.MEMORY} bytes of memory (422); an answer "
               f"of more than {limits.ANSWER_ROWS} rows or {limits.ANSWER_BYTES} bytes of JSON is refused (422)",
               body={"type": "object", "required": ["query"], "properties": {"query": TEXT}},
@@ -588,4 +613,24 @@ def routes(depot: Depot) -> list[Route]:
               body={"type": "object", "required": ["erasures", "status", "declaration"],
                     "properties": {"erasures": IDS, "status": status, "reason": TEXT, "declaration": DECLARATION}},
               answer={"type": "object", "required": ["carried_out"]}),
+        Route("POST", "/api/follow/head", follow_head, "for a clone or a pull of this depot (wpt depot clone, "
+              "pull): its name, its format, its change number and what it holds of each depot's numbering then",
+              body=OBJECT, answer={"type": "object", "required": ["name", "format", "change", "bounds"]}),
+        Route("POST", "/api/follow/rows", follow_rows, "for a clone or a pull: one page of the rows of a table "
+              f"that travels ({', '.join(follow.TABLES)}), in the order of its key, from the key after which the "
+              f"last page ended, at most {follow.PAGE_ROWS} rows or about {follow.PAGE_BYTES} bytes: JSON lines, "
+              "each row an object, then {\"next\": the key the next page starts after, or null}; ranges: {depot "
+              "name: [after, up to]}, the change numbers chosen of each depot's rows; texts, for content_lists, "
+              "the ids of the texts whose every version is wanted",
+              body={"type": "object", "required": ["table"],
+                    "properties": {"table": {"enum": list(follow.TABLES)},
+                                   "ranges": {"type": ["object", "null"], "additionalProperties": {
+                                       "type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}},
+                                   "after": {"type": ["array", "null"]}, "texts": {"type": "array", "items": TEXT}}}),
+        Route("POST", "/api/follow/parts", follow_parts, "for a clone or a pull: the parts named ([text id, hash in "
+              f"hexadecimal], at most {follow.PARTS_KEYS}), each a JSON line {{id, hash, change, size}} then its "
+              "stored value (size bytes, compressed), or {id, hash, missing: true} for one an erasure cut",
+              body={"type": "object", "required": ["keys"],
+                    "properties": {"keys": {"type": "array", "items": {
+                        "type": "array", "items": TEXT, "minItems": 2, "maxItems": 2}}}}),
     ]

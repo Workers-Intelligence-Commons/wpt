@@ -76,7 +76,7 @@ def built(tmp_path, monkeypatch):
 
     def recipe(name="d", model=None, training=None, drafter=None, steps=(), dataset="d"):
         text = {**ONE_STEP, **(training or {})}
-        named = depot.sql(f"SELECT id FROM datasets WHERE name = '{dataset}'")["id"].to_pylist()
+        named = [one["id"] for one in depot.sql(f"SELECT id FROM datasets WHERE name = '{dataset}'")]
         found = corpora.latest(store, depot.address, named[0]) if named else None  # the whole corpus, once built
         total = found["total_tokens"] if found else 3000
         read_text = {"step": "read-text", "optimizer": {"name": text["optimizer"], "settings": text["settings"]},

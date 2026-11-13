@@ -36,7 +36,7 @@ export function LibraryHead({ library, libraries, onChanged }: { library: Librar
   };
   const act = (a: Act) => () => { setDone(null); setActing(a); };
   const lock = async () => finished(await post(`/api/libraries/${encodeURIComponent(library.id)}/lock`, {}), `${library.name} is locked.`);
-  const outside = { ...EVERY, statuses: ["admitted" as const], where: `NOT list_contains(libraries, '${library.id.replace(/'/g, "''")}')` };
+  const outside = { ...EVERY, statuses: ["admitted" as const], where: `NOT EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '${library.id.replace(/'/g, "''")}')` };
   return (
     <section className="open-head" aria-label={`The library ${library.name}`}>
       <div className="open-head-main">
@@ -69,7 +69,7 @@ export function LibraryHead({ library, libraries, onChanged }: { library: Librar
             {library.problems!.map((p) => (
               <li key={p.decision}>
                 <a href={href(["libraries", library.id, "problems", p.decision])} className="cut" title={p.problem}>{p.problem}</a> <a className="ledger aside" href={href(["decisions", p.decision])}>{p.decision}</a>
-                {p.texts.length > 0 ? <> <a href={href(["texts"], { where: `list_contains(${JSON.stringify(p.texts).replace(/"/g, "'")}, id)` })}>{plural(p.texts.length, "text")}</a></> : <span className="aside"> the whole library</span>}
+                {p.texts.length > 0 ? <> <a href={href(["texts"], { where: `id IN (${p.texts.map((t) => `'${t.replace(/'/g, "''")}'`).join(", ")})` })}>{plural(p.texts.length, "text")}</a></> : <span className="aside"> the whole library</span>}
               </li>
             ))}
           </ul>

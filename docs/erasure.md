@@ -5,7 +5,7 @@ about content that is properly licensed.
 
 Backups of a depot are the one exception. An erasure does not reach a
 backup, so a backup keeps an erased passage for good, and a depot
-restored from it holds the passage again ([architecture.md](architecture.md),
+restored to a moment before the erasure holds the passage again ([architecture.md](architecture.md),
 "Backups").
 
 ## How to ask
@@ -111,11 +111,14 @@ The depot carries out an admitted request at once:
   in a text and refuse it. The cost is that anyone can confirm a guess at a
   short passage, such as a name or a phone number, by hashing it; the
   second hash can be slid over a later text to find the passage there.
-- The journal holds no content but the versions an erasure cuts, until
-  the erasure is done; the rows of the texts removed whole leave it. The
-  storage history of every table of the depot is dropped, so no file in
-  the depot's own folder holds the passage any more. Its backups are
-  copies of their own and keep it.
+- The depot's file keeps no copy of the passage: a deleted row's bytes
+  are overwritten, and the file's write-ahead log is emptied into it.
+- The erasure's change file, like every change file, holds the rows it
+  removed as they were, the passage included. It waits in the waiting
+  folder beside the depot's file (`<file>.waiting`) until the next
+  `wpt depot backup` sends it to the store and deletes it from the
+  folder. The
+  backups keep it for good.
 
 A depot that follows an upstream carries out the upstream's admitted
 erasures when it pulls, with their recorded places ([architecture.md](architecture.md), "The depot").

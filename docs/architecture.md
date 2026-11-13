@@ -5,7 +5,7 @@ holds the code, the model, tokenizer and series recipes, and the images of
 agentic tasks. The texts, the decisions on them and what to train on live
 in depots, and everything built or trained lives in a store.
 
-- A depot is one folder, known by its address, of tables: the texts and the
+- A depot is one SQLite file, known by its address, of tables: the texts and the
   structured items (conversations, tasks), each with its license, credits
   and notice; the people's decisions on them; the libraries that group
   admitted texts; the erasures; and the datasets, each naming libraries and
@@ -39,63 +39,68 @@ disagree.
 
 ## The depot
 
-A depot is one folder, or a prefix in an S3-compatible bucket
-(`s3://bucket/prefix`), given as a path or an address and known by that
-address. One app writes it, and people copy it whole. A depot in a bucket
-reads its own settings, never the store's: `WPT_DEPOT_ACCESS_KEY_ID` and
-`WPT_DEPOT_SECRET_ACCESS_KEY` (both needed), `WPT_DEPOT_SESSION_TOKEN`,
-`WPT_DEPOT_ENDPOINT_URL` and `WPT_DEPOT_REGION` (default `us-east-1`), in
-the environment or in `.env`. It reads no `AWS_*` setting. The setting
-`WPT_DEPOT`, in the environment or in `.env`, names the depot that
-`wpt depot` and `wpt depot web` work on, as `WPT_STORE` names the store.
-`wpt depot new ADDRESS` makes an empty one, with its name, its maintainer
-and its takedown contact.
+A depot is one SQLite file, given as a path or a `file://` address and
+known by that address. The setting `WPT_DEPOT`, in the environment or in
+`.env`, names the depot that `wpt depot` and `wpt depot web` work on, as
+`WPT_STORE` names the store. `wpt depot new ADDRESS` makes an empty one,
+with its name, its maintainer and its takedown contact.
 
 Its tables are `about` (the depot's name, maintainer, takedown contact
-and upstream), `licenses`, `notices`, `kinds`, `decisions`, `texts`,
-`contents` (every content version of each text, as the list of its
-parts), `parts` (the parts of each text's content versions), `libraries`,
-`memberships` (when each text joined and left each library), `pins` (the
-revision of each text a locked library reads), `erasures`, `datasets`,
-`pulls` (for a depot that follows another, how its change numbers meet
-its upstream's) and `journal`. What each holds
-and the rules on it are in [data-selection.md](data-selection.md) (texts,
-items, tags, libraries, datasets and corpora),
-[licenses.md](licenses.md) (licenses, notices and decisions) and
-[erasure.md](erasure.md) (erasures).
+and upstream), `changes` (every change: its number, its kind and its
+time), `numbers` (the last number of each kind of the depot's own ids),
+`licenses`, `notices`, `kinds`, `decisions`, `texts`, `content_lists`
+(every content version of each text, as the list of its parts), `parts`
+(the parts of each text's content versions), `libraries`, `memberships`
+(when each text joined and left each library), `pins` (the revision of
+each text a locked library reads), `erasures`, `datasets` and `pulls`
+(for a depot that follows another, how its change numbers meet its
+upstream's). Every table declares a primary key. What each holds and the
+rules on it are in [data-selection.md](data-selection.md) (texts, items,
+tags, libraries, datasets and corpora), [licenses.md](licenses.md)
+(licenses, notices and decisions) and [erasure.md](erasure.md)
+(erasures).
 
 **Ids.** Every id (of a text, a decision, a library, an erasure, a notice
 or a dataset) is the depot's name, a hyphen and a number: `my-depot-17`. The
 depot's name is made of letters, digits, `.`, `_` and `-`, and begins with a letter or a digit. A reference to an
 id in another table, in a dataset, in a corpus or in a tokenizer lock holds
-the whole id, so an id names one thing across depots. The number comes from
-the highest number this depot's ids carry in that table, an erased text's id
-included. A clone takes a name of its own, since it never reuses its
-upstream's.
+the whole id, so an id names one thing across depots. The number is one
+past the last number of that kind of id the depot gave (`numbers`), an
+erased text's included, so a number is never given twice. A clone takes a
+name of its own, since it never reuses its upstream's.
 
-Each table is a Delta Lake table in its own folder, written through
-delta-rs and read as SQL through DuckDB (`wpt_depot/tables.py`). Delta
-Lake checks only NOT NULL and CHECK constraints, so `wpt_depot.depot`
-enforces keys and references itself. It is the only code that changes a
-depot: each operation checks the whole change against the depot's rules
-first, so a refused change writes nothing.
+**Writing.** The file is in WAL mode. Several processes may open it: each
+reads at any time, and SQLite's lock lets one write at a time, the others
+waiting for it. `wpt_depot.depot` is the only code that changes a depot.
+Each operation is one change: one transaction, under the next change
+number, that checks the whole change against the depot's rules inside it,
+so a refused or failed change writes nothing and a crash never leaves a
+change half written (`wpt_depot/database.py`).
+
+A session of SQLite records every row a change writes or deletes. Before
+the transaction commits, that record goes to a change file in the waiting
+folder beside the depot's file (`<file>.waiting`), named by the change
+number, the number of the change before it and its time. The file is
+synced and kept only once the change is committed, so the waiting folder
+holds exactly the depot's committed changes since its last backup. A
+deleted row's bytes are overwritten in the file, so an erasure leaves no
+copy of what it removed in the file's free space.
 
 **Revisions and change numbers.** Every change of a depot has a change
 number, one past the last. `about`, `texts`, `libraries`, `erasures` and
 `datasets` keep each change of a row as a new row, its revision, keyed by
 the id and the revision number and recording its change number; the
 highest revision is the current one. A text's content versions are
-rows of `contents`, keyed by the text's id and the version number and
+rows of `content_lists`, keyed by the text's id and the version number and
 recording their change number, and each revision of the text names the
 content version it reads. A revision of a text also holds its scores,
 each with the content version it was made from. Memberships record the change
 numbers a text joined and left a library at. A depot can so be read as it
 was at any change number, which a dataset names for each library it
-reads. Delta Lake's own table history plays no part: an admitted erasure
-drops it.
+reads.
 
 **Contents.** A content version, a plain text or an item's JSON, is the
-ordered list of its parts, and its row of `contents` holds that list,
+ordered list of its parts, and its row of `content_lists` holds that list,
 each part's SHA-256 and length, with the version's length in characters
 and in UTF-8 bytes. The same rule cuts every text, whatever its size, so
 a text of many gigabytes, such as a repository with all its files and its
@@ -103,180 +108,124 @@ history, is one text (`wpt_depot/parts.py`). A text shorter than a part's
 least size is one part. A cut falls only right after a line end, at a line
 end that a hash of the bytes ending there chooses, so a part holds a few
 megabytes on average, and a cut depends only on the bytes around it. A
-part never holds more than a fixed maximum, far under the 2 GiB that one
-stored string holds: past it, the part ends at its last line end, or,
-with none, at its last whole character. A row of `parts` holds one part,
-keyed by the text's id and the part's hash, stored once for that text and
-shared by none other. An edit changes only the parts around it, so a new
-content version stores only the parts no version of the text held
-before. An erasure writes again only the parts that hold a character it
-cuts, and the versions list the new parts instead. A part that no version
-lists any longer goes. A text bigger than memory is added from a file read
-as a stream. An erasure, a clone and a pull read and write a text's parts a
-few at a time, and the corpus build reads the parts of all the texts it
-takes in one pass over `parts`. The corpus build holds the tokens of one
-text whole in memory while it encodes it, and `wpt depot show` and the web
-pages give a text whole, so they hold it in memory.
+part never holds more than a fixed maximum, far under the most bytes one
+SQLite value holds: past it, the part ends at its last line end, or, with
+none, at its last whole character. A row of `parts` holds one part,
+compressed with zstd, keyed by the text's id and the part's hash, stored
+once for that text and shared by none other. An edit changes only the
+parts around it, so a new content version stores only the parts no
+version of the text held before. An erasure writes again only the parts
+that hold a character it cuts, and the versions list the new parts
+instead. A part that no version lists any longer goes. A text bigger than
+memory is added from a file read as a stream. An erasure, a clone and a
+pull read and write a text's parts a few at a time, and the corpus build
+reads the parts of all the texts it takes in one pass over `parts`. The corpus build
+holds the tokens of one text whole in memory while it encodes it, and
+`wpt depot show` and the web pages give a text whole, so they hold it in
+memory.
 
-**SQL.** A read query sees each revised table's current state under its
+**SQL.** Every query is SQLite's SQL. A list column (a text's licenses,
+authors, tags, decisions and scores, a library's problems, a dataset's
+libraries and shares, and the others `wpt_depot/schema.py` names) is JSON
+text, so a tag test is `EXISTS (SELECT 1 FROM json_each(tags) WHERE value
+= 'book')`. A read query sees each revised table's current state under its
 plain name (`texts`, `libraries`, `datasets`, `about`, `erasures`) and
 every one of its rows under `<name>_revisions`. The `texts` view joins
 each text with the content version its current revision reads, its length
 and the libraries that hold it now. The `contents` view gives each content
 version's whole text, its parts joined in order, and `content_lists` its
-rows as they are. The other
-tables, `parts`, `memberships`, `pins` and `pulls` included, are seen
-as they are. A query that names no text column reads the views without
-joining any part, so a query over the texts' other columns costs the same
-whatever their size. DuckDB holds a string of at most 4294967295 bytes: a
-query that reads the text of a content version bigger than that fails
-with an error that names the version, and such a text is read from its
-parts, as `wpt depot show` reads it.
+rows as they are. The other tables, `parts`, `memberships`, `pins` and
+`pulls` included, are seen as they are. A query that names no text column
+reads the views without joining any part, so a query over the texts'
+other columns costs the same whatever their size. A query that reads the
+text of a content version bigger than one SQLite value holds fails with an
+error that names the version, and such a text is read from its parts, as
+`wpt depot show` reads it.
 
-**The journal.** Delta Lake commits one table at a time, so a change that
-touches several tables is written into the journal first, and that write
-makes it certain. The journal holds no text's content: right after its
-entry, the parts a change adds are written to `parts` in one streamed
-commit, and then its content versions to `contents` in one commit, both
-numbered by its change number. An erasure's entry holds the lists of parts
-of the versions it cuts and the number of new parts, and its new parts are
-written the same way. A change of scores holds
-only its decision and the number of texts it changes: its decision and
-then the texts' new revisions, made by one query over the lines of the
-change and the current texts, are written right after its entry, the
-revisions in one streamed commit numbered by its change number. The depot then applies
-the change to each table and marks it done. Opening a depot applies
-again every change left undone, and cuts short a change whose content
-versions, or whose revisions of a change of scores, were never written,
-writing nothing of it, so a crash never
-leaves a change half applied. A change that fails while the depot stays
-open is finished the same way before its next write, so no later change
-takes the ids or the change number of an undone one (`wpt_depot/journal.py`). The decision that
-admits an erasure and the erasure's carrying out are one change. Only the
-app that owns a depot finishes its journal: reading another depot (a
-dataset's library, a corpus, an upstream) writes nothing.
-
-**Writing rows.** A new row is appended without reading the rows its
-table holds, so adding texts costs no more for the text the depot holds
-already. A change applied again after a crash compares keys instead, so it
-never writes a row twice. Only a row that changes in place is rewritten
-through a merge, which reads the whole table: a membership that ends, a
-content version an erasure cuts, a row a pull replaces, a journal entry
-marked done. Each write adds files that every later read of its table
-opens, so at regular intervals of writes a table's log is summed up in
-a checkpoint and its small files are merged: a read opens a bounded
-number of small files whatever the number of writes before. A merge
-that fails leaves the write it follows as committed. The files a merge
-replaces stay with the older states, and every checkpoint records them,
-so opening a table still grows slowly with the files it replaced.
-`parts` and `contents` are never merged: the replaced files of `parts`
-would hold each content a second time, so their file counts grow with the
-writes that add contents. A query opens only the tables it reads. A text's
-content is stored once, in `parts`, whose content column is written
-without statistics and without a dictionary, so no file footer or table
-log holds a copy of a text's first characters. The Parquet writer checks
-a page's size every 16 rows of `parts`, so a page holds at most 16 parts
-past its size limit and stays under the 2 GiB a Parquet page holds.
+A person's SQL (`wpt depot sql`, the condition of a filter) runs on a
+connection that opens the file read-only and whose authorizer lets a
+statement only read rows and call functions: a statement that writes,
+attaches another file, runs a pragma or loads an extension is refused, and
+a query is one statement.
 
 **Format.** The depot's layout, its tables and their columns, has a
 number: its format. The code holds the format it reads and writes
 (`FORMAT` in `wpt_depot/schema.py`). Each `about` row records the depot's
-format when it was written, so the current row gives the depot's format. A
-depot whose `about` table has no `format` column is of format 0.
-
-Each format adds one change of layout to the one before. Format 1 adds the
-`format` column of `about`. Format 2 adds the `scores` column of `texts`,
-null for a text without scores. Its upgrade step adds the column to the
-table's log alone and rewrites no data file, so it costs the same whatever
-the number of texts. A data file written before a column was added lacks
-that column, and every read gives it as null in that file's rows: the SQL
-view of a table a step widened this way (`WIDENED` in
-`wpt_depot/schema.py`) matches the columns of its files by name, which
-reads the footer of each of its files before a query runs, and every other
-table's view reads its files by the first one's columns.
-
-Format 3 stores each content version as the list of its parts, in the new
-table `parts` ("Contents" above). Its upgrade step reads the data files of
-`contents` in batches of a bounded size, a few rows at a time, and never
-holds the table in memory. It stores each batch's parts in one commit of
-`parts`, which records the batch's number as a Delta Lake transaction, so
-a step cut short resumes after the last batch stored and stores no part
-twice. It keeps each batch's lists in the folder `format-3-lists` of the
-depot's folder, then replaces the rows of `contents` in one commit, drops
-the older states of `contents`, which hold every text a second time, and
-removes that folder, also when it runs again after a stop. Until it drops
-those older states, the depot needs free space about the size of its
-texts' content, since `parts` holds them a second time. A query of a table a
-later format added reads it as empty in a depot of an older format.
+format when it was written, so the current row gives the depot's format.
+A depot of format 3 or older is a folder of Delta Lake tables, which only
+`wpt depot upgrade` reads (`wpt_depot/legacy.py`).
 
 Every way into a depot that reads or changes its rows refuses one of
 another format than the code's, older or newer: every `wpt depot` command
-but backup, restore and upgrade, `wpt depot web`, the reading of another
-depot's library, and a clone or a pull, which need both the upstream and
-the clone at the code's format. The refusal names the depot's address,
-its format and the code's, and says to run `wpt depot upgrade` for an
-older depot or to update wpt for a newer one.
+but upgrade, `wpt depot web`, the reading of another depot's library, and
+a clone or a pull, which need both the upstream and the clone at the
+code's format. The refusal names the depot's address, its format and the
+code's, and says to run `wpt depot upgrade` for an older depot or to
+update wpt for a newer one.
 
-A backup and a restore copy a depot of the code's format or of an older
-one as it is, so the copy keeps its format, and they say when it needs
-`wpt depot upgrade`. They refuse a newer format.
-
-`wpt depot upgrade` runs only when asked. It first finishes every change
-the journal holds undone, with the current code, on the layout the depot
-has then. Then it runs, in order, the step from the depot's format to the
-next up to the code's. It records each format reached as a new revision of
-`about`, a change of the journal like any other. An upgrade cut short is
-finished by running the command again, which resumes after the last format
-it recorded. A newer depot is never brought down: the command refuses it.
+`wpt depot upgrade` runs only when asked (`wpt_depot/upgrade.py`). On a
+folder of format 3 or older, it first runs in the folder the steps from
+its format up to format 3, then writes a new SQLite file of the code's
+format from it: by default the folder's path with `.sqlite` added, or the
+file `--to` names. It never changes the folder after format 3 and never
+writes over a file. It reads each table's data files a batch at a time, so
+its memory does not grow with the depot. The file is written as
+`<file>.upgrading` and renamed once whole; an upgrade cut short goes on
+from the last data file it wrote when run again. A folder whose journal
+holds a change never finished is refused, since only the code of its
+format could finish it. A clone of those formats named its upstream by
+another address than a web address, so its upgrade takes the upstream's
+web address (`--upstream`) and is refused without it. A newer depot is
+never brought down: the command refuses it.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
 reads and writes itself, never through the current layout, which is a
-later format's. It changes only the tables its layout change touches, and
-run again on the layout it leaves it changes nothing more. A layout change
-keeps the current code able to apply an older format's undone journal
-changes on that older layout. A step that changes the journal table keeps
-backups and restores of older formats working: they read the journal's id
-and done, the `about` table's change and name, and every table's storage
-versions.
+later format's, and run again on the layout it leaves it changes nothing
+more.
 
 **Following an upstream.** A depot can follow another, its upstream, the
-way a Git clone follows its remote. `wpt depot clone ADDRESS TO --name NAME --maintainer M --takedown-contact C` copies
-every row of every table but the journal, revisions, contents,
-memberships and pins included, with their change numbers, into a new
-depot whose `about` row names the upstream. `wpt depot pull` fetches the
-upstream's updates: each upstream row replaces the row of the same key,
-and a row only the depot holds stays. A part never changes once stored, so
-a clone and a pull copy only the parts the depot lacks that the rows of
-contents they bring list, a few at a time,
-and a pull drops the parts that the versions an erasure it brings cut no
-longer list. Its change number is past the
-upstream's, so the depot's later changes come after every change it
-received. The texts the upstream's admitted erasures removed are removed
-too, and an erasure the depot had not carried out is carried out there
-(`wpt_depot/follow.py`). A pull runs when someone asks for it.
+way a Git clone follows its remote. The upstream is named by the web
+address of its web app (`wpt depot web`), and a clone reads nothing but
+the answers of its follow routes, which only read. `wpt depot clone URL TO
+--name NAME --maintainer M --takedown-contact C` copies every row of every
+table but `changes`, `numbers` and `about`, revisions, content lists, memberships
+and pins included, with their change numbers, into a new depot whose
+`about` row names the upstream. `wpt depot pull` fetches the upstream's
+updates: each upstream row replaces the row of the same key, and a row
+only the depot holds stays. What travels is paged, so no answer holds more
+than a bounded number of rows and bytes and fits the size and time limits
+of a web server in front of the upstream. A part never changes once
+stored, so a clone and a pull copy only the parts the depot lacks that the
+content lists they bring list, a few at a time, and a pull drops the
+parts that the versions an erasure it brings cut no longer list. Its
+change number is past the upstream's, so the depot's later changes come
+after every change it received. The texts the upstream's admitted
+erasures removed are removed too, and an erasure the depot had not
+carried out is carried out there (`wpt_depot/follow.py`). A pull runs
+when someone asks for it. A clone is written as `<TO>.cloning` and
+renamed once whole; a clone cut short goes on from its last page when run
+again.
 
 The rows a clone receives keep the upstream's change numbers, so the
 `pulls` table says how the two numberings meet: for the clone itself and
 for each pull, the depot that pulled, its change number then, its
 upstream's name and the upstream's change number the pull brought it up
-to. That number is the upstream's settled change number: the highest
-change its journal holds done with no change undone below it, read before
-any other table, so every upstream change up to it was written whole and
-a change the upstream is still writing, or holds undone after a crash,
-stays past it until a later pull. The pull's journal change carries that
-number, so a pull applied again after a crash records it the same way. A
-dataset that names a library of another depot names it at that depot's
-settled change number too. A read of the clone's own
-library at a past change of the clone sees the upstream's rows (their
-text revisions) only up to the upstream change the last pull at or
-before it brought, and the clone's own rows by its own numbers, so the
-library reads exactly as it stood then. A library of the upstream is
-read by the upstream's numbers, so a dataset naming it at an upstream
-change reads the same in the clone as in the upstream, and a dataset of
-the clone that names it by the clone's address names it at the upstream
-change its pulls brought. A clone copies its upstream's `pulls` rows
-too, so a clone of a clone follows the numbers back through each depot.
+to, the change number of the upstream's head when the pull began. A
+change the upstream commits while the pull reads it stays past that
+number until a later pull. An erasure the upstream carries out meanwhile
+makes the pull start over, and a pull writes nothing until it ends whole.
+A dataset that names a library of another depot names it at that depot's
+change number. A read of the clone's own library at a past change of the
+clone sees the upstream's rows (their text revisions) only up to the
+upstream change the last pull at or before it brought, and the clone's
+own rows by its own numbers, so the library reads exactly as it stood
+then. A library of the upstream is read by the upstream's numbers, so a
+dataset naming it at an upstream change reads the same in the clone as in
+the upstream, and a dataset of the clone that names it by the clone's
+address names it at the upstream change its pulls brought. A clone copies
+its upstream's `pulls` rows too, so a clone of a clone follows the numbers
+back through each depot.
 
 A clone is read-only on the rows its upstream owns, those whose id does
 not carry the clone's name. An id carries a name when it is exactly that
@@ -299,33 +248,42 @@ upstream library is a library of the clone's own. An upstream text that a
 pull brings refused, or with its licenses or content changed, leaves the clone's own
 open libraries at the pull's change number, as that decision made in the
 clone would; its locked libraries keep their pins. A dataset reads one of
-the upstream's libraries in the clone whether it names it by the clone's
-address or by the upstream's, so the head of the library in the workspace
-lists both. The pages show quietly
+the upstream's libraries in the clone once a pull has brought it, whether
+it names it with no address or by the upstream's web address, so the head
+of the library in the workspace lists both. A library of the upstream that
+no pull brought yet is asked of the upstream's web app when a dataset
+names it. The pages show quietly
 that a text, library, dataset or erasure request belongs to the upstream,
 and offer no action on it that the depot would refuse.
 
-**Backups.** `wpt depot backup TO` writes a new full copy of the depot
-that `WPT_DEPOT` names into a new folder under `TO`, a folder or a bucket
-as a depot's address is. The folder's name is the depot's name, the UTC
-time and the change number the copy holds:
-`my-depot-20261110T153000Z-change1234`. The copy holds every table with
-its log and its kept older storage states, as of the depot's settled
-change number, so a change written during the copy is not in it. It is
-an ordinary depot of the format the depot had, "Format" above
-(`wpt_depot/backup.py`).
+**Backups.** The backups of a depot are in the store, under
+`backups/<the depot's name>/` (`wpt_depot/backup.py`). `wpt depot backup`
+sends each change file waiting beside the depot into the store and deletes
+it from the waiting folder once the store holds it. Its first run on a
+file a command made whole (a new depot, a clone, an upgrade, a restore),
+and a run with `--full`, also sends a full copy of the file, made with
+SQLite's backup into a temporary file beside the depot's file while the
+depot goes on being written. Each run records what it sent. Such a file
+starts a timeline of its own, a random id its backups record, so the
+changes of a depot restored to an earlier moment, which number on from
+there again, never mix with the changes of the same numbers its origin
+made.
 
-The app never cuts, erases or removes a backup, and keeps no list of
-backups. An erasure does not reach them ([erasure.md](erasure.md)).
-Removing a backup is done by hand, by deleting its folder. Backups on a
-schedule come from a timer outside the app, such as this cron line:
+The app never cuts, erases or removes a backup. An erasure does not reach
+them ([erasure.md](erasure.md)). Backups on a schedule come from a timer
+outside the app, such as this cron line:
 
-    0 3 * * * cd /path/to/wpt && uv run wpt depot backup /backups
+    0 3 * * * cd /path/to/wpt && uv run wpt depot backup
 
-`wpt depot restore BACKUP TO` copies a backup as it is to `TO`, which
-must hold nothing: it never overwrites. The restored depot reads as the
-backup does. Erasures carried out after the backup are not carried out
-in it.
+`wpt depot restore TO --at MOMENT` makes a new depot file at `TO` from the
+backups of one timeline: the latest by default; for a change number, the
+latest that reaches it; for a UTC time, the one that made the latest change
+or full copy at or before it. It takes that timeline's last full copy at or
+before the moment, then applies every change file after it in order, up to
+the moment. A change that does not apply exactly stops the restore, which
+leaves nothing at `TO`; it never writes over a file. It reads the backups of the
+only depot name the store holds backups of, or of the name `--depot` gives. Erasures
+carried out after the moment are not carried out in the restored depot.
 
 ## The store
 
@@ -554,34 +512,31 @@ below, and 503
 when the store is missing on this machine. A command prints the same
 failure's kind and message and ends with exit code 2.
 
-Every query the depot runs, a person's included, reaches only the
-depot's folder. The depot's DuckDB database turns off its access to
-anything else once its own settings are made, and locks those settings.
-No query reads another file of the machine or an address on the network,
-writes a file outside the folder, attaches another database, installs or
-loads an extension, or changes a setting. A filter's condition is a query
-as well, under the same rule. `wpt depot sql` follows it too. A query can
-also read DuckDB's temporary folder of its own process, which holds only
-the depot's rows that did not fit in memory.
-
-For a depot in a bucket, DuckDB compares an address with the depot's
-prefix without resolving `..`, so the lock does not hold there: a query
-reaches every object the bucket's settings reach. A web server open to
-others over a depot in a bucket needs bucket settings that reach only that
-depot's prefix.
+A person's SQL reaches only the depot's file. It runs on the read-only
+connection whose authorizer lets a statement only read ("SQL" in
+[The depot](#the-depot)), so no query writes, attaches another file, runs
+a pragma or loads an extension, and SQLite has no function that reads
+another file or an address on the network. A filter's condition is a query
+as well, under the same rule. `wpt depot sql` follows it too.
 
 A route that runs a person's SQL (`POST /api/sql`, and the condition of
 `POST /api/texts/search` and `POST /api/texts/passages`) runs it in a
 reader process of its own (`wpt/depot/web/readers.py`), never in the
-server's process. The server kills that process once the request has run
-`SECONDS` and answers 422. On Linux, the reader's memory is capped at
-`MEMORY` bytes more than it holds once started, and a query past it ends
-with DuckDB's own refusal (400) or with the process (422). On another
-system, the reader has no memory cap. A query's answer holds at most
-`ANSWER_ROWS` rows and `ANSWER_BYTES` bytes of JSON, and a larger one is
-refused with 422. The server's process goes on after any of these, and
-the next request gets a new reader. The commands have none of these
-limits.
+server's process, with at most `READERS` reader processes at a time.
+SQLite stops the statement `SECONDS` after its reader takes it, and the
+server kills the reader once the request has run `SECONDS`, the wait for
+a free reader included; both answer 422. On Linux, the reader's memory is
+capped at `MEMORY` bytes more than it holds once started, and a query past
+it is refused with 422. On another system, the reader has no memory cap.
+A query's answer holds at most `ANSWER_ROWS` rows and `ANSWER_BYTES` bytes
+of JSON, counted as its rows are read, and a larger one is refused with
+422. The server's process goes on after any of these, and the next request
+gets a new reader. The commands have none of these limits.
+
+The follow routes (`POST /api/follow/head`, `POST /api/follow/rows` and
+`POST /api/follow/parts`) answer the clones and pulls of other depots
+("Following an upstream" in [The depot](#the-depot)). They only read,
+and each answer is one bounded page, streamed as it is read.
 
 `wpt depot web` serves the depot `WPT_DEPOT` names. It listens only on
 127.0.0.1 and checks neither the `Host` header nor a request's
@@ -610,7 +565,7 @@ the repository's tokenizer recipes.
 
 | Package | Role |
 | --- | --- |
-| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in Delta Lake tables of one folder written through delta-rs and read as SQL through DuckDB (`depot.py`, the only code that changes them, `tables.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); the journal of changes across tables (`journal.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store (`corpus.py`) and a model's notice from it (`notice.py`); `WPT_DEPOT` (`settings.py`) |
+| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store (`corpus.py`) and a model's notice from it (`notice.py`); `WPT_DEPOT` (`settings.py`) |
 | `wpt-recipes` | the model, tokenizer and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results, and the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot; a kept model folder copied out, checked against its sha256s (`models.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |

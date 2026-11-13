@@ -49,6 +49,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
+| apsw | 3.54.1.0 | any OSI-approved license, at the user's choice (its metadata: any-OSI); its compiled part includes SQLite (public domain) | the depot's SQLite file and the sessions that record each of its changes (wpt-depot) |
 | arro3-core | 0.9.1 | MIT OR Apache-2.0 | through deltalake |
 | attrs | 26.1.0 | MIT | |
 | boto3 | 1.43.113 | Apache-2.0 | |
@@ -59,9 +60,8 @@ packages must stay compatible with AGPL-3.0-or-later.
 | colorama | 0.4.6 | BSD-3-Clause | Windows only, through pytest |
 | coverage | 7.17.2 | Apache-2.0 | tests, through pytest-testmon |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | the gpu worker's certificate (wpt-worker), and tests through moto; its compiled part includes OpenSSL (Apache-2.0), statically linked |
-| deltalake | 1.6.6 | Apache-2.0 | the depot's tables (wpt-depot) |
+| deltalake | 1.6.6 | Apache-2.0 | reading a depot of format 3 or older, which `wpt depot upgrade` brings to format 4 (wpt-depot) |
 | deprecated | 3.0.1 | MIT | through deltalake |
-| duckdb | 2.0.0 | MIT | SQL reads over the depot's tables (wpt-depot); its metadata gives the license as a classifier only |
 | einops | 0.8.2 | MIT | through fla-core |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
 | fla-core | 0.5.2 | MIT | the fused output head and loss (flash-linear-attention), used where Triton runs |

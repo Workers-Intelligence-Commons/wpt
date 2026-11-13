@@ -4,8 +4,6 @@ import sys
 import threading
 import time
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from wpt_depot import About, Depot, clone, pull
@@ -25,7 +23,8 @@ CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text
 @pytest.fixture
 def serve(tmp_path):
     """serve(depot): the depot served on a free port, stopped when the test
-    ends: request(method, target, body) -> (status, payload)."""
+    ends: request(method, target, body) -> (status, payload), whose url is
+    the server's web address."""
     static = tmp_path / "static"
     static.mkdir()
     (static / "index.html").write_text("<p>interface</p>")
@@ -45,6 +44,7 @@ def serve(tmp_path):
             raw = response.read()
             return response.status, (json.loads(raw) if response.getheader("Content-Type") == "application/json"
                                      else raw)
+        request.url = f"http://127.0.0.1:{port}"  # the address a clone follows
         return request
 
     yield start
@@ -57,7 +57,7 @@ def serve(tmp_path):
 def web(tmp_path, serve):
     """A new depot holding the license CC0-1.0, served on a free port:
     (request(method, target, body) -> (status, payload), the depot)."""
-    depot = Depot.new(str(tmp_path / "depot"), About("test-depot", "Ada Lovelace", "ada@example.org"))
+    depot = Depot.new(str(tmp_path / "depot.sqlite"), About("test-depot", "Ada Lovelace", "ada@example.org"))
     depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
     return serve(depot), depot
 
@@ -99,7 +99,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     assert request("POST", "/api/datasets", {"name": "first", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}],
                                              "shares": [{"tag": "en", "share": 1}]}) == (200, {"id": "test-depot-1"})
     status, remote = request("GET", "/api/datasets/first/remote")
-    assert status == 200 and remote["libraries"] == [{"depot": depot.address, "library": "test-depot-1", "change": change}]
+    assert status == 200 and remote["libraries"] == [{"depot": None, "library": "test-depot-1", "change": change}]
     assert [one["name"] for one in request("GET", "/api/datasets")[1]] == ["first"]
 
     assert request("POST", "/api/erasures", {"reason": "a name", "needles": [{"text": "test-depot-1", "start": 4, "end": 7}],
@@ -158,7 +158,7 @@ def test_each_refusal_answers_its_status_and_writes_nothing(web):
     status, refused = request("POST", "/api/texts", unconfirmed)
     assert status == 422 and refused["problems"][0].startswith("Refused: a decision needs the confirmation")
     assert request("POST", "/api/texts", {**unconfirmed, "declaration": ME, "licenses": ["MIT"]})[0] == 422
-    assert depot.sql("SELECT count(*) AS n FROM texts")["n"][0].as_py() == 0
+    assert depot.sql("SELECT count(*) AS n FROM texts") == [{"n": 0}]
     assert request("GET", "/api/texts/test-depot-9")[0] == 404
     assert request("POST", "/api/sql", {"query": "DELETE FROM texts"})[0] == 400
     assert request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-1"]})[0] == 400  # no declaration
@@ -186,9 +186,15 @@ def test_a_pull_a_corpus_build_a_remote_import_and_a_change_of_the_depot_s_facts
     assert request("GET", "/api/about")[0] == 200
 
 
-@pytest.mark.parametrize("read", ["read_text('{outside}/secret.txt')", "read_csv('{outside}/secret.csv')",
-                                  "read_json('{outside}/secret.json')", "read_parquet('{outside}/secret.parquet')",
-                                  "glob('{outside}/*')", "read_text('https://example.org/')"])
+FOREVER = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c) SELECT count(*) FROM c"  # never ends
+
+
+def counted(most):
+    """A query of the numbers 1 to most, a column n."""
+    return f"WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < {most}) SELECT n FROM c"
+
+
+@pytest.mark.parametrize("read", ["load_extension('{outside}/secret')", "readfile('{outside}/secret.txt')"])
 def test_a_query_or_a_filter_s_condition_reads_nothing_outside_the_depot(web, tmp_path, read):
     request, depot = web
     request("POST", "/api/texts", {"text": "fox", "licenses": ["CC0-1.0"], "declaration": ME})
@@ -196,55 +202,53 @@ def test_a_query_or_a_filter_s_condition_reads_nothing_outside_the_depot(web, tm
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text(secret, encoding="utf-8")
-    (outside / "secret.csv").write_text(f"value\n{secret}\n", encoding="utf-8")
-    (outside / "secret.json").write_text(json.dumps({"value": secret}), encoding="utf-8")
-    pq.write_table(pa.table({"value": [secret]}), outside / "secret.parquet")
     read = read.format(outside=outside)
 
-    for target, body in (("/api/sql", {"query": f"SELECT * FROM {read}"}),
-                         ("/api/texts/search", {"filter": {"where": f"id IN (SELECT * FROM {read})"}}),
-                         ("/api/texts/passages", {"filter": {"where": f"EXISTS (SELECT * FROM {read})"}})):
+    for target, body in (("/api/sql", {"query": f"SELECT {read} AS value"}),
+                         ("/api/texts/search", {"filter": {"where": f"{read} IS NOT NULL"}}),
+                         ("/api/texts/passages", {"filter": {"where": f"EXISTS (SELECT {read})"}})):
         status, answer = request("POST", target, body)
-        assert status == 400 and "Permission Error" in answer["problems"][0] and secret not in json.dumps(answer)
+        assert status == 400 and answer["problems"][0].startswith("BadQuery") and secret not in json.dumps(answer)
 
 
 def test_a_query_can_neither_write_attach_load_nor_change_a_setting(web, tmp_path):
     request, depot = web
     change = depot.change()
-    for statement in (f"COPY (SELECT 1) TO '{tmp_path / 'written.csv'}'", f"COPY (SELECT 1) TO '{depot.address}/x.csv'",
-                      f"ATTACH '{tmp_path / 'other.duckdb'}' AS other", "INSTALL httpfs", "LOAD httpfs",
-                      "SET enable_external_access = true", "RESET lock_configuration", "PRAGMA enable_profiling"):
-        assert request("POST", "/api/sql", {"query": statement}) == (400, {"problems": [
-            "BadQuery: a query is one SELECT statement"]})
-    assert not (tmp_path / "written.csv").exists() and not (tmp_path / "other.duckdb").exists()
-    assert not (tmp_path / "depot" / "x.csv").exists() and depot.change() == change
+    other = tmp_path / "other.sqlite"
+    for statement in (f"ATTACH '{other}' AS other", f"VACUUM INTO '{tmp_path / 'copy.sqlite'}'",
+                      "DELETE FROM texts", "INSERT INTO changes VALUES (99, 'x', 'y')", "CREATE TABLE mine (a)",
+                      "DROP VIEW texts", "PRAGMA writable_schema = 1", "PRAGMA journal_mode = DELETE",
+                      "SELECT 1; DELETE FROM texts", f"SELECT load_extension('{tmp_path / 'x'}')"):
+        status, answer = request("POST", "/api/sql", {"query": statement})
+        assert status == 400 and answer["problems"][0].startswith("BadQuery"), statement
+    assert not other.exists() and not (tmp_path / "copy.sqlite").exists() and depot.change() == change
 
 
 def test_a_query_or_a_condition_past_the_time_limit_is_stopped_and_the_server_answers_the_next(web, monkeypatch):
-    # one long operation inside DuckDB checks no interruption: its reader process is killed at the limit
+    # SQLite stops the statement at the reader's deadline; past the server's own, it kills the reader process
     request, depot = web
     request("POST", "/api/texts", {"text": "fox", "licenses": ["CC0-1.0"], "declaration": ME})
     monkeypatch.setattr(readers, "SECONDS", 3)
-    slow = "SELECT length(regexp_replace(repeat('ab', 50000000), 'a', 'xyz', 'g')) AS n"  # one operation of about 7 s
 
-    for target, body in (("/api/sql", {"query": slow}),
-                         ("/api/texts/search", {"filter": {"where": f"({slow}) > 0"}}),
-                         ("/api/texts/passages", {"filter": {"where": f"({slow}) > 0"}})):
+    for target, body in (("/api/sql", {"query": FOREVER}),
+                         ("/api/texts/search", {"filter": {"where": f"({FOREVER}) > 0"}}),
+                         ("/api/texts/passages", {"filter": {"where": f"({FOREVER}) > 0"}})):
         started = time.monotonic()
         status, answer = request("POST", target, body)
         assert time.monotonic() - started < 3 + 2  # the limit, and the time to kill the process
-        assert (status, answer) == (422, {"problems": [
-            "TimeLimitReached: the reads ran past their limit of 3 seconds and were stopped"]})
+        assert status == 422 and answer["problems"][0].startswith("TimeLimitReached: "), answer
     assert request("POST", "/api/sql", {"query": "SELECT count(*) AS n FROM texts"}) == (
         200, {"columns": ["n"], "rows": [{"n": 1}]})
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="the memory of a reader process is capped on Linux")
-def test_a_query_past_the_memory_cap_is_stopped_and_the_server_answers_the_next(web):
+def test_a_query_past_the_memory_cap_is_stopped_and_the_server_answers_the_next(web, monkeypatch):
     request, depot = web
-    # one operation that DuckDB cannot write to its temporary folder: gigabytes in one list
-    status, answer = request("POST", "/api/sql", {"query": "SELECT length(list_sort(range(200000000))::VARCHAR) AS n"})
-    assert status in (400, 422) and "emory" in answer["problems"][0]  # DuckDB's own refusal, or the process lost
+    monkeypatch.setattr(readers, "MEMORY", 64 << 20)
+    # one string of about 300 MB, far past the cap
+    query = f"SELECT length(group_concat(printf('%0100d', n), '')) AS n FROM ({counted(3_000_000)})"
+    status, answer = request("POST", "/api/sql", {"query": query})
+    assert status in (400, 422) and "emory" in answer["problems"][0], answer  # SQLite's own refusal, or the process lost
     assert request("POST", "/api/sql", {"query": "SELECT 1 AS n"}) == (200, {"columns": ["n"], "rows": [{"n": 1}]})
 
 
@@ -252,10 +256,10 @@ def test_a_query_s_answer_past_its_bounds_is_refused(web, monkeypatch):
     request, depot = web
     monkeypatch.setattr(readers, "ANSWER_ROWS", 1000)
     monkeypatch.setattr(readers, "ANSWER_BYTES", 50_000)
-    assert request("POST", "/api/sql", {"query": "SELECT range AS n FROM range(1000)"})[0] == 200
-    status, answer = request("POST", "/api/sql", {"query": "SELECT range AS n FROM range(1001)"})
+    assert request("POST", "/api/sql", {"query": counted(1000)})[0] == 200
+    status, answer = request("POST", "/api/sql", {"query": counted(1001)})
     assert (status, answer["problems"][0].split(":")[0]) == (422, "AnswerTooLarge")
-    status, answer = request("POST", "/api/sql", {"query": "SELECT repeat('x', 100000) AS n"})
+    status, answer = request("POST", "/api/sql", {"query": "SELECT hex(zeroblob(50000)) AS n"})
     assert (status, answer["problems"][0].split(":")[0]) == (422, "AnswerTooLarge")
 
 
@@ -266,7 +270,7 @@ def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_lib
     other = {"depot": str(tmp_path / "elsewhere"), "library": "x-1"}
     status, answer = request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": [other]})
     assert status == 422 and str(tmp_path / "elsewhere") in answer["problems"][0]
-    mine = {"depot": (tmp_path / "depot").as_uri(), "library": "test-depot-1"}  # this depot, in another form
+    mine = {"depot": (tmp_path / "depot.sqlite").as_uri(), "library": "test-depot-1"}  # this depot, in another form
     assert request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": [mine]}) == (
         200, {"id": "test-depot-1"})
     assert request("POST", "/api/datasets/test-depot-1", {"name": "mix", "libraries": [mine, other]})[0] == 422
@@ -564,7 +568,7 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     request, upstream = web
     assert request("POST", "/api/texts", {"text": "Theirs.", "licenses": ["CC0-1.0"], "declaration": ME})[0] == 200
     assert request("POST", "/api/libraries", {"name": "theirs"})[0] == 200
-    follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
+    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert mine("POST", "/api/texts", {"text": "Mine.", "licenses": ["CC0-1.0"], "declaration": ME}) == (
         200, {"id": "test-clone-1"})
@@ -592,12 +596,12 @@ def test_a_clone_s_upstream_library_lists_the_datasets_naming_it_by_either_depot
     assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})
     assert request("POST", "/api/datasets", {"name": "upstream-set", "tokenizer": "t",
                                              "libraries": [{"library": "test-depot-1"}]})[0] == 200
-    follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
+    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert mine("POST", "/api/libraries", {"name": "mine"}) == (200, {"id": "test-clone-1"})
     assert mine("POST", "/api/datasets", {"name": "by-clone", "tokenizer": "t",
                                           "libraries": [{"library": "test-depot-1"}]})[0] == 200
-    follower.new_dataset("by-upstream-url", "t", [((tmp_path / "depot").as_uri(), "test-depot-1")], None)  # a command
+    follower.new_dataset("by-upstream-url", "t", [(request.url, "test-depot-1")], None)  # a command
 
     status, found = mine("GET", "/api/datasets")
 
@@ -614,7 +618,7 @@ def test_a_clone_s_page_of_an_upstream_dataset_marks_the_upstream_library_as_rea
     assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})
     assert request("POST", "/api/datasets", {"name": "upstream-set", "tokenizer": "t",
                                              "libraries": [{"library": "test-depot-1"}]}) == (200, {"id": "test-depot-1"})
-    follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
+    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
 
     status, shown = mine("GET", "/api/datasets/test-depot-1")
@@ -627,10 +631,10 @@ def test_a_clone_s_page_of_an_upstream_dataset_marks_the_upstream_library_as_rea
 def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_a_pull_brings_it(
         web, serve, tmp_path):
     request, upstream = web
-    follower = clone(upstream.address, str(tmp_path / "clone"), About("test-clone", "Grace Hopper", "grace@example.org"))
+    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})  # after the clone
-    assert follower.new_dataset("set", "t", [((tmp_path / "depot").as_uri(), "test-depot-1")], None) == "test-clone-1"
+    assert follower.new_dataset("set", "t", [(request.url, "test-depot-1")], None) == "test-clone-1"
 
     def shown():
         listed = mine("GET", "/api/datasets")[1][0]["here"]
@@ -645,7 +649,9 @@ def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_
 def test_the_web_command_refuses_a_depot_of_another_format_before_serving(tmp_path, monkeypatch, capsys):
     address = str(tmp_path / "depot")
     depot = Depot.new(address, About("served", "Ada Lovelace", "ada@example.org"))
-    depot.tables.update("about", {"format": str(FORMAT + 1)}, "true")
+    with depot.db.write("test") as (con, _):
+        con.execute("UPDATE about_revisions SET format = ?", (FORMAT + 1,))
+    depot.db.close()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("WPT_DEPOT", address)
     monkeypatch.setattr("wpt.depot.web.ui.built", lambda: tmp_path)

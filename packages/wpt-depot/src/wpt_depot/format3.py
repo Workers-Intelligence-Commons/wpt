@@ -1,4 +1,5 @@
-"""The step from format 2 to format 3 (wpt_depot.schema.STEPS): every
+"""The step from format 2 to format 3 (wpt_depot.legacy.STEPS), on the
+folder of Delta Lake tables: every
 content version stored as the ordered list of its parts (wpt_depot.parts).
 
 At format 2 a row of contents holds its version's whole text (text, or an
@@ -24,12 +25,14 @@ older states of contents and the folder LISTS it had not removed yet. Its
 layouts and the way it writes their files are its own (the columns it
 reads at format 2, the tables format 3 lays out and their writer
 properties), never those of a later format, and it reads the tables' files
-itself, never through the views of the code's current layout.
+itself, through pyarrow.
 """
 
 import hashlib
 
 import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.dataset as ds
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
 from deltalake import ColumnProperties, WriterProperties
@@ -57,7 +60,7 @@ CONTENTS_WRITTEN_3 = WriterProperties(compression="SNAPPY")
 
 
 def to_parts(tables):
-    """Format 2 to 3 over the depot's tables (wpt_depot.tables.Tables)."""
+    """Format 2 to 3 over the depot's tables (wpt_depot.legacy.Legacy)."""
     system, folder = _folder(tables)
     if "parts" in tables.columns("contents"):
         _remove(system, folder)
@@ -74,8 +77,8 @@ def to_parts(tables):
     system.create_dir(folder, recursive=True)
     for number in range(start, len(batches)):
         lists = []
-        tables.append_stream("parts", _parts(tables, batches[number], lists, many, seen),
-                             transaction=(APP, number), schema=PARTS_3, properties=PARTS_WRITTEN_3)
+        tables.append_stream("parts", _parts(tables, batches[number], lists, many, seen), PARTS_3, PARTS_WRITTEN_3,
+                             transaction=(APP, number))
         _keep(system, folder, number, batches[number], lists)
     contents.alter.drop_constraint(CONSTRAINT_2, raise_if_not_exists=False)
     tables.rewrite("contents", pa.RecordBatchReader.from_batches(CONTENTS_3, _lists(tables, batches, system, folder)),
@@ -103,44 +106,28 @@ def _batches(table) -> list[list[str]]:
 
 def _rows(tables, files: list[str]):
     """The rows of contents in the files, ROWS at a time, as lists of dicts."""
-    con = tables.bare()
-    try:
-        reader = con.sql(f"SELECT {', '.join(READ)} FROM read_parquet([{_listed(files)}])").to_arrow_reader(ROWS)
-        for batch in reader:
+    for file in files:
+        for batch in pq.ParquetFile(file).iter_batches(batch_size=ROWS, columns=list(READ)):
             yield batch.to_pylist()
-    finally:
-        con.close()
-
-
-def _listed(files: list[str]) -> str:
-    return ", ".join("'" + file.replace("'", "''") + "'" for file in files)
-
-
-def _read(tables, files: list[str], query: str, params=None) -> pa.Table:
-    """The rows of query over the Parquet files named, as the view `found`; none without files."""
-    if not files:
-        return pa.table({})
-    con = tables.bare()
-    try:
-        con.execute(f"CREATE TEMP VIEW found AS SELECT * FROM read_parquet([{_listed(files)}])")
-        return con.sql(query, params=params).to_arrow_table()
-    finally:
-        con.close()
 
 
 def _many(tables, files: list[str]) -> set[str]:
     """The ids of the texts with more than one content version, read from
     the files of contents: only their parts can be held by two batches."""
-    found = _read(tables, files, "SELECT id FROM found GROUP BY id HAVING count(*) > 1")
-    return set(found["id"].to_pylist()) if found.num_columns else set()
+    if not files:
+        return set()
+    ids = ds.dataset(files, format="parquet").to_table(columns=["id"])
+    counted = ids.group_by("id").aggregate([("id", "count")])
+    return set(counted.filter(pc.greater(counted["id_count"], 1))["id"].to_pylist())
 
 
 def _seen(tables, files: list[str], many: set[str]) -> set[tuple[str, bytes]]:
     """(id, hash) of the parts stored already, in the files of parts, of the texts named."""
-    if not many:
+    if not many or not files:
         return set()
-    found = _read(tables, files, "SELECT id, hash FROM found WHERE list_contains(?, id)", [sorted(many)])
-    return set(zip(found["id"].to_pylist(), found["hash"].to_pylist())) if found.num_columns else set()
+    found = ds.dataset(files, format="parquet").to_table(columns=["id", "hash"],
+                                                         filter=pc.field("id").isin(sorted(many)))
+    return set(zip(found["id"].to_pylist(), found["hash"].to_pylist()))
 
 
 def _cut(row: dict):
@@ -179,8 +166,7 @@ def _parts(tables, files: list[str], lists: list[dict], many: set[str], seen: se
 def _folder(tables) -> tuple[pafs.FileSystem, str]:
     """(the file system of the depot's folder, the path in it of the folder
     LISTS that keeps the lists of the batches between runs of the step)."""
-    system, root = tables.filesystem()
-    return system, f"{root}/{LISTS}"
+    return pafs.LocalFileSystem(), f"{tables.root.as_posix()}/{LISTS}"
 
 
 def _remove(system: pafs.FileSystem, folder: str):

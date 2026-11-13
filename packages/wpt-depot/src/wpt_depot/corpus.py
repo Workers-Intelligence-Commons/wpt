@@ -95,7 +95,6 @@ from wpt_utils.lines import say
 from .depot import Depot, location
 from .errors import Refused
 from .parts import scan
-from .schema import LIBRARY_REF, NAMES, SCORES, SHARE, TIME
 
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
 WHITESPACE = b" \t\n\r\x0b\x0c"  # the bytes the tokenizer's chunks treat as whitespace (wpt_tokenizer)
@@ -103,6 +102,11 @@ WHITESPACE_BYTES = np.frombuffer(WHITESPACE, np.uint8)
 FOLDER = "corpora"
 RECORD = "corpus.json"
 TRAINING_KINDS = ("conversation", "task")
+TIME = pa.timestamp("us", tz="UTC")
+NAMES = pa.list_(pa.string())
+LIBRARY_REF = pa.struct([("depot", pa.string()), ("library", pa.string()), ("change", pa.int64())])
+SHARE = pa.struct([("tag", pa.string()), ("share", pa.float64())])
+SCORES = pa.list_(pa.struct([("name", pa.string()), ("value", pa.float64()), ("content_version", pa.int64())]))
 CORPUS_SCHEMAS = {
     "dataset": pa.schema([pa.field("id", pa.string(), False), pa.field("revision", pa.int64(), False),
                           pa.field("name", pa.string(), False), pa.field("tokenizer", pa.string(), False),
@@ -228,7 +232,7 @@ def sample(depot: Depot, name: str, sample_bytes: int) -> list[dict]:
     read = {}
     for source, entries in _by_depot(chosen):
         pieces = {}
-        for text, value in scan(source.tables, {text: one["row"]["parts"] for text, one in entries.items()}):
+        for text, value in scan(source.reader(), {text: one["row"]["parts"] for text, one in entries.items()}):
             if value is not None:
                 pieces.setdefault(text, []).append(value)
             else:
@@ -258,7 +262,7 @@ def _tokenized(taken: list[dict], tokenizer, work: Path) -> dict:
     with open(paths["tokens"], "wb") as tokens_file, open(paths["tasks"], "wb") as tasks_file:
         for source, entries in _by_depot(taken):
             reading = {}  # of each text begun: its encoder (a plain text) or its pieces (an item)
-            for text, value in scan(source.tables, {text: one["row"]["parts"] for text, one in entries.items()}):
+            for text, value in scan(source.reader(), {text: one["row"]["parts"] for text, one in entries.items()}):
                 kind = entries[text]["row"]["kind"]
                 if value is not None:
                     if kind is None:
@@ -341,11 +345,11 @@ def _taken(depot: Depot, dataset: dict) -> tuple[list[dict], tuple[dict, dict], 
     shares = dataset["shares"]
     opened = {depot.address: depot}
     for ref in dataset["libraries"]:
-        where = str(location(ref["depot"]))
+        where = depot.address if depot.reads_here(ref["depot"], ref["library"]) else str(location(ref["depot"]))
         if where not in opened:
-            opened[where] = Depot.view(ref["depot"], depot.settings)
+            opened[where] = Depot.view(where)
         source = opened[where]
-        for row in source.library_texts(ref["library"], ref["change"]).to_pylist():
+        for row in source.library_texts(ref["library"], ref["change"]):
             if (source.address, row["id"]) in seen:
                 continue
             seen.add((source.address, row["id"]))
@@ -360,9 +364,9 @@ def _taken(depot: Depot, dataset: dict) -> tuple[list[dict], tuple[dict, dict], 
                     continue
             taken.append({"depot": source.address, "source": source, "row": row, "pool": pool})
     for address, source in opened.items():
-        for row in source.tables.read("licenses").to_pylist():
+        for row in source.sql("SELECT id, name, text FROM licenses"):
             licenses.setdefault(row["id"], row)
-        for row in source.tables.read("notices").to_pylist():
+        for row in source.sql("SELECT id, text FROM notices"):
             notices[row["id"]] = row["text"]
     seed = _fingerprint(_content(dataset))
     taken.sort(key=lambda one: hashlib.sha256(f"{seed}\0{one['depot']}\0{one['row']['id']}".encode()).digest())

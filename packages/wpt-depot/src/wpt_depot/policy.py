@@ -71,25 +71,27 @@ def status(decisions: list[dict]) -> str:
 
 
 def _since(decisions: str) -> str:
-    """The place in the list of the latest start over, 0 without one."""
-    over = " OR ".join(f"starts_with(c.reason, '{one}')" for one in STARTS_OVER)
-    return (f"(SELECT coalesce(max(list_position({decisions}, c.id)), 0) FROM decisions c "
-            f"WHERE list_contains({decisions}, c.id) AND ({over}))")
+    """The place in the JSON list of decision ids of the latest start over, 0 without one."""
+    over = " OR ".join(f"substr(c.reason, 1, {len(one)}) = '{one}'" for one in STARTS_OVER)
+    return (f"(SELECT coalesce(max(o.key), 0) FROM json_each({decisions}) o JOIN decisions c ON c.id = o.value "
+            f"WHERE {over})")
 
 
 def _having(decisions: str, status: str) -> str:
-    return (f"EXISTS (SELECT 1 FROM decisions d WHERE list_contains({decisions}, d.id) AND d.status = '{status}' "
-            f"AND list_position({decisions}, d.id) >= {_since(decisions)})")
+    return (f"EXISTS (SELECT 1 FROM json_each({decisions}) h JOIN decisions d ON d.id = h.value "
+            f"WHERE d.status = '{status}' AND h.key >= {_since(decisions)})")
 
 
 def admitted_sql(decisions: str) -> str:
-    """The same rule as admitted, as a DuckDB condition over a column of
-    decision ids in order, with the depot's decisions table as `decisions`."""
+    """The same rule as admitted, as an SQL condition over a column of
+    decision ids in order (a JSON array), with the depot's decisions table
+    as `decisions`."""
     return f"({_having(decisions, ADMITTED)} AND NOT {_having(decisions, REFUSED)})"
 
 
 def status_sql(decisions: str) -> str:
-    """The same rule as status, as a DuckDB expression over a column of
-    decision ids in order, with the depot's decisions table as `decisions`."""
+    """The same rule as status, as an SQL expression over a column of
+    decision ids in order (a JSON array), with the depot's decisions table
+    as `decisions`."""
     return (f"(CASE WHEN {_having(decisions, REFUSED)} THEN '{REFUSED}' WHEN {_having(decisions, ADMITTED)} "
             f"THEN '{ADMITTED}' ELSE '{UNDER_REVIEW}' END)")

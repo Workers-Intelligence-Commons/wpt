@@ -1,4 +1,5 @@
 import hashlib
+import json
 import random
 from pathlib import Path
 
@@ -70,9 +71,9 @@ def test_a_text_bigger_than_a_part_is_added_from_a_file_read_shown_and_built_int
     [one] = depot.add([NewText(text=FileText(path), licenses=("CC0-1.0",))], me)
 
     assert depot.show(one)["text"]["text"] == text
-    assert depot.sql(f"SELECT text, length FROM texts WHERE id = '{one}'").to_pylist() == [
+    assert depot.sql(f"SELECT text, length FROM texts WHERE id = '{one}'") == [
         {"text": text, "length": len(text)}]
-    assert depot.sql(f"SELECT count(*) AS n FROM parts WHERE id = '{one}'")["n"].to_pylist() == [
+    assert [row["n"] for row in depot.sql(f"SELECT count(*) AS n FROM parts WHERE id = '{one}'")] == [
         len(listed(text, SMALL).parts)] and len(listed(text, SMALL).parts) > 10
     assert depot.passages("true", characters=100)["rows"][0]["passage"] == text[:100]
     depot.decide("admitted", "true", me)
@@ -92,12 +93,12 @@ def test_a_new_content_version_stores_only_the_parts_no_version_held_before(make
     depot = make_depot()
     text = lines(400)
     [one] = depot.add([plain(text)], me)
-    first = depot.sql("SELECT count(*) AS n FROM parts")["n"][0].as_py()
+    first = depot.sql("SELECT count(*) AS n FROM parts")[0]["n"]
     changed = text.replace(hashlib.sha256(b"200").hexdigest(), "an edited line")
 
     depot.change_content(one, changed, None, me)
 
-    added = depot.sql("SELECT count(*) AS n FROM parts")["n"][0].as_py() - first
+    added = depot.sql("SELECT count(*) AS n FROM parts")[0]["n"] - first
     assert 0 < added <= 3
     assert depot.show(one)["text"]["text"] == changed
     assert depot.content(one, 1) == text and depot.content(one, 2) == changed
@@ -117,7 +118,7 @@ def test_an_erasure_across_two_parts_cuts_only_those_two_and_leaves_no_copy(make
     depot.decide_erasure(request, "admitted", me)
 
     assert depot.show(one)["text"]["text"] == text[:start] + text[end:]
-    now = {bytes(row["hash"]) for row in depot.sql("SELECT hash FROM parts").to_pylist()}
+    now = {bytes(row["hash"]) for row in depot.sql("SELECT hash FROM parts")}
     assert now - {hash_ for hash_, _ in found} != set()
     assert len({hash_ for hash_, _ in found} - now) == 2  # the two parts that held the passage, and no other
     assert files_holding(depot.address, left) == [] and files_holding(depot.address, right) == []
@@ -161,14 +162,14 @@ def test_a_text_fed_to_the_corpus_encoder_in_pieces_gives_the_tokens_of_the_whol
         assert held <= 2 * max(map(len, words + spaces)) * 4  # never more than the last chunk or two before a piece
 
 
-def test_a_clone_of_a_clone_pulls_the_parts_of_a_text_added_upstream_after_its_upstream_s_own_changes(
+def test_a_clone_of_a_clone_pulls_the_parts_of_a_text_added_upstream_after_its_upstream_s_own_changes(serve, 
         make_depot, me, tmp_path):
     first = make_depot("first")
     first.add([plain("first")], me)
-    second = clone(first.address, str(tmp_path / "second"), About("second", "Grace Hopper", "grace@example.org"))
+    second = clone(serve(first), str(tmp_path / "second.sqlite"), About("second", "Grace Hopper", "grace@example.org"))
     for number in range(8):  # the second depot's change numbers run past the first's
         second.add([plain(f"own {number}")], me)
-    third = clone(second.address, str(tmp_path / "third"), About("third", "Ada Lovelace", "ada@example.org"))
+    third = clone(serve(second), str(tmp_path / "third.sqlite"), About("third", "Ada Lovelace", "ada@example.org"))
     [text] = first.add([plain("second text from the first")], me)
 
     pull(second)
@@ -176,7 +177,7 @@ def test_a_clone_of_a_clone_pulls_the_parts_of_a_text_added_upstream_after_its_u
 
     assert second.show(text)["text"]["text"] == "second text from the first"
     assert third.show(text)["text"]["text"] == "second text from the first"
-    assert third.sql(f"SELECT count(*) AS n FROM parts WHERE id = '{text}'")["n"].to_pylist() == [1]
+    assert [row["n"] for row in third.sql(f"SELECT count(*) AS n FROM parts WHERE id = '{text}'")] == [1]
 
 
 def test_adding_again_the_text_an_erasure_left_makes_no_new_version_and_its_parts_are_cut_as_any_text(
@@ -190,9 +191,9 @@ def test_adding_again_the_text_an_erasure_left_makes_no_new_version_and_its_part
     depot.decide_erasure(depot.ask_erasure("a passage", [(one, start, end)], me), "admitted", me)
     cut = depot.content(one)
 
-    stored = depot.sql(f"SELECT parts FROM content_lists WHERE id = '{one}'")["parts"][0].as_py()
+    stored = json.loads(depot.sql(f"SELECT parts FROM content_lists WHERE id = '{one}'")[0]["parts"])
 
     assert cut == text[:start] + text[end:]
-    assert [(bytes(part["hash"]), part["length"]) for part in stored] == listed(cut, SMALL).parts
+    assert [(bytes.fromhex(part["hash"]), part["length"]) for part in stored] == listed(cut, SMALL).parts
     assert depot.change_content(one, cut, None, me) is None
-    assert depot.sql(f"SELECT count(*) AS n FROM content_lists WHERE id = '{one}'")["n"].to_pylist() == [1]
+    assert [row["n"] for row in depot.sql(f"SELECT count(*) AS n FROM content_lists WHERE id = '{one}'")] == [1]

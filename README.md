@@ -15,8 +15,8 @@ recipes of the models. No checkpoint has been published yet.
 
 ## How it works
 
-**The texts live in a depot; the repository holds none.** A depot is a
-folder, known by its address, that holds texts and items (conversations,
+**The texts live in a depot; the repository holds none.** A depot is an
+SQLite file, known by its address, that holds texts and items (conversations,
 tasks), each with its license, credit and notice, the human decisions that
 admit or refuse it, the libraries that group admitted texts, and the
 datasets that say what to train on (`wpt depot`). `wpt depot build DATASET`
@@ -54,7 +54,7 @@ through Docker Desktop.
 ```sh
 uv run scripts/setup.py                            # the PyTorch build for this machine's GPU
 echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where corpora, models and runs live
-echo "WPT_DEPOT=$HOME/wpt-depot" >> .env           # the depot the wpt depot commands work on
+echo "WPT_DEPOT=$HOME/wpt-depot.sqlite" >> .env    # the depot the wpt depot commands work on
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
 uv run wpt depot build DATASET                     # the corpus of the recipe's dataset, into the store; prints its id

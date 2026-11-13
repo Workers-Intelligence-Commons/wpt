@@ -24,23 +24,23 @@ only the parts around it and a new version stores only those (split):
 So a part ends with a line end but where a line runs past Sizes.maximum,
 and the last part, which ends where the text ends.
 
-Reading goes through Reader, which fetches parts by hash, and Parted, a
-content version read lazily: its length, a slice of its characters or its
-parts in order, each part fetched only when needed (per-part lengths come
-with its list). A reader of many texts at once (the corpus build) uses
-scan, which reads every part they list in one pass over the parts table.
+A part's text is stored compressed with zstd (pack, unpack). Reading
+goes through Reader, which fetches parts by hash, and Parted, a content
+version read lazily: its length, a slice of its characters or its parts in
+order, each part fetched only when needed (per-part lengths come with its
+list). A reader of many texts at once (the corpus build) uses scan.
 """
 
 import bisect
 import hashlib
-from collections import Counter
+import json
 from collections.abc import Iterable, Iterator
+from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-import pyarrow as pa
 
 
 class Sizes(NamedTuple):
@@ -49,13 +49,11 @@ class Sizes(NamedTuple):
     maximum: int  # bytes: the most a part holds
 
 
-# Sizes.maximum times the rows a page of the parts table holds at most (tables.PAGE_ROWS) stays under the 2 GiB a
-# Parquet page holds
 SIZES = Sizes(minimum=1 << 20, target=4 << 20, maximum=64 << 20)
 BLOCK = 16 << 20  # characters read from a file at a time
 WINDOW = 16  # the bytes that end at a line end which the cut's hash reads
-FETCHED = 64 << 20  # bytes of parts a Reader fetches in one query, about
-WRITTEN = 32 << 20  # bytes of parts in one record batch written to the parts table, about
+FETCHED = 64 << 20  # characters of parts a Reader fetches in one query, about
+LEVEL = 3  # the zstd level a part's stored value is compressed at
 _MIX = (np.uint64(0x9E3779B97F4A7C15), np.uint64(0xC2B2AE3D27D4EB4F), np.uint64(0x94D049BB133111EB))
 
 
@@ -177,6 +175,16 @@ def _forced(pending: bytes, maximum: int) -> int:
     return end
 
 
+def pack(value: str) -> bytes:
+    """A part's text as the parts table stores it: its UTF-8 bytes compressed with zstd."""
+    return zstd.compress(value.encode("utf-8"), LEVEL)
+
+
+def unpack(stored: bytes) -> str:
+    """A part's text from the value the parts table stores."""
+    return zstd.decompress(stored).decode("utf-8")
+
+
 def made(data: bytes) -> Part:
     """The part of these bytes."""
     value = data.decode("utf-8")
@@ -215,36 +223,29 @@ def listed(source: Source, sizes: Sizes | None = None) -> Listed:
 
 
 class Reader:
-    """Reads parts of texts from the depot's tables (wpt_depot.tables.Tables)
-    through one connection, which opens the parts table once."""
+    """Reads parts of texts from the depot's parts table through a
+    connection (wpt_depot.database), which `connection()` gives each time
+    it is asked: the one of the thread that reads."""
 
-    def __init__(self, tables):
-        self.tables = tables
-        self._con = None
-
-    def open(self) -> "Reader":
-        """Open the parts table now: a reader that feeds a write of a table
-        (Tables.append_stream) must, since no table opens during one."""
-        if self._con is None:
-            self._con = self.tables.connection("SELECT * FROM parts")
-        return self
+    def __init__(self, connection):
+        self.connection = connection
 
     def values(self, text: str, hashes: Iterable[bytes]) -> dict[bytes, str]:
         """{hash: its text} of the parts of the text named."""
         wanted = list(dict.fromkeys(hashes))
         if not wanted:
             return {}
-        self.open()
-        found = self._con.execute("SELECT hash, value FROM parts WHERE id = ? AND list_contains(?, hash)",
-                                  [text, wanted]).fetchall()
-        values = {bytes(hash_): value for hash_, value in found}
+        found = self.connection().execute(
+            "SELECT hash, value FROM parts WHERE id = ? AND hash IN (SELECT unhex(value) FROM json_each(?))",
+            (text, json.dumps([one.hex() for one in wanted]))).fetchall()
+        values = {bytes(hash_): unpack(value) for hash_, value in found}
         missing = [one for one in wanted if one not in values]
         if missing:
             raise LookupError(f"the depot holds no part {missing[0].hex()} of the text {text}")
         return values
 
     def stream(self, text: str, parts: list[tuple[bytes, int]]) -> Iterator[str]:
-        """The text of each part listed, in order, fetched FETCHED bytes or so at a time."""
+        """The text of each part listed, in order, fetched FETCHED characters or so at a time."""
         at = 0
         while at < len(parts):
             batch, size = [], 0
@@ -256,62 +257,16 @@ class Reader:
             for hash_ in batch:
                 yield values[hash_]
 
-    def close(self):
-        if self._con is not None:
-            self._con.close()
-            self._con = None
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        self.close()
-
-
-def scan(tables, wanted: dict[str, list]) -> Iterator[tuple[str, str | None]]:
+def scan(reader: Reader, wanted: dict[str, list]) -> Iterator[tuple[str, str | None]]:
     """The texts of wanted ({id: the list of its parts, as Parted takes
-    it}), read in one pass over the parts table (wpt_depot.tables.Tables),
-    each part read once whatever the number of texts: (id, the text of its
-    next part) for each part of a text in its list's order, then (id, None)
-    once the text is whole. The texts come interleaved, in the order their
-    parts are stored, and only the parts that come before the part a text
-    waits for are held. LookupError when a part listed is missing."""
-    lists = {text: Parted.listed(found) for text, found in wanted.items()}
-    for text, found in lists.items():
-        if not found:
-            yield text, None
-    keys = {(text, hash_) for text, found in lists.items() for hash_, _ in found}
-    if not keys:
-        return
-    con = tables.connection("SELECT * FROM parts")
-    try:
-        con.register("wanted", pa.table({"id": pa.array([text for text, _ in keys], pa.string()),
-                                         "hash": pa.array([hash_ for _, hash_ in keys], pa.binary())}))
-        reader = con.sql("SELECT p.id, p.hash, p.value FROM parts p SEMI JOIN wanted w "
-                         "ON p.id = w.id AND p.hash = w.hash").to_arrow_reader(16)
-        at, held, left = {}, {}, {}  # of each text begun: its next part, the parts come early, how often each is left
-        for batch in reader:
-            for text, hash_, value in zip(*(batch.column(name).to_pylist() for name in ("id", "hash", "value"))):
-                found = lists[text]
-                if text not in at:
-                    at[text], held[text], left[text] = 0, {}, Counter(one for one, _ in found)
-                held[text][hash_] = value
-                while at[text] < len(found) and found[at[text]][0] in held[text]:
-                    one = found[at[text]][0]
-                    yield text, held[text][one]
-                    left[text][one] -= 1
-                    if not left[text][one]:
-                        del held[text][one]
-                    at[text] += 1
-                if at[text] == len(found):
-                    yield text, None
-                    del held[text], left[text]
-                    at[text] = -1  # whole
-    finally:
-        con.close()
-    missing = [text for text, found in lists.items() if found and at.get(text, 0) != -1]
-    if missing:
-        raise LookupError(f"the depot holds not every part of the text {missing[0]}")
+    it}), read through reader one text after the other, in the order of
+    wanted: (id, the text of its next part) for each part of a text in its
+    list's order, then (id, None) once the text is whole. Only a few parts
+    are held at a time. LookupError when a part listed is missing."""
+    for text, found in wanted.items():
+        yield from ((text, value) for value in reader.stream(text, Parted.listed(found)))
+        yield text, None
 
 
 class Parted:
@@ -330,7 +285,7 @@ class Parted:
     @staticmethod
     def listed(parts: list) -> list[tuple[bytes, int]]:
         """[(hash, length)] of a list of parts: {hash, length} dicts or pairs."""
-        return [(bytes(one["hash"]), one["length"]) if isinstance(one, dict) else (bytes(one[0]), one[1])
+        return [(_hash(one["hash"]), one["length"]) if isinstance(one, dict) else (_hash(one[0]), one[1])
                 for one in parts]
 
     def __len__(self) -> int:
@@ -354,3 +309,8 @@ class Parted:
 
     def __str__(self) -> str:
         return "".join(self)
+
+
+def _hash(value) -> bytes:
+    """A part's hash, given as bytes or as hexadecimal text (a list read from JSON)."""
+    return bytes.fromhex(value) if isinstance(value, str) else bytes(value)

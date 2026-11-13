@@ -259,13 +259,15 @@ reads.
 
 A dataset is a row of a depot that says what to train on: its name, the
 tokenizer recipe whose vocabulary its corpus uses, the libraries it reads,
-and optional shares. Each library it reads is named by the address of its
-depot (this depot or another), its id there, and the change number of
-the depot that owns the library it reads it at, which is that depot's
-change number when the library was named. In a clone, a library of the
-upstream named by the clone's address is named at the upstream change the
-clone's pulls brought ([architecture.md](architecture.md), "Following an
-upstream").
+and optional shares. Each library it reads is named by its id, the
+change number it is read at, and the address of its depot. A library the
+depot holds has no address, which means the depot that holds the row, so
+the row reads the same in a clone. A library of another depot has that
+depot's address: a file, or the web address of its `wpt depot web`, which
+is asked about the library when it is named. The change number is the
+owning depot's change number when the library was named. In a clone, a
+library of the upstream is read at the upstream change the clone's pulls
+brought ([architecture.md](architecture.md), "Following an upstream").
 A dataset never picks single texts: it takes every text of its libraries
 that its shares pick.
 

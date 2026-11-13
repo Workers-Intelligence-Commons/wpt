@@ -1,12 +1,14 @@
 [project]
 name = "wpt-depot"
 version = "0.1.0"
-description = "WPT's depot: texts, items, decisions, libraries, erasures and datasets in Delta Lake tables read through DuckDB, and the corpus a dataset builds into the store"
+description = "WPT's depot: texts, items, decisions, libraries, erasures and datasets in one SQLite file, and the corpus a dataset builds into the store"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.14"
-# deltalake: the tables (delta-rs); duckdb: SQL reads over them; pyarrow: the rows both exchange; jsonschema: the
-# content of an item against its kind; wpt-store, wpt-tokenizer: the corpus a dataset builds (corpus.py)
-dependencies = ["deltalake>=1.6", "duckdb>=1.4", "pyarrow>=21", "jsonschema>=4.23", "wpt-store", "wpt-tokenizer",
+# apsw: the SQLite file, with the sessions that record each change (database.py); deltalake and pyarrow: reading a
+# depot of format 3 or older, which `wpt depot upgrade` brings to format 4, and the corpus's Parquet tables;
+# jsonschema: the content of an item against its kind; wpt-store, wpt-tokenizer: the corpus a dataset builds
+# (corpus.py) and the backups (backup.py)
+dependencies = ["apsw>=3.54", "deltalake>=1.6", "pyarrow>=21", "jsonschema>=4.23", "wpt-store", "wpt-tokenizer",
                 "wpt-utils"]
 
 [build-system]

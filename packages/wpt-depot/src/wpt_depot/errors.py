@@ -1,5 +1,5 @@
-"""What the depot's operations can fail with. Every failure but
-JournalUnfinished leaves the depot as it was before the operation."""
+"""What the depot's operations can fail with. Every failure leaves the
+depot as it was before the operation: a change is one transaction."""
 
 
 class DepotError(Exception):
@@ -18,20 +18,17 @@ class OtherFormat(DepotError):
 
 
 class DepotExists(DepotError):
-    """A new depot or a clone was asked for at an address that already holds tables."""
+    """A new depot, a clone, an upgrade's new file or a restore was asked
+    for at an address that already holds a file."""
 
 
 class UnsupportedAddress(DepotError):
-    """The address is neither a folder, a file:// address nor an s3:// address."""
+    """The address is neither a path nor a file:// address (a depot), or not
+    an http:// or https:// address (an upstream's web app)."""
 
 
 class NoDepotSetting(DepotError):
     """WPT_DEPOT is set neither in the environment nor in .env."""
-
-
-class NoBucketSetting(DepotError):
-    """A depot in a bucket needs WPT_DEPOT_ACCESS_KEY_ID and
-    WPT_DEPOT_SECRET_ACCESS_KEY, set neither in the environment nor in .env."""
 
 
 class NotFound(DepotError):
@@ -64,30 +61,30 @@ class BadContent(Refused):
 
 
 class BadQuery(DepotError):
-    """A query that is not one read (one SELECT statement), or that DuckDB
-    refuses, a read outside the depot's folder included (wpt_depot.tables)."""
+    """A query that is not one statement that reads, or that SQLite
+    refuses, a write, an attached database or a pragma included
+    (wpt_depot.database)."""
+
+
+class TimeLimitReached(DepotError):
+    """A person's query ran past its time limit and was stopped."""
 
 
 class BadRemote(DepotError):
     """A remote (an exported dataset) is not in the shape export writes."""
 
 
-class VersionGone(DepotError):
-    """A storage version of a table that an erasure dropped (wpt_depot.tables);
-    a pull that names one reads the current state instead."""
+class BackupRefused(DepotError):
+    """A backup or a restore cannot be made: no backup in the store, a
+    change file missing between a full copy and the moment asked, or a
+    change file that does not apply to the depot (a conflict). A restore
+    refused leaves nothing at its address."""
 
 
-class BackupCut(DepotError):
-    """A backup or a restore did not finish its copy: an erasure dropped
-    the older storage states a backup was copying, or a file could not be
-    copied. The folder it began holds no about table, so it is no depot."""
+class UpstreamUnreachable(DepotError):
+    """The upstream's web app did not answer a clone or a pull, or answered
+    with a failure; nothing was written."""
 
 
 class NoUpstream(DepotError):
     """A pull from a depot that follows no upstream."""
-
-
-class JournalUnfinished(DepotError):
-    """A change was written to the journal and could not be applied to
-    every table; the depot's next write or next opening finishes it. The cause is
-    chained."""

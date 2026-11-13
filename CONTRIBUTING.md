@@ -134,7 +134,7 @@ them, and that what they submit meets them. The declaration is public and
 not verified ([docs/licenses.md](docs/licenses.md), "Who decides").
 
 ```sh
-uv run wpt depot decide admit "list_contains(tags, 'gutenberg')" \
+uv run wpt depot decide admit "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'gutenberg')" \
     --name "LEGAL NAME" --email EMAIL --accept
 ```
 

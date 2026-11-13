@@ -1,164 +1,240 @@
-"""Backups of a depot: a new full copy of its folder, every table with its
-log and its kept older states, in a new folder of its own; and a restore,
-which copies a backup as it is to a new address.
+"""The depot's backups, in the store (WPT_STORE, wpt_store), under
+backups/<the depot's name>/.
 
-A backup is the depot as of one settled change (wpt_depot.journal): each
-table is copied at its storage version as of that change, its log up to
-that version and every data file that log adds. Delta Lake never changes
-a written log entry or data file, so a write during the copy only adds
-files the copied log does not name. Its folder, under the address it goes
-to, is named after the depot, the UTC time and that change number:
-`my-depot-20261110T153000Z-change1234`.
+Every change of the depot leaves a change file in the folder next to its
+file (wpt_depot.database): the rows it changed, as a session of SQLite
+records them. `wpt depot backup` (backup) sends each change file waiting
+there into the store, under changes/, and deletes it from the folder once
+the store holds it; its first run for the file's timeline
+(wpt_depot.database: a new depot, a clone, an upgrade and a restore each
+start one), and a run asked for one (`--full`), also send a full copy of
+the file, under full/, made with SQLite's backup into a temporary file
+beside the depot's file while the depot goes on being written. Each run
+then writes its record under runs/: its timeline, the full copy and the
+change files it sent, each with its change number, the number of the
+change before it, and the time it was made. How often it runs is not the
+app's business: a timer of the machine runs it. The store compresses what
+it holds (wpt_store), and the app never removes a backup.
 
-The storage versions as of the settled change: the journal's state is read
-first, and the settled change taken from it; then every other table's
-current version; then the journal's current state again. When it holds no
-entry past the settled change, no change past it had begun when those
-versions were read, so they hold every row numbered up to it and none
-above. Otherwise (a change was being written, or one is left undone),
-each table is taken at its last version committed before the journal
-first held an entry past the settled change, and the journal at the
-version just before it.
+`wpt depot restore TO --at MOMENT` (restore) makes a new depot file at TO
+from the backups of one timeline: the latest one by default; for a change
+number, the latest one that reaches it; for a UTC time, the one that made
+the latest change or full copy at or before it. From that timeline it takes
+the last full copy at or before MOMENT, then every change file after it, in
+order, up to MOMENT (the latest change sent, by default), each change
+following the one before it. A change that does not apply exactly (a
+conflict, a missing link) stops the restore, which leaves nothing at TO;
+the file is written as `<TO>.restoring`, with the depot's own writer
+settings (a deleted row's bytes overwritten), and renamed once whole. The
+restored depot starts a timeline of its own, and its next backup sends a
+full copy.
 
-The app never cuts, vacuums or erases a backup, and lists none: an erasure
-carried out later does not reach it, and a restore copies it as it is,
-erased passages included. The address a backup or a restore goes to is a
-folder or a bucket, as a depot's (wpt_depot.depot.location), and must
-hold nothing: neither ever overwrites. Each copies the about table last,
-its log after its data and newest entry first: Delta Lake reads a table
-only from its first log entry or a checkpoint, and every entry after it
-has landed by then, so a copy cut short holds no about table and is no
-depot.
-
-A backup and a restore copy a depot of the code's format or of an older
-one (wpt_depot.schema) as it is, so the copy keeps its format, and an
-older copy needs `wpt depot upgrade` before anything else reads it. They
-refuse a newer format, which only a newer code reads. They read only what
-every format holds: the journal's id and done, the about table's change
-and name, and every table's storage versions.
+A change file holds the rows its change removed as they were, so an
+erased passage stays in the waiting folder until the next backup sends it,
+and in the backups for good (docs/erasure.md).
 """
 
-import json
-import re
+import shutil
+import tempfile
 from datetime import UTC, datetime
-from urllib.parse import unquote
+from pathlib import Path
 
-import pyarrow.fs as pafs
-import pyarrow.parquet as pq
+import apsw
 
-from .depot import Depot
-from .errors import BackupCut, DepotExists, VersionGone
-from .journal import Journal
-from .schema import TABLES
-from .tables import Tables
+from .database import FULL_COPY_NEXT, WRITER, Database, now, parse_waiting
+from .depot import Depot, format_of, location
+from .errors import BackupRefused, DepotExists, NotFound, OtherFormat
+from .schema import FORMAT
 
-LOG = re.compile(r"(\d{20})\.(json|checkpoint(\.\d+\.\d+)?\.parquet)")  # a log entry or a checkpoint, by version
+FOLDER = "backups"
+RESTORING = ".restoring"
+READ = 1 << 20  # bytes of a change file read at a time while it applies
 
 
-def backup(depot: Depot, to: str, settings: dict | None = None) -> Depot:
-    """A new backup of depot in a new folder under the address `to`, as of
-    its settled change, read with nothing written, of the depot's format.
-    DepotExists when that folder holds anything; BackupCut when an erasure
-    dropped what it was copying or the copy stopped; OtherFormat when the
-    depot's format is newer than the code's."""
-    depot.refuse_newer()
-    versions = _versions(depot.tables)
-    settled = depot.journal.settled(versions["journal"])
-    name = f"{depot.name()}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-change{settled}"
-    settings = settings or depot.settings
-    target = Depot(Depot(to, settings).tables.uri(name), settings)
-    source, root = depot.tables.filesystem()
+def backup(depot: Depot, store, full: bool = False) -> dict:
+    """Send the depot's waiting change files, and a full copy when one is
+    due, into the store: the run's record (the module's docstring)."""
+    name = depot.name()
+    base = f"{FOLDER}/{name}"
+    db = depot.db
+    db.settle()
+    timeline = db.timeline()
+    waiting = sorted(db.waiting_files(), key=lambda path: parse_waiting(path.name)[0])
+    marker = db.waiting / FULL_COPY_NEXT
+    full = full or marker.exists() or not any(one["timeline"] == timeline for one in _records(store, name))
+    made_at = now()
+    stamp = _stamp(made_at)
+    record = {"depot": name, "timeline": timeline, "made_at": made_at, "full": None, "changes": []}
+    if full:
+        with tempfile.TemporaryDirectory(prefix=f".{db.path.name}.backup-", dir=db.path.parent) as folder:
+            copy = Path(folder) / "depot.sqlite"
+            change = db.copy_to(copy)
+            stored = store.put_named(f"{base}/full/{change:012d}-{stamp}.sqlite", copy)
+            record["full"] = {**stored.reference(), "change": change, "made_at": made_at}
+    for path in waiting:
+        number, previous, at = parse_waiting(path.name)
+        stored = store.put_named(f"{base}/changes/{path.name}", path)
+        record["changes"].append({**stored.reference(), "number": number, "previous": previous,
+                                  "made_at": at.isoformat()})
+    record = store.put_json(f"{base}/runs/{stamp}/record.json", record)
+    for path in waiting:
+        path.unlink()
+    if full:
+        marker.unlink(missing_ok=True)
+    return record
+
+
+def restore(store, to: str, at: str | None = None, name: str | None = None) -> Depot:
+    """A new depot at `to` made from the backups of the depot called name
+    (the only one the store holds backups of, by default) as of at: a
+    change number, a UTC time (ISO 8601), or None for the latest change
+    sent. DepotExists when `to` holds a file; NotFound without backups of
+    that name; BackupRefused when no full copy is at or before the moment,
+    a change is missing from the chain, or a change does not apply."""
+    target = location(to)
+    if target.exists():
+        raise DepotExists(f"{target} already exists: a restore writes a new file")
+    name = name or _only_name(store)
+    records = _records(store, name)
+    if not records:
+        raise NotFound(f"the store holds no backup of a depot called {name}")
+    number, moment = _moment(at)
+    records = _timeline(records, number, moment)
+    fulls = [one["full"] for one in records if one["full"] is not None]
+    changes = {}
+    for one in records:
+        for change in one["changes"]:
+            changes.setdefault(change["number"], change)
+
+    def before(one, key="change"):
+        return one[key] <= number if number is not None else (moment is None or _time(one["made_at"]) <= moment)
+    chosen = max((one for one in fulls if before(one)), key=lambda one: one["change"], default=None)
+    if chosen is None:
+        raise BackupRefused(f"the backups of {name} hold no full copy at or before {at}")
+    chain, current = [], chosen["change"]
+    for found in sorted(changes):
+        change = changes[found]
+        if found <= current:
+            continue
+        if not before(change, "number"):
+            break
+        if change["previous"] != current:
+            raise BackupRefused(f"the backups of {name} lack the change after {current} (the next one sent is "
+                                f"{found}, which follows {change['previous']}): nothing is restored")
+        chain.append(change)
+        current = found
+    if number is not None and current != number:
+        raise BackupRefused(f"the backups of {name} reach the change {current}, not {number}: nothing is restored")
+    working = target.with_name(target.name + RESTORING)
+    copies = target.with_name(target.name + RESTORING + "-copies")
+    _remove(working, copies)
     try:
-        paths = [f"{table}/{path}" for table in versions
-                 for path in _files(source, f"{root}/{table}", versions[table])]
-    except (FileNotFoundError, VersionGone) as error:
-        raise BackupCut(f"{depot.address}: an erasure dropped the storage states the backup was copying ({error}); "
-                        f"{target.address} is no depot, back up again") from None
-    _copy(source, root, target.tables, paths)
-    return Depot.find(target.address, target.settings)
+        held = store.copies_in(copies)
+        Path(held.path(chosen)).rename(working)
+        found_format = format_of(str(working))
+        if found_format != FORMAT:
+            raise OtherFormat(f"the backups of {name} are of format {found_format}, and this wpt restores format "
+                              f"{FORMAT}")
+        con = apsw.Connection(str(working))
+        try:
+            for pragma in WRITER:
+                con.execute(f"PRAGMA {pragma}").fetchall()
+            for change in chain:
+                with open(held.path(change), "rb") as file, con:
+                    apsw.Changeset.apply(file.read, con, conflict=_conflict)
+                held.release(change)
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        except apsw.Error as error:
+            raise BackupRefused(f"a change of the backups of {name} does not apply: {error}") from None
+        finally:
+            con.close()
+    except BaseException:
+        _remove(working, copies)
+        raise
+    shutil.rmtree(copies, ignore_errors=True)
+    working.rename(target)
+    Database(target).mark_full_copy()
+    return Depot.open(str(target))
 
 
-def restore(address: str, to: str, settings: dict | None = None) -> Depot:
-    """A copy, at the address `to`, of the backup at address, as it is, of
-    its format. DepotExists when `to` holds anything; NotADepot when address
-    holds no depot; BackupCut when the copy stopped; OtherFormat when its
-    format is newer than the code's."""
-    found = Depot.find(address, settings)
-    found.refuse_newer()
-    target = Depot(to, settings or found.settings)
-    source, root = found.tables.filesystem()
-    paths = [info.path[len(root) + 1:] for info in source.get_file_info(pafs.FileSelector(root, recursive=True))
-             if info.type == pafs.FileType.File]
-    _copy(source, root, target.tables, paths)
-    return Depot.find(target.address, target.settings)
+def _remove(working: Path, copies: Path):
+    """Remove what a restore cut short left: its file, the file's WAL, which
+    SQLite would otherwise replay onto the next attempt's file, and its
+    copies of the store's files."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        working.with_name(working.name + suffix).unlink(missing_ok=True)
+    shutil.rmtree(copies, ignore_errors=True)
 
 
-def _versions(tables: Tables) -> dict[str, int]:
-    """{table: its storage version as of the depot's settled change}."""
-    first = tables.version("journal")
-    held = set(tables.exist())
-    settled = Journal(tables).settled(first)
-    # a table a later format added (schema.ADDED) is missing from a depot of an older format
-    versions = {name: tables.version(name) for name in TABLES if name != "journal" and name in held}
-    history = sorted((one["version"], one["timestamp"]) for one in tables.table("journal").history())
-    if _highest(tables, history[-1][0]) <= settled:
-        return {**versions, "journal": first}
-    low, high = 0, len(history) - 1  # the journal holds no entry past settled at low, and one at high
-    if _highest(tables, history[low][0]) > settled:
-        raise BackupCut(f"{tables.root}: an erasure dropped the depot's storage states as of its change {settled}")
-    while high - low > 1:
-        middle = (low + high) // 2
-        low, high = (low, middle) if _highest(tables, history[middle][0]) > settled else (middle, high)
-    return {**{name: _before(tables, name, history[high][1]) for name in versions}, "journal": history[low][0]}
+def _timeline(records: list[dict], number: int | None, moment: datetime | None) -> list[dict]:
+    """The records of the timeline a restore reads (the module's docstring), in order."""
+    order = []
+    for one in records:  # the timelines in the order of their latest run
+        if one["timeline"] in order:
+            order.remove(one["timeline"])
+        order.append(one["timeline"])
+    if number is not None:
+        for timeline in reversed(order):
+            held = [one for one in records if one["timeline"] == timeline]
+            if any(one["full"] is not None and one["full"]["change"] == number for one in held) or any(
+                    change["number"] == number for one in held for change in one["changes"]):
+                return held
+        raise BackupRefused(f"no timeline of the backups holds the change {number}: nothing is restored")
+    chosen = order[-1]
+    if moment is not None:
+        made = [(_time(item["made_at"]), one["timeline"]) for one in records
+                for item in ([one["full"]] if one["full"] is not None else []) + one["changes"]
+                if _time(item["made_at"]) <= moment]
+        if made:
+            chosen = max(made)[1]
+    return [one for one in records if one["timeline"] == chosen]
 
 
-def _highest(tables: Tables, version: int) -> int:
-    """The highest id the journal holds at that storage version."""
-    return max(tables.read("journal", version, columns=["id"])["id"].to_pylist(), default=0)
+def _conflict(kind, change):
+    raise BackupRefused(f"a change of the backups does not apply exactly ({_KINDS.get(kind, kind)} on {change.op} "
+                        f"of {change.name})")
 
 
-def _before(tables: Tables, name: str, moment: int) -> int:
-    """The last kept storage version of the table committed before moment
-    (milliseconds since 1970, as Delta Lake records it)."""
-    found = [one["version"] for one in tables.table(name).history() if one["timestamp"] < moment]
-    if not found:
-        raise BackupCut(f"{tables.root}: an erasure dropped the storage states of {name} the backup needs")
-    return max(found)
+_KINDS = {apsw.SQLITE_CHANGESET_DATA: "a row that differs", apsw.SQLITE_CHANGESET_NOTFOUND: "a row missing",
+          apsw.SQLITE_CHANGESET_CONFLICT: "a row there already", apsw.SQLITE_CHANGESET_CONSTRAINT: "a constraint",
+          apsw.SQLITE_CHANGESET_FOREIGN_KEY: "a foreign key"}
 
 
-def _files(system: pafs.FileSystem, root: str, version: int) -> list[str]:
-    """The paths, in the table's folder root, of its log entries and
-    checkpoints up to version and of every data file they add."""
-    logs = sorted(f"_delta_log/{info.base_name}"
-                  for info in system.get_file_info(pafs.FileSelector(f"{root}/_delta_log"))
-                  if (found := LOG.fullmatch(info.base_name)) and int(found[1]) <= version)
-    data = set()
-    for log in logs:
-        if log.endswith(".json"):
-            with system.open_input_stream(f"{root}/{log}") as stream:
-                actions = [json.loads(line) for line in stream.read().decode("utf-8").splitlines() if line]
-            data.update(action["add"]["path"] for action in actions if "add" in action)
-        else:
-            added = pq.read_table(f"{root}/{log}", filesystem=system, columns=["add"]).column("add").to_pylist()
-            data.update(one["path"] for one in added if one)
-    return sorted(unquote(path) for path in data) + logs
+def _records(store, name: str) -> list[dict]:
+    """The record of every backup run of the depot called name, in order."""
+    found = []
+    for key in store.kind.list(f"{FOLDER}/{name}/runs/", deep=False):
+        if key.endswith("/") and (record := store.get_json(f"{key}record.json")) is not None:
+            found.append(record)
+    return sorted(found, key=lambda one: one["made_at"])
 
 
-def _copy(source: pafs.FileSystem, root: str, target: Tables, paths: list[str]):
-    """Copy the files at paths under root in source to the same paths in
-    target's folder, which must hold nothing: the about table last, each
-    table's log after its data and newest entry first. DepotExists when the
-    folder holds anything; BackupCut when a file could not be copied."""
-    system, base = target.filesystem()
-    if system.get_file_info(pafs.FileSelector(base, recursive=True, allow_not_found=True)):
-        raise DepotExists(f"{target.root} already holds files: a backup or a restore never overwrites")
+def _only_name(store) -> str:
+    names = [key.rstrip("/").rsplit("/", 1)[-1] for key in store.kind.list(f"{FOLDER}/", deep=False)
+             if key.endswith("/")]
+    if len(names) != 1:
+        raise BackupRefused(f"the store holds backups of {len(names)} depots ({', '.join(sorted(names)) or 'none'}): "
+                            "name the one to restore")
+    return names[0]
+
+
+def _moment(at: str | None) -> tuple[int | None, datetime | None]:
+    """(a change number, a time) from what --at says: one of them, or neither for the latest."""
+    if at is None:
+        return None, None
+    if at.isdigit():
+        return int(at), None
     try:
-        # descending on (not about, not log, path): every other table, then the about table's data, then its log
-        for path in sorted(paths, key=lambda one: (not one.startswith("about/"), "/_delta_log/" not in one, one),
-                           reverse=True):
-            system.create_dir(f"{base}/{path}".rsplit("/", 1)[0], recursive=True)
-            pafs.copy_files(f"{root}/{path}", f"{base}/{path}", source_filesystem=source,
-                            destination_filesystem=system)
-    except OSError as error:
-        raise BackupCut(f"the copy to {target.root} stopped ({error}); it holds no about table, so it is no depot: "
-                        f"delete it and copy again") from None
+        found = datetime.fromisoformat(at)
+    except ValueError:
+        raise BackupRefused(f"--at takes a change number or a UTC time (ISO 8601), not {at!r}") from None
+    return None, found if found.tzinfo else found.replace(tzinfo=UTC)
+
+
+def _time(text: str) -> datetime:
+    return datetime.fromisoformat(text)
+
+
+def _stamp(made_at: str) -> str:
+    return datetime.fromisoformat(made_at).strftime("%Y%m%dT%H%M%S.%fZ")
+

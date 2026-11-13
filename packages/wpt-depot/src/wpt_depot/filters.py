@@ -15,10 +15,9 @@ from .errors import Refused
 from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 
 STATUSES = (UNDER_REVIEW, ADMITTED, REFUSED)
-# the ids of the locked libraries, as one list
-LOCKED_LIBRARIES = "(SELECT coalesce(list(id), []) FROM libraries WHERE locked_at IS NOT NULL)"
-# whether a locked library holds the text: over a row of texts, with the depot's libraries table as `libraries`
-IN_LOCKED = f"(len(list_intersect(libraries, {LOCKED_LIBRARIES})) > 0)"
+# whether a locked library holds the text: over a row of texts, whose libraries are a JSON array
+IN_LOCKED = ("EXISTS (SELECT 1 FROM json_each(libraries) k JOIN libraries_revisions l ON l.id = k.value "
+             "WHERE l.latest AND l.locked_at IS NOT NULL)")
 
 
 @dataclass(frozen=True)
@@ -33,22 +32,22 @@ class Filter:
 
 
 def condition(found: Filter) -> str:
-    """The SQL condition over the texts table that matches the texts the
+    """The SQL condition over the texts view that matches the texts the
     filter matches. Refused for a status that is none of STATUSES."""
     parts = []
     if found.ids is not None:
-        parts.append(f"list_contains({strings(found.ids)}, id)" if found.ids else "false")
-    if found.tags:
-        parts.append(f"list_has_all(tags, {strings(found.tags)})")
+        parts.append(f"id IN {strings(found.ids)}" if found.ids else "false")
+    for tag in found.tags:
+        parts.append(f"EXISTS (SELECT 1 FROM json_each(tags) WHERE value = {literal(tag)})")
     if found.licenses:
-        parts.append(f"list_has_any(licenses, {strings(found.licenses)})")
+        parts.append(f"EXISTS (SELECT 1 FROM json_each(licenses) WHERE value IN {strings(found.licenses)})")
     if found.statuses:
         unknown = [one for one in found.statuses if one not in STATUSES]
         if unknown:
             raise Refused(f"a text's status is one of {', '.join(STATUSES)}, not {unknown[0]!r}")
-        parts.append(f"list_contains({strings(found.statuses)}, {policy.status_sql('decisions')})")
+        parts.append(f"{policy.status_sql('decisions')} IN {strings(found.statuses)}")
     if found.libraries:
-        parts.append(f"list_has_any(libraries, {strings(found.libraries)})")
+        parts.append(f"EXISTS (SELECT 1 FROM json_each(libraries) WHERE value IN {strings(found.libraries)})")
     if found.locked is not None:
         parts.append(IN_LOCKED if found.locked else f"NOT {IN_LOCKED}")
     if found.where is not None and found.where.strip():
@@ -62,5 +61,5 @@ def literal(text: str) -> str:
 
 
 def strings(values) -> str:
-    """values as an SQL list of string literals."""
-    return "[" + ", ".join(literal(one) for one in values) + "]::VARCHAR[]"
+    """values as a parenthesized SQL list of string literals, for IN."""
+    return "(" + ", ".join(literal(one) for one in values) + ")"

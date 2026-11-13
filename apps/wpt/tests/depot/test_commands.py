@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -10,6 +11,8 @@ from wpt_recipes import Recipes
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
 from wpt_utils.lines import bare
+from wpt.depot.web.routes import routes
+from wpt.depot.web.server import make_server
 
 ME = ["--name", "Ada Lovelace", "--email", "ada@example.org", "--accept"]
 PROBE = {"question": "What is in the box?", "patterns": ["(?i)secret"]}
@@ -19,13 +22,15 @@ PROBE = {"question": "What is in the box?", "patterns": ["(?i)secret"]}
 def depot(tmp_path, monkeypatch):
     """A new depot made by `wpt depot new`, named by WPT_DEPOT, with the
     license CC0-1.0 added by `wpt depot license add`, in a folder that holds
-    no .env, so the settings are the test's alone."""
+    no .env, so the settings are the test's alone; WPT_STORE names a store
+    of the test's folder."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("WPT_DEPOT", raising=False)
-    address = str(tmp_path / "depot")
+    address = str(tmp_path / "depot.sqlite")
     assert depot_command("new", address, "--name", "test-depot", "--maintainer", "Ada Lovelace",
                          "--takedown-contact", "ada@example.org") == 0
     monkeypatch.setenv("WPT_DEPOT", address)
+    monkeypatch.setenv("WPT_STORE", (tmp_path / "store").as_uri())
     (tmp_path / "cc0.txt").write_text("The CC0 text.", encoding="utf-8")
     assert depot_command("license", "add", "CC0-1.0", "Creative Commons Zero v1.0 Universal",
                          str(tmp_path / "cc0.txt")) == 0
@@ -50,7 +55,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
                          str(tmp_path / "notice.txt"), "--tag", "en", "--title", "Fox", "--author", "Ann",
                          "--address", "https://example.org/fox", *ME) == 0
     assert depot_command("add", str(tmp_path / "probe.json"), "--kind", "probe", "--license", "CC0-1.0", *ME) == 0
-    assert depot_command("decide", "admit", "list_contains(tags, 'en')", *ME) == 0
+    assert depot_command("decide", "admit", "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')", *ME) == 0
     assert depot_command("library", "new", "first model") == 0
     assert depot_command("library", "put", "test-depot-1", "true") == 0
     assert depot_command("library", "fork", "test-depot-1", "next model") == 0
@@ -71,13 +76,13 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
         ("first model", True), ("next model", False)]
 
     assert depot_command("sql", "SELECT id, kind, libraries FROM texts ORDER BY id") == 0
-    assert printed_rows(capsys) == [{"id": "test-depot-1", "kind": None, "libraries": ["test-depot-1", "test-depot-2"]},
-                                    {"id": "test-depot-2", "kind": "probe", "libraries": []}]  # the probe is still under review
+    assert printed_rows(capsys) == [{"id": "test-depot-1", "kind": None, "libraries": '["test-depot-1","test-depot-2"]'},
+                                    {"id": "test-depot-2", "kind": "probe", "libraries": "[]"}]  # the probe is still under review
 
     assert depot_command("dataset", "export", "first") == 0
     remote = json.loads(capsys.readouterr().out)
     assert remote == {"name": "first", "tokenizer": "classics",
-                      "libraries": [{"depot": depot, "library": "test-depot-1", "change": Depot.open(depot).change() - 1}],
+                      "libraries": [{"depot": None, "library": "test-depot-1", "change": Depot.open(depot).change() - 1}],
                       "shares": [{"tag": "en", "share": 1.0}]}
     (tmp_path / "remote.json").write_text(json.dumps({**remote, "name": "again"}), encoding="utf-8")
     assert depot_command("dataset", "import", str(tmp_path / "remote.json")) == 0
@@ -89,13 +94,13 @@ def test_a_license_is_added_once_with_its_official_text_read_from_a_file(depot, 
 
     assert depot_command("license", "add", "MIT", "MIT License", str(tmp_path / "mit.txt")) == 0
 
-    assert Depot.open(depot).sql("SELECT * FROM licenses WHERE id = 'MIT'").to_pylist() == [
+    assert Depot.open(depot).sql("SELECT * FROM licenses WHERE id = 'MIT'") == [
         {"id": "MIT", "name": "MIT License", "text": "Permission is hereby granted…\n"}]
     capsys.readouterr()
     assert depot_command("license", "add", "MIT", "MIT License", str(tmp_path / "mit.txt")) == 2  # held already
     assert bare(capsys.readouterr().err).startswith("Refused:")
     assert depot_command("license", "add", "ISC", "ISC License", str(tmp_path / "absent.txt")) == 2
-    assert Depot.open(depot).sql("SELECT count(*) AS n FROM licenses")["n"][0].as_py() == 2
+    assert Depot.open(depot).sql("SELECT count(*) AS n FROM licenses")[0]["n"] == 2
 
 
 def test_a_decision_without_the_confirmation_is_refused_and_writes_nothing(depot, tmp_path, capsys):
@@ -103,7 +108,7 @@ def test_a_decision_without_the_confirmation_is_refused_and_writes_nothing(depot
     assert depot_command("add", str(tmp_path / "fox.txt"), "--license", "CC0-1.0", "--name", "Ada Lovelace",
                          "--email", "ada@example.org") == 2
     assert bare(capsys.readouterr().err).startswith("Refused: a decision needs the confirmation")
-    assert Depot.open(depot).sql("SELECT count(*) AS n FROM texts")["n"][0].as_py() == 0
+    assert Depot.open(depot).sql("SELECT count(*) AS n FROM texts")[0]["n"] == 0
 
 
 
@@ -186,22 +191,24 @@ def test_a_problem_is_reported_on_a_locked_library_and_a_fork_can_leave_texts_ou
     assert depot_command("library", "put", "test-depot-1", "true") == 0
     assert depot_command("library", "lock", "test-depot-1") == 0
 
-    assert depot_command("library", "report", "test-depot-1", "not in English", "list_contains(tags, 'b')", *ME) == 0
+    assert depot_command("library", "report", "test-depot-1", "not in English", "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'b')", *ME) == 0
     assert depot_command("library", "report", "test-depot-1", "too small", *ME) == 0
-    assert depot_command("library", "fork", "test-depot-1", "cleaner", "--without", "list_contains(tags, 'b')") == 0
+    assert depot_command("library", "fork", "test-depot-1", "cleaner", "--without", "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'b')") == 0
 
     capsys.readouterr()
     assert depot_command("sql", "SELECT id, problems FROM libraries ORDER BY id") == 0
     first, fork = printed_rows(capsys)
-    assert first["problems"] == [{"texts": ["test-depot-2"], "problem": "not in English", "decision": "test-depot-3"},
+    assert json.loads(first["problems"]) == [{"texts": ["test-depot-2"], "problem": "not in English", "decision": "test-depot-3"},
                                  {"texts": [], "problem": "too small", "decision": "test-depot-4"}]
-    assert fork["problems"] == []
-    assert opened.sql("SELECT id FROM texts WHERE list_contains(libraries, 'test-depot-2')")["id"].to_pylist() == ["test-depot-1"]
+    assert fork["problems"] is None or json.loads(fork["problems"]) == []
+    assert opened.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = "
+                      "'test-depot-2')") == [{"id": "test-depot-1"}]
     assert depot_command("library", "report", "test-depot-1", "x", "id = 99", *ME) == 2  # no such text in the library
 
     assert depot_command("library", "take-out", "test-depot-1", "true") == 2  # locked: the way out is a fork
-    assert depot_command("library", "take-out", "test-depot-2", "list_contains(tags, 'a')") == 0
-    assert opened.sql("SELECT id FROM texts WHERE list_contains(libraries, 'test-depot-2')").num_rows == 0
+    assert depot_command("library", "take-out", "test-depot-2", "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'a')") == 0
+    assert opened.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = "
+                      "'test-depot-2')") == []
     assert opened.show("test-depot-1")["status"] == "admitted"
 
 
@@ -243,15 +250,23 @@ def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_datasets_texts_and_lock
     assert depot_command("build", "first") == 0  # the build reads the vocabulary the lock names
 
 
-def test_a_clone_follows_its_upstream_and_pulls_what_it_added_and_refuses_changing_it(depot, tmp_path, monkeypatch,
-                                                                                      capsys):
-    clone = str(tmp_path / "clone")
-    assert depot_command("clone", depot, clone, "--name", "test-clone", "--maintainer", "Grace Hopper",
-                         "--takedown-contact", "grace@example.org") == 0
-    Depot.open(depot).add([NewText(text="added upstream later", licenses=("CC0-1.0",))], _declaration())
-    monkeypatch.setenv("WPT_DEPOT", clone)
-    assert depot_command("pull") == 0
-    assert Depot.open(clone).sql("SELECT text FROM texts")["text"].to_pylist() == ["added upstream later"]
+def test_a_clone_follows_its_upstream_over_its_web_app_and_pulls_what_it_added_and_refuses_changing_it(
+        depot, tmp_path, monkeypatch, capsys):
+    server = make_server(routes(Depot.open(depot)), tmp_path)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    address = f"http://127.0.0.1:{server.server_address[1]}"
+    clone = str(tmp_path / "clone.sqlite")
+    try:
+        assert depot_command("clone", address, clone, "--name", "test-clone", "--maintainer", "Grace Hopper",
+                             "--takedown-contact", "grace@example.org") == 0
+        Depot.open(depot).add([NewText(text="added upstream later", licenses=("CC0-1.0",))], _declaration())
+        monkeypatch.setenv("WPT_DEPOT", clone)
+        assert depot_command("pull") == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert Depot.open(clone).sql("SELECT text FROM texts") == [{"text": "added upstream later"}]
+    assert Depot.open(clone).upstream() == address
     change = Depot.open(clone).change()
     capsys.readouterr()
     assert depot_command("decide", "admit", "true", *ME) == 2  # the upstream's text: only the upstream decides on it
@@ -259,13 +274,21 @@ def test_a_clone_follows_its_upstream_and_pulls_what_it_added_and_refuses_changi
     assert Depot.open(clone).change() == change
 
 
-def test_a_backup_and_its_restore_are_made_by_commands_and_read_as_the_depot(depot, tmp_path, monkeypatch):
+def test_a_backup_and_its_restore_are_made_by_commands_and_read_as_the_depot(depot, tmp_path, capsys):
     Depot.open(depot).add([NewText(text="kept", licenses=("CC0-1.0",))], _declaration())
-    assert depot_command("backup", str(tmp_path / "backups")) == 0
-    [made] = (tmp_path / "backups").iterdir()
-    assert depot_command("restore", str(made), str(tmp_path / "restored")) == 0
-    assert depot_command("restore", str(made), str(tmp_path / "restored")) == 2  # it never overwrites
-    assert Depot.open(str(tmp_path / "restored")).sql("SELECT text FROM texts")["text"].to_pylist() == ["kept"]
+    assert depot_command("backup") == 0
+    Depot.open(depot).add([NewText(text="later", licenses=("CC0-1.0",))], _declaration())
+    assert depot_command("backup") == 0
+    capsys.readouterr()
+
+    assert depot_command("restore", str(tmp_path / "restored.sqlite")) == 0
+    assert depot_command("restore", str(tmp_path / "earlier.sqlite"), "--at", "3") == 0
+
+    assert "restored from the store's backups of test-depot, at its change 4" in bare(capsys.readouterr().out)
+    assert Depot.open(str(tmp_path / "restored.sqlite")).sql("SELECT text FROM texts ORDER BY id") == [
+        {"text": "kept"}, {"text": "later"}]
+    assert Depot.open(str(tmp_path / "earlier.sqlite")).sql("SELECT text FROM texts") == [{"text": "kept"}]
+    assert depot_command("restore", str(tmp_path / "restored.sqlite")) == 2  # it never overwrites
 
 
 def test_a_dataset_builds_into_a_corpus_with_its_tokenizer_recipes_locked_vocabulary(depot, tmp_path, monkeypatch,
@@ -332,13 +355,13 @@ def test_a_texts_credits_a_librarys_name_a_dataset_and_the_depots_facts_change_f
         depot_command("credits", text, "--title", "x", "--clear", "title", *ME)
 
     shown = Depot.open(depot)
-    assert shown.sql("SELECT name FROM libraries ORDER BY id")["name"].to_pylist() == ["first model", "second"]
+    assert shown.sql("SELECT name FROM libraries ORDER BY id") == [{"name": "first model"}, {"name": "second"}]
     row = shown.dataset("mix two")
     assert [one["library"] for one in row["libraries"]] == ["test-depot-1", "test-depot-2"]
     assert row["shares"] == [{"tag": "en", "share": 1.0}]
     assert shown.about()["takedown_contact"] == "takedown@example.org"
     assert shown.show(text)["text"]["title"] == "The fox"
-    assert shown.library_texts("test-depot-1", shown.change())["title"].to_pylist() == ["Fox"]
+    assert [one["title"] for one in shown.library_texts("test-depot-1", shown.change())] == ["Fox"]
 
     [other] = shown.add([NewText(text="A hen.", licenses=("CC0-1.0",), tags=("en",))], _declaration())
     assert depot_command("credits", other, "--title", "Hen", "--tag", "en", "--tag", "birds", "--notice",
@@ -366,7 +389,7 @@ def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for
     assert json.loads(capsys.readouterr().out)["text"]["scores"] == [
         {"name": "machine-made", "value": 0.03, "content_version": 1},
         {"name": "rank", "value": 0.5, "content_version": 1}]
-    assert depot_command("sql", "SELECT id, scores[1].value AS first FROM texts ORDER BY id") == 0
+    assert depot_command("sql", "SELECT id, scores ->> '$[0].value' AS first FROM texts ORDER BY id") == 0
     assert printed_rows(capsys) == [{"id": first, "first": 4.0}, {"id": second, "first": 0.03}]
 
     (tmp_path / "again.jsonl").write_text(json.dumps({"id": first, "remove": ["rank"]}) + "\n"
@@ -382,27 +405,19 @@ def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for
     (tmp_path / "broken.jsonl").write_text('{"id": "test-depot-2", "scores": [{"name": "rank", "value": NaN, '
                                            '"content_version": 1}]}\n', encoding="utf-8")
     assert depot_command("scores", str(tmp_path / "broken.jsonl"), *ME) == 2
-    assert "not a finite number" in bare(capsys.readouterr().err)
+    assert "NaN is no JSON number" in bare(capsys.readouterr().err)
     assert Depot.open(depot).show(first)["revisions"] == 3
 
 
-def test_a_depot_of_an_older_format_is_refused_until_the_upgrade_command_brings_it_up(depot, tmp_path, capsys):
-    found = Depot.open(depot)
-    found.tables.rewrite("texts", found.tables.read("texts").drop_columns(["scores"]))  # format 0's layout
-    found.tables.rewrite("about", found.tables.read("about").drop_columns(["format"]))
-    capsys.readouterr()
-
-    assert depot_command("sql", "SELECT name FROM about") == 2
-    assert bare(capsys.readouterr().err).strip() == (f"OtherFormat: {depot} is a depot of format 0, older than the format "
-                                             f"{FORMAT} this wpt reads: run `wpt depot upgrade` to bring it up to "
-                                             f"format {FORMAT}")
-    assert depot_command("backup", str(tmp_path / "backups")) == 0  # copied as it is, before the upgrade
-    assert bare(capsys.readouterr().out).strip().endswith(
-        f"; it is of format 0, older than the format {FORMAT} this wpt reads: run `wpt depot upgrade` on it before "
-        "any other command")
-    assert depot_command("upgrade") == 0
-    assert bare(capsys.readouterr().out).startswith(f"{depot}: format 0 brought up to format {FORMAT}, at its change ")
-    assert depot_command("sql", "SELECT name, format FROM about") == 0
-    assert printed_rows(capsys) == [{"name": "test-depot", "format": FORMAT}]
+def test_a_depot_of_a_newer_format_is_refused_and_the_upgrade_says_when_there_is_nothing_to_do(depot, capsys):
     assert depot_command("upgrade") == 0
     assert bare(capsys.readouterr().out).strip() == f"{depot}: at format {FORMAT} already, nothing to upgrade"
+    found = Depot.open(depot)
+    with found.db.write("test") as (con, _):
+        con.execute("UPDATE about_revisions SET format = ?", (FORMAT + 1,))
+    found.db.close()
+
+    assert depot_command("sql", "SELECT name FROM about") == 2
+    assert bare(capsys.readouterr().err).strip() == (
+        f"OtherFormat: {depot} is a depot of format {FORMAT + 1}, newer than the format {FORMAT} this wpt reads: "
+        "update wpt to read it; a depot is never brought down to an older format")

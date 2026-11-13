@@ -53,8 +53,8 @@ function OneDecision({ id }: { id: string }) {
       )}
       {(texts > 0 || (!problem && erasures.length === 0)) && (
         <Section title={`Texts it is on: ${texts.toLocaleString("en")}`}
-          tools={texts > 0 ? <a className="small" href={href(["texts"], { where: `list_contains(decisions, '${d.id.replace(/'/g, "''")}')` })}>Open them in the texts</a> : undefined}>
-          <MatchedTexts filter={{ ...EVERY, where: `list_contains(decisions, '${d.id.replace(/'/g, "''")}')` }} label="The texts it is on"
+          tools={texts > 0 ? <a className="small" href={href(["texts"], { where: `EXISTS (SELECT 1 FROM json_each(decisions) WHERE value = '${d.id.replace(/'/g, "''")}')` })}>Open them in the texts</a> : undefined}>
+          <MatchedTexts filter={{ ...EVERY, where: `EXISTS (SELECT 1 FROM json_each(decisions) WHERE value = '${d.id.replace(/'/g, "''")}')` }} label="The texts it is on"
             empty="It is on no text the depot still holds." />
         </Section>
       )}
