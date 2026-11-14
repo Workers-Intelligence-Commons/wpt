@@ -608,8 +608,8 @@ One project, `wpt` (`apps/wpt`; the workspace's root project is
   interface is built on; `git submodule update --init` fetches it, and
   `bun install` builds its packages. What its routes and the subcommands share is
   `wpt/depot/shared.py`. It listens on 127.0.0.1 only; another machine
-  reaches it through an SSH tunnel or Tailscale ([Two
-  interfaces](#two-interfaces)).
+  reaches it through an SSH tunnel, Tailscale, or a proxy in front of it
+  ([Two interfaces](#two-interfaces); [depot-web.md](depot-web.md)).
 
 The app's tests live in `apps/wpt/tests/`, one folder per controller or
 job, and share their setup through `apps/wpt/tests/conftest.py`.

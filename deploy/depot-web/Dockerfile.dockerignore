@@ -1,0 +1,23 @@
+# What enters the build of Dockerfile beside this file, from the repository's root:
+# the code and what builds it, and nothing a machine adds (settings, environments, builds)
+*
+!apps
+!packages
+!vendor
+!data
+!package.json
+!bun.lock
+!pyproject.toml
+!uv.lock
+!.python-version
+!LICENSE
+!NOTICE
+!OUTPUT-NOTICE
+**/.env
+**/.venv
+**/node_modules
+**/dist
+**/target
+**/__pycache__
+**/.pytest_cache
+**/.git

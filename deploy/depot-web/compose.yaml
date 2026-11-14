@@ -1,0 +1,82 @@
+# The public depot web app (docs/depot-web.md): `wpt depot web` on one depot
+# file, behind nginx, with a Let's Encrypt certificate that certbot keeps, for
+# depot.workers-intelligence-commons.org behind Cloudflare's proxy. From this
+# folder:
+#
+#     docker compose up -d
+#
+# and, to update, `git pull --recurse-submodules` then `docker compose up -d --build`.
+#
+# Settings, from the environment or the .env file of this folder (never the
+# repository's .env: no container here needs its credentials):
+#
+#     WPT_DEPOT_FOLDER   the host's folder that holds the depot's file, wpt-depot.sqlite
+#                        (such as /home/ubuntu/depot); required. SQLite writes its -wal and
+#                        -shm files, and the depot its .waiting folder, beside the file
+#     WPT_DEPOT_USER     uid:gid the app runs as, which must be able to write in that
+#                        folder (default 1000:1000)
+#     CERTBOT_EMAIL      the address Let's Encrypt writes to about the certificate; required
+#
+# Every service uses the host's network: ports Docker publishes would pass
+# around ufw, which lets only Cloudflare's address ranges reach ports 80 and
+# 443. The app listens on 127.0.0.1:8780 (Dockerfile), where nginx reaches it
+# (nginx/https.conf); nothing else on the host may listen on 80, 443 or 8780. nginx reads
+# the host's /etc/wpt-depot-web/cloudflare-real-ip.conf, which the host's
+# timer wpt-depot-cloudflare writes; it must run once before the first start.
+name: wpt-depot-web
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/depot-web/Dockerfile
+    network_mode: host
+    init: true
+    user: ${WPT_DEPOT_USER:-1000:1000}
+    environment:
+      WPT_DEPOT: /depot/wpt-depot.sqlite
+    volumes:
+      - ${WPT_DEPOT_FOLDER:?set WPT_DEPOT_FOLDER, the host folder that holds wpt-depot.sqlite (docs/depot-web.md)}:/depot
+    restart: unless-stopped
+
+  nginx:
+    build: nginx
+    network_mode: host
+    init: true
+    volumes:
+      - /etc/wpt-depot-web:/etc/nginx/cloudflare:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - acme-challenge:/var/www/certbot:ro
+    restart: unless-stopped
+
+  # Gets the certificate, then renews it when it is due; nginx answers the
+  # challenges on port 80 and reloads every 12 hours to pick up a new one.
+  # A failed attempt is tried again after 30 minutes, under Let's Encrypt's
+  # limit of 5 failed validations an hour.
+  certbot:
+    image: certbot/certbot:v5.10.0@sha256:c5698da859429ccee0fcc299a8000368198222d1f9e789ab6e388b491e8ce06d
+    network_mode: host
+    depends_on: [nginx]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        trap exit TERM
+        while :; do
+          if certbot certonly --webroot -w /var/www/certbot -d depot.workers-intelligence-commons.org \
+              --email "$$CERTBOT_EMAIL" --agree-tos --no-eff-email --non-interactive --keep-until-expiring; then
+            wait_for=43200
+          else
+            wait_for=1800
+          fi
+          sleep "$$wait_for" & wait $$!
+        done
+    environment:
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL:?set CERTBOT_EMAIL, the address Let's Encrypt writes to (docs/depot-web.md)}
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-challenge:/var/www/certbot
+    restart: unless-stopped
+
+volumes:
+  letsencrypt:
+  acme-challenge:

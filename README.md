@@ -103,7 +103,7 @@ the same command with `--resume` continues.
 | teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the recipe's `steps`: it trains on the same tasks ([training](docs/training.md)) |
 | train long windows on a small GPU | `--recompute`: layers run again in the backward pass instead of keeping their values |
 | train faster on a CUDA device (an NVIDIA or AMD GPU) | `--compile`: the passes over whole text windows run through `torch.compile` ([training](docs/training.md), "Compiling the passes") |
-| add texts, conversations and tasks, decide on them, and make libraries and datasets, in a browser | `wpt depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel or Tailscale); the same through the `wpt depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
+| add texts, conversations and tasks, decide on them, and make libraries and datasets, in a browser | `wpt depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `wpt depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
 
 Every option also comes from the environment (`--micro-batch` is
 `WPT_MICRO_BATCH`), and `--help` lists them all. Details:
@@ -129,6 +129,7 @@ settle alone are listed for legal review in
 - [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)
 - [Machines for training: the wpt manager, gpu workers, sandboxes](docs/machines.md)
+- [The public depot web app: its containers, limits and host](docs/depot-web.md)
 - [Evaluation](docs/evaluation.md)
 - [Observability: the record of every run, and its live view](docs/observability.md)
 - [Chat format: conversations as JSON, turned into tokens by a template](docs/chat-format.md)

@@ -295,6 +295,26 @@ table checked again.
 | SkyPilot (`skypilot[all]`, with the libraries it installs for every cloud it reaches) | 0.14.1 | Apache-2.0 for SkyPilot; each library its own license | the manager's `sky` command, which rents gpu workers, in an environment of its own on Python 3.13 (which uv installs, PSF-2.0) |
 | pytorch/pytorch | 2.14.1, CUDA 13.0, cuDNN 9 | BSD-3-Clause for PyTorch; NVIDIA's CUDA and cuDNN under NVIDIA's license agreements, as in "CUDA build, Linux only" | the gpu worker's base image |
 
+### The public depot web app's images (`deploy/depot-web/`, not part of WPT)
+
+The public depot web app ([depot-web.md](depot-web.md)) runs on public
+images pinned by their digests. Its own image holds WPT's code, its
+Python libraries and the built interface, on the python image; the host
+builds it, and WPT does not distribute it. Bun, uv and the build tools
+run only in the stage that builds it, and stay out of the image. nginx
+runs unmodified, with WPT's configuration copied in, and certbot runs
+unmodified, as separate programs. A new digest or version needs this
+table checked again.
+
+| Part | Version | License | Role |
+| --- | --- | --- | --- |
+| python (Docker's official image, Debian trixie slim) | 3.14 | PSF-2.0 for Python; each Debian package its own license | the app's base image |
+| oven/bun (Bun's official image, its `bun` command) | 1.4.4 | MIT for Bun; it links JavaScriptCore and parts of WebKit under LGPL-2.0, and other libraries under their own licenses (its `LICENSE.md`) | builds the interface |
+| uv | 0.13.5 | MIT OR Apache-2.0 | installs the libraries |
+| rustup, build-essential (Debian packages) | trixie | rustup MIT OR Apache-2.0; build-essential's compilers GPL-3.0-or-later | build the tokenizer |
+| nginx (Docker's official image, Debian trixie) | 1.30.6 | BSD-2-Clause for nginx; each Debian package its own license | the reverse proxy |
+| certbot/certbot (Certbot's official image, Alpine Linux) | 5.10.0 | Apache-2.0 for Certbot; each Alpine package its own license | gets and renews the Let's Encrypt certificate |
+
 ### Container images of agentic tasks (`data/images/`)
 
 The `finish-tasks` and `finish-tasks-with-less-writing` training steps
