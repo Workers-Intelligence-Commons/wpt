@@ -89,7 +89,7 @@ def port_numbers(spec: str) -> set[int]:
 def app_ports(name: str) -> set[int]:
     """The ports of a ufw application profile."""
     lines = ufw("app", "info", name).splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "Ports:")
+    start = next(i for i, line in enumerate(lines) if line.strip() in ("Port:", "Ports:"))
     return set().union(*(port_numbers(line.strip()) for line in lines[start + 1:] if line.strip()))
 
 
