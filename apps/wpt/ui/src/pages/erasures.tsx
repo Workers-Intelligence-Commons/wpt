@@ -125,7 +125,7 @@ const quoted = (value: string) => `'${value.replace(/'/g, "''")}'`;
 // asks, on that text.
 function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
   const [words, setWords] = useState("");
-  const [found, setFound] = useState<Answer<{ total: number; rows: Row[] }> | null>(null);
+  const [found, setFound] = useState<Answer<{ rows: Row[]; next: unknown }> | null>(null);
   const [chosen, setChosen] = useState<Answer<{ text: Erasable & { title: string | null }; upstream: boolean }> | null>(null);
   useEffect(() => {
     const typed = words.trim();
@@ -133,7 +133,7 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
     let live = true;
     const wait = window.setTimeout(() => {
       const where = `contains(lower(coalesce(title, '')), lower(${quoted(typed)})) OR contains(id, ${quoted(typed)})`;
-      search({ ...EVERY, where }, 0, 8).then((a) => live && setFound(a));
+      search({ ...EVERY, where }, {}, 8).then((a) => live && setFound(a));
     }, 250);
     return () => { live = false; window.clearTimeout(wait); };
   }, [words]);
@@ -164,9 +164,9 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
       <p className="form-note small">Matching texts are listed as you type; Enter, or "Open this id", opens the text with exactly this id.</p>
       {chosen && !chosen.ok && <Problems problems={chosen.problems} />}
       {found && !found.ok && <Problems problems={found.problems} />}
-      {found?.ok && (found.data.total === 0 ? <p className="small">No text's title or id holds these words.</p> : (
+      {found?.ok && (found.data.rows.length === 0 ? <p className="small">No text's title or id holds these words.</p> : (
         <>
-          <p className="small aside">{plural(found.data.total, "text")} match{found.data.total === 1 ? "es" : ""}{found.data.total > found.data.rows.length ? `; the first ${found.data.rows.length} by id` : ""}.</p>
+          {found.data.next !== null && <p className="small aside">More texts match; the first {found.data.rows.length} by id.</p>}
           <ul className="plain picks">
             {found.data.rows.map((r) => (
               <li key={r.id}>

@@ -60,7 +60,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | colorama | 0.4.6 | BSD-3-Clause | Windows only, through pytest |
 | coverage | 7.17.2 | Apache-2.0 | tests, through pytest-testmon |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | the gpu worker's certificate (wpt-worker), and tests through moto; its compiled part includes OpenSSL (Apache-2.0), statically linked |
-| deltalake | 1.6.6 | Apache-2.0 | reading a depot of format 3 or older, which `wpt depot upgrade` brings to format 4 (wpt-depot) |
+| deltalake | 1.6.6 | Apache-2.0 | reading a depot of format 3 or older, which `wpt depot upgrade` writes into an SQLite file (wpt-depot) |
 | deprecated | 3.0.1 | MIT | through deltalake |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
 | googleapis-common-protos | 1.75.5 | Apache-2.0 | through opentelemetry-exporter-otlp-proto-http |

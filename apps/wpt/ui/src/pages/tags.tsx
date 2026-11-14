@@ -3,30 +3,30 @@
 // every tag. The page is not in the navigation: lists link to it.
 
 import { Skeleton } from "@workers-intelligence-commons/components";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { get, type Answer } from "../api";
-import { EVERY, search, type Found } from "../filter";
-import { PageHead, plural, Problems, Section, STATUSES, StatusBadge } from "../parts";
+import { MatchedCount, useCounts } from "../counts";
+import { EVERY } from "../filter";
+import { PageHead, Problems, Section, STATUSES, StatusBadge } from "../parts";
 import { href } from "../route";
 import { MatchedTexts } from "../table";
 import type { Page } from "./index";
 
 function OneTag({ tag }: { tag: string }) {
-  const [found, setFound] = useState<Answer<Found> | null>(null);
-  useEffect(() => { search({ ...EVERY, tags: [tag] }, 0, 1).then(setFound); }, [tag]);
+  const filter = useMemo(() => ({ ...EVERY, tags: [tag] }), [tag]);
+  const found = useCounts(filter);
   return (
     <>
       <PageHead title={tag}
-        meta={found?.ok ? <a href={href(["texts"], { tag })}>{plural(found.data.total, "text")}</a> : undefined}
+        meta={<a href={href(["texts"], { tag })}><MatchedCount counting={found} /></a>}
         chain={<>One of the <a href={href(["tags"])}>tags</a> the <a href={href(["texts"])}>texts</a> have; a dataset's shares choose texts by tag.</>} />
-      {!found && <Skeleton lines={2} />}
-      {found && !found.ok && <Problems problems={found.problems} />}
-      {found?.ok && (
+      {found?.problems && <Problems problems={found.problems} />}
+      {found && found.counted > 0 && (
         <ul className="plain counted small status-counts" aria-label="Its texts by status">
           {STATUSES.map((s) => (
-            <li key={s}><a href={href(["texts"], { tag, status: s })}><StatusBadge status={s} /></a><span className="number">{found.data.statuses[s].toLocaleString("en")}</span></li>
+            <li key={s}><a href={href(["texts"], { tag, status: s })}><StatusBadge status={s} /></a><span className="number">{found.statuses[s].toLocaleString("en")}</span></li>
           ))}
-          {found.data.locked > 0 && <li><span className="aside">in a locked library</span><span className="number">{found.data.locked.toLocaleString("en")}</span></li>}
+          {found.locked > 0 && <li><span className="aside">in a locked library</span><span className="number">{found.locked.toLocaleString("en")}</span></li>}
         </ul>
       )}
       <Section title="Texts that have it" tools={<a className="small" href={href(["texts"], { tag })}>Open them in the texts</a>}>

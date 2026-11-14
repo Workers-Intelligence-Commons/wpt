@@ -2,9 +2,11 @@
 // Every answer is JSON; a refusal carries {problems: string[]} with the depot's
 // own messages: 400 a query or remote that is not one, 404 not found, 409 an
 // address that holds a depot, 422 refused by the depot's rules, 503 missing on
-// this machine. A request the server never
-// answers (stopped, connection closed) or an answer that is not JSON comes
-// back as status 0 with the error's message, so every page shows it.
+// this machine. A proxy in front of the server answers 429 to a request past
+// its limits. A refusal that is not JSON keeps its status, with a message
+// naming it. A request the server never answers (stopped, connection
+// closed), or a success that is not JSON, comes back as status 0 with the
+// error's message, so every page shows it.
 
 export type Answer<T> = { ok: true; data: T } | { ok: false; status: number; problems: string[] };
 
@@ -15,7 +17,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<An
       headers: body === undefined ? {} : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const data = await response.json();
+    const data = response.ok ? await response.json() : await response.json().catch(() => ({}));
     return response.ok ? { ok: true, data } : { ok: false, status: response.status, problems: data.problems ?? [`the server answered ${response.status}`] };
   } catch (error) {
     return { ok: false, status: 0, problems: [`no answer from the depot's server at ${path}: ${error instanceof Error ? error.message : String(error)}`] };

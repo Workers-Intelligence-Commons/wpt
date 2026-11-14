@@ -43,9 +43,14 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages` and `/api/texts/blocked` | 1 a second | 5, delayed |
+| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked` | 1 a second | 5, delayed |
 | every other `POST` | 1 a second | 10, delayed |
 | every other request | 10 a second | 40, at once |
+
+The pages count the texts a filter matches one step at a time, at most
+one step every two seconds, and send a step refused with 429 or for lack
+of a free reader again after a wait, so counting leaves at least half of the first limit to the other
+requests.
 
 An address holds at most 20 connections at a time. A request body holds
 at most 100 MB, and the app has 100 seconds to answer.

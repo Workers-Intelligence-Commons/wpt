@@ -1,5 +1,5 @@
 // Pieces every page uses: a page's head and its sections, the markers of
-// form fields, what an operation answered, a status, a pager, a value cut to
+// form fields, what an operation answered, a status, the pagers, a value cut to
 // one line, the libraries, and the confirm of every decision.
 
 import { Badge, Button, type ButtonVariant } from "@workers-intelligence-commons/components";
@@ -121,6 +121,37 @@ export function Pager({ offset, limit, total, onOffset, onLimit, label }: { offs
             <span className="aside">of {pages.toLocaleString("en")}</span>
           </form>
           <Button variant="quiet" disabled={page === pages} onClick={() => go(page + 1)}>Next</Button>
+        </span>
+      )}
+      {onLimit && (
+        <span className="row tight">
+          <label className="aside" htmlFor={`${id}-size`}>rows per page</label>
+          <select id={`${id}-size`} className="wic-input wic-select wic-focus page-size" value={limit} onChange={(e) => onLimit(Number(e.target.value))}>
+            {SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </span>
+      )}
+    </nav>
+  );
+}
+
+// Where a list read one page after another stands (filter.tsx: a page of
+// texts starts after a row, not at a number): what is known of its count
+// (counted), the first page, the page before and the page after, each when
+// there is one, and, when onLimit is given, how many rows a page holds.
+export function PlacePager({ onFirst, onPrevious, onNext, limit, onLimit, label, counted }: {
+  onFirst: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; limit: number;
+  onLimit?: (limit: number) => void; label: string; counted?: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <nav className="pager small" aria-label={label}>
+      {counted && <span className="aside">{counted}</span>}
+      {(onPrevious || onNext) && (
+        <span className="row tight">
+          <Button variant="quiet" disabled={!onPrevious} onClick={onFirst}>First</Button>
+          <Button variant="quiet" disabled={!onPrevious} onClick={() => onPrevious?.()}>Previous</Button>
+          <Button variant="quiet" disabled={!onNext} onClick={() => onNext?.()}>Next</Button>
         </span>
       )}
       {onLimit && (

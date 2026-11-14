@@ -11,8 +11,20 @@ folder's own path with `.sqlite` added, or the file given (`--to`). It
 refuses a folder whose journal holds a change never finished, since only
 the code of its format knew how to finish it.
 
+An SQLite file of format 4 or newer, the one given or the one just written
+from a folder, is brought up in place by the step from its format to the
+next (FILE_STEPS) until it reaches the code's format. Each step is one
+transaction that changes the layout and adds a revision of the about row
+at its new format under a change of its own, kind 'upgrade', so a step cut
+short leaves the file as it was and runs again whole. Before it, the file
+is marked to send a full copy at its next backup, under a new timeline
+(wpt_depot.database), since the change files record no change of layout.
+The step to format 5 builds the index texts_order (wpt_depot.schema) in
+one statement, which reads every current text's row once and rewrites no
+table; it says what it does before it starts and how long it took.
+
 A clone of those formats named its upstream by the upstream's folder
-or bucket address; a clone of format 4 follows its upstream over the
+or bucket address; a clone of format 4 or newer follows its upstream over the
 upstream's web app (wpt_depot.follow), so upgrading a clone takes that web
 address (`--upstream`), which its about row then names, and is refused
 without it.
@@ -40,8 +52,11 @@ sends a full copy (wpt_depot.backup).
 
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
+
+from wpt_utils.lines import say
 
 from . import ids
 from .database import Database, now
@@ -54,6 +69,15 @@ from .schema import FORMAT
 UPGRADING = ".upgrading"  # what the name of the file being written adds to the new file's name
 ROWS = 4096  # rows of a data file read at a time
 PARTS_ROWS = 16  # rows of parts read at a time: each holds up to 64 MiB of text
+WRITTEN = 4  # the format of the SQLite file written from a folder
+# the index of format 5: the current texts in the numeric order of their ids
+TEXTS_ORDER = ("CREATE INDEX IF NOT EXISTS texts_order ON texts_revisions (((CASE WHEN (rtrim(id, '0123456789') <> id "
+               "AND rtrim(id, '0123456789') GLOB '*-') THEN substr(id, 1, length(rtrim(id, '0123456789')) - 1) ELSE "
+               "id END) || char(1) || CASE WHEN (CASE WHEN (rtrim(id, '0123456789') <> id AND rtrim(id, '0123456789') "
+               "GLOB '*-') THEN CAST(substr(id, length(rtrim(id, '0123456789')) + 1) AS INTEGER) END) IS NULL THEN "
+               "'1' ELSE '0' || printf('%020d', (CASE WHEN (rtrim(id, '0123456789') <> id AND rtrim(id, "
+               "'0123456789') GLOB '*-') THEN CAST(substr(id, length(rtrim(id, '0123456789')) + 1) AS INTEGER) "
+               "END)) END || char(1) || id)) WHERE latest")
 # each format 3 table, by its folder's name: the table of format 4 its rows go into
 TARGETS = {"about": "about_revisions", "licenses": "licenses", "notices": "notices", "kinds": "kinds",
            "decisions": "decisions", "texts": "texts_revisions", "contents": "content_lists", "parts": "parts",
@@ -63,14 +87,14 @@ LISTS = {"licenses", "authors", "tags", "decisions", "scores", "problems", "need
 _ID = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*-[0-9]+)"')
 
 
-def upgrade(address: str, to: str | None = None, upstream: str | None = None):
+def upgrade(address: str, to: str | None = None, upstream: str | None = None, log=say):
     """(the depot at address brought up to this code's format, the format it
     had). A depot of the code's format is left as it is. upstream: the web
-    address of the upstream's web app, for a clone. OtherFormat for a
-    newer format, which no code brings down; Refused for a folder whose
-    journal holds a change never finished, for a clone without upstream
-    and for upstream given to a depot that follows none; DepotExists when
-    the new file's path holds a file already."""
+    address of the upstream's web app, for a clone. log: where a step says
+    what it does. OtherFormat for a newer format, which no code brings down;
+    Refused for a folder whose journal holds a change never finished, for a
+    clone without upstream and for upstream given to a depot that follows
+    none; DepotExists when the new file's path holds a file already."""
     from .depot import Depot, format_of, location, other_format
     path = location(address)
     start = format_of(address)
@@ -78,8 +102,17 @@ def upgrade(address: str, to: str | None = None, upstream: str | None = None):
         raise OtherFormat(other_format(str(path), start))
     if not path.is_dir():
         if upstream is not None:
-            raise Refused(f"{path} is of format {start} already: --upstream is for the upgrade of a clone")
-        return Depot.open(address), start
+            raise Refused(f"{path} is a depot file already: --upstream is for the upgrade of a clone of format 3 "
+                          "or older")
+    else:
+        path = _from_folder(path, to, upstream)
+    _in_place(path, log)
+    return Depot.open(str(path)), start
+
+
+def _from_folder(path: Path, to: str | None, upstream: str | None) -> Path:
+    """The SQLite file of format 4 written from the folder at path, as the module says."""
+    from .depot import location
     legacy = Legacy(path)
     undone = legacy.undone()
     if undone:
@@ -100,7 +133,49 @@ def upgrade(address: str, to: str | None = None, upstream: str | None = None):
         STEPS[reached](legacy)
         legacy.record_format(reached + 1)
     _write(legacy, target, upstream)
-    return Depot.open(str(target)), start
+    return target
+
+
+def _in_place(path: Path, log):
+    """The SQLite file at path brought up to the code's format, a step at a time, as the module says."""
+    db = Database(path)
+    try:
+        while (reached := _format(db)) < FORMAT:
+            db.settle()
+            db.mark_full_copy()
+            FILE_STEPS[reached](db, log)
+    finally:
+        db.close()
+
+
+def _format(db: Database) -> int:
+    return db.reader().execute("SELECT format FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchall()[0][0]
+
+
+def _to_5(db: Database, log):
+    """Format 4 to 5: the index texts_order."""
+    texts = db.reader().execute("SELECT count(*) FROM texts_revisions WHERE latest").fetchall()[0][0]
+    log(f"{db.path}: building the index texts_order over its {texts} current texts, in one statement that reads "
+        "each of their rows once and writes no row of a table")
+    began = time.monotonic()
+    with db.bulk() as con:
+        con.execute(TEXTS_ORDER)
+        _new_format(con, 5)
+    log(f"{db.path}: the index texts_order is built, in {time.monotonic() - began:.0f} seconds; the depot is at "
+        "format 5")
+
+
+def _new_format(con, reached: int):
+    """The upgrade's own change: a new revision of the about row at the format reached."""
+    number = con.execute("SELECT coalesce(max(id), 0) + 1 FROM changes").fetchall()[0][0]
+    con.execute("INSERT INTO changes (id, kind, made_at) VALUES (?, 'upgrade', ?)", (number, now()))
+    con.execute("INSERT INTO about_revisions (revision, change, name, maintainer, takedown_contact, upstream, format) "
+                "SELECT revision + 1, ?, name, maintainer, takedown_contact, upstream, ? FROM about_revisions "
+                "ORDER BY revision DESC LIMIT 1", (number, reached))
+
+
+# each format of an SQLite file below the code's: the step that brings it to the next
+FILE_STEPS = {4: _to_5}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):
@@ -110,7 +185,7 @@ def _write(legacy: Legacy, target: Path, upstream: str | None):
     if not working.exists():
         db.create()
     try:
-        if not db.reader().execute("SELECT 1 FROM about_revisions WHERE format = ?", (FORMAT,)).fetchall():
+        if not db.reader().execute("SELECT 1 FROM about_revisions WHERE format = ?", (WRITTEN,)).fetchall():
             _fill(db, legacy, upstream)
     finally:
         db.close()  # the last connection to close folds the WAL into the file and removes it
@@ -220,7 +295,7 @@ def _finish(con, legacy: Legacy, upstream: str | None):
                 (number, now()))
     con.execute("INSERT INTO about_revisions (revision, change, name, maintainer, takedown_contact, upstream, format) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)", (row["revision"] + 1, number, name, row["maintainer"],
-                                                 row["takedown_contact"], upstream, FORMAT))
+                                                 row["takedown_contact"], upstream, WRITTEN))
     own = ids.carries_sql(name)
     counted = {
         "texts": f"SELECT max({ids.number_sql()}) FROM (SELECT id FROM texts_revisions UNION SELECT j.value ->> 'text' "

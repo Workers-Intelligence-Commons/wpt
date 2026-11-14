@@ -47,7 +47,7 @@ export function BlockedTexts({ found, status, onDecided, onRelicensed }: {
   const sliceKey = JSON.stringify(slice.map((b) => b.id));
   useEffect(() => {
     const shown: string[] = JSON.parse(sliceKey);
-    if (shown.length) search({ ...EVERY, ids: shown }, 0, shown.length).then(setPage);
+    if (shown.length) search({ ...EVERY, ids: shown }, {}, shown.length).then(setPage);
   }, [sliceKey]);
   const rows = new Map(page?.ok ? page.data.rows.map((r) => [r.id, r]) : []);
   // only a text of this depot's own can be refused or given other licenses here

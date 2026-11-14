@@ -3,13 +3,15 @@
 // text, each status, the libraries (open, then locked), the tags, the
 // licenses, and the filters saved in this browser (saved-filters.ts), with
 // the form, opened by a button, that saves the open filter under a name, and a way to forget one.
-// The counts come from one search over every text. The entry whose filter is
-// the open one is marked as the current one.
+// The counts come from one count of every text, made in steps (counts.tsx),
+// so they grow as it goes and a line says how far it has gone. The entry
+// whose filter is the open one is marked as the current one.
 
 import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { type Answer } from "../api";
-import { EVERY, search, toQuery, type Found, type TextFilter } from "../filter";
+import { CountingNote, useCounts } from "../counts";
+import { EVERY, toQuery, type TextFilter } from "../filter";
 import { NewLibrary } from "../pages/libraries";
 import { Outcome, plural, Problems, required, STATUSES, StatusBadge, type Library } from "../parts";
 import { href } from "../route";
@@ -23,12 +25,10 @@ const same = (a: TextFilter, b: TextFilter) => JSON.stringify({ ...a, ids: null 
 export function Sources({ open, libraries, version, onLibraryMade }: {
   open: TextFilter; libraries: Library[]; version: number; onLibraryMade: () => void;
 }) {
-  const [every, setEvery] = useState<Answer<Found> | null>(null);
-  useEffect(() => { search(EVERY, 0, 1).then(setEvery); }, [version]);
+  const counts = useCounts(EVERY, version);
   const saved = useSavedFilters();
   const [making, setMaking] = useState(false);
   const [made, setMade] = useState<Answer<{ id: string }> | null>(null);
-  const counts = every?.ok ? every.data : null;
   const entry = (filter: TextFilter, label: ReactNode, count?: number, title?: string) => (
     <a className="source wic-focus" href={href(["texts"], toQuery(filter))} aria-current={same(filter, open) ? "true" : undefined} title={title}>
       <span className="source-label">{label}</span>
@@ -39,23 +39,24 @@ export function Sources({ open, libraries, version, onLibraryMade }: {
   const locked = libraries.filter((l) => l.locked_at);
   return (
     <nav className="sources small" aria-label="What to open">
-      {every && !every.ok && <Problems problems={every.problems} />}
       <ul className="plain source-list">
-        <li>{entry(EVERY, "Every text", counts?.total)}</li>
+        <li>{entry(EVERY, "Every text", counts?.total ?? undefined)}</li>
+        {counts && !counts.done && <li className="small"><CountingNote counting={counts} /></li>}
+        {counts?.problems && <li><Problems problems={counts.problems} /></li>}
       </ul>
       <SourceGroup title="Statuses">
-        {STATUSES.map((s) => <li key={s}>{entry({ ...EVERY, statuses: [s] }, <StatusBadge status={s} />, counts?.statuses[s])}</li>)}
+        {STATUSES.map((s) => <li key={s}>{entry({ ...EVERY, statuses: [s] }, <StatusBadge status={s} />, counts?.counted ? counts.statuses[s] : undefined)}</li>)}
       </SourceGroup>
       <SourceGroup title="Libraries" tools={<Button variant="quiet" onClick={() => { setMade(null); setMaking(true); }}>New library</Button>}>
-        {counts && libraries.length === 0 && <li className="aside">No library yet.</li>}
+        {libraries.length === 0 && <li className="aside">No library yet.</li>}
         {[...own, ...locked].map((l) => (
           <li key={l.id}>{entry({ ...EVERY, libraries: [l.id] }, <>{l.name}{l.locked_at && <span className="aside"> locked</span>}{l.upstream && <span className="aside"> upstream</span>}</>, l.texts, `${l.name} (${l.id})`)}</li>
         ))}
       </SourceGroup>
       {!making && <Outcome answer={made} done={(d) => <>Library <a href={href(["texts"], { library: d.id })}>{d.id}</a>: open.</>} />}
-      <Findable title="Tags" loaded={counts !== null} rows={(counts?.tags ?? []).map((t) => ({ key: t.tag, n: t.texts }))}
+      <Findable title="Tags" loaded={Boolean(counts?.done)} rows={(counts?.tags ?? []).map((t) => ({ key: t.tag, n: t.texts }))}
         entry={(key, n) => entry({ ...EVERY, tags: [key] }, key, n)} />
-      <Findable title="Licenses" loaded={counts !== null} rows={(counts?.licenses ?? []).map((l) => ({ key: l.license, n: l.texts }))}
+      <Findable title="Licenses" loaded={Boolean(counts?.done)} rows={(counts?.licenses ?? []).map((l) => ({ key: l.license, n: l.texts }))}
         entry={(key, n) => entry({ ...EVERY, licenses: [key] }, <span className="ledger">{key}</span>, n)} />
       <SourceGroup title="Saved filters">
         {saved.length === 0 && <li className="aside">None saved in this browser.</li>}

@@ -1,14 +1,15 @@
 // What needs the maintainer: the chain of the depot (texts, libraries,
 // datasets) with their counts, the texts under review counted by tag and by
-// license, each tag and license linked to its view and each count to those
+// license (a count made in steps, which grows as it goes, counts.tsx), each tag and license linked to its view and each count to those
 // texts, the latest decisions, the open erasure requests and the problems
 // reported on libraries, each linked to its view.
 
 import { Notice, Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
 import { get, type Answer } from "../api";
+import { CountingNote, matched, useCounts } from "../counts";
 import { declared, useDeclarant } from "../declarant";
-import { EVERY, search, type Found } from "../filter";
+import { EVERY, type TextFilter } from "../filter";
 import { Cut, LibraryLink, PageHead, plural, Problems, Section, useDatasets, useLibraries, type Status } from "../parts";
 import { href } from "../route";
 import { DecisionTable, type Latest } from "./decisions";
@@ -18,6 +19,7 @@ type Needle = { text: string };
 type Erasure = { id: string; reason: string; status: Status; needles: Needle[] };
 
 const REVIEW = "under review";
+const WAITING: TextFilter = { ...EVERY, statuses: [REVIEW] };
 
 // The problem a later decision records first: a depot numbers its decisions
 // in the order it makes them, so the larger number after the last hyphen is
@@ -33,13 +35,10 @@ function Overview() {
   const who = useDeclarant();
   const { libraries, loaded, problems: libraryProblems } = useLibraries();
   const { datasets } = useDatasets();
-  const [all, setAll] = useState<Answer<Found> | null>(null);
-  const [waiting, setWaiting] = useState<Answer<Found> | null>(null);
+  const waiting = useCounts(WAITING); // its first step also gives how many texts the depot holds
   const [latest, setLatest] = useState<Answer<Latest[]> | null>(null);
   const [erasures, setErasures] = useState<Answer<Erasure[]> | null>(null);
   useEffect(() => {
-    search(EVERY, 0, 1).then(setAll);
-    search({ ...EVERY, statuses: [REVIEW] }, 0, 1).then(setWaiting);
     get<Latest[]>("/api/decisions/latest").then(setLatest);
     get<Erasure[]>("/api/erasures").then(setErasures);
   }, []);
@@ -59,7 +58,7 @@ function Overview() {
         <ol className="chain-strip small">
           <li>
             <a className="chain-step" href={href(["texts"])}>
-              <span className="cue">{count(all?.ok ? all.data.total : undefined, "text")}</span>
+              <span className="cue">{count(waiting?.total ?? undefined, "text")}</span>
               <span className="quiet">added under review, then admitted</span>
             </a>
           </li>
@@ -78,14 +77,15 @@ function Overview() {
         </ol>
       </nav>
       <div className="board">
-        <Section className="tall" title={<>Under review{waiting?.ok && <>: <a href={href(["texts"], { status: REVIEW })}>{plural(waiting.data.total, "text")}</a></>}</>}>
-          {!waiting && <Skeleton lines={4} />}
-          {waiting && !waiting.ok && <Problems problems={waiting.problems} />}
-          {waiting?.ok && waiting.data.total === 0 && <p className="small">Nothing waits for a decision.</p>}
-          {waiting?.ok && waiting.data.total > 0 && (
+        <Section className="tall" title={<>Under review{waiting && waiting.counted > 0 && <>: <a href={href(["texts"], { status: REVIEW })}>{waiting.done ? "" : "at least "}{plural(matched(waiting), "text")}</a></>}</>}>
+          {waiting && !waiting.done && <p className="small"><CountingNote counting={waiting} /></p>}
+          {waiting?.counted === 0 && !waiting.done && <Skeleton lines={4} />}
+          {waiting?.problems && <Problems problems={waiting.problems} />}
+          {waiting?.done && !waiting.problems && matched(waiting) === 0 && <p className="small">Nothing waits for a decision.</p>}
+          {waiting && matched(waiting) > 0 && (
             <div className="two-lists">
-              <Counted title="by tag" rows={waiting.data.tags.map((t) => ({ key: t.tag, n: t.texts, view: href(["tags", t.tag]), link: href(["texts"], { status: REVIEW, tag: t.tag }) }))} />
-              <Counted title="by license" ledger rows={waiting.data.licenses.map((l) => ({ key: l.license, n: l.texts, view: href(["licenses", l.license]), link: href(["texts"], { status: REVIEW, license: l.license }) }))} />
+              <Counted title="by tag" rows={waiting.tags.map((t) => ({ key: t.tag, n: t.texts, view: href(["tags", t.tag]), link: href(["texts"], { status: REVIEW, tag: t.tag }) }))} />
+              <Counted title="by license" ledger rows={waiting.licenses.map((l) => ({ key: l.license, n: l.texts, view: href(["licenses", l.license]), link: href(["texts"], { status: REVIEW, license: l.license }) }))} />
             </div>
           )}
         </Section>

@@ -1,5 +1,6 @@
 """A person's SQL, run by `wpt depot web` in processes of their own: the
-query of POST /api/sql and the condition of a filter (search, passages).
+query of POST /api/sql and the condition of a filter (search, passages,
+count).
 
 A reader process opens the depot's file read-only (Depot.view): every
 statement of a person runs on a connection that opens the file with
@@ -11,7 +12,9 @@ process's memory is capped at MEMORY bytes more than it holds once started
 (on Linux, through the limit the system puts on a process's data), and the
 server waits for its answer at most SECONDS from the request's start,
 waiting for a free reader included: then it kills the process and answers
-TimeLimitReached. A reader that dies (past its memory) answers ReaderLost.
+TimeLimitReached. A request that finds no free reader within SECONDS
+answers NoReaderFree, its reads never started, so the same request can be
+sent again later. A reader that dies (past its memory) answers ReaderLost.
 Either way the server's own process goes on, and the next request gets a
 new reader. At most READERS run at a time, and at most KEPT of those that
 answered wait for the next request. A query's answer holds at most
@@ -39,6 +42,10 @@ ANSWER_BYTES = 16 << 20  # bytes of JSON a query's answer holds at most
 
 class ReaderLost(errors.DepotError):
     """The process that ran the reads ended before it answered: it went past MEMORY."""
+
+
+class NoReaderFree(errors.DepotError):
+    """Every reader process stayed busy for SECONDS: the request's reads never started."""
 
 
 class AnswerTooLarge(errors.DepotError):
@@ -86,11 +93,13 @@ def _serve(address: str, memory: int, answer: tuple[int, int], seconds: float, c
     depot.sql("SELECT 1")
     depot.search("false")
     depot.passages("false")
+    depot.count("false", texts=[])
     if sys.platform == "linux":
         import resource
         held = _held()
         resource.setrlimit(resource.RLIMIT_DATA, (held + memory, held + memory))
-    jobs = {"sql": lambda query: _sql(depot, query, *answer), "search": depot.search, "passages": depot.passages}
+    jobs = {"sql": lambda query: _sql(depot, query, *answer), "search": depot.search, "passages": depot.passages,
+            "count": depot.count}
     while True:
         try:
             job, args = connection.recv()
@@ -140,12 +149,13 @@ class Readers:
         weakref.finalize(self, _stop, self._kept)  # the kept readers end with the routes that use them
 
     def run(self, job: str, *args):
-        """The answer of job (sql, search or passages) over the depot with
-        args, within SECONDS: the depot's failure as it is; TimeLimitReached
-        or ReaderLost when the reader was stopped or ended."""
+        """The answer of job (sql, search, passages or count) over the depot with
+        args, within SECONDS: the depot's failure as it is; NoReaderFree when
+        no reader was free within SECONDS; TimeLimitReached or ReaderLost
+        when the reader was stopped or ended."""
         deadline = time.monotonic() + SECONDS
         if not self._running.acquire(timeout=SECONDS):
-            raise TimeLimitReached(f"no reader was free within the limit of {SECONDS:g} seconds")
+            raise NoReaderFree(f"no reader was free within {SECONDS:g} seconds: send the request again later")
         try:
             reader = self._take()
             try:

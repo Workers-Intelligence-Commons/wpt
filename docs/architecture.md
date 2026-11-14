@@ -165,9 +165,9 @@ update wpt for a newer one.
 
 `wpt depot upgrade` runs only when asked (`wpt_depot/upgrade.py`). On a
 folder of format 3 or older, it first runs in the folder the steps from
-its format up to format 3, then writes a new SQLite file of the code's
-format from it: by default the folder's path with `.sqlite` added, or the
-file `--to` names. It never changes the folder after format 3 and never
+its format up to format 3, then writes a new SQLite file of format 4 from
+it: by default the folder's path with `.sqlite` added, or the file `--to`
+names. It never changes the folder after format 3 and never
 writes over a file. It reads each table's data files a batch at a time, so
 its memory does not grow with the depot. The file is written as
 `<file>.upgrading` and renamed once whole; an upgrade cut short goes on
@@ -177,6 +177,17 @@ format could finish it. A clone of those formats named its upstream by
 another address than a web address, so its upgrade takes the upstream's
 web address (`--upstream`) and is refused without it. A newer depot is
 never brought down: the command refuses it.
+
+An SQLite file of format 4 or newer, the one named or the one just
+written from a folder, is brought up in place, one step per format. Each
+step is one transaction, so a step cut short leaves the file as it was and
+runs again whole. It records a new `about` revision at its format under a
+change of kind `upgrade`. The change files record no change of layout, so
+before a step the file is marked for a full copy, under a new timeline, at
+its next backup. The step to format 5 builds the index `texts_order`, the
+current texts in the numeric order of their ids. It is one `CREATE INDEX`
+that reads each current text's row once and rewrites no table, and it says
+what it does before it starts and how long it took.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
@@ -441,8 +452,9 @@ refused change writes nothing.
 | a read query | `sql QUERY` | `POST /api/sql` |
 | the depot at a glance | none | `GET /api/decisions/latest`; pages "Overview" and "Settings" |
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on, the erasure requests it decides or the problem it records; the view of a decision, and of a reported problem |
-| a tag, shown | `sql QUERY` | `POST /api/texts/search` with the tag; the view of a tag |
+| a tag, shown | `sql QUERY` | `POST /api/texts/search` and `POST /api/texts/counts` with the tag; the view of a tag |
 | texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the playlist of the "Workspace" page |
+| the texts a filter matches, counted one slice of the depot at a time | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Workspace" page, its playlist and its review, of the "Overview" and of the views of a tag, a license, a decision and a problem |
 | texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Workspace" page |
 | a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the editor of the "Workspace" page, with the text's record |
@@ -496,6 +508,27 @@ field or the editor. The blob mode shows the open texts as one continuous
 text, read a page at a time as it scrolls; a click on a passage opens
 that text in the editor.
 
+A list of texts comes a page at a time with no count, since a count reads
+every text it matches. A page starts after the last row of the page
+before it, in its order, or ends before the first row of the page after
+it, so a far page is read as fast as the first and the pages are read one
+after another, never by number. The numeric order of ids is the order of
+the index `texts_order`, so its first page reads only its own rows. The
+other orders sort every text the filter matches. The counts of a filter
+come apart, in steps: each step counts the matches in one slice of about a
+million texts, in the order of their ids, so each one stays well under the
+time limit of a reader. A filter that names its texts is counted in one
+step over those texts. The pages run one step at a time, the counts open on
+a page taking turns, and add the steps up. The numbers grow as the steps
+answer, with how many texts are counted out of the depot's texts. A count
+ends when its page leaves it or its filter changes, and it starts again
+after a change of the depot made from the page. A step starts at least two
+seconds after the one before it. A step refused by a proxy's rate limit
+(429), or that found no free reader, is sent again after a wait that
+doubles. A step over a slice that the time limit stopped is sent again over
+a slice half as big. A step that answers within a quarter of the time limit
+lets the next one go over twice as many texts, up to a million.
+
 The web pages decide on texts by their ids, never by a filter. A filter
 finds the texts; the review window lists every id it reached, each ticked,
 and the decision, the put, the take-out, the fork or the report takes exactly
@@ -525,12 +558,15 @@ another file or an address on the network. A filter's condition is a query
 as well, under the same rule. `wpt depot sql` follows it too.
 
 A route that runs a person's SQL (`POST /api/sql`, and the condition of
-`POST /api/texts/search` and `POST /api/texts/passages`) runs it in a
+`POST /api/texts/search`, `POST /api/texts/passages` and `POST
+/api/texts/counts`) runs it in a
 reader process of its own (`wpt/depot/web/readers.py`), never in the
 server's process, with at most `READERS` reader processes at a time.
 SQLite stops the statement `SECONDS` after its reader takes it, and the
 server kills the reader once the request has run `SECONDS`, the wait for
-a free reader included; both answer 422. On Linux, the reader's memory is
+a free reader included; both answer 422 `TimeLimitReached`. A request that
+finds no free reader within `SECONDS` answers 422 `NoReaderFree`, its reads
+never started. On Linux, the reader's memory is
 capped at `MEMORY` bytes more than it holds once started, and a query past
 it is refused with 422. On another system, the reader has no memory cap.
 A query's answer holds at most `ANSWER_ROWS` rows and `ANSWER_BYTES` bytes

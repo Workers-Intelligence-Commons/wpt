@@ -272,6 +272,8 @@ def test_the_depot_s_queries_read_only_its_file_and_change_nothing(make_depot, m
             depot.sql(statement)
         with pytest.raises(BadQuery):  # a condition is a query as well
             depot.search(f"id IN ({statement})")
+        with pytest.raises(BadQuery):
+            depot.count(f"id IN ({statement})")
 
     assert not outside.exists() and not (tmp_path / "copy.sqlite").exists()
     assert column(depot.sql("SELECT count(*) AS n FROM texts"), "n") == [1]
@@ -856,7 +858,7 @@ def test_an_operation_on_named_texts_takes_exactly_those_and_refuses_an_id_that_
     decision, decided = depot.decide("admitted", reviewed, me)
 
     assert decided == [ids[1], ids[9]]  # in the numeric order of their ids: depot-2 before depot-10
-    assert depot.search("true", 0, 3)["rows"][1]["id"] == ids[1]
+    assert depot.search("true", limit=3)["rows"][1]["id"] == ids[1]
     assert [one["status"] for one in depot.search(f"id = '{ids[0]}'")["rows"]] == ["under review"]
     with pytest.raises(NotFound):
         depot.decide("admitted", [ids[0], "depot-99"], me)
@@ -867,7 +869,34 @@ def test_an_operation_on_named_texts_takes_exactly_those_and_refuses_an_id_that_
         depot.report(library, "a problem", [ids[1], ids[2]], me)
     assert depot.report(library, "a problem", [ids[1]], me)[1] == [ids[1]]
     fork = depot.fork(library, "without", [ids[1]])
-    assert depot.search(f"EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{fork}')")["total"] == 0
+    assert depot.search(f"EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{fork}')")["rows"] == []
+
+
+def test_pages_of_texts_follow_one_another_in_the_numeric_order_of_ids_forward_and_back(make_depot, me):
+    # a page starts after the last row of the one before it, so depot-10 comes after depot-9, not after depot-1
+    depot = make_depot()
+    ids = depot.add([plain(f"text {n}") for n in range(1, 13)], me)
+    pages, after = [], None
+    while True:
+        page = depot.search("true", after=after, limit=5)
+        pages.append([one["id"] for one in page["rows"]])
+        if page["next"] is None:
+            break
+        after = page["next"]
+
+    assert pages == [ids[:5], ids[5:10], ids[10:]]
+    back = depot.search("true", before=depot.search("true", after=after, limit=5)["previous"], limit=5)
+    assert [one["id"] for one in back["rows"]] == ids[5:10]
+    assert [one["id"] for one in depot.search("true", before=back["previous"], limit=5)["rows"]] == ids[:5]
+    shown = depot.passages("true", limit=7, characters=1000)
+    assert [one["id"] for one in shown["rows"] + depot.passages("true", after=shown["next"])["rows"]] == ids
+
+    # the last page read again after its texts left the filter (decided from it) is empty, with a way back to the
+    # rows before the place it starts after
+    left = f"id NOT IN ({', '.join(repr(one) for one in ids[10:])})"
+    emptied = depot.search(left, after=after, limit=5)
+    assert (emptied["rows"], emptied["next"]) == ([], None)
+    assert [one["id"] for one in depot.search(left, before=emptied["previous"], limit=5)["rows"]] == ids[4:9]
 
 
 def test_several_erasure_requests_are_decided_together_only_when_each_can_be(make_depot, me):
@@ -932,7 +961,7 @@ def test_an_admitted_text_whose_licenses_change_leaves_its_open_libraries_and_is
     assert depot.show(kept)["text"]["libraries"] == [library]
     assert statuses_everywhere(depot, changed) == {"under review"}
     assert depot.put(library, [changed]) == ([], [changed])
-    assert depot.search("true")["statuses"] == {"under review": 1, "admitted": 1, "refused": 0}
+    assert depot.count("true")["statuses"] == {"under review": 1, "admitted": 1, "refused": 0}
 
 
 def test_texts_with_different_old_licenses_each_get_the_reason_true_for_them(make_depot, me):

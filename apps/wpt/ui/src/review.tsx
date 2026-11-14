@@ -1,6 +1,6 @@
 // The review before an operation on texts: the ids of every text a filter
 // matches, read once when it opens, a summary of them by status, tag and
-// license, then the paged list of them, each ticked, so that unticking one
+// license (a count of exactly those texts, counts.tsx), then the paged list of them, each ticked, so that unticking one
 // leaves it out. The operation then names exactly the ticked ids: a text
 // that comes to match the filter after the review is never reached. The
 // review of a decision first asks the depot which of those texts the
@@ -11,9 +11,10 @@
 // an allowed license joins the others, ticked.
 
 import { Button, Skeleton } from "@workers-intelligence-commons/components";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { type Answer } from "./api";
 import { blocked, BlockedTexts, type Blocked, type Deciding } from "./blocked";
+import { CountingNote, useCounts } from "./counts";
 import { BY_ID, EVERY, search, type Found, type TextFilter } from "./filter";
 import { Pager, Problems, plural, STATUSES, StatusBadge, type Library } from "./parts";
 import { TextTable } from "./table";
@@ -26,19 +27,18 @@ const SHOWN = 12; // tags and licenses named in the summary
 // decision or a license change made from its texts that it cannot cover.
 export function Review({ filter, libraries, unticks = [], decision, onChange, children }: {
   filter: TextFilter; libraries: Library[]; unticks?: Untick[]; decision?: Deciding; onChange?: () => void;
-  children: (chosen: string[], found: Found) => ReactNode;
+  children: (chosen: string[]) => ReactNode;
 }) {
   const [found, setFound] = useState<Answer<Found> | null>(null);
   const [checked, setChecked] = useState<Answer<{ texts: Blocked[] }> | null>(null);
   const [gone, setGone] = useState<Set<string>>(new Set()); // texts decided from the review, which leave it
   const [changes, setChanges] = useState(0); // refusals and license changes made inside the review
-  const [summary, setSummary] = useState<Answer<Found> | null>(null); // read again after each of them
   const [left, setLeft] = useState<Set<string>>(new Set());
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(25);
   const [page, setPage] = useState<Answer<Found> | null>(null);
   const filterKey = JSON.stringify(filter);
-  useEffect(() => { search(JSON.parse(filterKey), 0, 1, BY_ID, true).then(setFound); }, [filterKey]);
+  useEffect(() => { search(JSON.parse(filterKey), {}, 1, BY_ID, true).then(setFound); }, [filterKey]);
   const reached = found?.ok ? (found.data.ids ?? []).filter((id) => !gone.has(id)) : [];
   const reachedKey = decision && found ? JSON.stringify(reached) : "";
   useEffect(() => {
@@ -46,10 +46,9 @@ export function Review({ filter, libraries, unticks = [], decision, onChange, ch
     const all: string[] = JSON.parse(reachedKey);
     if (all.length) blocked(all, decision!).then(setChecked); else setChecked({ ok: true, data: { texts: [] } });
   }, [reachedKey, changes, decision]);
-  useEffect(() => {
-    if (!changes || !reachedKey) return;
-    search({ ...EVERY, ids: JSON.parse(reachedKey) }, 0, 1).then(setSummary);
-  }, [reachedKey, changes]);
+  const summaryKey = found?.ok ? JSON.stringify(reached) : null;
+  const summaryFilter = useMemo(() => (summaryKey === null ? null : { ...EVERY, ids: JSON.parse(summaryKey) as string[] }), [summaryKey]);
+  const data = useCounts(summaryFilter, changes); // counted again after each of them
   const [said, setSaid] = useState(""); // what the latest of them did, shown here once no blocked text is left
   const changed = (words: string) => { setSaid(words); setChanges((n) => n + 1); onChange?.(); };
   const apart = checked?.ok ? checked.data.texts : [];
@@ -59,14 +58,13 @@ export function Review({ filter, libraries, unticks = [], decision, onChange, ch
   const sliceKey = JSON.stringify(slice);
   useEffect(() => {
     const shown: string[] = JSON.parse(sliceKey);
-    if (shown.length) search({ ...EVERY, ids: shown }, 0, shown.length).then(setPage);
+    if (shown.length) search({ ...EVERY, ids: shown }, {}, shown.length).then(setPage);
   }, [sliceKey]);
   if (!found) return <Skeleton lines={4} label="Reading the texts it reaches" />;
   if (!found.ok) return <Problems problems={found.problems} />;
   if (decision && !checked) return <Skeleton lines={4} label={`Checking which texts can be ${decision}`} />;
   if (checked && !checked.ok) return <Problems problems={checked.problems} />;
-  if (found.data.total === 0) return <p>It reaches no text.</p>;
-  const data = summary?.ok ? summary.data : found.data;
+  if ((found.data.ids ?? []).length === 0) return <p>It reaches no text.</p>;
   const chosen = ids.filter((id) => !left.has(id));
   const tick = (some: string[], on: boolean) => {
     const next = new Set(left);
@@ -74,13 +72,14 @@ export function Review({ filter, libraries, unticks = [], decision, onChange, ch
     setLeft(next);
   };
   const untick = async (part: Partial<TextFilter>) => {
-    const a = await search({ ...EVERY, ...part, ids: chosen }, 0, 1, BY_ID, true);
+    const a = await search({ ...EVERY, ...part, ids: chosen }, {}, 1, BY_ID, true);
     if (a.ok) tick(a.data.ids ?? [], false);
   };
   return (
     <div className="review">
-      {summary && !summary.ok && <Problems problems={summary.problems} />}
-      <div className="reach-summary small">
+      {data?.problems && <Problems problems={data.problems} />}
+      {data && !data.done && <p className="small"><CountingNote counting={data} /></p>}
+      {data?.done && !data.problems && <div className="reach-summary small">
         <section aria-label="By status">
           <h3 className="cue">By status</h3>
           <ul className="plain">
@@ -103,7 +102,7 @@ export function Review({ filter, libraries, unticks = [], decision, onChange, ch
             {data.licenses.length > SHOWN && <li className="aside">{data.licenses.length - SHOWN} more licenses</li>}
           </ul>
         </section>
-      </div>
+      </div>}
       {apart.length > 0 ? (
         <BlockedTexts found={apart} status={decision!} onRelicensed={changed}
           onDecided={(decided, words) => { setGone(new Set([...gone, ...decided])); changed(words); }} />
@@ -121,7 +120,7 @@ export function Review({ filter, libraries, unticks = [], decision, onChange, ch
       )}
       <Pager offset={offset} limit={limit} total={ids.length} onOffset={setOffset} onLimit={(n) => { setLimit(n); setOffset(0); }} label="Pages of the texts it reaches" />
       </>}
-      {children(chosen, data)}
+      {children(chosen)}
     </div>
   );
 }

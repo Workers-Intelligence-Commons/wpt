@@ -9,8 +9,9 @@
 
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { type ReactNode } from "react";
+import { MatchedCount, useCounts } from "./counts";
 import { useSearch, type Order, type Row, type TextFilter } from "./filter";
-import { LibraryLink, Pager, Problems, StatusBadge, useLibraries, type Library } from "./parts";
+import { LibraryLink, PlacePager, Problems, StatusBadge, useLibraries, type Library } from "./parts";
 import { href } from "./route";
 
 const name = (r: Row) => r.title ?? (r.kind ? `an item of kind ${r.kind}` : "untitled text");
@@ -42,17 +43,20 @@ function Links({ values, part }: { values: string[]; part: string }) {
   );
 }
 
-// The texts a filter matches, a page at a time, sortable; empty: what to say when none does.
+// The texts a filter matches, a page at a time, sortable, with their count
+// as it grows; empty: what to say when none does.
 export function MatchedTexts({ filter, label, empty }: { filter: TextFilter; label: string; empty: string }) {
   const { libraries } = useLibraries();
-  const { answer, pending, offset, setOffset, limit, setLimit, order, setOrder } = useSearch(filter, 25);
+  const { answer, pending, next, previous, first, limit, setLimit, order, setOrder } = useSearch(filter, 25);
+  const counting = useCounts(filter);
   if (!answer) return <Skeleton lines={4} label={`Reading ${label.toLowerCase()}`} />;
   if (!answer.ok) return <Problems problems={answer.problems} />;
-  if (answer.data.total === 0) return <p className="small">{empty}</p>;
+  if (answer.data.rows.length === 0 && !previous) return <p className="small">{empty}</p>;
   return (
     <>
       <TextTable rows={answer.data.rows} libraries={libraries} busy={pending} order={order} onOrder={setOrder} label={label} />
-      <Pager offset={offset} limit={limit} total={answer.data.total} onOffset={setOffset} onLimit={setLimit} label={`Pages of ${label.toLowerCase()}`} />
+      <PlacePager onFirst={first} onPrevious={previous} onNext={next} limit={limit} onLimit={setLimit} label={`Pages of ${label.toLowerCase()}`}
+        counted={<MatchedCount counting={counting} />} />
     </>
   );
 }

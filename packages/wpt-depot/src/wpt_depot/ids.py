@@ -75,10 +75,17 @@ def number_sql(column: str = "id") -> str:
 
 
 def order_sql(column: str = "id") -> str:
-    """An SQL ORDER BY list that puts ids in their numeric order: by the
-    depot's name, then by number, so trial-2 comes before trial-10. An id
-    with no number after its last hyphen comes after those of its name."""
-    return f"{owner_sql(column)}, {number_sql(column)} NULLS LAST, {column}"
+    """An SQL expression whose text order is the ids' numeric order: by the
+    depot's name, then by number, so trial-2 comes before trial-10, an id
+    with no number after its last hyphen coming after those of its name.
+    It is the name, the number written with 20 digits (or '1' for none, after
+    every number) and the id, joined by char(1), which sorts before every
+    character an id holds. It is never null, so a page starts after one
+    value of it (Depot.search), and an index over it serves the order
+    (schema.INDEXES)."""
+    number = number_sql(column)
+    return (f"({owner_sql(column)} || char(1) || CASE WHEN {number} IS NULL THEN '1' "
+            f"ELSE '0' || printf('%020d', {number}) END || char(1) || {column})")
 
 
 def order_key(one: str) -> tuple:

@@ -1,6 +1,9 @@
 // A filter of the depot's texts, the address query it is kept in, the
 // paged search of the texts it matches through POST /api/texts/search, and
 // the compact bar that edits it and applies each change after a short pause.
+// A page of texts comes with no count (counts.tsx counts them apart): it
+// starts after the place of a row or ends before one, so the pages are
+// read one after another, forward or back, never by their number.
 
 import { Button } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,18 +27,19 @@ export type Row = {
   id: string; kind: string | null; title: string | null; authors: string[] | null; tags: string[]; licenses: string[];
   libraries: string[]; status: Status; locked: boolean; length: number;
 };
-export type Found = {
-  where: string; total: number; statuses: Record<Status, number>; locked: number;
-  tags: { tag: string; texts: number }[]; licenses: { license: string; texts: number }[]; rows: Row[]; ids?: string[];
-};
+// where a page starts or ends: a row's values of the order, as the server gives them
+export type Place = (string | number)[];
+export type Found = { where: string; rows: Row[]; next: Place | null; previous: Place | null; ids?: string[] };
 export type Order = { by: "id" | "title" | "status" | "tags" | "licenses" | "libraries" | "length"; descending: boolean };
 export const BY_ID: Order = { by: "id", descending: false };
+// a page: the first (neither), the one after a place, or the one before it
+export type At = { after?: Place; before?: Place };
 
-const body = (f: TextFilter) => ({ ...f, where: f.where.trim() === "" ? null : f.where });
+export const body = (f: TextFilter) => ({ ...f, where: f.where.trim() === "" ? null : f.where });
 
-// The texts a filter matches from offset; everyId: with the id of every one.
-export const search = (filter: TextFilter, offset = 0, limit = 50, order: Order = BY_ID, everyId = false) =>
-  post<Found>("/api/texts/search", { filter: body(filter), offset, limit, order: order.by, descending: order.descending, every_id: everyId });
+// The page at of the texts a filter matches; everyId: with the id of every one.
+export const search = (filter: TextFilter, at: At = {}, limit = 50, order: Order = BY_ID, everyId = false) =>
+  post<Found>("/api/texts/search", { filter: body(filter), ...at, limit, order: order.by, descending: order.descending, every_id: everyId });
 
 // The filter a page's query names (#/texts?tag=en&status=admitted&library=x&locked=no&where=...).
 export function fromQuery(query: URLSearchParams): TextFilter {
@@ -59,9 +63,10 @@ export function toQuery(f: TextFilter): Record<string, string | string[] | null>
 // the first page when the filter, the order or the page size changes. Only
 // the answer to the latest request is kept: answer is null until the
 // filter's first answer comes, and pending is true while a newer page or a
-// reload is asked.
+// reload is asked. next and previous move by one page when the answer says
+// there is one; open starts a page after a place.
 export function useSearch(filter: TextFilter, initialLimit = 50) {
-  const [offset, setOffset] = useState(0);
+  const [at, setAt] = useState<At>({});
   const [limit, setLimitState] = useState(initialLimit);
   const [order, setOrderState] = useState<Order>(BY_ID);
   const [got, setGot] = useState<{ key: string; asked: number; answer: Answer<Found> } | null>(null);
@@ -70,21 +75,26 @@ export function useSearch(filter: TextFilter, initialLimit = 50) {
   const [shownFilter, setShownFilter] = useState(filterKey);
   if (filterKey !== shownFilter) {
     setShownFilter(filterKey);
-    setOffset(0);
+    setAt({});
   }
-  const key = JSON.stringify([filterKey, offset, limit, order]);
+  const key = JSON.stringify([filterKey, at, limit, order]);
   const reload = useCallback(() => setAsked((n) => n + 1), []);
   useEffect(() => {
     let live = true;
-    const [f, o, l, by] = JSON.parse(key);
-    search(JSON.parse(f), o, l, by).then((answer) => live && setGot({ key, asked, answer }));
+    const [f, a, l, by] = JSON.parse(key);
+    search(JSON.parse(f), a, l, by).then((answer) => live && setGot({ key, asked, answer }));
     return () => { live = false; };
   }, [key, asked]);
   const answer = got && JSON.parse(got.key)[0] === filterKey ? got.answer : null;
   const pending = got === null || got.key !== key || got.asked !== asked;
-  const setLimit = (n: number) => { setLimitState(n); setOffset(0); };
-  const setOrder = (o: Order) => { setOrderState(o); setOffset(0); };
-  return { answer, pending, offset, setOffset, limit, setLimit, order, setOrder, reload };
+  const found = answer?.ok ? answer.data : null;
+  const next = found?.next ? () => setAt({ after: found.next! }) : null;
+  const previous = found?.previous ? () => setAt({ before: found.previous! }) : null;
+  const first = () => setAt({});
+  const open = useCallback((after: Place | null) => setAt(after ? { after } : {}), []);
+  const setLimit = (n: number) => { setLimitState(n); setAt({}); };
+  const setOrder = (o: Order) => { setOrderState(o); setAt({}); };
+  return { answer, pending, next, previous, first, open, limit, setLimit, order, setOrder, reload };
 }
 
 type Tag = { tag: string; texts: number };

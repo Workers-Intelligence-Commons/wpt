@@ -14,7 +14,7 @@ from functools import wraps
 
 from wpt_depot import Declaration, Depot, NewText, errors, follow
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
-from wpt_depot.depot import BELONGS_TO_UPSTREAM, CREDITS, NO_ALLOWED_LICENSE, ORDERS
+from wpt_depot.depot import BELONGS_TO_UPSTREAM, COUNT_STEP, CREDITS, NO_ALLOWED_LICENSE, ORDERS
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter, condition
 from wpt_depot.schema import ADMITTED, REFUSED
@@ -41,6 +41,9 @@ DECLARATION = {"type": "object", "required": ["name", "email", "accepted"],
 ID = {"type": "object", "required": ["id"], "properties": {"id": TEXT}}
 # the exact texts an operation works on, by id: those the page reviewed, never a condition matched again later
 IDS = {"type": "array", "items": TEXT, "minItems": 1, "uniqueItems": True}
+# where a page of texts starts or ends: a row's values of the order, as a page gives them
+PLACE = {"type": "array", "items": {"type": ["string", "integer", "number"]}, "minItems": 1}
+NULLABLE_PLACE = {"oneOf": [PLACE, {"type": "null"}]}
 # how many characters of text a page of passages holds at most, by default and at the most a request may ask
 PASSAGE_CHARACTERS, MAX_PASSAGE_CHARACTERS = 200_000, 2_000_000
 
@@ -140,14 +143,20 @@ def routes(depot: Depot) -> list[Route]:
     def search(values, body):
         where = filtered(body["filter"])
         return 200, {"where": where, **jsonable(readers.run(
-            "search", where, body.get("offset", 0), body.get("limit", 50), body.get("order", "id"),
+            "search", where, body.get("after"), body.get("before"), body.get("limit", 50), body.get("order", "id"),
             body.get("descending", False), body.get("every_id", False)))}
 
     @refusals
     def passages(values, body):
         return 200, jsonable(readers.run(
-            "passages", filtered(body["filter"]), body.get("offset", 0), body.get("limit", 50),
+            "passages", filtered(body["filter"]), body.get("after"), body.get("limit", 50),
             body.get("characters", PASSAGE_CHARACTERS), body.get("order", "id"), body.get("descending", False)))
+
+    @refusals
+    def counts(values, body):
+        named = body["filter"].get("ids")
+        return 200, jsonable(readers.run("count", filtered(body["filter"]), body.get("start"),
+                                         body.get("size", COUNT_STEP), named))
 
     @refusals
     def blocked(values, body):
@@ -452,35 +461,52 @@ def routes(depot: Depot) -> list[Route]:
                     "oneOf": [{"required": ["text"]}, {"required": ["content"]}],
                     "properties": {"text": {"type": "string"}, "content": {}, "declaration": DECLARATION}},
               answer={"type": "object", "required": ["decision", "version"]}),
-        Route("POST", "/api/texts/search", search, "the texts a filter matches, a page at a time: the SQL "
-              "condition over the texts table the filter stands for, how many texts it matches, how many of them "
-              "are under review, admitted and refused, how many a locked library holds, how many have each tag and "
-              "name each license, the page of rows from offset in the order asked (then by id, in the numeric order "
-              "of ids), each a text's credits, status and length in characters, without its text, and with "
-              "every_id the id of every text it matches, which a decision, a put, a fork or a report then names",
-              body={"type": "object", "required": ["filter"],
-                    "properties": {"filter": text_filter, "offset": {"type": "integer", "minimum": 0},
+        Route("POST", "/api/texts/search", search, "the texts a filter matches, a page at a time, with no count "
+              "(POST /api/texts/counts counts them): the SQL condition over the texts table the filter stands for, "
+              "the page of at most limit rows in the order asked (then by id, in the numeric order of ids; "
+              "descending turns the whole order around), each a text's credits, status and length in characters, "
+              "without its text; next, the place of the page's last row when more rows follow it, and previous, the "
+              "place of its first row when rows come before it, each null otherwise; a page starts after a place "
+              "(after) or ends before one (before), so a far page is read as fast as the first, and a page before a "
+              "place with fewer than limit rows before it is the first page; with every_id, the id of every text it "
+              "matches, which a decision, a put, a fork or a report then names",
+              body={"type": "object", "required": ["filter"], "not": {"required": ["after", "before"]},
+                    "properties": {"filter": text_filter, "after": PLACE, "before": PLACE,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                                    "order": {"enum": list(ORDERS)}, "descending": {"type": "boolean"},
                                    "every_id": {"type": "boolean"}}},
-              answer={"type": "object", "required": ["where", "total", "statuses", "locked", "tags", "licenses",
-                                                     "rows"]}),
+              answer={"type": "object", "required": ["where", "rows", "next", "previous"], "properties": {
+                  "next": NULLABLE_PLACE, "previous": NULLABLE_PLACE}}),
         Route("POST", "/api/texts/passages", passages, "the texts a filter matches with their text, a page at a "
               "time in the order of POST /api/texts/search, the page bounded both by a count of texts (limit) and "
-              "by characters: from offset, at most limit texts holding at most characters characters together, each "
-              "its id, kind, title, length in characters and passage, its text or an item's content from its start, "
-              "whole, or cut at characters for the page's first text when it is longer; a later text that does not "
-              "fit whole starts the next page; next is the offset of the text after the page, null when the page "
-              "ends the texts matched",
+              "by characters: after the place after (from the first text without it), at most limit texts holding at "
+              "most characters characters together, each its id, kind, title, length in characters and passage, its "
+              "text or an item's content from its start, whole, or cut at characters for the page's first text when "
+              "it is longer; a later text that does not fit whole starts the next page; next is the place of the "
+              "page's last text, after which the next page starts, null when the page ends the texts matched",
               body={"type": "object", "required": ["filter"],
-                    "properties": {"filter": text_filter, "offset": {"type": "integer", "minimum": 0},
+                    "properties": {"filter": text_filter, "after": PLACE,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                                    "characters": {"type": "integer", "minimum": 1, "maximum": MAX_PASSAGE_CHARACTERS},
                                    "order": {"enum": list(ORDERS)}, "descending": {"type": "boolean"}}},
               answer={"type": "object", "required": ["rows", "next"], "properties": {
                   "rows": {"type": "array", "items": {"type": "object", "required": [
                       "id", "kind", "title", "length", "passage"]}},
-                  "next": {"type": ["integer", "null"]}}}),
+                  "next": NULLABLE_PLACE}}),
+        Route("POST", "/api/texts/counts", counts, "one step of counting the texts a filter matches, so a page "
+              "counts them in the background, a step after another, each bounded whatever the depot's size: the "
+              f"slice is the size texts (at most {COUNT_STEP}) after the id start (from the first without it) in the "
+              "order of their ids as text, or, for a filter that names its texts, exactly those, in one step; texts, "
+              "how many texts the slice holds; total, how many texts every step goes over, in the first step only "
+              "(no start), null after it; the matches of the slice by status, how many of them a locked library "
+              "holds, by tag and by license; next, the start of the next step, null after the last one",
+              body={"type": "object", "required": ["filter"], "properties": {
+                  "filter": text_filter, "start": TEXT, "size": {"type": "integer", "minimum": 1,
+                                                                 "maximum": COUNT_STEP}}},
+              answer={"type": "object", "required": ["texts", "total", "statuses", "locked", "tags", "licenses",
+                                                     "next"],
+                      "properties": {"texts": {"type": "integer"}, "total": {"type": ["integer", "null"]},
+                                     "next": {"type": ["string", "null"]}}}),
         Route("POST", "/api/texts/blocked", blocked, "of exactly the texts named, each one a decision of that status "
               "(default admitted) cannot cover, the check a decision applies: its id and its reasons (it belongs to "
               "the upstream this depot follows, for any decision; none of its licenses is allowed, for an "

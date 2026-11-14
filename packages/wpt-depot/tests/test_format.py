@@ -8,6 +8,7 @@ import pytest
 from wpt_depot import About, Depot, NewText, clone, upgrade
 from wpt_depot.errors import DepotExists, OtherFormat, Refused
 from wpt_depot.legacy import Legacy
+from wpt_depot.database import FULL_COPY_NEXT
 from wpt_depot.schema import FORMAT, KEYS
 
 
@@ -51,7 +52,7 @@ def test_an_upgrade_of_a_format_3_folder_writes_a_new_file_holding_what_the_fold
     assert [one["revision"] for one in depot.library_texts("old-2", depot.change())] == [2]  # the revision it pinned
     assert depot.sql("SELECT id, revision FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = "
                      "'book')") == [{"id": "old-1", "revision": 2}]
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4]
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5]
     assert depot.erasures()[0]["needles"][0]["text"] == "old-2"
     # the ids go on from the highest number of each kind the folder held
     assert depot.add([NewText(text="new", licenses=("CC0-1.0",))], me) == ["old-3"]
@@ -109,8 +110,8 @@ def test_an_upgrade_stopped_once_its_file_is_whole_only_renames_it_when_run_agai
 
     depot, _ = Depot.upgrade(str(folder))
 
-    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"]
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4]
+    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 2
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5]
 
 
 def test_the_upgrade_of_a_clone_takes_its_upstream_s_web_address(make_legacy):
@@ -157,3 +158,43 @@ def test_a_depot_of_a_newer_format_is_refused_everywhere_and_never_brought_down(
         assert str(refused.value) == (f"{depot.address} is a depot of format {FORMAT + 1}, newer than the format "
                                       f"{FORMAT} this wpt reads: update wpt to read it; a depot is never brought "
                                       "down to an older format")
+
+
+def schema_of(path) -> list[tuple]:
+    """Every table and index of the file, with the statement that makes it."""
+    con = apsw.Connection(f"file:{Path(path).as_posix()}?mode=ro", flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI)
+    try:
+        return con.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    finally:
+        con.close()
+
+
+def test_an_upgrade_of_a_format_4_file_builds_the_index_of_format_5_in_place_and_keeps_every_row(make_depot, me,
+                                                                                                 tmp_path):
+    new = make_depot("new")
+    depot = make_depot()
+    depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(12)], me)
+    with depot.db.bulk() as con:  # the depot as format 4 left it: no index texts_order
+        con.execute("DROP INDEX texts_order")
+        con.execute("UPDATE about_revisions SET format = 4")
+    depot.db.close()
+    before = table_rows(depot.address)
+    (depot.db.waiting / FULL_COPY_NEXT).unlink()
+    with pytest.raises(OtherFormat):
+        Depot.open(depot.address)
+    said = []
+
+    upgraded, start = upgrade.upgrade(depot.address, log=said.append)
+
+    assert start == 4 and upgraded.format() == 5 and upgraded.address == depot.address
+    assert schema_of(depot.address) == schema_of(new.address)
+    after = table_rows(depot.address)
+    assert [one[-1] for one in after["about_revisions"]] == [4, 5] and after["changes"][-1][1] == "upgrade"
+    assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
+        table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
+    assert (depot.db.waiting / FULL_COPY_NEXT).exists()  # the change files hold no change of layout
+    assert "texts_order" in said[0] and "12 current texts" in said[0]
+    assert [one["id"] for one in upgraded.search("true", limit=3)["rows"]] == ["depot-1", "depot-2", "depot-3"]
+
+    _, start = upgrade.upgrade(depot.address, log=said.append)
+    assert start == 5 and table_rows(depot.address) == after and len(said) == 2

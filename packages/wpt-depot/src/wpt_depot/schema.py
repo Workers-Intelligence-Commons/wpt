@@ -39,7 +39,10 @@ hexadecimal), "at", "needle"}; a problem is {"texts", "problem",
 time is ISO 8601 text in UTC.
 
 Every table has a declared primary key (KEYS): the sessions that record
-each change (wpt_depot.database) need one to name a row.
+each change (wpt_depot.database) need one to name a row. The index
+texts_order holds the current texts in the numeric order of their ids
+(ids.order_sql), so a page of texts in that order, the first or a far one,
+reads only its own rows.
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -66,7 +69,9 @@ FORMAT only (Depot.view). A depot of format 3 or older is a folder of Delta
 Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 """
 
-FORMAT = 4  # the format of the layout below: what a depot this code reads and writes is written at
+from . import ids
+
+FORMAT = 5  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -107,6 +112,7 @@ KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name"
         "pulls": ("depot", "change")}
 INDEXES = (
     "CREATE UNIQUE INDEX texts_latest ON texts_revisions (id) WHERE latest",
+    f"CREATE INDEX texts_order ON texts_revisions ({ids.order_sql()}) WHERE latest",
     "CREATE UNIQUE INDEX libraries_latest ON libraries_revisions (id) WHERE latest",
     "CREATE UNIQUE INDEX erasures_latest ON erasures_revisions (id) WHERE latest",
     "CREATE UNIQUE INDEX datasets_latest ON datasets_revisions (id) WHERE latest",

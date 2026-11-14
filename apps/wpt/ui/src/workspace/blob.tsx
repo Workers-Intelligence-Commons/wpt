@@ -5,43 +5,47 @@
 // end of the last one scrolls into view, so the collection is never read
 // whole. A text longer than a page shows its start and says how much is
 // left. It is read only: a click on a passage, or on the name over it,
-// opens that text in the editor, at its place in the playlist.
+// opens that text in the editor, the playlist's page starting where the
+// blob's page that holds it starts (a blob page holds fewer texts than a
+// playlist page, so that page holds it too).
 
 import { Button, Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, useState } from "react";
 import { post, type Answer } from "../api";
-import { type Order, type TextFilter } from "../filter";
+import { body, type Order, type Place, type TextFilter } from "../filter";
 import { plural, Problems } from "../parts";
 import { codePoints } from "../reader";
 
 type Passage = { id: string; kind: string | null; title: string | null; length: number; passage: string };
-type Page = { rows: Passage[]; next: number | null };
+type Page = { rows: Passage[]; next: Place | null };
 
 const TEXTS = 50; // texts a page holds at most
 const CHARACTERS = 200_000; // characters a page holds at most
 
-const body = (f: TextFilter) => ({ ...f, where: f.where.trim() === "" ? null : f.where });
+// where the next page starts: the first, after a place, or nowhere (the end)
+type Next = { after: Place | null } | null;
+const FIRST: Next = { after: null };
 
-// onOpen: the text clicked, with its place in the order (from 0).
-export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Order; onOpen: (id: string, place: number) => void }) {
-  const [pages, setPages] = useState<{ offset: number; rows: Passage[] }[]>([]);
-  const [next, setNext] = useState<number | null>(0);
+// onOpen: the text clicked, with the place its page starts after (null: the first page).
+export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Order; onOpen: (id: string, after: Place | null) => void }) {
+  const [pages, setPages] = useState<{ after: Place | null; rows: Passage[] }[]>([]);
+  const [next, setNext] = useState<Next>(FIRST);
   const [reading, setReading] = useState(false);
   const [failed, setFailed] = useState<Answer<Page> | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const key = JSON.stringify([filter, order]);
   const asked = useRef(key);
-  useEffect(() => { asked.current = key; setPages([]); setNext(0); setFailed(null); setReading(false); }, [key]);
+  useEffect(() => { asked.current = key; setPages([]); setNext(FIRST); setFailed(null); setReading(false); }, [key]);
   const more = async () => {
     if (next === null || reading) return;
     setReading(true);
-    const from = next;
-    const a = await post<Page>("/api/texts/passages", { filter: body(filter), offset: from, limit: TEXTS, characters: CHARACTERS, order: order.by, descending: order.descending });
+    const from = next.after;
+    const a = await post<Page>("/api/texts/passages", { filter: body(filter), ...(from ? { after: from } : {}), limit: TEXTS, characters: CHARACTERS, order: order.by, descending: order.descending });
     if (asked.current !== key) return; // the filter or the order changed while it was read
     setReading(false);
     if (!a.ok) { setFailed(a); return; }
-    setPages((p) => [...p, { offset: from, rows: a.data.rows }]);
-    setNext(a.data.next);
+    setPages((p) => [...p, { after: from, rows: a.data.rows }]);
+    setNext(a.data.next ? { after: a.data.next } : null);
   };
   useEffect(() => {
     const sentinel = end.current;
@@ -50,22 +54,22 @@ export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Ord
     watcher.observe(sentinel);
     return () => watcher.disconnect();
   });
-  const opened = (id: string, place: number) => () => {
+  const opened = (id: string, after: Place | null) => () => {
     if (window.getSelection()?.isCollapsed === false) return; // a passage being selected, not a click
-    onOpen(id, place);
+    onOpen(id, after);
   };
   return (
     <div className="blob" aria-label="The open texts, one after another">
       {pages.length === 0 && next !== null && !failed && <Skeleton lines={8} label="Reading the first texts" />}
       {pages.length > 0 && pages[0].rows.length === 0 && <p>No text matches the filter.</p>}
-      {pages.flatMap((page) => page.rows.map((r, i) => (
+      {pages.flatMap((page) => page.rows.map((r) => (
         <article key={r.id} className="blob-text" aria-label={r.title ?? r.id}>
           <h2 className="blob-rule small">
-            <button type="button" className="blob-name wic-focus" onClick={() => onOpen(r.id, page.offset + i)} title="Open it in the editor">
+            <button type="button" className="blob-name wic-focus" onClick={() => onOpen(r.id, page.after)} title="Open it in the editor">
               <span className="cut">{r.title ?? (r.kind ? `an item of kind ${r.kind}` : "untitled text")}</span> <span className="ledger aside">{r.id}</span>
             </button>
           </h2>
-          <pre className="blob-passage" onClick={opened(r.id, page.offset + i)}>{r.passage}</pre>
+          <pre className="blob-passage" onClick={opened(r.id, page.after)}>{r.passage}</pre>
           {codePoints(r.passage) < r.length && <p className="aside small">{plural(r.length - codePoints(r.passage), "more character")} in this text: open it to read them.</p>}
         </article>
       )))}

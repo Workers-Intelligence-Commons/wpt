@@ -3,13 +3,16 @@
 // ever read): each a link that opens it in the editor, with its status, its
 // length and a tick for the actions on ticked texts. The current text is
 // marked. Its head chooses the order (the orders of POST /api/texts/search)
-// and ticks every text open; its foot is the pager. The keys that move and
-// decide are the workspace's (workspace.tsx), and so is their legend.
+// and ticks every text open, naming how many once their count is done; its
+// foot is the pager, which moves a page after another and shows the count
+// as it grows. The keys that move and decide are the workspace's
+// (workspace.tsx), and so is their legend.
 
 import { Button } from "@workers-intelligence-commons/components";
 import { useEffect, useRef } from "react";
+import { matched, MatchedCount, type Counting } from "../counts";
 import { type Found, type Order } from "../filter";
-import { Pager, plural, type Status } from "../parts";
+import { PlacePager, plural, type Status } from "../parts";
 
 const ORDERS: { by: Order["by"]; label: string }[] = [
   { by: "id", label: "id" }, { by: "title", label: "title" }, { by: "status", label: "status" }, { by: "length", label: "length" },
@@ -22,15 +25,17 @@ const MARKS: Record<Status, string> = { "under review": "○", admitted: "■", 
 // A length in characters, short: 950, 12k, 3.4M.
 const short = (n: number) => n < 1000 ? `${n}` : n < 1e6 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`;
 
-export function Playlist({ found, busy, current, link, ticked, onTick, onTickAll, tickingAll, order, onOrder, offset, limit, onOffset }: {
+export function Playlist({ found, busy, current, link, ticked, onTick, onTickAll, tickingAll, order, onOrder, limit, onFirst, onPrevious, onNext, counting }: {
   found: Found; busy: boolean; current: string | null; link: (id: string) => string; ticked: Set<string>;
   onTick: (ids: string[], on: boolean) => void; onTickAll: () => void; tickingAll: boolean;
-  order: Order; onOrder: (o: Order) => void; offset: number; limit: number; onOffset: (o: number) => void;
+  order: Order; onOrder: (o: Order) => void; limit: number;
+  onFirst: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; counting: Counting | null;
 }) {
   const list = useRef<HTMLOListElement>(null);
   // the current row stays in view as the keys move through the list
   useEffect(() => { list.current?.querySelector("[aria-current='true']")?.scrollIntoView({ block: "nearest" }); }, [current, found]);
   const allTicked = found.rows.length > 0 && found.rows.every((r) => ticked.has(r.id));
+  const total = counting?.done && !counting.problems ? matched(counting) : null; // how many texts are open, once counted
   return (
     <section className="playlist" aria-label="The open texts, in order">
       <div className="playlist-head small">
@@ -47,12 +52,12 @@ export function Playlist({ found, busy, current, link, ticked, onTick, onTickAll
           <input type="checkbox" className="wic-check-box wic-focus" checked={allTicked} onChange={(e) => onTick(found.rows.map((r) => r.id), e.target.checked)} />
           <span className="tick-label">this page</span>
         </label>
-        {found.total > found.rows.length && ticked.size < found.total && (
-          <Button variant="quiet" disabled={tickingAll} onClick={onTickAll}>{tickingAll ? "Ticking" : `Tick all ${found.total.toLocaleString("en")}`}</Button>
+        {(found.next || found.previous) && (!total || ticked.size < total) && (
+          <Button variant="quiet" disabled={tickingAll} onClick={onTickAll}>{tickingAll ? "Ticking" : total ? `Tick all ${total.toLocaleString("en")}` : "Tick all"}</Button>
         )}
       </div>
-      {found.total === 0 ? <p>No text matches.</p> : (
-        <ol ref={list} className="playlist-rows" aria-busy={busy} start={offset + 1}>
+      {found.rows.length === 0 ? <p>{found.previous ? "No text matches from here on." : "No text matches."}</p> : (
+        <ol ref={list} className="playlist-rows" aria-busy={busy}>
           {found.rows.map((r) => (
             <li key={r.id} className={`playlist-row${r.id === current ? " current" : ""}${ticked.has(r.id) ? " ticked" : ""}`} aria-current={r.id === current ? "true" : undefined}>
               <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${r.id}`} checked={ticked.has(r.id)} onChange={(e) => onTick([r.id], e.target.checked)} />
@@ -65,7 +70,8 @@ export function Playlist({ found, busy, current, link, ticked, onTick, onTickAll
           ))}
         </ol>
       )}
-      <Pager offset={offset} limit={limit} total={found.total} onOffset={onOffset} label="Pages of the open texts" />
+      <PlacePager onFirst={onFirst} onPrevious={onPrevious} onNext={onNext} limit={limit} label="Pages of the open texts"
+        counted={<MatchedCount counting={counting} />} />
     </section>
   );
 }

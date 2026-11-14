@@ -27,7 +27,8 @@ import { post, type Answer } from "../api";
 import type { Deciding } from "../blocked";
 import { type EditorHandle } from "../code-editor";
 import { declared, readDeclarant, saveDeclarant, useDeclarant } from "../declarant";
-import { BY_ID, EVERY, FilterBar, fromQuery, search, toQuery, useSearch, type TextFilter } from "../filter";
+import { CountingNote, matched, useCounts } from "../counts";
+import { BY_ID, EVERY, FilterBar, fromQuery, search, toQuery, useSearch, type Place, type TextFilter } from "../filter";
 import { plural, Problems, required, RequiredNote, useLibraries } from "../parts";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
@@ -52,9 +53,8 @@ export function Workspace({ current, query }: { current: string | null; query: U
   const blob = query.get("view") === "blob";
   const { libraries, reload: reloadLibraries } = useLibraries();
   const playlist = useSearch(filter, LIMIT);
-  const { answer, offset, limit } = playlist;
+  const { answer } = playlist;
   const rows = answer?.ok ? answer.data.rows : [];
-  const total = answer?.ok ? answer.data.total : 0;
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   // a new filter, however it was reached (a link, the filter bar, the back button), starts with nothing ticked
   const filterKey = JSON.stringify({ ...filter, ids: null });
@@ -104,7 +104,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
     const at = found.findIndex((r) => r.id === wanted.id);
     const next = at >= 0 ? found[at + 1] : found[wanted.index];
     if (next) go(next.id);
-    else if (offset + limit < answer.data.total) { pick.current = { kind: "first" }; playlist.setOffset(offset + limit); }
+    else if (playlist.next) { pick.current = { kind: "first" }; playlist.next(); }
   });
 
   // nothing open: the first text of the playlist opens, as if J was pressed
@@ -119,9 +119,9 @@ export function Workspace({ current, query }: { current: string | null; query: U
     if (at === -1 && rows.length) return go(rows[0].id);
     if (step === 1) {
       if (at < rows.length - 1) go(rows[at + 1].id);
-      else if (offset + limit < total) { pick.current = { kind: "first" }; playlist.setOffset(offset + limit); }
+      else if (playlist.next) { pick.current = { kind: "first" }; playlist.next(); }
     } else if (at > 0) go(rows[at - 1].id);
-    else if (offset > 0) { pick.current = { kind: "last" }; playlist.setOffset(Math.max(0, offset - limit)); }
+    else if (playlist.previous) { pick.current = { kind: "last" }; playlist.previous(); }
   };
 
   const decide = async (status: Deciding) => {
@@ -164,7 +164,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
   };
   const tickAll = async () => {
     setTickingAll(true);
-    const a = await search(filter, 0, 1, BY_ID, true);
+    const a = await search(filter, {}, 1, BY_ID, true);
     setTickingAll(false);
     if (a.ok) setTicked(new Set(a.data.ids));
   };
@@ -198,12 +198,13 @@ export function Workspace({ current, query }: { current: string | null; query: U
     if (a && dirty.current && !leave()) { e.preventDefault(); e.stopPropagation(); }
   };
 
-  const openFromBlob = (id: string, place: number) => {
-    playlist.setOffset(Math.floor(place / limit) * limit);
+  // the blob's page that holds the text starts the playlist's page, which then holds it too
+  const openFromBlob = (id: string, after: Place | null) => {
+    playlist.open(after);
     window.location.hash = address(id, toQuery(filter));
   };
   const named = saved.find((s) => JSON.stringify({ ...s.filter, ids: null }) === JSON.stringify({ ...filter, ids: null }))?.name;
-  const counts = answer?.ok ? answer.data : null;
+  const counts = useCounts(filter, version);
 
   return (
     <div className="workspace-frame" onClickCapture={guard}>
@@ -212,9 +213,10 @@ export function Workspace({ current, query }: { current: string | null; query: U
         {library ? <LibraryHead library={library} libraries={libraries} onChanged={changed} /> : (
           <section className="open-head" aria-label="What is open">
             <h1 className="title open-title">{named ?? describe(filter)}</h1>
-            {counts && <span className="small aside">
-              {plural(counts.total, "text")}: {counts.statuses["under review"].toLocaleString("en")} under review, {counts.statuses.admitted.toLocaleString("en")} admitted, {counts.statuses.refused.toLocaleString("en")} refused{counts.locked > 0 && <>; {counts.locked.toLocaleString("en")} in a locked library</>}
+            {counts && counts.counted > 0 && <span className="small aside">
+              {counts.done ? "" : "so far "}{plural(matched(counts), "text")}: {counts.statuses["under review"].toLocaleString("en")} under review, {counts.statuses.admitted.toLocaleString("en")} admitted, {counts.statuses.refused.toLocaleString("en")} refused{counts.locked > 0 && <>; {counts.locked.toLocaleString("en")} in a locked library</>}
             </span>}
+            <span className="small"><CountingNote counting={counts} /></span>
           </section>
         )}
         <div className="view-switch small" role="group" aria-label="How the open texts are shown">
@@ -231,7 +233,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
             {answer?.ok && (
               <Playlist found={answer.data} busy={playlist.pending} current={current} link={link} ticked={ticked} onTick={tick}
                 onTickAll={tickAll} tickingAll={tickingAll} order={playlist.order} onOrder={playlist.setOrder}
-                offset={offset} limit={limit} onOffset={playlist.setOffset} />
+                limit={playlist.limit} onFirst={playlist.first} onPrevious={playlist.previous} onNext={playlist.next} counting={counts} />
             )}
           </div>
           <div className="editor-column">

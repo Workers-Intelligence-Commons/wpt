@@ -206,7 +206,8 @@ def test_a_query_or_a_filter_s_condition_reads_nothing_outside_the_depot(web, tm
 
     for target, body in (("/api/sql", {"query": f"SELECT {read} AS value"}),
                          ("/api/texts/search", {"filter": {"where": f"{read} IS NOT NULL"}}),
-                         ("/api/texts/passages", {"filter": {"where": f"EXISTS (SELECT {read})"}})):
+                         ("/api/texts/passages", {"filter": {"where": f"EXISTS (SELECT {read})"}}),
+                         ("/api/texts/counts", {"filter": {"where": f"{read} IS NOT NULL"}})):
         status, answer = request("POST", target, body)
         assert status == 400 and answer["problems"][0].startswith("BadQuery") and secret not in json.dumps(answer)
 
@@ -232,7 +233,8 @@ def test_a_query_or_a_condition_past_the_time_limit_is_stopped_and_the_server_an
 
     for target, body in (("/api/sql", {"query": FOREVER}),
                          ("/api/texts/search", {"filter": {"where": f"({FOREVER}) > 0"}}),
-                         ("/api/texts/passages", {"filter": {"where": f"({FOREVER}) > 0"}})):
+                         ("/api/texts/passages", {"filter": {"where": f"({FOREVER}) > 0"}}),
+                         ("/api/texts/counts", {"filter": {"where": f"({FOREVER}) > 0"}})):
         started = time.monotonic()
         status, answer = request("POST", target, body)
         assert time.monotonic() - started < 3 + 2  # the limit, and the time to kill the process
@@ -321,20 +323,43 @@ def test_a_review_gets_every_id_a_filter_matches_and_the_decision_takes_exactly_
                                                  {"tag": "fr", "texts": 1}])
 
     status, every = request("POST", "/api/texts/search", {"filter": {}, "limit": 2})
-    assert status == 200 and every["total"] == 4 and every["locked"] == 1 and "ids" not in every
-    assert every["statuses"] == {"under review": 2, "admitted": 1, "refused": 1}
-    assert every["tags"] == [{"tag": "en", "texts": 3}, {"tag": "a", "texts": 2}, {"tag": "fr", "texts": 1}]
-    assert every["licenses"] == [{"license": "CC0-1.0", "texts": 4}]
+    assert status == 200 and "ids" not in every and "total" not in every and every["previous"] is None
     assert [(one["id"], one["status"], one["locked"], one["length"]) for one in every["rows"]] == [
         ("test-depot-1", "admitted", True, 3), ("test-depot-2", "under review", False, 3)]
-    status, second = request("POST", "/api/texts/search", {"filter": {}, "offset": 2, "limit": 2})
-    assert [one["id"] for one in second["rows"]] == ["test-depot-3", "test-depot-4"]
+    status, second = request("POST", "/api/texts/search", {"filter": {}, "after": every["next"], "limit": 2})
+    assert [one["id"] for one in second["rows"]] == ["test-depot-3", "test-depot-4"] and second["next"] is None
+    status, back = request("POST", "/api/texts/search", {"filter": {}, "before": second["previous"], "limit": 2})
+    assert back["rows"] == every["rows"] and back["previous"] is None and back["next"] == every["next"]
     status, longest = request("POST", "/api/texts/search", {"filter": {}, "order": "length", "descending": True})
-    assert [one["id"] for one in longest["rows"]] == ["test-depot-3", "test-depot-4", "test-depot-1", "test-depot-2"]
+    assert [one["id"] for one in longest["rows"]] == ["test-depot-3", "test-depot-4", "test-depot-2", "test-depot-1"]
+    status, shortest = request("POST", "/api/texts/search", {"filter": {}, "order": "length", "limit": 3})
+    status, rest = request("POST", "/api/texts/search", {"filter": {}, "order": "length", "after": shortest["next"]})
+    assert [one["id"] for one in shortest["rows"] + rest["rows"]] == [
+        "test-depot-1", "test-depot-2", "test-depot-4", "test-depot-3"]
+    assert request("POST", "/api/texts/search", {"filter": {}, "after": ["x", 1]})[0] == 422  # not a place of the order
+
+    # the counts come in steps, each one slice of the texts, which a page adds up
+    status, whole = request("POST", "/api/texts/counts", {"filter": {}})
+    assert status == 200 and (whole["texts"], whole["total"], whole["next"]) == (4, 4, None)
+    assert whole["statuses"] == {"under review": 2, "admitted": 1, "refused": 1} and whole["locked"] == 1
+    assert whole["tags"] == [{"tag": "en", "texts": 3}, {"tag": "a", "texts": 2}, {"tag": "fr", "texts": 1}]
+    assert whole["licenses"] == [{"license": "CC0-1.0", "texts": 4}]
+    steps, start = [], None
+    while True:
+        status, step = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}, "size": 3,
+                                                             **({"start": start} if start else {})})
+        steps.append(step)
+        start = step["next"]
+        if start is None:
+            break
+    assert [(one["texts"], one["total"]) for one in steps] == [(3, 4), (1, None)]
+    assert sum(one["statuses"]["under review"] + one["statuses"]["admitted"] for one in steps) == 3
+    status, named = request("POST", "/api/texts/counts", {"filter": {"ids": ["test-depot-2", "test-depot-9"]}})
+    assert (named["texts"], named["total"], named["next"], named["statuses"]["under review"]) == (1, 1, None, 1)
 
     status, found = request("POST", "/api/texts/search", {"filter": {"tags": ["en"], "statuses": ["under review", "refused"],
                                                                      "locked": False}, "every_id": True, "limit": 1})
-    assert (found["total"], found["ids"]) == (2, ["test-depot-2", "test-depot-3"])
+    assert found["ids"] == ["test-depot-2", "test-depot-3"]
     request("POST", "/api/texts", {"text": "five", "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
     assert request("POST", "/api/decisions", {"status": "admitted", "texts": found["ids"], "declaration": ME}) \
         == (200, {"decision": "test-depot-8", "texts": ["test-depot-2", "test-depot-3"]})
@@ -385,18 +410,17 @@ def test_passages_give_the_texts_a_filter_matches_with_their_text_a_page_bounded
     tagged = {"tags": ["x"]}
 
     status, first = request("POST", "/api/texts/passages", {"filter": tagged, "characters": 6})
-    assert status == 200 and first == {"rows": [{"id": "test-depot-1", "kind": None, "title": "a", "length": 10,
-                                                 "passage": "aaaaaa"}], "next": 1}
-    status, second = request("POST", "/api/texts/passages", {"filter": tagged, "offset": 1, "characters": 6})
+    assert status == 200 and first["rows"] == [{"id": "test-depot-1", "kind": None, "title": "a", "length": 10,
+                                                "passage": "aaaaaa"}] and first["next"] is not None
+    status, second = request("POST", "/api/texts/passages", {"filter": tagged, "after": first["next"], "characters": 6})
     assert [(one["id"], one["passage"]) for one in second["rows"]] == [("test-depot-2", "bbbb")]
-    assert second["next"] == 2
-    status, third = request("POST", "/api/texts/passages", {"filter": tagged, "offset": 2, "limit": 1})
-    assert [one["id"] for one in third["rows"]] == ["test-depot-4"] and third["next"] == 3
-    status, last = request("POST", "/api/texts/passages", {"filter": tagged, "offset": 3})
+    status, third = request("POST", "/api/texts/passages", {"filter": tagged, "after": second["next"], "limit": 1})
+    assert [one["id"] for one in third["rows"]] == ["test-depot-4"]
+    status, last = request("POST", "/api/texts/passages", {"filter": tagged, "after": third["next"]})
     assert [(one["id"], one["passage"]) for one in last["rows"]] == [("test-depot-5", "ee")] and last["next"] is None
     status, longest = request("POST", "/api/texts/passages", {"filter": {}, "order": "length", "descending": True,
                                                               "characters": 100})
-    assert [one["id"] for one in longest["rows"]] == ["test-depot-1", "test-depot-2", "test-depot-3", "test-depot-4",
+    assert [one["id"] for one in longest["rows"]] == ["test-depot-1", "test-depot-3", "test-depot-2", "test-depot-4",
                                                       "test-depot-5"] and longest["next"] is None
     assert request("POST", "/api/texts/passages", {"filter": tagged, "characters": 0})[0] == 400
 

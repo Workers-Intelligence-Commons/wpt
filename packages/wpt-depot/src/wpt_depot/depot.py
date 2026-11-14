@@ -170,9 +170,13 @@ FORK = ", or fork it into a library of this depot"
 SINGULAR = {"texts": "text", "libraries": "library", "erasure requests": "erasure request", "datasets": "dataset"}
 # the credits of a text that change as a new revision (Depot.edit_credits), in the order its reason names them
 CREDITS = ("title", "authors", "tags", "address", "notice")
-# what the rows of a search can be ordered by: each an ORDER BY list over the searched rows
-ORDERS = {"id": [ids.order_sql()], "title": ["title"], "kind": ["kind"], "status": ["status"], "tags": ["tags"],
-          "licenses": ["licenses"], "libraries": ["libraries"], "length": ["length"]}
+# what the rows of a search can be ordered by: each the SQL expressions over the searched rows it orders by, in turn,
+# before the numeric order of ids (_ordered); none of them is ever null, so a row's values of them compare as a whole
+ORDERS = {"id": [], "title": ["title IS NOT NULL", "coalesce(title, '')"],
+          "kind": ["kind IS NOT NULL", "coalesce(kind, '')"], "status": ["status"], "tags": ["tags"], "licenses": ["licenses"], "libraries": ["libraries"],
+          "length": ["length"]}
+# how many texts a step of Depot.count goes over at most
+COUNT_STEP = 1_000_000
 # the columns of the texts view but those that hold a text: what a query reads that never reads a text's parts
 FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
           "decisions, scores, libraries")
@@ -426,54 +430,62 @@ class Depot:
                 "revisions": revisions, "pins": pins, "content_versions": versions,
                 "upstream": bool(self.upstream_owned([text]))}
 
-    def search(self, where: str, offset: int = 0, limit: int = 50, order: str = "id", descending: bool = False,
-               every_id: bool = False) -> dict:
-        """The texts the SQL condition where matches, a page at a time:
-        {total: how many it matches, statuses: how many of them are under
-        review, admitted, refused (wpt_depot.policy), locked: how many of
-        them a locked library holds, tags and licenses: how many of them
-        have each tag and name each license, the most first, rows: the page
-        of limit rows from offset, ordered by the column order (one of
-        ORDERS; then by id), ids: with every_id, the id of every text it
-        matches, in the order of their ids}. A row holds a text's credits,
-        never its text or content: its id, kind, title, authors, tags,
-        licenses, libraries, status, whether a locked library holds it, and
-        its length in characters. BadQuery for a condition that is not one;
-        Refused for an order that is none of ORDERS."""
-        matched, by = self._ordered(where, order, descending)
-        counts = self.db.person_rows(f"SELECT status, locked, count(*) AS n FROM ({matched}) GROUP BY status, locked")
-        statuses = {status: sum(one["n"] for one in counts if one["status"] == status)
-                    for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
-        found = [_decoded({**one, "locked": bool(one["locked"])}) for one in self.db.person_rows(
-            f"SELECT id, kind, title, authors, tags, licenses, libraries, status, locked, length "
-            f"FROM ({matched}) ORDER BY {by} LIMIT {int(limit)} OFFSET {int(offset)}")]
-        named = {column: self.db.person_rows(
-            f"SELECT j.value AS {name}, count(*) AS texts FROM (SELECT {column} FROM texts WHERE ({where})) t, "
-            f"json_each(t.{column}) j GROUP BY j.value ORDER BY texts DESC, j.value")
-                 for column, name in (("tags", "tag"), ("licenses", "license"))}
-        answer = {"total": sum(statuses.values()), "statuses": statuses,
-                  "locked": sum(one["n"] for one in counts if one["locked"]), **named, "rows": found}
+    def search(self, where: str, after: Sequence | None = None, before: Sequence | None = None, limit: int = 50,
+               order: str = "id", descending: bool = False, every_id: bool = False) -> dict:
+        """The texts the SQL condition where matches, a page at a time, with
+        no count (Depot.count counts them a step at a time): {rows: the page
+        of at most limit rows, ordered by the column order (one of ORDERS;
+        then by id, in the numeric order of ids), descending turning the
+        whole order around; next: the place of the page's last row when
+        more rows follow it, None otherwise; previous: the place of its
+        first row when rows come before it, None on the first page, and
+        the place after itself for an empty page after a place, since rows
+        can come before it; ids: with every_id, the id of every text it
+        matches, in the numeric order of their ids}. A place is the list of a row's values of the order
+        (_ordered), and a page starts after one (after) or ends before one
+        (before), so a far page is read as fast as the first; a page
+        before a place that has fewer than limit rows before it is the first
+        page. A row holds a text's credits, never its text or content: its
+        id, kind, title, authors, tags, licenses, libraries, status, whether
+        a locked library holds it, and its length in characters. BadQuery
+        for a condition that is not one; Refused for an order that is none
+        of ORDERS, both after and before, or a place that is not one of the
+        order."""
+        if after is not None and before is not None:
+            raise Refused("a page starts after one place or ends before one, not both")
+        columns = "id, kind, title, authors, tags, licenses, libraries, status, locked, length"
+        found = self._page(where, columns, order, descending, before if before is not None else after,
+                           before is not None, limit)
+        if before is not None and len(found) <= limit:
+            return self.search(where, limit=limit, order=order, descending=descending, every_id=every_id)
+        page = found[:limit]
+        if before is not None:
+            page.reverse()
+        places = [one.pop("place") for one in page]
+        answer = {"rows": [_decoded({**one, "locked": bool(one["locked"])}) for one in page],
+                  "next": places[-1] if page and (before is not None or len(found) > limit) else None,
+                  "previous": places[0] if page and (after is not None or len(found) > limit and before is not None)
+                  else after}
         if every_id:
             answer["ids"] = self.matching(where)
         return answer
 
-    def passages(self, where: str, offset: int = 0, limit: int = 50, characters: int = 200_000, order: str = "id",
-                 descending: bool = False) -> dict:
+    def passages(self, where: str, after: Sequence | None = None, limit: int = 50, characters: int = 200_000,
+                 order: str = "id", descending: bool = False) -> dict:
         """The texts the SQL condition where matches with their text, a page
-        at a time, in the order of search: {rows: from offset, at most limit
-        texts holding at most characters characters together, each {id,
-        kind, title, length: its length in characters, passage: its text, or
-        an item's content, from its start, whole, or cut at characters for a
-        first text longer than that}, next: the offset of the text after the
-        page, None when the page ends the texts matched}. A later text that
-        does not fit whole starts the next page. BadQuery for a condition
-        that is not one; Refused for an order that is none of ORDERS or a
-        bound below 1."""
+        at a time, in the order of search: {rows: after the place after (from
+        the first text when None), at most limit texts holding at most
+        characters characters together, each {id, kind, title, length: its
+        length in characters, passage: its text, or an item's content, from
+        its start, whole, or cut at characters for a first text longer than
+        that}, next: the place of the page's last text, where the next page
+        starts, None when the page ends the texts matched}. A later text
+        that does not fit whole starts the next page. BadQuery for a
+        condition that is not one; Refused for an order that is none of
+        ORDERS, a place that is not one of the order or a bound below 1."""
         if limit < 1 or characters < 1:
             raise Refused("a page holds at least one text and one character")
-        matched, by = self._ordered(where, order, descending)
-        found = self.db.person_rows(f"SELECT id, kind, title, length FROM ({matched}) ORDER BY {by} "
-                                    f"LIMIT {int(limit) + 1} OFFSET {int(offset)}")
+        found = self._page(where, "id, kind, title, length", order, descending, after, False, limit)
         page, left = [], characters
         for one in found[:limit]:
             if page and one["length"] > left:
@@ -486,19 +498,83 @@ class Depot:
         reader = self.reader()
         found_rows = [{"id": one["id"], "kind": one["kind"], "title": one["title"], "length": one["length"],
                        "passage": Parted(reader, one["id"], listed_parts[one["id"]])[:one["shown"]]} for one in page]
-        return {"rows": found_rows, "next": int(offset) + len(page) if len(page) < len(found) else None}
+        return {"rows": found_rows, "next": page[-1]["place"] if len(page) < len(found) else None}
 
-    def _ordered(self, where: str, order: str, descending: bool) -> tuple[str, str]:
-        """(a query of the texts where matches, with their status, whether a
-        locked library holds them and their length; the ORDER BY list of
-        order, then by id). Refused for an order that is none of ORDERS."""
-        if order not in ORDERS:
-            raise Refused(f"the texts are ordered by one of {', '.join(ORDERS)}, not {order!r}")
-        direction = " DESC" if descending else ""
-        by = ", ".join([f"{one}{direction}" for one in ORDERS[order]] + [ids.order_sql()])
+    def _page(self, where: str, columns: str, order: str, descending: bool, place: Sequence | None, backward: bool,
+              limit: int) -> list[dict]:
+        """At most limit + 1 rows of the texts where matches, with columns
+        and their place (_ordered), in the order asked, from the one after
+        place, or backward from the one before it, the nearest first."""
+        keys = _ordered(order)
+        down = descending != backward
+        compared = ""
+        if place is not None:
+            if not isinstance(place, (list, tuple)) or len(place) != len(keys) or not all(
+                    isinstance(one, (str, int, float)) and not isinstance(one, bool) for one in place):
+                raise Refused(f"a place in the order {order} is a list of {len(keys)} values, as a page gives it")
+            compared = f"WHERE ({', '.join(keys)}) {'<' if down else '>'} ({', '.join('?' * len(keys))})"
         matched = (f"SELECT {FIELDS}, {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked "
                    f"FROM texts WHERE ({where})")
-        return matched, by
+        by = ", ".join(f"{one}{' DESC' if down else ''}" for one in keys)
+        found = self.db.person_rows(
+            f"SELECT {columns}, json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} ORDER BY {by} "
+            f"LIMIT {int(limit) + 1}", tuple(place) if place is not None else None)
+        return [{**one, "place": json.loads(one["place"])} for one in found]
+
+    def count(self, where: str, start: str | None = None, size: int = COUNT_STEP,
+              texts: Sequence[str] | None = None) -> dict:
+        """How many texts the SQL condition where matches in one slice of
+        the depot's texts, so that every match is counted a step at a time,
+        each step bounded whatever the depot's size: the slice is the size
+        texts after the id start (from the first when None), in the order of
+        their ids as text, which the index texts_latest holds; with texts,
+        it is exactly those of the texts named that the depot holds, in one
+        step. {texts: how many texts the slice holds; total: how many texts
+        every step goes over (the depot's texts, or the texts named that it
+        holds), with the first step only (start None), None after it;
+        statuses: how many of the matches are under review, admitted,
+        refused (wpt_depot.policy); locked: how many of them a locked
+        library holds; tags and licenses: how many of them have each tag and
+        name each license, the most first; next: the start of the next
+        slice, the id of this slice's last text, None when this slice ends
+        the texts}. BadQuery for a condition that is not one; Refused for a
+        size below 1, or texts given with start."""
+        if size < 1:
+            raise Refused("a step counts at least one text")
+        if texts is not None:
+            if start is not None:
+                raise Refused("the texts named are counted in one step, with no start")
+            named = _json(sorted(set(texts)))
+            bound, params = "id IN (SELECT value FROM json_each(:named))", {"named": named}
+            held = self._one("SELECT count(*) FROM texts_revisions WHERE latest AND id IN "
+                             "(SELECT value FROM json_each(?))", (named,))
+            step = {"texts": held, "total": held, "next": None}
+        else:
+            last = self._rows("SELECT id FROM texts_revisions WHERE latest AND id > ? ORDER BY id LIMIT 1 OFFSET ?",
+                              (start or "", size - 1))
+            end = last[0]["id"] if last else None
+            bound = "id > :start" + (" AND id <= :end" if end is not None else "")
+            params = {"start": start or "", **({"end": end} if end is not None else {})}
+            held = size if end is not None else self._one(
+                "SELECT count(*) FROM texts_revisions WHERE latest AND id > ?", (start or "",))
+            total = self._one("SELECT count(*) FROM texts_revisions WHERE latest") if start is None else None
+            step = {"texts": held, "total": total, "next": end}
+        found = self.db.person_rows(
+            f"WITH m AS MATERIALIZED (SELECT {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked, "
+            f"tags, licenses FROM texts WHERE {bound} AND ({where})) "
+            "SELECT 'status' AS part, status AS name, locked, count(*) AS n FROM m GROUP BY status, locked "
+            "UNION ALL SELECT 'tag', j.value, 0, count(*) FROM m, json_each(m.tags) j GROUP BY j.value "
+            "UNION ALL SELECT 'license', j.value, 0, count(*) FROM m, json_each(m.licenses) j GROUP BY j.value",
+            params)
+        statuses = [one for one in found if one["part"] == "status"]
+        named_counts = {part: sorted(([one["name"], one["n"]] for one in found if one["part"] == part),
+                                     key=lambda one: (-one[1], one[0])) for part in ("tag", "license")}
+        return {**step,
+                "statuses": {status: sum(one["n"] for one in statuses if one["name"] == status)
+                             for status in (UNDER_REVIEW, ADMITTED, REFUSED)},
+                "locked": sum(one["n"] for one in statuses if one["locked"]),
+                "tags": [{"tag": name, "texts": n} for name, n in named_counts["tag"]],
+                "licenses": [{"license": name, "texts": n} for name, n in named_counts["license"]]}
 
     def tags(self) -> list[dict]:
         """Every tag a text has, with how many texts have it, by name."""
@@ -1667,6 +1743,14 @@ def _json(value) -> str | None:
 
 def _parts_json(found: list[tuple[bytes, int]]) -> str:
     return _json([{"hash": hash_.hex(), "length": length} for hash_, length in found])
+
+
+def _ordered(order: str) -> list[str]:
+    """The SQL expressions a page in the order order (one of ORDERS) is ordered by, in turn: the order's own, then
+    the numeric order of ids. Refused for an order that is none of ORDERS."""
+    if order not in ORDERS:
+        raise Refused(f"the texts are ordered by one of {', '.join(ORDERS)}, not {order!r}")
+    return ORDERS[order] + [ids.order_sql()]
 
 
 def _decoded(row: dict) -> dict:
