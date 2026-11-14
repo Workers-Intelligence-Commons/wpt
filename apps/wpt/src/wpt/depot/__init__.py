@@ -13,6 +13,9 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           stored; the first run, one after a clone, an upgrade or a restore,
                                           and --full also send a full copy of the file; the app never removes
                                           a backup, and a timer outside it says how often it runs
+    wpt depot backup --off                nothing backs the depot up: its writes record no change file and
+                                          the waiting ones are deleted, until its next backup, which sends
+                                          a full copy
     wpt depot restore TO [--at MOMENT] [--depot NAME]
                                           a new depot file TO, which must not exist, made from the store's
                                           backups of the depot NAME (the only one backed up, by default) as
@@ -186,6 +189,11 @@ def cmd_clone(args):
 
 def cmd_backup(args):
     depot = opened()
+    if args.off:
+        depot.db.backup_off()
+        say(f"{depot.address}: its writes record no change file until its next backup, which sends a full copy; "
+            "its waiting change files are deleted")
+        return 0
     record = backup(depot, store_from_settings(env_file()), full=args.full)
     full = record["full"]
     say(f"{depot.address}: sent {len(record['changes'])} change files"
@@ -466,6 +474,9 @@ def parser() -> argparse.ArgumentParser:
     backing = commands.add_parser("backup", help="send the depot's waiting change files, and a full copy when one "
                                                  "is due, into the store")
     backing.add_argument("--full", action="store_true", help="send a new full copy of the file too")
+    backing.add_argument("--off", action="store_true",
+                         help="nothing backs this depot up: its writes record no change file and the waiting ones "
+                              "are deleted, until the next backup, which sends a full copy")
     backing.set_defaults(run=cmd_backup)
     restoring = commands.add_parser("restore", help="a new depot file made from the store's backups")
     restoring.add_argument("to", help="the new depot's file, which must not exist")

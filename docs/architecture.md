@@ -269,6 +269,11 @@ changes of a depot restored to an earlier moment, which number on from
 there again, never mix with the changes of the same numbers its origin
 made.
 
+`wpt depot backup --off` marks a depot that nothing backs up. Its writes
+then record no change file, so the waiting folder does not grow, and its
+waiting change files are deleted. Its next backup records again and sends
+a full copy.
+
 The app never cuts, erases or removes a backup. An erasure does not reach
 them ([erasure.md](erasure.md)). Backups on a schedule come from a timer
 outside the app, such as this cron line:

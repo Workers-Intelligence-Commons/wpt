@@ -47,6 +47,11 @@ new timeline (TIMELINE, a random id in the waiting folder), which its
 backups record: a depot restored to an earlier moment numbers its changes
 on from there again, and its timeline keeps them apart from the changes
 of the same numbers the depot it came from made.
+
+A depot that nothing backs up holds the marker NO_BACKUP in its waiting
+folder (`wpt depot backup --off`, Database.backup_off): its writes record no
+change file, so the folder does not grow, and its next backup turns the
+recording back on and sends a full copy.
 """
 
 import contextlib
@@ -72,6 +77,7 @@ WAITING = ".waiting"  # what the waiting folder's name adds to the depot file's 
 PENDING, FINAL = ".pending", ".changeset"
 FULL_COPY_NEXT = "full-copy-next"  # the marker of a file made whole: its next backup sends a full copy
 TIMELINE = "timeline"  # the file of the waiting folder that holds the id of the file's timeline
+NO_BACKUP = "no-backup"  # the marker of a depot nothing backs up: its writes record no change file
 WRITER = ("synchronous = FULL", "secure_delete = ON", "temp_store = FILE")  # the pragmas of a connection that writes
 STEPS = 10_000  # SQLite steps between two checks of a person's statement's time limit
 # what a person's statement may do: read rows, call functions, recurse in a common table expression
@@ -158,6 +164,43 @@ class Database:
         _write_synced(self.waiting / TIMELINE, secrets.token_hex(16))
         (self.waiting / FULL_COPY_NEXT).touch()
         sync_folder(self.waiting)
+
+    def recording(self) -> bool:
+        """Whether the depot's writes record their change files (no NO_BACKUP marker)."""
+        return not (self.waiting / NO_BACKUP).exists()
+
+    def backup_off(self):
+        """Stop recording change files: the marker NO_BACKUP, the waiting
+        change files deleted (no backup will send them), and a new timeline
+        whose next backup sends a full copy. Under the write lock, so no
+        write is between recording and not."""
+        with self._held_lock() as con:
+            self._settle(con)
+            self.mark_full_copy()
+            _write_synced(self.waiting / NO_BACKUP, "")
+            for path in self.waiting_files():
+                path.unlink()
+            sync_folder(self.waiting)
+
+    def backup_on(self):
+        """Record change files again (NO_BACKUP removed), under the write
+        lock: every write after it is recorded, so a full copy taken after
+        it and the change files after that copy hold every change."""
+        with self._held_lock():
+            (self.waiting / NO_BACKUP).unlink(missing_ok=True)
+            sync_folder(self.waiting)
+
+    @contextlib.contextmanager
+    def _held_lock(self) -> Iterator[apsw.Connection]:
+        """The write lock, held without writing: no write of any process runs meanwhile."""
+        with self._lock:
+            con = self._write_connection()
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                yield con
+            finally:
+                with contextlib.suppress(apsw.Error):
+                    con.execute("ROLLBACK")
 
     def timeline(self) -> str:
         """The id of the file's timeline; a new one, with a full copy at the
@@ -248,7 +291,8 @@ class Database:
     def write(self, kind: str, past: int = 0) -> Iterator[tuple[apsw.Connection, int]]:
         """One change of that kind: (the writer connection, its change
         number), in a transaction that holds the write lock and is
-        recorded (the module's docstring); committed when the block ends,
+        recorded unless the depot is marked NO_BACKUP (the module's
+        docstring); committed when the block ends,
         rolled back whole when it raises."""
         with self._lock:
             con = self._write_connection()
@@ -258,21 +302,23 @@ class Database:
                 self._settle(con)
                 previous = con.execute("SELECT coalesce(max(id), 0) FROM changes").fetchall()[0][0]
                 number, made_at = max(previous, past) + 1, now()
-                session = apsw.Session(con, "main")
-                session.attach(None)
+                if self.recording():
+                    session = apsw.Session(con, "main")
+                    session.attach(None)
                 con.execute("INSERT INTO changes (id, kind, made_at) VALUES (?, ?, ?)", (number, kind, made_at))
                 self._local.writing = con
                 try:
                     yield con, number
                 finally:
                     self._local.writing = None
-                pending = self.waiting / (waiting_name(number, previous, made_at) + PENDING)
-                self.waiting.mkdir(exist_ok=True)
-                with open(pending, "wb") as file:
-                    session.changeset_stream(file.write)
-                    file.flush()
-                    os.fsync(file.fileno())
-                sync_folder(self.waiting)
+                if session is not None:
+                    pending = self.waiting / (waiting_name(number, previous, made_at) + PENDING)
+                    self.waiting.mkdir(exist_ok=True)
+                    with open(pending, "wb") as file:
+                        session.changeset_stream(file.write)
+                        file.flush()
+                        os.fsync(file.fileno())
+                    sync_folder(self.waiting)
                 con.execute("COMMIT")
             except BaseException:
                 with contextlib.suppress(apsw.Error):

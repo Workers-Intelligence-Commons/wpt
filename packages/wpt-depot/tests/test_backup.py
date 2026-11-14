@@ -137,3 +137,24 @@ def test_a_pending_change_file_stays_when_its_change_is_in_the_depot_and_goes_ot
 
     assert held.exists() and not kept.exists() and not never.exists()
     assert again.change() == depot.change()
+
+
+def test_a_depot_backed_up_by_nothing_records_no_change_file_until_its_next_backup_sends_a_full_copy(
+        make_depot, me, tmp_path, store):
+    depot = make_depot()
+    texts = depot.add([plain("one")], me)
+    assert depot.db.waiting_files()
+    depot.db.backup_off()
+    assert depot.db.waiting_files() == []  # no backup will send them
+    depot.decide("admitted", texts, me)
+    depot.add([plain("two")], me)
+    assert depot.db.waiting_files() == []
+
+    record = backup(depot, store)
+    assert record["full"] is not None and record["full"]["change"] == depot.change()
+    assert depot.db.recording()
+    depot.add([plain("three")], me)
+    assert len(depot.db.waiting_files()) == 1
+    backup(depot, store)
+    restored = restore(store, str(tmp_path / "restored.sqlite"))
+    assert table_rows(restored.db.path) == table_rows(depot.db.path)

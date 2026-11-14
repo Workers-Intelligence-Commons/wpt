@@ -29,6 +29,11 @@ settings (a deleted row's bytes overwritten), and renamed once whole. The
 restored depot starts a timeline of its own, and its next backup sends a
 full copy.
 
+`wpt depot backup --off` (wpt_depot.database: Database.backup_off) marks a
+depot that nothing backs up: its writes record no change file and its
+waiting change files are deleted. Its next backup turns the recording back
+on before anything else, then sends a full copy.
+
 A change file holds the rows its change removed as they were, so an
 erased passage stays in the waiting folder until the next backup sends it,
 and in the backups for good (docs/erasure.md).
@@ -57,6 +62,9 @@ def backup(depot: Depot, store, full: bool = False) -> dict:
     name = depot.name()
     base = f"{FOLDER}/{name}"
     db = depot.db
+    if not db.recording():
+        db.backup_on()  # before the full copy, so every change after the copy has its change file
+        full = True
     db.settle()
     timeline = db.timeline()
     waiting = sorted(db.waiting_files(), key=lambda path: parse_waiting(path.name)[0])

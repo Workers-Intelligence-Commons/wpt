@@ -118,7 +118,8 @@ The depot carries out an admitted request at once:
   folder beside the depot's file (`<file>.waiting`) until the next
   `wpt depot backup` sends it to the store and deletes it from the
   folder. The
-  backups keep it for good.
+  backups keep it for good. A depot marked as backed up by nothing
+  (`wpt depot backup --off`) writes no change file.
 
 A depot that follows an upstream carries out the upstream's admitted
 erasures when it pulls, with their recorded places ([architecture.md](architecture.md), "The depot").
