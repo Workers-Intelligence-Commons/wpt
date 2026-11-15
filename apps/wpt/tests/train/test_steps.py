@@ -18,7 +18,7 @@ import wpt_agent
 import wpt.train
 from wpt_agent import images, played
 from wpt_depot import NewText
-from wpt_depot import corpus as corpora
+from wpt_depot import corpora
 from wpt_model import PARTS
 from wpt_store import LocalStore
 from wpt_telemetry import RECORD_FAILED, Telemetry
@@ -314,7 +314,7 @@ def task_corpus(built, root, check='#!/bin/bash\necho "0.$RANDOM"\n') -> tuple[s
                "check": {"mode": "100755", "content": encoded(check.encode())}}
     corpus_id = built.dataset("tasks", [NewText(kind="task", content=json.dumps(content), tags=("finish-tasks",))])
     [line] = built.store.get_bytes(corpora.find(built.store, corpus_id)["tasks"]["file"]).decode().splitlines()
-    return corpus_id, f"{built.depot.address} {json.loads(line)['id']}"
+    return corpus_id, f"{built.depot.name()} {json.loads(line)['id']}"
 
 
 def attempt_lines(store, folder, name) -> list[dict]:

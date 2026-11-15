@@ -173,7 +173,20 @@ export function Cut({ text, className }: { text: string; className?: string }) {
 
 export type Problem = { texts: string[]; problem: string; decision: string };
 // upstream: it belongs to the upstream this depot follows, which alone changes it
-export type Library = { id: string; name: string; forked_from: string | null; problems: Problem[] | null; locked_at: string | null; texts: number; upstream: boolean };
+export type Library = { id: string; name: string; forked_from: string | null; problems: Problem[] | null; locked_at: string | null; upstream: boolean };
+
+// A library's size, read only when asked (GET /api/libraries/ID/size, from the
+// depot's counts): a "More info" button, then how many texts it holds.
+export function LibrarySize({ id, name }: { id: string; name?: string }) {
+  const [size, setSize] = useState<Answer<{ texts: number }> | null>(null);
+  const [asked, setAsked] = useState(false);
+  if (!asked) return (
+    <Button variant="quiet" aria-label={`More info on ${name ?? id}`} onClick={() => { setAsked(true); get<{ texts: number }>(`/api/libraries/${encodeURIComponent(id)}/size`).then(setSize); }}>More info</Button>
+  );
+  if (!size) return <span className="aside">reading its size</span>;
+  if (!size.ok) return <span className="not-allowed">{size.problems.join(" ")}</span>;
+  return <span>{plural(size.data.texts, "text")}</span>;
+}
 
 // Every library, read again by reload.
 export function useLibraries(): { libraries: Library[]; loaded: boolean; problems: string[]; reload: () => void } {
@@ -202,7 +215,7 @@ export function LibraryLink({ library }: { library: Library | { id: string; name
 }
 
 export type DatasetRef = { depot: string | null; library: string; change: number };
-export type Dataset = { id: string; revision: number; name: string; tokenizer: string; libraries: DatasetRef[]; shares: { tag: string; share: number }[] | null; upstream: boolean; here: string[] };
+export type Dataset = { id: string; revision: number; name: string; tokenizer: string; libraries: DatasetRef[]; shares: { tag: string; share: number }[] | null; max_tokens: number | null; upstream: boolean; here: string[] };
 
 // Every dataset, read again by reload.
 export function useDatasets(): { datasets: Answer<Dataset[]> | null; reload: () => void } {

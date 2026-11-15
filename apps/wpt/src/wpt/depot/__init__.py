@@ -113,9 +113,12 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           library WHERE matches (none without WHERE) and the problem
                                           in words; no text and no membership changes
     wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID [...] [--share TAG=SHARE ...]
+                [--max-tokens N]
                                           a dataset reading those libraries (ADDRESS: another depot's),
-                                          each at its depot's change number now; shares in order
+                                          each at its depot's change number now; shares in order; its
+                                          corpus holds at most N tokens, conversations and tasks first
     wpt depot dataset edit NAME [--new-name N] [--library [ADDRESS:]ID ...] [--share TAG=SHARE ... | --no-shares]
+                [--max-tokens N | --no-max-tokens]
                                           change the dataset as a new revision, its id and tokenizer kept:
                                           an option given replaces that part (--library: every library); a
                                           library it read already keeps its change number, a new one is read
@@ -123,23 +126,44 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           own copy
     wpt depot dataset export NAME         the dataset as a remote, JSON on standard output
     wpt depot dataset import FILE         a dataset made from a remote
-    wpt depot tokenizer RECIPE            train the vocabulary of a tokenizer recipe on its dataset's
-                                          texts in its depot, put it in the store WPT_STORE names, and
-                                          write the recipe's lock
+    wpt depot tokenizer new NAME --dataset D [--depot URL] --sample-bytes N --vocab-size N [--note T]
+                                          a tokenizer recipe at version 1: its vocabulary trains on a sample
+                                          of the dataset D, this depot's or that of the depot whose web app
+                                          is at URL
+    wpt depot tokenizer edit NAME [--dataset D] [--depot URL] [--sample-bytes N] [--vocab-size N] [--note T]
+                                          change it as a new revision: a change of what trains its
+                                          vocabulary raises its version, a change of its note alone does not
+    wpt depot tokenizer train NAME        train the vocabulary of the recipe's version on its sample, read
+                                          once, and keep it in the depot with the texts it trained on; the
+                                          depot refuses a second vocabulary of the same version
+    wpt depot tokenizer import NAME FILE --dataset D [--lock FILE | --vocabulary FILE]
+                                          a tokenizer recipe made from a recipe file (sample_bytes,
+                                          vocab_size, note), trained on this depot's dataset D, with the
+                                          vocabulary a lock file names (read from the store WPT_STORE names)
+                                          or a vocabulary file as the vocabulary of its version 1
     wpt depot build DATASET               the dataset's corpus, built into the store WPT_STORE names with
-                                          the vocabulary its tokenizer recipe locked
+                                          the vocabulary of its tokenizer recipe's version, under the cap
+                                          WPT_CORPORA_CAP; the dataset's other corpora are deleted once it
+                                          is whole
+    wpt depot jobs [cancel ID]            the web app's jobs, one JSON row per line; cancel: a queued job
+                                          never runs, a running one is stopped
     wpt depot erase ID [START END] [--field POINTER] --reason TEXT DECLARATION
                                           ask to erase characters [START, END) of a text, or of the string
                                           at the JSON Pointer POINTER in an item's content, or the whole
                                           text or item (no START, END or POINTER)
     wpt depot erasures                    every erasure request; one JSON row per line
+    wpt depot recount                     make the depot's counts (how many texts have each status, tag
+                                          and license, each library holds and each decision is on) again
+                                          from its rows, as one change; the writes keep them right, so it
+                                          repairs only counts a failure outside the app broke
     wpt depot about [--maintainer M] [--takedown-contact C]
                                           change who maintains the depot, or where to ask for a takedown;
                                           its name never changes, since it begins every id
     wpt depot web [--port N]              the same operations as pages, on http://127.0.0.1:N/, but
                                           new, clone, pull, upgrade, backup, restore, about's change,
                                           dataset import, a dataset naming another depot's library,
-                                          build and tokenizer
+                                          tokenizer import, jobs cancel and recount; a vocabulary
+                                          training and a build run as jobs of its queue, one at a time
 
 DECLARATION is --name LEGAL_NAME --email EMAIL --accept: who decides, and
 the confirmation every decision needs (an add, an erasure request and a
@@ -165,12 +189,15 @@ from wpt_depot.filters import literal
 from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED
 from wpt_depot.settings import depot_address
-from wpt_recipes import RecipeError
+from wpt_depot import corpora
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_utils.lines import ERROR, say
 
-from .shared import (CONFIRMATION, NoSample, NoVocabulary, TokenizerLocked, build_corpus, decide_erasures, env_file,
-                     jsonable, opened, pulled, train_vocabulary)
+from .downloads import Downloads
+from .jobs import Jobs, jobs_file
+from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_corpus, decide_erasures, env_file,
+                     corpora_cap, import_tokenizer, jsonable, opened, pulled,
+                     train_vocabulary)
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED}
 
@@ -260,18 +287,19 @@ def cmd_decide(args):
                                       args.reason, say)[args.erasure]
         say(f"erasure {args.erasure}: {STATUSES[args.status]}" + (", carried out" if carried_out else ""))
         return 0
-    decision, texts = opened().decide(STATUSES[args.status], args.where, _declaration(args), args.reason)
-    say(f"decision {decision}: {STATUSES[args.status]}, on {len(texts):,} texts")
+    decision, texts, _ = opened().decide(STATUSES[args.status], args.where, _declaration(args), args.reason,
+                                         progress=_stage)
+    say(f"decision {decision}: {STATUSES[args.status]}, on {texts:,} texts")
     return 0
 
 
 def cmd_relicense(args):
-    changed, skipped = opened().relicense(args.ids, args.license, _declaration(args))
+    changed, skipped = opened().relicense(args.ids, args.license, _declaration(args), progress=_stage)
     for decision, texts in changed:
         say(f"decision {decision}: licenses changed to {', '.join(dict.fromkeys(args.license))}, on "
-            f"{len(texts):,} texts, now under review")
+            f"{texts:,} texts, now under review")
     if skipped:
-        say(f"left out, naming these licenses already: {', '.join(skipped)}")
+        say(f"{skipped:,} texts left out, naming these licenses already")
     return 0
 
 
@@ -327,17 +355,28 @@ def cmd_library_rename(args):
     return 0
 
 
+def _stage(stage: str):
+    """What a write over many texts says as it starts each stage."""
+    say(f"{stage}...")
+
+
+def cmd_recount(args):
+    opened().recount()
+    say("the depot's counts are made again from its rows")
+    return 0
+
+
 def cmd_library_put(args):
-    joined, left_out = opened().put(args.library, args.where)
-    say(f"library {args.library}: {len(joined):,} texts joined it"
-        + (f"; {len(left_out):,} matched and left out, not admitted" if left_out else ""))
+    joined, left_out = opened().put(args.library, args.where, progress=_stage)
+    say(f"library {args.library}: {joined:,} texts joined it"
+        + (f"; {left_out:,} matched and left out, not admitted" if left_out else ""))
     return 0
 
 
 def cmd_library_take_out(args):
-    taken_out, not_held = opened().take_out(args.library, args.where)
-    say(f"library {args.library}: {len(taken_out):,} texts taken out of it"
-        + (f"; {len(not_held):,} matched and not in it" if not_held else ""))
+    taken_out, not_held = opened().take_out(args.library, args.where, progress=_stage)
+    say(f"library {args.library}: {taken_out:,} texts taken out of it"
+        + (f"; {not_held:,} matched and not in it" if not_held else ""))
     return 0
 
 
@@ -348,14 +387,14 @@ def cmd_library_lock(args):
 
 
 def cmd_library_fork(args):
-    library = opened().fork(args.library, args.name, args.without)
+    library = opened().fork(args.library, args.name, args.without, progress=_stage)
     say(f"library {library}: {args.name}, a fork of library {args.library}"
         + (f", less the texts {args.without} matches" if args.without else ""))
     return 0
 
 
 def cmd_library_report(args):
-    decision, texts = opened().report(args.library, args.problem, args.where, _declaration(args))
+    decision, texts = opened().report(args.library, args.problem, args.where, _declaration(args), progress=_stage)
     say(f"library {args.library}: problem reported by decision {decision}"
         + (f", on {len(texts):,} texts" if args.where else ""))
     return 0
@@ -363,7 +402,8 @@ def cmd_library_report(args):
 
 def cmd_dataset_new(args):
     shares = [(tag, share) for tag, share in args.share] if args.share else None
-    say(f"dataset {opened().new_dataset(args.name, args.tokenizer, args.library, shares)}: {args.name}")
+    say(f"dataset {opened().new_dataset(args.name, args.tokenizer, args.library, shares, args.max_tokens)}: "
+        f"{args.name}")
     return 0
 
 
@@ -374,7 +414,8 @@ def cmd_dataset_edit(args):
     shares = (None if args.no_shares else [(tag, share) for tag, share in args.share] if args.share
               else None if row["shares"] is None else [(one["tag"], one["share"]) for one in row["shares"]])
     name = args.new_name or row["name"]
-    depot.edit_dataset(row["id"], name, libraries, shares)
+    limit = None if args.no_max_tokens else args.max_tokens if args.max_tokens is not None else row["max_tokens"]
+    depot.edit_dataset(row["id"], name, libraries, shares, limit)
     say(f"dataset {row['id']}: {name}, changed")
     return 0
 
@@ -391,14 +432,63 @@ def cmd_dataset_import(args):
 
 
 def cmd_build(args):
-    record = build_corpus(opened(), args.dataset, say)
+    depot = opened()
+    store = store_from_settings(env_file())
+    cap = corpora_cap()
+    downloads = Downloads(jobs_file(depot.address))
+    record = build_corpus(depot, depot.dataset(args.dataset)["id"], say, store=store,
+                          room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download,
+                                                           downloads.busy, say))
     say(f"corpus {record['id']}")
     return 0
 
 
-def cmd_tokenizer(args):
-    lock = train_vocabulary(args.recipe, say)
-    say(f"vocabulary {lock['vocabulary_sha256']}, trained on {len(lock['texts']):,} texts")
+def cmd_tokenizer_new(args):
+    recipe = opened().new_tokenizer(args.name, args.depot, args.dataset, args.sample_bytes, args.vocab_size, args.note)
+    say(f"tokenizer recipe {recipe}: {args.name}, version 1")
+    return 0
+
+
+def cmd_tokenizer_edit(args):
+    depot = opened()
+    row = depot.tokenizer(args.name)
+    given = {"depot": args.depot, "dataset": args.dataset, "sample_bytes": args.sample_bytes,
+             "vocab_size": args.vocab_size, "note": args.note}
+    values = {key: row[key] if value is None else value for key, value in given.items()}
+    if args.depot == "":
+        values["depot"] = None
+    version = depot.edit_tokenizer(row["id"], **values)
+    say(f"tokenizer recipe {row['id']}: {args.name}, version {version}")
+    return 0
+
+
+def cmd_tokenizer_train(args):
+    train_vocabulary(opened(), args.name, say)
+    return 0
+
+
+def cmd_tokenizer_import(args):
+    depot = opened()
+    given = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    lock = None if args.lock is None else json.loads(Path(args.lock).read_text(encoding="utf-8"))
+    vocabulary = None if args.vocabulary is None else Path(args.vocabulary).read_bytes()
+    store = store_from_settings(env_file()) if lock is not None else None
+    found = import_tokenizer(depot, args.name, given, args.dataset, lock, vocabulary, store)
+    say(f"tokenizer recipe {found['recipe']}: {args.name}, version 1"
+        + (f", vocabulary {found['vocabulary']}" if found["vocabulary"] else ", no vocabulary yet"))
+    return 0
+
+
+def cmd_jobs(args):
+    for job in Jobs(opened().address).listed():
+        print(json.dumps({key: job[key] for key in ("id", "kind", "title", "state", "progress", "problem", "created",
+                                                     "started", "ended")}, ensure_ascii=False))
+    return 0
+
+
+def cmd_jobs_cancel(args):
+    job = Jobs(opened().address).cancel(args.id)
+    say(f"job {job['id']} ({job['title']}): cancelled, it was {job['state']}")
     return 0
 
 
@@ -610,6 +700,9 @@ def parser() -> argparse.ArgumentParser:
     making.add_argument("--share", action="append", type=_share,
                         help="TAG=SHARE, in order: a plain text counts for the first share whose tag it has, and "
                              "one no share takes is left out; the build trims the shares to their proportions")
+    making.add_argument("--max-tokens", type=int, help="the most tokens its corpus holds: conversations and tasks "
+                                                       "first, then each share stops at its first text that would "
+                                                       "pass its part of what they leave")
     making.set_defaults(run=cmd_dataset_new)
     editing = datasets.add_parser("edit", help="change a dataset's name, libraries or shares as a new revision")
     editing.add_argument("name", help="the dataset's name now")
@@ -620,6 +713,9 @@ def parser() -> argparse.ArgumentParser:
     sharing = editing.add_mutually_exclusive_group()
     sharing.add_argument("--share", action="append", type=_share, help="TAG=SHARE, in order: every share")
     sharing.add_argument("--no-shares", action="store_true", help="no shares: every text")
+    limiting = editing.add_mutually_exclusive_group()
+    limiting.add_argument("--max-tokens", type=int, help="the most tokens its corpus holds, items included")
+    limiting.add_argument("--no-max-tokens", action="store_true", help="no limit")
     editing.set_defaults(run=cmd_dataset_edit)
     exporting = datasets.add_parser("export", help="the dataset as a remote, JSON on standard output")
     exporting.add_argument("name")
@@ -627,12 +723,50 @@ def parser() -> argparse.ArgumentParser:
     importing = datasets.add_parser("import", help="a dataset made from a remote")
     importing.add_argument("file")
     importing.set_defaults(run=cmd_dataset_import)
-    training = commands.add_parser("tokenizer", help="train a tokenizer recipe's vocabulary and lock it")
-    training.add_argument("recipe", help="the name of a tokenizer recipe (data/recipes/tokenizers)")
-    training.set_defaults(run=cmd_tokenizer)
+    tokenizer = commands.add_parser("tokenizer", help="make, change, train and import tokenizer recipes")
+    tokenizers = tokenizer.add_subparsers(dest="action", required=True)
+    making = tokenizers.add_parser("new", help="a tokenizer recipe at version 1")
+    making.add_argument("name")
+    making.add_argument("--dataset", required=True, help="the dataset whose sample trains its vocabulary: this "
+                                                          "depot's (name or id), or, with --depot, the other depot's "
+                                                          "name")
+    making.add_argument("--depot", help="the web address of another depot's web app that holds the dataset")
+    making.add_argument("--sample-bytes", type=int, required=True, help="the sample's UTF-8 bytes at most")
+    making.add_argument("--vocab-size", type=int, required=True, help="the vocabulary's tokens at most")
+    making.add_argument("--note")
+    making.set_defaults(run=cmd_tokenizer_new)
+    editing = tokenizers.add_parser("edit", help="change a tokenizer recipe as a new revision: a change of what "
+                                                 "trains its vocabulary raises its version")
+    editing.add_argument("name")
+    editing.add_argument("--dataset")
+    editing.add_argument("--depot", help="another depot's web address; '' for this depot")
+    editing.add_argument("--sample-bytes", type=int)
+    editing.add_argument("--vocab-size", type=int)
+    editing.add_argument("--note")
+    editing.set_defaults(run=cmd_tokenizer_edit)
+    training = tokenizers.add_parser("train", help="train the vocabulary of the recipe's version and keep it in "
+                                                   "the depot")
+    training.add_argument("name")
+    training.set_defaults(run=cmd_tokenizer_train)
+    importing = tokenizers.add_parser("import", help="a tokenizer recipe made from a recipe file, with the "
+                                                     "vocabulary of a lock file or a vocabulary file")
+    importing.add_argument("name")
+    importing.add_argument("file", help="the recipe file (JSON: sample_bytes, vocab_size, note)")
+    importing.add_argument("--dataset", required=True, help="this depot's dataset (name or id) it trains on")
+    given = importing.add_mutually_exclusive_group()
+    given.add_argument("--lock", help="a lock file (JSON: texts, vocabulary_sha256), its vocabulary read from the "
+                                      "store WPT_STORE names")
+    given.add_argument("--vocabulary", help="a vocabulary file (wpt_tokenizer's format)")
+    importing.set_defaults(run=cmd_tokenizer_import)
     building = commands.add_parser("build", help="a dataset's corpus, built into the store")
     building.add_argument("dataset")
     building.set_defaults(run=cmd_build)
+    job = commands.add_parser("jobs", help="the web app's jobs: list them, or cancel one")
+    job.set_defaults(run=cmd_jobs)
+    job_actions = job.add_subparsers(dest="action")
+    cancelling = job_actions.add_parser("cancel", help="cancel a queued or running job")
+    cancelling.add_argument("id")
+    cancelling.set_defaults(run=cmd_jobs_cancel)
 
     erasing = commands.add_parser("erase", help="ask to erase a passage of a text, or a whole text or item")
     erasing.add_argument("id", help="the text or item")
@@ -644,6 +778,7 @@ def parser() -> argparse.ArgumentParser:
     _declares(erasing)
     erasing.set_defaults(run=cmd_erase)
     commands.add_parser("erasures", help="every erasure request").set_defaults(run=cmd_erasures)
+    commands.add_parser("recount", help="make the depot's counts again from its rows").set_defaults(run=cmd_recount)
     abouting = commands.add_parser("about", help="change who maintains the depot or its takedown contact")
     abouting.add_argument("--maintainer", help="who maintains it")
     abouting.add_argument("--takedown-contact", help="where to ask for a takedown")
@@ -671,7 +806,8 @@ def main(argv=None) -> int:
             found.error(f"credits takes --clear {both[0]} or a new value for it, not both")
     try:
         return args.run(args)
-    except (DepotError, RecipeError, StoreError, StoreSettingError, NoVocabulary, TokenizerLocked, NoSample, OSError, UnicodeDecodeError) as error:
+    except (DepotError, StoreError, StoreSettingError, NoVocabulary, NoSample, BadSetting, corpora.TooBig,
+            corpora.NoRoom, OSError, UnicodeDecodeError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2
 

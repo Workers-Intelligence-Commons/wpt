@@ -151,7 +151,8 @@ train on, with optional shares by tag. `wpt depot library new`, `put`,
 `lock`, `fork` and `report` make and fill libraries, and report a
 problem with one; `wpt depot dataset new`,
 `export` and `import` make datasets and write them out as remotes;
-`wpt depot build DATASET` builds a dataset's corpus into the store
+`wpt depot tokenizer new` and `train` make a tokenizer recipe and its
+vocabulary; `wpt depot build DATASET` builds a dataset's corpus into the store
 ([docs/data-selection.md](docs/data-selection.md)).
 
 ## Changing a text

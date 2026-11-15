@@ -31,6 +31,7 @@ they check and read the files a command wrote, to compare them.
 """
 
 import ast
+import json
 import os
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from wpt_recipes import Recipes
 from wpt_recipes.guard import DataAccessRefused
 
 ROOT = Path(__file__).resolve().parents[3]
+MODEL = "watery-tardigrade"  # a model recipe of the repository, copied into a checkout of the test's own
 # the service layer's file and the class whose private members give paths under data/
 SERVICES = {ROOT / "packages" / "wpt-recipes" / "src" / "wpt_recipes" / "recipes.py": "Recipes"}
 # calls whose arguments are parts of a path, or a path they reach
@@ -165,17 +167,19 @@ def test_the_audit_hook_refuses_data_access_from_code_outside_the_service_layer(
     # the runtime half: whatever way a path was built, code that is neither a service layer nor a test cannot
     # open, list or change a file under a guarded data folder; through the service layer the same file reads
     root = tmp_path / "wpt"
-    (root / "data" / "recipes" / "tokenizers").mkdir(parents=True)
-    tokenizer = root / "data" / "recipes" / "tokenizers" / "t.json"
-    tokenizer.write_text('{"version": 1, "depot": "", "dataset": "", "sample_bytes": 1, "vocab_size": 300}\n',
+    (root / "data" / "recipes" / "series").mkdir(parents=True)
+    (root / "data" / "recipes" / "models").mkdir(parents=True)
+    recipe = root / "data" / "recipes" / "models" / "t.json"
+    shipped = json.loads((ROOT / "data" / "recipes" / "models" / f"{MODEL}.json").read_text(encoding="utf-8"))
+    recipe.write_text(json.dumps({**shipped, "data": {**shipped["data"], "total_tokens": 300}}) + "\n",
                          encoding="utf-8")
     recipes = Recipes(root)
     elsewhere = str(tmp_path / "elsewhere" / "wpt_reader" / "reader.py")  # not a test, not a service layer
-    for line in (f"open({str(tokenizer)!r}).read()", f"__import__('os').listdir({str(root / 'data')!r})",
-                 f"__import__('pathlib').Path({str(tokenizer)!r}).write_text('x')"):
+    for line in (f"open({str(recipe)!r}).read()", f"__import__('os').listdir({str(root / 'data')!r})",
+                 f"__import__('pathlib').Path({str(recipe)!r}).write_text('x')"):
         with pytest.raises(DataAccessRefused, match="only the service layers"):
             exec(compile(line, elsewhere, "exec"), {})
-    assert recipes.recipe("tokenizer", "t")["vocab_size"] == 300
+    assert recipes.data_part("t")["total_tokens"] == 300
     exec(compile(f"open({str(tmp_path / 'other.txt')!r}, 'w').write('x')", elsewhere, "exec"), {})  # elsewhere: free
 
 

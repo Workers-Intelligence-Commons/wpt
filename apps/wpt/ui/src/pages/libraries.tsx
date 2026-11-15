@@ -10,7 +10,8 @@
 import { Button, Skeleton, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
 import { get, part, post, type Answer } from "../api";
-import { EVERY } from "../filter";
+import { JobProgress, leftOut, useWrite, type Left } from "../decide-forms";
+import { EVERY, sent, type Selection } from "../filter";
 import { Facts, LibraryLink, PageHead, Pager, plural, Problems, required, RequiredNote, Section, StatusBadge, useLibraries, type Library } from "../parts";
 import { href } from "../route";
 import { MatchedTexts } from "../table";
@@ -117,20 +118,22 @@ function OneProblem({ library, decision }: { library: string; decision: string }
   );
 }
 
-// A fork without exactly the chosen texts, or with every text (without null).
-export function ForkForm({ library, without, onDone }: { library: Library; without: string[] | null; onDone: (a: Answer<unknown>, words: string) => void }) {
+// A fork without the texts of a selection, or with every text (without null).
+export function ForkForm({ library, without, onDone }: { library: Library; without: Selection | null; onDone: (a: Answer<unknown>, words: string) => void }) {
   const [name, setName] = useState("");
+  const { send, job, busy } = useWrite();
   const fork = async () => {
-    const a = await post<{ id: string }>(`/api/libraries/${encodeURIComponent(library.id)}/forks`, { name, ...(without?.length ? { without } : {}) });
-    onDone(a, a.ok ? `Library ${a.data.id}: ${name}, open.` : "");
+    const a = await send<{ id: string; left: Left }>(`/api/libraries/${encodeURIComponent(library.id)}/forks`, { name, ...(without ? { without: sent(without) } : {}) });
+    onDone(a, a.ok ? `Library ${a.data.id}: ${name}, open.${leftOut(a.data.left)}` : "");
   };
   return (
     <div className="action-form">
       <RequiredNote />
       <TextInput label={required("Name of the fork")} required value={name} onChange={(e) => setName(e.target.value)} />
-      <Button variant="primary" disabled={!name.trim() || (without !== null && without.length === 0)} onClick={fork}>
-        {without ? `Fork without ${plural(without.length, "text")}` : "Fork with every text"}
+      <Button variant="primary" disabled={!name.trim() || busy} onClick={fork}>
+        {without ? "Fork without the ticked texts" : "Fork with every text"}
       </Button>
+      <JobProgress job={job} />
     </div>
   );
 }

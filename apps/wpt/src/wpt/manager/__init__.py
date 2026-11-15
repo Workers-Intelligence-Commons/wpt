@@ -58,7 +58,7 @@ container, so the manager refuses it.
 The steps, each its own command, in order, each stopping the run with its
 exit code when it fails:
 
-    1. the corpus                        WPT_CORPUS, or the one last built for the recipe's depot
+    1. the corpus                        WPT_CORPUS, or the latest fresh one of the recipe's depot
                                          and dataset (wpt.train.find_corpus); the manager neither
                                          downloads nor builds: `wpt depot build DATASET` builds the
                                          corpus first, on the machine that holds the depot, and a
@@ -366,7 +366,7 @@ def _main(argv, signalled) -> int:
             "environment or in .env", ERROR)
         return leave(REFUSED)
     try:
-        Recipes(root).model_recipe(recipe)  # refused now, not after the workers are rented
+        Recipes(root).data_part(recipe)  # refused now, not after the workers are rented
     except RecipeError as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
@@ -567,8 +567,8 @@ def _run(recipe, name, out, evaluate, store, telemetry, environ, root, workers, 
             held.halt("images")
         with telemetry.span("manager.corpus", recipe=recipe) as span:
             try:
-                record = find_corpus(store, environ.get("WPT_CORPUS") or None, Recipes(root).model_recipe(recipe),
-                                     log)
+                record = find_corpus(store, environ.get("WPT_CORPUS") or None, Recipes(root).data_part(recipe), log)
+                Recipes(root).model_recipe(recipe, record["tokenizer"]["vocab_size"])  # a size of a series derives
             except (InputError, RecipeError) as error:
                 log(f"{type(error).__name__}: {error}", ERROR)
                 return REFUSED

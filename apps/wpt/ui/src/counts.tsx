@@ -14,15 +14,17 @@
 // next one go over twice as many, up to STEP; a filter that names its texts
 // has no slice, so its step is not sent again. A count ends when its page
 // no longer shows it: its component leaves, or its filter or version
-// changes.
+// changes. A selection (filter.tsx) is counted as a write takes it: less its
+// unticked texts and those changed since its change number.
 
 import { useEffect, useState } from "react";
 import { post } from "./api";
-import { body, type TextFilter } from "./filter";
+import { sent, type Selection, type TextFilter } from "./filter";
 import { plural, STATUSES, type Status } from "./parts";
 
+// blocked: how many an admission cannot cover, by the depot's reason (blocked.tsx)
 export type Counts = {
-  statuses: Record<Status, number>; locked: number;
+  statuses: Record<Status, number>; locked: number; blocked: Record<string, number>;
   tags: { tag: string; texts: number }[]; licenses: { license: string; texts: number }[];
 };
 // counted: texts gone over so far; total: how many there are to go over, known from the first step
@@ -38,7 +40,7 @@ const SMALLEST = 1000; // texts of the smallest step tried after the time limit 
 const QUICK = 15_000; // milliseconds: a quarter of the server's limit of 60 seconds a request
 
 type Job = {
-  filter: TextFilter; start: string | null; size: number; wait: number; users: number;
+  selection: Selection; start: string | null; size: number; wait: number; users: number;
   state: Counting; listeners: Set<(c: Counting) => void>;
 };
 
@@ -48,7 +50,7 @@ let running = false;
 let lastStart = 0;
 
 const EMPTY: Counting = {
-  statuses: { "under review": 0, admitted: 0, refused: 0 }, locked: 0, tags: [], licenses: [],
+  statuses: { "under review": 0, admitted: 0, refused: 0 }, locked: 0, blocked: {}, tags: [], licenses: [],
   counted: 0, total: null, done: false, problems: null,
 };
 
@@ -79,8 +81,8 @@ async function run() {
       await pause(Math.max(0, lastStart + PACE - Date.now()));
       if (jobs.get(key) !== job) continue; // it ended while waiting
       lastStart = Date.now();
-      const sent = job.size;
-      const a = await post<Step>("/api/texts/counts", { filter: body(job.filter), size: job.size, ...(job.start !== null ? { start: job.start } : {}) });
+      const size = job.size;
+      const a = await post<Step>("/api/texts/counts", { ...sent(job.selection), size: job.size, ...(job.start !== null ? { start: job.start } : {}) });
       if (jobs.get(key) !== job) continue; // it ended while its step ran: the answer is dropped
       const refused = (name: string) => !a.ok && a.status === 422 && a.problems.some((p) => p.startsWith(`${name}: `));
       if (!a.ok && (a.status === 429 || refused("NoReaderFree"))) {
@@ -89,17 +91,19 @@ async function run() {
         continue;
       }
       job.wait = WAIT;
-      if (refused("TimeLimitReached") && !Array.isArray(job.filter.ids) && sent / 2 >= SMALLEST) {
-        job.size = Math.floor(sent / 2);
+      if (refused("TimeLimitReached") && !Array.isArray(job.selection.filter.ids) && size / 2 >= SMALLEST) {
+        job.size = Math.floor(size / 2);
         continue;
       }
       if (!a.ok) { publish(job, { ...job.state, done: true, problems: a.problems }); continue; }
       const s = job.state, step = a.data;
       job.start = step.next;
-      if (Date.now() - lastStart < QUICK) job.size = Math.min(sent * 2, STEP);
+      if (Date.now() - lastStart < QUICK) job.size = Math.min(size * 2, STEP);
       publish(job, {
         statuses: Object.fromEntries(STATUSES.map((st) => [st, s.statuses[st] + step.statuses[st]])) as Record<Status, number>,
         locked: s.locked + step.locked, tags: added("tag", s.tags, step.tags), licenses: added("license", s.licenses, step.licenses),
+        blocked: Object.fromEntries([...new Set([...Object.keys(s.blocked), ...Object.keys(step.blocked)])]
+          .map((reason) => [reason, (s.blocked[reason] ?? 0) + (step.blocked[reason] ?? 0)])),
         counted: s.counted + step.texts, total: s.total ?? step.total, done: step.next === null, problems: null,
       });
     }
@@ -108,16 +112,17 @@ async function run() {
   }
 }
 
-// The counts of the texts filter matches as they grow, null without a
-// filter; version: raised after a change, so the count starts again.
-export function useCounts(filter: TextFilter | null, version = 0): Counting | null {
-  const key = filter === null ? null : JSON.stringify([filter, version]);
+// The counts of the texts a filter or a selection matches as they grow, null
+// without one; version: raised after a change, so the count starts again.
+export function useCounts(what: TextFilter | Selection | null, version = 0): Counting | null {
+  const selection: Selection | null = what === null ? null : "filter" in what ? what : { filter: what };
+  const key = selection === null ? null : JSON.stringify([selection, version]);
   const [state, setState] = useState<{ key: string | null; counting: Counting | null }>({ key: null, counting: null });
   useEffect(() => {
     if (key === null) return;
     let job = jobs.get(key);
     if (!job) {
-      job = { filter: JSON.parse(key)[0], start: null, size: STEP, wait: WAIT, users: 0, state: EMPTY, listeners: new Set() };
+      job = { selection: JSON.parse(key)[0], start: null, size: STEP, wait: WAIT, users: 0, state: EMPTY, listeners: new Set() };
       jobs.set(key, job);
     }
     const mine = job;

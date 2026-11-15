@@ -1,7 +1,8 @@
 // What needs the maintainer: the chain of the depot (texts, libraries,
-// datasets) with their counts, the texts under review counted by tag and by
-// license (a count made in steps, which grows as it goes, counts.tsx), each tag and license linked to its view and each count to those
-// texts, the latest decisions, the open erasure requests and the problems
+// datasets) with their counts, the number of texts under review (the depot's
+// own counts, GET /api/counts), those texts counted by tag and by license (a
+// count made in steps, which grows as it goes, counts.tsx), each tag and
+// license linked to its view and each count to those texts, the latest decisions, the open erasure requests and the problems
 // reported on libraries, each linked to its view.
 
 import { Notice, Skeleton } from "@workers-intelligence-commons/components";
@@ -17,6 +18,7 @@ import type { Page } from "./index";
 
 type Needle = { text: string };
 type Erasure = { id: string; reason: string; status: Status; needles: Needle[] };
+type DepotCounts = { texts: number; statuses: Record<Status, number> };
 
 const REVIEW = "under review";
 const WAITING: TextFilter = { ...EVERY, statuses: [REVIEW] };
@@ -35,10 +37,13 @@ function Overview() {
   const who = useDeclarant();
   const { libraries, loaded, problems: libraryProblems } = useLibraries();
   const { datasets } = useDatasets();
-  const waiting = useCounts(WAITING); // its first step also gives how many texts the depot holds
+  const waiting = useCounts(WAITING); // by tag and by license
+  const [counts, setCounts] = useState<Answer<DepotCounts> | null>(null);
   const [latest, setLatest] = useState<Answer<Latest[]> | null>(null);
   const [erasures, setErasures] = useState<Answer<Erasure[]> | null>(null);
+  const known = counts?.ok ? counts.data : null;
   useEffect(() => {
+    get<DepotCounts>("/api/counts").then(setCounts);
     get<Latest[]>("/api/decisions/latest").then(setLatest);
     get<Erasure[]>("/api/erasures").then(setErasures);
   }, []);
@@ -58,7 +63,7 @@ function Overview() {
         <ol className="chain-strip small">
           <li>
             <a className="chain-step" href={href(["texts"])}>
-              <span className="cue">{count(waiting?.total ?? undefined, "text")}</span>
+              <span className="cue">{count(known?.texts, "text")}</span>
               <span className="quiet">added under review, then admitted</span>
             </a>
           </li>
@@ -77,11 +82,12 @@ function Overview() {
         </ol>
       </nav>
       <div className="board">
-        <Section className="tall" title={<>Under review{waiting && waiting.counted > 0 && <>: <a href={href(["texts"], { status: REVIEW })}>{waiting.done ? "" : "at least "}{plural(matched(waiting), "text")}</a></>}</>}>
+        <Section className="tall" title={<>Under review{known && <>: <a href={href(["texts"], { status: REVIEW })}>{plural(known.statuses[REVIEW], "text")}</a></>}</>}>
+          {counts && !counts.ok && <Problems problems={counts.problems} />}
           {waiting && !waiting.done && <p className="small"><CountingNote counting={waiting} /></p>}
           {waiting?.counted === 0 && !waiting.done && <Skeleton lines={4} />}
           {waiting?.problems && <Problems problems={waiting.problems} />}
-          {waiting?.done && !waiting.problems && matched(waiting) === 0 && <p className="small">Nothing waits for a decision.</p>}
+          {known?.statuses[REVIEW] === 0 && <p className="small">Nothing waits for a decision.</p>}
           {waiting && matched(waiting) > 0 && (
             <div className="two-lists">
               <Counted title="by tag" rows={waiting.tags.map((t) => ({ key: t.tag, n: t.texts, view: href(["tags", t.tag]), link: href(["texts"], { status: REVIEW, tag: t.tag }) }))} />

@@ -12,9 +12,8 @@ is how a run is started and looked after.
 
 - The corpus of the recipe's dataset is built: `uv run wpt depot build
   DATASET`, on the machine that holds the depot, prints its id. The build
-  needs the lock of the dataset's tokenizer recipe
-  (`data/recipes/tokenizers/NAME.lock.json`) and the vocabulary it names
-  in the store.
+  needs the vocabulary of the dataset's tokenizer recipe at its version,
+  which the depot holds (`wpt depot tokenizer train NAME`).
 - PyTorch is installed for this machine's GPU: a plain `uv sync` removes
   it, `uv run scripts/setup.py` puts it back.
 - The model folder (`--out`, under `runs/`, which git ignores) is new, or
@@ -32,8 +31,8 @@ from the repository folder:
 | Windows (PowerShell) | `.\scripts\detach.ps1 uv run wpt train RECIPE [CORPUS_ID] --out runs/NAME [options]` |
 | Linux, macOS | `scripts/detach.sh uv run wpt train RECIPE [CORPUS_ID] --out runs/NAME [options]` |
 
-Without a corpus id, `wpt train` reads the corpus last built for the
-recipe's depot and dataset; `uv run wpt store list` lists the corpora the
+Without a corpus id, `wpt train` reads the latest fresh corpus of the
+recipe's dataset; `uv run wpt store list` lists the corpora the
 store holds.
 
 On a Windows machine, use the Windows row from PowerShell, never a WSL

@@ -1,18 +1,23 @@
 // Datasets: what to train on (wpt depot dataset new), and written out as a
-// remote (export); a remote is read back in (wpt depot dataset import) and a
-// corpus built into the store (wpt depot build) by the commands. A new dataset's tokenizer recipe is chosen among the
-// repository's, its libraries of this depot ticked; a dataset that reads a
-// library of another depot is made and changed by the commands only. #/datasets/ID is one dataset's view: its libraries with
-// the change number of their depot each is read at, its shares, the corpora
+// remote (export); a remote is read back in (wpt depot dataset import) by
+// the commands. A new dataset names a tokenizer recipe of the depot (one of
+// the Tokenizers page's, or a name a recipe will take), its libraries of
+// this depot ticked, its shares and its optional max_tokens; a dataset that
+// reads a library of another depot is made and changed by the commands
+// only. #/datasets/ID is one dataset's view: its libraries with the change
+// number of their depot each is read at, its shares, its limit, the corpora
 // built from it when the store can be read (each with the revision of the
-// dataset it was built from), its remote, and the edit of its name,
-// libraries and shares as a new revision (wpt depot dataset edit). A
-// dataset that belongs to the upstream this depot follows says so and has no
-// edit: only the upstream changes it.
+// dataset it was built from, stale or deleted, a deleted one built again
+// by a button), the button that queues its corpus's build (POST
+// /api/datasets/ID/build, after its vocabulary's training when its recipe
+// has none) and the link to its download page (download.tsx), its remote,
+// and the edit of its name, libraries, shares and limit as a new revision
+// (wpt depot dataset edit). A dataset that belongs to the upstream this
+// depot follows says so and has no edit: only the upstream changes it.
 
-import { Button, Dialog, Select, Skeleton, TextArea, TextInput } from "@workers-intelligence-commons/components";
+import { Button, ButtonLink, Dialog, Skeleton, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useState } from "react";
-import { get, part, post, type Answer } from "../api";
+import { get, part, post, type Answer, type Job } from "../api";
 import { Cut, local, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, requiredGroup, Section, useLibraries, type Dataset, type DatasetRef } from "../parts";
 import { href } from "../route";
 import { TickList } from "../ticks";
@@ -40,7 +45,7 @@ function Datasets() {
   return (
     <>
       <PageHead title="Datasets"
-        chain={<>A dataset reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training with <span className="ledger">wpt depot build</span>. A remote carries it to another machine, where <span className="ledger">wpt depot dataset import</span> reads it.</>}
+        chain={<>A dataset reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training, with the vocabulary of its <a href={href(["tokenizers"])}>tokenizer recipe</a>. A remote carries it to another machine, where <span className="ledger">wpt depot dataset import</span> reads it.</>}
         actions={<Button variant="primary" onClick={() => setMaking(true)}>New dataset</Button>} />
       <Outcome answer={answer} done={said} />
       {rows && !rows.ok && <Problems problems={rows.problems} />}
@@ -51,7 +56,7 @@ function Datasets() {
             <tbody>
               {rows.data.map((d) => (
                 <tr key={d.id}>
-                  <td className="nowrap"><a href={href(["datasets", d.id])}>{d.name}</a>{d.upstream && <span className="aside"> the upstream's</span>}</td>
+                  <td className="nowrap"><a href={href(["datasets", d.id])}>{d.name}</a>{d.upstream ? <span className="aside"> the upstream's</span> : null}</td>
                   <td className="ledger nowrap">{d.id}</td>
                   <td className="ledger"><Cut text={d.tokenizer} /></td>
                   <td>
@@ -67,6 +72,7 @@ function Datasets() {
                   </td>
                   <td><Cut text={d.shares?.length ? d.shares.map((s) => `${s.tag} ${Math.round(s.share * 1000) / 10} %`).join(", ") : "every text"} /></td>
                   <td className="nowrap">
+                    <a href={href(["download", d.id])}>Download</a>{" "}
                     <Button variant="quiet" onClick={() => exported(d.name)}>Export</Button>
                   </td>
                 </tr>
@@ -90,19 +96,21 @@ function Datasets() {
 // dataset, its edit as a new revision (POST /api/datasets/ID), its tokenizer fixed.
 function DatasetForm({ dataset, onDone }: { dataset?: Dataset; onDone: (a: Answer<any>, name: string) => void }) {
   const { libraries } = useLibraries();
-  const [recipes, setRecipes] = useState<Answer<string[]> | null>(null);
+  const [recipes, setRecipes] = useState<Answer<{ name: string }[]> | null>(null);
   const [name, setName] = useState(dataset?.name ?? "");
   const [tokenizer, setTokenizer] = useState(dataset?.tokenizer ?? "");
   const [mine, setMine] = useState<string[]>(dataset ? dataset.libraries.filter((r) => local(dataset, r)).map((r) => r.library) : []);
   const [others] = useState<Other[]>(dataset ? dataset.libraries.filter((r) => !local(dataset, r)).map((r) => ({ depot: r.depot ?? "", library: r.library })) : []);
   const [shares, setShares] = useState<Share[]>(dataset?.shares?.map((s) => ({ tag: s.tag, share: String(s.share) })) ?? []);
+  const [limit, setLimit] = useState(dataset?.max_tokens ? String(dataset.max_tokens) : "");
   const [problems, setProblems] = useState<string[]>([]);
-  useEffect(() => { if (!dataset) get<string[]>("/api/tokenizers").then(setRecipes); }, [dataset]);
+  useEffect(() => { if (!dataset) get<{ name: string }[]>("/api/tokenizers").then(setRecipes); }, [dataset]);
   const send = async () => {
     const body = {
       name,
       libraries: mine.map((library) => ({ library })),
       shares: shares.length ? shares.map((s) => ({ tag: s.tag, share: Number(s.share) })) : null,
+      max_tokens: limit.trim() ? Number(limit) : null,
     };
     const a = dataset ? await post(`/api/datasets/${part(dataset.id)}`, body) : await post("/api/datasets", { ...body, tokenizer });
     setProblems(a.ok ? [] : a.problems);
@@ -121,18 +129,22 @@ function DatasetForm({ dataset, onDone }: { dataset?: Dataset; onDone: (a: Answe
       <div className="fields">
         <TextInput label={required("Name")} required value={name} onChange={(e) => setName(e.target.value)} />
         {!dataset && (
-          <Select label={required("Tokenizer recipe")} required value={tokenizer} onChange={(e) => setTokenizer(e.target.value)} hint="A recipe of data/recipes/tokenizers.">
-            <option value="">{!recipes ? "Reading the recipes" : recipes.ok ? "Choose a recipe" : "No recipe could be read"}</option>
-            {recipes?.ok && recipes.data.map((r) => <option key={r} value={r}>{r}</option>)}
-          </Select>
+          <>
+            <TextInput label={required("Tokenizer recipe")} required value={tokenizer} list="tokenizer-recipes" onChange={(e) => setTokenizer(e.target.value)}
+              hint={<>A recipe of the <a href={href(["tokenizers"])}>Tokenizers</a> page, or the name of one to make there once the dataset it trains on exists.</>} />
+            <datalist id="tokenizer-recipes">{recipes?.ok && recipes.data.map((r) => <option key={r.name} value={r.name} />)}</datalist>
+          </>
         )}
+        <TextInput label={optional("Most tokens")} type="number" min="1" step="1" value={limit} placeholder="no limit"
+          onChange={(e) => setLimit(e.target.value)}
+          hint="Every token of the corpus counts: conversations and tasks are taken first, each kind stopping at its first item that would pass the limit, then each share stops at its first text that would pass its part of what they leave, in the corpus's order. Empty: no limit." />
       </div>
       {recipes && !recipes.ok && <Problems problems={recipes.problems} />}
       <fieldset className="form-part">
         <legend className="wic-label">{requiredGroup("Libraries")}</legend>
         <p className="wic-field-hint">At least one, of this depot. A library of another depot is named with <span className="ledger">wpt depot dataset new</span> or <span className="ledger">edit</span>.</p>
       <TickList label="Of this depot" chosen={mine} onChange={setMine}
-        options={libraries.map((l) => ({ value: l.id, words: `${l.id} ${l.name}`, label: <>{l.name} <span className="ledger aside">{l.id}</span>{l.locked_at ? <span className="aside"> locked</span> : null}</>, count: l.texts }))} />
+        options={libraries.map((l) => ({ value: l.id, words: `${l.id} ${l.name}`, label: <>{l.name} <span className="ledger aside">{l.id}</span>{l.locked_at ? <span className="aside"> locked</span> : null}</> }))} />
       {others.length > 0 && <p className="form-note small">It reads libraries of another depot ({others.map((o) => `${o.depot} ${o.library}`).join(", ")}): only <span className="ledger">wpt depot dataset edit</span> changes it.</p>}
       </fieldset>
       <fieldset className="form-part">
@@ -151,14 +163,14 @@ function DatasetForm({ dataset, onDone }: { dataset?: Dataset; onDone: (a: Answe
         <Button variant="quiet" onClick={() => setShares([...shares, { tag: "", share: "" }])}>Add a share</Button>
       </fieldset>
       <Problems problems={problems} />
-      <Button type="submit" variant="primary" disabled={!name.trim() || (!dataset && !tokenizer) || count === 0 || others.length > 0 || shares.some((s) => !s.tag.trim() || s.share.trim() === "")}>
+      <Button type="submit" variant="primary" disabled={!name.trim() || (!dataset && !tokenizer.trim()) || count === 0 || others.length > 0 || shares.some((s) => !s.tag.trim() || s.share.trim() === "") || (limit.trim() !== "" && !(Number(limit) >= 1))}>
         {dataset ? "Save the dataset" : "Make the dataset"}
       </Button>
     </form>
   );
 }
 
-type Corpus = { id: string; revision: number; built_at: string; texts: number; conversations: number; total_tokens: number; stale: { erasures: string[] } | null };
+type Corpus = { id: string; revision: number; built_at: string; texts: number; conversations: number; total_tokens: number; stale: { erasures: string[] } | null; deleted: { at: string; why: string; whole: boolean } | null };
 type Shown = {
   dataset: Dataset; upstream: boolean; remote: unknown; corpora: Corpus[] | null; store: string | null;
   libraries: (DatasetRef & { local: boolean; name: string | null; locked_at: string | null })[];
@@ -172,16 +184,25 @@ function OneDataset({ id }: { id: string }) {
   const [said, setSaid] = useState("");
   const load = useCallback(() => { get<Shown>(`/api/datasets/${part(id)}`).then(setShown); }, [id]);
   useEffect(load, [load]);
+  const build = async (corpus?: string) => {
+    const a = await post<Job<unknown>>(`/api/datasets/${part(id)}/build`, corpus ? { corpus } : {});
+    setSaid(a.ok ? `Queued: ${a.data.title}.` : "");
+    setAnswer(a);
+  };
   if (!shown) return <Skeleton lines={6} label="Reading the dataset" />;
   if (!shown.ok) return <Problems problems={shown.problems} />;
   const { dataset, libraries, corpora } = shown.data;
   return (
     <>
       <PageHead title={dataset.name}
-        meta={<><span className="ledger">{dataset.id}</span><span>revision {dataset.revision}</span><span>tokenizer <span className="ledger">{dataset.tokenizer}</span></span><span>{plural(libraries.length, "library", "libraries")}</span>{shown.data.upstream && <span className="aside">the upstream's</span>}</>}
+        meta={<><span className="ledger">{dataset.id}</span><span>revision {dataset.revision}</span><span>tokenizer <a className="ledger" href={href(["tokenizers", dataset.tokenizer])}>{dataset.tokenizer}</a></span><span>{plural(libraries.length, "library", "libraries")}</span><span>{dataset.max_tokens ? `at most ${plural(dataset.max_tokens, "token")}` : "no limit of tokens"}</span>{shown.data.upstream ? <span className="aside">the upstream's</span> : null}</>}
         note={shown.data.upstream ? "It belongs to the upstream this depot follows: only the upstream edits it, and a pull brings its edits here. Its corpus can still be built here." : undefined}
-        chain={<>One of the <a href={href(["datasets"])}>datasets</a>. It reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training with <span className="ledger">wpt depot build {dataset.name}</span>.</>}
-        actions={!shown.data.upstream && <Button variant="primary" onClick={() => { setAnswer(null); setEditing(true); }}>Edit it</Button>} />
+        chain={<>One of the <a href={href(["datasets"])}>datasets</a>. It reads <a href={href(["libraries"])}>libraries</a>, each as it stood at a change of its depot, and builds a corpus of their texts for training, which <a href={href(["download", dataset.id])}>its download page</a> gives. A build runs as a job of the <a href={href(["jobs"])}>queue</a>.</>}
+        actions={<>
+          <Button variant="primary" onClick={() => build()}>Build its corpus</Button>
+          <ButtonLink variant="quiet" href={href(["download", dataset.id])}>Download</ButtonLink>
+          {!shown.data.upstream && <Button variant="quiet" onClick={() => { setAnswer(null); setEditing(true); }}>Edit it</Button>}
+        </>} />
       {!editing && <Outcome answer={answer} done={() => said} />}
       <Section title="Libraries, each at a change of its depot">
         <div className="table-scroll">
@@ -214,7 +235,7 @@ function OneDataset({ id }: { id: string }) {
         ) : corpora.length === 0 ? <p className="small">No corpus of the store is built from it.</p> : (
           <div className="table-scroll">
             <table className="ledger-table" aria-label="The corpora built from it">
-              <thead><tr><th scope="col">corpus</th><th scope="col" className="number">of revision</th><th scope="col">built (UTC)</th><th scope="col" className="number">texts</th><th scope="col" className="number">tokens of plain text</th><th scope="col">stale</th></tr></thead>
+              <thead><tr><th scope="col">corpus</th><th scope="col" className="number">of revision</th><th scope="col">built (UTC)</th><th scope="col" className="number">texts</th><th scope="col" className="number">tokens of plain text</th><th scope="col">state</th></tr></thead>
               <tbody>
                 {corpora.map((c) => (
                   <tr key={c.id}>
@@ -223,7 +244,8 @@ function OneDataset({ id }: { id: string }) {
                     <td className="ledger nowrap">{c.built_at.replace("T", " ").slice(0, 16)}</td>
                     <td className="number ledger">{c.texts.toLocaleString("en")}</td>
                     <td className="number ledger">{c.total_tokens.toLocaleString("en")}</td>
-                    <td>{c.stale ? <span className="not-allowed">stale: {c.stale.erasures.map((e, i) => <span key={e}>{i > 0 && ", "}<a href={href(["erasures"], { request: e })}>{e}</a></span>)}</span> : <span className="aside">no</span>}</td>
+                    <td>{c.deleted ? <span><span className="aside">deleted: {c.deleted.why}</span> <Button variant="quiet" onClick={() => build(c.id)}>Build it again</Button></span>
+                      : c.stale ? <span className="not-allowed">stale: {c.stale.erasures.map((e, i) => <span key={e}>{i > 0 && ", "}<a href={href(["erasures"], { request: e })}>{e}</a></span>)}</span> : <span className="aside">fresh</span>}</td>
                   </tr>
                 ))}
               </tbody>

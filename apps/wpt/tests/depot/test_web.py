@@ -12,10 +12,30 @@ from wpt_utils.lines import bare
 from wpt.depot import main
 from wpt.depot.shared import CONFIRMATION, REQUIREMENTS
 from wpt.depot.web import readers
-from wpt.depot.web.routes import routes
+from wpt.depot.jobs import Jobs
+from wpt.depot.web.routes import STATUSES, routes
 from wpt.depot.web.server import Route, make_server
 
 ME = {"name": "Ada Lovelace", "email": "ada@example.org", "accepted": True}
+
+
+def named(ids) -> dict:
+    """The selection of exactly the texts ids, as a text's page sends it."""
+    return {"filter": {"ids": list(ids)}}
+
+
+def wrote(request, target, body):
+    """(status, answer) of a write over a selection, its job followed to its end: the operation's answer, or the
+    refusal's status and problems."""
+    status, state = request("POST", target, body)
+    while status == 202 or (status == 200 and state["state"] in ("queued", "running")):
+        time.sleep(0.05)
+        status, state = request("GET", f"/api/jobs/{state['id']}")
+    if status != 200:
+        return status, state
+    if state["state"] != "done":
+        return state["status"], {"problems": [state["problem"]]}
+    return 200, state["answer"]
 CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
                              {"role": "assistant", "content": [{"type": "text", "text": "Hello."}]}]}
 
@@ -28,10 +48,13 @@ def serve(tmp_path):
     static = tmp_path / "static"
     static.mkdir()
     (static / "index.html").write_text("<p>interface</p>")
-    servers = []
+    servers, runners = [], []
 
     def start(depot):
-        server = make_server(routes(depot), static)
+        jobs = Jobs(depot.address, STATUSES)
+        jobs.start()
+        runners.append(jobs)
+        server = make_server(routes(depot, jobs), static)
         servers.append(server)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         port = server.server_address[1]
@@ -51,6 +74,8 @@ def serve(tmp_path):
     for server in servers:
         server.shutdown()
         server.server_close()
+    for jobs in runners:
+        jobs.stop()
 
 
 @pytest.fixture
@@ -76,15 +101,17 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     assert request("POST", "/api/texts", {"kind": "conversation", "content": CONVERSATION, "licenses": ["CC0-1.0"],
                                           "tags": ["en"], "declaration": ME}) == (200, {"id": "test-depot-2"})
     both = ["test-depot-1", "test-depot-2"]
-    assert request("POST", "/api/decisions", {"status": "admitted", "texts": both, "reason": "free and clear",
-                                              "declaration": ME}) == (200, {"decision": "test-depot-3", "texts": both})
+    assert wrote(request, "/api/decisions", {"status": "admitted", "selection": named(both), "reason": "free and clear",
+                                             "declaration": ME}) == (200, {"decision": "test-depot-3", "texts": 2, "left": {}})
     assert request("POST", "/api/libraries", {"name": "first model"}) == (200, {"id": "test-depot-1"})
-    assert request("POST", "/api/libraries/test-depot-1/texts", {"texts": both}) == (200, {"joined": both, "left_out": []})
-    assert request("POST", "/api/libraries/test-depot-1/forks", {"name": "next"}) == (200, {"id": "test-depot-2"})
+    assert wrote(request, "/api/libraries/test-depot-1/texts", {"selection": named(both)}) == (
+        200, {"joined": 2, "left_out": 0, "left": {}})
+    assert wrote(request, "/api/libraries/test-depot-1/forks", {"name": "next"}) == (200, {"id": "test-depot-2", "left": {}})
     assert request("POST", "/api/libraries/test-depot-1/lock", {}) == (200, {})
     status, held = request("GET", "/api/libraries")
-    assert [(one["name"], one["texts"], one["locked_at"] is not None) for one in held] == [
-        ("first model", 2, True), ("next", 2, False)]
+    assert [(one["name"], one["locked_at"] is not None) for one in held] == [("first model", True), ("next", False)]
+    assert "texts" not in held[0]  # the size comes on demand
+    assert request("GET", "/api/libraries/test-depot-1/size") == (200, {"id": "test-depot-1", "texts": 2})
 
     status, shown = request("GET", "/api/texts/test-depot-2")
     assert status == 200 and json.loads(shown["text"]["content"]) == CONVERSATION
@@ -94,7 +121,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     assert (status, found) == (200, {"columns": ["id", "title"], "rows": [{"id": "test-depot-1", "title": "Fox"},
                                                                          {"id": "test-depot-2", "title": None}]})
 
-    assert "classics" in request("GET", "/api/tokenizers")[1]  # the repository's own recipes
+    assert request("GET", "/api/tokenizers") == (200, [])  # the depot's own recipes: none yet
     change = depot.change()
     assert request("POST", "/api/datasets", {"name": "first", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}],
                                              "shares": [{"tag": "en", "share": 1}]}) == (200, {"id": "test-depot-1"})
@@ -116,17 +143,19 @@ def test_the_pages_routes_add_a_license_decide_an_erasure_report_a_problem_and_f
     for text, tag in (("call 555-0100 now", "a"), ("another", "b")):
         request("POST", "/api/texts", {"text": text, "licenses": ["MIT"], "tags": [tag], "declaration": ME})
     assert [(one["id"], one["texts"]) for one in request("GET", "/api/licenses")[1]] == [("CC0-1.0", 0), ("MIT", 2)]
-    request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-1", "test-depot-2"], "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1", "test-depot-2"]), "declaration": ME})
     request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"texts": ["test-depot-1", "test-depot-2"]})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1", "test-depot-2"])})
     request("POST", "/api/libraries/test-depot-1/lock", {})
-    assert request("POST", "/api/libraries/test-depot-1/problems", {"problem": "a bad text", "texts": ["test-depot-2"],
-                                                          "declaration": ME}) == (200, {"decision": "test-depot-4", "texts": ["test-depot-2"]})
-    assert request("POST", "/api/libraries/test-depot-1/problems", {"problem": "a bad text", "texts": ["test-depot-9"],
+    assert wrote(request, "/api/libraries/test-depot-1/problems", {
+        "problem": "a bad text", "selection": named(["test-depot-2"]), "declaration": ME}) == (
+        200, {"decision": "test-depot-4", "texts": 1, "left": {}})
+    assert request("POST", "/api/libraries/test-depot-1/problems", {"problem": "a bad text", "selection": named(["test-depot-9"]),
                                                           "declaration": ME})[0] == 404
-    assert request("POST", "/api/libraries/test-depot-1/forks", {"name": "cleaner", "without": ["test-depot-2"]}) \
-        == (200, {"id": "test-depot-2"})
-    held = {one["name"]: (one["texts"], one["problems"]) for one in request("GET", "/api/libraries")[1]}
+    assert wrote(request, "/api/libraries/test-depot-1/forks", {"name": "cleaner", "without": named(["test-depot-2"])}) \
+        == (200, {"id": "test-depot-2", "left": {}})
+    held = {one["name"]: (request("GET", f"/api/libraries/{one['id']}/size")[1]["texts"], one["problems"])
+            for one in request("GET", "/api/libraries")[1]}
     assert held == {"first": (2, [{"texts": ["test-depot-2"], "problem": "a bad text", "decision": "test-depot-4"}]), "cleaner": (1, [])}
 
     request("POST", "/api/erasures", {"reason": "a number", "needles": [{"text": "test-depot-1", "start": 5, "end": 13}],
@@ -161,11 +190,11 @@ def test_each_refusal_answers_its_status_and_writes_nothing(web):
     assert depot.sql("SELECT count(*) AS n FROM texts") == [{"n": 0}]
     assert request("GET", "/api/texts/test-depot-9")[0] == 404
     assert request("POST", "/api/sql", {"query": "DELETE FROM texts"})[0] == 400
-    assert request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-1"]})[0] == 400  # no declaration
+    assert request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"])})[0] == 400  # no declaration
     assert request("POST", "/api/decisions", {"status": "admitted", "where": "true", "declaration": ME})[0] == 400  # no ids
 
 
-def test_a_pull_a_corpus_build_a_remote_import_and_a_change_of_the_depot_s_facts_are_no_routes(web):
+def test_a_pull_a_remote_import_and_a_change_of_the_depot_s_facts_are_no_routes(web):
     # the server is open to anyone: these reach past the depot (another address, the store) or change the depot's
     # own facts, so only the commands do them
     request, depot = web
@@ -174,7 +203,7 @@ def test_a_pull_a_corpus_build_a_remote_import_and_a_change_of_the_depot_s_facts
     status, remote = request("GET", "/api/datasets/first/remote")
     change, about = depot.change(), depot.about()
 
-    for target, body in (("/api/pull", {}), ("/api/datasets/first/corpus", {}),
+    for target, body in (("/api/pull", {}), ("/api/jobs/x/cancel", {}),
                          ("/api/remotes", {"remote": {**remote, "name": "again"}}),
                          ("/api/about", {"maintainer": "Grace Hopper"})):
         assert request("POST", target, body) == (404, {"problems": [f"no route POST {target}"]})
@@ -308,16 +337,16 @@ def test_the_web_command_serves_the_depot_its_setting_names(tmp_path, monkeypatc
     assert main(["web"]) == 1  # no depot to serve
 
 
-def test_a_review_gets_every_id_a_filter_matches_and_the_decision_takes_exactly_those_ids(web):
-    # the pages review the texts a filter matches, then send their ids: a text that comes to match the filter
-    # between the review and the click is not decided
+def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_changed_since(web):
+    # the pages review the texts a filter matches, then send the filter with the change it was read at: a text
+    # that comes to match the filter between the review and the click is not decided
     request, depot = web
     for text, tags in (("one", ["en", "a"]), ("two", ["en"]), ("three", ["en", "a"]), ("four", ["fr"])):
         request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "tags": tags, "declaration": ME})
-    request("POST", "/api/decisions", {"status": "refused", "texts": ["test-depot-4"], "declaration": ME})
-    request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-1"], "declaration": ME})
+    request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-4"]), "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]), "declaration": ME})
     request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"texts": ["test-depot-1"]})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
     request("POST", "/api/libraries/test-depot-1/lock", {})
     assert request("GET", "/api/tags") == (200, [{"tag": "a", "texts": 2}, {"tag": "en", "texts": 3},
                                                  {"tag": "fr", "texts": 1}])
@@ -354,17 +383,35 @@ def test_a_review_gets_every_id_a_filter_matches_and_the_decision_takes_exactly_
             break
     assert [(one["texts"], one["total"]) for one in steps] == [(3, 4), (1, None)]
     assert sum(one["statuses"]["under review"] + one["statuses"]["admitted"] for one in steps) == 3
-    status, named = request("POST", "/api/texts/counts", {"filter": {"ids": ["test-depot-2", "test-depot-9"]}})
-    assert (named["texts"], named["total"], named["next"], named["statuses"]["under review"]) == (1, 1, None, 1)
+    status, given = request("POST", "/api/texts/counts", {"filter": {"ids": ["test-depot-2", "test-depot-9"]}})
+    assert (given["texts"], given["total"], given["next"], given["statuses"]["under review"]) == (1, 1, None, 1)
 
-    status, found = request("POST", "/api/texts/search", {"filter": {"tags": ["en"], "statuses": ["under review", "refused"],
-                                                                     "locked": False}, "every_id": True, "limit": 1})
-    assert found["ids"] == ["test-depot-2", "test-depot-3"]
+    # a selection is the filter, the change its page was read at and the ids unticked: a text that came to match
+    # the filter after that change is left out, and counted; a filter that names no ids runs as a job
+    shown = {"tags": ["en"], "statuses": ["under review", "refused"], "locked": False}
+    status, found = request("POST", "/api/texts/search", {"filter": shown, "limit": 1})
+    assert [one["id"] for one in found["rows"]] == ["test-depot-2"] and found["change"] == depot.change()
     request("POST", "/api/texts", {"text": "five", "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
-    assert request("POST", "/api/decisions", {"status": "admitted", "texts": found["ids"], "declaration": ME}) \
-        == (200, {"decision": "test-depot-8", "texts": ["test-depot-2", "test-depot-3"]})
+    request("POST", "/api/texts", {"text": "six", "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
+    selection = {"filter": shown, "change": found["change"], "unticked": ["test-depot-6"]}
+    status, counted = request("POST", "/api/texts/counts", {"filter": shown, "change": found["change"],
+                                                            "unticked": ["test-depot-6"]})
+    assert counted["statuses"]["under review"] == 2
+    status, started = request("POST", "/api/decisions", {"status": "admitted", "selection": selection,
+                                                         "declaration": ME})
+    assert status in (200, 202) and (started["kind"], started["title"]) == ("write", "decision")
+    job = started
+    while job["state"] in ("queued", "running"):
+        time.sleep(0.05)
+        job = request("GET", f"/api/jobs/{started['id']}")[1]
+    assert (job["state"], job["answer"]) == ("done", {"decision": "test-depot-9", "texts": 2,
+                                                       "left": {"changed since": 1}})
+    assert "selecting the texts" in [one["stage"] for one in job["stages"]]
+    assert wrote(request, "/api/decisions", {"status": "admitted", "selection": selection, "declaration": ME})[0] \
+        == 404  # what still matches came after the page was read
+    assert request("GET", "/api/jobs/nothing")[0] == 404
     assert request("GET", "/api/texts/test-depot-5")[1]["status"] == "under review"
-    assert request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-5", "test-depot-9"],
+    assert request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-5", "test-depot-9"]),
                                               "declaration": ME})[0] == 404  # one is no text: nothing is decided
     assert request("GET", "/api/texts/test-depot-5")[1]["status"] == "under review"
     status, chosen = request("POST", "/api/texts/search", {"filter": {"libraries": ["test-depot-1"]}})
@@ -374,7 +421,7 @@ def test_a_review_gets_every_id_a_filter_matches_and_the_decision_takes_exactly_
 
     status, latest = request("GET", "/api/decisions/latest")
     assert [(one["id"], one["status"], one["texts"]) for one in latest[:2]] == [
-        ("test-depot-8", "admitted", 2), ("test-depot-7", "under review", 1)]
+        ("test-depot-9", "admitted", 2), ("test-depot-8", "under review", 1)]
 
 
 def test_texts_taken_out_of_an_open_library_stay_admitted_and_a_locked_library_refuses_it(web):
@@ -382,23 +429,23 @@ def test_texts_taken_out_of_an_open_library_stay_admitted_and_a_locked_library_r
     for text in ("one", "two", "three"):
         request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "declaration": ME})
     every = ["test-depot-1", "test-depot-2", "test-depot-3"]
-    request("POST", "/api/decisions", {"status": "admitted", "texts": every, "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(every), "declaration": ME})
     request("POST", "/api/libraries", {"name": "open"})
     request("POST", "/api/libraries", {"name": "locked"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"texts": every[:2]})
-    request("POST", "/api/libraries/test-depot-2/texts", {"texts": every})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(every[:2])})
+    request("POST", "/api/libraries/test-depot-2/texts", {"selection": named(every)})
     request("POST", "/api/libraries/test-depot-2/lock", {})
 
-    assert request("POST", "/api/libraries/test-depot-1/taken-out", {"texts": ["test-depot-1", "test-depot-3"]}) == (
-        200, {"taken_out": ["test-depot-1"], "not_held": ["test-depot-3"]})
+    assert wrote(request, "/api/libraries/test-depot-1/taken-out", {"selection": named(["test-depot-1", "test-depot-3"])}) == (
+        200, {"taken_out": 1, "not_held": 1, "left": {}})
     status, held = request("POST", "/api/texts/search", {"filter": {"libraries": ["test-depot-1"]}})
     assert [one["id"] for one in held["rows"]] == ["test-depot-2"]
     assert request("GET", "/api/texts/test-depot-1")[1]["status"] == "admitted"
     change = depot.change()
-    status, refused = request("POST", "/api/libraries/test-depot-2/taken-out", {"texts": ["test-depot-1"]})
+    status, refused = request("POST", "/api/libraries/test-depot-2/taken-out", {"selection": named(["test-depot-1"])})
     assert status == 422 and refused["problems"][0].startswith("Locked:")
     assert depot.change() == change
-    assert request("POST", "/api/libraries/test-depot-9/taken-out", {"texts": ["test-depot-1"]})[0] == 404
+    assert request("POST", "/api/libraries/test-depot-9/taken-out", {"selection": named(["test-depot-1"])})[0] == 404
 
 
 def test_passages_give_the_texts_a_filter_matches_with_their_text_a_page_bounded_by_count_and_characters(web):
@@ -431,15 +478,17 @@ def test_the_review_of_an_admission_gets_the_texts_it_cannot_cover_with_their_re
     request("POST", "/api/licenses", {"id": "CC-BY-NC-4.0", "name": "Non commercial", "text": "text"})
     for text, licenses in (("free", ["CC0-1.0"]), ("held", ["CC0-1.0"]), ("unlicensed", ["CC-BY-NC-4.0"])):
         request("POST", "/api/texts", {"text": text, "licenses": licenses, "declaration": ME})
-    request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-2"], "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-2"]), "declaration": ME})
     request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"texts": ["test-depot-2"]})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-2"])})
     request("POST", "/api/libraries/test-depot-1/lock", {})
 
-    assert request("POST", "/api/texts/blocked", {"texts": ["test-depot-3", "test-depot-2", "test-depot-1"]}) == (200, {
-        "texts": [{"id": "test-depot-3", "reasons": ["no allowed license"]}]})  # a locked library blocks nothing
-    assert request("POST", "/api/texts/blocked", {"texts": ["test-depot-1", "test-depot-9"]})[0] == 404
-    assert request("POST", "/api/texts/blocked", {"texts": []})[0] == 400
+    assert request("POST", "/api/texts/blocked", {"selection": named(["test-depot-3", "test-depot-2", "test-depot-1"])}) == (200, {
+        "rows": [{"id": "test-depot-3", "reasons": ["no allowed license"]}], "next": None})  # a locked library blocks nothing
+    assert request("POST", "/api/texts/blocked", {"selection": {"filter": {}}, "limit": 1})[1]["rows"] == [
+        {"id": "test-depot-3", "reasons": ["no allowed license"]}]
+    assert request("POST", "/api/texts/blocked", {"selection": named([])}) == (200, {"rows": [], "next": None})
+    assert request("POST", "/api/texts/blocked", {"selection": {}})[0] == 400
 
 
 
@@ -450,31 +499,31 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_libr
     for text in ("one", "two"):
         request("POST", "/api/texts", {"text": text, "licenses": ["CC-BY-NC-4.0"], "declaration": ME})
     request("POST", "/api/texts", {"text": "held", "licenses": ["CC0-1.0"], "declaration": ME})
-    request("POST", "/api/decisions", {"status": "refused", "texts": ["test-depot-1"], "declaration": ME})
-    request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-3"], "declaration": ME})
+    request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-1"]), "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-3"]), "declaration": ME})
     request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"texts": ["test-depot-3"]})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-3"])})
     request("POST", "/api/libraries/test-depot-1/lock", {})
 
-    status, changed = request("POST", "/api/texts/licenses", {"texts": ["test-depot-2", "test-depot-1"],
-                                                             "licenses": ["CC0-1.0"], "declaration": ME})
+    status, changed = wrote(request, "/api/texts/licenses", {"selection": named(["test-depot-2", "test-depot-1"]),
+                                                            "licenses": ["CC0-1.0"], "declaration": ME})
 
-    assert (status, changed) == (200, {"decisions": [{"decision": "test-depot-6",
-                                                      "texts": ["test-depot-1", "test-depot-2"]}],
-                                        "skipped": []})
+    assert (status, changed) == (200, {"decisions": [{"decision": "test-depot-6", "texts": 2}], "skipped": 0,
+                                       "left": {}})
     shown = request("GET", "/api/texts/test-depot-1")[1]
     assert shown["status"] == "under review" and shown["text"]["licenses"] == ["CC0-1.0"]
     assert shown["decisions"][-1]["reason"] == "licenses changed from CC-BY-NC-4.0 to CC0-1.0"
-    assert request("POST", "/api/texts/blocked", {"texts": ["test-depot-1", "test-depot-2"]}) == (200, {"texts": []})
-    locked = {"texts": ["test-depot-3"], "licenses": ["CC-BY-NC-4.0"], "declaration": ME}
-    assert request("POST", "/api/texts/licenses", {**locked, "texts": ["test-depot-9"]})[0] == 404
+    assert request("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-depot-2"])}) == (
+        200, {"rows": [], "next": None})
+    locked = {"selection": named(["test-depot-3"]), "licenses": ["CC-BY-NC-4.0"], "declaration": ME}
+    assert request("POST", "/api/texts/licenses", {**locked, "selection": named(["test-depot-9"])})[0] == 404
     assert request("POST", "/api/texts/licenses", {**locked, "licenses": []})[0] == 400
     assert request("POST", "/api/texts/licenses", locked)[0] == 200
     shown = request("GET", "/api/texts/test-depot-3")[1]
-    assert (shown["text"]["licenses"], shown["revisions"]) == (["CC-BY-NC-4.0"], 3)
-    assert shown["pins"] == [{"library": "test-depot-1", "name": "first", "revision": 2}]
+    assert (shown["text"]["licenses"], shown["revisions"]) == (["CC-BY-NC-4.0"], 2)
+    assert shown["pins"] == [{"library": "test-depot-1", "name": "first", "revision": 1}]
     assert request("POST", "/api/libraries/test-depot-1/pins", {}) == (200, {"total": 1, "newer": 1, "rows": [
-        {"id": "test-depot-3", "title": None, "revision": 2, "current": 3}]})
+        {"id": "test-depot-3", "title": None, "revision": 1, "current": 2, "status": "admitted"}]})
 
 def test_a_content_change_from_the_page_of_a_text_takes_a_plain_text_or_an_item_s_content(web):
     request, depot = web
@@ -547,11 +596,11 @@ def test_each_thing_a_page_lists_has_a_view_and_the_details_change_through_the_r
     monkeypatch.delenv("WPT_STORE", raising=False)
     request("POST", "/api/texts", {"text": "The fox.", "licenses": ["CC0-1.0"], "tags": ["en"], "title": "Fox",
                                    "declaration": ME})
-    request("POST", "/api/decisions", {"status": "admitted", "texts": ["test-depot-1"], "reason": "clear",
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]), "reason": "clear",
                                        "declaration": ME})
     request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"texts": ["test-depot-1"]})
-    request("POST", "/api/libraries/test-depot-1/problems", {"problem": "too short", "texts": ["test-depot-1"],
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
+    request("POST", "/api/libraries/test-depot-1/problems", {"problem": "too short", "selection": named(["test-depot-1"]),
                                                             "declaration": ME})
     request("POST", "/api/datasets", {"name": "mix", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}]})
 
@@ -599,7 +648,7 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     assert mine("POST", "/api/libraries", {"name": "mine"}) == (200, {"id": "test-clone-1"})
     change = follower.change()
 
-    status, refused = mine("POST", "/api/decisions", {"status": "refused", "texts": ["test-depot-1", "test-clone-1"],
+    status, refused = mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-1", "test-clone-1"]),
                                                        "declaration": ME})
     assert status == 422 and "test-depot-1" in refused["problems"][0] and "to the upstream" in refused["problems"][0]
     assert mine("POST", "/api/libraries/test-depot-1/name", {"name": "renamed"})[0] == 422
@@ -609,9 +658,9 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     assert mine("GET", "/api/texts/test-clone-1")[1]["upstream"] is False
     assert [(one["id"], one["upstream"]) for one in mine("GET", "/api/libraries")[1]] == [
         ("test-clone-1", False), ("test-depot-1", True)]
-    assert mine("POST", "/api/texts/blocked", {"texts": ["test-depot-1", "test-clone-1"], "status": "refused"}) == (
-        200, {"texts": [{"id": "test-depot-1", "reasons": ["belongs to the upstream"]}]})
-    assert mine("POST", "/api/decisions", {"status": "refused", "texts": ["test-clone-1"], "declaration": ME})[0] == 200
+    assert mine("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-clone-1"]), "status": "refused"}) == (
+        200, {"rows": [{"id": "test-depot-1", "reasons": ["belongs to the upstream"]}], "next": None})
+    assert mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-clone-1"]), "declaration": ME})[0] == 200
     assert request("GET", "/api/texts/test-depot-1")[1]["upstream"] is False  # in the upstream, it is its own
 
 

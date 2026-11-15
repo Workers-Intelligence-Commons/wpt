@@ -12,6 +12,7 @@ export type About = {
   about: { name: string; maintainer: string; takedown_contact: string; upstream: string | null; revision: number };
   confirmation: string;
   requirements: string;
+  sorted: number; // a search in an order other than id or status is given for at most this many matches
 };
 
 // The answer once one came; a failed question is asked again by the next

@@ -36,12 +36,15 @@ A text never changes by itself. A newer version of a work is another
 text, under review. An older one stays where it is until someone refuses
 it or asks for its erasure ([erasure.md](erasure.md)).
 
-Every change of a text makes a new revision of it: a new row under the
-same id, with the next revision number (1, 2, 3...) and the depot's
-change number ("Change numbers", below). Its rows before stay as they
-were, and the highest revision is the current one. A revision holds the
-small fields (licenses, notice, credits, tags, scores, decisions) and the
-number of the content version it reads, never the content itself.
+Every change of a text but a decision on it makes a new revision of it: a
+new row under the same id, with the next revision number (1, 2, 3...) and
+the depot's change number ("Change numbers", below). Its rows before stay
+as they were, and the highest revision is the current one. A revision
+holds the small fields (licenses, notice, credits, tags, scores) and the
+number of the content version it reads, never the content itself. A
+decision on a text is linked to it with the change number it was made at,
+and the current revision stores the status its decisions make, so a
+decision changes that status and makes no revision.
 
 A text's content is stored apart, as content versions numbered 1, 2,
 3..., each with the change number it was made at. A content version never
@@ -272,11 +275,25 @@ A dataset never picks single texts: it takes every text of its libraries
 that its shares pick.
 
 `wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID ...
-[--share TAG=SHARE ...]` makes one.
+[--share TAG=SHARE ...] [--max-tokens N]` makes one. The tokenizer recipe
+is one of the depot's ([tokenizer.md](tokenizer.md)); it may be made after
+the dataset, and a build needs it.
+
+`max_tokens`, optional, is the most tokens the corpus holds: those of its
+plain texts, conversations and tasks together. Conversations and tasks are
+taken first, in the corpus's order: conversations stop at the first
+conversation that would pass what is left of the limit, and tasks at the
+first such task, never scanning on for a smaller one. A conversation counts
+the tokens of its chat template. A task is kept as a JSON line and never
+tokenized, so it counts the tokens of its content written as the JSON text
+of that line. Each share then takes its proportion of what the items left,
+or, without shares, the plain texts take all of it, and stops at its first
+text that would pass that part, in the corpus's order. Without
+`max_tokens`, every conversation and task is taken.
 
 `wpt depot dataset edit NAME`, or "Edit it" on the view of the dataset,
-changes its name, its libraries and its shares as a new revision, its id
-and its tokenizer recipe kept, with the checks of a new one. A library it
+changes its name, its libraries, its shares and its `max_tokens` as a new
+revision, its id and its tokenizer recipe kept, with the checks of a new one. A library it
 read already, named by its depot's address in any form (in a clone, a
 library of the upstream by either depot's address), stays as the
 dataset holds it, its address and its change number included, and its
@@ -297,17 +314,21 @@ shares' tags is left out. Without shares, every text of the libraries is
 taken.
 
 The build brings the shares to their proportions without repeating a text.
-It counts each share's tokens, finds the share that is scarcest relative to
-its proportion, and keeps every text of that share. From each other share it
-takes a seeded random subset of texts, whose tokens match the proportion
-against the scarcest share. A text enters a corpus once at most. The seed
-is part of the dataset, so the same dataset builds the same corpus. The
+Without `max_tokens`, it finds the share with the fewest bytes relative to
+its proportion and keeps every text of that share; each other share stops,
+in the corpus's seeded order, at its first text whose bytes would pass its
+proportion of the scarcest share's bytes. With `max_tokens`, each share
+stops at its part of it. A text enters a corpus once at most. The seed
+comes from the dataset's libraries and shares, so the same dataset builds
+the same corpus, and a change of its name or of `max_tokens` keeps its
+order. The
 corpus's record keeps how many tokens each share holds (`shares_tokens`) and
 how many texts the build left out (`left_out`: texts no share took, texts
-trimmed from a share, items of the kinds that shares do not apply to).
+trimmed from a share, items `max_tokens` left out, items of the kinds that
+are no training data).
 
 A share with no text refuses the build. Shares apply to plain texts only:
-conversations and tasks are not trimmed.
+only `max_tokens` trims conversations and tasks.
 
 ### Remotes
 
@@ -329,10 +350,20 @@ passages it cuts are cut in every revision ([erasure.md](erasure.md)).
 
 `wpt depot build DATASET` builds the dataset's corpus into the store
 (`WPT_STORE`): what training reads. It runs on the machine that holds the
-depot. A rented GPU machine only reads the corpus and trains
-([machines.md](machines.md)). The build needs the lock of the dataset's
-tokenizer recipe at its version and the vocabulary that lock names in the
-store ([tokenizer.md](tokenizer.md)); without them it builds nothing.
+depot, or as a job of `wpt depot web` ([depot-web.md](depot-web.md)). A
+rented GPU machine only reads the corpus and trains
+([machines.md](machines.md)). The build needs the vocabulary of the
+dataset's tokenizer recipe at its version, which the depot holds
+([tokenizer.md](tokenizer.md)); without it the command builds nothing,
+and the web app trains it first.
+
+The build is a stream. Worker processes tokenize the texts, and the build
+takes their results in the corpus's order. It uploads each token file to
+the store as soon as it is full, with the part of the `texts` table that
+lists its texts, and deletes its local copies, so the memory and the local
+disk it takes stay bounded whatever the dataset's size. A build cut short
+goes on from the first text after the last token file uploaded and writes
+the same bytes as a build that never stopped.
 
 The build takes every text of the dataset's libraries, each library at
 the change number the dataset names; a text two libraries hold is taken
@@ -348,15 +379,36 @@ once. It chooses nothing by score. It then keeps:
 Items of other kinds are not training data: the build leaves them out and
 counts them in the record. The texts go in a seeded order drawn from the
 dataset's row, so that any first part of the corpus is drawn from all of
-it. Every size of a model series reads the same corpus, the smaller sizes
+it. The order does not depend on where the depot's file is: a text of the
+dataset's own depot is placed by its id alone, and a text of another depot
+by that depot's name and its id. Every size of a model series reads the same corpus, the smaller sizes
 its first part ([model.md](model.md), "Model series").
+
+A corpus names a depot by what no place of its file changes. The depot
+that holds the dataset is named by its public address, the web address of
+its `wpt depot web` that the setting `WPT_DEPOT_URL` gives, or by its name
+when it has none; a clone names a dataset its upstream owns by the
+upstream's web address. Another local depot is named by the name in its
+own settings, never by its file. The corpus's record, its build's key and
+the erasures it counts, its copy of the dataset's row, its token files,
+its `texts` table and `tasks.jsonl` all carry those names, so the same
+depot state builds the same corpus wherever its files are, and a clone
+builds its upstream's corpus again.
+
+Two depots a corpus reads never carry one name: a build where another
+depot's name is the one the corpus gives the dataset's own depot, or where
+two other depots share a name, is refused. Whatever reads the texts again,
+the text parts sent for download and a build of the same corpus again
+included, finds each other depot's file from the dataset's libraries at
+the revision the corpus took.
 
 A corpus says everything about what it holds, even once the depots it
 read change or vanish. Beside its token files and `tasks.jsonl`, it holds
 these tables:
 
-- `dataset`: the dataset's row, copied, with the time of the build;
-- `texts`: every text it took, with its depot's address, its id there,
+- `dataset`: the dataset's row, copied, each library of another depot named by that depot's name, with the
+  time of the build;
+- `texts`: every text it took, in parts, one for each token file, with its depot's name (above), its id there,
   its kind, its credits, licenses and tags copied, its scores copied with
   the content version each was made from, its notice, and where its
   tokens start (the steps that read conversations and tasks pick them by
@@ -366,8 +418,12 @@ these tables:
   repeat across depots).
 
 Everything goes under `corpora/<dataset name>-<first 8 hex characters of
-the corpus id>/` in the store, with the record, `corpus.json`, written
-last, so a build that fails leaves no corpus. The corpus id covers the
+the build's key>/` in the store, with the record, `corpus.json`, written
+last, so a build that fails leaves no corpus. The build's key covers the
+depot, the dataset's id and row, the vocabulary and the erasures carried
+out on a text the dataset's libraries hold or held, so building a deleted
+corpus again writes into its folder, and an erasure of a text the dataset
+never read changes neither. The corpus id covers the
 dataset's id and its row (without its revision and change), the
 vocabulary and every file's content (of each text: its depot, id, notice,
 where its tokens start and, when it has any, its scores), so building the
@@ -377,9 +433,29 @@ gets a corpus of its own. The record also gives a
 fingerprint of each part a training step reads, `text`, `conversations`
 and `tasks` ([training.md](training.md), "Step results and reuse").
 
-A model recipe's data part names a depot address, a dataset in it, the
-tokenizer recipe and the total tokens ([model.md](model.md), "Model
-recipes"). `wpt train` reads the corpus last built for that depot and
+The store keeps only the latest fresh corpus of each dataset: a new
+corpus deletes the one before once it is whole. A corpus of an older
+revision of the dataset, built again, deletes none of a newer revision,
+and the latest corpus of a dataset is the last built of its newest
+revision. A cap (`WPT_CORPORA_CAP`) bounds the bytes all corpora take
+together, the files of a folder left without a record by a build that
+stopped included. To make room, a build deletes those files first, then
+the corpus downloaded least recently, a file at a time, never one being
+built or downloaded. Before its first upload, a build estimates its whole
+size from its first files, and a corpus bigger than the cap fails then,
+before any other corpus is deleted for it. A build whose uploaded files
+were deleted meanwhile writes no record, and started again it starts over.
+A deleted corpus keeps its record, and building it again from that record
+(its dataset revision and vocabulary) says when an erasure changed its
+id.
+
+An erasure carried out while a corpus is built is checked once the build
+ends: when it reached a text the corpus took, the corpus is written stale
+and deletes no other corpus.
+
+A model recipe's data part names a depot by the name its corpora carry, a
+dataset in it by id or name, and the total tokens ([model.md](model.md),
+"Model recipes"). `wpt train` reads the latest fresh corpus of that
 dataset, or the corpus it is given. A text added to the depot after a
 build reaches training only once the corpus is built again.
 

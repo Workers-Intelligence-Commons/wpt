@@ -1,8 +1,7 @@
 {
   "data": {
-    "depot": "",
-    "dataset": "",
-    "tokenizer": "admitted",
+    "depot": "https://depot.workers-intelligence-commons.org",
+    "dataset": "wic-1",
     "total_tokens": 2925565920
   },
   "model": {

@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from wpt_depot import About, Declaration, Depot, NewText
-from wpt_depot import corpus as corpora
+from wpt_depot import corpora
+from wpt_depot.corpus import build
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
 from wpt.train import main as train
@@ -41,7 +42,7 @@ TINY_DRAFTER = {"epochs": 1, "prompts": 4, "prompt_tokens": 8, "answer_tokens": 
 @pytest.fixture
 def built(tmp_path, monkeypatch):
     """A corpus of a depot's dataset "d": 16 plain texts. The working folder tmp_path is the
-    repository, and the store is WPT_STORE. Gives store, depot (the Depot),
+    repository, the store is WPT_STORE and the depot WPT_DEPOT. Gives store, depot (the Depot),
     corpus_id (the corpus of "d", which the model recipe "d", a tiny model
     trained one step, names), records(command) (the record folders of that
     command's runs, oldest first), notice (the texts' notice),
@@ -72,25 +73,27 @@ def built(tmp_path, monkeypatch):
         library = depot.new_library(name)
         depot.put(library, "true")
         depot.new_dataset(name, TOKENIZER, [(None, library)], [(TAG, 1.0)])
-        return corpora.build(depot, name, store, tokenizer, 1, log=lambda *_: None)["id"]
+        if not depot.tokenizers():  # the depot's tokenizer recipe, trained on the first dataset
+            recipe = depot.new_tokenizer(TOKENIZER, None, name, 10**9, VOCAB_SIZE)
+            depot.add_vocabulary(recipe, 1, tokenizer.to_bytes(), [], None)
+        return build(depot, name, store, tokenizer, 1, log=lambda *_: None)["id"]
 
     def recipe(name="d", model=None, training=None, drafter=None, steps=(), dataset="d"):
         text = {**ONE_STEP, **(training or {})}
         named = [one["id"] for one in depot.sql(f"SELECT id FROM datasets WHERE name = '{dataset}'")]
-        found = corpora.latest(store, depot.address, named[0]) if named else None  # the whole corpus, once built
+        found = corpora.latest(store, depot.name(), named[0]) if named else None  # the whole corpus, once built
         total = found["total_tokens"] if found else 3000
         read_text = {"step": "read-text", "optimizer": {"name": text["optimizer"], "settings": text["settings"]},
                      "settings": {key: text[key] for key in ("stages", "eval_every", "eval_batches")}}
-        return write("model", name, {"data": {"depot": depot.address, "dataset": dataset, "tokenizer": TOKENIZER,
-                                              "total_tokens": total},
+        return write("model", name, {"data": {"depot": depot.name(), "dataset": dataset, "total_tokens": total},
                                      "model": {**TINY_MODEL, **(model or {})}, "seed": text["seed"],
                                      "steps": [read_text, *steps], "drafter": {**TINY_DRAFTER, **(drafter or {})}})
 
-    write("tokenizer", TOKENIZER, {"version": 1, "depot": depot.address, "dataset": "d", "sample_bytes": 10**9,
-                                   "vocab_size": VOCAB_SIZE})
     corpus_id = dataset("d", [NewText(text=story, notice=NOTICE) for story in stories])
     recipe()
     monkeypatch.setenv("WPT_STORE", store.root.as_uri())  # where each command run also writes its record
+    monkeypatch.setenv("WPT_DEPOT", depot.address)  # the depot the recipes name (by its name: it has no public address)
+    monkeypatch.delenv("WPT_DEPOT_URL", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)  # no live backend, whatever this machine sets
     monkeypatch.setenv("WPT_MAX_RESTARTS", "0")  # wpt train runs in the test's own process, unless a test says
     monkeypatch.chdir(tmp_path)

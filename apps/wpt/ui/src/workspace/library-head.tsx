@@ -1,5 +1,5 @@
 // The head of the workspace when one library is open: its name, whether it
-// is open or locked, how many texts it holds, the library it was forked
+// is open or locked, how many texts it holds (asked for with "More info"), the library it was forked
 // from and the datasets that read it, its reported problems, and its
 // actions: put texts in it (the admitted texts it does not hold, opened as
 // the filter to tick from), report a problem with it as a whole, fork it,
@@ -15,7 +15,7 @@ import { post, type Answer } from "../api";
 import { ReportForm } from "../decide-forms";
 import { EVERY, toQuery } from "../filter";
 import { ForkForm, Pinned, RenameForm } from "../pages/libraries";
-import { LibraryLink, Outcome, plural, Problems, readers, useDatasets, type Library } from "../parts";
+import { LibraryLink, LibrarySize, Outcome, plural, Problems, readers, useDatasets, type Library } from "../parts";
 import { href } from "../route";
 
 type Act = "report" | "fork" | "lock" | "rename" | "pins";
@@ -28,7 +28,7 @@ export function LibraryHead({ library, libraries, onChanged }: { library: Librar
   const parent = libraries.find((l) => l.id === library.forked_from);
   const reading = readers(datasets?.ok ? datasets.data : [], library.id);
   const open = !library.locked_at;
-  const theirs = library.upstream;
+  const theirs = Boolean(library.upstream);
   const finished = (a: Answer<unknown>, words: string) => {
     setDone(a);
     setSaid(words);
@@ -45,7 +45,7 @@ export function LibraryHead({ library, libraries, onChanged }: { library: Librar
           <span>{open ? "open" : `locked ${library.locked_at!.replace("T", " ").slice(0, 16)} UTC`}</span>
           <span className="ledger">{library.id}</span>
           {theirs && <span className="aside">the upstream's</span>}
-          <span>{plural(library.texts, "text")}</span>
+          <LibrarySize id={library.id} name={library.name} />
           {parent && <span>forked from <LibraryLink library={parent} /></span>}
           <span>{reading.length ? <>read by {reading.map((d, i) => <span key={d.id}>{i > 0 && ", "}<a href={href(["datasets", d.id])}>{d.name}</a></span>)}</> : <span className="aside">no dataset reads it</span>}</span>
         </div>
@@ -76,7 +76,7 @@ export function LibraryHead({ library, libraries, onChanged }: { library: Librar
         </details>
       )}
       <Dialog open={acting === "report"} onClose={() => setActing(null)} title={`Report a problem with ${library.name}`}>
-        {acting === "report" && <ReportForm library={library} chosen={null} onDone={finished} />}
+        {acting === "report" && <ReportForm library={library} selection={null} onDone={finished} />}
         {acting === "report" && done && !done.ok && <Problems problems={done.problems} />}
       </Dialog>
       <Dialog open={acting === "fork"} onClose={() => setActing(null)} title={`Fork ${library.name}`}>
@@ -88,7 +88,7 @@ export function LibraryHead({ library, libraries, onChanged }: { library: Librar
         {acting === "rename" && done && !done.ok && <Problems problems={done.problems} />}
       </Dialog>
       <Dialog open={acting === "lock"} onClose={() => setActing(null)} title={`Lock ${library.name} for good`}>
-        <p>Locking {library.name} (<span className="ledger">{library.id}</span>), which holds {plural(library.texts, "text")}, cannot be undone: it pins the current revision of each, reads those for good, and no text joins or leaves it again. A later decision or edit of one of its texts makes a new revision it does not read.</p>
+        <p>Locking {library.name} (<span className="ledger">{library.id}</span>) cannot be undone: it pins the current revision of each, reads those for good, and no text joins or leaves it again. A later decision or edit of one of its texts makes a new revision it does not read.</p>
         <Button variant="primary" onClick={lock}>Lock it for good</Button>
         {acting === "lock" && done && !done.ok && <Problems problems={done.problems} />}
       </Dialog>

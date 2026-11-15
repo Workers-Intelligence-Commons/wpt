@@ -21,7 +21,7 @@ def test_the_store_lists_its_corpora_models_and_runs(built, tmp_path, capsys):
 
     assert main(["list"]) == 0
     listed = capsys.readouterr().out
-    assert f"{built.corpus_id}: dataset d of {built.depot.address}" in listed and "  fox-1" in listed
+    assert f"{built.corpus_id}: dataset d of {built.depot.name()}" in listed and "  fox-1" in listed
 
     assert main(["runs"]) == 0
     assert "wpt train" in capsys.readouterr().out

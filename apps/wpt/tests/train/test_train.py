@@ -24,7 +24,7 @@ from wpt_utils.device import select_device
 from wpt.train import StoreCheckpoint, main
 from wpt_training import load_state
 from wpt_utils.lines import bare
-from wpt_depot import corpus as corpora
+from wpt_depot import corpora
 from wpt_store.shards import shard_file
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -61,7 +61,7 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     tokenizer = Tokenizer.from_bytes(load_tokenizer(tmp_path / "model"))
     assert model.config.vocab_size == tokenizer.vocab_size
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["corpus"] == {"id": corpus_id, "depot": built.depot.address, "dataset": "d"}
+    assert provenance["corpus"] == {"id": corpus_id, "depot": built.depot.name(), "dataset": "d"}
     assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
     assert provenance["learned"] == {"text": record["total_tokens"]}  # the recipe trains on the whole corpus
     assert provenance["recipe_name"] == "three"
@@ -463,11 +463,11 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
     texts = {(one["depot"], one["id"]): one
              for one in corpora.read_table(built.store, corpora.find(built.store, built.corpus_id), "texts").to_pylist()}
     assert len(learned) == len(texts) == 16  # the step read every token of the plain texts
-    assert all(line.startswith(f"{built.depot.address} ") and "; MIT; notice " in line for line in learned)
+    assert all(line.startswith(f"{built.depot.name()} ") and "; MIT; notice " in line for line in learned)
     assert f"\n{built.notice}\n" in credits and "MIT (MIT License)\nCopyright (c) 2026 Ada Writer" in credits
     notice = (folder / "NOTICE").read_text()
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
-    assert f"From corpus {built.corpus_id}, built from dataset d of the depot {built.depot.address}" in notice
+    assert f"From corpus {built.corpus_id}, built from dataset d of the depot {built.depot.name()}" in notice
     assert credits.rstrip("\n") in notice
     assert notice.endswith((ROOT / "OUTPUT-NOTICE").read_text())
     assert (folder / "LICENSE").read_text() == (ROOT / "LICENSE").read_text()
@@ -766,7 +766,7 @@ def test_a_store_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_on
     def failing(store, depot, dataset):
         raise StoreError("the bucket does not answer")
 
-    monkeypatch.setattr(corpora, "latest", failing)
+    monkeypatch.setattr(corpora, "latest_fresh", failing)
     with pytest.raises(SystemExit) as refused:
         main(["d"])
     assert refused.value.code == 2 and bare(capsys.readouterr().err) == "StoreError: the bucket does not answer\n"
@@ -790,10 +790,10 @@ def test_wpt_train_without_a_corpus_id_reads_the_one_last_built_for_the_recipe_s
 
 def test_a_corpus_is_found_by_its_dataset_s_id_through_a_rename_and_an_older_revision_is_used_with_a_warning(built):
     # a renamed dataset keeps its corpora, and a newer revision of it than its corpus trains on that corpus, said
-    from wpt.train import InputError, find_corpus, load_corpus, load_recipe
+    from wpt.train import InputError, find_corpus, load_corpus, load_data
     later = built.dataset("later")
     dataset = built.depot.dataset("later")
-    renamed = load_recipe(built.recipe("three", training=one_stage(3), dataset="renamed"))
+    renamed = load_data(built.recipe("three", training=one_stage(3), dataset="renamed"))
     built.depot.edit_dataset(dataset["id"], "renamed", [(None, one["library"]) for one in dataset["libraries"]],
                              [(one["tag"], one["share"]) for one in dataset["shares"]])
     said = []
@@ -805,10 +805,45 @@ def test_a_corpus_is_found_by_its_dataset_s_id_through_a_rename_and_an_older_rev
                                 f"({dataset['id']}), whose current revision is 2: this run trains on the older "
                                 "revision; build the dataset again with `wpt depot build renamed` to train on the "
                                 "current one")]
-    load_corpus(built.store, record, renamed)  # built under its old name, it is still the recipe's dataset
+    load_corpus(built.store, record, {"data": renamed})  # built under its old name, it is still the recipe's dataset
     built.depot.new_dataset("later", "classics", [(None, dataset["libraries"][0]["library"])])
-    with pytest.raises(InputError, match="no corpus of dataset 'later'"):  # a new dataset of the old name has none
-        find_corpus(built.store, None, load_recipe(built.recipe("four", training=one_stage(3), dataset="later")))
+    with pytest.raises(InputError, match="no fresh corpus of dataset 'later'"):  # a new dataset of the old name has none
+        find_corpus(built.store, None, load_data(built.recipe("four", training=one_stage(3), dataset="later")))
+
+
+def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_corpus_through_the_depot_s_web_app(
+        built, tmp_path, monkeypatch):
+    # a machine without the depot's file reads the dataset through its web app, and the corpus built with that
+    # public address is the recipe's
+    from wpt.depot.jobs import Jobs
+    from wpt.depot.web.routes import STATUSES, routes
+    from wpt.depot.web.server import make_server
+    from wpt.train import find_corpus, load_corpus
+    from wpt_depot.corpus import build
+    from wpt_depot.settings import URL_SETTING
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "index.html").write_text("<p>interface</p>")
+    jobs = Jobs(built.depot.address, STATUSES)
+    server = make_server(routes(built.depot, jobs), tmp_path / "static")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    address = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        monkeypatch.setenv(URL_SETTING, address)
+        row = built.depot.dataset("d")
+        recipe = built.depot.tokenizer(row["tokenizer"])
+        vocabulary = Tokenizer.from_bytes(built.depot.vocabulary(recipe["id"], 1)["merges"].encode("utf-8"))
+        public = build(built.depot, "d", built.store, vocabulary, 1, url=address, log=lambda *_: None)
+        monkeypatch.delenv("WPT_DEPOT")
+        monkeypatch.delenv(URL_SETTING)
+        data = {"depot": address, "dataset": row["id"], "total_tokens": 1}
+
+        record = find_corpus(built.store, None, data)
+
+        assert record["id"] == public["id"] and record["depot"] == address
+        load_corpus(built.store, record, {"data": data})
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_a_stopped_run_saves_its_step_and_continues_on_another_machine(built, tmp_path, monkeypatch):

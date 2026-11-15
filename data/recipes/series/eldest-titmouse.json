@@ -1,8 +1,7 @@
 {
   "data": {
-    "depot": "",
-    "dataset": "",
-    "tokenizer": "admitted"
+    "depot": "https://depot.workers-intelligence-commons.org",
+    "dataset": "wic-1"
   },
   "reference": {
     "window_layers": 4,

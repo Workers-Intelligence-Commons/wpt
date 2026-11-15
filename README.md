@@ -22,7 +22,7 @@ admit or refuse it, the libraries that group admitted texts, and the
 datasets that say what to train on (`wpt depot`). `wpt depot build DATASET`
 builds a dataset into a corpus in a store you control (a folder or an S3
 bucket): the token files, with copies of every text's credits, licenses and
-notices. A model recipe names a depot address and a dataset in it, and
+notices. A model recipe names a depot by its public address and a dataset in it, and
 `wpt train` reads that dataset's corpus from the store. A depot can follow
 another and pull its updates, the way a Git clone follows its remote.
 WPT hosts no data.
@@ -57,6 +57,7 @@ echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where corpora, models and r
 echo "WPT_DEPOT=$HOME/wpt-depot.sqlite" >> .env    # the depot the wpt depot commands work on
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
+uv run wpt depot tokenizer train RECIPE            # the vocabulary of the dataset's tokenizer recipe, into the depot
 uv run wpt depot build DATASET                     # the corpus of the recipe's dataset, into the store; prints its id
 scripts/detach.sh uv run wpt train classics-test --stream --out runs/first
 uv run wpt eval runs/first                         # the tests, into the model card
@@ -69,8 +70,8 @@ The store holds plain named things: `corpora/`, `models/` and `runs/`
 (`wpt store list` lists the corpora and models).
 
 `classics-test` is a small model recipe, enough to see every step work on
-one machine; its depot address and dataset name are for a person to fill
-in. A model recipe
+one machine, on the dataset `test1` (id `wic-1`) of the public depot
+https://depot.workers-intelligence-commons.org. A model recipe
 (`data/recipes/models/`) holds everything that changes the model: its
 data, architecture and training steps
 ([model.md](docs/model.md)); the command-line options only say how the

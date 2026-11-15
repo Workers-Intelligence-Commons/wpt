@@ -11,19 +11,18 @@
   },
   "properties": {
     "data": {
-      "description": "what the model trains on: a dataset of a depot, whose corpus `wpt depot build` makes; recipes with the same data share one corpus",
+      "description": "what the model trains on: a dataset of a depot, whose corpus `wpt depot build` makes with the vocabulary of the dataset's tokenizer recipe; recipes with the same data share one corpus",
       "type": "object",
       "additionalProperties": false,
-      "required": ["depot", "dataset", "tokenizer", "total_tokens"],
+      "required": ["depot", "dataset", "total_tokens"],
       "properties": {
-        "depot": {"type": "string", "description": "the depot's address: a folder or a bucket; empty until a person names it, and the check names each recipe to fill in"},
-        "dataset": {"type": "string", "description": "the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"},
-        "tokenizer": {"$ref": "#/$defs/name", "description": "a file name in data/recipes/tokenizers/, without .json"},
+        "depot": {"type": "string", "description": "the depot's public address, the name its corpora record for it (wpt_depot.corpus.depot_name): the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"},
+        "dataset": {"type": "string", "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"},
         "total_tokens": {"type": "integer", "minimum": 1}
       }
     },
     "model": {
-      "description": "the architecture's numbers (docs/model.md; wpt_model.ModelConfig without vocab_size, which the tokenizer gives, and block_size, the last window length of the steps' text windows)",
+      "description": "the architecture's numbers (docs/model.md; wpt_model.ModelConfig without vocab_size, which the corpus's vocabulary gives, and block_size, the last window length of the steps' text windows)",
       "type": "object",
       "additionalProperties": false,
       "required": ["window_layers", "sparse_groups", "sparse_layers", "d_model", "attention_heads", "attention_head_dim",

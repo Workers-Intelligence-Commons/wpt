@@ -34,8 +34,7 @@ says exactly what a replay guarantees.
 
 Each command also records each step that cannot be undone just before it
 (such as `store.model_kept`, `training.checkpoint_saved`,
-`training.checkpoint_deleted`, `model.folder_replaced`, `eval.file_written`,
-`tokenizer.lock`). A result the store keeps in `cache/`, which can be
+`training.checkpoint_deleted`, `model.folder_replaced`, `eval.file_written`). A result the store keeps in `cache/`, which can be
 computed again (a step's result),
 is the event `store.result_set` (`stage`, `fingerprint`, `sha256`), which goes
 with the next group of lines instead of being sent first: a crash can leave
@@ -171,7 +170,7 @@ other kind of write to a file, whichever process made it.
   is stored twice. Before a step that
   cannot be undone (a model folder renamed into place, an evaluation's
   result file or model card written, a checkpoint saved in or deleted from the
-  store, a tokenizer's lock file written, a model kept in the store), the command
+  store, a model kept in the store), the command
   records it as an event, sends the lines it holds and waits for
   the store's answer: a refused group stops it before that step. The one
   exception is a checkpoint saved once the record broke (below).

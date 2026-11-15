@@ -18,12 +18,15 @@ output to `runs/logs/<date-time>.log` and print how to follow and stop it.
 of that size; see [model.md](model.md), "Model recipes") and the id of a
 corpus in the store, or a start of it, and never builds: `wpt depot build`
 builds the corpus of the recipe's dataset, on the machine that holds the
-depot. Without an id, it reads the corpus last built for the recipe's depot
-and dataset, and with none it is refused. To find that corpus, it opens the
+depot. Without an id, it reads the latest fresh corpus of the recipe's
+dataset, found through the depot, and with none it is refused. To find that corpus, it opens the
 depot to read the dataset's id and current revision, so without an id
 (`WPT_CORPUS` or the corpus option) the depot must be readable where
-training runs. A corpus of another depot,
-dataset or tokenizer recipe than the recipe names is refused. Everything that changes the
+training runs: from its file, when `WPT_DEPOT` names a depot the recipe's
+depot names (its public address, `WPT_DEPOT_URL`, or its name), else
+through its web app, when the recipe names it by a web address. A corpus of another depot or
+dataset than the recipe names is refused. The vocabulary is the corpus's, so
+a size of a model series is derived for the vocabulary the corpus holds. Everything that changes the
 resulting model comes from the recipe: the architecture's numbers, the
 seed, the steps ("Steps", below) with their settings, and the drafter. The
 command-line options say only how the hardware runs it; each also comes

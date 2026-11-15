@@ -18,16 +18,32 @@ part is a row of parts, its text stored once for its text, compressed with
 zstd, keyed by the text's id and the part's hash, with the change number
 that first stored it (wpt_depot.parts says where a content is cut). Each
 revision of a text holds only the small fields and the number of the
-content version it reads (content_version). Which texts a library holds is
+content version it reads (content_version) and, on the current revision,
+the status its decisions make (wpt_depot.policy), kept by every write. The
+decisions on a text are rows of text_decisions, one for each decision and
+text with the change the decision was made at, and the texts view gives a
+text's decisions as a list read from text_decisions (decision_list). The
+column decisions of texts_revisions is unused, kept because removing it
+rewrites the whole table: every revision the current format writes holds '[]'
+there, and a past revision upgraded from an older format keeps the list it
+held. The table counts holds how
+many current texts have each status, tag, license, library and decision
+(wpt_depot.counts). Which texts a library holds is
 memberships: the change a text joined at and the change it left at (null
 while it is in). A locked library also has pins: the exact revision of each
 text it locked, with the change that locked it. A decision and a notice
-record the change that wrote them. numbers holds, for each kind of id, the
+record the change that wrote them. A tokenizer recipe is revised like the
+other rows (tokenizers_revisions), and its version rises only when what
+trains its vocabulary changes. vocabularies holds at most one vocabulary for
+each version of a recipe, its merges kept as text, with the change that
+wrote it; vocabulary_texts lists, by position, every text it trained on,
+by its depot ('' for the depot that holds the recipe, else that depot's
+web address, or the name of another local depot its dataset reads) and id. numbers holds, for each kind of id, the
 last number of the depot's own ids, so a number is never given twice, even
 once an erasure removed its row.
 
-A list is JSON text: a text's licenses, authors, tags, decisions (ids, in
-order) and scores, a content version's parts, a library's problems, an
+A list is JSON text: a text's licenses, authors, tags and scores, the
+decisions (ids, in order) the texts view gives, a content version's parts, a library's problems, an
 erasure request's decisions, needles and erased passages, a dataset's
 libraries and shares. A list of names is a JSON array of strings, so a tag
 test is `EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'book')`; a
@@ -42,7 +58,9 @@ Every table has a declared primary key (KEYS): the sessions that record
 each change (wpt_depot.database) need one to name a row. The index
 texts_order holds the current texts in the numeric order of their ids
 (ids.order_sql), so a page of texts in that order, the first or a far one,
-reads only its own rows.
+reads only its own rows. The index texts_status holds them by status, then
+in that order, so a page of the texts of one status reads only its own
+rows. No index serves the other orders.
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -71,7 +89,7 @@ Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 
 from . import ids
 
-FORMAT = 5  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 6  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -90,7 +108,8 @@ TABLES = {
         made_at TEXT NOT NULL, reason TEXT""",
     "texts_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, licenses TEXT NOT NULL, notice TEXT, title TEXT, authors TEXT, tags TEXT NOT NULL,
-        address TEXT, decisions TEXT NOT NULL, content_version INTEGER NOT NULL, scores TEXT""",
+        address TEXT, decisions TEXT NOT NULL, content_version INTEGER NOT NULL, scores TEXT, status TEXT""",
+    "text_decisions": "text TEXT NOT NULL, decision TEXT NOT NULL, change INTEGER NOT NULL",
     "content_lists": """id TEXT NOT NULL, version INTEGER NOT NULL, change INTEGER NOT NULL, kind TEXT,
         parts TEXT NOT NULL, length INTEGER NOT NULL, bytes INTEGER NOT NULL""",
     "parts": "id TEXT NOT NULL, hash BLOB NOT NULL, change INTEGER NOT NULL, value BLOB NOT NULL",
@@ -101,28 +120,44 @@ TABLES = {
     "erasures_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, reason TEXT NOT NULL, decisions TEXT NOT NULL, needles TEXT NOT NULL, erased TEXT""",
     "datasets_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
-        latest INTEGER NOT NULL, name TEXT NOT NULL, tokenizer TEXT NOT NULL, libraries TEXT NOT NULL, shares TEXT""",
+        latest INTEGER NOT NULL, name TEXT NOT NULL, tokenizer TEXT NOT NULL, libraries TEXT NOT NULL, shares TEXT,
+        max_tokens INTEGER""",
+    "tokenizers_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
+        latest INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL, depot TEXT, dataset TEXT NOT NULL,
+        sample_bytes INTEGER NOT NULL, vocab_size INTEGER NOT NULL, note TEXT""",
+    "vocabularies": """recipe TEXT NOT NULL, version INTEGER NOT NULL, change INTEGER NOT NULL, sha256 TEXT NOT NULL,
+        merges TEXT NOT NULL, texts INTEGER NOT NULL, bytes INTEGER, made_at TEXT NOT NULL""",
+    "vocabulary_texts": """recipe TEXT NOT NULL, version INTEGER NOT NULL, position INTEGER NOT NULL,
+        depot TEXT NOT NULL, text TEXT NOT NULL, change INTEGER NOT NULL""",
     "pulls": "depot TEXT NOT NULL, change INTEGER NOT NULL, upstream TEXT NOT NULL, upstream_change INTEGER NOT NULL",
+    "counts": "facet TEXT NOT NULL, name TEXT NOT NULL, texts INTEGER NOT NULL",
 }
 KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name",), "licenses": ("id",),
         "notices": ("id",), "kinds": ("id",), "decisions": ("id",), "texts_revisions": ("id", "revision"),
         "content_lists": ("id", "version"), "parts": ("id", "hash"), "libraries_revisions": ("id", "revision"),
         "memberships": ("library", "text", "joined_change"), "pins": ("library", "text"),
         "erasures_revisions": ("id", "revision"), "datasets_revisions": ("id", "revision"),
-        "pulls": ("depot", "change")}
+        "pulls": ("depot", "change"), "text_decisions": ("text", "decision"), "counts": ("facet", "name"),
+        "tokenizers_revisions": ("id", "revision"), "vocabularies": ("recipe", "version"),
+        "vocabulary_texts": ("recipe", "version", "position")}
+# the tables stored in the order of their key alone (SQLite's WITHOUT ROWID): small rows read by their key
+WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts"})
 INDEXES = (
     "CREATE UNIQUE INDEX texts_latest ON texts_revisions (id) WHERE latest",
     f"CREATE INDEX texts_order ON texts_revisions ({ids.order_sql()}) WHERE latest",
+    f"CREATE INDEX texts_status ON texts_revisions (status, {ids.order_sql()}) WHERE latest",
     "CREATE UNIQUE INDEX libraries_latest ON libraries_revisions (id) WHERE latest",
     "CREATE UNIQUE INDEX erasures_latest ON erasures_revisions (id) WHERE latest",
     "CREATE UNIQUE INDEX datasets_latest ON datasets_revisions (id) WHERE latest",
+    "CREATE UNIQUE INDEX tokenizers_latest ON tokenizers_revisions (id) WHERE latest",
     "CREATE INDEX memberships_held ON memberships (text) WHERE left_change IS NULL",
     "CREATE INDEX pins_text ON pins (text)",
     "CREATE INDEX texts_change ON texts_revisions (change)",
     "CREATE INDEX notices_text ON notices (text)",
 )
 # the tables whose rows are revisions of an id, with the flag latest; <name> is the view of their current rows
-REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "datasets_revisions")
+REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "datasets_revisions",
+           "tokenizers_revisions")
 # the columns that hold JSON text, by name, in any table or view
 JSON_COLUMNS = frozenset({"licenses", "authors", "tags", "decisions", "scores", "libraries", "parts", "problems",
                           "needles", "erased", "shares"})
@@ -130,8 +165,23 @@ JSON_COLUMNS = frozenset({"licenses", "authors", "tags", "decisions", "scores", 
 
 def ddl() -> list[str]:
     """The statements that make every table, with its key, and every index."""
-    return [f"CREATE TABLE {name} ({columns}, PRIMARY KEY ({', '.join(KEYS[name])}))"
+    return [f"CREATE TABLE {name} ({columns}, PRIMARY KEY ({', '.join(KEYS[name])})){table_options(name)}"
             for name, columns in TABLES.items()] + list(INDEXES)
+
+
+def table_options(name: str) -> str:
+    """What follows the columns of the table's statement: WITHOUT ROWID for those of WITHOUT_ROWID."""
+    return " WITHOUT ROWID" if name in WITHOUT_ROWID else ""
+
+
+def decision_list(text: str, bound: str | None = None) -> str:
+    """The ids of the decisions on the text whose id is the SQL expression
+    text, as a JSON array in the order they were made (the numeric order of
+    their ids, wpt_depot.ids): its rows of text_decisions, those made at a
+    change number up to the SQL expression bound when it is given."""
+    within = "" if bound is None else f" AND l.change <= {bound}"
+    return (f"(SELECT json_group_array(l.decision ORDER BY {ids.order_sql('l.decision')}) FROM text_decisions l "
+            f"WHERE l.text = {text}{within})")
 
 
 # a content version's whole text: its parts joined in order, refused past SQL_STRING bytes
@@ -140,10 +190,11 @@ JOINED = (f"(CASE WHEN c.bytes > {SQL_STRING} THEN content_too_big(c.id, c.versi
           "JOIN parts p ON p.id = c.id AND p.hash = unhex(j.value ->> 'hash')), '') END)")
 TEXT_COLUMNS = ("t.id, t.revision, t.change, CASE WHEN c.kind IS NULL THEN {joined} END AS text, c.kind, "
                 "CASE WHEN c.kind IS NOT NULL THEN {joined} END AS content, t.content_version, c.length, t.licenses, "
-                "t.notice, t.title, t.authors, t.tags, t.address, t.decisions, t.scores").format(joined=JOINED)
+                "t.notice, t.title, t.authors, t.tags, t.address, {decisions} AS decisions, t.scores, t.status"
+                ).format(joined=JOINED, decisions=decision_list("t.id"))
 # a text at one revision with the list of parts of the version it reads and its bytes, never its text
 LISTED_COLUMNS = ("t.id, t.revision, t.change, c.kind, t.content_version, c.length, t.licenses, t.notice, t.title, "
-                  "t.authors, t.tags, t.address, t.decisions, t.scores, c.parts, c.bytes")
+                  "t.authors, t.tags, t.address, t.scores, c.parts, c.bytes")
 # how a revision of texts (t) meets the content version it reads (c)
 CONTENT_JOIN = "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version"
 # the libraries holding the text t now, as a JSON array in the order of their ids
@@ -159,6 +210,8 @@ VIEWS = {
                   "WHERE latest"),
     "erasures": ("SELECT id, revision, change, reason, decisions, needles, erased FROM erasures_revisions "
                  "WHERE latest"),
-    "datasets": ("SELECT id, revision, change, name, tokenizer, libraries, shares FROM datasets_revisions "
+    "datasets": ("SELECT id, revision, change, name, tokenizer, libraries, shares, max_tokens FROM datasets_revisions "
                  "WHERE latest"),
+    "tokenizers": ("SELECT id, revision, change, name, version, depot, dataset, sample_bytes, vocab_size, note "
+                   "FROM tokenizers_revisions WHERE latest"),
 }

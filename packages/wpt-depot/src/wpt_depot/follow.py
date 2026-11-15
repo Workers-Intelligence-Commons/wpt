@@ -70,12 +70,12 @@ import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import ids, policy
+from . import counts, ids, policy
 from .database import Database, now
 from .depot import About, Depot, _drop_unlisted, _json, _remove_texts, location
 from .errors import BadQuery, DepotExists, NoUpstream, NotFound, OtherFormat, Refused, UpstreamUnreachable
 from .parts import Parted
-from .schema import FORMAT, KEYS, REVISED
+from .schema import ADMITTED, FORMAT, KEYS, REVISED
 
 PAGE_ROWS = 2000  # rows in one page at most
 PAGE_BYTES = 16 << 20  # bytes of rows in one page, about
@@ -89,12 +89,17 @@ WHOLE = ("licenses", "kinds", "pulls")  # the tables that travel whole
 _CHANGED = "t.change > {s} AND t.change <= {u}"
 FOLLOWED = {
     "notices": ("id", _CHANGED), "decisions": ("id", _CHANGED), "content_lists": ("id", _CHANGED),
-    "texts_revisions": ("id", _CHANGED), "libraries_revisions": ("id", _CHANGED),
+    "texts_revisions": ("id", _CHANGED), "text_decisions": ("decision", _CHANGED), "libraries_revisions": ("id", _CHANGED),
     "memberships": ("library", "((t.joined_change > {s} AND t.joined_change <= {u}) "
                                "OR (t.left_change > {s} AND t.left_change <= {u}))"),
     "pins": ("library", _CHANGED), "erasures_revisions": ("id", _CHANGED), "datasets_revisions": ("id", _CHANGED),
+    "tokenizers_revisions": ("id", _CHANGED), "vocabularies": ("recipe", _CHANGED),
+    "vocabulary_texts": ("recipe", _CHANGED),
 }
 TABLES = (*WHOLE, *FOLLOWED)
+# the tables whose rows change what a text adds to the depot's counts (wpt_depot.counts), with the column that names
+# the text
+COUNTED = {"texts_revisions": "id", "text_decisions": "text", "memberships": "text"}
 CLONING, PROGRESS = ".cloning", ".cloning.json"
 
 
@@ -301,6 +306,9 @@ def clone(address: str, to: str, about: About) -> Depot:
         for table in REVISED:
             con.execute(f"UPDATE {table} SET latest = (revision = (SELECT max(r.revision) FROM {table} r "
                         f"WHERE r.id = {table}.id))")
+        con.execute(f"UPDATE texts_revisions SET status = {policy.linked_status_sql('texts_revisions.id')} "
+                    "WHERE latest")
+        counts.recount(con)
         number = _highest(con) + 1
         con.execute("INSERT INTO changes (id, kind, made_at) VALUES (?, 'clone', ?)", (number, now()))
         con.execute("INSERT OR REPLACE INTO pulls (depot, change, upstream, upstream_change) VALUES (?, ?, ?, ?)",
@@ -354,22 +362,22 @@ def _pull(depot: Depot, upstream: Upstream) -> list[str]:
     ranges = {owner: [held.get(owner, 0), upto] for owner, upto in top["bounds"].items()}
     before = _carried_out(depot)
     with depot.db.write("pull", max(top["bounds"].values(), default=0)) as (con, number):
-        touched = set()
+        tracked = _Tracked(con)
         for table in TABLES:
             after = None
             while True:
                 found, after = upstream.page(table, None if table in WHOLE else ranges, after)
+                if table in COUNTED:
+                    tracked.add({one[COUNTED[table]] for one in found})
                 _put(con, table, found)
                 if table == "content_lists":
                     _bring_parts(con, upstream, found)
-                if table == "texts_revisions":
-                    touched.update(one["id"] for one in found)
                 if after is None:
                     break
         brought = sorted(_carried_out(depot) - before)
         for erasure in brought:
-            _carry_out(con, depot, upstream, erasure)
-        _leave(con, depot, sorted(touched), number)
+            _carry_out(con, depot, upstream, erasure, tracked)
+        tracked.settle(depot, number)
         con.execute("INSERT INTO pulls (depot, change, upstream, upstream_change) VALUES (?, ?, ?, ?)",
                     (name, number, top["name"], top["change"]))
         moved = upstream.head()
@@ -451,12 +459,13 @@ def _carried_out(depot: Depot) -> set[str]:
     return {one for (one,) in depot.db.reader().execute("SELECT id FROM erasures WHERE erased IS NOT NULL")}
 
 
-def _carry_out(con, depot: Depot, upstream: Upstream, erasure: str):
+def _carry_out(con, depot: Depot, upstream: Upstream, erasure: str, tracked: "_Tracked"):
     """Carry out here an erasure the upstream carried out: the texts it
     removed whole go, and the texts it cut are read again."""
     needles = json.loads(con.execute("SELECT needles FROM erasures WHERE id = ?", (erasure,)).fetchall()[0][0])
     removed = sorted({one["text"] for one in needles if one["start"] is None and one["field"] is None})
     cut = sorted({one["text"] for one in needles} - set(removed))
+    tracked.add(removed)
     _remove_texts(con, removed)
     if cut:
         con.execute("DELETE FROM content_lists WHERE id IN (SELECT value FROM json_each(?))", (_json(cut),))
@@ -470,14 +479,40 @@ def _carry_out(con, depot: Depot, upstream: Upstream, erasure: str):
         _drop_unlisted(con, cut)
 
 
-def _leave(con, depot: Depot, texts: list[str], number: int):
-    """The texts a pull brought that are not admitted now leave the depot's own open libraries."""
-    if texts:
+class _Tracked:
+    """The texts a pull changes, in the temporary table followed: what each
+    adds to the depot's counts is measured before the pull first changes it
+    (add), and once every row is in, settle stores the status of each from
+    its decisions, takes those not admitted out of the depot's own open
+    libraries, and shifts the counts by the difference (wpt_depot.counts)."""
+
+    def __init__(self, con):
+        self.con = con
+        self.before = counts.Counter()
+        for table in ("followed", "fresh"):
+            con.execute(f"CREATE TEMP TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY)")
+            con.execute(f"DELETE FROM temp.{table}")
+
+    def add(self, texts):
+        """Measure the texts named that no earlier call named, before they change."""
+        con = self.con
+        con.execute("DELETE FROM temp.fresh")
+        con.execute("INSERT OR IGNORE INTO temp.fresh SELECT value FROM json_each(?) "
+                    "WHERE value NOT IN (SELECT id FROM temp.followed)", (_json(sorted(texts)),))
+        self.before.update(counts.measure(con, "temp.fresh", counts.FACETS))
+        con.execute("INSERT INTO temp.followed SELECT id FROM temp.fresh")
+
+    def settle(self, depot: Depot, number: int):
+        con = self.con
+        con.execute(f"UPDATE texts_revisions SET status = {policy.linked_status_sql('texts_revisions.id')} "
+                    "WHERE latest AND id IN (SELECT id FROM temp.followed)")
         con.execute(f"""UPDATE memberships SET left_change = ? WHERE left_change IS NULL
             AND library IN (SELECT id FROM libraries WHERE locked_at IS NULL AND {ids.carries_sql(depot.name())})
-            AND text IN (SELECT t.id FROM texts_revisions t WHERE t.latest
-                         AND t.id IN (SELECT value FROM json_each(?)) AND NOT {policy.admitted_sql('t.decisions')})""",
-                    (number, _json(texts)))
+            AND text IN (SELECT t.id FROM texts_revisions t JOIN temp.followed f ON f.id = t.id
+                         WHERE t.latest AND t.status <> '{ADMITTED}')""", (number,))
+        after = counts.measure(con, "temp.followed", counts.FACETS)
+        after.subtract(self.before)
+        counts.shift(con, after)
 
 
 def _highest(con) -> int:
@@ -488,7 +523,9 @@ def _highest(con) -> int:
         UNION ALL SELECT max(change) FROM libraries_revisions UNION ALL SELECT max(change) FROM erasures_revisions
         UNION ALL SELECT max(change) FROM datasets_revisions UNION ALL SELECT max(joined_change) FROM memberships
         UNION ALL SELECT max(left_change) FROM memberships UNION ALL SELECT max(change) FROM pulls
-        UNION ALL SELECT max(change) FROM decisions UNION ALL SELECT max(change) FROM notices
+        UNION ALL SELECT max(change) FROM decisions UNION ALL SELECT max(change) FROM text_decisions
+        UNION ALL SELECT max(change) FROM notices UNION ALL SELECT max(change) FROM tokenizers_revisions
+        UNION ALL SELECT max(change) FROM vocabularies UNION ALL SELECT max(change) FROM vocabulary_texts
         UNION ALL SELECT max(change) FROM pins)""").fetchall()[0][0] or 0
 
 

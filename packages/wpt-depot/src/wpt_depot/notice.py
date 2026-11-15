@@ -15,7 +15,7 @@ files, every conversation when a step read conversations, every task when a
 step read tasks. Without `learned`, every text of the corpus.
 """
 
-from .corpus import read_table
+from .corpora import read_table
 
 
 def model_notice(store, record: dict, learned: dict | None = None) -> str:

@@ -27,21 +27,16 @@
       "additionalProperties": false,
       "required": [
         "depot",
-        "dataset",
-        "tokenizer"
+        "dataset"
       ],
       "properties": {
         "depot": {
           "type": "string",
-          "description": "the depot's address: a folder or a bucket; empty until a person names it, and the check names each recipe to fill in"
+          "description": "the depot's public address, the name its corpora record for it (wpt_depot.corpus.depot_name): the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"
         },
         "dataset": {
           "type": "string",
-          "description": "the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"
-        },
-        "tokenizer": {
-          "$ref": "#/$defs/name",
-          "description": "a file name in data/recipes/tokenizers/, without .json"
+          "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"
         }
       }
     },

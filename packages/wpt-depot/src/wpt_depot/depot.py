@@ -1,5 +1,6 @@
 """A depot: texts and structured items, the decisions on them, libraries,
-erasures and datasets, in the tables of one SQLite file (wpt_depot.schema).
+erasures, datasets and tokenizer recipes with their vocabularies, in the
+tables of one SQLite file (wpt_depot.schema).
 
 Depot is the only code that changes a depot's tables. Each operation is one
 change: one transaction under the next change number, recorded for the
@@ -10,9 +11,12 @@ The depot's state is numbered by its change number (Depot.change): every
 write raises it, and every revision row and membership records the change
 number it was made at. What changes in place keeps its old versions as
 revision rows of its own table, never overwritten or deleted but by an
-erasure: a text's credits, licenses and decisions, a library's name, lock
+erasure: a text's credits and licenses, a library's name, lock
 and problems, a dataset, the depot's maintainer and takedown contact, an
-erasure request's decisions and what it erased.
+erasure request's decisions and what it erased. A decision on a text is a
+row of text_decisions with the change it was made at, never deleted but by
+an erasure. Each write keeps the status stored on each current text it
+changes and the counts (wpt_depot.counts) right, in its own transaction.
 
 The rules (the app's policy, wpt_depot.policy, says how decisions combine):
 
@@ -25,12 +29,20 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   stores it. Every license a text names is a
   row of licenses (one of them is enough to allow it), and its notice is
   stored once.
-- An operation on texts (a decision, a put, a take-out, a fork's texts
-  left out, a report) takes them as a selection: an SQL condition over the texts
-  view (the current state), matched when the operation runs, or the exact
-  ids of chosen texts, every one of which must be a text of the depot.
-- A decision on texts is appended to every text selected, as a new
-  revision, with an optional public reason. Admitting is refused when a
+- An operation on texts (a decision, a license change, a put, a take-out,
+  a fork's texts left out, a report) takes them as a selection: an SQL
+  condition over the texts view (the current state), the exact ids of
+  chosen texts, or a filter (wpt_depot.filters), each matched when the
+  operation runs. Every id a selection names must be a text of the depot.
+  A filter may carry the change number its page was read at and the ids
+  unticked by hand: the operation leaves those ids out, and every text
+  changed after that change number, and says how many it left out
+  (CHANGED_SINCE). Every operation over many texts runs in SQL over a
+  temporary table of the selected ids, and takes a progress function that
+  it calls with the name of each stage it starts.
+- A decision on texts is linked to every text selected, as a row of
+  text_decisions, with an optional public reason; it makes no new revision
+  of a text, and changes the status stored on its current revision. Admitting is refused when a
   text it covers has no allowed license (wpt_depot.licenses). A refusal
   takes each of them out of every open library. Depot.blocked says, for
   given texts, which ones an admission cannot cover and why; a decision
@@ -104,10 +116,18 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
 - A dataset names libraries, of this depot or another, each with a
   change number of the depot that owns it, which it reads (a clone naming
   one of its upstream's libraries by its own address names it at the
-  upstream change its pulls brought), and optional ordered shares by tag.
-  Its name, libraries and shares change as a new revision, its id kept,
-  with the checks of a new one; a library it read already keeps its change
-  number. Exported, a dataset is a remote (wpt_depot.remote).
+  upstream change its pulls brought), optional ordered shares by tag, an
+  optional max_tokens, and the name of a tokenizer recipe, which need not
+  exist yet. Its name, libraries, shares and max_tokens change as a new
+  revision, its id and tokenizer recipe kept, with the checks of a new one;
+  a library it read already keeps its change number. Exported, a dataset
+  is a remote (wpt_depot.remote).
+- A tokenizer recipe names the dataset whose sample trains its vocabulary,
+  this depot's or another depot's by its web address, with sample_bytes,
+  vocab_size and a note. It changes as a new revision; a change of what
+  trains the vocabulary raises its version, a change of the note alone does
+  not. A version has at most one vocabulary, written once with the list of
+  the texts it trained on; a second one is refused.
 - The depot's maintainer and takedown contact change as a new revision;
   its name never does, since it begins every id. A library's name, a
   dataset and the depot's facts change with no declaration: they are no
@@ -139,35 +159,43 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
 
 import bisect
 import functools
+import hashlib
+import itertools
 import json
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+import re
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 import apsw
 
-from . import erasure, ids, kinds, licenses, policy, scoring
+from . import counts, erasure, ids, kinds, licenses, policy, scoring
 from .database import Database, person_columns
 from .erasure import Needle
-from .errors import BelongsToUpstream, DepotExists, Locked, NotADepot, NotFound, OtherFormat, Refused, UnsupportedAddress
-from .filters import IN_LOCKED
+from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
+                     UnsupportedAddress)
+from .filters import IN_LOCKED, Filter, changed_since, condition, listed as listed_ids
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
-from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW)
+from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW,
+                     decision_list)
 
-# texts an operation works on: an SQL condition over the texts view, matched when the operation runs, or the exact
-# ids of chosen texts
-Selection = str | Sequence[str]
+# texts an operation works on: an SQL condition over the texts view, matched when the operation runs, a filter
+# (wpt_depot.filters) matched then, less the texts changed since its change number, or the exact ids of chosen texts
+Selection = str | Filter | Sequence[str]
 # why a decision cannot cover a text (Depot.blocked): none of its licenses is allowed (an admission only), or it is
 # a row the upstream of a clone owns (any decision)
 NO_ALLOWED_LICENSE = "no allowed license"
 BELONGS_TO_UPSTREAM = "belongs to the upstream"
+# why an operation on a filter with a change number leaves a text out: something changed it after that number
+CHANGED_SINCE = "changed since"
 # how many ids a refusal of upstream rows names before it gives the count of the rest
 NAMED = 20
 # what a clone can do instead of changing an upstream library: a fork is a library of its own
 FORK = ", or fork it into a library of this depot"
-SINGULAR = {"texts": "text", "libraries": "library", "erasure requests": "erasure request", "datasets": "dataset"}
+SINGULAR = {"texts": "text", "libraries": "library", "erasure requests": "erasure request", "datasets": "dataset",
+            "tokenizer recipes": "tokenizer recipe"}
 # the credits of a text that change as a new revision (Depot.edit_credits), in the order its reason names them
 CREDITS = ("title", "authors", "tags", "address", "notice")
 # what the rows of a search can be ordered by: each the SQL expressions over the searched rows it orders by, in turn,
@@ -175,11 +203,20 @@ CREDITS = ("title", "authors", "tags", "address", "notice")
 ORDERS = {"id": [], "title": ["title IS NOT NULL", "coalesce(title, '')"],
           "kind": ["kind IS NOT NULL", "coalesce(kind, '')"], "status": ["status"], "tags": ["tags"], "licenses": ["licenses"], "libraries": ["libraries"],
           "length": ["length"]}
+# the orders an index of the depot serves (schema.INDEXES), so a page in them reads only its own rows; a page in any
+# other order sorts every match, so it is given only when a search matches at most SORTED texts
+INDEXED = ("id", "status")
+SORTED = 100_000
+# a tokenizer recipe's name, which a dataset names its vocabulary by
+TOKENIZER_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
+# what a tokenizer recipe's revision changes that trains another vocabulary, and so raises its version
+TRAINS_VOCABULARY = ("depot", "dataset", "sample_bytes", "vocab_size")
+VOCABULARY_BASE = 513  # the smallest vocabulary: 256 bytes, the end of a text and 256 reserved ids (wpt_tokenizer)
 # how many texts a step of Depot.count goes over at most
 COUNT_STEP = 1_000_000
 # the columns of the texts view but those that hold a text: what a query reads that never reads a text's parts
 FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
-          "decisions, scores, libraries")
+          "decisions, scores, status, libraries")
 
 
 class _Nothing(Exception):
@@ -275,11 +312,10 @@ class Depot:
         """The depot at address, to read: every connection opens its file
         read-only, so nothing is written. NotADepot when the address holds
         none; OtherFormat when its format is not this code's
-        (schema.FORMAT)."""
+        (schema.FORMAT), HalfUpgraded when an upgrade to it has not ended."""
         found = format_of(address)
         depot = cls(address, readonly=True)
-        if found != FORMAT:
-            raise OtherFormat(other_format(depot.address, found))
+        _check_format(depot, found)
         return depot
 
     @classmethod
@@ -287,11 +323,11 @@ class Depot:
         """The depot at address, to write: the change files a crash left
         pending kept or dropped first (wpt_depot.database). NotADepot when
         the address holds none; OtherFormat when its format is not this
-        code's (schema.FORMAT)."""
+        code's (schema.FORMAT), HalfUpgraded when an upgrade to it has not
+        ended."""
         found = format_of(address)
         depot = cls(address)
-        if found != FORMAT:
-            raise OtherFormat(other_format(depot.address, found))
+        _check_format(depot, found)
         depot.db.settle()
         return depot
 
@@ -413,8 +449,6 @@ class Depot:
         row = found[0]
         whole = self.content(text, row["content_version"])
         row = {**row, "text": whole if row["kind"] is None else None, "content": None if row["kind"] is None else whole}
-        decided = {one["id"]: one for one in self._rows(
-            "SELECT * FROM decisions WHERE id IN (SELECT value FROM json_each(?))", (_json(row["decisions"]),))}
         held = [{**one, "upstream": bool(one["upstream"])} for one in self._rows(
             f"SELECT *, {self.upstream_sql()} AS upstream FROM libraries "
             "WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id", (_json(row["libraries"]),))]
@@ -423,15 +457,17 @@ class Depot:
         versions = self._one("SELECT count(*) FROM content_lists WHERE id = ?", (text,))
         pins = self._rows("SELECT p.library, l.name, p.revision FROM pins p JOIN libraries l ON l.id = p.library "
                           "WHERE p.text = ? ORDER BY p.library", (text,))
-        decisions = [decided[one] for one in row["decisions"]]
+        decisions = self._rows(f"SELECT d.* FROM text_decisions l JOIN decisions d ON d.id = l.decision "
+                               f"WHERE l.text = ? ORDER BY {ids.order_sql('d.id')}", (text,))
         counting = {one["id"] for one in policy.counted(decisions)}
-        return {"text": row, "status": policy.status(decisions), "notice": notice,
+        status = row.pop("status")
+        return {"text": row, "status": status, "notice": notice,
                 "decisions": [{**one, "counts": one["id"] in counting} for one in decisions], "libraries": held,
                 "revisions": revisions, "pins": pins, "content_versions": versions,
                 "upstream": bool(self.upstream_owned([text]))}
 
     def search(self, where: str, after: Sequence | None = None, before: Sequence | None = None, limit: int = 50,
-               order: str = "id", descending: bool = False, every_id: bool = False) -> dict:
+               order: str = "id", descending: bool = False) -> dict:
         """The texts the SQL condition where matches, a page at a time, with
         no count (Depot.count counts them a step at a time): {rows: the page
         of at most limit rows, ordered by the column order (one of ORDERS;
@@ -440,8 +476,10 @@ class Depot:
         more rows follow it, None otherwise; previous: the place of its
         first row when rows come before it, None on the first page, and
         the place after itself for an empty page after a place, since rows
-        can come before it; ids: with every_id, the id of every text it
-        matches, in the numeric order of their ids}. A place is the list of a row's values of the order
+        can come before it; change: the depot's change number, read before
+        its rows}. A page in an order of INDEXED reads only its own rows; in
+        another order it sorts every match, so it is refused when more
+        than SORTED texts match. A place is the list of a row's values of the order
         (_ordered), and a page starts after one (after) or ends before one
         (before), so a far page is read as fast as the first; a page
         before a place that has fewer than limit rows before it is the first
@@ -449,15 +487,17 @@ class Depot:
         id, kind, title, authors, tags, licenses, libraries, status, whether
         a locked library holds it, and its length in characters. BadQuery
         for a condition that is not one; Refused for an order that is none
-        of ORDERS, both after and before, or a place that is not one of the
-        order."""
+        of ORDERS, an order outside INDEXED for more than SORTED matches,
+        both after and before, or a place that is not one of the order."""
         if after is not None and before is not None:
             raise Refused("a page starts after one place or ends before one, not both")
+        change = self.change()
+        self._sortable(where, order)
         columns = "id, kind, title, authors, tags, licenses, libraries, status, locked, length"
         found = self._page(where, columns, order, descending, before if before is not None else after,
                            before is not None, limit)
         if before is not None and len(found) <= limit:
-            return self.search(where, limit=limit, order=order, descending=descending, every_id=every_id)
+            return self.search(where, limit=limit, order=order, descending=descending)
         page = found[:limit]
         if before is not None:
             page.reverse()
@@ -465,10 +505,21 @@ class Depot:
         answer = {"rows": [_decoded({**one, "locked": bool(one["locked"])}) for one in page],
                   "next": places[-1] if page and (before is not None or len(found) > limit) else None,
                   "previous": places[0] if page and (after is not None or len(found) > limit and before is not None)
-                  else after}
-        if every_id:
-            answer["ids"] = self.matching(where)
+                  else after, "change": change}
         return answer
+
+    def _sortable(self, where: str, order: str):
+        """Refused when order is none of ORDERS, or is outside INDEXED and
+        more than SORTED texts match where: a page in such an order sorts
+        every match."""
+        _ordered(order)
+        if order not in INDEXED:
+            found = self.db.person_rows(f"SELECT count(*) AS n FROM (SELECT 1 FROM texts WHERE ({where}) "
+                                        f"LIMIT {SORTED + 1})")[0]["n"]
+            if found > SORTED:
+                raise Refused(f"a page ordered by {order} sorts every text it matches, so it is given for at most "
+                              f"{SORTED:,} matches, and more match: narrow the filter, or order by "
+                              f"{' or '.join(INDEXED)}")
 
     def passages(self, where: str, after: Sequence | None = None, limit: int = 50, characters: int = 200_000,
                  order: str = "id", descending: bool = False) -> dict:
@@ -482,9 +533,11 @@ class Depot:
         starts, None when the page ends the texts matched}. A later text
         that does not fit whole starts the next page. BadQuery for a
         condition that is not one; Refused for an order that is none of
-        ORDERS, a place that is not one of the order or a bound below 1."""
+        ORDERS, an order outside INDEXED for more than SORTED matches, a
+        place that is not one of the order or a bound below 1."""
         if limit < 1 or characters < 1:
             raise Refused("a page holds at least one text and one character")
+        self._sortable(where, order)
         found = self._page(where, "id, kind, title, length", order, descending, after, False, limit)
         page, left = [], characters
         for one in found[:limit]:
@@ -513,8 +566,7 @@ class Depot:
                     isinstance(one, (str, int, float)) and not isinstance(one, bool) for one in place):
                 raise Refused(f"a place in the order {order} is a list of {len(keys)} values, as a page gives it")
             compared = f"WHERE ({', '.join(keys)}) {'<' if down else '>'} ({', '.join('?' * len(keys))})"
-        matched = (f"SELECT {FIELDS}, {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked "
-                   f"FROM texts WHERE ({where})")
+        matched = f"SELECT {FIELDS}, {IN_LOCKED} AS locked FROM texts WHERE ({where})"
         by = ", ".join(f"{one}{' DESC' if down else ''}" for one in keys)
         found = self.db.person_rows(
             f"SELECT {columns}, json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} ORDER BY {by} "
@@ -533,10 +585,11 @@ class Depot:
         every step goes over (the depot's texts, or the texts named that it
         holds), with the first step only (start None), None after it;
         statuses: how many of the matches are under review, admitted,
-        refused (wpt_depot.policy); locked: how many of them a locked
+        refused (the status the depot stores, wpt_depot.policy); locked: how many of them a locked
         library holds; tags and licenses: how many of them have each tag and
-        name each license, the most first; next: the start of the next
-        slice, the id of this slice's last text, None when this slice ends
+        name each license, the most first; blocked: {reason: how many of
+        them an admission cannot cover for it} (Depot.blocked); next: the
+        start of the next slice, the id of this slice's last text, None when this slice ends
         the texts}. BadQuery for a condition that is not one; Refused for a
         size below 1, or texts given with start."""
         if size < 1:
@@ -557,12 +610,15 @@ class Depot:
             params = {"start": start or "", **({"end": end} if end is not None else {})}
             held = size if end is not None else self._one(
                 "SELECT count(*) FROM texts_revisions WHERE latest AND id > ?", (start or "",))
-            total = self._one("SELECT count(*) FROM texts_revisions WHERE latest") if start is None else None
+            total = self._one(f"SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = '{counts.TEXTS}'") \
+                if start is None else None
             step = {"texts": held, "total": total, "next": end}
         found = self.db.person_rows(
-            f"WITH m AS MATERIALIZED (SELECT {policy.status_sql('decisions')} AS status, {IN_LOCKED} AS locked, "
-            f"tags, licenses FROM texts WHERE {bound} AND ({where})) "
+            f"WITH m AS MATERIALIZED (SELECT status, {IN_LOCKED} AS locked, {self.upstream_sql()} AS theirs, "
+            f"{self._unlicensed_sql('licenses')} AS unlicensed, tags, licenses FROM texts WHERE {bound} AND ({where})) "
             "SELECT 'status' AS part, status AS name, locked, count(*) AS n FROM m GROUP BY status, locked "
+            f"UNION ALL SELECT 'blocked', '{BELONGS_TO_UPSTREAM}', 0, count(*) FROM m WHERE theirs "
+            f"UNION ALL SELECT 'blocked', '{NO_ALLOWED_LICENSE}', 0, count(*) FROM m WHERE unlicensed AND NOT theirs "
             "UNION ALL SELECT 'tag', j.value, 0, count(*) FROM m, json_each(m.tags) j GROUP BY j.value "
             "UNION ALL SELECT 'license', j.value, 0, count(*) FROM m, json_each(m.licenses) j GROUP BY j.value",
             params)
@@ -573,38 +629,30 @@ class Depot:
                 "statuses": {status: sum(one["n"] for one in statuses if one["name"] == status)
                              for status in (UNDER_REVIEW, ADMITTED, REFUSED)},
                 "locked": sum(one["n"] for one in statuses if one["locked"]),
+                "blocked": {one["name"]: one["n"] for one in found if one["part"] == "blocked"},
                 "tags": [{"tag": name, "texts": n} for name, n in named_counts["tag"]],
                 "licenses": [{"license": name, "texts": n} for name, n in named_counts["license"]]}
 
     def tags(self) -> list[dict]:
-        """Every tag a text has, with how many texts have it, by name."""
-        return self._rows("SELECT j.value AS tag, count(*) AS texts FROM texts_revisions t, json_each(t.tags) j "
-                          "WHERE t.latest GROUP BY j.value ORDER BY j.value")
+        """Every tag a text has, with how many texts have it, by name (wpt_depot.counts)."""
+        return self._rows(f"SELECT name AS tag, texts FROM counts WHERE facet = '{counts.TAG}' ORDER BY name")
 
-    def matching(self, where: str) -> list[str]:
-        """The ids of the texts the SQL condition where matches, in the
-        numeric order of their ids (wpt_depot.ids)."""
-        return [one for (one,) in self.db.person_query(
-            f"SELECT id FROM texts WHERE ({where}) ORDER BY {ids.order_sql()}")]
+    def counts(self) -> dict[str, dict[str, int]]:
+        """{facet: {name: count}} of the depot's counts (wpt_depot.counts):
+        its current texts, and how many of them have each status, tag and
+        license, each library holds and each decision is on."""
+        return counts.read(self.db.reader())
 
-    def selected(self, texts: Selection) -> list[str]:
-        """The ids of the texts a selection names, each once, in the numeric
-        order of their ids: those an SQL condition matches now, or exactly
-        the ids given. NotFound when a given id is no text of the depot."""
-        if isinstance(texts, str):
-            return self.matching(texts)
-        given = sorted(set(texts))
-        found = {one for (one,) in self.db.reader().execute(
-            "SELECT id FROM texts_revisions WHERE latest AND id IN (SELECT value FROM json_each(?))", (_json(given),))}
-        missing = [one for one in given if one not in found]
-        if missing:
-            raise NotFound(f"{len(missing)} of the texts named are no text of the depot (the first: {missing[0]})")
-        return sorted(given, key=ids.order_key)
+    def recount(self):
+        """Make the depot's counts again from its rows (wpt_depot.counts),
+        as one change that writes nothing else."""
+        with self._write("recount") as (con, _):
+            counts.recount(con)
 
     def latest_decisions(self, limit: int = 10) -> list[dict]:
         """The latest decisions, the newest first, each with how many texts
-        and erasure requests it decides and the library whose reported
-        problem it records (None for any other)."""
+        (wpt_depot.counts) and erasure requests it decides and the library
+        whose reported problem it records (None for any other)."""
         return self._rows(
             f"SELECT d.*, {_DECIDED_TEXTS} AS texts, "
             "(SELECT count(*) FROM erasures_revisions e WHERE e.latest "
@@ -663,49 +711,88 @@ class Depot:
         up to that change brought). The columns of schema.LISTED_COLUMNS, in
         the numeric order of ids. NotFound without such a library, or when
         it did not exist yet at that change."""
+        held, params = self._held(library, change)
+        bound = f"(SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('t.id')})"
+        query = (f"SELECT {LISTED_COLUMNS}, {decision_list('t.id', bound)} AS decisions, "
+                 f"{policy.linked_status_sql('t.id', bound)} AS status FROM ({held}) h JOIN texts_revisions t "
+                 f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN} ORDER BY {ids.order_sql('t.id')}")
+        return self._rows(query, params)
+
+    def library_members(self, library: str, change: int) -> Iterator[tuple]:
+        """The texts library_texts gives, read one at a time as the query
+        goes, in no set order: (id, revision, kind, tags as JSON text,
+        bytes) of each."""
+        held, params = self._held(library, change)
+        cursor = self.db.reader().cursor().execute(
+            f"SELECT t.id, t.revision, c.kind, t.tags, c.bytes FROM ({held}) h JOIN texts_revisions t "
+            f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN}", params)
+        yield from cursor
+
+    def listed_text(self, text: str, revision: int) -> dict:
+        """One text at one revision, as library_texts gives a row but with
+        neither its decisions nor its status. NotFound when the depot no
+        longer holds it (an erasure removed it)."""
+        found = self._rows(f"SELECT {LISTED_COLUMNS} FROM texts_revisions t {CONTENT_JOIN} "
+                           "WHERE t.id = ? AND t.revision = ?", (text, revision))
+        if not found:
+            raise NotFound(f"the depot holds no revision {revision} of the text {text}")
+        return found[0]
+
+    def _held(self, library: str, change: int) -> tuple[str, dict]:
+        """(the query of each text the library held at that change, as
+        member and revision; its parameters), as library_texts says."""
         self._library(library)
         state = self._rows("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
                            "ORDER BY revision DESC LIMIT 1", (library, change))
         if not state:
             raise NotFound(f"the library {library} did not exist yet at the change {change}")
-        if state[0]["locked_at"] is not None:
+        locked = state[0]["locked_at"] is not None
+        if locked:
             held = "SELECT p.text AS member, p.revision FROM pins p WHERE p.library = :library"
+            change = self._lock_change(library)
         else:
             held = ("SELECT m.text AS member, (SELECT max(r.revision) FROM texts_revisions r WHERE r.id = m.text "
                     f"AND r.change <= (SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')})"
                     ") AS revision FROM memberships m WHERE m.library = :library "
                     "AND m.joined_change <= :change AND (m.left_change IS NULL OR m.left_change > :change)")
-        query = (f"SELECT {LISTED_COLUMNS} FROM ({held}) h JOIN texts_revisions t ON t.id = h.member "
-                 f"AND t.revision = h.revision {CONTENT_JOIN} ORDER BY {ids.order_sql('t.id')}")
-        return self._rows(query, {"library": library, "change": change,
-                                  "bounds": _json(self.bounds(ids.owner(library), change))})
+        return held, {"library": library, "change": change, "bounds": _json(self.bounds(ids.owner(library), change))}
+
+    def _lock_change(self, library: str) -> int:
+        """The change number at which the locked library was locked, in the numbering of the depot that owns it."""
+        return self._one("SELECT change FROM libraries_revisions WHERE id = ? AND locked_at IS NOT NULL "
+                         "ORDER BY revision LIMIT 1", (library,))
 
     def pinned(self, library: str, offset: int = 0, limit: int = 50) -> dict:
         """The revisions a locked library pinned, a page at a time: {total:
         how many texts it pinned, newer: how many of them have a current
         revision newer than the one pinned, rows: limit rows from offset in
         the numeric order of ids, each {id, title: the pinned revision's,
-        revision: the one pinned, current: the text's current revision}}.
-        An open library pins none. NotFound without such a library."""
+        revision: the one pinned, current: the text's current revision,
+        status: its status when the library was locked, by the decisions
+        made on it up to then (wpt_depot.policy)}}. An open library pins
+        none. NotFound without such a library."""
         self._library(library)
         query = ("SELECT p.text AS id, t.title, p.revision, c.revision AS current FROM pins p "
                  "JOIN texts_revisions t ON t.id = p.text AND t.revision = p.revision "
-                 "JOIN texts_revisions c ON c.id = p.text AND c.latest WHERE p.library = ?")
-        counts = self._rows(f"SELECT count(*) AS total, count(*) FILTER (WHERE current > revision) AS newer "
-                            f"FROM ({query})", (library,))[0]
-        found = self._rows(f"SELECT * FROM ({query}) ORDER BY {ids.order_sql()} LIMIT {int(limit)} "
-                           f"OFFSET {int(offset)}", (library,))
-        return {**counts, "rows": found}
+                 "JOIN texts_revisions c ON c.id = p.text AND c.latest WHERE p.library = :library")
+        totals = self._rows(f"SELECT count(*) AS total, count(*) FILTER (WHERE current > revision) AS newer "
+                            f"FROM ({query})", {"library": library})[0]
+        locked = self._lock_change(library)
+        bounds = _json(self.bounds(ids.owner(library), locked)) if locked is not None else "{}"
+        bound = f"(SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('q.id')})"
+        found = self._rows(f"SELECT q.*, {policy.linked_status_sql('q.id', bound)} AS status FROM ({query}) q "
+                           f"ORDER BY {ids.order_sql('q.id')} LIMIT {int(limit)} OFFSET {int(offset)}",
+                           {"library": library, "bounds": bounds})
+        return {**totals, "rows": found}
 
     # Licenses
 
     def licenses(self) -> list[dict]:
         """Every license the depot holds, by id: its id and name, whether it
         is allowed (wpt_depot.licenses, a combined row only if every part
-        is), and how many texts name it."""
-        named = {one["id"]: one["texts"] for one in self._rows(
-            "SELECT j.value AS id, count(*) AS texts FROM texts_revisions t, json_each(t.licenses) j "
-            "WHERE t.latest GROUP BY j.value")}
+        is), and how many texts name it (wpt_depot.counts)."""
+        named = {one["name"]: one["texts"] for one in self._rows(
+            f"SELECT name, texts FROM counts WHERE facet = '{counts.LICENSE}'")}
         return [{"id": one["id"], "name": one["name"], "allowed": licenses.allowed(one["id"]),
                  "texts": named.get(one["id"], 0)} for one in self._rows("SELECT id, name FROM licenses ORDER BY id")]
 
@@ -713,8 +800,8 @@ class Depot:
         """One license: its id, name, official text, whether it is allowed
         (as licenses() says) and how many texts name it. NotFound without
         it."""
-        found = self._rows("SELECT l.*, (SELECT count(*) FROM texts_revisions t, json_each(t.licenses) j "
-                           "WHERE t.latest AND j.value = l.id) AS texts FROM licenses l WHERE l.id = ?", (license_id,))
+        found = self._rows(f"SELECT l.*, coalesce((SELECT c.texts FROM counts c WHERE c.facet = '{counts.LICENSE}' "
+                           "AND c.name = l.id), 0) AS texts FROM licenses l WHERE l.id = ?", (license_id,))
         if not found:
             raise NotFound(f"no license {license_id}")
         return {**found[0], "allowed": licenses.allowed(license_id)}
@@ -753,92 +840,145 @@ class Depot:
                 new_texts.append({"id": text_id, "revision": 1, "change": number, "latest": 1,
                                   "licenses": _json(list(one.licenses)), "notice": notice, "title": one.title,
                                   "authors": None if one.authors is None else _json(list(one.authors)),
-                                  "tags": _json(list(one.tags)), "address": one.address,
-                                  "decisions": _json([decision]), "content_version": 1, "scores": None})
+                                  "tags": _json(list(one.tags)), "address": one.address, "decisions": "[]",
+                                  "content_version": 1, "scores": None, "status": UNDER_REVIEW})
             _insert(con, "texts_revisions", new_texts)
-            return [one["id"] for one in new_texts]
+            added = [one["id"] for one in new_texts]
+            self._choose(con, added)
+            self._link(con, decision, number)  # counts the decision's texts
+            counts.shift(con, counts.measure(con, "temp.chosen", (counts.TEXTS, counts.STATUS, counts.TAG,
+                                                                  counts.LICENSE)))
+            return added
 
-    def blocked(self, texts: Selection, status: str = ADMITTED) -> list[dict]:
-        """Of the texts a selection names, each one a decision of that status
-        cannot cover, in the numeric order of their ids: {id, reasons: the
-        reasons that hold, BELONGS_TO_UPSTREAM (a row the upstream owns,
-        for any decision) and NO_ALLOWED_LICENSE (none of its licenses is
-        allowed, wpt_depot.licenses, for an admission)}. The decision refuses
-        any text listed here. NotFound when a given id is no text."""
-        return self._blocked(self.selected(texts), status)
+    def blocked(self, texts: Selection, status: str = ADMITTED, after: Sequence | None = None,
+                limit: int = 50) -> dict:
+        """Of the texts a selection names, those a decision of that status
+        cannot cover, a page at a time in the numeric order of their ids:
+        {rows: at most limit rows, each {id, reasons: the reasons that
+        hold, BELONGS_TO_UPSTREAM (a row the upstream owns, for any
+        decision) and NO_ALLOWED_LICENSE (none of its licenses is allowed,
+        wpt_depot.licenses, for an admission)}, next: the place of the
+        page's last row when more follow, None otherwise}. The decision
+        refuses, or leaves out, every text listed here. NotFound when a
+        given id is no text; BadQuery for a condition that is not one."""
+        theirs, unlicensed = self.upstream_sql(), self._unlicensed_sql("licenses", status)
+        found = self._page(f"({self._condition(texts)}) AND ({theirs} OR {unlicensed})",
+                           f"id, {theirs} AS theirs, {unlicensed} AS unlicensed", "id", False, after, False, limit)
+        rows = [{"id": one["id"], "reasons": [reason for reason, holds in (
+            (BELONGS_TO_UPSTREAM, one["theirs"]), (NO_ALLOWED_LICENSE, one["unlicensed"])) if holds]}
+            for one in found[:limit]]
+        return {"rows": rows, "next": found[limit - 1]["place"] if len(found) > limit else None}
 
-    def decide(self, status: str, texts: Selection, declaration: Declaration,
-               reason: str | None = None) -> tuple[str, list[str]]:
+    def decide(self, status: str, texts: Selection, declaration: Declaration, reason: str | None = None,
+               leave_blocked: bool = False, progress=None) -> tuple[str, int, dict[str, int]]:
         """One decision, admitted or refused, with an optional public reason,
-        appended to every text selected as a new revision: (its id, the
-        texts' ids). A refusal takes them out of every open library; a locked
-        library keeps reading the revision it pinned. NotFound when nothing
-        is selected or a given id is no text; Refused when admitting texts
-        none of whose licenses is allowed (wpt_depot.licenses)."""
+        on every text selected: a row of text_decisions for each, and its
+        status by the policy (wpt_depot.policy) stored on its current
+        revision, which stays the same revision. A refusal takes them out of
+        every open library; a locked library keeps reading the revision it
+        pinned, at the status its decisions up to the lock make. Its answer:
+        (its id, how many texts it is on, {reason: how many texts were left
+        out for it}: CHANGED_SINCE for a filter with a change number, and
+        with leave_blocked, Depot.blocked's reasons). A text a
+        decision cannot cover (Depot.blocked) refuses the whole decision, or,
+        with leave_blocked, is left out of it. progress, when given, is
+        called with the name of each stage as it starts. NotFound when
+        nothing is selected (or nothing is left once the blocked texts are
+        left out) or a given id is no text; BelongsToUpstream for a text the
+        upstream owns and Refused when admitting texts none of whose
+        licenses is allowed (wpt_depot.licenses), both without
+        leave_blocked."""
         if status not in (ADMITTED, REFUSED):
             raise Refused(f"a decision on texts admits or refuses them, not {status!r}")
+        stage = progress or _quiet
         with self._write("decide") as (con, number):
-            matched = self.selected(texts)
-            if not matched:
-                raise NotFound(f"no text matches {texts}" if isinstance(texts, str) else "no text is named")
-            self._refuse_upstream("texts", matched)
-            unlicensed = [one["id"] for one in self._blocked(matched, status) if NO_ALLOWED_LICENSE in one["reasons"]]
-            if status == ADMITTED and unlicensed:
-                raise Refused(f"{len(unlicensed)} of the texts have no allowed license, so none is admitted (the "
-                              f"first: {unlicensed[0]}; docs/licenses.md, \"What the corpus accepts\")")
+            stage("selecting the texts")
+            changed = {}
+            if not self._choose(con, texts, left=changed):
+                raise NotFound(_none_left(texts, changed))
+            stage("checking the texts")
+            left = {**changed, **self._leave_blocked(con, status, leave_blocked)}
+            decided = con.execute("SELECT count(*) FROM temp.chosen").fetchall()[0][0]
+            if not decided:
+                raise NotFound(f"no text {'left to be ' + status + ' once ' if left else ''}matches the selection")
             decision = self._decision(con, number, status, declaration, reason)
-            self._revise(con, "texts_revisions", matched, number, {"decisions": _APPEND}, {"decision": decision})
+            stage("recording the decision on each text")
+            self._link(con, decision, number)
+            stage("storing the statuses")
+            self._restatus(con, status, False)
             if status == REFUSED:
-                self._leave(con, matched, self._open_libraries(), number)
-            return decision, matched
+                stage("taking the texts out of the open libraries")
+                self._leave(con, self._open_libraries(), number)
+            stage("committing")
+            return decision, decided, left
 
     @_answers
-    def relicense(self, texts: Selection, new: Sequence[str],
-                  declaration: Declaration) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    def relicense(self, texts: Selection, new: Sequence[str], declaration: Declaration,
+                  progress=None, left: dict | None = None) -> tuple[list[tuple[str, int]], int]:
         """Change the licenses of every text selected to the list new, as a
         new revision, their ids kept. Each distinct old list gets one
         decision 'under review' made by declaration, whose reason the depot
-        writes (wpt_depot.policy.license_change), appended to the texts that
+        writes (wpt_depot.policy.license_change), made on the texts that
         had that list; the decisions before it no longer count, so each text
         is under review again and leaves every open library (a locked library
         keeps reading the revision it pinned). A text that names the licenses
         of new already is left out, so a change never only wipes its
-        decisions. ([(each decision's id, the ids of its texts)], the ids
-        left out), both in the order of the texts' ids; nothing is written
-        when every text is left out. NotFound when nothing is selected or a
-        given id is no text; Refused when new is empty or names a license the
-        depot does not hold."""
+        decisions. ([(each decision's id, how many texts it is on)], in the
+        numeric order of the first text of each old list, how many texts
+        were left out); nothing is
+        written when every text is left out. progress as for decide; left,
+        when given, receives CHANGED_SINCE as _choose says. NotFound when
+        nothing is selected or a given id is no text; Refused
+        when new is empty or names a license the depot does not hold."""
         new = list(dict.fromkeys(new))
         if not new:
             raise Refused("a text names at least one license")
+        stage = progress or _quiet
         with self._write("relicense") as (con, number):
-            matched = self.selected(texts)
-            if not matched:
-                raise NotFound(f"no text matches {texts}" if isinstance(texts, str) else "no text is named")
-            self._refuse_upstream("texts", matched)
+            stage("selecting the texts")
+            changed = {}
+            chosen = self._choose(con, texts, left=changed)
+            if left is not None:
+                left.update(changed)
+            if not chosen:
+                raise NotFound(_none_left(texts, changed))
+            stage("checking the texts")
+            self._leave_blocked(con, UNDER_REVIEW, False)
             held_licenses = {one for (one,) in con.execute("SELECT id FROM licenses")}
             unknown = [one for one in new if one not in held_licenses]
             if unknown:
                 raise Refused(f"the depot holds no license {', '.join(unknown)}")
-            groups: dict[tuple[str, ...], list[str]] = {}
-            for one in sorted(self._rows("SELECT id, licenses FROM texts_revisions WHERE latest "
-                                         "AND id IN (SELECT value FROM json_each(?))", (_json(matched),)),
-                              key=lambda one: ids.order_key(one["id"])):
-                groups.setdefault(tuple(one["licenses"]), []).append(one["id"])
-            skipped = sorted((text for old in groups if set(old) == set(new) for text in groups[old]),
-                             key=matched.index)
-            groups = {old: texts_of for old, texts_of in groups.items() if set(old) != set(new)}
-            if not groups:
+            lists = [old for (old,) in con.execute(
+                "SELECT t.licenses FROM temp.chosen c JOIN texts_revisions t ON t.id = c.id AND t.latest "
+                f"GROUP BY t.licenses ORDER BY min({ids.order_sql('t.id')})")]
+            same = [old for old in lists if set(json.loads(old)) == set(new)]
+            con.execute("CREATE TEMP TABLE IF NOT EXISTS skipped (id TEXT PRIMARY KEY)")
+            con.execute("DELETE FROM temp.skipped")
+            con.execute("INSERT INTO temp.skipped SELECT c.id FROM temp.chosen c JOIN texts_revisions t "
+                        "ON t.id = c.id AND t.latest WHERE t.licenses IN (SELECT value FROM json_each(?))",
+                        (_json(same),))
+            skipped = con.execute("SELECT count(*) FROM temp.skipped").fetchall()[0][0]
+            con.execute("DELETE FROM temp.chosen WHERE id IN (SELECT id FROM temp.skipped)")
+            changed_lists = [old for old in lists if old not in same]
+            if not changed_lists:
                 raise _Nothing(([], skipped))
+            stage("writing the new revisions")
             changed = []
-            for old, texts_of in groups.items():
-                decision = self._decision(con, number, UNDER_REVIEW, declaration, policy.license_change(old, new),
-                                          checked=False)
-                self._revise(con, "texts_revisions", texts_of, number,
-                             {"licenses": ":licenses", "decisions": _APPEND},
-                             {"licenses": _json(new), "decision": decision})
-                changed.append((decision, texts_of))
-            self._leave(con, [text for _, texts_of in changed for text in texts_of], self._open_libraries(), number)
+            with counts.changing(con, "temp.chosen", (counts.STATUS, counts.LICENSE)):
+                for old in changed_lists:
+                    decision = self._decision(con, number, UNDER_REVIEW, declaration,
+                                              policy.license_change(json.loads(old), new), checked=False)
+                    con.execute("CREATE TEMP TABLE IF NOT EXISTS grouped (id TEXT PRIMARY KEY)")
+                    con.execute("DELETE FROM temp.grouped")
+                    con.execute("INSERT INTO temp.grouped SELECT c.id FROM temp.chosen c JOIN texts_revisions t "
+                                "ON t.id = c.id AND t.latest WHERE t.licenses = ?", (old,))
+                    self._revise(con, "texts_revisions", "SELECT id FROM temp.grouped", number,
+                                 {"licenses": ":licenses", "status": f"'{UNDER_REVIEW}'"}, {"licenses": _json(new)})
+                    self._link(con, decision, number, "grouped")
+                    changed.append((decision, con.execute("SELECT count(*) FROM temp.grouped").fetchall()[0][0]))
+                stage("taking the texts out of the open libraries")
+                self._leave(con, self._open_libraries(), number)
+            stage("committing")
             return changed, skipped
 
     @_answers
@@ -891,10 +1031,12 @@ class Depot:
                                       policy.content_change(row["content_version"], version), checked=False)
             self._store(con, number, [{"id": text, "version": version, "kind": row["kind"],
                                        "source": plain if row["kind"] is None else content}])
-            self._revise(con, "texts_revisions", [text], number,
-                         {"content_version": ":version", "decisions": _APPEND},
-                         {"version": version, "decision": decision})
-            self._leave(con, [text], self._open_libraries(), number)
+            self._choose(con, [text])
+            with counts.changing(con, "temp.chosen", (counts.STATUS,)):
+                self._revise(con, "texts_revisions", [text], number,
+                             {"content_version": ":version", "status": f"'{UNDER_REVIEW}'"}, {"version": version})
+                self._leave(con, self._open_libraries(), number)
+            self._link(con, decision, number)
             return decision, version
 
     def edit_credits(self, text: str, changes: dict, declaration: Declaration) -> tuple[str, str]:
@@ -942,10 +1084,11 @@ class Depot:
             reason = "; ".join(f"{name} changed from {_credit(row[name])} to {_credit(value)}"
                                for name, value in values.items())
             decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
-            self._revise(con, "texts_revisions", [text], number,
-                         {**{name: f":{name}" for name in values}, "decisions": _APPEND},
-                         {**{name: _json(value) if name in JSON_COLUMNS else value for name, value in values.items()},
-                          "decision": decision})
+            self._choose(con, [text])
+            with counts.changing(con, "temp.chosen", (counts.TAG,) if "tags" in values else ()):
+                self._revise(con, "texts_revisions", [text], number, {name: f":{name}" for name in values},
+                             {name: _json(value) if name in JSON_COLUMNS else value for name, value in values.items()})
+            self._link(con, decision, number)
             return decision, reason
 
     def edit_scores(self, changes: str | Path | list[dict], declaration: Declaration) -> tuple[str, str, int, int]:
@@ -986,8 +1129,8 @@ class Depot:
                 con.execute("CREATE TEMP TABLE scored_ids (id TEXT PRIMARY KEY)")
                 con.execute("INSERT INTO temp.scored_ids SELECT id FROM temp.scored")
                 self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
-                             {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)",
-                              "decisions": _APPEND}, {"decision": decision})
+                             {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
+                self._link(con, decision, number, "scored_ids")
             finally:
                 scoring.close(con)
             return decision, reason, changed, left_out
@@ -1014,54 +1157,62 @@ class Depot:
             self._revise(con, "libraries_revisions", [library], number, {"name": ":name"}, {"name": name})
 
     @_answers
-    def put(self, library: str, texts: Selection) -> tuple[list[str], list[str]]:
-        """Put into an open library every admitted text selected: (the ids
-        that joined it, the ids selected and left out because they are not
-        admitted). Locked when the library is locked; NotFound when a given
-        id is no text."""
+    def put(self, library: str, texts: Selection, progress=None, left: dict | None = None) -> tuple[int, int]:
+        """Put into an open library every admitted text selected: (how many
+        joined it, how many were selected and left out because they are not
+        admitted). progress as for decide; left, when given, receives
+        CHANGED_SINCE as _choose says. Locked when the library is locked;
+        NotFound when a given id is no text."""
+        stage = progress or _quiet
         with self._write("put") as (con, number):
             found = self._library(library)
             self._refuse_upstream("libraries", [library], FORK)
             if found["locked_at"] is not None:
                 raise Locked(f"the library {library} is locked: no text joins it")
-            matched = self.selected(texts)
-            if not matched:
-                raise _Nothing(([], []))
-            found = {one["id"]: one for one in self._rows(
-                f"SELECT t.id, {policy.admitted_sql('t.decisions')} AS admitted, EXISTS (SELECT 1 FROM memberships m "
-                "WHERE m.library = :library AND m.text = t.id AND m.left_change IS NULL) AS held "
-                "FROM texts_revisions t WHERE t.latest AND t.id IN (SELECT value FROM json_each(:ids))",
-                {"library": library, "ids": _json(matched)})}
-            joining = [text for text in matched if found[text]["admitted"] and not found[text]["held"]]
-            left_out = [text for text in matched if not found[text]["admitted"]]
-            if not joining:
-                raise _Nothing(([], left_out))
-            self._join(con, joining, library, number)
-            return joining, left_out
+            stage("selecting the texts")
+            if not self._choose(con, texts, left=left):
+                raise _Nothing((0, 0))
+            stage("putting the admitted texts in the library")
+            con.execute("INSERT INTO memberships (library, text, joined_change, left_change) "
+                        "SELECT :library, c.id, :change, NULL FROM temp.chosen c JOIN texts_revisions t "
+                        f"ON t.id = c.id AND t.latest WHERE t.status = '{ADMITTED}' AND NOT EXISTS "
+                        "(SELECT 1 FROM memberships m WHERE m.library = :library AND m.text = c.id "
+                        "AND m.left_change IS NULL)", {"library": library, "change": number})
+            joined = con.changes()
+            left_out = con.execute("SELECT count(*) FROM temp.chosen c JOIN texts_revisions t ON t.id = c.id "
+                                   f"AND t.latest WHERE t.status <> '{ADMITTED}'").fetchall()[0][0]
+            if not joined:
+                raise _Nothing((0, left_out))
+            counts.shift(con, {(counts.LIBRARY, library): joined})
+            stage("committing")
+            return joined, left_out
 
     @_answers
-    def take_out(self, library: str, texts: Selection) -> tuple[list[str], list[str]]:
+    def take_out(self, library: str, texts: Selection, progress=None, left: dict | None = None) -> tuple[int, int]:
         """Take out of an open library every text selected that it holds,
-        each staying as it is, admitted included: (the ids that left it, the
-        ids selected that it did not hold). Locked when the library is
-        locked; NotFound when a given id is no text."""
+        each staying as it is, admitted included: (how many left it, how
+        many were selected that it did not hold). progress and left as for
+        put. Locked when the library is locked; NotFound when a given id is
+        no text."""
+        stage = progress or _quiet
         with self._write("take out") as (con, number):
             found = self._library(library)
             self._refuse_upstream("libraries", [library], FORK)
             if found["locked_at"] is not None:
                 raise Locked(f"the library {library} is locked: no text leaves it")
-            matched = self.selected(texts)
-            if not matched:
-                raise _Nothing(([], []))
-            held = {one for (one,) in con.execute(
-                "SELECT text FROM memberships WHERE library = ? AND left_change IS NULL "
-                "AND text IN (SELECT value FROM json_each(?))", (library, _json(matched)))}
-            leaving = [text for text in matched if text in held]
-            not_held = [text for text in matched if text not in held]
-            if not leaving:
-                raise _Nothing(([], not_held))
-            self._leave(con, leaving, [library], number)
-            return leaving, not_held
+            stage("selecting the texts")
+            chosen = self._choose(con, texts, left=left)
+            if not chosen:
+                raise _Nothing((0, 0))
+            stage("taking the texts out of the library")
+            con.execute("UPDATE memberships SET left_change = ? WHERE library = ? AND left_change IS NULL "
+                        "AND text IN (SELECT id FROM temp.chosen)", (number, library))
+            left = con.changes()
+            if not left:
+                raise _Nothing((0, chosen))
+            counts.shift(con, {(counts.LIBRARY, library): -left})
+            stage("committing")
+            return left, chosen - left
 
     def lock(self, library: str):
         """Lock an open library for good, as a new revision: it pins the
@@ -1078,55 +1229,69 @@ class Depot:
             self._revise(con, "libraries_revisions", [library], number, {"locked_at": ":locked_at"},
                          {"locked_at": _now()})
 
-    def fork(self, library: str, name: str, without: Selection | None = None) -> str:
+    def fork(self, library: str, name: str, without: Selection | None = None, progress=None,
+             left: dict | None = None) -> str:
         """A new open library holding the texts library holds that are
         admitted now (only an admitted text joins a library), less those
         selected by without when it is given: its id. It starts with no
-        problem. NotFound when a given id is no text."""
+        problem. progress and left as for put (a text left out of without
+        stays in the fork). NotFound when a given id is no text."""
         _filled(name=name)
+        stage = progress or _quiet
         with self._write("library") as (con, number):
             self._library(library)
-            held = sorted((one for (one,) in con.execute(
-                f"SELECT t.id FROM memberships m JOIN texts_revisions t ON t.id = m.text AND t.latest "
-                f"WHERE m.library = ? AND m.left_change IS NULL AND {policy.admitted_sql('t.decisions')}",
-                (library,))), key=ids.order_key)
             if without is not None:
-                left = set(self.selected(without))
-                held = [text for text in held if text not in left]
+                stage("selecting the texts left out")
+                self._choose(con, without, left=left)
+            stage("putting the texts in the fork")
             fork = self._id(self._take(con, "libraries"))
             _insert(con, "libraries_revisions", [{"id": fork, "revision": 1, "change": number, "latest": 1,
                                                   "name": name, "forked_from": library, "problems": "[]",
                                                   "locked_at": None}])
-            self._join(con, held, fork, number)
+            con.execute("INSERT INTO memberships (library, text, joined_change, left_change) "
+                        "SELECT :fork, m.text, :change, NULL FROM memberships m JOIN texts_revisions t "
+                        "ON t.id = m.text AND t.latest WHERE m.library = :library AND m.left_change IS NULL "
+                        f"AND t.status = '{ADMITTED}'"
+                        + (" AND m.text NOT IN (SELECT id FROM temp.chosen)" if without is not None else ""),
+                        {"fork": fork, "change": number, "library": library})
+            counts.shift(con, {(counts.LIBRARY, fork): con.changes()})
+            stage("committing")
             return fork
 
     def report(self, library: str, problem: str, texts: Selection | None,
-               declaration: Declaration) -> tuple[str, list[str]]:
+               declaration: Declaration, progress=None, left: dict | None = None) -> tuple[str, list[str]]:
         """A problem with the library, locked or not, as a new revision of
         it: the problem in words, and the texts of the library selected (none
         without a selection: the problem concerns the library as a whole).
         The reporter's declaration is recorded on a decision under review,
-        which the problem names. (its id, the texts' ids). NotFound without
-        such a library, when a condition matches no text the library holds,
-        or a given id is no text; Refused when a given id is a text the
-        library does not hold. Membership and texts stay as they are."""
+        which the problem names. (its id, the texts' ids, in the numeric
+        order of ids). NotFound without such a library, when a condition
+        matches no text the library holds, or a given id is no text;
+        Refused when a given id is a text the library does not hold.
+        Membership and texts stay as they are. progress and left as for
+        put."""
         _filled(problem=problem)
+        stage = progress or _quiet
         with self._write("report") as (con, number):
             self._library(library)
             self._refuse_upstream("libraries", [library])
             where, texts = texts, []
             if where is not None:
-                held = {one for (one,) in con.execute(
-                    "SELECT text FROM memberships WHERE library = ? AND left_change IS NULL", (library,))}
-                chosen = self.selected(where)
-                texts = [text for text in chosen if text in held]
-                if not isinstance(where, str) and len(texts) < len(chosen):
-                    outside = [text for text in chosen if text not in held]
+                stage("selecting the texts")
+                chosen = self._choose(con, where, left=left)
+                texts = [one for (one,) in con.execute(
+                    "SELECT c.id FROM temp.chosen c WHERE EXISTS (SELECT 1 FROM memberships m WHERE m.library = ? "
+                    f"AND m.text = c.id AND m.left_change IS NULL) ORDER BY {ids.order_sql('c.id')}", (library,))]
+                if not isinstance(where, (str, Filter)) and len(texts) < chosen:
+                    outside = [one for (one,) in con.execute(
+                        "SELECT c.id FROM temp.chosen c WHERE NOT EXISTS (SELECT 1 FROM memberships m "
+                        "WHERE m.library = ? AND m.text = c.id AND m.left_change IS NULL) "
+                        f"ORDER BY {ids.order_sql('c.id')}", (library,))]
                     raise Refused(f"{len(outside)} of the texts named are not in the library {library} (the first: "
                                   f"{outside[0]})")
                 if not texts:
-                    raise NotFound(f"no text of the library {library} matches {where}" if isinstance(where, str)
-                                   else "no text is named")
+                    raise NotFound(f"no text of the library {library} matches the selection"
+                                   if isinstance(where, (str, Filter)) else "no text is named")
             decision = self._decision(con, number, UNDER_REVIEW, declaration)
             self._revise(con, "libraries_revisions", [library], number,
                          {"problems": "json_insert(coalesce(t.problems, '[]'), '$[#]', json(:problem))"},
@@ -1316,6 +1481,10 @@ class Depot:
         if write:
             con, _ = write
             _drop_unlisted(con, sorted(cut))
+            if removed:
+                self._choose(con, removed)
+                gone = counts.measure(con, "temp.chosen", counts.FACETS)
+                counts.shift(con, {key: -count for key, count in gone.items()})
             _remove_texts(con, removed)
         return named
 
@@ -1365,12 +1534,17 @@ class Depot:
     # Datasets
 
     def new_dataset(self, name: str, tokenizer: str, libraries: list[tuple[str | None, str]],
-                    shares: list[tuple[str, float]] | None = None) -> str:
+                    shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None) -> str:
         """A dataset reading the libraries (depot address, None for this
         depot, and library id), each at its depot's change number now, with
-        optional ordered shares (tag, share of the tokens): its id."""
+        optional ordered shares (tag, share of the tokens) and an optional
+        limit of its corpus's tokens of plain text (max_tokens), whose
+        vocabulary is that of the depot's tokenizer recipe named tokenizer:
+        its id. The recipe need not exist yet, since a recipe trains on a
+        dataset that exists: a build needs it."""
         return self._new_dataset({"name": name, "tokenizer": tokenizer, "libraries": self._refs(libraries),
-                                  "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares]})
+                                  "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares],
+                                  "max_tokens": max_tokens})
 
     def import_dataset(self, remote: dict) -> str:
         """A dataset made from a remote (wpt_depot.remote): its id here."""
@@ -1397,11 +1571,12 @@ class Depot:
         return found[0]
 
     def edit_dataset(self, dataset: str, name: str, libraries: list[tuple[str | None, str]],
-                     shares: list[tuple[str, float]] | None = None):
+                     shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None):
         """Change the dataset of that id as a new revision, its id and
         tokenizer kept: its name, the libraries it reads (depot address, None
-        for this depot, and library id) and its optional ordered shares (tag,
-        share of the tokens), with the checks of new_dataset. A library it
+        for this depot, and library id), its optional ordered shares (tag,
+        share of the tokens) and its optional max_tokens, with the checks of
+        new_dataset. A library it
         read already (the same library, its depot's address in any form, or
         either address of a library read here, reads_here) is kept exactly
         as stored, its address and change number included, its
@@ -1417,14 +1592,17 @@ class Depot:
             stored = kept.get(self._read_from(address, library))
             refs.append(dict(stored) if stored is not None else self._refs([(address, library)])[0])
         values = {"name": name, "libraries": refs,
-                  "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares]}
+                  "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares],
+                  "max_tokens": max_tokens}
         _checked_dataset({**old, **values})
         with self._write("edit dataset") as (con, number):
             if self._rows("SELECT id FROM datasets WHERE name = ? AND id <> ?", (name, dataset)):
                 raise Refused(f"the dataset name {name} is taken")
             self._revise(con, "datasets_revisions", [dataset], number,
-                         {"name": ":name", "libraries": ":libraries", "shares": ":shares"},
-                         {"name": name, "libraries": _json(refs), "shares": _json(values["shares"])})
+                         {"name": ":name", "libraries": ":libraries", "shares": ":shares",
+                          "max_tokens": ":max_tokens"},
+                         {"name": name, "libraries": _json(refs), "shares": _json(values["shares"]),
+                          "max_tokens": max_tokens})
 
     def _refs(self, libraries: list[tuple[str | None, str]]) -> list[dict]:
         """Each library (depot address, None for this depot, and library id)
@@ -1504,8 +1682,146 @@ class Depot:
             _insert(con, "datasets_revisions", [{"id": dataset, "revision": 1, "change": number, "latest": 1,
                                                  "name": row["name"], "tokenizer": row["tokenizer"],
                                                  "libraries": _json(row["libraries"]),
-                                                 "shares": _json(row["shares"])}])
+                                                 "shares": _json(row["shares"]),
+                                                 "max_tokens": row.get("max_tokens")}])
             return dataset
+
+    # Tokenizer recipes and their vocabularies
+
+    def new_tokenizer(self, name: str, depot: str | None, dataset: str, sample_bytes: int, vocab_size: int,
+                      note: str | None = None) -> str:
+        """A tokenizer recipe at version 1: its vocabulary trains on a
+        sample of at most sample_bytes bytes of the plain texts of a dataset
+        (one of this depot's, by its name or id, with depot None or this
+        depot's address; or another depot's, by its name, with depot the web
+        address of that depot's web app), up to vocab_size tokens: its id.
+        Refused for a name that is taken or not one (TOKENIZER_NAME), a
+        sample or a size out of range, an address that is not a web address;
+        NotFound for a dataset of this depot it does not hold."""
+        row = self._recipe_row(depot, dataset, sample_bytes, vocab_size, note)
+        if not isinstance(name, str) or not TOKENIZER_NAME.fullmatch(name):
+            raise Refused("a tokenizer recipe's name is lowercase a-z, 0-9, '.', '_' and '-', starting with a letter "
+                          "or a digit")
+        with self._write("tokenizer") as (con, number):
+            if self._rows("SELECT id FROM tokenizers WHERE name = ?", (name,)):
+                raise Refused(f"the tokenizer recipe name {name} is taken")
+            recipe = self._id(self._take(con, "tokenizers"))
+            _insert(con, "tokenizers_revisions", [{"id": recipe, "revision": 1, "change": number, "latest": 1,
+                                                   "name": name, "version": 1, **row}])
+            return recipe
+
+    def edit_tokenizer(self, recipe: str, depot: str | None, dataset: str, sample_bytes: int, vocab_size: int,
+                       note: str | None = None) -> int:
+        """Change the tokenizer recipe of that id as a new revision, its id
+        and name kept, with the checks of new_tokenizer: its version, which
+        it answers, goes up by one when the revision changes what trains its
+        vocabulary (the dataset, the sample's bytes, the vocabulary's size),
+        and stays for a change of its note alone. A change that changes
+        nothing writes nothing. NotFound without such a recipe;
+        BelongsToUpstream for a recipe of the upstream."""
+        old = self.tokenizer_by_id(recipe)
+        self._refuse_upstream("tokenizer recipes", [recipe])
+        row = self._recipe_row(depot, dataset, sample_bytes, vocab_size, note)
+        if all(old[key] == value for key, value in row.items()):
+            return old["version"]
+        version = old["version"] + (any(old[key] != row[key] for key in TRAINS_VOCABULARY))
+        with self._write("edit tokenizer") as (con, number):
+            self._revise(con, "tokenizers_revisions", [recipe], number,
+                         {**{key: f":{key}" for key in row}, "version": ":version"}, {**row, "version": version})
+        return version
+
+    def _recipe_row(self, depot: str | None, dataset: str, sample_bytes: int, vocab_size: int,
+                    note: str | None) -> dict:
+        """The columns of a tokenizer recipe's revision that a person gives, checked (new_tokenizer)."""
+        whole = (lambda value: isinstance(value, int) and not isinstance(value, bool))
+        if not whole(sample_bytes) or sample_bytes < 1:
+            raise Refused("a tokenizer recipe's sample holds a whole number of bytes above 0")
+        if not whole(vocab_size) or vocab_size < VOCABULARY_BASE:
+            raise Refused(f"a vocabulary holds at least {VOCABULARY_BASE} tokens (256 bytes, the end of a text and "
+                          "256 reserved ids)")
+        _filled(dataset=dataset)
+        if note is not None and not note.strip():
+            note = None
+        if depot is None or self.is_here(depot):
+            return {"depot": None, "dataset": self._dataset_named(dataset)["id"], "sample_bytes": sample_bytes,
+                    "vocab_size": vocab_size, "note": note}
+        if not depot.startswith(("http://", "https://")):
+            raise Refused(f"a tokenizer recipe trains on a dataset of this depot, or of another depot named by the "
+                          f"web address of its web app (http:// or https://), not {depot}")
+        return {"depot": _written(depot), "dataset": dataset.strip(), "sample_bytes": sample_bytes,
+                "vocab_size": vocab_size, "note": note}
+
+    def _dataset_named(self, dataset: str) -> dict:
+        """The current row of the dataset of that id, or else of that name. NotFound without one."""
+        found = self._rows("SELECT * FROM datasets WHERE id = ?", (dataset,))
+        return found[0] if found else self.dataset(dataset)
+
+    def tokenizer(self, name: str) -> dict:
+        """The current revision of the tokenizer recipe named so. NotFound without one."""
+        found = self._rows("SELECT * FROM tokenizers WHERE name = ?", (name,))
+        if not found:
+            raise NotFound(f"no tokenizer recipe {name}")
+        return found[0]
+
+    def tokenizer_by_id(self, recipe: str) -> dict:
+        """The current revision of the tokenizer recipe of that id. NotFound without one."""
+        found = self._rows("SELECT * FROM tokenizers WHERE id = ?", (recipe,))
+        if not found:
+            raise NotFound(f"no tokenizer recipe {recipe}")
+        return found[0]
+
+    def tokenizers(self) -> list[dict]:
+        """Every tokenizer recipe's current revision, by name, with
+        trained: whether its version has a vocabulary."""
+        return self._rows("SELECT t.*, EXISTS (SELECT 1 FROM vocabularies v WHERE v.recipe = t.id "
+                          "AND v.version = t.version) AS trained FROM tokenizers t ORDER BY t.name")
+
+    def vocabulary(self, recipe: str, version: int) -> dict | None:
+        """The vocabulary of a version of the tokenizer recipe of that id:
+        {recipe, version, change, sha256, merges: the vocabulary file as
+        text (its bytes in UTF-8), texts: how many texts it trained on, bytes: their UTF-8
+        bytes, None when not known, made_at}; None when that version has none."""
+        found = self._rows("SELECT * FROM vocabularies WHERE recipe = ? AND version = ?", (recipe, version))
+        return found[0] if found else None
+
+    def vocabulary_texts(self, recipe: str, version: int, offset: int = 0, limit: int = 50) -> list[dict]:
+        """The texts a vocabulary trained on, a page at a time in the order
+        they were read: each {position, depot: the web address of the depot
+        that holds it, '' for the depot that holds the recipe, text: its id}."""
+        return self._rows("SELECT position, depot, text FROM vocabulary_texts WHERE recipe = ? AND version = ? "
+                          "ORDER BY position LIMIT ? OFFSET ?", (recipe, version, int(limit), int(offset)))
+
+    def add_vocabulary(self, recipe: str, version: int, merges: bytes, texts: Iterable[tuple[str, str]],
+                       size: int | None) -> str:
+        """Keep the vocabulary of a version of the tokenizer recipe of that
+        id, for good: merges, the vocabulary file's bytes (wpt_tokenizer),
+        and texts, (the web address of the depot that holds it, '' for this
+        depot; its id) of each text it trained on in the order they were
+        read, read a few at a time, whose UTF-8 bytes add up to size: its
+        sha256. Refused when that version has a vocabulary already, which
+        never changes, or when the recipe never had that version; NotFound
+        without such a recipe; BelongsToUpstream for a recipe of the
+        upstream, whose vocabularies a pull brings."""
+        self.tokenizer_by_id(recipe)
+        self._refuse_upstream("tokenizer recipes", [recipe])
+        sha = hashlib.sha256(merges).hexdigest()
+        with self._write("vocabulary") as (con, number):
+            if not con.execute("SELECT 1 FROM tokenizers_revisions WHERE id = ? AND version = ?",
+                               (recipe, version)).fetchall():
+                raise Refused(f"the tokenizer recipe {recipe} never had the version {version}")
+            if con.execute("SELECT 1 FROM vocabularies WHERE recipe = ? AND version = ?", (recipe, version)).fetchall():
+                raise Refused(f"the tokenizer recipe {recipe} has a vocabulary of its version {version} already: a "
+                              "vocabulary never changes, and a new one takes a new version of the recipe")
+            count = 0
+            for batch in itertools.batched(texts, 10_000):
+                con.executemany("INSERT INTO vocabulary_texts (recipe, version, position, depot, text, change) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                [(recipe, version, count + at, depot, text, number)
+                                 for at, (depot, text) in enumerate(batch)])
+                count += len(batch)
+            _insert(con, "vocabularies", [{"recipe": recipe, "version": version, "change": number, "sha256": sha,
+                                           "merges": merges.decode("utf-8"), "texts": count, "bytes": size, "made_at": _now()}])
+        return sha
 
     # Inside
 
@@ -1577,17 +1893,112 @@ class Depot:
         found = self._rows("SELECT needles, erased FROM erasures WHERE erased IS NOT NULL")
         return [entry for row in found for entry in row["erased"] if row["needles"][entry["needle"]]["text"] == text]
 
-    def _blocked(self, texts: list[str], status: str) -> list[dict]:
-        """See blocked, over ids known to be texts."""
-        found = sorted(self._rows("SELECT id, licenses FROM texts_revisions WHERE latest "
-                                  "AND id IN (SELECT value FROM json_each(?))", (_json(texts),)),
-                       key=lambda one: ids.order_key(one["id"]))
-        theirs = set(self.upstream_owned(texts))
-        reasons = [(one["id"], [reason for reason, holds in (
-            (BELONGS_TO_UPSTREAM, one["id"] in theirs),
-            (NO_ALLOWED_LICENSE, status == ADMITTED and not licenses.any_allowed(one["licenses"]))) if holds])
-            for one in found]
-        return [{"id": text, "reasons": held} for text, held in reasons if held]
+    def _condition(self, texts: Selection) -> str:
+        """The SQL condition over the texts view of a selection: the
+        condition itself, or the ids given, written as one value
+        (filters.listed), or a filter's (filters.condition). NotFound when a
+        given id is no text."""
+        if isinstance(texts, str):
+            return texts
+        if isinstance(texts, Filter):
+            return condition(texts)
+        given = _json(sorted(set(texts)))
+        missing = self.db.reader().execute(
+            "SELECT count(*), min(value) FROM json_each(?) WHERE NOT EXISTS (SELECT 1 FROM texts_revisions t "
+            "WHERE t.latest AND t.id = value)", (given,)).fetchall()[0]
+        if missing[0]:
+            raise NotFound(f"{missing[0]} of the texts named are no text of the depot (the first: {missing[1]})")
+        return f"id IN {listed_ids(json.loads(given))}"
+
+    def _unlicensed_sql(self, column: str, status: str = ADMITTED) -> str:
+        """Whether a decision of that status cannot cover a text because none
+        of its licenses (the JSON list in column) is allowed: an admission
+        only (wpt_depot.licenses), as an SQL condition."""
+        if status != ADMITTED:
+            return "false"
+        allowed = [one for (one,) in self.db.reader().execute("SELECT id FROM licenses") if licenses.allowed(one)]
+        return f"NOT EXISTS (SELECT 1 FROM json_each({column}) j WHERE j.value IN {listed_ids(allowed)})"
+
+    def _choose(self, con, texts: Selection, table: str = "chosen", left: dict | None = None) -> int:
+        """Fill the temporary table (one column, id, its key) with the ids
+        of the texts a selection names, each once: those an SQL condition
+        over the texts view matches now (a person's SQL, which only reads,
+        Database.select_into), those a filter matches now less those
+        changed since its change number (filters.changed_since; how many
+        added to left under CHANGED_SINCE when left is given), or exactly
+        the ids given. How many. NotFound when a given id, or an id a
+        filter names, is no text;
+        BadQuery for a condition that is not one."""
+        con.execute(f"CREATE TEMP TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY)")
+        con.execute(f"DELETE FROM temp.{table}")
+        if isinstance(texts, Filter):
+            if texts.ids:
+                self._condition(list(texts.ids))  # NotFound for a named id that is no text
+            self.db.select_into(con, table, f"SELECT id FROM texts WHERE {condition(replace(texts, change=None))}")
+            if texts.change is not None:
+                con.execute(f"DELETE FROM temp.{table} WHERE EXISTS (SELECT 1 FROM texts_revisions texts "
+                            f"WHERE texts.latest AND texts.id = temp.{table}.id AND {changed_since(texts.change)})")
+                if left is not None and con.changes():
+                    left[CHANGED_SINCE] = left.get(CHANGED_SINCE, 0) + con.changes()
+        elif isinstance(texts, str):
+            self.db.select_into(con, table, f"SELECT id FROM texts WHERE ({texts})")
+        else:
+            con.execute(f"INSERT OR IGNORE INTO temp.{table} (id) SELECT value FROM json_each(?)",
+                        (_json(list(texts)),))
+            missing = con.execute(f"SELECT count(*), min(c.id) FROM temp.{table} c WHERE NOT EXISTS "
+                                  "(SELECT 1 FROM texts_revisions t WHERE t.latest AND t.id = c.id)").fetchall()[0]
+            if missing[0]:
+                raise NotFound(f"{missing[0]} of the texts named are no text of the depot (the first: {missing[1]})")
+        return con.execute(f"SELECT count(*) FROM temp.{table}").fetchall()[0][0]
+
+    def _leave_blocked(self, con, status: str, leave: bool) -> dict[str, int]:
+        """Of the texts of temp.chosen, those a decision of that status
+        cannot cover (blocked): taken out of temp.chosen with leave, and
+        {reason: how many} returned; without it, BelongsToUpstream or
+        Refused when there is one."""
+        theirs = self.upstream_sql("c.id")
+        upstream = con.execute(f"SELECT count(*) FROM temp.chosen c WHERE {theirs}").fetchall()[0][0]
+        if upstream and not leave:
+            named = [one for (one,) in con.execute(f"SELECT c.id FROM temp.chosen c WHERE {theirs} "
+                                                   f"ORDER BY {ids.order_sql('c.id')} LIMIT {NAMED}")]
+            self._refuse_upstream("texts", named, total=upstream)
+        unlicensed = self._unlicensed_sql("t.licenses", status)
+        found = con.execute(f"SELECT count(*), min(c.id) FROM temp.chosen c JOIN texts_revisions t ON t.id = c.id "
+                            f"AND t.latest WHERE {unlicensed} AND NOT {theirs}").fetchall()[0]
+        if found[0] and not leave:
+            raise Refused(f"{found[0]} of the texts have no allowed license, so none is admitted (the first: "
+                          f"{found[1]}; docs/licenses.md, \"What the corpus accepts\")")
+        left = {reason: count for reason, count in ((BELONGS_TO_UPSTREAM, upstream), (NO_ALLOWED_LICENSE, found[0]))
+                if count}
+        if left:
+            con.execute(f"DELETE FROM temp.chosen WHERE id IN (SELECT c.id FROM temp.chosen c JOIN texts_revisions t "
+                        f"ON t.id = c.id AND t.latest WHERE {theirs} OR {unlicensed})")
+        return left
+
+    @staticmethod
+    def _link(con, decision: str, number: int, table: str = "chosen"):
+        """The decision made at the change number on every text of the temporary table: its rows of
+        text_decisions, and its count (wpt_depot.counts)."""
+        con.execute(f"INSERT INTO text_decisions (text, decision, change) SELECT id, ?, ? FROM temp.{table}",
+                    (decision, number))
+        counts.shift(con, {(counts.DECISION, decision): con.changes()})
+
+    @staticmethod
+    def _restatus(con, status: str, starts_over: bool):
+        """Store on the current revision of every text of temp.chosen the
+        status one more decision of that status makes of it
+        (policy.combined_sql), and shift the counts of statuses by it."""
+        new = policy.combined_sql("t.status", status, starts_over)
+        moved = con.execute(f"SELECT t.status, {new}, count(*) FROM temp.chosen c JOIN texts_revisions t "
+                            "ON t.id = c.id AND t.latest GROUP BY t.status").fetchall()
+        new = policy.combined_sql("status", status, starts_over)
+        con.execute(f"UPDATE texts_revisions SET status = {new} WHERE latest AND id IN (SELECT id FROM temp.chosen) "
+                    f"AND status IS NOT {new}")
+        delta = {}
+        for old, now, count in moved:
+            delta[counts.STATUS, old] = delta.get((counts.STATUS, old), 0) - count
+            delta[counts.STATUS, now] = delta.get((counts.STATUS, now), 0) + count
+        counts.shift(con, delta)
 
     def _column_names(self, table: str) -> list[str]:
         if table not in self._names:
@@ -1609,7 +2020,8 @@ class Depot:
             con.execute(f"INSERT INTO temp.revised SELECT r.id, r.revision FROM {table} r WHERE r.latest "
                         "AND r.id IN (SELECT value FROM json_each(?))", (_json(list(chosen)),))
         con.execute(f"UPDATE {table} SET latest = 0 WHERE latest AND id IN (SELECT id FROM temp.revised)")
-        given = {"revision": "t.revision + 1", "change": ":change", "latest": "1", **sets}
+        given = {"revision": "t.revision + 1", "change": ":change", "latest": "1",
+                 **({"decisions": "'[]'"} if table == "texts_revisions" else {}), **sets}
         names = self._column_names(table)
         con.execute(f"INSERT INTO {table} ({', '.join(names)}) SELECT "
                     f"{', '.join(given.get(name, f't.{name}') for name in names)} "
@@ -1618,20 +2030,18 @@ class Depot:
         con.execute("DELETE FROM temp.revised")
 
     @staticmethod
-    def _join(con, texts: list[str], library: str, number: int):
-        """The texts join the library at the change number; a text in it already stays as it is."""
-        con.execute("INSERT INTO memberships (library, text, joined_change, left_change) "
-                    "SELECT :library, j.value, :change, NULL FROM json_each(:texts) j WHERE NOT EXISTS "
-                    "(SELECT 1 FROM memberships m WHERE m.library = :library AND m.text = j.value "
-                    "AND m.left_change IS NULL)", {"library": library, "change": number, "texts": _json(texts)})
-
-    @staticmethod
-    def _leave(con, texts: list[str], libraries: list[str], number: int):
-        """The texts leave the libraries at the change number."""
-        if texts and libraries:
+    def _leave(con, libraries: list[str], number: int, table: str = "chosen"):
+        """The texts of the temporary table leave the libraries at the change
+        number, and the counts of those libraries go down by it."""
+        if libraries:
+            leaving = dict(con.execute(
+                f"SELECT m.library, count(*) FROM temp.{table} c JOIN memberships m ON m.text = c.id "
+                "AND m.left_change IS NULL WHERE m.library IN (SELECT value FROM json_each(?)) GROUP BY m.library",
+                (_json(libraries),)).fetchall())
             con.execute("UPDATE memberships SET left_change = ? WHERE left_change IS NULL "
-                        "AND library IN (SELECT value FROM json_each(?)) AND text IN (SELECT value FROM json_each(?))",
-                        (number, _json(libraries), _json(texts)))
+                        f"AND library IN (SELECT value FROM json_each(?)) AND text IN (SELECT id FROM temp.{table})",
+                        (number, _json(libraries)))
+            counts.shift(con, {(counts.LIBRARY, library): -count for library, count in leaving.items()})
 
     def _store(self, con, number: int, contents: Sequence[dict]):
         """Write the content versions a change numbered number adds
@@ -1655,13 +2065,14 @@ class Depot:
                                             "bytes": sum(size for _, _, size in found)}])
 
 
-# how many texts the current revisions of which carry the decision d: a decision is appended to a text by the
-# change that writes it, and a text's list of decisions only grows, so a text carries it now when it has a
-# revision made at that change that carries it
-_DECIDED_TEXTS = ("(SELECT count(*) FROM texts_revisions t WHERE t.change = d.change "
-                  "AND EXISTS (SELECT 1 FROM json_each(t.decisions) WHERE value = d.id))")
-# a new revision's decisions: the current ones and the change's decision
+# how many texts the decision d is on (wpt_depot.counts)
+_DECIDED_TEXTS = f"coalesce((SELECT c.texts FROM counts c WHERE c.facet = '{counts.DECISION}' AND c.name = d.id), 0)"
+# a new revision of an erasure request's decisions: the current ones and the change's decision
 _APPEND = "json_insert(t.decisions, '$[#]', :decision)"
+
+
+def _quiet(stage: str):
+    """A progress that says nothing."""
 
 
 def location(address: str) -> Path:
@@ -1697,6 +2108,29 @@ def format_of(address: str) -> int:
         con.close()
 
 
+def _none_left(texts: Selection, left: dict) -> str:
+    """What NotFound says when a selection names no text."""
+    if left.get(CHANGED_SINCE):
+        return f"every text the selection matches ({left[CHANGED_SINCE]}) changed since the page was read"
+    return f"no text matches {texts}" if isinstance(texts, str) else (
+        "no text matches the filter" if isinstance(texts, Filter) else "no text is named")
+
+
+def half_upgraded(con) -> bool:
+    """Whether the depot the connection reads is under an upgrade that has
+    not ended: its file holds the table upgrade.UNDER_WAY."""
+    return bool(con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'upgrade_under_way'")
+                .fetchall())
+
+
+def _check_format(depot: "Depot", found: int):
+    if found != FORMAT:
+        raise OtherFormat(other_format(depot.address, found))
+    if half_upgraded(depot.db.reader()):
+        raise HalfUpgraded(f"{depot.address} is under an upgrade to format {FORMAT} that has not ended: run "
+                           "`wpt depot upgrade` again, which goes on where it stopped")
+
+
 def other_format(address: str, found: int) -> str:
     """Why a depot of the format found is not read: what OtherFormat says."""
     if found < FORMAT:
@@ -1728,11 +2162,11 @@ def _drop_unlisted(con, texts: list[str]):
 
 
 def _remove_texts(con, texts: list[str]):
-    """Remove the texts whole: every revision, every content version and part, memberships and pins (an
-    erasure's part)."""
+    """Remove the texts whole: every revision, every content version and part, decision rows, memberships and
+    pins (an erasure's part)."""
     if texts:
         for table, column in (("texts_revisions", "id"), ("content_lists", "id"), ("parts", "id"),
-                              ("memberships", "text"), ("pins", "text")):
+                              ("text_decisions", "text"), ("memberships", "text"), ("pins", "text")):
             con.execute(f"DELETE FROM {table} WHERE {column} IN (SELECT value FROM json_each(?))", (_json(texts),))
 
 
@@ -1878,6 +2312,9 @@ def _check_declaration(declaration: Declaration, reason: str | None):
 
 def _checked_dataset(row: dict):
     _filled(name=row["name"], tokenizer=row["tokenizer"])
+    limit = row.get("max_tokens")
+    if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+        raise Refused("max_tokens is a whole number of tokens above 0, or none")
     if not row["libraries"]:
         raise Refused("a dataset reads at least one library")
     if row["shares"] is not None:

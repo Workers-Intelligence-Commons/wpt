@@ -1,85 +1,87 @@
 // The texts of a decision's review that the decision cannot cover, set
 // apart from the rest with the depot's reason for each (POST
-// /api/texts/blocked, the same check a decision applies): the text belongs
-// to the upstream this depot follows (any decision), or none of its
-// licenses is allowed (an admission). They are never part of the decision.
-// From the list a person opens a text in a new tab, keeping the review; a
-// text of this depot's own with no allowed license can be ticked, then
-// refused or given other licenses (the review then checks it again). A text
-// of the upstream has no tick: only the upstream decides on it.
+// /api/texts/blocked, the same check a decision applies, a page at a time
+// over the selection): the text belongs to the upstream this depot follows
+// (any decision), or none of its licenses is allowed (an admission). The
+// decision leaves them out. From the list a person opens a text in a new
+// tab, keeping the review; a text of this depot's own with no allowed
+// license can be ticked, then refused or given other licenses (the review
+// then checks again). A text of the upstream has no tick: only the upstream
+// decides on it.
 
 import { Button } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
 import { post, type Answer } from "./api";
 import { DecideForm, RelicenseForm, relicensed, type Decided, type Relicensed } from "./decide-forms";
-import { EVERY, search, type Found } from "./filter";
-import { Cut, Outcome, Pager, plural, Problems, StatusBadge } from "./parts";
+import { EVERY, named, search, sent, type Found, type Place, type Selection } from "./filter";
+import { Cut, Outcome, PlacePager, plural, Problems, StatusBadge } from "./parts";
 import { href } from "./route";
 
 export type Blocked = { id: string; reasons: string[] };
 export const NO_ALLOWED_LICENSE = "no allowed license";
 export const BELONGS_TO_UPSTREAM = "belongs to the upstream";
 export type Deciding = "admitted" | "refused";
+type Page = { rows: Blocked[]; next: Place | null };
 
-// The texts among ids that a decision of that status cannot cover, by the depot's check.
-export const blocked = (ids: string[], status: Deciding) => post<{ texts: Blocked[] }>("/api/texts/blocked", { texts: ids, status });
+const LIMIT = 25; // blocked texts a page shows
+
+// How many texts of a count a decision of that status cannot cover (counts.tsx's blocked).
+export const blockedCount = (blocked: Record<string, number>, status: Deciding) =>
+  (blocked[BELONGS_TO_UPSTREAM] ?? 0) + (status === "admitted" ? blocked[NO_ALLOWED_LICENSE] ?? 0 : 0);
 
 type Acting = { act: "refuse" } | { act: "relicense" };
 
-// found: the blocked texts; onDecided: the ids a decision made here took,
-// after it was recorded; onRelicensed: after their licenses changed; both
-// get what happened in words, for the review to say when no blocked text is
-// left to show it here.
-export function BlockedTexts({ found, status, onDecided, onRelicensed }: {
-  found: Blocked[]; status: Deciding; onDecided: (ids: string[], words: string) => void; onRelicensed: (words: string) => void;
+// selection: the review's; total: how many of its texts are blocked, as
+// counted; version: raised after a change, so the list is read again;
+// onChanged: after a refusal or a license change made here, with what it did
+// in words.
+export function BlockedTexts({ selection, status, total, version, onChanged }: {
+  selection: Selection; status: Deciding; total: number; version: number; onChanged: (words: string) => void;
 }) {
-  const [wanted, setOffset] = useState(0);
-  const [limit, setLimit] = useState(25);
-  const [page, setPage] = useState<Answer<Found> | null>(null);
+  const [places, setPlaces] = useState<(Place | null)[]>([null]); // where each page read so far starts after
+  const [page, setPage] = useState<Answer<Page> | null>(null);
+  const [rows, setRows] = useState<Answer<Found> | null>(null);
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [acting, setActing] = useState<Acting | null>(null);
   const [said, setSaid] = useState<Answer<unknown> | null>(null);
   const [words, setWords] = useState("");
-  // A refusal made here shortens found, so the page asked for may now lie
-  // past the end: the last page that still holds texts is shown instead.
-  const offset = Math.min(wanted, Math.max(0, (Math.ceil(found.length / limit) - 1) * limit));
-  const slice = found.slice(offset, offset + limit);
-  const sliceKey = JSON.stringify(slice.map((b) => b.id));
+  const after = places[places.length - 1];
+  const key = JSON.stringify([sent(selection), status, after, version]);
   useEffect(() => {
-    const shown: string[] = JSON.parse(sliceKey);
-    if (shown.length) search({ ...EVERY, ids: shown }, {}, shown.length).then(setPage);
-  }, [sliceKey]);
-  const rows = new Map(page?.ok ? page.data.rows.map((r) => [r.id, r]) : []);
+    const [s, st, a] = JSON.parse(key);
+    post<Page>("/api/texts/blocked", { selection: s, status: st, limit: LIMIT, ...(a ? { after: a } : {}) }).then(setPage);
+  }, [key]);
+  const found = page?.ok ? page.data.rows : [];
+  const shownKey = JSON.stringify(found.map((b) => b.id));
+  useEffect(() => {
+    const shown: string[] = JSON.parse(shownKey);
+    if (shown.length) search({ ...EVERY, ids: shown }, {}, shown.length).then(setRows);
+  }, [shownKey]);
+  const credits = new Map(rows?.ok ? rows.data.rows.map((r) => [r.id, r]) : []);
   // only a text of this depot's own can be refused or given other licenses here
-  const every = found.filter((b) => !b.reasons.includes(BELONGS_TO_UPSTREAM)).map((b) => b.id);
-  const theirs = found.length - every.length;
+  const own = found.filter((b) => !b.reasons.includes(BELONGS_TO_UPSTREAM)).map((b) => b.id);
+  const chosen = own.filter((id) => ticked.has(id));
   const decision = status === "admitted" ? "admission" : "refusal";
-  const chosen = every.filter((id) => ticked.has(id));
   const flip = (id: string, on: boolean) => {
     const next = new Set(ticked);
     if (on) next.add(id); else next.delete(id);
     setTicked(next);
   };
-  const decided = (a: Answer<Decided>) => {
+  const done = (a: Answer<unknown>, w: string) => {
     setSaid(a);
-    const w = a.ok ? `Decision ${a.data.decision}: refused, on ${plural(a.data.texts.length, "text")}.` : "";
     setWords(w);
-    if (a.ok) { setActing(null); setTicked(new Set()); onDecided(a.data.texts, w); }
+    if (a.ok) { setActing(null); setTicked(new Set()); setPlaces([null]); onChanged(w); }
   };
-  const changed = (a: Answer<Relicensed>, licenses: string[]) => {
-    setSaid(a);
-    const w = a.ok ? relicensed(a.data, licenses) : "";
-    setWords(w);
-    if (a.ok) { setActing(null); setTicked(new Set()); onRelicensed(w); }
-  };
+  const decided = (a: Answer<Decided>) => done(a, a.ok ? `Decision ${a.data.decision}: refused, on ${plural(a.data.texts, "text")}.` : "");
+  const changed = (a: Answer<Relicensed>, licenses: string[]) => done(a, a.ok ? relicensed(a.data, licenses) : "");
   return (
     <section className="blocked" aria-labelledby="blocked-title">
-      <h3 id="blocked-title" className="cue">{plural(found.length, "text")} cannot be {status}</h3>
+      <h3 id="blocked-title" className="cue">{plural(total, "text")} cannot be {status}</h3>
       <p className="small">
-        They are left out of the {decision}, since the depot refuses the whole {decision} when it names one of them.
-        {theirs > 0 && <> {plural(theirs, "text")} {theirs === 1 ? "belongs" : "belong"} to the upstream this depot follows: only the upstream decides on {theirs === 1 ? "it" : "them"}, and a pull brings its decisions here.</>}
-        {every.length > 0 && <> {plural(every.length, "text")} {every.length === 1 ? "names" : "name"} no allowed license; such a text can get other licenses, its decisions then start over, and with an allowed license it joins the admission.</>}
+        The {decision} leaves them out: only the upstream this depot follows decides on its own texts, and a text that
+        names no allowed license can get other licenses, its decisions then starting over; with an allowed license it joins the admission.
       </p>
+      {page && !page.ok && <Problems problems={page.problems} />}
       <div className="table-scroll">
         <table className="ledger-table" aria-label="The texts that cannot be admitted">
           <thead>
@@ -89,8 +91,8 @@ export function BlockedTexts({ found, status, onDecided, onRelicensed }: {
             </tr>
           </thead>
           <tbody>
-            {slice.map((b) => {
-              const r = rows.get(b.id);
+            {found.map((b) => {
+              const r = credits.get(b.id);
               return (
                 <tr key={b.id} className={ticked.has(b.id) ? "ticked" : undefined}>
                   <td className="tick-cell">
@@ -113,11 +115,12 @@ export function BlockedTexts({ found, status, onDecided, onRelicensed }: {
           </tbody>
         </table>
       </div>
-      {page && !page.ok && <Problems problems={page.problems} />}
-      <Pager offset={offset} limit={limit} total={found.length} onOffset={setOffset} onLimit={(n) => { setLimit(n); setOffset(0); }} label="Pages of the texts that cannot be admitted" />
-      {every.length > 0 && <div className="row tight blocked-tools">
-        {chosen.length < every.length
-          ? <Button variant="quiet" onClick={() => setTicked(new Set(every))}>Tick all {plural(every.length, "text")}</Button>
+      <PlacePager label="Pages of the texts that cannot be admitted" limit={LIMIT}
+        onFirst={() => setPlaces([null])} onPrevious={places.length > 1 ? () => setPlaces(places.slice(0, -1)) : null}
+        onNext={page?.ok && page.data.next ? () => setPlaces([...places, page.data.next]) : null} />
+      {own.length > 0 && <div className="row tight blocked-tools">
+        {chosen.length < own.length
+          ? <Button variant="quiet" onClick={() => setTicked(new Set(own))}>Tick the {plural(own.length, "text")} of this page</Button>
           : <Button variant="quiet" onClick={() => setTicked(new Set())}>Untick all</Button>}
         <Button variant="ink" disabled={chosen.length === 0} onClick={() => { setSaid(null); setActing({ act: "refuse" }); }}>Refuse {plural(chosen.length, "ticked text")}</Button>
         <Button variant="quiet" disabled={chosen.length === 0} onClick={() => { setSaid(null); setActing({ act: "relicense" }); }}>Change their licenses</Button>
@@ -125,13 +128,13 @@ export function BlockedTexts({ found, status, onDecided, onRelicensed }: {
       {!acting && <Outcome answer={said} done={() => words} />}
       {acting?.act === "refuse" && (
         <div className="blocked-form">
-          <DecideForm status="refused" chosen={chosen} onDone={decided} variant="ink" />
+          <DecideForm status="refused" selection={named(chosen)} size={chosen.length} onDone={decided} variant="ink" />
           <Button variant="quiet" onClick={() => setActing(null)}>Cancel the refusal</Button>
         </div>
       )}
       {acting?.act === "relicense" && (
         <div className="blocked-form">
-          <RelicenseForm chosen={chosen} subject={`the ${plural(chosen.length, "ticked text")} with no allowed license`} onDone={changed} variant="ink" />
+          <RelicenseForm selection={named(chosen)} subject={`the ${plural(chosen.length, "ticked text")} with no allowed license`} onDone={changed} variant="ink" />
           <Button variant="quiet" onClick={() => setActing(null)}>Cancel the license change</Button>
         </div>
       )}

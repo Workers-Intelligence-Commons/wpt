@@ -1,19 +1,28 @@
 import base64
 import json
+import sqlite3
+from compression import zstd
+
+from pathlib import Path
 
 import pytest
 
 from wpt_store import open_store
 from wpt_store.shards import read_verified
 from wpt_tokenizer import END, Tokenizer, chat
-from wpt_depot import NewText
-from wpt_depot.corpus import build, mark_stale, read_table, records, sample
+from wpt_depot import About, Depot, NewText, clone
+from wpt_depot import corpora, exports
+from wpt_depot.corpora import Room, TooBig, latest, mark_stale, read_table, records
+from wpt_depot.corpus import build, sample, task_text
 from wpt_depot.errors import Refused
 from wpt_depot.notice import model_notice
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
 CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
                              {"role": "assistant", "content": [{"type": "text", "text": "Hello."}]}]}
+
+
+HERE = "https://depot.example"  # the public address of the depot that holds the dataset
 
 
 def encoded(data: bytes) -> str:
@@ -49,26 +58,27 @@ def test_a_corpus_holds_its_libraries_texts_tokenized_with_their_credits_and_a_n
     depot.new_dataset("first model", "classics", [(None, library), (other.address, their_library)])
     store = open_store((tmp_path / "store").as_uri())
 
-    record = build(depot, "first model", store, TOKENIZER, log=lambda *_: None)
+    record = build(depot, "first model", store, TOKENIZER, url=HERE, log=lambda *_: None)
 
+    assert record["depot"] == HERE  # its public address names the depot that holds the dataset, never its file
     rows = [row for shard in record["shards"] for row in read_verified(store, shard)]
     documents = {(source, document): (list(tokens), pool) for tokens, source, document, pool, _ in rows}
-    assert set(documents) == {(depot.address, first), (depot.address, twin), (depot.address, french),
-                              (other.address, theirs)}  # duplicates kept
-    assert documents[(depot.address, french)] == ([*TOKENIZER.encode("le renard".encode()), END], "")
+    assert set(documents) == {(HERE, first), (HERE, twin), (HERE, french),
+                              ("other", theirs)}  # duplicates kept; another depot by its own name
+    assert documents[(HERE, french)] == ([*TOKENIZER.encode("le renard".encode()), END], "")
     [conversation] = [row for shard in record["conversation_shards"] for row in read_verified(store, shard)]
     assert list(conversation[0]) == chat.encode(TOKENIZER, CONVERSATION)[0]
     [kept_task] = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines()
-    assert json.loads(kept_task) == {"depot": depot.address, "id": task, "content": TASK}
-    assert record["left_out"] == {"no share": 0, "trimmed": 0, "kinds": {"probe": 1}}
+    assert json.loads(kept_task) == {"depot": HERE, "id": task, "content": TASK}
+    assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0, "kinds": {"probe": 1}}
 
     texts = {(one["depot"], one["id"]): one for one in read_table(store, record, "texts").to_pylist()}
     assert probe not in {id_ for _, id_ in texts}
-    assert texts[(depot.address, first)]["title"] == "Twice" and texts[(depot.address, first)]["authors"] == ["Ann"]
-    assert texts[(depot.address, first)]["tags"] == ["en"] and texts[(depot.address, talk)]["tags"] == ["en"]
+    assert texts[(HERE, first)]["title"] == "Twice" and texts[(HERE, first)]["authors"] == ["Ann"]
+    assert texts[(HERE, first)]["tags"] == ["en"] and texts[(HERE, talk)]["tags"] == ["en"]
     notices = {one["id"]: one["text"] for one in read_table(store, record, "notices").to_pylist()}
     assert notices == {"depot-1": "(c) Ann", "other-1": "(c) Other"}  # ids carry the depot: copied as they are
-    assert notices[texts[(other.address, theirs)]["notice"]] == "(c) Other"
+    assert notices[texts[("other", theirs)]["notice"]] == "(c) Other"
     assert read_table(store, record, "licenses").to_pylist() == [
         {"id": "CC0-1.0", "name": "Creative Commons Zero v1.0 Universal", "text": "The CC0 text."}]
     [dataset] = read_table(store, record, "dataset").to_pylist()
@@ -77,20 +87,20 @@ def test_a_corpus_holds_its_libraries_texts_tokenized_with_their_credits_and_a_n
     for tokens, source, document, _, _ in rows:  # each text's first token, over the token files in order
         assert texts[(source, document)]["tokens"] == start
         start += len(tokens)
-    assert texts[(depot.address, talk)]["tokens"] == 0  # the one conversation starts the conversations' files
+    assert texts[(HERE, talk)]["tokens"] == 0  # the one conversation starts the conversations' files
 
     lines = model_notice(store, record).split("\n\n")[0].splitlines()
     assert len(lines) == len(texts)
-    assert f"{depot.address} {first}: Twice by Ann; CC0-1.0; notice {texts[(depot.address, first)]['notice']}" in lines
+    assert f"{HERE} {first}: Twice by Ann; CC0-1.0; notice {texts[(HERE, first)]['notice']}" in lines
     # a model that learned less is credited with what it learned: the plain texts that start in the tokens it
     # read from the start, and the conversations or tasks when it learned from them
     _, source, document, _, _ = rows[0]
     assert model_notice(store, record, {"text": 1}).split("\n\n")[0].splitlines() == [
         line for line in lines if line.startswith(f"{source} {document}:")]
     assert model_notice(store, record, {"conversations": 1}).split("\n\n")[0].splitlines() == [
-        line for line in lines if line.startswith(f"{depot.address} {talk}:")]
+        line for line in lines if line.startswith(f"{HERE} {talk}:")]
 
-    assert build(depot, "first model", store, TOKENIZER, log=lambda *_: None)["id"] == record["id"]
+    assert build(depot, "first model", store, TOKENIZER, url=HERE, log=lambda *_: None)["id"] == record["id"]
 
 
 def shared_depot(make_depot, me, english, french):
@@ -129,14 +139,18 @@ def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seede
     assert again["id"] == record["id"]  # the seed makes the same subset
 
 
-def test_shares_in_other_proportions_and_the_sample_count_the_same_way(make_depot, me):
+def test_the_sample_gives_each_share_its_part_of_the_bytes_in_the_corpus_s_order(make_depot, me, tmp_path):
     depot, library = shared_depot(make_depot, me, english=12, french=3)
     depot.new_dataset("mix", "classics", [(None, library)], [("en", 0.75), ("fr", 0.25)])
 
-    found = sample(depot, "mix", 10**6)
+    # each text is 7 bytes: 28 bytes give the english share 21 (3 texts) and the french one 7 (1 text)
+    found = list(sample(depot, "mix", 28, tmp_path / "work"))
 
-    pools = [depot.show(one["id"])["text"]["tags"][0] for one in found]
-    assert (pools.count("en"), pools.count("fr")) == (9, 3)
+    assert {where for where, _, _ in found} == {""}  # '' names the depot that holds the dataset
+    pools = [depot.show(text)["text"]["tags"][0] for _, text, _ in found]
+    assert (pools.count("en"), pools.count("fr")) == (3, 1)
+    assert {data for _, _, data in found} == {b"the dog", b"the fox"}
+    assert list(sample(depot, "mix", 28, tmp_path / "work")) == found  # the seeded order, whatever the run
 
 
 def test_shares_naming_a_tag_no_text_has_refuse_the_build(make_depot, me, tmp_path):
@@ -178,7 +192,7 @@ def test_a_dataset_builds_the_same_corpus_at_its_change_numbers_whatever_its_lib
     depot.edit_credits(first, {"title": "The fox"}, me)
     depot.decide("refused", [first], me)
 
-    again = build(depot, "pinned", store, TOKENIZER, log=lambda *_: None)
+    again = build(depot, "pinned", open_store((tmp_path / "other").as_uri()), TOKENIZER, log=lambda *_: None)
 
     assert again["id"] == before["id"]
     assert [(one["id"], one["title"]) for one in read_table(store, again, "texts").to_pylist()] == [(first, "Fox")]
@@ -186,7 +200,6 @@ def test_a_dataset_builds_the_same_corpus_at_its_change_numbers_whatever_its_lib
 
 def test_a_dataset_keeps_its_corpora_through_a_rename_and_a_new_dataset_of_its_old_name_has_none(make_depot, me,
                                                                                                  tmp_path):
-    from wpt_depot.corpus import latest
     depot = make_depot()
     depot.add([NewText(text="the fox", licenses=("CC0-1.0",))], me)
     depot.decide("admitted", "true", me)
@@ -201,14 +214,14 @@ def test_a_dataset_keeps_its_corpora_through_a_rename_and_a_new_dataset_of_its_o
     depot.edit_dataset(dataset, "mix renamed", [(None, library)])
     newcomer = depot.import_dataset(exported)  # the old dataset's row as it was, under a new id
 
-    assert latest(store, depot.address, dataset)["id"] == record["id"]
-    assert latest(store, depot.address, newcomer) is None
+    assert latest(store, depot.name(), dataset)["id"] == record["id"]
+    assert latest(store, depot.name(), newcomer) is None
 
     # the newcomer's row is the old one's then, yet another dataset gets a corpus of its own
     own = build(depot, "mix", store, TOKENIZER, log=lambda *_: None)
     assert own["id"] != record["id"] and own["dataset"]["id"] == newcomer
-    assert latest(store, depot.address, newcomer)["id"] == own["id"]
-    assert latest(store, depot.address, dataset)["id"] == record["id"]
+    assert latest(store, depot.name(), newcomer)["id"] == own["id"]
+    assert latest(store, depot.name(), dataset)["id"] == record["id"]
 
 
 def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_chooses_nothing_by_them(
@@ -231,3 +244,412 @@ def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_choo
     texts = {one["id"]: one["scores"] for one in read_table(store, record, "texts").to_pylist()}
     assert texts == {scored: [{"name": "machine-made", "value": 0.03, "content_version": 2},
                               {"name": "rank", "value": -1.5, "content_version": 1}], unscored: None}
+
+
+def test_an_erasure_carried_out_while_a_corpus_is_built_makes_it_stale_once_written_and_keeps_the_older_one(
+        make_depot, me, tmp_path):
+    # the erasure's own marking reads only the records that exist, and the build's record does not exist yet
+    depot, library = shared_depot(make_depot, me, english=2, french=0)
+    dataset = depot.new_dataset("all", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+    older = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    depot.edit_dataset(dataset, "all", [(None, library)], max_tokens=1000)
+    [text] = [row["id"] for row in depot.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) "
+                                             "WHERE value = 'de')")]
+    asked = []
+
+    def erase_while_finishing(state):
+        if state["stage"] == "finishing":
+            asked.append(depot.ask_erasure("a dog", [(text, 4, 7)], me))
+            assert depot.decide_erasure(asked[0], "admitted", me) is True
+
+    record = build(depot, "all", store, TOKENIZER, progress=erase_while_finishing, log=lambda *_: None)
+
+    assert record["stale"] == {"erasures": asked}
+    kept = {one["id"]: one for one in records(store)}
+    assert kept[record["id"]]["stale"] == {"erasures": asked}
+    assert corpora.fresh(kept[older["id"]])  # a stale corpus supersedes nothing
+
+
+def test_max_tokens_stops_each_share_at_its_first_text_that_would_pass_its_part(make_depot, me, tmp_path):
+    depot = make_depot()
+    depot.add([NewText(text=text, licenses=("CC0-1.0",), tags=("en",)) for text in
+               ("the dog", "the quick brown fox jumps over the lazy dog", "the fox", "dog")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    dataset = depot.new_dataset("all", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+    whole = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    lengths = [len(tokens) for shard in whole["shards"] for tokens, *_ in read_verified(store, shard)]
+    limit = lengths[0] + lengths[1] + lengths[2] - 1  # the third text in the corpus's order would pass it
+    depot.edit_dataset(dataset, "all", [(None, library)], max_tokens=limit)
+
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+
+    taken = [len(tokens) for shard in record["shards"] for tokens, *_ in read_verified(store, shard)]
+    assert taken == lengths[:2]  # the same order, cut short at its first text that would pass the limit
+    assert record["total_tokens"] <= limit
+    assert record["left_out"]["trimmed"] == 2
+
+
+def items_depot(make_depot, me, plain: int):
+    """A depot of `plain` texts tagged en (each 3 tokens with END), two conversations and one task, all
+    admitted in one library read by the dataset "all"; and the tokens a conversation and the task count."""
+    depot = make_depot()
+    depot.add([NewText(text="the dog", licenses=("CC0-1.0",), tags=("en",)) for _ in range(plain)]
+              + [item("conversation", CONVERSATION, "en"), item("conversation", CONVERSATION, "en"),
+                 item("task", TASK, "en")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    depot.new_dataset("all", "classics", [(None, library)])
+    conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
+    task = len(TOKENIZER.encode(task_text(TASK).encode("utf-8")))
+    return depot, library, conversation, task
+
+
+def corpus_tokens(store, record) -> int:
+    """Every token the corpus holds: its plain texts', its conversations' and its tasks' (task_text)."""
+    tasks = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines() if "tasks" in record else []
+    return (record["total_tokens"] + sum(one["tokens"] for one in record["conversation_shards"])
+            + sum(len(TOKENIZER.encode(task_text(json.loads(line)["content"]).encode("utf-8"))) for line in tasks))
+
+
+def test_max_tokens_takes_the_items_first_and_gives_the_shares_what_they_leave(make_depot, me, tmp_path):
+    depot, library, conversation, task = items_depot(make_depot, me, plain=6)
+    limit = 2 * conversation + task + 7  # the items fit, and leave 7 tokens: two plain texts of 3
+    depot.edit_dataset(depot.dataset("all")["id"], "all", [(None, library)], max_tokens=limit)
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+
+    assert (record["conversations"], record["tasks"]["count"]) == (2, 1)
+    assert record["total_tokens"] == 6 and record["left_out"]["trimmed"] == 4
+    assert corpus_tokens(store, record) == limit - 1
+
+
+def test_items_alone_past_max_tokens_stop_each_kind_at_its_first_item_that_would_pass(make_depot, me, tmp_path):
+    depot, library, conversation, task = items_depot(make_depot, me, plain=3)
+    assert task > conversation + 1  # so one conversation is all that fits, whatever the corpus's order
+    limit = conversation + 1
+    depot.edit_dataset(depot.dataset("all")["id"], "all", [(None, library)], max_tokens=limit)
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+
+    assert record["conversations"] == 1 and "tasks" not in record
+    assert record["total_tokens"] == 0  # the 1 token the items leave holds no plain text
+    assert record["left_out"]["trimmed items"] == 2 and record["left_out"]["trimmed"] == 3
+    assert corpus_tokens(store, record) == conversation <= limit
+
+
+def test_a_depot_moved_to_another_file_builds_the_same_corpus(make_depot, me, tmp_path):
+    depot, library, _, _ = items_depot(make_depot, me, plain=4)
+    first = build(depot, "all", open_store((tmp_path / "first").as_uri()), TOKENIZER, log=lambda *_: None)
+    moved = tmp_path / "elsewhere" / "moved.sqlite"
+    moved.parent.mkdir()
+    with sqlite3.connect(depot.address) as source, sqlite3.connect(moved) as target:
+        source.backup(target)
+    second_store = open_store((tmp_path / "second").as_uri())
+
+    second = build(Depot.view(str(moved)), "all", second_store, TOKENIZER, log=lambda *_: None)
+
+    assert second["id"] == first["id"] and second["depot"] == first["depot"] == depot.name()
+    for kind in ("shards", "conversation_shards"):
+        assert [one["sha256"] for one in second[kind]] == [one["sha256"] for one in first[kind]]
+    assert second["tasks"]["file"]["sha256"] == first["tasks"]["file"]["sha256"]
+    assert [one["sha256"] for one in second["tables"]["texts"]] == [one["sha256"] for one in first["tables"]["texts"]]
+
+
+def test_a_clone_builds_its_upstream_s_dataset_into_the_upstream_s_corpus(make_depot, me, tmp_path, serve):
+    upstream, _, _, _ = items_depot(make_depot, me, plain=4)
+    address = serve(upstream)
+    built = build(upstream, "all", open_store((tmp_path / "upstream").as_uri()), TOKENIZER, url=address,
+                  log=lambda *_: None)
+    follower = clone(address, str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
+
+    again = build(follower, "all", open_store((tmp_path / "follower").as_uri()), TOKENIZER, log=lambda *_: None)
+
+    assert again["depot"] == address and again["id"] == built["id"]
+
+
+def test_a_build_cut_short_goes_on_from_its_last_token_file_and_writes_the_same_corpus(make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=40, french=0)
+    depot.new_dataset("all", "classics", [(None, library)])
+    whole = build(depot, "all", open_store((tmp_path / "whole").as_uri()), TOKENIZER, shard_tokens=20,
+                  log=lambda *_: None)
+    saved = []
+
+    def stop_after_two(state):
+        saved.append(state)
+        if len(saved) == 2:
+            raise KeyboardInterrupt
+
+    store = open_store((tmp_path / "store").as_uri())
+    with pytest.raises(KeyboardInterrupt):
+        build(depot, "all", store, TOKENIZER, work=tmp_path / "work", save=stop_after_two, shard_tokens=20,
+              log=lambda *_: None)
+    assert records(store) == []  # no record until the build is whole
+
+    resumed = build(depot, "all", store, TOKENIZER, work=tmp_path / "work", checkpoint=saved[-1], shard_tokens=20,
+                    log=lambda *_: None)
+
+    assert resumed["id"] == whole["id"]
+    assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in whole["shards"]]
+
+
+def test_a_new_corpus_of_a_dataset_deletes_the_older_one_which_keeps_its_record_and_builds_again_the_same(
+        make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=3, french=0)
+    dataset = depot.new_dataset("all", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+    first = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    depot.edit_dataset(dataset, "all", [(None, library)], max_tokens=5)
+
+    second = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+
+    kept = {one["id"]: one for one in records(store)}
+    assert kept[first["id"]]["deleted"]["whole"] and kept[first["id"]]["deleted"]["why"] == corpora.SUPERSEDED
+    assert not any(store.has(corpora.File.of(one)) for one in corpora.files(first))
+    assert corpora.latest_fresh(store, depot.name(), dataset)["id"] == second["id"]
+    # built again from its own record, the deleted corpus is the same corpus
+    again = build(depot, "all", store, TOKENIZER, dataset=kept[first["id"]]["dataset"], log=lambda *_: None)
+    assert again["id"] == first["id"] and corpora.fresh(again)
+    # of an older revision, it leaves the corpus of the current revision as it is, and the latest one still
+    assert corpora.fresh({one["id"]: one for one in records(store)}[second["id"]])
+    assert corpora.latest_fresh(store, depot.name(), dataset)["id"] == second["id"]
+
+
+def test_a_cap_deletes_the_corpus_downloaded_least_recently_and_refuses_a_corpus_bigger_than_itself(
+        make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=3, french=3)
+    store = open_store((tmp_path / "store").as_uri())
+    depot.new_dataset("en", "classics", [(None, library)], [("en", 1.0)])
+    depot.new_dataset("fr", "classics", [(None, library)], [("fr", 1.0)])
+    english = build(depot, "en", store, TOKENIZER, log=lambda *_: None)
+    french = build(depot, "fr", store, TOKENIZER, log=lambda *_: None)
+    size = sum(one["bytes"] for one in corpora.files(english))
+    downloaded = {english["id"]: 2.0, french["id"]: 1.0}  # french was downloaded least recently
+    depot.new_dataset("all", "classics", [(None, library)])
+
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None,
+                   room=lambda folder: Room(store, 2 * size + size // 2, folder, downloaded.get, set))
+
+    kept = {one["id"]: one for one in records(store)}
+    assert "deleted" in kept[french["id"]] and "deleted" not in kept[english["id"]]
+    assert corpora.fresh(kept[record["id"]])
+    with pytest.raises(TooBig):
+        build(depot, "fr", store, TOKENIZER, dataset={**depot.dataset("fr"), "max_tokens": 4},
+              log=lambda *_: None, room=lambda folder: Room(store, 10, folder))
+
+
+def test_a_cap_weighs_only_the_items_max_tokens_keeps(make_depot, me, tmp_path):
+    depot = make_depot()
+    depot.add([NewText(text="the dog", licenses=("CC0-1.0",), tags=("en",)) for _ in range(20)]
+              + [item("conversation", CONVERSATION, "en") for _ in range(200)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
+    depot.new_dataset("all", "classics", [(None, library)], max_tokens=2 * conversation + 30)
+    alone = build(depot, "all", open_store((tmp_path / "alone").as_uri()), TOKENIZER, shard_tokens=6,
+                  log=lambda *_: None)
+    size = sum(one["bytes"] for one in corpora.files(alone))
+    store = open_store((tmp_path / "store").as_uri())
+
+    # the 198 conversations the limit leaves out take no room in the estimate a cap of three times the size checks
+    record = build(depot, "all", store, TOKENIZER, shard_tokens=6, log=lambda *_: None,
+                   room=lambda folder: Room(store, 3 * size, folder))
+
+    assert record["id"] == alone["id"] and record["conversations"] == 2
+
+
+def test_a_corpus_bigger_than_the_cap_is_refused_before_any_other_corpus_is_deleted_for_it(make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=40, french=2)
+    depot.new_dataset("fr", "classics", [(None, library)], [("fr", 1.0)])
+    depot.new_dataset("all", "classics", [(None, library)])
+    whole = build(depot, "all", open_store((tmp_path / "whole").as_uri()), TOKENIZER, shard_tokens=20,
+                  log=lambda *_: None)
+    size = sum(one["bytes"] for one in corpora.files(whole))
+    store = open_store((tmp_path / "store").as_uri())
+    french = build(depot, "fr", store, TOKENIZER, log=lambda *_: None)
+
+    with pytest.raises(TooBig, match="no corpus was deleted"):
+        build(depot, "all", store, TOKENIZER, shard_tokens=20, log=lambda *_: None,
+              room=lambda folder: Room(store, size // 2, folder))
+
+    assert corpora.fresh(records(store)[0]) and records(store)[0]["id"] == french["id"]
+
+
+def test_a_cap_deletes_the_files_a_build_left_without_a_record_and_that_build_started_again_starts_over(
+        make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=40, french=0)
+    dataset = depot.new_dataset("all", "classics", [(None, library)])
+    row = depot.dataset("all")
+    whole = build(depot, "all", open_store((tmp_path / "whole").as_uri()), TOKENIZER, shard_tokens=20,
+                  log=lambda *_: None)
+    size = sum(one["bytes"] for one in corpora.files(whole))
+    store = open_store((tmp_path / "store").as_uri())
+    saved = []
+
+    def stop_after_five(state):
+        saved.append(state)
+        if len(saved) == 5:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        build(depot, "all", store, TOKENIZER, work=tmp_path / "work", save=stop_after_five, shard_tokens=20,
+              log=lambda *_: None)
+    [left] = [key for key in store.kind.list("corpora/", deep=False)]
+    left_bytes = sum(store.kind.list(left, deep=True).values())
+    depot.edit_dataset(dataset, "all", [(None, library)], max_tokens=10**6)  # the next build goes into a new folder
+
+    record = build(depot, "all", store, TOKENIZER, shard_tokens=20, log=lambda *_: None,
+                   room=lambda folder: Room(store, size + left_bytes - 1, folder))
+
+    assert corpora.fresh(record)
+    assert sum(store.kind.list(left, deep=True).values()) < left_bytes  # a file at a time, as the build needed room
+    resumed = build(depot, "all", store, TOKENIZER, dataset=row, work=tmp_path / "work", checkpoint=saved[-1],
+                    shard_tokens=20, log=lambda *_: None)
+    assert resumed["id"] == whole["id"] and not corpora.missing(store, resumed["folder"], corpora.files(resumed))
+
+
+def test_an_erasure_of_a_text_the_dataset_never_read_leaves_its_corpus_s_folder_and_id_as_they_were(
+        make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=3, french=0)
+    [outside] = depot.add([NewText(text="the cat", licenses=("CC0-1.0",))], me)
+    depot.new_dataset("all", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+    first = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    corpora.delete(store, first, "a test deleted it")
+    request = depot.ask_erasure("a cat", [(outside, 4, 7)], me)
+    assert depot.decide_erasure(request, "admitted", me) is True
+
+    again = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+
+    assert (again["id"], again["folder"]) == (first["id"], first["folder"]) and corpora.fresh(again)
+    assert corpora.find(store, first["id"])["id"] == first["id"]  # one record of that id
+
+
+def two_depots(make_depot, me):
+    """(a depot, another depot named other, its library, its text, the id of the dataset all of the first reading
+    one library of each)."""
+    depot, library = shared_depot(make_depot, me, english=3, french=0)
+    other = make_depot("other")
+    [theirs] = other.add([NewText(text="the lazy dog", licenses=("CC0-1.0",), tags=("en",))], me)
+    other.decide("admitted", "true", me)
+    their_library = other.new_library("theirs")
+    other.put(their_library, "true")
+    dataset = depot.new_dataset("all", "classics", [(None, library), (other.address, their_library)])
+    return depot, other, their_library, theirs, dataset
+
+
+def moved(depot, other, their_library, dataset, to):
+    """Copy the other depot's file to to, delete the first file and point the dataset at the copy."""
+    to.parent.mkdir()
+    with sqlite3.connect(other.address) as source, sqlite3.connect(to) as target:
+        source.backup(target)
+    Path(other.address).unlink()
+    library = depot.dataset_by_id(dataset)["libraries"][0]["library"]
+    depot.edit_dataset(dataset, "all", [(None, library), (str(to), their_library)])
+
+
+def test_another_depot_moved_to_another_file_builds_the_same_corpus_which_records_no_path(make_depot, me, tmp_path):
+    depot, other, their_library, theirs, dataset = two_depots(make_depot, me)
+    first = build(depot, "all", open_store((tmp_path / "first").as_uri()), TOKENIZER, log=lambda *_: None)
+    moved(depot, other, their_library, dataset, tmp_path / "elsewhere" / "moved.sqlite")
+    second_store = open_store((tmp_path / "second").as_uri())
+
+    second = build(depot, "all", second_store, TOKENIZER, log=lambda *_: None)
+
+    assert second["id"] == first["id"] and second["build"] == first["build"]
+    assert second["dataset"]["libraries"][1]["depot"] == "other" and "other" in second["erasures"]
+    # every file but the dataset table, which holds the build's time and the dataset's revision
+    files = [*second["shards"], *second["conversation_shards"], *second["tables"]["texts"],
+             second["tables"]["licenses"], second["tables"]["notices"]]
+    assert [one["sha256"] for one in files] == [one["sha256"] for one in [
+        *first["shards"], *first["conversation_shards"], *first["tables"]["texts"], first["tables"]["licenses"],
+        first["tables"]["notices"]]]
+    sources = {source for shard in second["shards"] for _, source, _, _, _ in read_verified(second_store, shard)}
+    assert sources == {depot.name(), "other"}
+    assert {one["depot"] for one in read_table(second_store, second, "texts").to_pylist()} == {depot.name(), "other"}
+    [copied] = read_table(second_store, second, "dataset").to_pylist()
+    assert str(tmp_path) not in json.dumps(second) + json.dumps(copied, default=str)
+
+
+def test_a_build_where_two_depots_would_carry_one_name_is_refused(make_depot, me, tmp_path):
+    depot, library = shared_depot(make_depot, me, english=1, french=0)
+    store = open_store((tmp_path / "store").as_uri())
+    namesakes = []
+    for folder, name in (("twin", depot.name()), ("first", "other"), ("second", "other")):
+        (tmp_path / folder).mkdir()
+        one = Depot.new(str(tmp_path / folder / "depot.sqlite"), About(name, "Ada Lovelace", "ada@example.org"))
+        namesakes.append((one.address, one.new_library("theirs")))
+    depot.new_dataset("same as the holder", "classics", [(None, library), namesakes[0]])
+    depot.new_dataset("two others", "classics", [(None, library), *namesakes[1:]])
+
+    for dataset in ("same as the holder", "two others"):
+        with pytest.raises(Refused, match="carry the name"):
+            build(depot, dataset, store, TOKENIZER, log=lambda *_: None)
+    assert records(store) == []
+
+
+def test_the_text_parts_of_a_corpus_reading_another_depot_are_served_from_its_moved_file_without_a_path(
+        make_depot, me, tmp_path):
+    depot, other, their_library, theirs, dataset = two_depots(make_depot, me)
+    moved(depot, other, their_library, dataset, tmp_path / "elsewhere" / "moved.sqlite")
+    store = open_store((tmp_path / "store").as_uri())
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+
+    lines = b"".join(b"".join(exports.part(depot, store, record, number, "jsonl.zst"))
+                     for number in range(len(record["tables"]["texts"])))
+
+    rows = [json.loads(line) for line in zstd.decompress(lines).decode().splitlines()]
+    assert {row["depot"] for row in rows} == {depot.name(), "other"}
+    assert [row["text"] for row in rows if row["id"] == theirs] == ["the lazy dog"]
+    assert str(tmp_path) not in zstd.decompress(lines).decode()
+
+
+def test_an_erasure_in_another_depot_makes_its_corpus_stale_and_its_rebuild_another_corpus(make_depot, me, tmp_path):
+    depot, other, _, theirs, _ = two_depots(make_depot, me)
+    store = open_store((tmp_path / "store").as_uri())
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    request = other.ask_erasure("a dog", [(theirs, 4, 8)], me)
+    assert other.decide_erasure(request, "admitted", me) is True
+
+    assert mark_stale(store, [theirs], [request]) == [record["id"]]  # what carrying an erasure out does to the store
+    again = build(depot, "all", store, TOKENIZER, dataset=record["dataset"], log=lambda *_: None)
+
+    assert again["id"] != record["id"] and corpora.fresh(again) and again["erasures"]["other"] == [request]
+
+
+def test_a_corpus_built_before_another_depot_moved_still_serves_its_text_parts_from_the_moved_file(
+        make_depot, me, tmp_path):
+    depot, other, their_library, theirs, dataset = two_depots(make_depot, me)
+    store = open_store((tmp_path / "store").as_uri())
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    moved(depot, other, their_library, dataset, tmp_path / "elsewhere" / "moved.sqlite")
+
+    again = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    lines = b"".join(b"".join(exports.part(depot, store, again, number, "jsonl.zst"))
+                     for number in range(len(again["tables"]["texts"])))
+
+    assert again["id"] == record["id"]
+    rows = [json.loads(line) for line in zstd.decompress(lines).decode().splitlines()]
+    assert [row["text"] for row in rows if row["id"] == theirs] == ["the lazy dog"]
+
+
+def test_a_stale_corpus_built_before_another_depot_moved_is_rebuilt_from_the_moved_file(make_depot, me, tmp_path):
+    depot, other, their_library, theirs, dataset = two_depots(make_depot, me)
+    store = open_store((tmp_path / "store").as_uri())
+    record = build(depot, "all", store, TOKENIZER, log=lambda *_: None)
+    moved(depot, other, their_library, dataset, tmp_path / "elsewhere" / "moved.sqlite")
+    elsewhere = Depot.open(str(tmp_path / "elsewhere" / "moved.sqlite"))
+    request = elsewhere.ask_erasure("a dog", [(theirs, 4, 8)], me)
+    assert elsewhere.decide_erasure(request, "admitted", me) is True
+    mark_stale(store, [theirs], [request])
+
+    again = build(depot, "all", store, TOKENIZER, dataset=record["dataset"], log=lambda *_: None)
+
+    assert again["id"] != record["id"] and corpora.fresh(again) and again["erasures"]["other"] == [request]

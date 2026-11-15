@@ -48,6 +48,11 @@ backups record: a depot restored to an earlier moment numbers its changes
 on from there again, and its timeline keeps them apart from the changes
 of the same numbers the depot it came from made.
 
+The writing connection keeps a page cache of CACHE_KIB KiB, and after each
+write SQLite truncates the WAL back to JOURNAL_LIMIT bytes once its pages
+are folded into the file, so the WAL does not keep the size of the largest
+write.
+
 A depot that nothing backs up holds the marker NO_BACKUP in its waiting
 folder (`wpt depot backup --off`, Database.backup_off): its writes record no
 change file, so the folder does not grow, and its next backup turns the
@@ -78,7 +83,11 @@ PENDING, FINAL = ".pending", ".changeset"
 FULL_COPY_NEXT = "full-copy-next"  # the marker of a file made whole: its next backup sends a full copy
 TIMELINE = "timeline"  # the file of the waiting folder that holds the id of the file's timeline
 NO_BACKUP = "no-backup"  # the marker of a depot nothing backs up: its writes record no change file
-WRITER = ("synchronous = FULL", "secure_delete = ON", "temp_store = FILE")  # the pragmas of a connection that writes
+# the pragmas of a connection that writes: the WAL file cut back to JOURNAL_LIMIT bytes once a checkpoint has copied
+# it into the file, so it does not keep the size of the largest write, and a page cache of CACHE_KIB KiB
+JOURNAL_LIMIT, CACHE_KIB = 64 << 20, 256 << 10
+WRITER = ("synchronous = FULL", "secure_delete = ON", "temp_store = FILE", f"journal_size_limit = {JOURNAL_LIMIT}",
+          f"cache_size = -{CACHE_KIB}")
 STEPS = 10_000  # SQLite steps between two checks of a person's statement's time limit
 # what a person's statement may do: read rows, call functions, recurse in a common table expression
 READS = {apsw.SQLITE_SELECT, apsw.SQLITE_READ, apsw.SQLITE_FUNCTION, apsw.SQLITE_RECURSIVE}
@@ -284,6 +293,29 @@ class Database:
         """person_query's rows as dicts by column name."""
         names = person_columns(self.person(), sql)
         return [dict(zip(names, one)) for one in self.person_query(sql, params)]
+
+    def select_into(self, con: apsw.Connection, table: str, query: str):
+        """Add the ids a query that holds a person's SQL gives to the
+        temporary table (one column, id) on the writer connection con, inside
+        a write: the query must be one statement that only reads (checked on
+        person()), and it runs under an authorizer that lets it read and add
+        rows to that table only. BadQuery otherwise, or when SQLite refuses
+        it."""
+        one_statement(self.person(), query)
+
+        def authorize(action, first, second, database, trigger):
+            if action == apsw.SQLITE_INSERT and first == table and database == "temp":
+                return apsw.SQLITE_OK
+            return _authorize(action, first, second, database, trigger)
+        previous = con.authorizer
+        con.authorizer = authorize
+        try:
+            con.execute(f"INSERT INTO temp.{table} (id) {query}")
+        except (apsw.SQLError, apsw.AuthError, apsw.ConstraintError, apsw.RangeError, apsw.MismatchError,
+                apsw.TooBigError, apsw.ReadOnlyError) as error:
+            raise BadQuery(f"{type(error).__name__}: {error}") from None
+        finally:
+            con.authorizer = previous
 
     # Writing
 

@@ -7,7 +7,11 @@
 // (filter.tsx), kept in the address with the current text and the mode:
 // #/texts/ID?library=L&view=blob. The filter bar refines it. When it is one
 // library, its head stands above the columns (library-head.tsx); ticked
-// texts are acted on through the bar at the bottom (bulk.tsx).
+// texts are acted on through the bar at the bottom (bulk.tsx). The ticked
+// texts are those ticked one by one, or, once "Tick all" is pressed, every
+// text the filter matches less those unticked since, at the change number
+// the playlist's page was read at; either way the bar sends them as a
+// selection (filter.tsx), never as the list of every id.
 //
 // The keys of the playlist work anywhere but in a field, the editor or a
 // dialog: J or the down arrow (in the playlist) opens the next text, K or
@@ -23,12 +27,13 @@
 import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useAbout } from "../about";
-import { post, type Answer } from "../api";
+import { write, type Answer } from "../api";
 import type { Deciding } from "../blocked";
 import { type EditorHandle } from "../code-editor";
 import { declared, readDeclarant, saveDeclarant, useDeclarant } from "../declarant";
 import { CountingNote, matched, useCounts } from "../counts";
-import { BY_ID, EVERY, FilterBar, fromQuery, search, toQuery, useSearch, type Place, type TextFilter } from "../filter";
+import { type Decided } from "../decide-forms";
+import { EVERY, FilterBar, fromQuery, named as namedIds, sent, toQuery, useSearch, type Place, type Selection, type TextFilter } from "../filter";
 import { plural, Problems, required, RequiredNote, useLibraries } from "../parts";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
@@ -46,6 +51,10 @@ const LIMIT = 100; // texts of a playlist page
 // where the next one now stands when the decision took it out of the list).
 type Pick = { kind: "first" } | { kind: "last" } | { kind: "after"; id: string; index: number };
 type Said = { status: Deciding; id: string; title: string; answer: Answer<{ decision: string }> } | { words: ReactNode };
+// What is ticked: the ids ticked one by one (all false), or every text the
+// filter matches at change less the ids unticked (all true).
+type Ticked = { all: boolean; ids: Set<string>; change: number | null };
+const NONE: Ticked = { all: false, ids: new Set(), change: null };
 
 export function Workspace({ current, query }: { current: string | null; query: URLSearchParams }) {
   const queryText = query.toString();
@@ -55,12 +64,11 @@ export function Workspace({ current, query }: { current: string | null; query: U
   const playlist = useSearch(filter, LIMIT);
   const { answer } = playlist;
   const rows = answer?.ok ? answer.data.rows : [];
-  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [ticked, setTicked] = useState<Ticked>(NONE);
   // a new filter, however it was reached (a link, the filter bar, the back button), starts with nothing ticked
   const filterKey = JSON.stringify({ ...filter, ids: null });
   const [tickedFor, setTickedFor] = useState(filterKey);
-  if (tickedFor !== filterKey) { setTickedFor(filterKey); setTicked(new Set()); }
-  const [tickingAll, setTickingAll] = useState(false);
+  if (tickedFor !== filterKey) { setTickedFor(filterKey); setTicked(NONE); }
   const [version, setVersion] = useState(0); // raised after every change, so each column reads again
   const [said, setSaid] = useState<Said | null>(null);
   const [asking, setAsking] = useState<Deciding | null>(null);
@@ -133,7 +141,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
     const row = rows[at];
     const title = row ? row.title ?? (row.kind ? `an item of kind ${row.kind}` : "untitled text") : current;
     setDeciding(true);
-    const a = await post<{ decision: string }>("/api/decisions", { status, texts: [current], declaration: { name: who.name.trim(), email: who.email.trim(), accepted: true } });
+    const a = await write<Decided>("/api/decisions", { status, selection: sent(namedIds([current])), declaration: { name: who.name.trim(), email: who.email.trim(), accepted: true } });
     setDeciding(false);
     setSaid({ status, id: current, title, answer: a });
     if (!a.ok) return;
@@ -149,25 +157,24 @@ export function Workspace({ current, query }: { current: string | null; query: U
     const row = rows[at];
     const title = row ? row.title ?? (row.kind ? `an item of kind ${row.kind}` : "untitled text") : current;
     setDeciding(true);
-    const a = await post<{ taken_out: string[]; not_held: string[] }>(`/api/libraries/${encodeURIComponent(library.id)}/taken-out`, { texts: [current] });
+    const a = await write<{ taken_out: number; not_held: number }>(`/api/libraries/${encodeURIComponent(library.id)}/taken-out`, { selection: sent(namedIds([current])) });
     setDeciding(false);
     if (!a.ok) { setSaid({ words: <Problems problems={[`Not taken out: ${title} (${current}).`, ...a.problems]} /> }); return; }
+    if (!a.data.taken_out) { setSaid({ words: <>{library.name} did not hold {title} <span className="ledger">({current})</span>.</> }); return; }
     setSaid({ words: <>Taken out of {library.name}: {title} <span className="ledger">({current})</span>; it stays admitted.</> });
     pick.current = { kind: "after", id: current, index: Math.max(at, 0) };
     changed();
   };
 
+  const isTicked = (id: string) => ticked.all !== ticked.ids.has(id);
   const tick = (ids: string[], on: boolean) => {
-    const next = new Set(ticked);
-    ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
-    setTicked(next);
+    const next = new Set(ticked.ids);
+    ids.forEach((id) => (on !== ticked.all ? next.add(id) : next.delete(id)));
+    const change = ticked.change ?? (answer?.ok ? answer.data.change : null);
+    setTicked(!ticked.all && next.size === 0 ? NONE : { ...ticked, ids: next, change });
   };
-  const tickAll = async () => {
-    setTickingAll(true);
-    const a = await search(filter, {}, 1, BY_ID, true);
-    setTickingAll(false);
-    if (a.ok) setTicked(new Set(a.data.ids));
-  };
+  // every text the filter matches at the change the playlist's page was read at; nothing is read
+  const tickAll = () => { if (answer?.ok) setTicked({ all: true, ids: new Set(), change: answer.data.change }); };
 
   // the keys, read again at every render so they act on what is shown now
   useEffect(() => {
@@ -183,7 +190,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
       else if (key === "a") decide("admitted");
       else if (key === "r") decide("refused");
       else if (key === "t") takeOut();
-      else if (key === "x" && current) tick([current], !ticked.has(current));
+      else if (key === "x" && current) tick([current], !isTicked(current));
       else if (key === "e") editor.current?.focus();
       else return;
       e.preventDefault();
@@ -205,6 +212,11 @@ export function Workspace({ current, query }: { current: string | null; query: U
   };
   const named = saved.find((s) => JSON.stringify({ ...s.filter, ids: null }) === JSON.stringify({ ...filter, ids: null }))?.name;
   const counts = useCounts(filter, version);
+  const total = counts?.done && !counts.problems ? matched(counts) : null; // how many texts are open, once counted
+  const selection: Selection | null = ticked.all
+    ? { filter, change: ticked.change ?? undefined, unticked: [...ticked.ids] }
+    : ticked.ids.size ? { ...namedIds([...ticked.ids]), change: ticked.change ?? undefined } : null;
+  const tickedCount = ticked.all ? (total === null ? null : Math.max(0, total - ticked.ids.size)) : ticked.ids.size;
 
   return (
     <div className="workspace-frame" onClickCapture={guard}>
@@ -231,8 +243,8 @@ export function Workspace({ current, query }: { current: string | null; query: U
             {!answer && <p className="aside">Reading the texts</p>}
             {answer && !answer.ok && <Problems problems={answer.problems} />}
             {answer?.ok && (
-              <Playlist found={answer.data} busy={playlist.pending} current={current} link={link} ticked={ticked} onTick={tick}
-                onTickAll={tickAll} tickingAll={tickingAll} order={playlist.order} onOrder={playlist.setOrder}
+              <Playlist found={answer.data} busy={playlist.pending} current={current} link={link} isTicked={isTicked} everyTicked={ticked.all && ticked.ids.size === 0}
+                onTick={tick} onTickAll={tickAll} total={total} sorted={about?.sorted ?? 0} order={playlist.order} onOrder={playlist.setOrder}
                 limit={playlist.limit} onFirst={playlist.first} onPrevious={playlist.previous} onNext={playlist.next} counting={counts} />
             )}
           </div>
@@ -242,8 +254,8 @@ export function Workspace({ current, query }: { current: string | null; query: U
           </div>
         </>}
       </div>
-      <Bulk ticked={ticked} libraries={libraries} library={library} into={into} onUntick={() => setTicked(new Set())}
-        onDone={(words) => { setSaid({ words }); setTicked(new Set()); changed(); }} />
+      <Bulk selection={selection} count={tickedCount} libraries={libraries} library={library} into={into} onUntick={() => setTicked(NONE)}
+        onDone={(words) => { setSaid({ words }); setTicked(NONE); changed(); }} />
       {said && <SaidLine said={said} />}
       {!blob && <Legend takes={Boolean(library && !library.locked_at && !library.upstream)} who={declared(who) ? who : null} confirmation={about?.confirmation ?? null} requirements={about?.requirements ?? null} />}
       <Dialog open={asking !== null} onClose={() => setAsking(null)} title="Who decides from this browser?">

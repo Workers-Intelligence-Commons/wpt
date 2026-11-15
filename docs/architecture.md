@@ -1,22 +1,24 @@
 # Architecture
 
 **The texts live in a depot; the repository holds none.** The repository
-holds the code, the model, tokenizer and series recipes, and the images of
-agentic tasks. The texts, the decisions on them and what to train on live
-in depots, and everything built or trained lives in a store.
+holds the code, the model and series recipes, and the images of agentic
+tasks. The texts, the decisions on them, what to train on and the
+tokenizer recipes live in depots, and everything built or trained lives in
+a store.
 
 - A depot is one SQLite file, known by its address, of tables: the texts and the
   structured items (conversations, tasks), each with its license, credits
   and notice; the people's decisions on them; the libraries that group
-  admitted texts; the erasures; and the datasets, each naming libraries and
-  the share of each tag. A depot can follow an upstream depot and pull its
-  updates (`wpt_depot`).
+  admitted texts; the erasures; the datasets, each naming libraries and
+  the share of each tag; and the tokenizer recipes, each with the
+  vocabulary of each of its versions. A depot can follow an upstream depot
+  and pull its updates (`wpt_depot`).
 - A corpus is what a dataset is built into, in the store: the token files,
   the conversations and tasks, and copies of every text's credits,
   licenses and notices, so it says everything about what it holds even once
   the depots it read change or vanish (`wpt_depot.corpus`).
-- A model recipe names a depot address and a dataset in it; training reads
-  that dataset's corpus from the store, and every size of a model series
+- A model recipe names a depot by its public address and a dataset in it; training reads
+  that dataset's latest fresh corpus from the store, and every size of a model series
   reads the same corpus, the smaller sizes its first part.
 
 ## Components and services
@@ -43,7 +45,12 @@ A depot is one SQLite file, given as a path or a `file://` address and
 known by that address. The setting `WPT_DEPOT`, in the environment or in
 `.env`, names the depot that `wpt depot` and `wpt depot web` work on, as
 `WPT_STORE` names the store. `wpt depot new ADDRESS` makes an empty one,
-with its name, its maintainer and its takedown contact.
+with its name, its maintainer and its takedown contact. The setting
+`WPT_DEPOT_URL`, read the same way, is the depot's public address, the web
+address of its `wpt depot web`: its corpora name the depot by it, never by
+its file, and a depot without it is named by its name. A corpus names
+another local depot it reads by that depot's name too
+([data-selection.md](data-selection.md), "Corpora").
 
 Its tables are `about` (the depot's name, maintainer, takedown contact
 and upstream), `changes` (every change: its number, its kind and its
@@ -63,7 +70,7 @@ tags, libraries, datasets and corpora), [licenses.md](licenses.md)
 **Ids.** Every id (of a text, a decision, a library, an erasure, a notice
 or a dataset) is the depot's name, a hyphen and a number: `my-depot-17`. The
 depot's name is made of letters, digits, `.`, `_` and `-`, and begins with a letter or a digit. A reference to an
-id in another table, in a dataset, in a corpus or in a tokenizer lock holds
+id in another table, in a dataset, in a corpus or in a vocabulary's list of texts holds
 the whole id, so an id names one thing across depots. The number is one
 past the last number of that kind of id the depot gave (`numbers`), an
 erased text's included, so a number is never given twice. A clone takes a
@@ -95,9 +102,21 @@ rows of `content_lists`, keyed by the text's id and the version number and
 recording their change number, and each revision of the text names the
 content version it reads. A revision of a text also holds its scores,
 each with the content version it was made from. Memberships record the change
-numbers a text joined and left a library at. A depot can so be read as it
-was at any change number, which a dataset names for each library it
-reads.
+numbers a text joined and left a library at. A decision on a text is a
+row of `text_decisions`, with the change number it was made at, so a
+decision on a million texts writes a million small rows and no revision. A
+depot can so be read as it was at any change number, which a dataset names
+for each library it reads.
+
+**Status and counts.** The current revision of each text stores the status
+its decisions make, and the index `texts_status` holds the current texts by
+status, then in the numeric order of their ids. The table `counts` holds
+how many current texts the depot has, and how many have each status, each
+tag and each license, each library holds and each decision is on. Every
+write keeps the stored statuses and the counts right in its own
+transaction, so a page reads them at once whatever the depot's size; one
+module writes `counts` (`wpt_depot/counts.py`), and `wpt depot recount`
+makes it again from the rows.
 
 **Contents.** A content version, a plain text or an item's JSON, is the
 ordered list of its parts, and its row of `content_lists` holds that list,
@@ -134,8 +153,15 @@ every one of its rows under `<name>_revisions`. The `texts` view joins
 each text with the content version its current revision reads, its length
 and the libraries that hold it now. The `contents` view gives each content
 version's whole text, its parts joined in order, and `content_lists` its
-rows as they are. The other tables, `parts`, `memberships`, `pins` and
-`pulls` included, are seen as they are. A query that names no text column
+rows as they are. The other tables, `parts`, `memberships`, `pins`,
+`text_decisions`, `counts` and `pulls` included, are seen as they are.
+The `texts` view gives each text's decisions as a list read from
+`text_decisions`, in order. The column `decisions` of `texts_revisions` is
+unused: every revision the current format writes holds `[]` there, and a
+past revision brought up from an older format keeps the list it held, so a query over
+past revisions reads the decisions from `text_decisions` and its change
+numbers. The column stays because removing it rewrites the whole table.
+A query that names no text column
 reads the views without joining any part, so a query over the texts'
 other columns costs the same whatever their size. A query that reads the
 text of a content version bigger than one SQLite value holds fails with an
@@ -179,15 +205,26 @@ web address (`--upstream`) and is refused without it. A newer depot is
 never brought down: the command refuses it.
 
 An SQLite file of format 4 or newer, the one named or the one just
-written from a folder, is brought up in place, one step per format. Each
-step is one transaction, so a step cut short leaves the file as it was and
-runs again whole. It records a new `about` revision at its format under a
-change of kind `upgrade`. The change files record no change of layout, so
+written from a folder, is brought up in place, one step per format. A
+step records a new `about` revision at its format under a change of kind
+`upgrade`. A step that fits one transaction leaves the file as it was when
+it is cut short, and runs again whole. A step that rewrites every current
+text runs in several transactions, so its WAL stays the size of one batch:
+the first marks the depot as half upgraded, each next one writes one batch
+of rows and records where it stopped, and the last removes the mark. Every
+way into a half-upgraded depot but `wpt depot upgrade` refuses it, and the
+upgrade run again goes on from the batch after the last one written. It
+says how far it is as it goes. The change files record no change of layout, so
 before a step the file is marked for a full copy, under a new timeline, at
 its next backup. The step to format 5 builds the index `texts_order`, the
 current texts in the numeric order of their ids. It is one `CREATE INDEX`
 that reads each current text's row once and rewrites no table, and it says
-what it does before it starts and how long it took.
+what it does before it starts and how long it took. The step to format 6
+writes each current text's decisions as rows of `text_decisions` and its
+status, a batch of rows at a time, then builds the index `texts_status`
+and fills `counts`. It also makes the tables of the tokenizer recipes, of
+their vocabularies and of the texts each vocabulary trained on, empty, and
+the column `max_tokens` of the datasets.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
@@ -336,6 +373,14 @@ cache/<stage>/<fingerprint>        only what can be rebuilt
 
 `wpt store list` lists the corpora and models.
 
+The store keeps the latest fresh corpus of each dataset and the record of
+every corpus (`wpt_depot/corpora.py`). A build deletes the dataset's
+corpus before it once its own is whole, and, under the cap
+`WPT_CORPORA_CAP`, deletes the files of folders without a record, then
+those of the corpus downloaded least recently, until its own fit, never
+those of a corpus being built or downloaded. A deleted corpus's record stays, marked deleted with the
+reason, and building it again checks that it gives the same id.
+
 Hashes do two jobs. Every read checks the bytes against their sha256: a
 record names each file it points at by the one shape `{"key", "sha256"}` (the
 file's key in the store and its sha256), a record holds the
@@ -392,19 +437,17 @@ ends; [observability.md](observability.md)).
 
 `packages/wpt-recipes/src/wpt_recipes/recipes.py` (`Recipes`) is the only
 code that reads or writes the repository's data. It hands out documents
-and bytes, never a path under `data/`. It holds the model, tokenizer and
-series recipes, the tokenizer locks, and the images of agentic tasks:
+and bytes, never a path under `data/`. It holds the model and series
+recipes and the images of agentic tasks:
 their Dockerfiles, locks, license lists and pools of tools (`tools.json`).
 `wpt train`, `wpt manager`, `wpt eval`, `wpt doctor`, the
 image commands of `wpt agent` and the task reader of `wpt_agent` read them
 through it. It checks every file it reads against its schema, and its
-check adds the rules across files: a recipe names a tokenizer recipe that
-exists, a series derives every size, an image's pool takes no built-in
-tool's name. A recipe whose depot address or dataset name is still empty
+check adds the rules across files: a series derives every size, and an
+image's pool takes no built-in tool's name. A recipe whose depot or dataset is still empty
 reads, and the check names it for a person to fill in. People edit the
 recipes and `tools.json` as files; `Recipes` writes only the generated
-files (a tokenizer's `.lock.json`, an image's `lock.json` and
-`licenses.json`), for the command that makes them, after their schema,
+files (an image's `lock.json` and `licenses.json`), for the command that makes them, after their schema,
 through a temporary file and a rename.
 
 Two checks hold the rule. A test
@@ -450,7 +493,8 @@ refused change writes nothing.
 | the depot's layout brought up to the code's format | `upgrade` | none |
 | the depot's maintainer and takedown contact | `about [--maintainer M] [--takedown-contact C]` | `GET /api/about` reads them; page "Depot" |
 | a read query | `sql QUERY` | `POST /api/sql` |
-| the depot at a glance | none | `GET /api/decisions/latest`; pages "Overview" and "Settings" |
+| the depot at a glance | none | `GET /api/counts`, the depot's counts, and `GET /api/decisions/latest`; pages "Overview" and "Settings" |
+| the depot's counts made again from its rows | `recount` | none |
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on, the erasure requests it decides or the problem it records; the view of a decision, and of a reported problem |
 | a tag, shown | `sql QUERY` | `POST /api/texts/search` and `POST /api/texts/counts` with the tag; the view of a tag |
 | texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the playlist of the "Workspace" page |
@@ -459,15 +503,20 @@ refused change writes nothing.
 | a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the editor of the "Workspace" page, with the text's record |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
-| a decision on texts | `decide admit\|refuse WHERE` | `POST /api/decisions`, on named texts, and `POST /api/texts/blocked`, which of named texts an admission cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A and R |
-| a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on named texts; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
+| a decision on texts | `decide admit\|refuse WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection an admission cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A and R |
+| a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
 | a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
-| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`; the "Workspace" page lists them and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
-| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/tokenizers`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
-| a corpus | `build DATASET` | none |
-| a tokenizer's vocabulary | `tokenizer RECIPE` | none |
+| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; the "Workspace" page lists them and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
+| a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the "More info" button of a library in a list, which lists libraries by name only |
+| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
+| tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
+| a tokenizer's vocabulary | `tokenizer train NAME` | `POST /api/tokenizers/{name}/train`, a job; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
+| a corpus | `build DATASET`, run in the command | `POST /api/datasets/{id}/build`, a job, after the training of the vocabulary when its version has none |
+| a corpus downloaded | none | `GET /api/datasets/{id}/download`, its `files/{name}` and `text/{part}`; the dataset's page "Download" |
+| a dataset's sample, for another depot's vocabulary | none | `GET /api/datasets/{dataset}/sample?bytes=N` |
+| the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
 | erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Workspace" page asks |
 
 Each row of a list on the pages opens a view of that thing, with its own
@@ -513,14 +562,19 @@ every text it matches. A page starts after the last row of the page
 before it, in its order, or ends before the first row of the page after
 it, so a far page is read as fast as the first and the pages are read one
 after another, never by number. The numeric order of ids is the order of
-the index `texts_order`, so its first page reads only its own rows. The
-other orders sort every text the filter matches. The counts of a filter
+the index `texts_order`, and the order of statuses that of the index
+`texts_status`, so a first page in either reads only its own rows. No index
+serves the other orders, which sort every text the filter matches, so the
+server gives them only for a filter that matches at most `SORTED` texts
+(`wpt_depot/depot.py`) and refuses them past it; the playlist offers them
+once the filter's count is done and at most that. The counts of a filter
 come apart, in steps: each step counts the matches in one slice of about a
 million texts, in the order of their ids, so each one stays well under the
 time limit of a reader. A filter that names its texts is counted in one
 step over those texts. The pages run one step at a time, the counts open on
 a page taking turns, and add the steps up. The numbers grow as the steps
-answer, with how many texts are counted out of the depot's texts. A count
+answer, with how many texts are counted out of the depot's texts, a number
+`counts` gives. A count
 ends when its page leaves it or its filter changes, and it starts again
 after a change of the depot made from the page. A step starts at least two
 seconds after the one before it. A step refused by a proxy's rate limit
@@ -529,11 +583,37 @@ doubles. A step over a slice that the time limit stopped is sent again over
 a slice half as big. A step that answers within a quarter of the time limit
 lets the next one go over twice as many texts, up to a million.
 
-The web pages decide on texts by their ids, never by a filter. A filter
-finds the texts; the review window lists every id it reached, each ticked,
-and the decision, the put, the take-out, the fork or the report takes exactly
-the ids that stay ticked. A text that matches the filter after the review is not part of
-the decision.
+The web pages act on texts by a selection, never by a list of every id the
+browser read: the filter the page shows, the change number its page was
+read at, and the ids unticked by hand. "Tick all" reads nothing more. The
+review window counts the selection and lists its texts a page at a time,
+each ticked. The decision, the license change, the put, the take-out, the
+fork or the report matches the filter when it writes, leaves out the ids
+unticked and every text changed after that change number, and its answer
+says how many it left out. A text that matches the filter only after the
+page was read is left out with them. A text's own page names that one text
+in the filter. The commands and the web reach the same SQL in `wpt_depot`.
+
+The server runs its long work as jobs (`wpt/depot/jobs.py`): a write over
+a selection, the training of a vocabulary and the build of a corpus. The
+queue is a SQLite file beside the depot, `<depot file>.jobs`, which nothing
+backs up. One job runs at a time, in a process of its own, which runs the
+same `wpt_depot` operation as one change and sends the name of each stage
+it starts and its progress. A write over at most `INLINE` texts runs in
+the request instead, while no job is queued or running: a selection whose
+filter names at most `INLINE` ids, or a fork of a library that holds at
+most `INLINE` texts. Otherwise every write over a selection is a job, since
+it waits for the running job's write lock and only a job shows that it
+waits. Either way the answer is the job's state, and `GET /api/jobs/{id}`
+reads it again while it runs, so the page shows the stage of a long write
+and its end. A job survives a restart of the server: a queued job stays
+queued, and a job a restart cut short runs again, at most `RESTARTS`
+times. Each dataset has at most one corpus job open and each recipe one
+vocabulary job (409 otherwise). Only `wpt depot jobs cancel ID` cancels a
+job. The queue's file also holds what the downloads need
+(`wpt/depot/downloads.py`): when each corpus was last downloaded, the
+streams being sent, and each text part's size and sha256 once it was sent
+whole.
 
 The review of an admission sets apart the texts the depot would refuse to
 admit because none of their licenses is allowed. The depot's own check
@@ -557,16 +637,18 @@ a pragma or loads an extension, and SQLite has no function that reads
 another file or an address on the network. A filter's condition is a query
 as well, under the same rule. `wpt depot sql` follows it too.
 
-A route that runs a person's SQL (`POST /api/sql`, and the condition of
-`POST /api/texts/search`, `POST /api/texts/passages` and `POST
-/api/texts/counts`) runs it in a
+A route that runs a person's SQL, or that reads many texts (`POST
+/api/sql`, `POST /api/texts/search`, `POST /api/texts/passages`, `POST
+/api/texts/counts` and `POST /api/texts/blocked`), runs it in a
 reader process of its own (`wpt/depot/web/readers.py`), never in the
 server's process, with at most `READERS` reader processes at a time.
 SQLite stops the statement `SECONDS` after its reader takes it, and the
 server kills the reader once the request has run `SECONDS`, the wait for
 a free reader included; both answer 422 `TimeLimitReached`. A request that
 finds no free reader within `SECONDS` answers 422 `NoReaderFree`, its reads
-never started. On Linux, the reader's memory is
+never started. Up to `KEPT` readers stay alive between requests, and a
+reader encodes its answer as JSON once, which the server sends as it is.
+On Linux, the reader's memory is
 capped at `MEMORY` bytes more than it holds once started, and a query past
 it is refused with 422. On another system, the reader has no memory cap.
 A query's answer holds at most `ANSWER_ROWS` rows and `ANSWER_BYTES` bytes
@@ -590,24 +672,25 @@ browser can do the same with a cross-origin `POST` with `Content-Type:
 text/plain`, which the browser sends without asking first, and so can a
 site that makes its own name resolve to 127.0.0.1 (DNS rebinding).
 
-A pull (which makes the machine fetch another depot), a corpus build
-(which writes to the store), a remote's import, and a change of the
-depot's maintainer or takedown contact are commands only: the server has
-no route for them. A dataset made or edited through the server reads only
+A pull (which makes the machine fetch another depot), a remote's import,
+a tokenizer recipe file's import, and a change of the depot's maintainer or
+takedown contact are commands only: the server has no route for them. A dataset made or edited through the server reads only
 this depot's libraries: a library named by another depot's address is
 refused (422) before anything is opened, and only `wpt depot dataset new`
-and `edit` name one. Three routes reach past the depot. `POST
+and `edit` name one. Some routes reach past the depot. `POST
 /api/erasures/decisions`, once it carries out an erasure, marks stale the
-store's corpora that hold a text it cut. `GET /api/datasets/{id}` lists
-the store's corpora built from the dataset. `GET /api/tokenizers` lists
-the repository's tokenizer recipes.
+store's corpora that hold a text it cut, in the background, and sends no
+corpus until that ends. `GET /api/datasets/{id}` lists
+the store's corpora built from the dataset. The build of a corpus writes
+it into the store, and the downloads read it from there. The training of
+a recipe whose dataset is another depot's reads that depot's sample route.
 
 ## Packages
 
 | Package | Role |
 | --- | --- |
-| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store (`corpus.py`) and a model's notice from it (`notice.py`); `WPT_DEPOT` (`settings.py`) |
-| `wpt-recipes` | the model, tokenizer and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
+| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store as a stream (`corpus.py`), in the seeded order of its texts (`order.py`), what the store keeps of corpora (`corpora.py`), a corpus's texts made into parts to download (`exports.py`) and a model's notice from a corpus (`notice.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
+| `wpt-recipes` | the model and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results, and the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot; a kept model folder copied out, checked against its sha256s (`models.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |
 | `wpt-tokenizer` | the byte-level BPE tokenizer, Rust inside |
@@ -637,7 +720,7 @@ One project, `wpt` (`apps/wpt`; the workspace's root project is
   depot, the store and the agent harness are `wpt/depot/`, `wpt/store.py`
   and `wpt/agent.py`; the jobs are the subpackages `wpt.train`, `wpt.eval`, `wpt.chat` and `wpt.manager`.
 - the web server, `wpt depot web` (`wpt/depot/web/`: `server.py`,
-  `routes.py`, and `ui.py`, which builds the interface of `apps/wpt/ui`
+  `routes.py`, `builds.py` for the routes of the tokenizer recipes, the jobs, the builds and the downloads, and `ui.py`, which builds the interface of `apps/wpt/ui`
   with Bun). The root `package.json` makes one Bun workspace of the
   interface and the packages of the organization's design system, the git
   submodule `vendor/wic-design-system`, whose tokens and components the
@@ -668,10 +751,9 @@ commit in CI, or `--base REV`. The parts:
   changed.
 - `tests`: the tests of every package, below.
 - `rust`: the tokenizer's Rust tests. It runs when the tokenizer's Rust changed.
-- `data`: the recipes' check (`wpt_recipes.Recipes.check`): every recipe,
-  tokenizer lock and image file matches its schema, and the rules across
-  files hold (a recipe names a tokenizer recipe that exists, a series
-  derives every size, an image's pool takes no built-in tool's name, a
+- `data`: the recipes' check (`wpt_recipes.Recipes.check`): every recipe
+  and image file matches its schema, and the rules across files hold (a
+  series derives every size, an image's pool takes no built-in tool's name, a
   recipe names its depot and dataset). It runs when `data/` changed, or
   `wpt-recipes`, the root `pyproject.toml` or `uv.lock`.
 - `commits`: the author's sign-off (`Signed-off-by: <author>`) on every

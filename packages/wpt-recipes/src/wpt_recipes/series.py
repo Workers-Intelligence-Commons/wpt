@@ -33,7 +33,7 @@ functions of the series document:
                   data/recipes/models/<name>.json: the series' data part,
                   its shape, the seed, one read-text step of one stage
                   reading its prefix, the drafter
-    data_part     the series' data part: its depot, dataset and tokenizer,
+    data_part     the series' data part: its depot and dataset,
                   and the total tokens of the largest prefix, so one corpus
                   serves every size
 
@@ -291,7 +291,7 @@ def data_part(series: dict) -> dict:
     vocabulary's size does not change a prefix)."""
     largest = max(_trunk_prefix(series, plan(series, size, 0)) for size in sizes(series))
     data = series["data"]
-    return {"depot": data["depot"], "dataset": data["dataset"], "tokenizer": data["tokenizer"],
+    return {"depot": data["depot"], "dataset": data["dataset"],
             "total_tokens": largest}
 
 

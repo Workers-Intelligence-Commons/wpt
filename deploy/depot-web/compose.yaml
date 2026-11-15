@@ -8,13 +8,22 @@
 # and, to update, `git pull --recurse-submodules` then `docker compose up -d --build`.
 #
 # Settings, from the environment or the .env file of this folder (never the
-# repository's .env: no container here needs its credentials):
+# repository's .env, whose keys reach more than the corpora):
 #
 #     WPT_DEPOT_FOLDER   the host's folder that holds the depot's file, wpt-depot.sqlite
 #                        (such as /home/ubuntu/depot); required. SQLite writes its -wal and
-#                        -shm files, and the depot its .waiting folder, beside the file
+#                        -shm files, the depot its .waiting folder, the queue its
+#                        wpt-depot.sqlite.jobs file and the jobs their wpt-depot.sqlite.work
+#                        folder beside the file, and the store its local copies in cache/
 #     WPT_DEPOT_USER     uid:gid the app runs as, which must be able to write in that
 #                        folder (default 1000:1000)
+#     WPT_STORE          the store that holds the corpora the app builds and serves
+#                        (s3://BUCKET/PREFIX); unset, the app builds and serves none
+#     WPT_STORE_ACCESS_KEY_ID, WPT_STORE_SECRET_ACCESS_KEY
+#                        a key that reads and writes that store
+#     WPT_STORE_ENDPOINT_URL, WPT_STORE_REGION, WPT_STORE_SESSION_TOKEN
+#                        optional, as wpt_store reads them
+#     WPT_CORPORA_CAP    the bytes the store's corpora may take together (3TB); unset, no cap
 #     CERTBOT_EMAIL      the address Let's Encrypt writes to about the certificate; required
 #
 # Every service uses the host's network: ports Docker publishes would pass
@@ -35,6 +44,15 @@ services:
     user: ${WPT_DEPOT_USER:-1000:1000}
     environment:
       WPT_DEPOT: /depot/wpt-depot.sqlite
+      WPT_DEPOT_URL: https://depot.workers-intelligence-commons.org  # what the corpora it builds name it by
+      XDG_CACHE_HOME: /depot/cache
+      WPT_STORE: ${WPT_STORE:-}
+      WPT_STORE_ACCESS_KEY_ID: ${WPT_STORE_ACCESS_KEY_ID:-}
+      WPT_STORE_SECRET_ACCESS_KEY: ${WPT_STORE_SECRET_ACCESS_KEY:-}
+      WPT_STORE_ENDPOINT_URL: ${WPT_STORE_ENDPOINT_URL:-}
+      WPT_STORE_REGION: ${WPT_STORE_REGION:-}
+      WPT_STORE_SESSION_TOKEN: ${WPT_STORE_SESSION_TOKEN:-}
+      WPT_CORPORA_CAP: ${WPT_CORPORA_CAP:-}
     volumes:
       - ${WPT_DEPOT_FOLDER:?set WPT_DEPOT_FOLDER, the host folder that holds wpt-depot.sqlite (docs/depot-web.md)}:/depot
     restart: unless-stopped

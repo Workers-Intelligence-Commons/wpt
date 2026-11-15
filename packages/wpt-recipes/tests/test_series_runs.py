@@ -117,5 +117,5 @@ def test_a_branch_whose_decay_would_start_inside_the_warm_up_is_refused(ladder):
 def test_a_run_a_size_does_not_have_is_refused():
     with pytest.raises(NotFound, match="no run 'lr-2' of the size 384x8; its runs are branch-0.25, "
                                             "branch-0.5, branch-1"):
-        Recipes(ROOT).model_recipe("eldest-titmouse:384x8:lr-2")
+        Recipes(ROOT).model_recipe("eldest-titmouse:384x8:lr-2", 32768)
 

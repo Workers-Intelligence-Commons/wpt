@@ -14,7 +14,7 @@ from wpt.train import main as train
 # 227 tokens as 4 updates of 4 windows of 16 tokens, after a warm-up of 1; its branches make 2 updates (half),
 # decaying after update 1, and 4, decaying after update 3
 TINY = {
-    "data": {"depot": "", "dataset": "d", "tokenizer": "t"},  # the depot: the test's
+    "data": {"depot": "", "dataset": "d"},  # the depot: the test's
     "reference": {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 16, "attention_heads": 2,
                   "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
                   "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
@@ -40,7 +40,7 @@ def steps_of(folder):
 def test_branches_share_the_trunk_and_the_full_branch_trains_as_the_size_s_own_run(built, tmp_path):
     folder = tmp_path / "data" / "recipes" / "series"
     folder.mkdir(parents=True)
-    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.address}}))
+    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.name()}}))
     dataset = built.corpus_id
     # on the CPU, where the same updates give the same bits
     (tmp_path / "cpu.py").write_text("import torch\nfrom wpt_training import Strategy\n\n"

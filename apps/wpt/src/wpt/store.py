@@ -17,7 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from wpt_depot import corpus
+from wpt_depot import corpora
 from wpt_store import StoreError, store_from_settings
 from wpt_store.models import copy_out, names
 from wpt_telemetry import runs
@@ -25,7 +25,7 @@ from wpt_utils.lines import ERROR, say
 
 
 def cmd_list(args, store):
-    found = corpus.records(store)
+    found = corpora.records(store)
     say(f"{len(found)} corpora:")
     for record in found:
         say(f"  {record['id']}: dataset {record['dataset']['name']} of {record['depot']}, built "

@@ -3,21 +3,26 @@
 // text, each status, the libraries (open, then locked), the tags, the
 // licenses, and the filters saved in this browser (saved-filters.ts), with
 // the form, opened by a button, that saves the open filter under a name, and a way to forget one.
-// The counts come from one count of every text, made in steps (counts.tsx),
-// so they grow as it goes and a line says how far it has gone. The entry
+// The counts are the depot's own (GET /api/counts), read at once and again
+// after every change; a library shows its name only, its size on its own
+// head (workspace/library-head.tsx). The entry
 // whose filter is the open one is marked as the current one.
 
 import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
-import { useState, type ReactNode } from "react";
-import { type Answer } from "../api";
-import { CountingNote, useCounts } from "../counts";
+import { useEffect, useState, type ReactNode } from "react";
+import { get, type Answer } from "../api";
 import { EVERY, toQuery, type TextFilter } from "../filter";
 import { NewLibrary } from "../pages/libraries";
-import { Outcome, plural, Problems, required, STATUSES, StatusBadge, type Library } from "../parts";
+import { Outcome, plural, Problems, required, STATUSES, StatusBadge, type Library, type Status } from "../parts";
 import { href } from "../route";
 import { forgetFilter, saveFilter, useSavedFilters } from "../saved-filters";
 
 const SHOWN = 30; // tags and licenses listed before typing finds the others
+
+// the depot's counts: every current text, and how many have each status, tag and license
+type DepotCounts = { texts: number; statuses: Record<Status, number>; tags: Record<string, number>; licenses: Record<string, number> };
+// the most used first, then by name
+const ranked = (found: Record<string, number>) => Object.entries(found).sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([key, n]) => ({ key, n }));
 
 const same = (a: TextFilter, b: TextFilter) => JSON.stringify({ ...a, ids: null }) === JSON.stringify({ ...b, ids: null });
 
@@ -25,7 +30,9 @@ const same = (a: TextFilter, b: TextFilter) => JSON.stringify({ ...a, ids: null 
 export function Sources({ open, libraries, version, onLibraryMade }: {
   open: TextFilter; libraries: Library[]; version: number; onLibraryMade: () => void;
 }) {
-  const counts = useCounts(EVERY, version);
+  const [answer, setAnswer] = useState<Answer<DepotCounts> | null>(null);
+  useEffect(() => { get<DepotCounts>("/api/counts").then(setAnswer); }, [version]);
+  const counts = answer?.ok ? answer.data : null;
   const saved = useSavedFilters();
   const [making, setMaking] = useState(false);
   const [made, setMade] = useState<Answer<{ id: string }> | null>(null);
@@ -40,23 +47,22 @@ export function Sources({ open, libraries, version, onLibraryMade }: {
   return (
     <nav className="sources small" aria-label="What to open">
       <ul className="plain source-list">
-        <li>{entry(EVERY, "Every text", counts?.total ?? undefined)}</li>
-        {counts && !counts.done && <li className="small"><CountingNote counting={counts} /></li>}
-        {counts?.problems && <li><Problems problems={counts.problems} /></li>}
+        <li>{entry(EVERY, "Every text", counts?.texts)}</li>
+        {answer && !answer.ok && <li><Problems problems={answer.problems} /></li>}
       </ul>
       <SourceGroup title="Statuses">
-        {STATUSES.map((s) => <li key={s}>{entry({ ...EVERY, statuses: [s] }, <StatusBadge status={s} />, counts?.counted ? counts.statuses[s] : undefined)}</li>)}
+        {STATUSES.map((s) => <li key={s}>{entry({ ...EVERY, statuses: [s] }, <StatusBadge status={s} />, counts?.statuses[s])}</li>)}
       </SourceGroup>
       <SourceGroup title="Libraries" tools={<Button variant="quiet" onClick={() => { setMade(null); setMaking(true); }}>New library</Button>}>
         {libraries.length === 0 && <li className="aside">No library yet.</li>}
         {[...own, ...locked].map((l) => (
-          <li key={l.id}>{entry({ ...EVERY, libraries: [l.id] }, <>{l.name}{l.locked_at && <span className="aside"> locked</span>}{l.upstream && <span className="aside"> upstream</span>}</>, l.texts, `${l.name} (${l.id})`)}</li>
+          <li key={l.id}>{entry({ ...EVERY, libraries: [l.id] }, <>{l.name}{l.locked_at && <span className="aside"> locked</span>}{l.upstream ? <span className="aside"> upstream</span> : null}</>, undefined, `${l.name} (${l.id})`)}</li>
         ))}
       </SourceGroup>
       {!making && <Outcome answer={made} done={(d) => <>Library <a href={href(["texts"], { library: d.id })}>{d.id}</a>: open.</>} />}
-      <Findable title="Tags" loaded={Boolean(counts?.done)} rows={(counts?.tags ?? []).map((t) => ({ key: t.tag, n: t.texts }))}
+      <Findable title="Tags" loaded={Boolean(counts)} rows={counts ? ranked(counts.tags) : []}
         entry={(key, n) => entry({ ...EVERY, tags: [key] }, key, n)} />
-      <Findable title="Licenses" loaded={Boolean(counts?.done)} rows={(counts?.licenses ?? []).map((l) => ({ key: l.license, n: l.texts }))}
+      <Findable title="Licenses" loaded={Boolean(counts)} rows={counts ? ranked(counts.licenses) : []}
         entry={(key, n) => entry({ ...EVERY, licenses: [key] }, <span className="ledger">{key}</span>, n)} />
       <SourceGroup title="Saved filters">
         {saved.length === 0 && <li className="aside">None saved in this browser.</li>}

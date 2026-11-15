@@ -12,7 +12,6 @@ class NotFound(RecipeError):
 
 class InvalidRecipe(RecipeError):
     """A file the check refuses: it does not parse, does not match its
-    schema, or breaks a rule across files (a recipe naming a tokenizer
-    recipe that does not exist, a depot or dataset not named yet, a series
-    whose sizes cannot be derived, an image's pool of tools that takes a
-    built-in tool's name)."""
+    schema, or breaks a rule across files (a depot or dataset not named
+    yet, a series whose sizes cannot be derived, an image's pool of tools
+    that takes a built-in tool's name)."""

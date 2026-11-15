@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from wpt_depot import corpora
 from wpt_recipes import Recipes
 from wpt_training import WINDOWS
 from wpt_worker.training import drafter_shards
@@ -14,7 +15,7 @@ from wpt.train import main as train
 # the small size (60,880 parameters, M 371,616) reads 232 tokens as 4 updates of 4 windows of 16 tokens, the
 # large one (219,744, M 1,302,720) 814 tokens as 13 updates
 TINY = {
-    "data": {"depot": "", "dataset": "d", "tokenizer": "t"},  # the depot: the test's
+    "data": {"depot": "", "dataset": "d"},  # the depot: the test's
     "reference": {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 16, "attention_heads": 2,
                   "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
                   "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
@@ -47,15 +48,16 @@ def test_the_drafter_reads_the_shards_the_run_s_steps_read_and_none_past_their_p
 def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(built, tmp_path):
     folder = tmp_path / "data" / "recipes" / "series"
     folder.mkdir(parents=True)
-    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.address}}))
+    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.name()}}))
     recipes = Recipes(tmp_path)
-    data = recipes.model_recipe("tiny:small")["data"]
-    assert data == recipes.model_recipe("tiny:large")["data"]
+    vocabulary = corpora.find(built.store, built.corpus_id)["tokenizer"]["vocab_size"]  # the size training plans for
+    data = recipes.model_recipe("tiny:small", vocabulary)["data"]
+    assert data == recipes.model_recipe("tiny:large", vocabulary)["data"]
     assert data["total_tokens"] == 13 * 4 * 17  # the large size's prefix
     train(["tiny:small", "--out", "model"])  # the corpus last built for the series' dataset
     provenance = json.loads((Path("model") / "provenance.json").read_text())
     assert provenance["recipe_name"] == "tiny:small" and provenance["corpus"]["id"] == built.corpus_id
-    assert provenance["recipe"] == recipes.model_recipe("tiny:small")
+    assert provenance["recipe"] == recipes.model_recipe("tiny:small", vocabulary)
     [step] = provenance["recipe"]["steps"]
     assert step["settings"]["stages"] == [{"block_size": 16, "steps": 4, "batch_size": 4}]
     assert step["settings"]["prefix_tokens"] == 4 * 4 * 17 == provenance["learned"]["text"]  # the corpus's start
@@ -66,7 +68,7 @@ def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(
 def test_train_series_prints_every_size_and_trains_nothing(built, tmp_path, capsys):
     folder = tmp_path / "data" / "recipes" / "series"
     folder.mkdir(parents=True)
-    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.address}}))
+    (folder / "tiny.json").write_text(json.dumps({**TINY, "data": {**TINY["data"], "depot": built.depot.name()}}))
 
     train(["series", "tiny"])
 

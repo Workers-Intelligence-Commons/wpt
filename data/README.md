@@ -3,8 +3,6 @@
 This folder describes data; it never holds data itself. The texts live in
 a depot (`wpt depot`).
 
-- `recipes/tokenizers/`: tokenizer recipes and the lock files their
-  training writes.
 - `recipes/models/`: model recipes, each everything that changes one model:
   the depot and dataset it trains on, its architecture and training steps.
   See [docs/model.md](../docs/model.md).

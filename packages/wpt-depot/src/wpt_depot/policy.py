@@ -1,6 +1,9 @@
-"""The app's policy: how the decisions on a text or an erasure combine. The
-depot stores every decision in order; it is this module, never the depot,
-that says what they mean.
+"""The app's policy: how the decisions on a text or an erasure combine, and
+the status they make of it. The depot stores every decision in order, and
+each text's status by this rule (a column of its current revision, kept up
+to date by every write that changes it); this module is the one place that
+says what decisions mean, the depot applying it through the functions
+below.
 
 Only the decisions from the latest start over on count. A text starts over
 when its licenses change or its content changes: each is recorded as a
@@ -14,6 +17,7 @@ Only an admitted text trains and joins a library, and only an admitted
 erasure is carried out.
 """
 
+from . import ids
 from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 
 # how the reason of a license change, and of a content change, starts; only the depot writes a reason that starts so
@@ -72,21 +76,13 @@ def status(decisions: list[dict]) -> str:
 
 def _since(decisions: str) -> str:
     """The place in the JSON list of decision ids of the latest start over, 0 without one."""
-    over = " OR ".join(f"substr(c.reason, 1, {len(one)}) = '{one}'" for one in STARTS_OVER)
     return (f"(SELECT coalesce(max(o.key), 0) FROM json_each({decisions}) o JOIN decisions c ON c.id = o.value "
-            f"WHERE {over})")
+            f"WHERE {_over('c.reason')})")
 
 
 def _having(decisions: str, status: str) -> str:
     return (f"EXISTS (SELECT 1 FROM json_each({decisions}) h JOIN decisions d ON d.id = h.value "
             f"WHERE d.status = '{status}' AND h.key >= {_since(decisions)})")
-
-
-def admitted_sql(decisions: str) -> str:
-    """The same rule as admitted, as an SQL condition over a column of
-    decision ids in order (a JSON array), with the depot's decisions table
-    as `decisions`."""
-    return f"({_having(decisions, ADMITTED)} AND NOT {_having(decisions, REFUSED)})"
 
 
 def status_sql(decisions: str) -> str:
@@ -95,3 +91,36 @@ def status_sql(decisions: str) -> str:
     as `decisions`."""
     return (f"(CASE WHEN {_having(decisions, REFUSED)} THEN '{REFUSED}' WHEN {_having(decisions, ADMITTED)} "
             f"THEN '{ADMITTED}' ELSE '{UNDER_REVIEW}' END)")
+
+
+def combined_sql(old: str, status: str, starts_over: bool) -> str:
+    """The status of a text whose status was old once one more decision of
+    that status is made on it, a start over (starts_over) or not: the same
+    rule as status, from the status alone, as an SQL expression over a
+    column of statuses old."""
+    if starts_over or status == REFUSED:
+        return f"'{status}'"
+    if status == ADMITTED:
+        return f"(CASE WHEN {old} = '{REFUSED}' THEN '{REFUSED}' ELSE '{ADMITTED}' END)"
+    return old
+
+
+def _over(reason: str) -> str:
+    return " OR ".join(f"substr({reason}, 1, {len(one)}) = '{one}'" for one in STARTS_OVER)
+
+
+def linked_status_sql(text: str, bound: str | None = None) -> str:
+    """The same rule as status, as an SQL expression over the decisions on
+    the text whose id is the SQL expression text, in the depot's table
+    text_decisions (the decisions made at a change number up to the SQL
+    expression bound, when it is given), in the order of their ids."""
+    def within(alias: str) -> str:
+        return f"{alias}.text = {text}" + ("" if bound is None else f" AND {alias}.change <= {bound}")
+    since = (f"(SELECT max({ids.order_sql('o.decision')}) FROM text_decisions o JOIN decisions c ON c.id = o.decision "
+             f"WHERE {within('o')} AND ({_over('c.reason')}))")
+
+    def having(status: str) -> str:
+        return (f"EXISTS (SELECT 1 FROM text_decisions h JOIN decisions d ON d.id = h.decision WHERE {within('h')} "
+                f"AND d.status = '{status}' AND coalesce({ids.order_sql('h.decision')} >= {since}, 1))")
+    return (f"(CASE WHEN {having(REFUSED)} THEN '{REFUSED}' WHEN {having(ADMITTED)} THEN '{ADMITTED}' "
+            f"ELSE '{UNDER_REVIEW}' END)")

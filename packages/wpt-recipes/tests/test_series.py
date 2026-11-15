@@ -12,6 +12,7 @@ from wpt_recipes import NotFound, Recipes, series, validate
 ROOT = Path(__file__).resolve().parents[3]
 SERIES = "eldest-titmouse"
 WINDOW = 32768
+VOCABULARY = 32768  # the vocabulary of the admitted mixture, which the series' dataset names
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +45,6 @@ def test_the_sizes_scale_every_width_of_the_reference_and_keep_its_layers(repo, 
         assert series.layer_count(model) == 21
     # the reference size is interstitial-pecker's model, and every size uses the 32,768-token vocabulary
     assert series.shape(ladder, "512x10") == repo.recipe("model", "interstitial-pecker")["model"]
-    assert repo.vocab_size(ladder) == 32768
 
 
 def test_a_size_s_training_follows_deepseek_llm_s_laws_at_the_compute_its_size_pairs_with(repo, ladder):
@@ -52,7 +52,7 @@ def test_a_size_s_training_follows_deepseek_llm_s_laws_at_the_compute_its_size_p
     # gives the C of a size's M = 6 x the parameters a token uses + 12 x layers x width x window (plus In-Place TTT's
     # work: 6 x 2 matrices of width x 2 shared widths in each of its 4 layers, at one pass of the loop), then
     # D_opt = 5.8316 C^0.4757, eta_opt = 0.3118 C^-0.1250 and B_opt = 0.2920 C^0.3271 (tokens)
-    plan = series.plan(ladder, "512x10", repo.vocab_size(ladder))
+    plan = series.plan(ladder, "512x10", VOCABULARY)
     assert (plan.parameters, plan.total_parameters) == (221_873_112, 255_427_544)  # the model's own count
     # a token uses 93,447,320 parameters (4 of the 32 routed experts of each layer, no Engram table; checked against
     # the model in wpt-training's tests), through 21 layers of width 512, over a window of 32,768 tokens
@@ -89,13 +89,14 @@ def test_the_batch_is_whole_windows_at_least_one_and_the_warm_up_a_share_of_the_
 
 
 def test_each_size_is_a_model_recipe_and_every_size_shares_the_data_of_the_largest(repo, ladder):
-    plans = repo.series_plans(SERIES)
+    plans = repo.series_plans(SERIES, VOCABULARY)
     largest = max(plans, key=lambda plan: plan.parameters)
     assert largest.size == "768x15"
     data = {**ladder["data"], "total_tokens": largest.prefix_tokens}
-    assert set(data) == {"depot", "dataset", "tokenizer", "total_tokens"}
+    assert set(data) == {"depot", "dataset", "total_tokens"}
+    assert repo.data_part(f"{SERIES}:{largest.size}") == data
     for plan in plans:
-        recipe = repo.model_recipe(f"{SERIES}:{plan.size}")
+        recipe = repo.model_recipe(f"{SERIES}:{plan.size}", VOCABULARY)
         validate(recipe, "model", f"{SERIES}:{plan.size}")
         assert recipe["data"] == data  # one corpus: every size reads the same one
         assert recipe["model"] == plan.model and recipe["seed"] == ladder["seed"]
@@ -113,9 +114,9 @@ def test_each_size_is_a_model_recipe_and_every_size_shares_the_data_of_the_large
 
 def test_a_size_or_a_series_that_does_not_exist_is_refused(repo, ladder):
     with pytest.raises(NotFound, match="no size '1024x20' in the series eldest-titmouse"):
-        repo.model_recipe(f"{SERIES}:1024x20")
+        repo.model_recipe(f"{SERIES}:1024x20", VOCABULARY)
     with pytest.raises(NotFound, match="no series 'nothing'"):
-        repo.model_recipe("nothing:256x5")
+        repo.model_recipe("nothing:256x5", VOCABULARY)
     odd = copy.deepcopy(ladder)
     odd["sizes"].append({"name": "300x6", "d_model": 300})  # 300 / 512 of 8 attention heads is not whole
     with pytest.raises(ValueError, match="size 300x6: attention_heads"):

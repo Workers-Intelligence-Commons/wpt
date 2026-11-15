@@ -29,7 +29,8 @@ export type Row = {
 };
 // where a page starts or ends: a row's values of the order, as the server gives them
 export type Place = (string | number)[];
-export type Found = { where: string; rows: Row[]; next: Place | null; previous: Place | null; ids?: string[] };
+// change: the depot's change number the page was read at, which a selection of its texts names
+export type Found = { rows: Row[]; next: Place | null; previous: Place | null; change: number };
 export type Order = { by: "id" | "title" | "status" | "tags" | "licenses" | "libraries" | "length"; descending: boolean };
 export const BY_ID: Order = { by: "id", descending: false };
 // a page: the first (neither), the one after a place, or the one before it
@@ -37,9 +38,19 @@ export type At = { after?: Place; before?: Place };
 
 export const body = (f: TextFilter) => ({ ...f, where: f.where.trim() === "" ? null : f.where });
 
-// The page at of the texts a filter matches; everyId: with the id of every one.
-export const search = (filter: TextFilter, at: At = {}, limit = 50, order: Order = BY_ID, everyId = false) =>
-  post<Found>("/api/texts/search", { filter: body(filter), ...at, limit, order: order.by, descending: order.descending, every_id: everyId });
+// The texts a write takes (a decision, a put...): those the filter matches
+// when it runs, less the ids unticked and every text changed after the change
+// number its page was read at, which the write counts apart. Never a list of
+// ids the browser read: a text's own page names that one text in the filter.
+export type Selection = { filter: TextFilter; change?: number; unticked?: string[] };
+export const named = (ids: string[]): Selection => ({ filter: { ...EVERY, ids } });
+export const sent = (s: Selection) => ({
+  filter: body(s.filter), ...(s.change !== undefined ? { change: s.change } : {}), ...(s.unticked?.length ? { unticked: s.unticked } : {}),
+});
+
+// The page at of the texts a filter matches.
+export const search = (filter: TextFilter, at: At = {}, limit = 50, order: Order = BY_ID) =>
+  post<Found>("/api/texts/search", { filter: body(filter), ...at, limit, order: order.by, descending: order.descending });
 
 // The filter a page's query names (#/texts?tag=en&status=admitted&library=x&locked=no&where=...).
 export function fromQuery(query: URLSearchParams): TextFilter {
@@ -138,7 +149,7 @@ export function FilterBar({ value, onApply, libraries, fixedLibrary }: { value: 
       <TickMenu label="Licenses" search options={licenses.map((l) => ({ value: l.id, label: l.id, words: `${l.id} ${l.name}`, count: l.texts }))}
         chosen={draft.licenses} onChange={(licenses) => change({ licenses })} />
       {fixedLibrary === undefined && (
-        <TickMenu label="Libraries" options={libraries.map((l) => ({ value: l.id, label: `${l.name}${l.locked_at ? " (locked)" : ""}`, words: `${l.id} ${l.name}`, count: l.texts }))}
+        <TickMenu label="Libraries" options={libraries.map((l) => ({ value: l.id, label: `${l.name}${l.locked_at ? " (locked)" : ""}`, words: `${l.id} ${l.name}` }))}
           chosen={draft.libraries} onChange={(libraries) => change({ libraries })} />
       )}
       {!lockedFixed && (

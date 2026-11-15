@@ -78,7 +78,7 @@ function Erasures({ query }: { query: URLSearchParams }) {
                   <td className="tick-cell">
                     {e.status === "under review" && !e.upstream && <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${e.id}`} checked={ticked.includes(e.id)} onChange={(x) => flip([e.id], x.target.checked)} />}
                   </td>
-                  <td className="ledger nowrap"><a href={href(["erasures"], { request: e.id })} title={`What ${e.id} asks to erase`}>{e.id}</a>{e.upstream && <span className="aside"> the upstream's</span>}</td>
+                  <td className="ledger nowrap"><a href={href(["erasures"], { request: e.id })} title={`What ${e.id} asks to erase`}>{e.id}</a>{e.upstream ? <span className="aside"> the upstream's</span> : null}</td>
                   <td className="nowrap"><StatusBadge status={e.status} /></td>
                   <td className="wide-cell"><Cut text={e.reason} /></td>
                   <td>

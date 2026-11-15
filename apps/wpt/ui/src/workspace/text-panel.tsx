@@ -22,9 +22,10 @@
 import { Badge, Button, Dialog, Select, Skeleton, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import type { Text } from "@codemirror/state";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { get, post, type Answer } from "../api";
+import { get, post, write, type Answer } from "../api";
 import type { EditorHandle } from "../code-editor";
-import { RelicenseForm, relicensed, type Relicensed } from "../decide-forms";
+import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../decide-forms";
+import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
 import { Confirm, Cut, Facts, Joined, LibraryLink, optional, Outcome, plural, Problems, required, RequiredNote, Section, StatusBadge, type Declaration, type Library, type Status } from "../parts";
 import { codePoints, TextViewer } from "../reader";
@@ -216,9 +217,9 @@ function Record({ shown }: { shown: Shown }) {
 function DecideOn({ id, onDone }: { id: string; onDone: (words: ReactNode) => void }) {
   const [status, setStatus] = useState<"admitted" | "refused">("admitted");
   const [reason, setReason] = useState("");
-  const [answer, setAnswer] = useState<Answer<{ decision: string }> | null>(null);
+  const [answer, setAnswer] = useState<Answer<Decided> | null>(null);
   const send = async (declaration: Declaration) => {
-    const a = await post<{ decision: string }>("/api/decisions", { status, texts: [id], ...(reason.trim() ? { reason: reason.trim() } : {}), declaration });
+    const a = await write<Decided>("/api/decisions", { status, selection: sent(named([id])), ...(reason.trim() ? { reason: reason.trim() } : {}), declaration });
     setAnswer(a);
     if (a.ok) onDone(`Decision ${a.data.decision}: ${status}.`);
   };
@@ -244,7 +245,7 @@ function Relicense({ row, onDone }: { row: Row; onDone: (words: ReactNode) => vo
   return (
     <>
       <p>It names {row.licenses.map((l, i) => <span key={l}>{i > 0 && " or "}<Badge status="license">{l}</Badge></span>)} now.</p>
-      <RelicenseForm chosen={[row.id]} subject="this text" onDone={(a, licenses) => { setAnswer(a); if (a.ok) onDone(relicensed(a.data, licenses)); }} />
+      <RelicenseForm selection={named([row.id])} subject="this text" onDone={(a, licenses) => { setAnswer(a); if (a.ok) onDone(relicensed(a.data, licenses)); }} />
       <Outcome answer={answer} done={() => ""} />
     </>
   );
@@ -365,12 +366,12 @@ function Credits({ row, notice, onDone }: { row: Row; notice: string | null; onD
 // Out of one of the depot's own open libraries that hold it; it stays admitted.
 function TakeOut({ id, libraries, onDone }: { id: string; libraries: Library[]; onDone: (words: ReactNode) => void }) {
   const [library, setLibrary] = useState(libraries[0].id);
-  const [answer, setAnswer] = useState<Answer<{ taken_out: string[] }> | null>(null);
+  const [answer, setAnswer] = useState<Answer<{ taken_out: number }> | null>(null);
   const name = libraries.find((l) => l.id === library)?.name ?? library;
   const send = async () => {
-    const a = await post<{ taken_out: string[]; not_held: string[] }>(`/api/libraries/${encodeURIComponent(library)}/taken-out`, { texts: [id] });
+    const a = await write<{ taken_out: number; not_held: number }>(`/api/libraries/${encodeURIComponent(library)}/taken-out`, { selection: sent(named([id])) });
     setAnswer(a);
-    if (a.ok) onDone(a.data.taken_out.length ? `Taken out of ${name}; it keeps its status.` : `${name} did not hold it.`);
+    if (a.ok) onDone(a.data.taken_out ? `Taken out of ${name}; it keeps its status.` : `${name} did not hold it.`);
   };
   return (
     <div className="action-form">
@@ -391,7 +392,7 @@ function Report({ id, libraries, onDone }: { id: string; libraries: Library[]; o
   const [problem, setProblem] = useState("");
   const [answer, setAnswer] = useState<Answer<{ decision: string }> | null>(null);
   const send = async (declaration: Declaration) => {
-    const a = await post<{ decision: string }>(`/api/libraries/${encodeURIComponent(library)}/problems`, { problem, texts: [id], declaration });
+    const a = await write<{ decision: string }>(`/api/libraries/${encodeURIComponent(library)}/problems`, { problem, selection: sent(named([id])), declaration });
     setAnswer(a);
     if (a.ok) onDone(`Problem reported, recorded by decision ${a.data.decision}.`);
   };

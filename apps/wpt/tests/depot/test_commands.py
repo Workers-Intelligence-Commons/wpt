@@ -5,12 +5,12 @@ import pytest
 
 import wpt
 from wpt_depot import Declaration, Depot, NewText
-from wpt_depot.corpus import read_table
+from wpt_depot.corpora import read_table
 from wpt_depot.schema import FORMAT
-from wpt_recipes import Recipes
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
 from wpt_utils.lines import bare
+from wpt.depot.jobs import Jobs
 from wpt.depot.web.routes import routes
 from wpt.depot.web.server import make_server
 
@@ -67,7 +67,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
     assert depot_command("show", "test-depot-1") == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["text"] | {"decisions": None} == {
-        "id": "test-depot-1", "revision": 2, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": None, "content": None, "content_version": 1, "length": 21, "licenses": ["CC0-1.0"],
+        "id": "test-depot-1", "revision": 1, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": None, "content": None, "content_version": 1, "length": 21, "licenses": ["CC0-1.0"],
         "notice": "test-depot-1", "title": "Fox", "authors": ["Ann"], "tags": ["en"], "address": "https://example.org/fox", "scores": None,
         "decisions": None, "libraries": ["test-depot-1", "test-depot-2"]}
     assert [(one["status"], one["name"], one["email"]) for one in shown["decisions"]] == [
@@ -83,7 +83,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
     remote = json.loads(capsys.readouterr().out)
     assert remote == {"name": "first", "tokenizer": "classics",
                       "libraries": [{"depot": None, "library": "test-depot-1", "change": Depot.open(depot).change() - 1}],
-                      "shares": [{"tag": "en", "share": 1.0}]}
+                      "shares": [{"tag": "en", "share": 1.0}], "max_tokens": None}
     (tmp_path / "remote.json").write_text(json.dumps({**remote, "name": "again"}), encoding="utf-8")
     assert depot_command("dataset", "import", str(tmp_path / "remote.json")) == 0
     assert Depot.open(depot).dataset("again")["libraries"] == remote["libraries"]
@@ -212,10 +212,8 @@ def test_a_problem_is_reported_on_a_locked_library_and_a_fork_can_leave_texts_ou
     assert opened.show("test-depot-1")["status"] == "admitted"
 
 
-def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_datasets_texts_and_locks_it(depot, tmp_path, monkeypatch,
-                                                                                    capsys):
-    store_folder = tmp_path / "store"
-    monkeypatch.setenv("WPT_STORE", store_folder.as_uri())
+def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_datasets_sample_once_and_keeps_it_in_the_depot(
+        depot, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
     opened = Depot.open(depot)
@@ -227,32 +225,33 @@ def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_datasets_texts_and_lock
     library = opened.new_library("all")
     opened.put(library, "true")
     opened.new_dataset("first", "tiny", [(None, library)])
-    tokenizers = tmp_path / "data" / "recipes" / "tokenizers"
-    tokenizers.mkdir(parents=True)
-    recipe = {"version": 1, "depot": "", "dataset": "", "sample_bytes": 200, "vocab_size": 560}
-    (tokenizers / "tiny.json").write_text(json.dumps(recipe), encoding="utf-8")
+    assert depot_command("tokenizer", "new", "tiny", "--dataset", "first", "--sample-bytes", "6000",
+                         "--vocab-size", "560") == 0
 
-    assert depot_command("tokenizer", "tiny") == 2  # a person has not named the depot and the dataset yet
-    assert "InvalidRecipe" in capsys.readouterr().err
-    recipe = {**recipe, "depot": depot, "dataset": "first"}
-    (tokenizers / "tiny.json").write_text(json.dumps(recipe), encoding="utf-8")
-    assert depot_command("tokenizer", "tiny") == 0
+    assert depot_command("tokenizer", "train", "tiny") == 0
 
-    lock = Recipes(tmp_path).generated("lock", "tiny")
-    # the two short plain texts fit the 200 bytes, the long one is passed over, the item is no sample
-    assert lock["recipe"] == recipe
-    assert sorted(lock["texts"], key=lambda one: one["id"]) == [{"depot": depot, "id": "test-depot-1"}, {"depot": depot, "id": "test-depot-2"}]
-    store = open_store(store_folder.as_uri())
-    assert 513 < Tokenizer.from_bytes(store.get_bytes(lock["vocabulary_sha256"])).vocab_size <= 560  # merges learned
+    shown = Depot.open(depot)
+    recipe = shown.tokenizer("tiny")
+    vocabulary = shown.vocabulary(recipe["id"], 1)
+    assert 513 < Tokenizer.from_bytes(vocabulary["merges"].encode()).vocab_size <= 560  # merges learned
+    texts = {one["text"] for one in shown.vocabulary_texts(recipe["id"], 1)}
+    assert texts == {"test-depot-1", "test-depot-2", "test-depot-4"}  # every plain text fits, never the item
+    assert all(one["depot"] == "" for one in shown.vocabulary_texts(recipe["id"], 1))
     capsys.readouterr()
-    assert depot_command("tokenizer", "tiny") == 2  # locked at its version: never trained again
-    assert bare(capsys.readouterr().err).startswith("TokenizerLocked:")
-    assert depot_command("build", "first") == 0  # the build reads the vocabulary the lock names
+    assert depot_command("tokenizer", "train", "tiny") == 2  # a version's vocabulary is never trained again
+    assert bare(capsys.readouterr().err).startswith("Refused:")
+    assert depot_command("tokenizer", "edit", "tiny", "--note", "a note") == 0
+    assert Depot.open(depot).tokenizer("tiny")["version"] == 1  # a note is no new version
+    assert depot_command("tokenizer", "edit", "tiny", "--vocab-size", "600") == 0
+    assert Depot.open(depot).tokenizer("tiny")["version"] == 2
+    assert depot_command("build", "first") == 2  # version 2 has no vocabulary yet
+    assert "NoVocabulary" in capsys.readouterr().err
 
 
 def test_a_clone_follows_its_upstream_over_its_web_app_and_pulls_what_it_added_and_refuses_changing_it(
         depot, tmp_path, monkeypatch, capsys):
-    server = make_server(routes(Depot.open(depot)), tmp_path)
+    opened = Depot.open(depot)
+    server = make_server(routes(opened, Jobs(opened.address)), tmp_path)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     address = f"http://127.0.0.1:{server.server_address[1]}"
     clone = str(tmp_path / "clone.sqlite")
@@ -291,11 +290,10 @@ def test_a_backup_and_its_restore_are_made_by_commands_and_read_as_the_depot(dep
     assert depot_command("restore", str(tmp_path / "restored.sqlite")) == 2  # it never overwrites
 
 
-def test_a_dataset_builds_into_a_corpus_with_its_tokenizer_recipes_locked_vocabulary(depot, tmp_path, monkeypatch,
-                                                                                      capsys):
-    # the build reads the vocabulary from the store, by the sha256 the recipe's lock names
+def test_a_recipe_file_and_its_lock_are_imported_and_a_dataset_builds_with_that_vocabulary(depot, tmp_path,
+                                                                                            monkeypatch, capsys):
+    # the step of a deploy that brings a recipe of the repository, and the vocabulary its lock named, into a depot
     store_folder = tmp_path / "store"
-    monkeypatch.setenv("WPT_STORE", store_folder.as_uri())
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
     opened = Depot.open(depot)
@@ -304,25 +302,29 @@ def test_a_dataset_builds_into_a_corpus_with_its_tokenizer_recipes_locked_vocabu
     library = opened.new_library("all")
     opened.put(library, "true")
     opened.new_dataset("first", "tiny", [(None, library)])
-
-    assert depot_command("build", "first") == 2  # the repository has no tokenizer recipe tiny yet
-    assert "NotFound" in capsys.readouterr().err
-    tokenizers = tmp_path / "data" / "recipes" / "tokenizers"
-    tokenizers.mkdir(parents=True)
-    recipe = {"version": 1, "depot": depot, "dataset": "first", "sample_bytes": 1000, "vocab_size": 560}
-    (tokenizers / "tiny.json").write_text(json.dumps(recipe), encoding="utf-8")
-    assert depot_command("build", "first") == 2
-    assert bare(capsys.readouterr().err) == "NoVocabulary: the tokenizer recipe tiny has no lock of its version 1\n"
-
+    assert depot_command("build", "first") == 2  # the depot has no tokenizer recipe tiny yet
+    assert "NoVocabulary: the depot holds no tokenizer recipe tiny" in bare(capsys.readouterr().err)
+    recipe = {"version": 1, "depot": "", "dataset": "", "sample_bytes": 1000, "vocab_size": 560, "note": "tiny"}
+    (tmp_path / "tiny.json").write_text(json.dumps(recipe), encoding="utf-8")
     tokenizer = Tokenizer.train([b"the quick brown fox"] * 4, vocab_size=560)
     store = open_store(store_folder.as_uri())
-    vocabulary = store.put_bytes(tokenizer.to_bytes())
-    Recipes(tmp_path).write_generated("lock", "tiny", {"recipe": recipe, "texts": [{"depot": depot, "id": "test-depot-1"}],
-                                                       "vocabulary_sha256": vocabulary})
+    lock = {"recipe": recipe, "texts": [{"depot": depot, "id": "test-depot-1"}],
+            "vocabulary_sha256": store.put_bytes(tokenizer.to_bytes())}
+    (tmp_path / "lock.json").write_text(json.dumps(lock), encoding="utf-8")
+
+    assert depot_command("tokenizer", "import", "tiny", str(tmp_path / "tiny.json"), "--dataset", "first",
+                         "--lock", str(tmp_path / "lock.json")) == 0
+
+    shown = Depot.open(depot)
+    found = shown.tokenizer("tiny")
+    assert (found["version"], found["sample_bytes"], found["vocab_size"], found["note"]) == (1, 1000, 560, "tiny")
+    assert shown.vocabulary(found["id"], 1)["merges"].encode() == tokenizer.to_bytes()
+    assert shown.vocabulary_texts(found["id"], 1) == [{"position": 0, "depot": "", "text": "test-depot-1"}]
+    capsys.readouterr()
     assert depot_command("build", "first") == 0
     corpus = bare(capsys.readouterr().out).splitlines()[-1].removeprefix("corpus ")
     [record] = [store.get_json(f"corpora/{folder}/corpus.json") for folder in _corpora(store_folder)]
-    assert record["id"] == corpus
+    assert record["id"] == corpus and record["tokenizer"]["recipe"] == "tiny"
     assert [(one["id"], one["title"]) for one in read_table(store, record, "texts").to_pylist()] == [("test-depot-1", "Fox")]
 
 

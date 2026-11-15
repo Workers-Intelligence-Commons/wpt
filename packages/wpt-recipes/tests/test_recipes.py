@@ -12,78 +12,56 @@ MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 
          "engram_table_size": 31, "residual_groups": 3, "loops": 0}
 STEPS = [{"step": "read-text", "optimizer": {"name": "by-part", "settings": {}},
           "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}]}, "locked": []}]
-DEPOT = "s3://depot-of-the-test"
+DEPOT = "https://depot.example"
 
 
 @pytest.fixture
 def recipes(tmp_path):
     root = tmp_path / "wpt"
-    for folder in ("tokenizers", "models", "series"):
+    for folder in ("models", "series"):
         (root / "data" / "recipes" / folder).mkdir(parents=True)
     return Recipes(root)
 
 
 def write(recipes, kind, name, document):
-    folder = {"tokenizer": "tokenizers", "model": "models"}[kind]
+    folder = {"model": "models"}[kind]
     (recipes.root / "data" / "recipes" / folder / f"{name}.json").write_text(dump_json(document), encoding="utf-8")
 
 
-def tokenizer(depot=DEPOT, dataset="first"):
-    return {"version": 1, "depot": depot, "dataset": dataset, "sample_bytes": 1000, "vocab_size": 300}
-
-
-def model(tokenizer_name="t", depot=DEPOT, dataset="first"):
-    return {"data": {"depot": depot, "dataset": dataset, "tokenizer": tokenizer_name, "total_tokens": 100},
+def model(depot=DEPOT, dataset="first"):
+    return {"data": {"depot": depot, "dataset": dataset, "total_tokens": 100},
             "model": MODEL, "seed": 1, "steps": STEPS, "drafter": {}}
 
 
-def test_a_model_recipe_names_a_depot_a_dataset_there_its_tokenizer_and_its_tokens(recipes):
-    write(recipes, "tokenizer", "t", tokenizer())
+def test_a_model_recipe_names_a_depot_a_dataset_there_and_its_tokens(recipes):
     write(recipes, "model", "m", model())
-    assert recipes.model_recipe("m")["data"] == {"depot": DEPOT, "dataset": "first", "tokenizer": "t",
-                                                 "total_tokens": 100}
-    assert recipes.vocab_size(recipes.model_recipe("m")) == 300
+    assert recipes.model_recipe("m")["data"] == {"depot": DEPOT, "dataset": "first", "total_tokens": 100}
+    assert recipes.data_part("m") == recipes.model_recipe("m")["data"]
     assert recipes.check() == []
 
 
 def test_the_check_names_each_recipe_whose_depot_or_dataset_a_person_has_not_named(recipes):
     # an empty depot or dataset reads (training needs neither), and the check names the file to fill in
-    write(recipes, "tokenizer", "t", tokenizer(depot=""))
     write(recipes, "model", "m", model(dataset=""))
     assert recipes.model_recipe("m")["data"]["dataset"] == ""
     assert recipes.check() == [
-        "data/recipes/tokenizers/t.json: depot empty: a person names the depot's address and the name of its dataset",
-        "data/recipes/models/m.json: data.dataset empty: a person names the depot's address and the name of its "
-        "dataset"]
+        "data/recipes/models/m.json: data.dataset empty: a person names the depot's public address and the id or "
+        "name of its dataset"]
 
 
-def test_a_recipe_of_the_earlier_shape_or_naming_no_tokenizer_recipe_is_refused(recipes):
-    write(recipes, "tokenizer", "t", tokenizer())
+def test_a_recipe_of_an_earlier_shape_is_refused(recipes):
     earlier = model()
     earlier["data"] = {"mixture": "classics", "tokenizer": "t", "total_tokens": 100, "held_out": 0.05}
     write(recipes, "model", "earlier", earlier)
-    write(recipes, "model", "lost", model(tokenizer_name="gone"))
+    named = model()
+    named["data"]["tokenizer"] = "t"  # the tokenizer is the dataset's own: a recipe names none
+    write(recipes, "model", "named", named)
     with pytest.raises(InvalidRecipe, match="data/recipes/models/earlier.json: at data: Additional properties"):
         recipes.model_recipe("earlier")
-    assert recipes.problems("model", "lost") == ["no tokenizer 'gone' (data/recipes/tokenizers/gone.json does not "
-                                                 "exist)"]
+    with pytest.raises(InvalidRecipe, match="data/recipes/models/named.json: at data: Additional properties"):
+        recipes.model_recipe("named")
     with pytest.raises(NotFound, match="no model 'nothing'"):
         recipes.model_recipe("nothing")
-
-
-def test_a_lock_lists_the_texts_its_vocabulary_read_by_depot_and_id_and_a_wrong_one_writes_nothing(recipes):
-    write(recipes, "tokenizer", "t", tokenizer())
-    lock = {"recipe": tokenizer(), "texts": [{"depot": DEPOT, "id": "my-depot-12"}, {"depot": "other-depot", "id": "other-depot-12"}],
-            "vocabulary_sha256": "b" * 64}
-    assert recipes.generated("lock", "t") is None
-    assert recipes.write_generated("lock", "t", lock) == "data/recipes/tokenizers/t.lock.json"
-    assert recipes.generated("lock", "t") == lock
-    with pytest.raises(InvalidRecipe, match="at texts/0: 'id' is a required property"):
-        recipes.write_generated("lock", "t", {**lock, "texts": [{"depot": DEPOT}]})
-    assert recipes.generated("lock", "t") == lock
-    with pytest.raises(NotFound, match="no tokenizer 'other'"):  # a lock belongs to a tokenizer recipe
-        recipes.write_generated("lock", "other", lock)
-    assert recipes.names("lock") == ["t"] and recipes.names("tokenizer") == ["t"]
 
 
 def test_the_check_reads_the_lock_and_licenses_of_each_image(recipes):

@@ -3,8 +3,6 @@
 Every file of these kinds is opened here and nowhere else
 (docs/architecture.md, "The service layer"):
 
-    data/recipes/tokenizers/<name>.json   a tokenizer recipe
-                          + <name>.lock.json (written by the command that trains the vocabulary)
     data/recipes/models/<name>.json       data, architecture and training steps of one model
     data/recipes/series/<name>.json       a model series: the rules its sizes share and the sizes
     data/images/<name>/Dockerfile         a container image of agentic tasks (and any file it copies)
@@ -13,8 +11,8 @@ Every file of these kinds is opened here and nowhere else
 
 A Recipes hands out documents and bytes, never a path under data/; docker
 gets an image's files as a tar archive made from image_files. People write
-the recipes and tools.json themselves; the generated files (tokenizer
-locks, image locks and image license lists) are written only through
+the recipes and tools.json themselves; the generated files (image locks and
+image license lists) are written only through
 write_generated, by the command that makes them. The audit hook of
 guard.py refuses any other code that reaches these files.
 
@@ -41,16 +39,14 @@ from .guard import guard
 
 DATA_FOLDER = "data"  # the repository's data, a top-level folder of its root
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
-RECIPE_FOLDERS = {"tokenizer": "tokenizers", "model": "models", "series": "series"}
+RECIPE_FOLDERS = {"model": "models", "series": "series"}
 IMAGE_FILES = {"dockerfile": "Dockerfile", "image-lock": "lock.json", "image-licenses": "licenses.json",
                "image-tools": "tools.json"}
 # every kind of file, by its name: its JSON schema (None for a text kind), and the command that writes a
 # generated kind (None: people write it)
 KINDS = {
-    "tokenizer": ("tokenizer", None),
     "model": ("model", None),
     "series": ("series", None),
-    "lock": ("lock", "the command that trains the vocabulary"),
     "dockerfile": (None, None),
     "image-lock": ("image-lock", "wpt agent lock-image"),
     "image-licenses": ("image-licenses", "wpt agent lock-image"),
@@ -109,11 +105,11 @@ def check_declared(where: str, names: list[str]):
 
 def _empty_data(where: str, data: dict, place: str):
     """InvalidRecipe naming the fields of a data part that a person has not
-    filled in yet: the depot's address and the dataset's name."""
+    filled in yet: the depot's public address and the dataset's id or name."""
     empty = [key for key in ("depot", "dataset") if not data[key]]
     if empty:
         raise InvalidRecipe(f"{where}: {' and '.join(f'{place}{key}' for key in empty)} empty: a person names the "
-                            f"depot's address and the name of its dataset")
+                            f"depot's public address and the id or name of its dataset")
 
 
 class Recipes:
@@ -149,8 +145,6 @@ class Recipes:
             raise NotFound(f"no {kind} {name!r}: a name is lowercase a-z, 0-9, '.', '_' and '-'")
         if kind in RECIPE_FOLDERS:
             return self._data / "recipes" / RECIPE_FOLDERS[kind] / f"{name}.json"
-        if kind == "lock":
-            return self._data / "recipes" / "tokenizers" / f"{name}.lock.json"
         return self._data / "images" / name / IMAGE_FILES[kind]
 
     def relative(self, kind: str, name: str) -> str:
@@ -165,12 +159,7 @@ class Recipes:
         """The names of the existing files of a kind, sorted."""
         if kind in RECIPE_FOLDERS:
             folder = self._data / "recipes" / RECIPE_FOLDERS[kind]
-            return sorted(p.stem for p in folder.glob("*.json") if not p.name.endswith(".lock.json")) \
-                if folder.is_dir() else []
-        if kind == "lock":
-            folder = self._data / "recipes" / "tokenizers"
-            return sorted(p.name.removesuffix(".lock.json") for p in folder.glob("*.lock.json")) \
-                if folder.is_dir() else []
+            return sorted(p.stem for p in folder.glob("*.json")) if folder.is_dir() else []
         if kind not in KINDS:
             raise NotFound(f"no kind of file named {kind!r}; the kinds are {', '.join(KINDS)}")
         return [name for name in self.image_names() if (self._data / "images" / name / IMAGE_FILES[kind]).is_file()]
@@ -189,25 +178,40 @@ class Recipes:
 
     # -- recipes -----------------------------------------------------------------
     def recipe(self, kind: str, name: str) -> dict:
-        """The tokenizer, model or series recipe of that name, validated
+        """The model or series recipe of that name, validated
         against its schema; NotFound when it does not exist."""
         if kind not in RECIPE_FOLDERS:
             raise NotFound(f"no kind of recipe named {kind!r}; the kinds are {', '.join(RECIPE_FOLDERS)}")
         return self._load(kind, name)
 
-    def model_recipe(self, given: str) -> dict:
+    def data_part(self, given: str) -> dict:
+        """The data part of the model recipe a name gives (model_recipe):
+        its depot, dataset and, for a model recipe, total_tokens; read
+        without deriving a size, so without the vocabulary's size. NotFound
+        as model_recipe."""
+        name, separated, _ = given.partition(SIZE_OF)
+        if not separated:
+            return self.recipe("model", given)["data"]
+        return series.data_part(self.recipe("series", name))
+
+    def model_recipe(self, given: str, vocab_size: int | None = None) -> dict:
         """The model recipe a name gives: NAME, the file of
         data/recipes/models/; SERIES:SIZE, that size of the series file
-        data/recipes/series/SERIES.json, derived from it (series.py);
+        data/recipes/series/SERIES.json, derived from it (series.py) for a
+        vocabulary of vocab_size tokens (the vocabulary of the dataset's
+        tokenizer recipe, which its depot holds), which a series needs;
         SERIES:SIZE:RUN, another run of that size (a decay branch, a
         learning rate of the check: series.runs). NotFound when there is no
         such recipe, series, size or run; InvalidRecipe when the series'
-        sizes cannot be derived."""
+        sizes cannot be derived, or no vocab_size is given for one."""
         name, separated, rest = given.partition(SIZE_OF)
         if not separated:
             return self.recipe("model", given)
         size, _, run = rest.partition(SIZE_OF)
         document = self.recipe("series", name)
+        if vocab_size is None:
+            raise InvalidRecipe(f"series {name}: a size is derived for the vocabulary's size, which its dataset's "
+                                "tokenizer recipe gives")
         if size not in series.sizes(document):
             raise NotFound(f"no size {size!r} in the series {name}; its sizes are {', '.join(series.sizes(document))}")
         try:
@@ -215,14 +219,13 @@ class Recipes:
                 listed = series.runs(document, size)
                 raise NotFound(f"series {name}: no run {run!r} of the size {size}; "
                                + (f"its runs are {', '.join(listed)}" if listed else "it has no other run"))
-            return series.run_recipe(document, series.plan(document, size, self.vocab_size(document)), run)
+            return series.run_recipe(document, series.plan(document, size, vocab_size), run)
         except ValueError as error:
             raise InvalidRecipe(f"series {name}: {error}") from None
 
-    def series_plans(self, name: str) -> list[series.Plan]:
-        """Every size's numbers in the series file of that name (series.Plan)."""
-        document = self.recipe("series", name)
-        return series.plans(document, self.vocab_size(document))
+    def series_plans(self, name: str, vocab_size: int) -> list[series.Plan]:
+        """Every size's numbers in the series file of that name (series.Plan), for a vocabulary of vocab_size tokens."""
+        return series.plans(self.recipe("series", name), vocab_size)
 
     def series_total_tokens(self, name: str) -> int:
         """The training tokens of the one corpus of the series file of that name (series.data_part)."""
@@ -232,29 +235,22 @@ class Recipes:
         """What each other run of a size of the series file of that name does (series.run_numbers)."""
         return series.run_numbers(self.recipe("series", name), found)
 
-    def vocab_size(self, recipe: dict) -> int:
-        """The vocabulary size the tokenizer recipe of a model recipe's or a series' data part asks for."""
-        return self.recipe("tokenizer", recipe["data"]["tokenizer"])["vocab_size"]
-
     def generated(self, kind: str, name: str) -> dict | None:
-        """A generated file (lock, image-lock, image-licenses), validated; None
+        """A generated file (image-lock, image-licenses), validated; None
         when it does not exist."""
         if not KINDS.get(kind, (None, None))[1]:
             raise NotFound(f"{kind!r} is not a kind of generated file")
         return self._load(kind, name) if self.exists(kind, name) else None
 
     def write_generated(self, kind: str, name: str, document: dict) -> str:
-        """Write a generated file (lock, image-lock, image-licenses) after its
-        schema, the image's folder or the tokenizer recipe it belongs to
-        existing; only the command that makes it calls this. Nothing is
+        """Write a generated file (image-lock, image-licenses) after its
+        schema and the image's folder it belongs to existing; only the
+        command that makes it calls this. Nothing is
         written when a check refuses it. Returns its place in the
         repository."""
         if not KINDS.get(kind, (None, None))[1]:
             raise NotFound(f"{kind!r} is not a kind of generated file: people write it")
-        if kind == "lock":
-            self.recipe("tokenizer", name)
-        else:
-            self._image_folder(name)
+        self._image_folder(name)
         validate(document, kind, self.relative(kind, name))
         self._write_file(self._path(kind, name), dump_json(document).encode("utf-8"))
         return self.relative(kind, name)
@@ -358,15 +354,11 @@ class Recipes:
         return []
 
     def check(self) -> list[str]:
-        """Every rule on every recipe, the locks of the tokenizer recipes and
-        every image; one line per problem."""
+        """Every rule on every recipe and every image; one line per problem."""
         found = []
         for kind in RECIPE_FOLDERS:
             for name in self.names(kind):
                 found += self.problems(kind, name)
-        for name in self.names("lock"):
-            if name in self.names("tokenizer"):
-                found += self.problems("lock", name)
         for name in self.image_names():
             found += self.problems("dockerfile", name)
             for kind in ("image-lock", "image-licenses", "image-tools"):
@@ -377,10 +369,6 @@ class Recipes:
     def _check_recipe(self, kind: str, name: str):
         document = self.recipe(kind, name)
         where = self.relative(kind, name)
-        if kind == "tokenizer":
-            _empty_data(where, document, "")
-            return
-        self.recipe("tokenizer", document["data"]["tokenizer"])
         if kind == "series":
             try:
                 series.check(document)

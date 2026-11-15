@@ -837,8 +837,10 @@ and the repository, or from a series file, the name of one of its sizes
 (and of that size's run, when it is another than its own) and the
 repository ("Model series", below). A model recipe holds:
 
-- the data: the address of a depot (`depot`), the name of a dataset there
-  (`dataset`), the tokenizer recipe and the total tokens;
+- the data: a depot (`depot`), by the name its corpora carry for it (its
+  public address, [data-selection.md](data-selection.md)), a dataset there
+  by id or name (`dataset`) and the total tokens; the vocabulary is the one the corpus
+  was built with, from the dataset's tokenizer recipe;
 - the architecture's numbers: the layout of the layers (`window_layers`,
   `sparse_groups`, `sparse_layers`, "Attention"), width, attention heads
   and head width, expert counts and widths, top `k`, latent width,
@@ -956,7 +958,7 @@ each size's model recipe (`wpt_recipes.series`):
   least 1, and the updates read `D` tokens. The warm-up is the series'
   `warmup_share` of the updates, at least 1; the drops stay at 80% and 90%.
 - the data: one corpus for the whole series. Its data part holds the
-  series' depot, dataset and tokenizer recipe, and the most tokens any
+  series' depot and dataset, and the most tokens any
   size's run reads (its own, or its trunk's, below), so every size's
   recipe has the same data part and reads the same corpus. Each size's
   `read-text` step reads only the start of its training tokens

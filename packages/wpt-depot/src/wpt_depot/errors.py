@@ -17,6 +17,12 @@ class OtherFormat(DepotError):
     The message names the depot's address, its format and the code's."""
 
 
+class HalfUpgraded(OtherFormat):
+    """The depot is under an upgrade that runs in several transactions
+    (wpt_depot.upgrade) and has not ended: only `wpt depot upgrade`, run
+    again, reads it, and goes on where it stopped."""
+
+
 class DepotExists(DepotError):
     """A new depot, a clone, an upgrade's new file or a restore was asked
     for at an address that already holds a file."""
@@ -29,6 +35,10 @@ class UnsupportedAddress(DepotError):
 
 class NoDepotSetting(DepotError):
     """WPT_DEPOT is set neither in the environment nor in .env."""
+
+
+class BadDepotSetting(DepotError):
+    """WPT_DEPOT_URL holds no http:// or https:// address."""
 
 
 class NotFound(DepotError):

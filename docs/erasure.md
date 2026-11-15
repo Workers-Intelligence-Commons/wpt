@@ -133,17 +133,26 @@ Erasure applies to the depot and to every corpus built after it, never
 to the depot's backups. A corpus
 already in the store is not rewritten: it keeps the passage until its
 dataset is built again, and it is marked stale (its record names the
-erasures), so `wpt train` refuses it until it is built again. Built again,
+erasures), so `wpt train` refuses it and the dataset's download link gives
+nothing until someone builds it again; nothing builds it by itself. A
+corpus being built when the erasure is carried out is written stale when
+its build ends, if it took a text the erasure reached. The same holds for
+an erasure carried out in another local depot a dataset reads: a corpus
+is marked stale by the texts it holds, whichever depot holds them, and its
+build's key counts the erasures of every depot it read. An erasure decided
+through `wpt depot web` is recorded as being checked before it is carried
+out, and the web app sends no corpus until every corpus holding one of its
+texts is marked stale, which it does in the background. Built again,
 a dataset gives what its libraries held at its change numbers, less what
 the erasure removed or cut ([data-selection.md](data-selection.md),
 "Building a dataset again"). Models already trained and published are not
 changed.
 
-A locked vocabulary is not retrained when a text changes (see
+A trained vocabulary is not retrained when a text changes (see
 [tokenizer.md](tokenizer.md)), so merges learned from erased text, such as
-pieces of a rare name, stay in it until someone raises the tokenizer
-recipe's `version`. When an erasure must reach the vocabulary too, raise
-the version together with the erasure.
+pieces of a rare name, stay in it until someone changes what trains the
+tokenizer recipe, which raises its version. When an erasure must reach the
+vocabulary too, change the recipe together with the erasure.
 
 ## The repository's history
 

@@ -13,15 +13,29 @@ the code of its format knew how to finish it.
 
 An SQLite file of format 4 or newer, the one given or the one just written
 from a folder, is brought up in place by the step from its format to the
-next (FILE_STEPS) until it reaches the code's format. Each step is one
-transaction that changes the layout and adds a revision of the about row
-at its new format under a change of its own, kind 'upgrade', so a step cut
-short leaves the file as it was and runs again whole. Before it, the file
+next (FILE_STEPS) until it reaches the code's format. A step changes the
+layout and adds a revision of the about row at its new format under a
+change of its own, kind 'upgrade'. A step that fits one transaction leaves
+the file as it was when it is cut short, and runs again whole. A step that
+rewrites every current text runs in several transactions: its first one
+makes the table UNDER_WAY, which marks the depot as half upgraded, with
+the new layout and the about revision; each next one handles one batch of
+rows and records in UNDER_WAY where it stopped; the last one drops it. A
+half-upgraded depot is at no format the code reads: every way in but the
+upgrade refuses it (errors.HalfUpgraded), and the upgrade run again goes
+on from the batch after the last one written, saying how far it is every
+SAY_EVERY seconds. Before a step, the file
 is marked to send a full copy at its next backup, under a new timeline
 (wpt_depot.database), since the change files record no change of layout.
 The step to format 5 builds the index texts_order (wpt_depot.schema) in
 one statement, which reads every current text's row once and rewrites no
-table; it says what it does before it starts and how long it took.
+table; it says what it does before it starts and how long it took. The
+step to format 6 makes, in its first transaction, the tables of the
+tokenizer recipes, their vocabularies and the texts each vocabulary trained
+on, and the column max_tokens of the datasets, all empty; then it writes
+each current text's decisions as rows of text_decisions and its status,
+BATCH rows of texts_revisions a transaction, then builds the index
+texts_status and fills the counts (wpt_depot.counts.recount).
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -58,7 +72,7 @@ from pathlib import Path
 
 from wpt_utils.lines import say
 
-from . import ids
+from . import counts, ids, policy
 from .database import Database, now
 from .errors import DepotExists, OtherFormat, Refused
 from .follow import Upstream
@@ -70,14 +84,38 @@ UPGRADING = ".upgrading"  # what the name of the file being written adds to the 
 ROWS = 4096  # rows of a data file read at a time
 PARTS_ROWS = 16  # rows of parts read at a time: each holds up to 64 MiB of text
 WRITTEN = 4  # the format of the SQLite file written from a folder
-# the index of format 5: the current texts in the numeric order of their ids
-TEXTS_ORDER = ("CREATE INDEX IF NOT EXISTS texts_order ON texts_revisions (((CASE WHEN (rtrim(id, '0123456789') <> id "
+# the index of format 5: the current texts in the numeric order of their ids (ids.order_sql)
+ORDER = ("((CASE WHEN (rtrim(id, '0123456789') <> id "
                "AND rtrim(id, '0123456789') GLOB '*-') THEN substr(id, 1, length(rtrim(id, '0123456789')) - 1) ELSE "
                "id END) || char(1) || CASE WHEN (CASE WHEN (rtrim(id, '0123456789') <> id AND rtrim(id, '0123456789') "
                "GLOB '*-') THEN CAST(substr(id, length(rtrim(id, '0123456789')) + 1) AS INTEGER) END) IS NULL THEN "
                "'1' ELSE '0' || printf('%020d', (CASE WHEN (rtrim(id, '0123456789') <> id AND rtrim(id, "
                "'0123456789') GLOB '*-') THEN CAST(substr(id, length(rtrim(id, '0123456789')) + 1) AS INTEGER) "
-               "END)) END || char(1) || id)) WHERE latest")
+               "END)) END || char(1) || id)")
+TEXTS_ORDER = f"CREATE INDEX IF NOT EXISTS texts_order ON texts_revisions ({ORDER}) WHERE latest"
+# format 6: the index of the current texts by status, then in the order of their ids, and its tables (a file
+# written from a folder is made with the code's tables, so they may exist already, the column status too)
+TEXTS_STATUS = f"CREATE INDEX IF NOT EXISTS texts_status ON texts_revisions (status, {ORDER}) WHERE latest"
+TABLES_6 = ("CREATE TABLE IF NOT EXISTS text_decisions (text TEXT NOT NULL, decision TEXT NOT NULL, "
+            "change INTEGER NOT NULL, PRIMARY KEY (text, decision)) WITHOUT ROWID",
+            "CREATE TABLE IF NOT EXISTS counts (facet TEXT NOT NULL, name TEXT NOT NULL, texts INTEGER NOT NULL, "
+            "PRIMARY KEY (facet, name)) WITHOUT ROWID",
+            "CREATE TABLE IF NOT EXISTS tokenizers_revisions (id TEXT NOT NULL, revision INTEGER NOT NULL, "
+            "change INTEGER NOT NULL, latest INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL, depot TEXT, "
+            "dataset TEXT NOT NULL, sample_bytes INTEGER NOT NULL, vocab_size INTEGER NOT NULL, note TEXT, "
+            "PRIMARY KEY (id, revision))",
+            "CREATE UNIQUE INDEX IF NOT EXISTS tokenizers_latest ON tokenizers_revisions (id) WHERE latest",
+            "CREATE TABLE IF NOT EXISTS vocabularies (recipe TEXT NOT NULL, version INTEGER NOT NULL, "
+            "change INTEGER NOT NULL, sha256 TEXT NOT NULL, merges TEXT NOT NULL, texts INTEGER NOT NULL, "
+            "bytes INTEGER, made_at TEXT NOT NULL, PRIMARY KEY (recipe, version))",
+            "CREATE TABLE IF NOT EXISTS vocabulary_texts (recipe TEXT NOT NULL, version INTEGER NOT NULL, "
+            "position INTEGER NOT NULL, depot TEXT NOT NULL, text TEXT NOT NULL, change INTEGER NOT NULL, "
+            "PRIMARY KEY (recipe, version, position)) WITHOUT ROWID")
+# format 6 columns added to tables of format 5: (table, column, its declaration)
+COLUMNS_6 = (("texts_revisions", "status", "TEXT"), ("datasets_revisions", "max_tokens", "INTEGER"))
+UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
+BATCH = 250_000  # rows of texts_revisions a transaction of the upgrade to format 6 goes over
+SAY_EVERY = 30  # seconds between two lines of progress
 # each format 3 table, by its folder's name: the table of format 4 its rows go into
 TARGETS = {"about": "about_revisions", "licenses": "licenses", "notices": "notices", "kinds": "kinds",
            "decisions": "decisions", "texts": "texts_revisions", "contents": "content_lists", "parts": "parts",
@@ -104,6 +142,11 @@ def upgrade(address: str, to: str | None = None, upstream: str | None = None, lo
         if upstream is not None:
             raise Refused(f"{path} is a depot file already: --upstream is for the upgrade of a clone of format 3 "
                           "or older")
+        db = Database(path)
+        try:
+            start = _format(db)  # a depot whose upgrade has not ended: the format it started from
+        finally:
+            db.close()
     else:
         path = _from_folder(path, to, upstream)
     _in_place(path, log)
@@ -149,7 +192,12 @@ def _in_place(path: Path, log):
 
 
 def _format(db: Database) -> int:
-    return db.reader().execute("SELECT format FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchall()[0][0]
+    """The depot's format, or for a depot under an upgrade that has not
+    ended, the format that upgrade starts from."""
+    from .depot import half_upgraded
+    con = db.reader()
+    found = con.execute("SELECT format FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchall()[0][0]
+    return found - 1 if half_upgraded(con) else found
 
 
 def _to_5(db: Database, log):
@@ -174,8 +222,53 @@ def _new_format(con, reached: int):
                 "ORDER BY revision DESC LIMIT 1", (number, reached))
 
 
+def _to_6(db: Database, log):
+    """Format 5 to 6, in several transactions, as the module says: each
+    text's decisions as rows of text_decisions, its stored status, the
+    index texts_status and the counts."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('texts', 0)")
+            for statement in TABLES_6:
+                con.execute(statement)
+            for table, column, declared in COLUMNS_6:
+                if column not in {one[1] for one in con.execute(f"PRAGMA table_info({table})")}:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declared}")
+            _new_format(con, 6)
+    con = db.reader()
+    after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'texts'").fetchall()[0][0]
+    last = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+    log(f"{db.path}: writing the decisions and the status of each current text, rows {after} to {last} of "
+        f"texts_revisions, {BATCH} rows a transaction; run again after a stop, it goes on from the last one")
+    began = said = time.monotonic()
+    while after < last:
+        upto = min(after + BATCH, last)
+        with db.bulk() as con:
+            con.execute("INSERT OR IGNORE INTO text_decisions (text, decision, change) "
+                        "SELECT t.id, j.value, d.change FROM texts_revisions t, json_each(t.decisions) j "
+                        "JOIN decisions d ON d.id = j.value WHERE t.latest AND t.rowid > ? AND t.rowid <= ?",
+                        (after, upto))
+            con.execute(f"UPDATE texts_revisions SET status = {policy.status_sql('decisions')}, decisions = '[]' "
+                        "WHERE latest AND rowid > ? AND rowid <= ?", (after, upto))
+            con.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'texts'", (upto,))
+        after = upto
+        if time.monotonic() - said >= SAY_EVERY or after == last:
+            said = time.monotonic()
+            log(f"{db.path}: {after} of {last} rows of texts_revisions, {said - began:.0f} seconds")
+    log(f"{db.path}: building the index texts_status over the current texts, in one statement")
+    with db.bulk() as con:
+        con.execute(TEXTS_STATUS)
+    log(f"{db.path}: counting the texts of each status, tag, license, library and decision")
+    with db.bulk() as con:
+        counts.recount(con)
+        con.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the depot is at format 6, in {time.monotonic() - began:.0f} seconds")
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5}
+FILE_STEPS = {4: _to_5, 5: _to_6}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):

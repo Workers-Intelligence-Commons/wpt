@@ -7,6 +7,7 @@ a dataset builds into the store (wpt_depot.corpus).
     database.py  the connections to the file, the person's read-only SQL, and the change files of each write
     parts.py     where a content is cut into parts, and reading a text from its parts
     policy.py    how decisions combine, and what they make of a text: its status
+    counts.py    the depot's counts of texts by status, tag, license, library and decision
     filters.py   a filter of the texts, and the SQL condition it stands for
     scoring.py   a change of the scores of many texts, checked and made in SQL
     erasure.py   cutting erased passages, naming them by public hashes, and showing a request's places
@@ -21,7 +22,7 @@ a dataset builds into the store (wpt_depot.corpus).
     remote.py    a dataset written out as JSON
     corpus.py    a dataset's corpus in the store
     notice.py    a model's notice from its corpus
-    settings.py  WPT_DEPOT, the depot to work on
+    settings.py  WPT_DEPOT, the depot to work on, and WPT_DEPOT_URL, its public address
 """
 
 from .backup import backup, restore

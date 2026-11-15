@@ -7,14 +7,17 @@ library with the change number of its depot it is read at:
 
     {"name": "...", "tokenizer": "...",
      "libraries": [{"depot": "<address>" or null, "library": "<depot name>-3", "change": 12}, ...],
-     "shares": [{"tag": "en", "share": 0.3}, ...] or null}
+     "shares": [{"tag": "en", "share": 0.3}, ...] or null, "max_tokens": 1000000 or null}
+
+A remote without max_tokens reads as one with null.
 """
 
 import json
 
 from .errors import BadRemote
 
-FIELDS = ("name", "tokenizer", "libraries", "shares")
+FIELDS = ("name", "tokenizer", "libraries", "shares", "max_tokens")
+OPTIONAL = ("max_tokens",)  # the fields a remote may leave out, read as null
 
 
 def to_remote(dataset: dict) -> dict:
@@ -38,8 +41,12 @@ def from_json(text: str) -> dict:
 def from_remote(found) -> dict:
     """A datasets row without its id, from a remote. BadRemote unless it has
     exactly the remote's fields, each of its type."""
-    if not isinstance(found, dict) or set(found) != set(FIELDS):
-        raise BadRemote(f"a remote is an object with exactly {', '.join(FIELDS)}")
+    if not isinstance(found, dict) or not set(FIELDS) - set(OPTIONAL) <= set(found) <= set(FIELDS):
+        raise BadRemote(f"a remote is an object with exactly {', '.join(FIELDS)} ({', '.join(OPTIONAL)} may be left "
+                        "out)")
+    limit = found.get("max_tokens")
+    if limit is not None and not (_integer(limit) and limit > 0):
+        raise BadRemote("a remote's max_tokens is null or a whole number above 0")
     if not isinstance(found["name"], str) or not isinstance(found["tokenizer"], str):
         raise BadRemote("a remote's name and tokenizer are text")
     libraries = found["libraries"]
@@ -54,7 +61,8 @@ def from_remote(found) -> dict:
             and isinstance(one["share"], (int, float)) and not isinstance(one["share"], bool) for one in shares)):
         raise BadRemote("a remote's shares are null, or objects of a tag and a share")
     return {"name": found["name"], "tokenizer": found["tokenizer"], "libraries": [dict(one) for one in libraries],
-            "shares": None if shares is None else [{"tag": one["tag"], "share": float(one["share"])} for one in shares]}
+            "shares": None if shares is None else [{"tag": one["tag"], "share": float(one["share"])} for one in shares],
+            "max_tokens": limit}
 
 
 def _integer(value) -> bool:
