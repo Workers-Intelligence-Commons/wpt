@@ -62,10 +62,12 @@ way.
 
 ### Training it
 
-`wpt depot tokenizer train NAME`, the button "Train" on the recipe's page,
-or the build of a dataset that names the recipe trains the vocabulary of
-the recipe's current version. The web app runs the training as a job of
-its queue ([depot-web.md](depot-web.md)).
+`wpt depot tokenizer train NAME`, or the button "Train its vocabulary" on
+the recipe's page, trains the vocabulary of the recipe's current version;
+a corpus build never trains one. The web app shows the training's estimate
+first, the sample's bytes and a time taken in proportion to the one
+training measured, and runs the training as a job of its queue only once
+it is confirmed ([depot-web.md](depot-web.md)).
 
 The sample is the plain texts of the recipe's dataset in the order its
 corpus takes them (the dataset's libraries at the states it names, then
@@ -83,8 +85,8 @@ the recipe, the web address for another depot) and its id there.
 ### One vocabulary per version
 
 The depot holds at most one vocabulary for each version of a recipe, and
-refuses a second one. From then on, every build of that version uses that
-vocabulary:
+refuses a second one. From then on, every build that names that version's
+vocabulary, by its sha256, uses it:
 
 - **Adding or changing texts never retrains it.** Many datasets and
   models, whatever their training settings, share one vocabulary, so a
@@ -95,9 +97,8 @@ vocabulary:
   data, another size), change what trains it, which raises the version,
   and train again. A change of the tokenizer's code asks for no new
   version: the depot keeps the vocabulary.
-- **A build without the vocabulary of its version builds nothing**
-  (`NoVocabulary`) from the command line; the web app's build queues the
-  training first.
+- **A build whose vocabulary the depot does not hold builds nothing**
+  (`NoVocabulary`), from the command line and from the web app alike.
 - **Erasure does not reach a trained vocabulary** until the version is
   raised: merges learned from text that was erased later stay in it (see
   [erasure.md](erasure.md)).
@@ -120,10 +121,10 @@ mean other tokens.
 
 ### Where the vocabulary is checked
 
-- The corpus build uses only the vocabulary the depot holds for the
-  recipe's version; the corpus record names the recipe, its version and
-  the vocabulary's file (`{"key", "sha256"}`, in the corpus's folder), and
-  the corpus id covers its sha256.
+- The corpus build uses only a vocabulary the depot holds; the corpus
+  record names its recipe, its version, its sha256 and the vocabulary's
+  file (`{"key", "sha256"}`, in the corpus's folder), and the corpus id
+  covers its sha256.
 - Training reads the vocabulary from the corpus, checked against that
   sha256, and writes it into the model folder as `tokenizer.json`. Every
   weight file's header names it: `tokenizer` (such as

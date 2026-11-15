@@ -294,7 +294,7 @@ def test_a_query_s_answer_past_its_bounds_is_refused(web, monkeypatch):
     assert (status, answer["problems"][0].split(":")[0]) == (422, "AnswerTooLarge")
 
 
-def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_libraries(web, tmp_path):
+def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_libraries_or_those_it_read(web, tmp_path):
     # the server answers any client: it opens no depot at an address a client gives
     request, depot = web
     request("POST", "/api/libraries", {"name": "first"})
@@ -306,6 +306,13 @@ def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_lib
         200, {"id": "test-depot-1"})
     assert request("POST", "/api/datasets/test-depot-1", {"name": "mix", "libraries": [mine, other]})[0] == 422
     assert depot.dataset("mix")["revision"] == 1
+    elsewhere = Depot.new(str(tmp_path / "elsewhere.sqlite"), About("elsewhere", "Ada Lovelace", "ada@example.org"))
+    theirs = {"depot": elsewhere.address, "library": elsewhere.new_library("theirs")}
+    cross = depot.new_dataset("cross", "t", [(None, "test-depot-1"), (theirs["depot"], theirs["library"])])
+    stored = depot.dataset_by_id(cross)["libraries"]
+    # a library of another depot the dataset reads already, as it stores it, is kept: the page edits the dataset
+    assert request("POST", f"/api/datasets/{cross}", {"name": "crossed", "libraries": stored}) == (200, {"id": cross})
+    assert depot.dataset("crossed")["libraries"] == stored
 
 
 def test_the_web_command_serves_the_depot_its_setting_names(tmp_path, monkeypatch):

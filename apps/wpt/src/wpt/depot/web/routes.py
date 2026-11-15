@@ -34,6 +34,7 @@ from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter, condition
 from wpt_depot.schema import ADMITTED, REFUSED
 from wpt_depot.corpora import NoRoom, TooBig
+from wpt_depot.corpora import triple as corpora_triple
 from wpt_store import StoreError
 from wpt_utils.lines import say
 
@@ -353,13 +354,17 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         held = held_libraries()
         return 200, jsonable([with_here(row, held) for row in found])
 
-    def own(libraries) -> list[tuple[str | None, str]]:
+    def own(libraries, read: list[dict] = ()) -> list[tuple[str | None, str]]:
         """The libraries a dataset of the body names, as (depot address,
         library id). Refused, before any depot is opened, for a library
-        named by another depot's address: the server answers any client, so
-        it opens no address a client gives (`wpt depot dataset` names them)."""
+        named by another depot's address that is not one the dataset reads
+        already (read: its stored libraries, which an edit keeps as they are,
+        never opening their depot): the server answers any client, so it
+        opens no address a client gives (`wpt depot dataset` names them)."""
+        stored = {(one["depot"], one["library"]) for one in read}
         others = sorted({one["depot"] for one in libraries
-                         if one.get("depot") is not None and not depot.is_here(one["depot"])})
+                         if one.get("depot") is not None and not depot.is_here(one["depot"])
+                         and (one["depot"], one["library"]) not in stored})
         if others:
             raise errors.Refused(f"a dataset made or changed here reads only this depot's libraries, not those of "
                                  f"{', '.join(others)}: use wpt depot dataset new or edit")
@@ -388,15 +393,17 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                               "corpora": None if corpora is None else [
                                   {**{key: one.get(key) for key in ("id", "built_at", "texts", "conversations",
                                                                     "total_tokens", "stale", "deleted")},
-                                   "revision": one["dataset"]["revision"]} for one in corpora],
+                                   "revision": one["dataset"]["revision"], "vocabulary": corpora_triple(one)[1],
+                                   "max_tokens": corpora_triple(one)[2]} for one in corpora],
                               "store": unreachable})
 
     @refusals
     def edit_dataset(values, body):
         shares = body.get("shares")
-        depot.edit_dataset(values["id"], body["name"], own(body["libraries"]),
+        depot.edit_dataset(values["id"], body["name"],
+                           own(body["libraries"], depot.dataset_by_id(values["id"])["libraries"]),
                            None if shares is None else [(one["tag"], one["share"]) for one in shares],
-                           body.get("max_tokens"))
+                           body.get("max_tokens"), body.get("vocabulary"))
         return 200, {"id": values["id"]}
 
     @refusals
@@ -452,11 +459,12 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     library_ref = {"type": "object", "required": ["library"],
                    "properties": {"depot": {"type": ["string", "null"], "description": "this depot's address, in "
                                             "any form; absent or null: this depot; another depot's address is "
-                                            "refused (422), only the commands name one"}, "library": TEXT}}
+                                            "refused (422), only the commands name one, but in an edit, a library "
+                                            "of another depot the dataset reads already, as it stores it"}, "library": TEXT}}
     share = {"type": "object", "required": ["tag", "share"], "properties": {"tag": TEXT, "share": {"type": "number"}}}
-    max_tokens = {"type": ["integer", "null"], "minimum": 1, "description": "the most tokens of plain text the "
-                  "corpus takes: the texts go in the corpus's order and each share stops at its first text that "
-                  "would pass its part; absent or null: no limit"}
+    max_tokens = {"type": ["integer", "null"], "minimum": 1, "description": "the size the build form starts at "
+                  "(nothing else reads it): the most tokens the corpus holds, conversations and tasks first; absent "
+                  "or null: no limit"}
     needle = {"type": "object", "required": ["text"],
               "properties": {"text": TEXT, "start": {"type": ["integer", "null"]}, "end": {"type": ["integer", "null"]},
                              "field": {"type": ["string", "null"], "description": "for an item: the JSON Pointer "
@@ -736,8 +744,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "from this depot: those this depot holds, named by its address in any form or, for a library of "
               "that upstream, by the upstream's", answer=ROWS),
         Route("POST", "/api/datasets", new_dataset, "a dataset reading libraries, each at its depot's change number now, "
-              "with optional ordered shares and an optional limit of its corpus's tokens of plain text, whose "
-              "vocabulary is that of the depot's tokenizer recipe it names (wpt depot dataset new)",
+              "with optional ordered shares and an optional size the build form starts at, whose vocabulary is "
+              "trained by the depot's tokenizer recipe it names; it publishes no vocabulary until an edit sets one "
+              "(wpt depot dataset new)",
               body={"type": "object", "required": ["name", "tokenizer", "libraries"],
                     "properties": {"name": TEXT, "tokenizer": TEXT,
                                    "libraries": {"type": "array", "minItems": 1, "items": library_ref},
@@ -747,18 +756,22 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "whether it belongs to the upstream this depot follows (which alone changes it), each library it "
               "reads with its change number and local, whether it is read here as GET /api/datasets says (and "
               "for such a library its name and whether it is locked), its remote, and the corpora the store holds "
-              "built from it, through its renames, each with the revision of the dataset it was built from, the "
-              "last built first (null, with why in store, when the store cannot be read)",
+              "built from it, through its renames, each with the revision of the dataset it was built from, its "
+              "vocabulary's sha256 and its size (max_tokens, null for none), the last built first (null, with why in store, when the store cannot be read)",
               answer={"type": "object", "required": ["dataset", "upstream", "libraries", "remote", "corpora",
                                                      "store"]}),
         Route("POST", "/api/datasets/{id}", edit_dataset, "change the dataset of that id as a new revision, its id "
               "and tokenizer kept, with the checks of a new one (wpt depot dataset edit): a library it read already "
-              "keeps its change number, a new one is read at its depot's change number now; a corpus built before "
-              "keeps its own copy",
+              "keeps its change number (one of another depot included, named as the dataset stores it), a new one "
+              "is read at its depot's change number now; a corpus built before keeps its own copy",
               body={"type": "object", "required": ["name", "libraries"],
                     "properties": {"name": TEXT, "libraries": {"type": "array", "minItems": 1, "items": library_ref},
                                    "shares": {"type": ["array", "null"], "items": share},
-                                   "max_tokens": max_tokens}}, answer=ID),
+                                   "max_tokens": max_tokens,
+                                   "vocabulary": {"type": ["string", "null"], "description": "the sha256 of the "
+                                                  "vocabulary the dataset publishes, one this depot holds (422 "
+                                                  "otherwise), whose corpus training takes; absent or null: none"}}},
+              answer=ID),
         Route("GET", "/api/datasets/{name}/remote", export, "the dataset as a remote (wpt depot dataset export)",
               answer=OBJECT),
         Route("GET", "/api/erasures", erasures, "every erasure request, with its status and whether it belongs to "

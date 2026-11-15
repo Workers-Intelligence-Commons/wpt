@@ -16,7 +16,10 @@ prefix_tokens of the corpus's, in the token files' order, and nothing after
 them: the windows, the token files copied or streamed and the texts the
 step learned from are those of that start. Each size of a model series
 reads its first part of the series' one corpus (docs/model.md, "Model
-series"). A corpus with fewer tokens is refused before any step runs.
+series"). A corpus with fewer tokens is refused before any step runs;
+`wpt train` gives a step no more than a corpus built at the recipe's size
+holds (docs/training.md, "Prefix"), so such a corpus is read
+whole.
 
 Each process takes --micro-batch windows per pass (default: all of its
 share of the batch) and adds passes up until the batch is complete: pass a

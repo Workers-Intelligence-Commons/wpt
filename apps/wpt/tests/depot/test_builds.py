@@ -91,72 +91,139 @@ def ended(call, job: str) -> dict:
     raise AssertionError(f"the job {job} did not end")
 
 
-def test_a_build_trains_the_missing_vocabulary_first_and_the_dataset_s_link_gives_its_files_and_texts_the_same_each_time(
+def trained(call, depot) -> str:
+    """Make the tokenizer recipe "tiny" the dataset "first" names and train its vocabulary through the routes,
+    confirmed: its sha256."""
+    assert call("POST", "/api/tokenizers", {"name": "tiny", "dataset": "first", "sample_bytes": 1000,
+                                           "vocab_size": 560})[0] == 200
+    assert ended(call, call("POST", "/api/tokenizers/tiny/train", {"confirmed": True})[2]["id"])["state"] == "done"
+    return call("GET", "/api/tokenizers/tiny")[2]["vocabularies"][0]["sha256"]
+
+
+def test_a_vocabulary_training_starts_only_once_confirmed_after_its_estimate(served, tmp_path):
+    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
+    call = served(depot)
+    call("POST", "/api/tokenizers", {"name": "tiny", "dataset": "first", "sample_bytes": 1000, "vocab_size": 560})
+
+    status, _, estimate = call("GET", "/api/tokenizers/tiny/estimate")
+    assert status == 200 and estimate["sample_bytes"] == 1000 and estimate["seconds"] == 0  # 1000 bytes: no time
+    assert call("POST", "/api/tokenizers/tiny/train", None)[0] == 400
+    assert call("POST", "/api/tokenizers/tiny/train", {"confirmed": False})[0] == 422
+    assert call("GET", "/api/jobs")[2] == []
+    assert call("POST", "/api/tokenizers/tiny/train", {"confirmed": True})[2]["kind"] == "vocabulary"
+
+
+def test_a_build_needs_a_trained_vocabulary_a_size_and_a_confirmation_and_each_size_has_its_own_link(
         served, tmp_path):
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
     assert call("GET", "/api/about")[2]["address"] == PUBLIC  # what names it in its corpora
     dataset = depot.dataset("first")["id"]
-    assert call("POST", "/api/tokenizers", {"name": "tiny", "dataset": "first", "sample_bytes": 1000,
-                                           "vocab_size": 560})[0] == 200
-    assert call("GET", f"/api/datasets/{dataset}/download")[2]["state"] == "not built"
+    base = f"/api/datasets/{dataset}"
+    untrained = "0" * 64
+    assert call("POST", f"{base}/build", {"vocabulary": untrained, "max_tokens": "all", "confirmed": True})[0] == 422
+    vocabulary = trained(call, depot)
+    link = f"{base}/download/{vocabulary}/all"
+    status, _, shown = call("GET", link)
+    assert status == 200 and shown["state"] == "not built" and shown["job"] is None
+    for refused in ({"max_tokens": "all", "confirmed": True}, {"vocabulary": vocabulary, "confirmed": True},
+                    {"vocabulary": vocabulary, "max_tokens": "all"}, {}):
+        assert call("POST", f"{base}/build", refused)[0] == 400
+    assert call("POST", f"{base}/build", {"vocabulary": vocabulary, "max_tokens": "all", "confirmed": False})[0] == 422
+    assert [one["kind"] for one in call("GET", "/api/jobs")[2]] == ["vocabulary"]  # neither link nor refusal queued
 
-    status, _, job = call("POST", f"/api/datasets/{dataset}/build", {})
-    assert status == 200 and job["kind"] == "corpus" and job["after"] is not None
-    assert call("POST", f"/api/datasets/{dataset}/build", {})[0] == 409  # one corpus job per dataset
+    status, _, job = call("POST", f"{base}/build", {"vocabulary": vocabulary, "max_tokens": "all", "confirmed": True})
+    assert status == 200 and job["kind"] == "corpus" and job["target"] == {"vocabulary": vocabulary, "max_tokens": None}
+    assert call("POST", f"{base}/build", {"vocabulary": vocabulary, "max_tokens": 5, "confirmed": True})[0] == 409
     assert ended(call, job["id"])["state"] == "done"
-
-    assert [(one["kind"], one["state"]) for one in call("GET", "/api/jobs")[2]] == [
-        ("corpus", "done"), ("vocabulary", "done")]  # the latest that ended first
-    recipe = depot.tokenizer("tiny")
-    assert depot.vocabulary(recipe["id"], 1) is not None
-    status, _, shown = call("GET", f"/api/datasets/{dataset}/download")
+    status, _, shown = call("GET", link)
     assert status == 200 and shown["state"] == "built" and shown["corpus"]["texts"] == len(TEXTS)
-    base = f"/api/datasets/{dataset}/download"
 
     # a token file: whole, the same twice and as listed; one range of it; a range past its end
     listed = max(shown["files"], key=lambda one: one["bytes"] or 0)
-    status, headers, whole = call("GET", f"{base}/files/{listed['name']}")
+    status, headers, whole = call("GET", f"{link}/files/{listed['name']}")
     assert status == 200 and hashlib.sha256(whole).hexdigest() == listed["sha256"]
     assert headers["Accept-Ranges"] == "bytes" and int(headers["Content-Length"]) == len(whole)
-    assert call("GET", f"{base}/files/{listed['name']}")[2] == whole
-    status, headers, piece = call("GET", f"{base}/files/{listed['name']}", headers={"Range": "bytes=2-9"})
+    assert call("GET", f"{link}/files/{listed['name']}")[2] == whole
+    status, headers, piece = call("GET", f"{link}/files/{listed['name']}", headers={"Range": "bytes=2-9"})
     assert (status, piece, headers["Content-Range"]) == (206, whole[2:10], f"bytes 2-9/{len(whole)}")
-    assert call("GET", f"{base}/files/{listed['name']}", headers={"Range": f"bytes={len(whole)}-"})[0] == 416
+    assert call("GET", f"{link}/files/{listed['name']}", headers={"Range": f"bytes={len(whole)}-"})[0] == 416
 
-    # the texts, in both forms: the same bytes each time, the corpus's texts in its order
+    # another size of the same dataset and vocabulary: another corpus, at its own link, beside the first
+    small = f"{base}/download/{vocabulary}/5"
+    assert call("GET", small)[2]["state"] == "not built"
+    assert ended(call, call("POST", f"{base}/build", {"vocabulary": vocabulary, "max_tokens": 5,
+                                                      "confirmed": True})[2]["id"])["state"] == "done"
+    assert call("GET", small)[2]["state"] == "built" and call("GET", link)[2]["state"] == "built"
+    assert call("GET", small)[2]["corpus"]["id"] != call("GET", link)[2]["corpus"]["id"]
+    listing = call("GET", f"{base}/download")[2]
+    assert sorted((one["size"], one["state"], one["link"]) for one in listing["corpora"]) == [
+        ("5", "built", small), ("all", "built", link)]
+
+
+def test_an_estimate_names_tokens_bytes_time_and_room_and_writes_and_queues_nothing(served, tmp_path, monkeypatch):
+    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
+    call = served(depot)
+    dataset = depot.dataset("first")["id"]
+    vocabulary = trained(call, depot)
+    monkeypatch.setenv(shared.CAP, "1TB")
+    jobs = call("GET", "/api/jobs")[2]
+    files = sorted(path.name for path in tmp_path.rglob("*") if path.is_file())
+
+    status, _, estimate = call("GET", f"/api/datasets/{dataset}/estimate?vocabulary={vocabulary}&max_tokens=all")
+
+    assert status == 200 and estimate["tokens"] > 0 and estimate["bytes"] > 0 and estimate["seconds"] is not None
+    assert (estimate["cap"], estimate["others"], estimate["fits"], estimate["evicts"]) == (10**12, 0, True, 0)
+    assert estimate["vocabulary"] == {"sha256": vocabulary, "recipe": "tiny", "version": 1}
+    assert call("GET", "/api/jobs")[2] == jobs
+    assert sorted(path.name for path in tmp_path.rglob("*") if path.is_file()) == files
+    assert call("GET", f"/api/datasets/{dataset}/estimate?vocabulary={'0' * 64}")[0] == 422  # not trained
+    assert call("GET", f"/api/datasets/test-depot-99/estimate?vocabulary={vocabulary}")[0] == 404
+    assert call("GET", f"/api/datasets/{dataset}/estimate?vocabulary={vocabulary}&max_tokens=0")[0] == 400
+
+
+def test_the_export_gives_every_text_in_parts_the_same_bytes_each_time_with_no_tokenizer_and_no_job(served, tmp_path):
+    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
+    call = served(depot)
+    base = f"/api/datasets/{depot.dataset('first')['id']}/export"
+
+    status, _, shown = call("GET", base)
+
+    assert status == 200 and shown["texts"] == len(TEXTS)
     [part] = shown["parts"]
     assert part["forms"]["jsonl.zst"] == {"name": "part-00000.jsonl.zst", "bytes": None, "sha256": None}
-    first = call("GET", f"{base}/text/part-00000.jsonl.zst")[2]
-    assert call("GET", f"{base}/text/part-00000.jsonl.zst")[2] == first
+    first = call("GET", f"{base}/part-00000.jsonl.zst")[2]
+    assert call("GET", f"{base}/part-00000.jsonl.zst")[2] == first
     rows = [json.loads(line) for line in zstd.decompress(first).decode().splitlines()]
     assert sorted(row["text"] for row in rows) == sorted(TEXTS)
     assert all(row["depot"] == PUBLIC and row["revision"] == 1 for row in rows)  # never the depot's file
-    table = call("GET", f"{base}/text/part-00000.parquet")[2]
-    assert call("GET", f"{base}/text/part-00000.parquet")[2] == table
+    table = call("GET", f"{base}/part-00000.parquet")[2]
     assert pq.read_table(io.BytesIO(table)).to_pylist() == rows
-    known = call("GET", base)[2]["parts"][0]["forms"]
-    assert known["jsonl.zst"] == {"name": "part-00000.jsonl.zst", "bytes": len(first),
-                                  "sha256": hashlib.sha256(first).hexdigest()}
-    assert call("GET", f"{base}/text/part-00001.parquet")[0] == 404
+    known = call("GET", base)[2]["parts"][0]["forms"]["jsonl.zst"]
+    assert known == {"name": "part-00000.jsonl.zst", "bytes": len(first), "sha256": hashlib.sha256(first).hexdigest()}
+    status, headers, piece = call("GET", f"{base}/part-00000.jsonl.zst", headers={"Range": "bytes=3-10"})
+    assert (status, piece, headers["Content-Range"]) == (206, first[3:11], f"bytes 3-10/{len(first)}")
+    assert call("GET", f"{base}/part-00001.parquet")[0] == 404
+    assert call("GET", "/api/jobs")[2] == []  # nothing was queued, and no tokenizer recipe exists
 
 
 def test_text_exports_are_bounded_in_all_and_per_visitor_while_token_files_are_not(served, tmp_path):
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
     dataset = depot.dataset("first")["id"]
-    call("POST", "/api/tokenizers", {"name": "tiny", "dataset": "first", "sample_bytes": 1000, "vocab_size": 560})
-    ended(call, call("POST", f"/api/datasets/{dataset}/build", {})[2]["id"])
-    shown = call("GET", f"/api/datasets/{dataset}/download")[2]
-    text = f"/api/datasets/{dataset}/download/text/part-00000.jsonl.zst"
-    token_file = f"/api/datasets/{dataset}/download/files/{shown['files'][0]['name']}"
+    vocabulary = trained(call, depot)
+    ended(call, call("POST", f"/api/datasets/{dataset}/build", {"vocabulary": vocabulary, "max_tokens": "all",
+                                                                "confirmed": True})[2]["id"])
+    shown = call("GET", f"/api/datasets/{dataset}/download/{vocabulary}/all")[2]
+    text = f"/api/datasets/{dataset}/export/part-00000.jsonl.zst"
+    token_file = f"/api/datasets/{dataset}/download/{vocabulary}/all/files/{shown['files'][0]['name']}"
     downloads = Downloads(Jobs(depot.address).path)  # the web app's own record of the streams being sent
 
-    with downloads.streaming(shown["corpus"]["id"], "203.0.113.1", "text"):  # one export to the first visitor
+    with downloads.streaming(None, "203.0.113.1", "text"):  # one export to the first visitor
         assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.1"})[0] == 429
         assert call("GET", token_file, headers={"X-Forwarded-For": "203.0.113.1"})[0] == 200
         assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.2"})[0] == 200
-        with downloads.streaming(shown["corpus"]["id"], "203.0.113.2", "text"):  # a second one, to another
+        with downloads.streaming(None, "203.0.113.2", "text"):  # a second one, to another
             assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.3"})[0] == 429
     assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.1"})[0] == 200  # once they ended
 
@@ -165,14 +232,16 @@ def test_an_admitted_erasure_makes_the_link_stale_until_a_rebuild_gives_a_corpus
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
     dataset = depot.dataset("first")["id"]
-    call("POST", "/api/tokenizers", {"name": "tiny", "dataset": "first", "sample_bytes": 1000, "vocab_size": 560})
-    ended(call, call("POST", f"/api/datasets/{dataset}/build", {})[2]["id"])
-    shown = call("GET", f"/api/datasets/{dataset}/download")[2]
+    vocabulary = trained(call, depot)
+    build = {"vocabulary": vocabulary, "max_tokens": "all", "confirmed": True}
+    link = f"/api/datasets/{dataset}/download/{vocabulary}/all"
+    ended(call, call("POST", f"/api/datasets/{dataset}/build", build)[2]["id"])
+    shown = call("GET", link)[2]
     built = shown["corpus"]["id"]
-    token_file = f"/api/datasets/{dataset}/download/files/{shown['files'][0]['name']}"
+    token_file = f"{link}/files/{shown['files'][0]['name']}"
     # while an erasure's corpora are being marked, nothing is sent: here one the web app never carried out
     Downloads(Jobs(depot.address).path).marking(["test-depot-9"])
-    assert call("GET", f"/api/datasets/{dataset}/download")[2]["state"] == "checking an erasure"
+    assert call("GET", link)[2]["state"] == "checking an erasure"
     assert call("GET", token_file)[0] == 422
     declaration = {"name": "Ada Lovelace", "email": "ada@example.org", "accepted": True}
     call("POST", "/api/erasures", {"reason": "a fox", "needles": [{"text": "test-depot-1", "start": 16, "end": 19}],
@@ -181,20 +250,64 @@ def test_an_admitted_erasure_makes_the_link_stale_until_a_rebuild_gives_a_corpus
                                                     "declaration": declaration})[0] == 200
 
     deadline = time.monotonic() + 60  # the corpora are marked in the background
-    while (shown := call("GET", f"/api/datasets/{dataset}/download")[2])["state"] == "checking an erasure":
+    while (shown := call("GET", link)[2])["state"] == "checking an erasure":
         assert time.monotonic() < deadline
         time.sleep(0.05)
     assert (shown["state"], shown["corpus"]["stale"]) == ("stale", {"erasures": ["test-depot-1"]})
-    assert call("GET", f"/api/datasets/{dataset}/download/text/part-00000.jsonl.zst")[0] == 404
+    assert call("GET", token_file)[0] == 404
     time.sleep(1.5)  # nothing builds it again by itself
-    assert call("GET", f"/api/datasets/{dataset}/download")[2]["state"] == "stale"
+    assert call("GET", link)[2]["state"] == "stale"
 
-    assert ended(call, call("POST", f"/api/datasets/{dataset}/build", {})[2]["id"])["state"] == "done"
-    shown = call("GET", f"/api/datasets/{dataset}/download")[2]
+    assert ended(call, call("POST", f"/api/datasets/{dataset}/build", build)[2]["id"])["state"] == "done"
+    shown = call("GET", link)[2]
     assert shown["state"] == "built" and shown["corpus"]["id"] != built
     rows = [json.loads(line) for line in zstd.decompress(
-        call("GET", f"/api/datasets/{dataset}/download/text/part-00000.jsonl.zst")[2]).decode().splitlines()]
+        call("GET", f"/api/datasets/{dataset}/export/part-00000.jsonl.zst")[2]).decode().splitlines()]
     assert "the quick brown  jumps over the lazy dog" in {row["text"] for row in rows}
+
+
+def test_an_erasure_of_a_text_the_corpus_left_out_a_new_default_size_and_a_published_vocabulary_leave_the_link_built(
+        served, tmp_path):
+    depot = Depot.new(str(tmp_path / "depot.sqlite"), About("test-depot", "Ada Lovelace", "ada@example.org"))
+    depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
+    depot.add([NewText(text=text, licenses=("CC0-1.0",)) for text in TEXTS]
+              + [NewText(text="the five boxing wizards jump quickly", licenses=("CC0-1.0",), tags=("en",))], ME)
+    depot.decide("admitted", "true", ME)
+    library = depot.new_library("all")
+    depot.put(library, "true")
+    depot.new_dataset("first", "tiny", [(None, library)])
+    row = depot.dataset("first")
+    call = served(depot)
+    vocabulary = trained(call, depot)
+    depot.edit_dataset(row["id"], "first", [(None, library)], [("en", 1.0)])  # the untagged texts are left out
+    link = f"/api/datasets/{row['id']}/download/{vocabulary}/all"
+    ended(call, call("POST", f"/api/datasets/{row['id']}/build",
+                     {"vocabulary": vocabulary, "max_tokens": "all", "confirmed": True})[2]["id"])
+    shown = call("GET", link)[2]
+    assert (shown["state"], shown["corpus"]["texts"]) == ("built", 1)
+    built, token_file = shown["corpus"]["id"], f"{link}/files/{shown['files'][0]['name']}"
+
+    depot.edit_dataset(row["id"], "first", [(None, library)], [("en", 1.0)], max_tokens=1000)  # a build never reads it
+    assert call("GET", link)[2]["state"] == "built"
+    edit = {"name": "first", "libraries": [{"library": library}], "shares": [{"tag": "en", "share": 1.0}],
+            "max_tokens": 1000}
+    assert call("POST", f"/api/datasets/{row['id']}", {**edit, "vocabulary": "0" * 64})[0] == 422  # none trained so
+    assert call("POST", f"/api/datasets/{row['id']}", {**edit, "vocabulary": vocabulary})[0] == 200
+    assert depot.dataset("first")["vocabulary"] == vocabulary
+    assert call("GET", link)[2]["state"] == "built"  # a build never reads it either
+    declaration = {"name": "Ada Lovelace", "email": "ada@example.org", "accepted": True}
+    call("POST", "/api/erasures", {"reason": "a fox", "needles": [{"text": "test-depot-1", "start": 16, "end": 19}],
+                                   "declaration": declaration})
+    assert call("POST", "/api/erasures/decisions", {"erasures": ["test-depot-1"], "status": "admitted",
+                                                    "declaration": declaration})[0] == 200
+
+    deadline = time.monotonic() + 60  # the corpora are marked in the background
+    while (shown := call("GET", link)[2])["state"] == "checking an erasure":
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert (shown["state"], shown["corpus"]["id"]) == ("built", built)
+    assert call("GET", token_file)[0] == 200
+    assert [one["kind"] for one in call("GET", "/api/jobs")[2]].count("corpus") == 1  # nothing queued another build
 
 
 def test_a_vocabulary_trains_on_another_depot_s_dataset_read_through_its_sample_route(served, tmp_path):

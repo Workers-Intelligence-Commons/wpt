@@ -8,7 +8,7 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, Needle, NewText, clone, pull
 from wpt_depot import depot as depots
-from wpt_depot import counts, erasure, follow, policy, scoring
+from wpt_depot import counts, erasure, follow, ids, policy, scoring
 from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, Locked, NoDepotSetting, NotFound,
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
@@ -405,6 +405,9 @@ def test_a_clone_follows_its_upstream_and_a_pull_brings_its_erasures(serve, make
     upstream.decide("admitted", [added], me)
     library = upstream.new_library("open")
     upstream.put(library, [added])
+    locked = upstream.new_library("locked")
+    upstream.put(locked, [added])
+    upstream.lock(locked)
     upstream.edit_credits(added, {"title": "New"}, me)
 
     assert pull(follower) == [request]
@@ -416,6 +419,10 @@ def test_a_clone_follows_its_upstream_and_a_pull_brings_its_erasures(serve, make
     assert pick(follower.library_texts(library, follower.change()), ["id", "revision", "title", "status"]) == [
         {"id": added, "revision": 2, "title": "New", "status": "admitted"}]
     assert follower.change() > upstream.change()  # the pull itself is a change of the follower
+    # every membership and pin the clone and the pull brought has its export key, so the clone's exports hold its texts
+    for table, count in (("memberships", 2), ("pins", 1)):
+        held = follower.sql(f"SELECT text, export_key FROM {table}")
+        assert len(held) == count and all(row["export_key"] == ids.export_key(row["text"]) for row in held)
 
     assert follower.sql("SELECT id, text FROM texts ORDER BY id") == [
         {"id": text, "text": "my address is "}, {"id": added, "text": "a new text"}]

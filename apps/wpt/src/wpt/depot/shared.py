@@ -33,8 +33,8 @@ RECIPE_FIELDS = ("sample_bytes", "vocab_size")  # what a recipe file gives that 
 
 
 class NoVocabulary(Exception):
-    """The dataset's tokenizer recipe is not in the depot, or has no
-    vocabulary of its current version; nothing was built."""
+    """The vocabulary a build names is not in the depot (not trained, or its
+    tokenizer recipe is not there); nothing was built."""
 
 
 class NoSample(Exception):
@@ -218,28 +218,48 @@ def vocabulary_of(depot: Depot, name: str, version: int | None = None) -> tuple[
     return recipe, Tokenizer.from_bytes(found["merges"].encode("utf-8"))
 
 
-def build_corpus(depot: Depot, dataset: str, log, *, store=None, record: dict | None = None, work: Path | None = None,
-                 checkpoint: dict | None = None, save=lambda state: None, progress=lambda state: None,
-                 room=None) -> dict:
+def vocabulary_by_sha256(depot: Depot, sha256: str) -> tuple[dict, int, Tokenizer]:
+    """(the tokenizer recipe of depot's vocabulary of that sha256, the
+    recipe's version it is of, its tokenizer). NoVocabulary when the depot
+    holds no such vocabulary: it is not trained."""
+    found = depot.rows("SELECT recipe, version, merges FROM vocabularies WHERE sha256 = ? ORDER BY recipe, version",
+                       (sha256,))
+    if not found:
+        raise NoVocabulary(f"the depot holds no vocabulary of sha256 {sha256}: train it first, on its tokenizer "
+                           "recipe's page or with `wpt depot tokenizer train`")
+    return (depot.tokenizer_by_id(found[0]["recipe"]), found[0]["version"],
+            Tokenizer.from_bytes(found[0]["merges"].encode("utf-8")))
+
+
+def build_corpus(depot: Depot, dataset: str, log, *, vocabulary: str | None = None, max_tokens: int | None,
+                 store=None, record: dict | None = None, work: Path | None = None, checkpoint: dict | None = None,
+                 save=lambda state: None, progress=lambda state: None, room=None) -> dict:
     """Build the corpus of depot's dataset of that id, as it is now, with the
-    vocabulary of the current version of its tokenizer recipe, into store
-    (default: the store WPT_STORE names): the corpus's record
+    vocabulary of that sha256 (default: the one of the current version of
+    the dataset's tokenizer recipe) at the size max_tokens (a number of
+    tokens, None for none), into store (default: the store WPT_STORE
+    names): the corpus's record
     (wpt_depot.corpus.build, which says what work, checkpoint, save,
     progress and room do). With record, a corpus built before: the same
-    dataset row and vocabulary again, and the record of the build, which
-    says `changed` when its id is not record's (an erasure carried out
-    since changed what it holds). NoVocabulary without that vocabulary; the
-    depot's and the store's failures as they are."""
+    dataset row, vocabulary and size again (max_tokens unread), and the record of the build,
+    which says `changed` when its id is not record's (an erasure carried
+    out since changed what it holds). NoVocabulary without that vocabulary;
+    the depot's and the store's failures as they are."""
     store = store if store is not None else store_from_settings(env_file())
-    if record is None:
+    if record is not None:
+        row, version = record["dataset"], record["tokenizer"]["recipe_version"]
+        recipe, tokenizer = vocabulary_of(depot, record["tokenizer"]["recipe"], version)
+        max_tokens = corpora.triple(record)[2]
+    elif vocabulary is None:
         row = depot.dataset_by_id(dataset)
         recipe, tokenizer = vocabulary_of(depot, row["tokenizer"])
         version = recipe["version"]
     else:
-        row, version = record["dataset"], record["tokenizer"]["recipe_version"]
-        recipe, tokenizer = vocabulary_of(depot, record["tokenizer"]["recipe"], version)
+        row = depot.dataset_by_id(dataset)
+        recipe, version, tokenizer = vocabulary_by_sha256(depot, vocabulary)
     built = build(depot, row["name"], store, tokenizer, version, dataset=row, url=public_url(), work=work,
-                  checkpoint=checkpoint, save=save, progress=progress, room=room, log=log)
+                  checkpoint=checkpoint, save=save, progress=progress, room=room, max_tokens=max_tokens,
+                  recipe=recipe["name"], log=log)
     if record is not None and built["id"] != record["id"]:
         why = (f"corpus {record['id']} was built again as {built['id']}: an erasure carried out since changed what "
                "it holds")

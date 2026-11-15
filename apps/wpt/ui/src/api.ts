@@ -37,7 +37,8 @@ export const post = <T,>(path: string, body: unknown) => call<T>("POST", path, b
 export type JobState = "queued" | "running" | "done" | "refused" | "failed" | "cancelled";
 export type Job<T> = {
   id: string; kind: "write" | "vocabulary" | "corpus"; title: string; state: JobState; stages: { stage: string; at: number }[];
-  progress: Record<string, unknown> | null; dataset: string | null; recipe: string | null; after: string | null;
+  progress: Record<string, unknown> | null; dataset: string | null; recipe: string | null;
+  target: { vocabulary: string; max_tokens: number | null } | null;
   created: number; started: number | null; ended: number | null; answer: T | null; problem: string | null; status: number | null;
 };
 export const waiting = (state: JobState) => state === "queued" || state === "running";

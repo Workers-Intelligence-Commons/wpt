@@ -22,7 +22,7 @@
   },
   "properties": {
     "data": {
-      "description": "what every size trains on, one dataset of a depot and one corpus for every size: its total tokens are the largest size's, and each size reads its start",
+      "description": "what every size trains on, one dataset of a depot and one corpus for every size: its total tokens are the largest size's, the size of the corpus they ask for, and each size reads its start, at most what that corpus holds",
       "type": "object",
       "additionalProperties": false,
       "required": [

@@ -244,8 +244,8 @@ def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_datasets_sample_once_an
     assert Depot.open(depot).tokenizer("tiny")["version"] == 1  # a note is no new version
     assert depot_command("tokenizer", "edit", "tiny", "--vocab-size", "600") == 0
     assert Depot.open(depot).tokenizer("tiny")["version"] == 2
-    assert depot_command("build", "first") == 2  # version 2 has no vocabulary yet
-    assert "NoVocabulary" in capsys.readouterr().err
+    assert depot_command("build", "first", "--all") == 2  # the dataset publishes no vocabulary
+    assert "NoVocabulary: the dataset 'first' publishes no vocabulary" in bare(capsys.readouterr().err)
 
 
 def test_a_clone_follows_its_upstream_over_its_web_app_and_pulls_what_it_added_and_refuses_changing_it(
@@ -302,8 +302,8 @@ def test_a_recipe_file_and_its_lock_are_imported_and_a_dataset_builds_with_that_
     library = opened.new_library("all")
     opened.put(library, "true")
     opened.new_dataset("first", "tiny", [(None, library)])
-    assert depot_command("build", "first") == 2  # the depot has no tokenizer recipe tiny yet
-    assert "NoVocabulary: the depot holds no tokenizer recipe tiny" in bare(capsys.readouterr().err)
+    assert depot_command("build", "first", "--all", "--vocabulary", "0" * 64) == 2  # the depot has no vocabulary yet
+    assert "NoVocabulary" in bare(capsys.readouterr().err)
     recipe = {"version": 1, "depot": "", "dataset": "", "sample_bytes": 1000, "vocab_size": 560, "note": "tiny"}
     (tmp_path / "tiny.json").write_text(json.dumps(recipe), encoding="utf-8")
     tokenizer = Tokenizer.train([b"the quick brown fox"] * 4, vocab_size=560)
@@ -321,11 +321,29 @@ def test_a_recipe_file_and_its_lock_are_imported_and_a_dataset_builds_with_that_
     assert shown.vocabulary(found["id"], 1)["merges"].encode() == tokenizer.to_bytes()
     assert shown.vocabulary_texts(found["id"], 1) == [{"position": 0, "depot": "", "text": "test-depot-1"}]
     capsys.readouterr()
-    assert depot_command("build", "first") == 0
+    with pytest.raises(SystemExit) as refused:  # a build always names its size: the dataset's max_tokens is no default
+        depot_command("build", "first")
+    assert refused.value.code == 2 and "one of the arguments --max-tokens --all is required" in capsys.readouterr().err
+    # without --vocabulary, a build takes the vocabulary the dataset publishes, and refuses when it publishes none
+    assert depot_command("build", "first", "--all") == 2
+    assert ("NoVocabulary: the dataset 'first' publishes no vocabulary: name one with --vocabulary SHA256, or "
+            "publish one with `wpt depot dataset edit first --vocabulary SHA256`") in bare(capsys.readouterr().err)
+    assert not (store_folder / "corpora").exists() or _corpora(store_folder) == []  # nothing was built
+    sha256 = lock["vocabulary_sha256"]
+    assert depot_command("dataset", "edit", "first", "--vocabulary", "0" * 64) == 2  # no vocabulary of the depot
+    assert depot_command("dataset", "edit", "first", "--vocabulary", sha256) == 0
+    assert Depot.open(depot).dataset("first")["vocabulary"] == sha256
+    capsys.readouterr()
+    assert depot_command("build", "first", "--all") == 0
     corpus = bare(capsys.readouterr().out).splitlines()[-1].removeprefix("corpus ")
     [record] = [store.get_json(f"corpora/{folder}/corpus.json") for folder in _corpora(store_folder)]
-    assert record["id"] == corpus and record["tokenizer"]["recipe"] == "tiny"
+    assert record["id"] == corpus and record["tokenizer"]["recipe"] == "tiny" and record["max_tokens"] is None
+    assert record["tokenizer"]["sha256"] == sha256
     assert [(one["id"], one["title"]) for one in read_table(store, record, "texts").to_pylist()] == [("test-depot-1", "Fox")]
+    assert depot_command("dataset", "edit", "first", "--new-name", "renamed") == 0  # other edits keep it
+    assert Depot.open(depot).dataset("renamed")["vocabulary"] == sha256
+    assert depot_command("dataset", "edit", "renamed", "--no-vocabulary") == 0
+    assert Depot.open(depot).dataset("renamed")["vocabulary"] is None
 
 
 def _corpora(store_folder):

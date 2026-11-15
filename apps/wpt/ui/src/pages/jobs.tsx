@@ -1,8 +1,8 @@
 // Jobs: the server's queue (GET /api/jobs), read again every few seconds:
 // every job queued or running, in the order they run, then the latest that
 // ended, each with what it does, its state, its progress and its answer or
-// problem. Anyone starts a vocabulary training or a corpus build from the
-// Tokenizers and Datasets pages; only the command line cancels a job (wpt
+// problem. Anyone starts a vocabulary training or a corpus build, each after
+// its estimate and a confirmation, from the Tokenizers and Download pages; only the command line cancels a job (wpt
 // depot jobs cancel ID). JobProgress says one job's progress in words, for
 // the pages that show the job they started.
 
@@ -31,6 +31,7 @@ export function JobProgress({ job }: { job: Job<unknown> }) {
 }
 
 function link(job: Job<unknown>) {
+  if (job.kind === "corpus" && job.dataset && job.target) return <a href={href(["download", job.dataset, job.target.vocabulary, job.target.max_tokens === null ? "all" : String(job.target.max_tokens)])}>{job.title}</a>;
   if (job.kind === "corpus" && job.dataset) return <a href={href(["download", job.dataset])}>{job.title}</a>;
   if (job.kind === "vocabulary" && job.recipe) return <a href={href(["tokenizers", job.recipe])}>{job.title}</a>;
   return <span>{job.title}</span>;
@@ -64,7 +65,7 @@ function Jobs() {
             <tbody>
               {jobs.data.map((j) => (
                 <tr key={j.id}>
-                  <td className="wide-cell">{link(j)}{j.after && j.state === "queued" && <span className="aside"> after {j.after}</span>}</td>
+                  <td className="wide-cell">{link(j)}</td>
                   <td className={j.state === "failed" || j.state === "refused" ? "not-allowed" : ""}>{j.state}</td>
                   <td className="wide-cell small">{j.state === "running" || j.state === "queued" ? <JobProgress job={j} />
                     : j.problem ? <span className="not-allowed">{j.problem}</span>

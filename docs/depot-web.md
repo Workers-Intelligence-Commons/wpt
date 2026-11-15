@@ -59,11 +59,12 @@ of a free reader again after a wait, so counting leaves at least half of the fir
 requests.
 
 An address holds at most 20 connections at a time. A request body holds
-at most 100 MB, and the app has 100 seconds to answer. The files and text
-parts of a corpus and a dataset's sample stream for as long as they last:
+at most 100 MB, and the app has 100 seconds to answer. The files of a
+corpus, the parts of a dataset's export and a dataset's sample stream for
+as long as they last:
 nginx passes each piece on as it comes, without a temporary file, and waits
 up to 600 seconds between two pieces. The limits above count them as any
-other request.
+other request. A build's estimate counts as a heavy read.
 
 ## Jobs and downloads
 
@@ -78,34 +79,66 @@ recipe one vocabulary job. The page "Jobs" shows the queue and each job's
 progress. Only `wpt depot jobs cancel ID`, run where the depot is, cancels
 one; `wpt depot jobs` lists them.
 
-"Build" on a dataset queues its corpus build, after the training of its
-recipe's vocabulary when the recipe's version has none. Each dataset has
-one fixed download link, its page "Download"
-(`GET /api/datasets/{id}/download`). It gives the latest fresh corpus built
-from the dataset's current revision, or says why there is none: being
-built (with the job's progress), stale (an admitted erasure reached one of
-its texts), not built, or checking an erasure (an erasure decided here is
-being carried into the corpora's records; no corpus is sent meanwhile). A stale corpus gives nothing until someone presses
-"Build it again"; nothing builds it by itself. The corpus's files stream
-from the store, each with its size and sha256, and take a `Range` of bytes.
-Its texts come as numbered parts, each in JSONL compressed with zstd and in
-Parquet, made as they are sent and the same bytes every time. A part names
-each depot by the name its corpus records, and the app reads a text of
-another local depot from that depot's file, found from the dataset's
-libraries at the revision the corpus took. At most 2
-text parts or samples are sent at once in all, and 1 to each visitor; past
-that the app answers 429.
+A dataset's page "Export" (`GET /api/datasets/{id}/export`) gives the
+texts of its current revision with no tokenizer, no build and no job: every
+plain text a share takes and every conversation and task, whatever its
+`max_tokens`, in numbered parts, each in JSONL compressed with zstd and in
+Parquet, made as it is sent and the same bytes every time for the same
+revision. Each text's export key, a seeded hash of its id that its depot
+stores with it and with each library's row of it, places it, and each part
+is one range of the keys, so no pass orders the dataset. Reading a part
+reads, for each of the dataset's libraries, that range of the library's
+rows by key, so it never reads the texts of the other parts nor the rows
+of other libraries. A part
+names each depot by the name a corpus records for it, and the app reads a
+text of another local depot from that depot's file. At most 2 parts or
+samples are sent at once in all, and 1 to each visitor; past that the app
+answers 429.
 
-The store keeps only the latest fresh corpus of each dataset: a build
-deletes the one before once its own is whole. `WPT_CORPORA_CAP` bounds the
-bytes all corpora take together, the files a stopped build left without a
-record included. To make room, a build deletes those files first, then the
-corpus downloaded least recently, a file at a time, never one being built
-or downloaded. A corpus whose estimated size passes the cap fails before
-its first upload, with that reason. A
-deleted corpus keeps its record, and "Build it again" builds it from the
-same dataset revision and vocabulary, saying so when an erasure changed it
-since.
+A corpus is built for a dataset, one vocabulary the depot holds (by its
+sha256) and a size: a number of tokens, or all. A build at a size counts
+everything, conversations and tasks first, and the corpus never passes
+that size. The dataset's `max_tokens` is only the size the build form
+fills in. The page "Download" lists the
+dataset's corpora and holds the form of a new build: a trained vocabulary,
+the one the dataset publishes filled in, and a size, then an estimate (`GET /api/datasets/{id}/estimate`: the
+tokens, the bytes in the store, the time of tokenizing on this machine
+and whether it fits under the cap, from a small sample tokenized, writing
+nothing; the time leaves out the pass that orders the dataset, which
+every build makes first, and names how many texts that pass reads), and
+only after it a start that restates the estimate and asks for a
+confirmation. A build never trains a vocabulary: the training is the
+recipe page's own action, with its own estimate and confirmation.
+
+Each dataset, vocabulary and size has one fixed download link
+(`GET /api/datasets/{id}/download/{vocabulary}/{size}`). It gives the
+latest fresh corpus of that vocabulary and size built from the dataset's
+current revision, or from a revision that differs from it only in its
+`max_tokens` or the vocabulary it publishes, which a build never reads.
+Otherwise it says why there is
+none: being built (with the job's progress), stale (an
+admitted erasure reached one of its texts), not built, or checking an
+erasure (an erasure decided here is being carried into the corpora's
+records; no corpus is sent meanwhile). Opening it starts nothing, and
+nothing builds a stale corpus again by itself. The corpus's files stream
+from the store, each with its size and sha256, and take a `Range` of bytes.
+
+The listing of a dataset's corpora (`GET /api/datasets/{id}/download`)
+names, for each vocabulary and size, the latest fresh corpus built from
+any revision of the dataset, with that revision. Training through the web
+app takes that corpus, by the same rule as from the depot's file
+([training.md](training.md), "Training").
+
+The store keeps only the latest fresh corpus of each dataset, vocabulary
+and size: a build deletes the one before of the same three once its own is
+whole, and the corpora of other vocabularies and sizes stay.
+`WPT_CORPORA_CAP` bounds the bytes all corpora take together, the files a
+stopped build left without a record included. To make room, a build
+deletes those files first, then the corpus downloaded least recently, a
+file at a time, never one being built or downloaded. A corpus whose
+estimated size passes the cap fails before its first upload, with that
+reason. A deleted corpus keeps its record, and a build of the same dataset
+state, vocabulary and size writes the same corpus into its folder again.
 
 ## Cloudflare's address ranges
 

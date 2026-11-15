@@ -1,8 +1,8 @@
-"""What a depot's web app knows of the downloads of corpora, kept in the
-queue's file beside the depot (wpt.depot.jobs): when each corpus was last
-downloaded, the streams being sent now, the size and sha256 of each part
-of a corpus's texts once it was sent whole, and the erasures whose corpora
-are being marked stale.
+"""What a depot's web app knows of its downloads, kept in the queue's file
+beside the depot (wpt.depot.jobs): when each corpus was last downloaded,
+the streams being sent now, how many texts each export of a dataset counts
+and the size and sha256 of each part of an export once it was sent whole
+(wpt_depot.exports), and the erasures whose corpora are being marked stale.
 
 An erasure decided through the web app is written into marking before it
 is carried out, and leaves it once every corpus holding one of its texts
@@ -16,6 +16,8 @@ A build's cap (wpt_depot.corpora.Room) reads the first two: it deletes the
 corpus downloaded least recently first, never one being downloaded. The
 web app reads the streams to bound the text exports: at most EXPORTS at
 once in all, and VISITOR_EXPORTS for one visitor (TooMany otherwise).
+An export's count of texts and a part's size are what reading them again
+would give, kept only to save that work.
 """
 
 import secrets
@@ -81,20 +83,31 @@ class Downloads:
         with connected(self.path) as con:
             return {row["corpus"] for row in con.execute("SELECT DISTINCT corpus FROM streams WHERE corpus IS NOT NULL")}
 
-    def export(self, corpus: str, part: int, form: str) -> dict | None:
-        """{bytes, sha256} of a part of the corpus's texts in that form, once
-        it was sent whole by the same versions of the libraries that make it
-        (wpt_depot.exports.MAKER); None before."""
+    def export_texts(self, export: str) -> int | None:
+        """How many texts the export (its identity, wpt_depot.exports.Export) counts, once kept; None before."""
         with connected(self.path) as con:
-            found = con.execute("SELECT bytes, sha256 FROM exports WHERE corpus = ? AND part = ? AND format = ? AND "
-                                "maker = ?", (corpus, part, form, MAKER)).fetchone()
-        return None if found is None else {"bytes": found["bytes"], "sha256": found["sha256"]}
+            found = con.execute("SELECT texts FROM export_texts WHERE export = ?", (export,)).fetchone()
+        return None if found is None else found["texts"]
 
-    def exported(self, corpus: str, part: int, form: str, size: int, sha256: str):
-        """Keep the size and sha256 of a part of the corpus's texts in that form, sent whole by these versions."""
+    def counted(self, export: str, texts: int):
+        """Keep how many texts the export counts."""
         with connected(self.path, write=True) as con:
-            con.execute("INSERT OR REPLACE INTO exports (corpus, part, format, maker, bytes, sha256) "
-                        "VALUES (?, ?, ?, ?, ?, ?)", (corpus, part, form, MAKER, size, sha256))
+            con.execute("INSERT OR REPLACE INTO export_texts (export, texts) VALUES (?, ?)", (export, texts))
+
+    def export_sizes(self, export: str, parts: int) -> dict[tuple[int, str], dict]:
+        """{(part, form): {bytes, sha256}} of each part of the parts of the
+        export sent whole in that form by the same versions of the libraries
+        that make it (wpt_depot.exports.MAKER)."""
+        with connected(self.path) as con:
+            found = con.execute("SELECT part, format, bytes, sha256 FROM export_parts WHERE export = ? AND parts = ? "
+                                "AND maker = ?", (export, parts, MAKER)).fetchall()
+        return {(row["part"], row["format"]): {"bytes": row["bytes"], "sha256": row["sha256"]} for row in found}
+
+    def exported(self, export: str, parts: int, part: int, form: str, size: int, sha256: str):
+        """Keep the size and sha256 of a part of the export in that form, sent whole by these versions."""
+        with connected(self.path, write=True) as con:
+            con.execute("INSERT OR REPLACE INTO export_parts (export, parts, part, format, maker, bytes, sha256) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)", (export, parts, part, form, MAKER, size, sha256))
 
     def marking(self, erasures: list[str]):
         """Keep the erasures as being marked: no corpus is sent until they leave (marked)."""

@@ -23,7 +23,8 @@ datasets that say what to train on (`wpt depot`). `wpt depot build DATASET`
 builds a dataset into a corpus in a store you control (a folder or an S3
 bucket): the token files, with copies of every text's credits, licenses and
 notices. A model recipe names a depot by its public address and a dataset in it, and
-`wpt train` reads that dataset's corpus from the store. A depot can follow
+`wpt train` reads from the store the corpus of the vocabulary that dataset publishes, at
+the recipe's size. A depot can follow
 another and pull its updates, the way a Git clone follows its remote.
 WPT hosts no data.
 
@@ -58,7 +59,8 @@ echo "WPT_DEPOT=$HOME/wpt-depot.sqlite" >> .env    # the depot the wpt depot com
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
 uv run wpt depot tokenizer train RECIPE            # the vocabulary of the dataset's tokenizer recipe, into the depot
-uv run wpt depot build DATASET                     # the corpus of the recipe's dataset, into the store; prints its id
+uv run wpt depot dataset edit DATASET --vocabulary SHA256        # the vocabulary the dataset publishes
+uv run wpt depot build DATASET --vocabulary SHA256 --max-tokens N # the recipe's corpus (N: its total_tokens); prints its id
 scripts/detach.sh uv run wpt train classics-test --stream --out runs/first
 uv run wpt eval runs/first                         # the tests, into the model card
 uv run wpt chat runs/first                         # continue text with the model

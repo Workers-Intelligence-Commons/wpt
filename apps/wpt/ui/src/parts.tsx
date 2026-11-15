@@ -215,7 +215,7 @@ export function LibraryLink({ library }: { library: Library | { id: string; name
 }
 
 export type DatasetRef = { depot: string | null; library: string; change: number };
-export type Dataset = { id: string; revision: number; name: string; tokenizer: string; libraries: DatasetRef[]; shares: { tag: string; share: number }[] | null; max_tokens: number | null; upstream: boolean; here: string[] };
+export type Dataset = { id: string; revision: number; name: string; tokenizer: string; libraries: DatasetRef[]; shares: { tag: string; share: number }[] | null; max_tokens: number | null; vocabulary: string | null; upstream: boolean; here: string[] };
 
 // Every dataset, read again by reload.
 export function useDatasets(): { datasets: Answer<Dataset[]> | null; reload: () => void } {

@@ -31,14 +31,18 @@ many current texts have each status, tag, license, library and decision
 (wpt_depot.counts). Which texts a library holds is
 memberships: the change a text joined at and the change it left at (null
 while it is in). A locked library also has pins: the exact revision of each
-text it locked, with the change that locked it. A decision and a notice
+text it locked, with the change that locked it. Each row of both also
+stores its text's export key (export_key, wpt_depot.ids). A decision and a notice
 record the change that wrote them. A tokenizer recipe is revised like the
 other rows (tokenizers_revisions), and its version rises only when what
 trains its vocabulary changes. vocabularies holds at most one vocabulary for
 each version of a recipe, its merges kept as text, with the change that
 wrote it; vocabulary_texts lists, by position, every text it trained on,
 by its depot ('' for the depot that holds the recipe, else that depot's
-web address, or the name of another local depot its dataset reads) and id. numbers holds, for each kind of id, the
+web address, or the name of another local depot its dataset reads) and id.
+A dataset's vocabulary, when set, is the sha256 of one of the depot's
+vocabularies: the one it publishes, which training takes its corpus of
+(its max_tokens is only the size a build form starts at). numbers holds, for each kind of id, the
 last number of the depot's own ids, so a number is never given twice, even
 once an erasure removed its row.
 
@@ -60,7 +64,15 @@ texts_order holds the current texts in the numeric order of their ids
 (ids.order_sql), so a page of texts in that order, the first or a far one,
 reads only its own rows. The index texts_status holds them by status, then
 in that order, so a page of the texts of one status reads only its own
-rows. No index serves the other orders.
+rows. The
+indexes memberships_key and pins_key hold each library's rows by their
+export key, with every other column a read of the library needs (the text,
+and the changes it joined and left, or the revision pinned), so a library's
+texts whose key falls in a range are read in key order from the index alone,
+without reading the other libraries' rows nor its own outside the range
+(Depot.library_range, wpt_depot.exports), and a library is counted from the
+index alone (Depot.library_count). No index serves the other
+orders.
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -89,7 +101,7 @@ Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 
 from . import ids
 
-FORMAT = 6  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 7  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -115,13 +127,15 @@ TABLES = {
     "parts": "id TEXT NOT NULL, hash BLOB NOT NULL, change INTEGER NOT NULL, value BLOB NOT NULL",
     "libraries_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, name TEXT NOT NULL, forked_from TEXT, problems TEXT, locked_at TEXT""",
-    "memberships": "library TEXT NOT NULL, text TEXT NOT NULL, joined_change INTEGER NOT NULL, left_change INTEGER",
-    "pins": "library TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL",
+    "memberships": """library TEXT NOT NULL, text TEXT NOT NULL, joined_change INTEGER NOT NULL, left_change INTEGER,
+        export_key INTEGER""",
+    "pins": """library TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
+        export_key INTEGER""",
     "erasures_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, reason TEXT NOT NULL, decisions TEXT NOT NULL, needles TEXT NOT NULL, erased TEXT""",
     "datasets_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, name TEXT NOT NULL, tokenizer TEXT NOT NULL, libraries TEXT NOT NULL, shares TEXT,
-        max_tokens INTEGER""",
+        max_tokens INTEGER, vocabulary TEXT""",
     "tokenizers_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL, depot TEXT, dataset TEXT NOT NULL,
         sample_bytes INTEGER NOT NULL, vocab_size INTEGER NOT NULL, note TEXT""",
@@ -152,6 +166,8 @@ INDEXES = (
     "CREATE UNIQUE INDEX tokenizers_latest ON tokenizers_revisions (id) WHERE latest",
     "CREATE INDEX memberships_held ON memberships (text) WHERE left_change IS NULL",
     "CREATE INDEX pins_text ON pins (text)",
+    "CREATE INDEX memberships_key ON memberships (library, export_key, joined_change, left_change, text)",
+    "CREATE INDEX pins_key ON pins (library, export_key, text, revision)",
     "CREATE INDEX texts_change ON texts_revisions (change)",
     "CREATE INDEX notices_text ON notices (text)",
 )
@@ -210,7 +226,8 @@ VIEWS = {
                   "WHERE latest"),
     "erasures": ("SELECT id, revision, change, reason, decisions, needles, erased FROM erasures_revisions "
                  "WHERE latest"),
-    "datasets": ("SELECT id, revision, change, name, tokenizer, libraries, shares, max_tokens FROM datasets_revisions "
+    "datasets": ("SELECT id, revision, change, name, tokenizer, libraries, shares, max_tokens, vocabulary "
+                 "FROM datasets_revisions "
                  "WHERE latest"),
     "tokenizers": ("SELECT id, revision, change, name, version, depot, dataset, sample_bytes, vocab_size, note "
                    "FROM tokenizers_revisions WHERE latest"),

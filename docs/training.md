@@ -3,7 +3,7 @@
 ## Training
 
 ```sh
-uv run wpt depot build DATASET            # the corpus of the recipe's dataset; prints its id
+uv run wpt depot build DATASET --vocabulary SHA256 --max-tokens N   # the recipe's corpus; prints its id
 uv run wpt train classics-test
 ```
 
@@ -18,13 +18,22 @@ output to `runs/logs/<date-time>.log` and print how to follow and stop it.
 of that size; see [model.md](model.md), "Model recipes") and the id of a
 corpus in the store, or a start of it, and never builds: `wpt depot build`
 builds the corpus of the recipe's dataset, on the machine that holds the
-depot. Without an id, it reads the latest fresh corpus of the recipe's
-dataset, found through the depot, and with none it is refused. To find that corpus, it opens the
-depot to read the dataset's id and current revision, so without an id
+depot. Without an id, it reads the latest fresh corpus of the triple the
+recipe's dataset, the vocabulary that dataset publishes and the recipe's
+`data.total_tokens` as the size (for a series, the total tokens of its
+largest size). A dataset that publishes no vocabulary, or a triple that is
+not built, refuses the run with the triple and the dataset's download page
+(`<depot address>/#/download/<dataset id>`), and nothing is built or
+queued. To find that corpus, it opens the depot to read the dataset's id,
+current revision and published vocabulary, so without an id
 (`WPT_CORPUS` or the corpus option) the depot must be readable where
 training runs: from its file, when `WPT_DEPOT` names a depot the recipe's
 depot names (its public address, `WPT_DEPOT_URL`, or its name), else
-through its web app, when the recipe names it by a web address. A corpus of another depot or
+through its web app, when the recipe names it by a web address, whose
+listing of the dataset's downloads names the latest fresh corpus of each
+triple. Either way, a corpus built from any revision of the dataset
+counts, with a warning when that revision is older than the current one.
+A corpus of another depot or
 dataset than the recipe names is refused. The vocabulary is the corpus's, so
 a size of a model series is derived for the vocabulary the corpus holds. Everything that changes the
 resulting model comes from the recipe: the architecture's numbers, the
@@ -394,13 +403,22 @@ are drawn from them alone, and the step learned from the texts of that
 start. With `--stream`, the walk over the shards starts again after the
 prefix. A corpus with fewer tokens than the prefix is refused before any
 step runs. A `read-text` step that sets no `prefix_tokens` trains on the
-first `total_tokens` of the recipe's data part, the same prefix; and
-`wpt train` refuses a corpus that holds fewer tokens than `total_tokens`,
-and a corpus that is stale (an admitted erasure reached a text it was built
-from, [erasure.md](erasure.md), "What it covers") until its dataset is built
-again. Each size of a model series reads its prefix of the series' one
-corpus (model.md, "Model series"), and the setting is part of the step's
-fingerprint.
+first `total_tokens` of the recipe's data part, the same prefix. Each size
+of a model series reads its prefix of the series' one corpus (model.md,
+"Model series"), and the setting is part of the step's fingerprint.
+
+The recipe's `total_tokens` is the size of the corpus the recipe asks for
+and a ceiling on what it reads. A corpus built at that size (its
+`max_tokens`) counts everything, conversations and tasks first, and never
+passes it, so it may hold fewer tokens of plain text than `total_tokens`.
+Training reads what such a corpus holds: each step that reads text windows
+reads the smaller of its prefix and the corpus's tokens of plain text, from
+the start, and the run's record says how many it reads when that is fewer
+than it asks for. `wpt train` refuses a corpus that holds fewer tokens of
+plain text than `total_tokens` and was built at another size, and a corpus
+that is stale (an admitted erasure reached a text it was built from,
+[erasure.md](erasure.md), "What it covers") until its dataset is built
+again.
 
 ### Streaming: a corpus larger than the disk
 

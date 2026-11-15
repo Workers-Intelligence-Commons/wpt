@@ -18,8 +18,11 @@ a store.
   licenses and notices, so it says everything about what it holds even once
   the depots it read change or vanish (`wpt_depot.corpus`).
 - A model recipe names a depot by its public address and a dataset in it; training reads
-  that dataset's latest fresh corpus from the store, and every size of a model series
-  reads the same corpus, the smaller sizes its first part.
+  the latest fresh corpus of that dataset, the vocabulary the dataset publishes and
+  the recipe's `total_tokens` from the store, and every size of a model series reads
+  the same corpus, the one of its largest size, the smaller sizes its first part;
+  `total_tokens` is the size the corpus is built at and a ceiling on what training
+  reads, and training reads what a corpus built at that size holds.
 
 ## Components and services
 
@@ -224,7 +227,12 @@ writes each current text's decisions as rows of `text_decisions` and its
 status, a batch of rows at a time, then builds the index `texts_status`
 and fills `counts`. It also makes the tables of the tokenizer recipes, of
 their vocabularies and of the texts each vocabulary trained on, empty, and
-the column `max_tokens` of the datasets.
+the column `max_tokens` of the datasets. The step to format 7 makes the
+column `export_key` of the memberships and of the pins, and the column
+`vocabulary` of the datasets. It writes the export key of every membership,
+then of every pin, a batch of rows at a time, saying how many rows a second it writes; run again after
+a stop, it goes on in the table and at the row it reached. Then it builds
+the indexes `memberships_key` and `pins_key`.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
@@ -373,9 +381,10 @@ cache/<stage>/<fingerprint>        only what can be rebuilt
 
 `wpt store list` lists the corpora and models.
 
-The store keeps the latest fresh corpus of each dataset and the record of
-every corpus (`wpt_depot/corpora.py`). A build deletes the dataset's
-corpus before it once its own is whole, and, under the cap
+The store keeps the latest fresh corpus of each dataset, vocabulary and
+size, and the record of every corpus (`wpt_depot/corpora.py`). A build
+deletes the corpus before it of the same dataset, vocabulary and size once
+its own is whole, and, under the cap
 `WPT_CORPORA_CAP`, deletes the files of folders without a record, then
 those of the corpus downloaded least recently, until its own fit, never
 those of a corpus being built or downloaded. A deleted corpus's record stays, marked deleted with the
@@ -512,9 +521,10 @@ refused change writes nothing.
 | a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the "More info" button of a library in a list, which lists libraries by name only |
 | datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
 | tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
-| a tokenizer's vocabulary | `tokenizer train NAME` | `POST /api/tokenizers/{name}/train`, a job; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
-| a corpus | `build DATASET`, run in the command | `POST /api/datasets/{id}/build`, a job, after the training of the vocabulary when its version has none |
-| a corpus downloaded | none | `GET /api/datasets/{id}/download`, its `files/{name}` and `text/{part}`; the dataset's page "Download" |
+| a tokenizer's vocabulary | `tokenizer train NAME` | `GET /api/tokenizers/{name}/estimate`, then `POST /api/tokenizers/{name}/train`, confirmed, a job; `GET /api/vocabularies`; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
+| a corpus | `build DATASET [--vocabulary SHA256] (--max-tokens N \| --all)`, run in the command | `GET /api/datasets/{id}/estimate`, then `POST /api/datasets/{id}/build` with a trained vocabulary and a size, confirmed, a job; the dataset's page "Download" |
+| a corpus downloaded | none | `GET /api/datasets/{id}/download` (the dataset's corpora), `GET /api/datasets/{id}/download/{vocabulary}/{size}` and its `files/{name}`; the pages "Download" |
+| a dataset's texts exported | none | `GET /api/datasets/{id}/export` and its parts `{name}`; the dataset's page "Export" |
 | a dataset's sample, for another depot's vocabulary | none | `GET /api/datasets/{dataset}/sample?bytes=N` |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
 | erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Workspace" page asks |
@@ -612,8 +622,8 @@ times. Each dataset has at most one corpus job open and each recipe one
 vocabulary job (409 otherwise). Only `wpt depot jobs cancel ID` cancels a
 job. The queue's file also holds what the downloads need
 (`wpt/depot/downloads.py`): when each corpus was last downloaded, the
-streams being sent, and each text part's size and sha256 once it was sent
-whole.
+streams being sent, how many texts each export counts, and each export
+part's size and sha256 once it was sent whole.
 
 The review of an admission sets apart the texts the depot would refuse to
 admit because none of their licenses is allowed. The depot's own check
@@ -682,7 +692,8 @@ and `edit` name one. Some routes reach past the depot. `POST
 store's corpora that hold a text it cut, in the background, and sends no
 corpus until that ends. `GET /api/datasets/{id}` lists
 the store's corpora built from the dataset. The build of a corpus writes
-it into the store, and the downloads read it from there. The training of
+it into the store, and the downloads read it from there. A dataset's
+export reads its texts from the depots, never from the store. The training of
 a recipe whose dataset is another depot's reads that depot's sample route.
 
 ## Packages

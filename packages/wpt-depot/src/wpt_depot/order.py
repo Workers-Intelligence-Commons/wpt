@@ -36,8 +36,10 @@ all, that is, a plain text with a pool or a conversation or a task (an item
 of another kind is no training data).
 
 With max_tokens, a build first counts the items' tokens and keeps in the
-table limited the positions of the items the limit leaves out
-(wpt_depot.corpus); the texts the corpus takes then leave those out.
+table limited the positions of the items the limit leaves out, with what
+that limit was counted for (its vocabulary and max_tokens, wpt_depot.corpus);
+the texts the corpus takes then leave those out. The order itself depends on
+neither, so builds of one dataset with other vocabularies or sizes share it.
 """
 
 import hashlib
@@ -195,16 +197,21 @@ class Order:
         for row in cursor:
             yield Entry(*row)
 
-    def limit_items(self, left_out: list[int], tokens: int):
-        """Keep the positions of the items the limit leaves out, and the
-        tokens of the items it takes (items_tokens)."""
+    def limit_items(self, left_out: list[int], tokens: int | None, limit):
+        """Keep the positions of the items the limit leaves out, the tokens
+        of the items it takes (items_tokens) and what the limit was counted
+        for (limit: any JSON value its caller names it by)."""
         with self.con:
             self.con.execute("DELETE FROM limited")
             self.con.executemany("INSERT INTO limited (position) VALUES (?)", ((one,) for one in left_out))
             self._set("items_tokens", tokens)
+            self._set("limit", limit)
 
-    def items_tokens(self) -> int | None:
-        """The tokens of the items the limit takes; None before limit_items."""
+    def items_tokens(self, limit) -> int | None:
+        """The tokens of the items the limit takes, when limit_items last
+        kept that limit; None otherwise."""
+        if self._meta("limit") != limit:
+            return None
         return self._meta("items_tokens")
 
     def limited(self) -> int:

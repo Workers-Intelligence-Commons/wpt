@@ -8,13 +8,28 @@ digits: `wpt-eu-3` carries the name `wpt-eu`, never `wpt`, so names that
 begin alike never share an id. The number counts up from 1 among the ids
 that carry the depot's own name; an id of another depot (a row a clone
 received) never takes part.
+
+A text's export key (export_key) is the first 8 bytes of the SHA-256 of
+EXPORT_SEED and its id, read as a signed 64-bit integer, what SQLite
+stores in an INTEGER column: it depends on the id alone, so it never
+changes and two depots holding a text give it the same key. The column
+export_key of memberships and pins stores it (wpt_depot.schema; SQL
+computes it through the function export_key, wpt_depot.database), and an export reads its parts as ranges of it
+(wpt_depot.exports).
 """
 
+import hashlib
 import re
 
 from .errors import Refused
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+EXPORT_SEED = "wpt-export-1"  # fixed: another seed moves every text to another part of every export
+
+
+def export_key(text: str) -> int:
+    """The export key of the text whose id is text, as the module says."""
+    return int.from_bytes(hashlib.sha256(f"{EXPORT_SEED}\0{text}".encode()).digest()[:8], "big", signed=True)
 
 
 def check_name(name: str):

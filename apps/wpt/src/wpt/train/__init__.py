@@ -20,15 +20,18 @@ finish-tasks, finish-tasks-with-less-writing) or a .py file, with its
 method, environment, optimizer, settings and locked parts. The model's
 context is the last window length of the last step that reads text
 windows. The recipe's data part names a depot, by the name its corpora
-record for it (its public address), and a dataset of it, by id or name, whose
-corpus `wpt depot build DATASET` builds into the store named by WPT_STORE
-(environment or .env), on the machine that holds the depot, with the
-vocabulary of the dataset's tokenizer recipe, which the depot holds; a
-size of a series is derived for that vocabulary's size. CORPUS_ID is
-what that build prints (or a start of it); without it, the latest fresh
-corpus of the recipe's dataset, found by the dataset's id, which training
-reads from the depot's file or its web app (wpt.train.recipe_depot; a dataset's corpora stay its own through a rename,
-and a new dataset given an old name has none); when that corpus was built
+record for it (its public address), and a dataset of it, by id or name,
+whose corpus is built into the store named by WPT_STORE (environment or
+.env), on the machine that holds the depot (`wpt depot build`, or the
+dataset's download page); a size of a series is derived for the size of
+the corpus's vocabulary. CORPUS_ID is what that build prints (or a start
+of it); without it, the latest fresh corpus of the triple the recipe's
+dataset (found by its id), the vocabulary that dataset publishes and the
+data part's total_tokens as the size, which training reads from the
+depot's file or its web app (wpt.train.recipe_depot; a dataset's corpora
+stay its own through a rename, and a new dataset given an old name has
+none); a dataset that publishes no vocabulary, or a triple not built,
+refuses the run, naming the triple and the dataset's download page; when that corpus was built
 from an older revision of the dataset than the current one, training uses
 it and warns, naming both revisions. A corpus of another depot or dataset
 than the recipe's is refused. It holds everything the
@@ -36,10 +39,16 @@ steps read: the token files of plain texts and of conversations, and the
 tasks. Training never builds anything and writes nothing to the depot: it
 reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
 locked parts, and that the corpus holds something for each step to learn
-from are checked before any step runs. A corpus that is stale (an admitted
-erasure reached a text it was built from) or that holds fewer tokens than the
-data part's total_tokens is refused. A step that reads text windows and sets no
-prefix_tokens trains on the first total_tokens of the corpus.
+from are checked before any step runs. The data part's total_tokens is the
+size of the corpus the recipe asks for and a ceiling on what it reads: a
+corpus built at that size (its max_tokens) counts everything,
+conversations and tasks first, so it may hold fewer tokens of plain text,
+and training reads what it holds. A corpus that is stale (an admitted
+erasure reached a text it was built from), or that holds fewer tokens of
+plain text than total_tokens and was built at another size, is refused. A
+step that reads text windows reads the first prefix_tokens of the corpus
+(without them, total_tokens), at most what a corpus built at the recipe's
+size holds; the run's record says how many it reads when that is fewer.
 
 `wpt train series NAME` prints the numbers of every size of a series.
 
@@ -350,15 +359,17 @@ def load_recipe(name, record):
         raise InputError(str(error)) from None
 
 
-def recipe_dataset(data) -> dict:
+def recipe_dataset(data, reader=None) -> dict:
     """The current row of the dataset a recipe's data part names (its id or
-    name), read from its depot without writing to it (wpt.train.recipe_depot);
-    InputError when the depot cannot be read or holds no such dataset."""
+    name), read from its depot without writing to it (wpt.train.recipe_depot;
+    reader: the depot already opened); InputError when the depot cannot be
+    read or holds no such dataset."""
     try:
-        return recipe_depot.opened(data, Path.cwd() / ".env").dataset(data["dataset"])
+        return (reader or recipe_depot.opened(data, Path.cwd() / ".env")).dataset(data["dataset"])
     except recipe_depot.Missing:
-        raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: make it, then build it "
-                         f"with `wpt depot build {data['dataset']}` on the machine that holds the depot") from None
+        raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: make it, publish its "
+                         "vocabulary, then build its corpus at the recipe's size (`wpt depot build "
+                         f"{data['dataset']} --max-tokens N` on the machine that holds the depot)") from None
     except (recipe_depot.Unreadable, DepotError) as error:
         raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
                          f"({type(error).__name__}: {error}); give the corpus id instead") from None
@@ -366,30 +377,52 @@ def recipe_dataset(data) -> dict:
 
 def find_corpus(store, given, data, log=say) -> dict:
     """The record of the corpus given (an id or a start of it), or without
-    one the latest fresh corpus of the dataset of the recipe's data part,
-    found by the dataset's id in its depot (a dataset's corpora stay its own
-    through a rename), with a warning in the log when it was built from an
-    older revision of the dataset than the current one; InputError when the
-    store holds none."""
+    one the corpus of the recipe's data part: the latest fresh corpus of the
+    triple its dataset (found by its id in its depot, so a dataset's corpora
+    stay its own through a rename), the vocabulary that dataset publishes
+    and the size total_tokens, read from the depot's file or through its
+    web app (recipe_depot.FileDepot.built, WebDepot.built), with a warning
+    in the log when it was built from an older revision of the dataset than
+    the current one. InputError when the store holds no such corpus, the
+    dataset publishes no vocabulary, or that triple is not built: the
+    message names the triple and the dataset's download page, and nothing
+    is built or queued."""
     dataset = None
     try:
         if given is not None:
             found = corpora.find(store, given)
         else:
-            dataset = recipe_dataset(data)
-            found = corpora.latest_fresh(store, data["depot"], dataset["id"])
+            try:
+                reader = recipe_depot.opened(data, Path.cwd() / ".env")
+            except recipe_depot.Unreadable as error:
+                raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
+                                 f"({type(error).__name__}: {error}); give the corpus id instead") from None
+            dataset = recipe_dataset(data, reader)
+            page = recipe_depot.download_page(data["depot"], dataset["id"])
+            vocabulary, size = dataset.get("vocabulary"), data["total_tokens"]
+            if vocabulary is None:
+                raise InputError(f"the dataset {dataset['name']!r} ({dataset['id']}) of the depot {data['depot']!r} "
+                                 "publishes no vocabulary, so no corpus is the recipe's: publish one on the "
+                                 f"dataset's page, then build the size {size:,} on its download page {page}")
+            try:
+                found = reader.built(store, data["depot"], dataset, vocabulary, size)
+            except (recipe_depot.Unreadable, recipe_depot.Missing) as error:
+                raise InputError(f"the corpus of the dataset {dataset['name']!r} cannot be found "
+                                 f"({type(error).__name__}: {error})") from None
+            if found is None:
+                raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
+                                 f"{data['depot']!r} with its published vocabulary {vocabulary} at the size "
+                                 f"{size:,} (the recipe's total_tokens) in {store}: build it on its download page "
+                                 f"{page}")
     except ValueError as error:
         raise InputError(str(error)) from None
     if found is None:
-        raise InputError(f"no corpus {given} in {store}" if given is not None else
-                         f"no fresh corpus of dataset {dataset['name']!r} ({dataset['id']}) of the depot "
-                         f"{data['depot']!r} in {store}: build it with `wpt depot build {dataset['name']}` on the "
-                         "machine that holds the depot")
+        raise InputError(f"no corpus {given} in {store}")
     if dataset is not None and found["dataset"]["revision"] < dataset["revision"]:
         log(f"corpus {found['id']} was built from revision {found['dataset']['revision']} of the dataset "
             f"{dataset['name']!r} ({dataset['id']}), whose current revision is {dataset['revision']}: this run "
-            f"trains on the older revision; build the dataset again with `wpt depot build {dataset['name']}` to "
-            "train on the current one", WARNING)
+            f"trains on the older revision; to train on the current one, build the size {size:,} again with "
+            f"`wpt depot build {dataset['name']} --max-tokens {size}` or on its download page {page}", WARNING)
     return found
 
 
@@ -408,18 +441,31 @@ def load_corpus(store, record, recipe):
     return Tokenizer.from_bytes(store.get_bytes(record["tokenizer"]["vocabulary"]))  # sha256-checked by the store
 
 
+def built_for(record, recipe) -> bool:
+    """Whether the corpus was built at the size the recipe asks for: its
+    max_tokens (wpt_depot.corpora.triple) is the data part's total_tokens."""
+    return corpora.triple(record)[2] == recipe["data"]["total_tokens"]
+
+
 def check_record(record, recipe):
     """InputError when the corpus cannot train the recipe: it is stale (an
-    admitted erasure reached a text it was built from) or it holds fewer
-    tokens than the data part's total_tokens."""
+    admitted erasure reached a text it was built from), or it holds fewer
+    tokens of plain text than the data part's total_tokens and was not
+    built at that size (built_for: such a corpus counts conversations and
+    tasks first, and training reads what it holds)."""
     if "stale" in record:
+        page = recipe_depot.download_page(recipe["data"]["depot"], record["dataset"]["id"])
         raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
                          f"{', '.join(record['stale']['erasures'])} on texts it was built from; build the dataset "
-                         f"{record['dataset']['name']!r} again with `wpt depot build`")
+                         f"{record['dataset']['name']!r} again at the recipe's size with `wpt depot build "
+                         f"{record['dataset']['name']} --max-tokens {recipe['data']['total_tokens']}`, or on its "
+                         f"download page {page}")
     wanted = recipe["data"]["total_tokens"]
-    if record["total_tokens"] < wanted:
+    if record["total_tokens"] < wanted and not built_for(record, recipe):
+        size = corpora.triple(record)[2]
         raise InputError(f"the recipe trains on {wanted:,} tokens (data.total_tokens); corpus {record['id']} holds "
-                         f"{record['total_tokens']:,}")
+                         f"{record['total_tokens']:,} and was built at "
+                         f"{'no size' if size is None else f'the size {size:,}'}, not the recipe's {wanted:,}")
 
 
 def plan(recipe) -> tuple[list, int]:
@@ -441,14 +487,26 @@ def plan(recipe) -> tuple[list, int]:
     return steps, contexts[-1]
 
 
-def with_prefixes(recipe) -> dict:
-    """The recipe with a step that reads text windows and sets no
-    prefix_tokens given the first total_tokens of the data part as its prefix."""
+def with_prefixes(recipe, record, log=lambda text: None) -> dict:
+    """The recipe with each step that reads text windows given the prefix
+    it reads: its prefix_tokens, or without them the data part's
+    total_tokens, and for a corpus built at the recipe's size (built_for)
+    never more than the tokens of plain text the corpus holds. log gets a
+    line for each step that reads fewer tokens than it asks for."""
+    held = record["total_tokens"] if built_for(record, recipe) else None
     entries = []
-    for entry in recipe["steps"]:
+    for number, entry in enumerate(recipe["steps"], 1):
         step = load_step(entry, PARTS)
-        if step.reads == WINDOWS and not step.settings["prefix_tokens"]:
-            entry = {**entry, "settings": {**entry.get("settings", {}), "prefix_tokens": recipe["data"]["total_tokens"]}}
+        if step.reads == WINDOWS:
+            asked = step.settings["prefix_tokens"] or recipe["data"]["total_tokens"]
+            prefix = asked if held is None else min(asked, held)
+            if prefix < asked:
+                log(f"step {number} {step.name} reads the first {prefix:,} tokens of plain text, all that corpus "
+                    f"{record['id']} holds, not the {asked:,} it asks for: built at the recipe's size "
+                    f"{recipe['data']['total_tokens']:,} (data.total_tokens), the corpus counts its conversations "
+                    "and tasks first")
+            if prefix != step.settings["prefix_tokens"]:
+                entry = {**entry, "settings": {**entry.get("settings", {}), "prefix_tokens": prefix}}
         entries.append(entry)
     return {**recipe, "steps": entries}
 
@@ -645,7 +703,8 @@ def _run(args, record, store, telemetry, environ) -> int:
     """The run; its exit code."""
     try:
         with telemetry.span("inputs.recipe", recipe=args.recipe):
-            recipe = with_prefixes(load_recipe(args.recipe, record))
+            recipe = with_prefixes(load_recipe(args.recipe, record), record,
+                                   lambda text: telemetry.log(text, WARNING))
             strategy_file = strategy_plugin(args.strategy)
         with telemetry.span("inputs.steps", steps=len(recipe["steps"])):
             steps, context = plan(recipe)

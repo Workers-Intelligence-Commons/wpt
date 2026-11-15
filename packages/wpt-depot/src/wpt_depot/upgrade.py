@@ -35,7 +35,17 @@ tokenizer recipes, their vocabularies and the texts each vocabulary trained
 on, and the column max_tokens of the datasets, all empty; then it writes
 each current text's decisions as rows of text_decisions and its status,
 BATCH rows of texts_revisions a transaction, then builds the index
-texts_status and fills the counts (wpt_depot.counts.recount).
+texts_status and fills the counts (wpt_depot.counts.recount). The step to
+format 7 adds, in its first transaction, the column export_key of
+memberships and pins and the column vocabulary of the datasets, empty;
+then it writes the export key (wpt_depot.ids.export_key) of every row of
+those two tables, in that order (KEYED_7: every membership, then every
+pin, by the text it names), BATCH rows a transaction, read and written by their rowid with
+memory bounded by the batch, saying how many rows a second it writes; the
+table upgrade_under_way keeps, for each table, the last rowid written, so a
+run after a stop goes on in the table and at the row it reached; then it
+builds the indexes memberships_key and pins_key, each in one
+statement.
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -113,8 +123,15 @@ TABLES_6 = ("CREATE TABLE IF NOT EXISTS text_decisions (text TEXT NOT NULL, deci
             "PRIMARY KEY (recipe, version, position)) WITHOUT ROWID")
 # format 6 columns added to tables of format 5: (table, column, its declaration)
 COLUMNS_6 = (("texts_revisions", "status", "TEXT"), ("datasets_revisions", "max_tokens", "INTEGER"))
+# format 7 columns added to tables of format 6: (table, column, its declaration)
+COLUMNS_7 = (("memberships", "export_key", "INTEGER"), ("pins", "export_key", "INTEGER"), ("datasets_revisions", "vocabulary", "TEXT"))
+# format 7: the tables whose rows get their text's export key, in the order they are filled, and the column naming it
+KEYED_7 = (("memberships", "text"), ("pins", "text"))
+INDEXES_7 = (("memberships_key", "CREATE INDEX IF NOT EXISTS memberships_key ON "
+                                 "memberships (library, export_key, joined_change, left_change, text)"),
+             ("pins_key", "CREATE INDEX IF NOT EXISTS pins_key ON pins (library, export_key, text, revision)"))
 UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
-BATCH = 250_000  # rows of texts_revisions a transaction of the upgrade to format 6 goes over
+BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions) and 7 (memberships, pins) goes over
 SAY_EVERY = 30  # seconds between two lines of progress
 # each format 3 table, by its folder's name: the table of format 4 its rows go into
 TARGETS = {"about": "about_revisions", "licenses": "licenses", "notices": "notices", "kinds": "kinds",
@@ -267,8 +284,62 @@ def _to_6(db: Database, log):
     log(f"{db.path}: the depot is at format 6, in {time.monotonic() - began:.0f} seconds")
 
 
+def _to_7(db: Database, log):
+    """Format 6 to 7, in several transactions, as the module says: the
+    export key of every row of memberships and pins, then their indexes."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            con.executemany(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES (?, 0)", [(t,) for t, _ in KEYED_7])
+            for table, column, declared in COLUMNS_7:
+                if column not in {one[1] for one in con.execute(f"PRAGMA table_info({table})")}:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declared}")
+            _new_format(con, 7)
+    began = time.monotonic()
+    for table, text in KEYED_7:
+        _keys(db, table, text, log)
+    for name, statement in INDEXES_7:
+        log(f"{db.path}: building the index {name}, in one statement")
+        indexed = time.monotonic()
+        with db.bulk() as con:
+            con.execute(statement)
+        log(f"{db.path}: the index {name} is built, in {time.monotonic() - indexed:.0f} seconds")
+    with db.bulk() as con:
+        con.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the depot is at format 7, in {time.monotonic() - began:.0f} seconds")
+
+
+def _keys(db: Database, table: str, text: str, log):
+    """Write the export key of each row of table, from the text its column
+    text names, BATCH rows a transaction from the rowid upgrade_under_way
+    keeps for it, which each transaction moves on."""
+    con = db.reader()
+    after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = ?", (table,)).fetchall()[0][0]
+    last = con.execute(f"SELECT coalesce(max(rowid), 0) FROM {table}").fetchall()[0][0]
+    if after >= last:
+        return
+    log(f"{db.path}: writing the export key of each row of {table}, rows {after} to {last}, {BATCH} rows a "
+        "transaction; run again after a stop, it goes on from the last one")
+    began = said = time.monotonic()
+    written = 0
+    while after < last:
+        upto = min(after + BATCH, last)
+        found = db.reader().execute(f"SELECT rowid, {text} FROM {table} WHERE rowid > ? AND rowid <= ?",
+                                    (after, upto)).fetchall()
+        with db.bulk() as con:
+            con.executemany(f"UPDATE {table} SET export_key = ? WHERE rowid = ?",
+                            [(ids.export_key(one), rowid) for rowid, one in found])
+            con.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = ?", (upto, table))
+        after, written = upto, written + len(found)
+        if time.monotonic() - said >= SAY_EVERY or after == last:
+            said = time.monotonic()
+            log(f"{db.path}: row {after} of {last} of {table}, {written / max(said - began, 1e-9):,.0f} rows "
+                f"a second, {said - began:.0f} seconds")
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):

@@ -279,8 +279,11 @@ that its shares pick.
 is one of the depot's ([tokenizer.md](tokenizer.md)); it may be made after
 the dataset, and a build needs it.
 
-`max_tokens`, optional, is the most tokens the corpus holds: those of its
-plain texts, conversations and tasks together. Conversations and tasks are
+A corpus is built at a size, `max_tokens`: the most tokens the corpus
+holds, or none. The dataset's own `max_tokens`, optional, is only the size
+the web app's build form starts at; nothing else reads it.
+The size counts the tokens of its plain texts, conversations and tasks
+together. Conversations and tasks are
 taken first, in the corpus's order: conversations stop at the first
 conversation that would pass what is left of the limit, and tasks at the
 first such task, never scanning on for a smaller one. A conversation counts
@@ -288,8 +291,8 @@ the tokens of its chat template. A task is kept as a JSON line and never
 tokenized, so it counts the tokens of its content written as the JSON text
 of that line. Each share then takes its proportion of what the items left,
 or, without shares, the plain texts take all of it, and stops at its first
-text that would pass that part, in the corpus's order. Without
-`max_tokens`, every conversation and task is taken.
+text that would pass that part, in the corpus's order. Without a size,
+every conversation and task is taken.
 
 `wpt depot dataset edit NAME`, or "Edit it" on the view of the dataset,
 changes its name, its libraries, its shares and its `max_tokens` as a new
@@ -305,6 +308,14 @@ the dataset's row, its id and revision included, so it stays what it was;
 the view of a dataset lists every corpus built from any of its revisions,
 with the revision each was built from.
 
+A dataset publishes at most one vocabulary: the sha256 of one of the
+vocabularies of the depot that holds the dataset, whatever depots its
+libraries are of. `wpt depot dataset edit NAME --vocabulary SHA256` (or
+`--no-vocabulary`), or the vocabulary part of the dataset's view, sets or
+clears it as a new revision; a sha256 the depot holds no vocabulary of is
+refused. Training takes the corpus of that vocabulary (see "Corpora"
+below). A build never reads it.
+
 ### Shares
 
 Shares are optional and ordered, each a tag and a share of the tokens
@@ -317,18 +328,18 @@ The build brings the shares to their proportions without repeating a text.
 Without `max_tokens`, it finds the share with the fewest bytes relative to
 its proportion and keeps every text of that share; each other share stops,
 in the corpus's seeded order, at its first text whose bytes would pass its
-proportion of the scarcest share's bytes. With `max_tokens`, each share
-stops at its part of it. A text enters a corpus once at most. The seed
-comes from the dataset's libraries and shares, so the same dataset builds
-the same corpus, and a change of its name or of `max_tokens` keeps its
-order. The
+proportion of the scarcest share's bytes. With a size, each share stops at
+its part of it. A text enters a corpus once at most. The seed comes from
+the dataset's libraries and shares, so the same dataset builds the same
+corpus, and a change of its name, of its `max_tokens` or of the build's
+size keeps its order. The
 corpus's record keeps how many tokens each share holds (`shares_tokens`) and
 how many texts the build left out (`left_out`: texts no share took, texts
 trimmed from a share, items `max_tokens` left out, items of the kinds that
 are no training data).
 
 A share with no text refuses the build. Shares apply to plain texts only:
-only `max_tokens` trims conversations and tasks.
+only a size trims conversations and tasks.
 
 ### Remotes
 
@@ -348,14 +359,17 @@ passages it cuts are cut in every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
-`wpt depot build DATASET` builds the dataset's corpus into the store
+`wpt depot build DATASET [--vocabulary SHA256] (--max-tokens N | --all)`
+builds the dataset's corpus into the store
 (`WPT_STORE`): what training reads. It runs on the machine that holds the
 depot, or as a job of `wpt depot web` ([depot-web.md](depot-web.md)). A
 rented GPU machine only reads the corpus and trains
-([machines.md](machines.md)). The build needs the vocabulary of the
-dataset's tokenizer recipe at its version, which the depot holds
-([tokenizer.md](tokenizer.md)); without it the command builds nothing,
-and the web app trains it first.
+([machines.md](machines.md)). A build is one dataset, one vocabulary and
+one size. The vocabulary is one the depot holds already, by its sha256
+([tokenizer.md](tokenizer.md)): by default the one the dataset
+publishes, and a dataset that publishes none refuses a build that names
+none. Without it nothing is built: a build never trains a vocabulary. The size is always named: a number of tokens,
+or `--all`.
 
 The build is a stream. Worker processes tokenize the texts, and the build
 takes their results in the corpus's order. It uploads each token file to
@@ -397,17 +411,16 @@ builds its upstream's corpus again.
 
 Two depots a corpus reads never carry one name: a build where another
 depot's name is the one the corpus gives the dataset's own depot, or where
-two other depots share a name, is refused. Whatever reads the texts again,
-the text parts sent for download and a build of the same corpus again
-included, finds each other depot's file from the dataset's libraries at
-the revision the corpus took.
+two other depots share a name, is refused. A build of the same corpus
+again finds each other depot's file from the dataset's libraries at the
+revision the corpus took.
 
 A corpus says everything about what it holds, even once the depots it
 read change or vanish. Beside its token files and `tasks.jsonl`, it holds
 these tables:
 
-- `dataset`: the dataset's row, copied, each library of another depot named by that depot's name, with the
-  time of the build;
+- `dataset`: the dataset's row, copied, each library of another depot named by that depot's name, its
+  `max_tokens` the build's size, with the time of the build;
 - `texts`: every text it took, in parts, one for each token file, with its depot's name (above), its id there,
   its kind, its credits, licenses and tags copied, its scores copied with
   the content version each was made from, its notice, and where its
@@ -420,10 +433,12 @@ these tables:
 Everything goes under `corpora/<dataset name>-<first 8 hex characters of
 the build's key>/` in the store, with the record, `corpus.json`, written
 last, so a build that fails leaves no corpus. The build's key covers the
-depot, the dataset's id and row, the vocabulary and the erasures carried
-out on a text the dataset's libraries hold or held, so building a deleted
-corpus again writes into its folder, and an erasure of a text the dataset
-never read changes neither. The corpus id covers the
+depot, the dataset's id and row, the vocabulary, the size and the erasures
+carried out on a text the dataset's libraries hold or held, so another
+vocabulary or size builds into another folder, building a deleted corpus
+again writes into its folder, and an erasure of a text the dataset never
+read changes neither. The record names the vocabulary's sha256 and the
+size. The corpus id covers the
 dataset's id and its row (without its revision and change), the
 vocabulary and every file's content (of each text: its depot, id, notice,
 where its tokens start and, when it has any, its scores), so building the
@@ -433,11 +448,12 @@ gets a corpus of its own. The record also gives a
 fingerprint of each part a training step reads, `text`, `conversations`
 and `tasks` ([training.md](training.md), "Step results and reuse").
 
-The store keeps only the latest fresh corpus of each dataset: a new
-corpus deletes the one before once it is whole. A corpus of an older
-revision of the dataset, built again, deletes none of a newer revision,
-and the latest corpus of a dataset is the last built of its newest
-revision. A cap (`WPT_CORPORA_CAP`) bounds the bytes all corpora take
+The store keeps only the latest fresh corpus of each dataset, vocabulary
+and size: a new corpus deletes the one before of the same three once it is
+whole, and leaves the corpora of the dataset's other vocabularies and sizes
+as they are. A corpus of an older revision of the dataset, built again,
+deletes none of a newer revision, and the latest corpus of a dataset is
+the last built of its newest revision. A cap (`WPT_CORPORA_CAP`) bounds the bytes all corpora take
 together, the files of a folder left without a record by a build that
 stopped included. To make room, a build deletes those files first, then
 the corpus downloaded least recently, a file at a time, never one being
@@ -446,8 +462,8 @@ size from its first files, and a corpus bigger than the cap fails then,
 before any other corpus is deleted for it. A build whose uploaded files
 were deleted meanwhile writes no record, and started again it starts over.
 A deleted corpus keeps its record, and building it again from that record
-(its dataset revision and vocabulary) says when an erasure changed its
-id.
+(its dataset revision, vocabulary and size) says when an erasure changed
+its id.
 
 An erasure carried out while a corpus is built is checked once the build
 ends: when it reached a text the corpus took, the corpus is written stale
@@ -455,9 +471,13 @@ and deletes no other corpus.
 
 A model recipe's data part names a depot by the name its corpora carry, a
 dataset in it by id or name, and the total tokens ([model.md](model.md),
-"Model recipes"). `wpt train` reads the latest fresh corpus of that
-dataset, or the corpus it is given. A text added to the depot after a
-build reaches training only once the corpus is built again.
+"Model recipes"). `wpt train` reads the corpus it is given, or else the
+latest fresh corpus of the triple that dataset, the vocabulary it publishes
+and the total tokens as the size. A dataset that publishes no vocabulary,
+or a triple not built, refuses the run with the triple and the dataset's
+download page in the depot's web app (`<depot address>/#/download/<dataset
+id>`); training never builds or queues anything. A text added to the depot
+after a build reaches training only once the corpus is built again.
 
 ## Languages and translation
 

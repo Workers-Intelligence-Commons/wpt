@@ -58,11 +58,12 @@ container, so the manager refuses it.
 The steps, each its own command, in order, each stopping the run with its
 exit code when it fails:
 
-    1. the corpus                        WPT_CORPUS, or the latest fresh one of the recipe's depot
-                                         and dataset (wpt.train.find_corpus); the manager neither
-                                         downloads nor builds: `wpt depot build DATASET` builds the
-                                         corpus first, on the machine that holds the depot, and a
-                                         run without one is refused (exit code 2)
+    1. the corpus                        WPT_CORPUS, or the latest fresh one of the recipe's dataset,
+                                         the vocabulary it publishes and the recipe's size
+                                         (wpt.train.find_corpus); the manager neither downloads nor
+                                         builds: the corpus is built first, on the dataset's download
+                                         page or with `wpt depot build`, and a run without one is
+                                         refused (exit code 2)
        wpt agent build-image NAME        each image the corpus's tasks name, where DOCKER_HOST
                                          reaches Docker (the sandboxes' machine); none without tasks
     2. wpt train RECIPE ID --run NAME --resume --out FOLDER/NAME

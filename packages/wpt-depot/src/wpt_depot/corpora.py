@@ -1,6 +1,7 @@
 """The corpora the store keeps (wpt_depot.corpus builds them): their
-records, the latest fresh one of a dataset, marking those an erasure
-reached stale, deleting a corpus's files, and the room a cap leaves.
+records, the latest fresh one of a dataset, vocabulary and size, marking
+those an erasure reached stale, deleting a corpus's files, and the room a
+cap leaves.
 
 Each corpus is a folder corpora/<dataset name>-<8 hex characters>/ of the
 store, its record corpus.json written last (folder_of). A corpus is fresh
@@ -9,9 +10,12 @@ it holds: the ids of the erasures) nor `deleted` (its files are gone: when,
 and why). A deleted corpus keeps its record, so the same build can be run
 again and its id compared with the one the record keeps.
 
-Only each dataset's latest corpus keeps its files: once a build is whole,
-every other corpus of the same depot's dataset is deleted (superseded),
-but one of a newer revision of the dataset than the build's.
+A corpus is built for a triple (triple): its dataset, its vocabulary (by
+sha256) and its size (max_tokens, None for none). Only the latest corpus
+of each triple keeps its files: once a build is whole, every other corpus
+of the same depot's dataset, vocabulary and size is deleted (superseded),
+but one of a newer revision of the dataset than the build's; the corpora
+of the dataset's other vocabularies and sizes stay.
 A cap (Room) bounds the bytes the corpora's files take together, as the
 records give each file's size: past it, the build in progress deletes the
 corpus downloaded least recently, a file at a time, as it needs room,
@@ -23,13 +27,14 @@ fails before any other corpus is deleted for it.
 
     records(store)                       every corpus the store holds, newest first
     find(store, corpus_id)               the corpus of that id (or of a start of it), None without one
+    triple(record)                       (its dataset's id, its vocabulary's sha256, its size)
     built_from(store, depot, dataset)    every corpus built for that depot's dataset (by id), latest first
     latest(store, depot, dataset)        the corpus last built for that depot's dataset (by id), None without one
     latest_fresh(store, depot, dataset)  the same, of the fresh ones
     mark_stale(store, texts, erasures)   mark every fresh corpus that holds one of these texts stale
     holds(store, record, texts)          whether a corpus holds one of these texts
     delete(store, record, why)           delete a corpus's files, its record kept and marked
-    supersede(store, record)             delete every other corpus of the record's dataset
+    supersede(store, record)             delete every other corpus of the record's triple
 """
 
 from datetime import UTC, datetime
@@ -43,8 +48,9 @@ from .errors import DepotError
 
 FOLDER = "corpora"
 RECORD = "corpus.json"
-SUPERSEDED = "a newer corpus of the dataset replaced it"
+SUPERSEDED = "a newer corpus of the dataset, vocabulary and size replaced it"
 CAPPED = "the store's cap needed its room"
+ANY = "any"  # a size that keeps the corpora of every size (built_from)
 
 
 class TooBig(DepotError):
@@ -94,6 +100,16 @@ def files(record: dict) -> list[dict]:
     return found
 
 
+def triple(record: dict) -> tuple[str, str, int | None]:
+    """What a corpus was built for: (its dataset's id, the sha256 of its
+    vocabulary, its size: max_tokens, None for none). A record that names
+    no size of its own was built at its dataset's max_tokens, and one that
+    names no vocabulary sha256 of its own has its vocabulary file's."""
+    size = record["max_tokens"] if "max_tokens" in record else record["dataset"].get("max_tokens")
+    vocabulary = record["tokenizer"].get("sha256") or record["tokenizer"]["vocabulary"]["sha256"]
+    return record["dataset"]["id"], vocabulary, size
+
+
 def records(store) -> list[dict]:
     """The record of every corpus the store holds, each checked by the
     store, the last built first."""
@@ -113,28 +129,33 @@ def find(store, corpus_id: str) -> dict | None:
     return found[0] if found else None
 
 
-def built_from(store, depot: str, dataset: str) -> list[dict]:
+def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> list[dict]:
     """The records of the corpora built from the dataset of id dataset of
     the depot of that name (wpt_depot.corpus.depot_name), latest first: those of the dataset's newest
     revision first, each revision's last built first, so a corpus of an
     older revision built again never comes before one of a newer revision.
     A dataset's corpora stay its own through a rename, and a new dataset
-    given an old name has none."""
+    given an old name has none. vocabulary (a sha256) and size (max_tokens,
+    None for none) keep only the corpora built for them (triple); by
+    default, every vocabulary and size."""
     found = [record for record in records(store)
-             if record["depot"] == depot and record["dataset"].get("id") == dataset]
+             if record["depot"] == depot and record["dataset"].get("id") == dataset
+             and (vocabulary is None or triple(record)[1] == vocabulary)
+             and (size is ANY or triple(record)[2] == size)]
     return sorted(found, key=lambda record: (record["dataset"].get("revision", 0), record["built_at"]), reverse=True)
 
 
-def latest(store, depot: str, dataset: str) -> dict | None:
+def latest(store, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> dict | None:
     """The record of the corpus last built for the dataset of id dataset of
-    the depot of that name (built_from); None when the store holds
-    none."""
-    return next(iter(built_from(store, depot, dataset)), None)
+    the depot of that name (built_from, which says what vocabulary and size
+    keep); None when the store holds none."""
+    return next(iter(built_from(store, depot, dataset, vocabulary, size)), None)
 
 
-def latest_fresh(store, depot: str, dataset: str) -> dict | None:
-    """The record of the fresh corpus last built for that dataset; None without one."""
-    return next((record for record in built_from(store, depot, dataset) if fresh(record)), None)
+def latest_fresh(store, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> dict | None:
+    """The record of the fresh corpus last built for that dataset (and
+    vocabulary and size, as built_from says); None without one."""
+    return next((record for record in built_from(store, depot, dataset, vocabulary, size) if fresh(record)), None)
 
 
 def read_table(store, record: dict, table: str) -> pa.Table:
@@ -204,13 +225,14 @@ def mark_deleted(store, record: dict, why: str, whole: bool = False) -> dict:
 
 
 def supersede(store, record: dict, log) -> list[str]:
-    """Delete the files of every other corpus built from the record's
-    dataset (its depot and id) that keeps them, but those of a newer
-    revision of the dataset (a corpus of an older revision built again
-    leaves the newer ones as they are): the ids deleted."""
+    """Delete the files of every other corpus built for the record's
+    triple (its depot, dataset id, vocabulary and size) that keeps them, but
+    those of a newer revision of the dataset (a corpus of an older revision
+    built again leaves the newer ones as they are): the ids deleted."""
     gone = []
     revision = record["dataset"].get("revision", 0)
-    for other in built_from(store, record["depot"], record["dataset"]["id"]):
+    _, vocabulary, size = triple(record)
+    for other in built_from(store, record["depot"], record["dataset"]["id"], vocabulary, size):
         if (other["id"] != record["id"] and "deleted" not in other
                 and other["dataset"].get("revision", 0) <= revision):
             delete(store, other, SUPERSEDED)
@@ -271,14 +293,18 @@ class Room:
                 self._kept[record["id"]] = (record, [{**one, "bytes": self._size(one)} for one in left])
         return self._kept
 
+    def taken(self) -> int:
+        """The bytes the files of the other corpora take now, as make counts them."""
+        return sum(one["bytes"] for _, left in self._listed().values() for one in left)
+
     def expect(self, size: int):
         """TooBig when the corpus being built, estimated at size bytes in
         all, passes the cap on its own: called before its first upload, so
         nothing is deleted for a corpus that cannot fit."""
         if self.cap is not None and size > self.cap:
             raise TooBig(f"this corpus would take about {size:,} bytes, more than the store's cap of {self.cap:,} "
-                         "bytes on its own: raise the cap or set the dataset's max_tokens; no corpus was deleted "
-                         "for it")
+                         "bytes on its own: raise the cap or build it at a smaller size (max_tokens); no corpus "
+                         "was deleted for it")
 
     def make(self, size: int):
         """Make room for size more bytes of the corpus being built: delete
@@ -292,9 +318,10 @@ class Room:
             return
         if self.used + size > self.cap:
             raise TooBig(f"this corpus needs more than the store's cap of {self.cap:,} bytes on its own "
-                         f"({self.used + size:,} bytes so far): raise the cap or set the dataset's max_tokens")
+                         f"({self.used + size:,} bytes so far): raise the cap or build it at a smaller size "
+                         "(max_tokens)")
         kept = self._listed()
-        taken = sum(one["bytes"] for _, left in kept.values() for one in left)
+        taken = self.taken()
         while taken + self.used + size > self.cap:
             busy = self.busy()
 

@@ -115,15 +115,16 @@ and items, the decisions on them, its libraries, datasets and erasures.
     wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID [...] [--share TAG=SHARE ...]
                 [--max-tokens N]
                                           a dataset reading those libraries (ADDRESS: another depot's),
-                                          each at its depot's change number now; shares in order; its
-                                          corpus holds at most N tokens, conversations and tasks first
+                                          each at its depot's change number now; shares in order; N: the
+                                          size the web app's build form starts at
     wpt depot dataset edit NAME [--new-name N] [--library [ADDRESS:]ID ...] [--share TAG=SHARE ... | --no-shares]
-                [--max-tokens N | --no-max-tokens]
+                [--max-tokens N | --no-max-tokens] [--vocabulary SHA256 | --no-vocabulary]
                                           change the dataset as a new revision, its id and tokenizer kept:
                                           an option given replaces that part (--library: every library); a
                                           library it read already keeps its change number, a new one is read
                                           at its depot's change number now; a corpus built before keeps its
-                                          own copy
+                                          own copy; --vocabulary: the vocabulary it publishes, one this depot
+                                          holds, whose corpus training takes
     wpt depot dataset export NAME         the dataset as a remote, JSON on standard output
     wpt depot dataset import FILE         a dataset made from a remote
     wpt depot tokenizer new NAME --dataset D [--depot URL] --sample-bytes N --vocab-size N [--note T]
@@ -141,10 +142,14 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           vocab_size, note), trained on this depot's dataset D, with the
                                           vocabulary a lock file names (read from the store WPT_STORE names)
                                           or a vocabulary file as the vocabulary of its version 1
-    wpt depot build DATASET               the dataset's corpus, built into the store WPT_STORE names with
-                                          the vocabulary of its tokenizer recipe's version, under the cap
-                                          WPT_CORPORA_CAP; the dataset's other corpora are deleted once it
-                                          is whole
+    wpt depot build DATASET [--vocabulary SHA256] (--max-tokens N | --all)
+                                          the dataset's corpus with that trained vocabulary (default: the
+                                          one the dataset publishes; refused when it publishes none) at
+                                          that size (--all: every token the dataset's rules take), built
+                                          into the store WPT_STORE names under the cap WPT_CORPORA_CAP;
+                                          a size counts everything, conversations and tasks first, and the
+                                          corpus never passes it; the older corpora of the same
+                                          dataset, vocabulary and size are deleted once it is whole
     wpt depot jobs [cancel ID]            the web app's jobs, one JSON row per line; cancel: a queued job
                                           never runs, a running one is stopped
     wpt depot erase ID [START END] [--field POINTER] --reason TEXT DECLARATION
@@ -415,7 +420,8 @@ def cmd_dataset_edit(args):
               else None if row["shares"] is None else [(one["tag"], one["share"]) for one in row["shares"]])
     name = args.new_name or row["name"]
     limit = None if args.no_max_tokens else args.max_tokens if args.max_tokens is not None else row["max_tokens"]
-    depot.edit_dataset(row["id"], name, libraries, shares, limit)
+    vocabulary = None if args.no_vocabulary else args.vocabulary or row["vocabulary"]
+    depot.edit_dataset(row["id"], name, libraries, shares, limit, vocabulary)
     say(f"dataset {row['id']}: {name}, changed")
     return 0
 
@@ -433,10 +439,17 @@ def cmd_dataset_import(args):
 
 def cmd_build(args):
     depot = opened()
+    row = depot.dataset(args.dataset)
+    vocabulary = args.vocabulary or row["vocabulary"]
+    if vocabulary is None:
+        raise NoVocabulary(f"the dataset {row['name']!r} publishes no vocabulary: name one with --vocabulary SHA256, "
+                           f"or publish one with `wpt depot dataset edit {row['name']} --vocabulary SHA256`; "
+                           "nothing was built")
     store = store_from_settings(env_file())
     cap = corpora_cap()
     downloads = Downloads(jobs_file(depot.address))
-    record = build_corpus(depot, depot.dataset(args.dataset)["id"], say, store=store,
+    record = build_corpus(depot, row["id"], say, vocabulary=vocabulary,
+                          max_tokens=None if args.all else args.max_tokens, store=store,
                           room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download,
                                                            downloads.busy, say))
     say(f"corpus {record['id']}")
@@ -533,6 +546,16 @@ def _library(value: str) -> tuple[str | None, str]:
     if not library:
         raise argparse.ArgumentTypeError(f"{value!r}: a library is [ADDRESS:]ID")
     return address or None, library
+
+
+def _tokens(value: str) -> int:
+    try:
+        found = int(value)
+    except ValueError:
+        found = 0
+    if found < 1:
+        raise argparse.ArgumentTypeError(f"{value!r}: a size is a whole number of tokens above 0")
+    return found
 
 
 def _share(value: str) -> tuple[str, float]:
@@ -700,9 +723,7 @@ def parser() -> argparse.ArgumentParser:
     making.add_argument("--share", action="append", type=_share,
                         help="TAG=SHARE, in order: a plain text counts for the first share whose tag it has, and "
                              "one no share takes is left out; the build trims the shares to their proportions")
-    making.add_argument("--max-tokens", type=int, help="the most tokens its corpus holds: conversations and tasks "
-                                                       "first, then each share stops at its first text that would "
-                                                       "pass its part of what they leave")
+    making.add_argument("--max-tokens", type=int, help="the size the web app's build form starts at")
     making.set_defaults(run=cmd_dataset_new)
     editing = datasets.add_parser("edit", help="change a dataset's name, libraries or shares as a new revision")
     editing.add_argument("name", help="the dataset's name now")
@@ -714,8 +735,12 @@ def parser() -> argparse.ArgumentParser:
     sharing.add_argument("--share", action="append", type=_share, help="TAG=SHARE, in order: every share")
     sharing.add_argument("--no-shares", action="store_true", help="no shares: every text")
     limiting = editing.add_mutually_exclusive_group()
-    limiting.add_argument("--max-tokens", type=int, help="the most tokens its corpus holds, items included")
-    limiting.add_argument("--no-max-tokens", action="store_true", help="no limit")
+    limiting.add_argument("--max-tokens", type=int, help="the size the web app's build form starts at")
+    limiting.add_argument("--no-max-tokens", action="store_true", help="the form starts at no limit")
+    publishing = editing.add_mutually_exclusive_group()
+    publishing.add_argument("--vocabulary", help="the sha256 of the vocabulary it publishes, one this depot holds: "
+                                                 "training takes the corpus of that vocabulary")
+    publishing.add_argument("--no-vocabulary", action="store_true", help="it publishes no vocabulary")
     editing.set_defaults(run=cmd_dataset_edit)
     exporting = datasets.add_parser("export", help="the dataset as a remote, JSON on standard output")
     exporting.add_argument("name")
@@ -760,6 +785,11 @@ def parser() -> argparse.ArgumentParser:
     importing.set_defaults(run=cmd_tokenizer_import)
     building = commands.add_parser("build", help="a dataset's corpus, built into the store")
     building.add_argument("dataset")
+    building.add_argument("--vocabulary", help="the sha256 of a vocabulary the depot holds (default: the one the "
+                                               "dataset publishes; refused when it publishes none)")
+    sizing = building.add_mutually_exclusive_group(required=True)
+    sizing.add_argument("--max-tokens", type=_tokens, help="the most tokens the corpus holds, items included")
+    sizing.add_argument("--all", action="store_true", help="every token the dataset's rules take")
     building.set_defaults(run=cmd_build)
     job = commands.add_parser("jobs", help="the web app's jobs: list them, or cancel one")
     job.set_defaults(run=cmd_jobs)

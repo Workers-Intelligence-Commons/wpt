@@ -5,11 +5,11 @@ own, so the web app keeps the other cores and answers while a job runs.
 
 The queue is a small SQLite file beside the depot, <depot file>.jobs,
 which nothing backs up: it holds each job's kind, what it does in words,
-the operation it runs and its arguments, its state, its progress and its
-answer, and the jobs' other state (wpt.depot.downloads). The web app's
-runner takes the oldest queued job whose `after` job is done, marks it
-running and runs it in a spawned process; a job whose `after` job ended
-without its answer fails, naming it. A job's state is queued, running,
+what it is for (its dataset or recipe, and its target: what a corpus job
+builds, its vocabulary and size), the operation it runs and its arguments,
+its state, its progress and its answer, and the jobs' other state
+(wpt.depot.downloads). The web app's runner takes the oldest queued job,
+marks it running and runs it in a spawned process. A job's state is queued, running,
 done (its answer), refused (the failure that stopped it, with its HTTP
 status; what it is refused writes nothing), failed (the process ended
 without an answer, or with a failure the routes do not name) or cancelled.
@@ -54,7 +54,7 @@ ENDED = ("done", "refused", "failed", "cancelled")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY, number INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
-    dataset TEXT, recipe TEXT, after TEXT, operation TEXT NOT NULL, arguments BLOB NOT NULL,
+    dataset TEXT, recipe TEXT, target TEXT, operation TEXT NOT NULL, arguments BLOB NOT NULL,
     state TEXT NOT NULL, stages TEXT NOT NULL, progress TEXT, answer TEXT, problem TEXT, status INTEGER,
     created REAL NOT NULL, started REAL, ended REAL, restarts INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS jobs_open ON jobs (state, number);
@@ -62,8 +62,11 @@ CREATE TABLE IF NOT EXISTS checkpoints (dataset TEXT PRIMARY KEY, state TEXT NOT
 CREATE TABLE IF NOT EXISTS downloads (corpus TEXT PRIMARY KEY, last REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, corpus TEXT, visitor TEXT NOT NULL, kind TEXT NOT NULL,
     started REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS exports (corpus TEXT NOT NULL, part INTEGER NOT NULL, format TEXT NOT NULL,
-    maker TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY (corpus, part, format, maker));
+DROP TABLE IF EXISTS exports;
+CREATE TABLE IF NOT EXISTS export_parts (export TEXT NOT NULL, parts INTEGER NOT NULL, part INTEGER NOT NULL,
+    format TEXT NOT NULL, maker TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL,
+    PRIMARY KEY (export, parts, part, format, maker));
+CREATE TABLE IF NOT EXISTS export_texts (export TEXT PRIMARY KEY, texts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS marking (erasure TEXT PRIMARY KEY, since REAL NOT NULL);
 """
 
@@ -95,6 +98,12 @@ def connected(path: Path, write: bool = False):
         con.execute("PRAGMA journal_mode = WAL")
         con.execute("PRAGMA busy_timeout = 60000")
         con.executescript(SCHEMA)
+        if "target" not in {row["name"] for row in con.execute("PRAGMA table_info(jobs)")}:  # a file made before it
+            try:
+                con.execute("ALTER TABLE jobs ADD COLUMN target TEXT")
+            except sqlite3.OperationalError as error:  # another connection added it meanwhile
+                if "duplicate column" not in str(error):
+                    raise
         if write:
             con.execute("BEGIN IMMEDIATE")
             try:
@@ -121,7 +130,7 @@ def _operation(name: str):
 def _shown(row) -> dict:
     """A job's row as the routes and the command line give it."""
     return {"id": row["id"], "kind": row["kind"], "title": row["title"], "dataset": row["dataset"],
-            "recipe": row["recipe"], "after": row["after"], "state": row["state"],
+            "recipe": row["recipe"], "target": json.loads(row["target"] or "null"), "state": row["state"],
             "stages": json.loads(row["stages"]), "progress": json.loads(row["progress"] or "null"),
             "answer": json.loads(row["answer"] or "null"), "problem": row["problem"], "status": row["status"],
             "created": row["created"], "started": row["started"], "ended": row["ended"],
@@ -215,13 +224,13 @@ class Jobs:
     # Adding and reading
 
     def add(self, kind: str, title: str, operation, *args, dataset: str | None = None, recipe: str | None = None,
-            after: str | None = None, **kwargs) -> dict:
+            target: dict | None = None, **kwargs) -> dict:
         """Queue a job of that kind (KINDS) that does what title says by
         running operation(depot, *args, progress=..., **kwargs), a function
         the job's process imports by name (and job=, a Job, for a kind that
-        is not a write), after the job after when given: its state. Busy
-        when the dataset has a corpus job open, or the recipe a vocabulary
-        job."""
+        is not a write), for the dataset or the recipe, target saying what
+        it makes (JSON): its state. Busy when the dataset has a corpus job
+        open, or the recipe a vocabulary job."""
         if kind not in KINDS:
             raise ValueError(f"no kind of job {kind!r}")
         job = secrets.token_hex(8)
@@ -233,10 +242,10 @@ class Jobs:
                                                     "state IN ('queued', 'running')", (recipe,)).fetchone():
                 raise Busy(f"the tokenizer recipe {recipe} has a vocabulary job queued or running already")
             number = con.execute("SELECT coalesce(max(number), 0) + 1 FROM jobs").fetchone()[0]
-            con.execute("INSERT INTO jobs (id, number, kind, title, dataset, recipe, after, operation, arguments, "
+            con.execute("INSERT INTO jobs (id, number, kind, title, dataset, recipe, target, operation, arguments, "
                         "state, stages, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '[]', ?)",
-                        (job, number, kind, title, dataset, recipe, after, _named(operation),
-                         pickle.dumps((args, kwargs)), time.time()))
+                        (job, number, kind, title, dataset, recipe, None if target is None else json.dumps(target),
+                         _named(operation), pickle.dumps((args, kwargs)), time.time()))
         return self.state(job)
 
     def open_job(self, kind: str, dataset: str | None = None, recipe: str | None = None) -> dict | None:
@@ -276,7 +285,7 @@ class Jobs:
         return self.state(job)
 
     def state(self, job: str) -> dict:
-        """The state of the job: {id, kind, title, dataset, recipe, after,
+        """The state of the job: {id, kind, title, dataset, recipe, target,
         state, stages: [{stage, at}], progress, answer, problem, status,
         created, started, ended, restarts}, times in seconds since the
         epoch. NotFound for a job the queue does not hold."""
@@ -355,22 +364,13 @@ class Jobs:
             self._runner.join()
 
     def _next(self) -> str | None:
-        """Mark the next job to run running: its id; None when no job can run.
-        A job whose after job ended without its answer fails."""
+        """Mark the oldest queued job running: its id; None when none is queued."""
         with connected(self.path, write=True) as con:
-            for row in con.execute("SELECT j.id, j.after, a.state AS after_state, a.title AS after_title, "
-                                   "a.problem AS after_problem FROM jobs j LEFT JOIN jobs a ON a.id = j.after "
-                                   "WHERE j.state = 'queued' ORDER BY j.number").fetchall():
-                if row["after"] is not None and row["after_state"] in ("refused", "failed", "cancelled", None):
-                    con.execute("UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? WHERE id = ?",
-                                (time.time(), f"the job it waited for ({row['after_title'] or row['after']}) ended "
-                                 f"without its answer: {row['after_problem'] or 'it is gone'}", row["id"]))
-                    continue
-                if row["after"] is not None and row["after_state"] != "done":
-                    continue
-                con.execute("UPDATE jobs SET state = 'running', started = ? WHERE id = ?", (time.time(), row["id"]))
-                return row["id"]
-        return None
+            row = con.execute("SELECT id FROM jobs WHERE state = 'queued' ORDER BY number LIMIT 1").fetchone()
+            if row is None:
+                return None
+            con.execute("UPDATE jobs SET state = 'running', started = ? WHERE id = ?", (time.time(), row["id"]))
+            return row["id"]
 
     def _run(self):
         while not self._stop.is_set():

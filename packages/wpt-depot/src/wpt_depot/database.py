@@ -9,9 +9,9 @@ through connections of its own.
 
 Every connection sees the tables by their names (wpt_depot.schema) and the
 views of the current state (schema.VIEWS), made on it as temporary views,
-with two functions they use: part_text, a part's stored value as its text,
-and content_too_big, which refuses a content version too big for one value
-of SQLite. A person's SQL (the query of `wpt depot sql`, a condition
+with three functions: part_text, a part's stored value as its text,
+content_too_big, which refuses a content version too big for one value of
+SQLite, and export_key, a text's export key from its id (wpt_depot.ids). A person's SQL (the query of `wpt depot sql`, a condition
 selecting texts) runs on a connection of its own that opens the file
 read-only and whose authorizer lets a statement only read (READS): a
 statement that writes, attaches another database, runs a pragma or loads an
@@ -73,6 +73,7 @@ from urllib.parse import quote
 import apsw
 import apsw.ext
 
+from . import ids
 from .errors import BadQuery, DepotExists, NotADepot, TimeLimitReached
 from .parts import unpack
 from .schema import SQL_STRING, VIEWS, ddl
@@ -234,6 +235,7 @@ class Database:
         con.set_busy_timeout(WAIT)
         con.create_scalar_function("part_text", _part_text, 1, deterministic=True)
         con.create_scalar_function("content_too_big", _too_big, 3, deterministic=True)
+        con.create_scalar_function("export_key", ids.export_key, 1, deterministic=True)
         try:
             for pragma in pragmas:
                 con.execute(f"PRAGMA {pragma}").fetchall()

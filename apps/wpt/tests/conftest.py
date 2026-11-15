@@ -52,7 +52,9 @@ def built(tmp_path, monkeypatch):
     entries that follow it), and returns its name, and dataset(name,
     items=()), which adds the items (NewText, licensed MIT and tagged TAG
     unless they say otherwise) to the depot, admitted, makes the dataset
-    name of every admitted text, builds its corpus and returns its id."""
+    name of every admitted text, builds its corpus and returns its id, and
+    sized(name, size, url=None), which publishes the depot's vocabulary on
+    the dataset name, builds its corpus at that size and returns its record."""
     store = open_store((tmp_path / "store").as_uri())
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
@@ -76,7 +78,17 @@ def built(tmp_path, monkeypatch):
         if not depot.tokenizers():  # the depot's tokenizer recipe, trained on the first dataset
             recipe = depot.new_tokenizer(TOKENIZER, None, name, 10**9, VOCAB_SIZE)
             depot.add_vocabulary(recipe, 1, tokenizer.to_bytes(), [], None)
-        return build(depot, name, store, tokenizer, 1, log=lambda *_: None)["id"]
+        return build(depot, name, store, tokenizer, 1, max_tokens=None, log=lambda *_: None)["id"]
+
+    def sized(name, size, url=None) -> dict:
+        """The record of the corpus of the dataset name built at that size with the depot's vocabulary, which the
+        dataset publishes from then on."""
+        row = depot.dataset(name)
+        found = depot.vocabulary(depot.tokenizer(row["tokenizer"])["id"], 1)
+        depot.edit_dataset(row["id"], name, [(None, one["library"]) for one in row["libraries"]],
+                           [(one["tag"], one["share"]) for one in row["shares"]], vocabulary=found["sha256"])
+        vocabulary = Tokenizer.from_bytes(found["merges"].encode("utf-8"))
+        return build(depot, name, store, vocabulary, 1, max_tokens=size, url=url, log=lambda *_: None)
 
     def recipe(name="d", model=None, training=None, drafter=None, steps=(), dataset="d"):
         text = {**ONE_STEP, **(training or {})}
@@ -111,7 +123,7 @@ def built(tmp_path, monkeypatch):
         return sorted(found, key=lambda run: run.start["started"])
 
     return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, recipe=recipe,
-                           records=records, dataset=dataset)
+                           records=records, dataset=dataset, sized=sized)
 
 
 @pytest.fixture

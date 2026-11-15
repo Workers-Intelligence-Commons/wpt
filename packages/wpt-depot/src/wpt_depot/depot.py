@@ -117,9 +117,12 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   change number of the depot that owns it, which it reads (a clone naming
   one of its upstream's libraries by its own address names it at the
   upstream change its pulls brought), optional ordered shares by tag, an
-  optional max_tokens, and the name of a tokenizer recipe, which need not
-  exist yet. Its name, libraries, shares and max_tokens change as a new
-  revision, its id and tokenizer recipe kept, with the checks of a new one;
+  optional max_tokens (the size a build form starts at), the name of a
+  tokenizer recipe, which need not exist yet, and, once set, the vocabulary
+  it publishes (the sha256 of one of the depot's vocabularies), which
+  training takes its corpus of. Its name, libraries, shares, max_tokens and
+  vocabulary change as a new revision, its id and tokenizer recipe kept,
+  with the checks of a new one;
   a library it read already keeps its change number. Exported, a dataset
   is a remote (wpt_depot.remote).
 - A tokenizer recipe names the dataset whose sample trains its vocabulary,
@@ -728,6 +731,68 @@ class Depot:
             f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN}", params)
         yield from cursor
 
+    def library_range(self, library: str, change: int, low: int, high: int) -> Iterator[tuple]:
+        """The texts library_members gives whose export key (wpt_depot.ids)
+        is from low to high, both included, in the order of their keys: (export
+        key, id, revision, kind, tags as JSON text) of each. They are read from
+        the library's side, as that range of the index memberships_key (of
+        pins_key for a library locked then), which holds every column of the
+        row it needs, each row's text revision looked up after it (CROSS JOIN fixes that order), so neither the other
+        libraries' rows nor the texts outside the range are read."""
+        if self._locked_then(library, change):
+            held, revision = "pins h", "h.revision"
+            when = ""
+            change = self._lock_change(library)
+        else:
+            held = "memberships h"
+            revision = ("(SELECT max(r.revision) FROM texts_revisions r WHERE r.id = h.text AND r.change <= "
+                        f"(SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')}))")
+            when = "AND h.joined_change <= :change AND (h.left_change IS NULL OR h.left_change > :change) "
+        cursor = self.db.reader().cursor().execute(
+            f"SELECT h.export_key, t.id, t.revision, c.kind, t.tags FROM {held} "
+            f"CROSS JOIN texts_revisions t ON t.id = h.text AND t.revision = {revision} {CONTENT_JOIN} "
+            f"WHERE h.library = :library AND h.export_key BETWEEN :low AND :high {when}ORDER BY h.export_key",
+            {"library": library, "change": change, "low": low, "high": high,
+             "bounds": _json(self.bounds(ids.owner(library), change))})
+        yield from cursor
+
+    def library_spread(self, library: str, change: int, points: int, members: int) -> list[tuple]:
+        """At most points of the texts library_members gives, as it gives
+        them, spread over the order the depot recorded the library's rows
+        in (the rowids of its memberships, or of its pins for a library
+        locked then): the first row at or after each of points evenly spaced
+        rowids from its first to its last, the same texts for the same depot state, each read through
+        the table's rowid alone. members, about how many rows the library
+        has, says whether they lie among many others' rows, when the
+        spacing spans the library's own first and last rowids instead of the
+        table's."""
+        table = "pins" if self._locked_then(library, change) else "memberships"
+        low, high = self.db.reader().execute(f"SELECT min(rowid), max(rowid) FROM {table}").fetchone()
+        if low is None:
+            return []
+        if members * 4 < high - low + 1:  # its rows are a few among many: span its own
+            low, high = self.db.reader().execute(f"SELECT min(rowid), max(rowid) FROM {table} WHERE library = ?",
+                                                 (library,)).fetchone()
+            if low is None:
+                return []
+        held, params = self._held(library, change, place=True)
+        query = (f"SELECT t.id, t.revision, c.kind, t.tags, c.bytes, h.place FROM ({held}) h JOIN texts_revisions t "
+                 f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN}")
+        found, seen = [], set()
+        reader = self.db.reader()
+        for at in range(points):
+            start = low + (high - low) * at // max(points - 1, 1)
+            for row in reader.execute(query, {**params, "start": start}):
+                if row[5] not in seen:
+                    seen.add(row[5])
+                    found.append(tuple(row[:5]))
+        return found
+
+    def library_count(self, library: str, change: int) -> int:
+        """How many texts library_members gives, counted without reading them."""
+        held, params = self._held(library, change)
+        return self._rows(f"SELECT count(*) AS n FROM ({held})", params)[0]["n"]
+
     def listed_text(self, text: str, revision: int) -> dict:
         """One text at one revision, as library_texts gives a row but with
         neither its decisions nor its status. NotFound when the depot no
@@ -738,24 +803,38 @@ class Depot:
             raise NotFound(f"the depot holds no revision {revision} of the text {text}")
         return found[0]
 
-    def _held(self, library: str, change: int) -> tuple[str, dict]:
+    def _held(self, library: str, change: int, place: bool = False) -> tuple[str, dict]:
         """(the query of each text the library held at that change, as
-        member and revision; its parameters), as library_texts says."""
+        member and revision; its parameters), as library_texts says. With
+        place, only the first such row at or after the rowid :start of
+        memberships, or of pins for a library locked then, read in rowid
+        order, with that rowid as place."""
+        if place:  # the rows are read in rowid order: the index of the library would read them all first
+            column, where, after = ", {0}.rowid AS place", "{0}.rowid >= :start AND +{0}.library", (
+                " ORDER BY {0}.rowid LIMIT 1")
+        else:
+            column, where, after = "", "{0}.library", ""
+        if self._locked_then(library, change):
+            held = (f"SELECT p.text AS member, p.revision{column} FROM pins p WHERE {where} = :library"
+                    f"{after}").format("p")
+            change = self._lock_change(library)
+        else:
+            held = ("SELECT m.text AS member, (SELECT max(r.revision) FROM texts_revisions r WHERE r.id = m.text "
+                    f"AND r.change <= (SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')})"
+                    f") AS revision{column.format('m')} FROM memberships m WHERE {where.format('m')} = :library "
+                    f"AND m.joined_change <= :change AND (m.left_change IS NULL OR m.left_change > :change)"
+                    f"{after.format('m')}")
+        return held, {"library": library, "change": change, "bounds": _json(self.bounds(ids.owner(library), change))}
+
+    def _locked_then(self, library: str, change: int) -> bool:
+        """Whether the library was locked at that change. NotFound without
+        such a library, or when it did not exist yet at that change."""
         self._library(library)
         state = self._rows("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
                            "ORDER BY revision DESC LIMIT 1", (library, change))
         if not state:
             raise NotFound(f"the library {library} did not exist yet at the change {change}")
-        locked = state[0]["locked_at"] is not None
-        if locked:
-            held = "SELECT p.text AS member, p.revision FROM pins p WHERE p.library = :library"
-            change = self._lock_change(library)
-        else:
-            held = ("SELECT m.text AS member, (SELECT max(r.revision) FROM texts_revisions r WHERE r.id = m.text "
-                    f"AND r.change <= (SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')})"
-                    ") AS revision FROM memberships m WHERE m.library = :library "
-                    "AND m.joined_change <= :change AND (m.left_change IS NULL OR m.left_change > :change)")
-        return held, {"library": library, "change": change, "bounds": _json(self.bounds(ids.owner(library), change))}
+        return state[0]["locked_at"] is not None
 
     def _lock_change(self, library: str) -> int:
         """The change number at which the locked library was locked, in the numbering of the depot that owns it."""
@@ -1173,8 +1252,8 @@ class Depot:
             if not self._choose(con, texts, left=left):
                 raise _Nothing((0, 0))
             stage("putting the admitted texts in the library")
-            con.execute("INSERT INTO memberships (library, text, joined_change, left_change) "
-                        "SELECT :library, c.id, :change, NULL FROM temp.chosen c JOIN texts_revisions t "
+            con.execute("INSERT INTO memberships (library, text, joined_change, left_change, export_key) "
+                        "SELECT :library, c.id, :change, NULL, export_key(c.id) FROM temp.chosen c JOIN texts_revisions t "
                         f"ON t.id = c.id AND t.latest WHERE t.status = '{ADMITTED}' AND NOT EXISTS "
                         "(SELECT 1 FROM memberships m WHERE m.library = :library AND m.text = c.id "
                         "AND m.left_change IS NULL)", {"library": library, "change": number})
@@ -1223,7 +1302,8 @@ class Depot:
             self._refuse_upstream("libraries", [library], FORK)
             if found["locked_at"] is not None:
                 raise Refused(f"the library {library} is locked already")
-            con.execute("INSERT INTO pins (library, text, revision, change) SELECT m.library, t.id, t.revision, ? "
+            con.execute("INSERT INTO pins (library, text, revision, change, export_key) "
+                        "SELECT m.library, t.id, t.revision, ?, m.export_key "
                         "FROM memberships m JOIN texts_revisions t ON t.id = m.text AND t.latest "
                         "WHERE m.library = ? AND m.left_change IS NULL", (number, library))
             self._revise(con, "libraries_revisions", [library], number, {"locked_at": ":locked_at"},
@@ -1248,8 +1328,8 @@ class Depot:
             _insert(con, "libraries_revisions", [{"id": fork, "revision": 1, "change": number, "latest": 1,
                                                   "name": name, "forked_from": library, "problems": "[]",
                                                   "locked_at": None}])
-            con.execute("INSERT INTO memberships (library, text, joined_change, left_change) "
-                        "SELECT :fork, m.text, :change, NULL FROM memberships m JOIN texts_revisions t "
+            con.execute("INSERT INTO memberships (library, text, joined_change, left_change, export_key) "
+                        "SELECT :fork, m.text, :change, NULL, m.export_key FROM memberships m JOIN texts_revisions t "
                         "ON t.id = m.text AND t.latest WHERE m.library = :library AND m.left_change IS NULL "
                         f"AND t.status = '{ADMITTED}'"
                         + (" AND m.text NOT IN (SELECT id FROM temp.chosen)" if without is not None else ""),
@@ -1538,10 +1618,10 @@ class Depot:
         """A dataset reading the libraries (depot address, None for this
         depot, and library id), each at its depot's change number now, with
         optional ordered shares (tag, share of the tokens) and an optional
-        limit of its corpus's tokens of plain text (max_tokens), whose
-        vocabulary is that of the depot's tokenizer recipe named tokenizer:
-        its id. The recipe need not exist yet, since a recipe trains on a
-        dataset that exists: a build needs it."""
+        max_tokens, the size a build form starts at, whose vocabulary is
+        trained by the depot's tokenizer recipe named tokenizer: its id. It
+        publishes no vocabulary until an edit sets one. The recipe need not exist
+        yet, since a recipe trains on a dataset that exists."""
         return self._new_dataset({"name": name, "tokenizer": tokenizer, "libraries": self._refs(libraries),
                                   "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares],
                                   "max_tokens": max_tokens})
@@ -1571,12 +1651,15 @@ class Depot:
         return found[0]
 
     def edit_dataset(self, dataset: str, name: str, libraries: list[tuple[str | None, str]],
-                     shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None):
+                     shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None,
+                     vocabulary: str | None = None):
         """Change the dataset of that id as a new revision, its id and
         tokenizer kept: its name, the libraries it reads (depot address, None
         for this depot, and library id), its optional ordered shares (tag,
-        share of the tokens) and its optional max_tokens, with the checks of
-        new_dataset. A library it
+        share of the tokens), its optional max_tokens and the vocabulary it
+        publishes (the sha256 of one of this depot's vocabularies, whatever
+        depots its libraries are of; None for none), with the checks of
+        new_dataset; Refused for a vocabulary the depot does not hold. A library it
         read already (the same library, its depot's address in any form, or
         either address of a library read here, reads_here) is kept exactly
         as stored, its address and change number included, its
@@ -1598,11 +1681,15 @@ class Depot:
         with self._write("edit dataset") as (con, number):
             if self._rows("SELECT id FROM datasets WHERE name = ? AND id <> ?", (name, dataset)):
                 raise Refused(f"the dataset name {name} is taken")
+            if vocabulary is not None and not con.execute("SELECT 1 FROM vocabularies WHERE sha256 = ?",
+                                                          (vocabulary,)).fetchall():
+                raise Refused(f"the depot holds no vocabulary of sha256 {vocabulary!r}: a dataset publishes one of "
+                              "the depot's trained vocabularies")
             self._revise(con, "datasets_revisions", [dataset], number,
                          {"name": ":name", "libraries": ":libraries", "shares": ":shares",
-                          "max_tokens": ":max_tokens"},
+                          "max_tokens": ":max_tokens", "vocabulary": ":vocabulary"},
                          {"name": name, "libraries": _json(refs), "shares": _json(values["shares"]),
-                          "max_tokens": max_tokens})
+                          "max_tokens": max_tokens, "vocabulary": vocabulary})
 
     def _refs(self, libraries: list[tuple[str | None, str]]) -> list[dict]:
         """Each library (depot address, None for this depot, and library id)

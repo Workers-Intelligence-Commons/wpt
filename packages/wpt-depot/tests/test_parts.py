@@ -82,7 +82,7 @@ def test_a_text_bigger_than_a_part_is_added_from_a_file_read_shown_and_built_int
     depot.new_dataset("model", "classics", [(None, library)])
     store = open_store((tmp_path / "store").as_uri())
 
-    record = build(depot, "model", store, TOKENIZER, log=lambda *_: None)
+    record = build(depot, "model", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
 
     [(tokens, _, document, _, _)] = [row for shard in record["shards"] for row in read_verified(store, shard)]
     assert document == one

@@ -5,7 +5,8 @@
 // a new recipe (wpt depot tokenizer new). #/tokenizers/NAME is one recipe:
 // its revisions, its vocabularies, each with its file and the texts it
 // trained on, a page at a time, the training of its version's vocabulary
-// queued as a job, and its edit as a new revision, which raises its version
+// queued as a job once its estimate (GET /api/tokenizers/NAME/estimate: the
+// sample's bytes and an approximate time) is shown and confirmed, and its edit as a new revision, which raises its version
 // when it changes what trains the vocabulary (wpt depot tokenizer edit). A
 // recipe of the upstream this depot follows has no edit.
 
@@ -14,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { get, part, post, put, type Answer, type Job } from "../api";
 import { Cut, Outcome, PageHead, Pager, plural, Problems, optional, required, RequiredNote, Section, useDatasets } from "../parts";
 import { href } from "../route";
+import { bytes, duration } from "./download";
 import { JobProgress } from "./jobs";
 import type { Page } from "./index";
 
@@ -23,6 +25,7 @@ type Recipe = {
 };
 type Vocabulary = { recipe: string; version: number; sha256: string; texts: number; bytes: number | null; made_at: string };
 type Shown = { recipe: Recipe; revisions: Recipe[]; vocabularies: Vocabulary[]; upstream: boolean; trained: boolean };
+type TrainingEstimate = { sample_bytes: number; version: number; seconds: number; basis: string };
 
 const trainsOn = (r: Recipe) => (r.depot ? <><span className="ledger">{r.dataset}</span> <span className="aside">of</span> <Cut text={r.depot} className="ledger" /></>
   : <a href={href(["datasets", r.dataset])}>{r.dataset_name ?? r.dataset}</a>);
@@ -36,7 +39,7 @@ function Tokenizers() {
   return (
     <>
       <PageHead title="Tokenizers"
-        chain={<>A tokenizer recipe says how a vocabulary trains: on a sample of a dataset, up to a number of tokens. A dataset's corpus uses the vocabulary of its recipe's version, kept in the depot once trained, for good.</>}
+        chain={<>A tokenizer recipe says how a vocabulary trains: on a sample of a dataset, up to a number of tokens. Each version's vocabulary is kept in the depot once trained, for good, and a corpus build names one of them.</>}
         actions={<Button variant="primary" onClick={() => { setAnswer(null); setMaking(true); }}>New recipe</Button>} />
       {!making && <Outcome answer={answer} done={(d) => `Tokenizer recipe ${d.id}: version 1.`} />}
       {!rows && <Skeleton lines={4} />}
@@ -134,6 +137,7 @@ function OneTokenizer({ name }: { name: string }) {
   const [editing, setEditing] = useState(false);
   const [answer, setAnswer] = useState<Answer<unknown> | null>(null);
   const [said, setSaid] = useState("");
+  const [estimate, setEstimate] = useState<Answer<TrainingEstimate> | null>(null);
   const load = useCallback(() => { get<Shown>(`/api/tokenizers/${part(name)}`).then(setShown); }, [name]);
   useEffect(load, [load]);
   useEffect(() => {  // a training under way: read again until it ends
@@ -145,18 +149,20 @@ function OneTokenizer({ name }: { name: string }) {
   if (!shown.ok) return <Problems problems={shown.problems} />;
   const { recipe, revisions, vocabularies, upstream, trained } = shown.data;
   const train = async () => {
-    const a = await post<Job<unknown>>(`/api/tokenizers/${part(name)}/train`, null);
+    const a = await post<Job<unknown>>(`/api/tokenizers/${part(name)}/train`, { confirmed: true });
+    setEstimate(null);
     setSaid(a.ok ? `Queued: ${a.data.title}.` : "");
     setAnswer(a);
     load();
   };
+  const estimated = async () => { setAnswer(null); setEstimate(await get<TrainingEstimate>(`/api/tokenizers/${part(name)}/estimate`)); };
   return (
     <>
       <PageHead title={recipe.name}
         meta={<><span className="ledger">{recipe.id}</span><span>version {recipe.version}</span><span>revision {recipe.revision}</span>{upstream && <span className="aside">the upstream's</span>}</>}
         chain={<>One of the <a href={href(["tokenizers"])}>tokenizer recipes</a>. Its vocabulary trains on a sample of {trainsOn(recipe)}; a training runs as a job of the <a href={href(["jobs"])}>queue</a>.</>}
         actions={<>
-          {!trained && !recipe.job && !upstream && <Button variant="primary" onClick={train}>Train its vocabulary</Button>}
+          {!trained && !recipe.job && !upstream && <Button variant="primary" onClick={estimated}>Train its vocabulary</Button>}
           {!upstream && <Button variant="quiet" onClick={() => { setAnswer(null); setEditing(true); }}>Edit it</Button>}
         </>} />
       {!editing && <Outcome answer={answer} done={() => said} />}
@@ -183,6 +189,20 @@ function OneTokenizer({ name }: { name: string }) {
           {revisions.map((r) => <li key={r.revision}>revision {r.revision}: version {r.version}, {r.depot ? `${r.dataset} of ${r.depot}` : r.dataset}, {plural(r.sample_bytes, "byte")}, {plural(r.vocab_size, "token")}{r.note ? `, ${r.note}` : ""}</li>)}
         </ol>
       </Section>
+      <Dialog open={estimate !== null} onClose={() => setEstimate(null)} title={`Train the vocabulary of ${recipe.name}?`}>
+        {estimate && !estimate.ok && <Problems problems={estimate.problems} />}
+        {estimate?.ok && (
+          <>
+            <p>The vocabulary of version {estimate.data.version}, of at most {plural(recipe.vocab_size, "token")}, trains on a sample of at most {bytes(estimate.data.sample_bytes)} of {trainsOn(recipe)}. It runs as a job of the <a href={href(["jobs"])}>queue</a>, one job at a time, and only the command line cancels it. Once trained, a vocabulary is kept for good.</p>
+            <dl className="facts">
+              <dt className="aside">time</dt><dd>about {duration(estimate.data.seconds)}</dd>
+              <dt className="aside">basis</dt><dd className="small">{estimate.data.basis}.</dd>
+            </dl>
+            <Button variant="primary" onClick={train}>Confirm and start the training</Button>{" "}
+            <Button variant="quiet" onClick={() => setEstimate(null)}>Cancel</Button>
+          </>
+        )}
+      </Dialog>
       <Dialog open={editing} onClose={() => setEditing(false)} title={`Edit ${recipe.name}`}>
         {editing && <RecipeForm recipe={recipe} onDone={(a) => { setSaid(a.ok ? `${recipe.name}: version ${(a.data as { version: number }).version}.` : ""); setAnswer(a); if (a.ok) { setEditing(false); load(); } }} />}
       </Dialog>

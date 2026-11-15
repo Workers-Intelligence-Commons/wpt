@@ -18,6 +18,11 @@ started again with that state and the same work folder goes on from the
 first text after the last token file uploaded, and writes the same bytes
 as a build that never stopped.
 
+A build is one dataset, one vocabulary and one size: max_tokens, a number
+of tokens or none (every text the rules below take), which its caller
+always names. The dataset's own max_tokens is never read here: it is only
+the size the web app's build form starts at.
+
 What it takes: a plain text counts for the first share whose tag it has,
 and a plain text that has none of their tags is left out; items of a kind
 other than conversation and task are no training data and are left out.
@@ -60,7 +65,8 @@ token file closes once it holds SHARD_TOKENS tokens, and closes the other
 kind's with it. A task is kept as one JSON line of tasks.jsonl.
 
 The corpus's tables are Parquet files (CORPUS_SCHEMAS): the dataset's row
-(its id and revision included) copied with the time of the build; every
+(its id and revision included, its max_tokens the build's size) copied with
+the time of the build; every
 text taken with its revision, its credits, its tags and its scores (each
 with the content version it was made from) copied and `tokens`, the
 position of its first token over the token files of its own kind in order
@@ -87,18 +93,19 @@ Everything goes under corpora/<dataset name>-<first 8 hex characters of the
 build's key>/ in the store, the record corpus.json last, so a build that
 fails leaves no record. The build's key covers what decides the corpus:
 the depot's name, the dataset's id and its row as the corpus copies it
-(without its revision and change), the vocabulary's sha256 and the
-erasures every depot read has carried out on a text of the dataset's
-libraries, so the
-same depot state, dataset and vocabulary build into
-the same folder, and building again a corpus whose files were deleted
-writes the same bytes there. The corpus id covers the dataset's id and
-row, the vocabulary and every file's content (each token file by its token
-hash, each part of the texts table by a hash of its rows), so building the
-same corpus again gives the same id. The record names the depot that holds
-the dataset (its name), the dataset's row
-(its id and the revision built from included), the vocabulary (its recipe,
-version and file), the number of texts and conversations it holds, the
+(without its revision, its change and the vocabulary it publishes, with
+the build's size), the vocabulary's
+sha256 and the erasures every depot read has carried out on a text of the
+dataset's libraries, so the same depot state, dataset, vocabulary and size
+build into the same folder, another vocabulary or size into another, and
+building again a corpus whose files were deleted writes the same bytes
+there. The corpus id covers the dataset's id and row, the vocabulary and
+every file's content (each token file by its token hash, each part of the
+texts table by a hash of its rows), so building the same corpus again
+gives the same id. The record names the depot that holds the dataset (its
+name), the dataset's row (its id and the revision built from included),
+the vocabulary (its recipe, version, file and sha256), the size
+(max_tokens, null for none), the number of texts and conversations it holds, the
 size of every file, and a fingerprint of each part a training step reads,
 `fingerprints`: "text" (the vocabulary and the plain texts' token files),
 "conversations" (the vocabulary and the conversations' token files) and
@@ -184,11 +191,12 @@ CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", 
 def build(depot: Depot, name: str, store, tokenizer: Tokenizer, tokenizer_version: int | None = None, *,
           dataset: dict | None = None, url: str | None = None, work: Path | None = None,
           checkpoint: dict | None = None, save=lambda state: None, progress=lambda state: None, room=None,
-          shard_tokens: int = SHARD_TOKENS, log=say) -> dict:
+          max_tokens: int | None, shard_tokens: int = SHARD_TOKENS, recipe: str | None = None, log=say) -> dict:
     """Build the corpus of depot's dataset name (its current row, or the
     row given as dataset) into store with tokenizer (the vocabulary of the
-    dataset's tokenizer recipe, at its version tokenizer_version, which the
-    record keeps): the corpus's record. url: the depot's public address
+    tokenizer recipe recipe, default the dataset's, at its version
+    tokenizer_version, which the record keeps), at the size max_tokens (a
+    number of tokens, None for none): the corpus's record. url: the depot's public address
     (depot_name), None when it has none.
 
     work: the folder the build keeps its order file and its local files in
@@ -206,7 +214,7 @@ def build(depot: Depot, name: str, store, tokenizer: Tokenizer, tokenizer_versio
         if work is None:
             work = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="wpt-corpus-")))
         return _Build(depot, name, store, tokenizer, tokenizer_version, dataset, url, Path(work), checkpoint or {},
-                      save, progress, room, shard_tokens, log).run()
+                      save, progress, room, shard_tokens, max_tokens, recipe, log).run()
 
 
 def sample(depot: Depot, name: str, sample_bytes: int, work: Path, progress=lambda state: None
@@ -218,13 +226,13 @@ def sample(depot: Depot, name: str, sample_bytes: int, work: Path, progress=lamb
     corpus may take, each whole, each share (without shares, every plain
     text) taking its proportion of sample_bytes and stopping at its first
     text that would pass it. Items are no sample. The order file goes in the
-    folder work, kept there for the next sample of the same dataset row and
-    erasures."""
+    folder work, kept there for the next sample of the same libraries, shares
+    and erasures (order_identity)."""
     dataset = depot.dataset(name)
     names, opened = _depots(depot, dataset, "")
     dataset = _named(dataset, names, "")
-    identity = _fingerprint({"content": _content(dataset), "erasures": _erasures(dataset, names, opened)})
-    order = _order(depot, dataset, names, opened, work, progress, identity)
+    order = _order(depot, dataset, names, opened, work, progress,
+                   order_identity("", dataset, names, _erasures(dataset, names, opened)))
     sources = order.sources()
     try:
         shares = dataset["shares"]
@@ -406,6 +414,16 @@ def _erasures(dataset: dict, names: list[str], opened: dict[str, Depot]) -> dict
     return found
 
 
+def order_identity(holder: str, named: dict, names: list[str], erasures: dict) -> str:
+    """What decides a dataset's order file: the name of the depot that holds
+    the dataset, the row's libraries (as its corpus copies them, _named)
+    and shares, each library's depot's name, and the erasures: never its
+    name, tokenizer recipe or max_tokens, so every build of the dataset's
+    libraries and shares reads the same order file."""
+    return _fingerprint({"depot": holder, "libraries": named["libraries"], "shares": named["shares"],
+                         "names": names, "erasures": erasures})
+
+
 def _order(depot: Depot, dataset: dict, named: list[str], opened: dict[str, Depot], work: Path, progress,
            identity: str) -> Order:
     """The order file in work of the dataset (its row as its corpus copies
@@ -499,17 +517,26 @@ class _Build:
     """One build, as build() says: its state, the files it writes and uploads, and its stages."""
 
     def __init__(self, depot, name, store, tokenizer, version, dataset, url, work, checkpoint, save, progress, room,
-                 shard_tokens, log):
+                 shard_tokens, max_tokens, recipe, log):
         self.depot, self.store, self.tokenizer, self.version = depot, store, tokenizer, version
         self.dataset = dataset if dataset is not None else depot.dataset(name)
+        self.recipe = recipe if recipe is not None else self.dataset["tokenizer"]
+        self.limit = max_tokens
+        if self.limit is not None and (not isinstance(self.limit, int) or isinstance(self.limit, bool)
+                                       or self.limit < 1):
+            raise Refused(f"a corpus's size is a whole number of tokens above 0, or none: {self.limit!r}")
         self.holder = depot_name(depot, self.dataset, url)
         self.names, self.opened = _depots(depot, self.dataset, self.holder)
-        self.named = _named(self.dataset, self.names, self.holder)  # what the corpus copies and its keys cover
+        # what the corpus copies and its keys cover: the row, its max_tokens the build's size, without the
+        # vocabulary the dataset publishes, which a build never reads (it is given one)
+        self.named = {**{key: value for key, value in _named(self.dataset, self.names, self.holder).items()
+                         if key != "vocabulary"}, "max_tokens": self.limit}
         self.work, self.state, self.save, self.progress, self.log = work, checkpoint, save, progress, log
         self.shard_tokens = shard_tokens
         self.vocabulary = tokenizer.to_bytes()
         self.vocabulary_sha256 = hashlib.sha256(self.vocabulary).hexdigest()
         self.erasures = _erasures(self.dataset, self.names, self.opened)
+        self.limit_of = [self.vocabulary_sha256, self.limit]  # what the order's limit of the items is counted for
         self.key = self._key()
         self.folder = f"{FOLDER}/{as_record_name(self.dataset['name'])}-{self.key[:8]}"
         self.room = room(self.folder) if room is not None else corpora.Room(store, None, self.folder)
@@ -525,12 +552,15 @@ class _Build:
         if known is not None and corpora.fresh(known):
             self.log(f"corpus {known['id']} of {self.dataset['name']} is already built")
             return known
-        self.order = _order(self.depot, self.named, self.names, self.opened, self.work, self.progress, self.key)
+        self.order = _order(self.depot, self.named, self.names, self.opened, self.work, self.progress,
+                            order_identity(self.holder, self.named, self.names, self.erasures))
         self.sources = self.order.sources()
         try:
-            limit = self.dataset.get("max_tokens")
-            if limit is not None and self.order.items_tokens() is None:
-                self._limit_items(limit)
+            if self.order.items_tokens(self.limit_of) is None:
+                if self.limit is None:
+                    self.order.limit_items([], 0, self.limit_of)
+                else:
+                    self._limit_items(self.limit)
             return self._stream()
         finally:
             self.order.close()
@@ -545,9 +575,9 @@ class _Build:
                      "tasks": 0, "tasks_count": 0, "pools": {}, "used": {}, "closed": [], "taken": 0,
                      "conversations": 0, "text_position": 0, "conversation_position": 0}
         shares = self.dataset["shares"]
-        limit = self.dataset.get("max_tokens")
+        limit = self.limit
         if limit is not None:  # the items took their tokens first (_limit_items); the shares split what is left
-            budget, counted = _proportions(shares, limit - self.order.items_tokens()), "tokens"
+            budget, counted = _proportions(shares, limit - self.order.items_tokens(self.limit_of)), "tokens"
         elif shares is not None:
             budget, counted = self._byte_budget(shares), "bytes"
         else:
@@ -765,7 +795,7 @@ class _Build:
                         used += tokens
                 done += len(batch)
                 self.progress({"stage": "counting items", "items": done, "tokens": used})
-        self.order.limit_items(left_out, used)
+        self.order.limit_items(left_out, used, self.limit_of)
 
     def _byte_budget(self, shares: list[dict]) -> dict[int, int]:
         """{pool: the bytes it may take} without max_tokens: the scarcest
@@ -823,8 +853,9 @@ class _Build:
             "id": corpus_id, "depot": self.holder, "dataset": dataset, "folder": self.folder,
             "build": self.key, "erasures": self.erasures, "built_at": built_at.isoformat(),
             "texts": state["taken"], "conversations": state["conversations"],
-            "tokenizer": {"recipe": self.dataset["tokenizer"], "recipe_version": self.version,
+            "tokenizer": {"recipe": self.recipe, "recipe_version": self.version, "sha256": self.vocabulary_sha256,
                           "vocab_size": self.tokenizer.vocab_size, "vocabulary": vocabulary},
+            "max_tokens": self.limit,
             "shards": state["shards"], "conversation_shards": state["conversation_shards"],
             "tables": {"dataset": put("dataset", [{**dataset, "built_at": built_at}]), "texts": state["texts"],
                        "licenses": put("licenses", license_rows), "notices": put("notices", notice_rows)},

@@ -133,7 +133,7 @@ Erasure applies to the depot and to every corpus built after it, never
 to the depot's backups. A corpus
 already in the store is not rewritten: it keeps the passage until its
 dataset is built again, and it is marked stale (its record names the
-erasures), so `wpt train` refuses it and the dataset's download link gives
+erasures), so `wpt train` refuses it and its download link gives
 nothing until someone builds it again; nothing builds it by itself. A
 corpus being built when the erasure is carried out is written stale when
 its build ends, if it took a text the erasure reached. The same holds for

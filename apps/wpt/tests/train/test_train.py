@@ -3,10 +3,12 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -763,26 +765,43 @@ def test_the_update_asked_for_is_profiled_into_the_record_and_training_goes_on(b
 
 
 def test_a_store_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_one_line(built, monkeypatch, capsys):
-    def failing(store, depot, dataset):
+    def failing(store, depot, dataset, vocabulary, size):
         raise StoreError("the bucket does not answer")
 
+    built.sized("d", None)  # "d" publishes a vocabulary, so the run asks the store for the corpus of its triple
     monkeypatch.setattr(corpora, "latest_fresh", failing)
     with pytest.raises(SystemExit) as refused:
         main(["d"])
     assert refused.value.code == 2 and bare(capsys.readouterr().err) == "StoreError: the bucket does not answer\n"
 
 
-def test_wpt_train_without_a_corpus_id_reads_the_one_last_built_for_the_recipe_s_dataset(built, tmp_path, capsys):
-    # the id goes from the build to the training through the store, not through a person's hands
-    recipe = built.recipe("three", training=one_stage(3), dataset="later")
+def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_dataset_s_published_vocabulary_at_its_size(
+        built, tmp_path, capsys):
+    # the id goes from the build to the training through the store, not through a person's hands: the recipe's
+    # dataset, the vocabulary that dataset publishes and the recipe's total_tokens name the corpus
+    whole = built.dataset("later")  # every token, with the depot's vocabulary, which the dataset does not publish
+    recipe = built.recipe("three", training=one_stage(3), dataset="later")  # total_tokens: every token of later
+    row = built.depot.dataset("later")
+    size = json.loads((tmp_path / "data" / "recipes" / "models" / "three.json").read_text())["data"]["total_tokens"]
+    page = f"fox/#/download/{row['id']}"
     with pytest.raises(SystemExit) as refused:
         main([recipe, "--out", "model"])
-    assert refused.value.code == 2 and "build it with `wpt depot build later`" in capsys.readouterr().err
+    said = capsys.readouterr().err
+    assert refused.value.code == 2 and "publishes no vocabulary" in said and page in said
+    built.depot.edit_dataset(row["id"], "later", [(None, one["library"]) for one in row["libraries"]],
+                             [(one["tag"], one["share"]) for one in row["shares"]],
+                             vocabulary=corpora.find(built.store, whole)["tokenizer"]["sha256"])
+    with pytest.raises(SystemExit) as refused:  # only the corpus of every token is built, not that size
+        main([recipe, "--out", "model"])
+    said = bare(capsys.readouterr().err)
+    assert refused.value.code == 2 and f"at the size {size:,} (the recipe's total_tokens)" in said and page in said
 
-    later = built.dataset("later")
+    sized = built.sized("later", size)["id"]
     main([recipe, "--out", "model"])
-    assert json.loads((tmp_path / "model" / "provenance.json").read_text())["corpus"]["id"] == later
+    assert json.loads((tmp_path / "model" / "provenance.json").read_text())["corpus"]["id"] == sized
 
+    main([recipe, whole, "--out", "given"])  # a corpus id given wins
+    assert json.loads((tmp_path / "given" / "provenance.json").read_text())["corpus"]["id"] == whole
     with pytest.raises(SystemExit) as refused:  # a start of an id that names no corpus
         main([recipe, "0" * 8, "--out", "other"])
     assert refused.value.code == 2 and "no corpus 00000000" in capsys.readouterr().err
@@ -791,35 +810,39 @@ def test_wpt_train_without_a_corpus_id_reads_the_one_last_built_for_the_recipe_s
 def test_a_corpus_is_found_by_its_dataset_s_id_through_a_rename_and_an_older_revision_is_used_with_a_warning(built):
     # a renamed dataset keeps its corpora, and a newer revision of it than its corpus trains on that corpus, said
     from wpt.train import InputError, find_corpus, load_corpus, load_data
-    later = built.dataset("later")
-    dataset = built.depot.dataset("later")
+    from wpt.train.recipe_depot import download_page
+    built.dataset("later")
     renamed = load_data(built.recipe("three", training=one_stage(3), dataset="renamed"))
+    sized = built.sized("later", renamed["total_tokens"])  # built from revision 2, which publishes it
+    dataset = built.depot.dataset("later")
     built.depot.edit_dataset(dataset["id"], "renamed", [(None, one["library"]) for one in dataset["libraries"]],
-                             [(one["tag"], one["share"]) for one in dataset["shares"]])
+                             [(one["tag"], one["share"]) for one in dataset["shares"]],
+                             vocabulary=dataset["vocabulary"])
     said = []
 
     record = find_corpus(built.store, None, renamed, lambda text, level="INFO": said.append((level, text)))
 
-    assert record["id"] == later and (record["dataset"]["id"], record["dataset"]["revision"]) == (dataset["id"], 1)
-    assert said == [("WARNING", f"corpus {later} was built from revision 1 of the dataset 'renamed' "
-                                f"({dataset['id']}), whose current revision is 2: this run trains on the older "
-                                "revision; build the dataset again with `wpt depot build renamed` to train on the "
-                                "current one")]
+    assert record["id"] == sized["id"] and (record["dataset"]["id"], record["dataset"]["revision"]) == (
+        dataset["id"], 2)
+    assert said == [("WARNING", f"corpus {sized['id']} was built from revision 2 of the dataset 'renamed' "
+                                f"({dataset['id']}), whose current revision is 3: this run trains on the older "
+                                f"revision; to train on the current one, build the size {renamed['total_tokens']:,} "
+                                f"again with `wpt depot build renamed --max-tokens {renamed['total_tokens']}` or on its "
+                                f"download page {download_page(renamed['depot'], dataset['id'])}")]
     load_corpus(built.store, record, {"data": renamed})  # built under its old name, it is still the recipe's dataset
     built.depot.new_dataset("later", "classics", [(None, dataset["libraries"][0]["library"])])
-    with pytest.raises(InputError, match="no fresh corpus of dataset 'later'"):  # a new dataset of the old name has none
+    with pytest.raises(InputError, match="'later' .* publishes no vocabulary"):  # a new dataset of the old name
         find_corpus(built.store, None, load_data(built.recipe("four", training=one_stage(3), dataset="later")))
 
 
 def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_corpus_through_the_depot_s_web_app(
         built, tmp_path, monkeypatch):
-    # a machine without the depot's file reads the dataset through its web app, and the corpus built with that
-    # public address is the recipe's
+    # a machine without the depot's file reads the dataset and the listing of its downloads, which names the latest
+    # fresh corpus of each triple; the corpus built with that public address is the recipe's
     from wpt.depot.jobs import Jobs
     from wpt.depot.web.routes import STATUSES, routes
     from wpt.depot.web.server import make_server
-    from wpt.train import find_corpus, load_corpus
-    from wpt_depot.corpus import build
+    from wpt.train import InputError, find_corpus, load_corpus
     from wpt_depot.settings import URL_SETTING
     (tmp_path / "static").mkdir()
     (tmp_path / "static" / "index.html").write_text("<p>interface</p>")
@@ -830,17 +853,33 @@ def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_corpus_through_the
     try:
         monkeypatch.setenv(URL_SETTING, address)
         row = built.depot.dataset("d")
-        recipe = built.depot.tokenizer(row["tokenizer"])
-        vocabulary = Tokenizer.from_bytes(built.depot.vocabulary(recipe["id"], 1)["merges"].encode("utf-8"))
-        public = build(built.depot, "d", built.store, vocabulary, 1, url=address, log=lambda *_: None)
-        monkeypatch.delenv("WPT_DEPOT")
-        monkeypatch.delenv(URL_SETTING)
-        data = {"depot": address, "dataset": row["id"], "total_tokens": 1}
+        size = corpora.find(built.store, built.corpus_id)["total_tokens"]
+        public = built.sized("d", size, url=address)
+        monkeypatch.delenv("WPT_DEPOT")  # the depot's web app, in this process, still knows its public address
+        data = {"depot": address, "dataset": row["id"], "total_tokens": size}
 
         record = find_corpus(built.store, None, data)
 
         assert record["id"] == public["id"] and record["depot"] == address
         load_corpus(built.store, record, {"data": data})
+        with pytest.raises(InputError, match=f"build it on its download page {address}/#/download/{row['id']}"):
+            find_corpus(built.store, None, {**data, "total_tokens": size - 1})  # that size is not built
+        # one rule on both paths: a corpus of an older revision counts, with a warning, though the download link of
+        # the triple, whose revision rule is its own, no longer gives it once the dataset's name changed
+        current = built.depot.dataset("d")
+        built.depot.edit_dataset(current["id"], "renamed", [(None, one["library"]) for one in current["libraries"]],
+                                 [(one["tag"], one["share"]) for one in current["shares"]],
+                                 vocabulary=current["vocabulary"])
+        said = []
+
+        older = find_corpus(built.store, None, data, lambda text, level="INFO": said.append((level, text)))
+
+        assert older["id"] == public["id"]
+        assert [level for level, _ in said] == ["WARNING"] and (
+            f"was built from revision {current['revision']} of the dataset 'renamed'" in said[0][1])
+        link = json.loads(urllib.request.urlopen(
+            f"{address}/api/datasets/{row['id']}/download/{current['vocabulary']}/{size}").read())
+        assert link["state"] == "not built"
     finally:
         server.shutdown()
         server.server_close()
@@ -1018,7 +1057,9 @@ def test_a_stale_corpus_is_refused_until_its_dataset_is_built_again(built, tmp_p
     text = corpora.read_table(built.store, record, "texts").to_pylist()[0]["id"]
     corpora.mark_stale(built.store, [text], [f"{built.depot.name()}-1"])
 
-    assert "is stale" in refusal(capsys, [built.recipe("stale"), built.corpus_id, "--out", "model"])
+    said = refusal(capsys, [built.recipe("stale"), built.corpus_id, "--out", "model"])
+    assert "is stale" in said
+    assert re.search(rf"`wpt depot build {record['dataset']['name']} --max-tokens \d+`, or on its download page ", said)
     assert not (tmp_path / "model").exists()
 
 
@@ -1028,7 +1069,50 @@ def test_a_corpus_with_fewer_tokens_than_the_recipe_s_total_is_refused(built, tm
     recipe["data"]["total_tokens"] = record["total_tokens"] + 1
     (tmp_path / "data" / "recipes" / "models" / "long.json").write_text(json.dumps(recipe))
 
-    assert "holds" in refusal(capsys, ["long", built.corpus_id, "--out", "model"])
+    assert "holds" in refusal(capsys, ["long", built.corpus_id, "--out", "model"])  # built at no size
+
+
+def test_a_corpus_built_at_the_recipe_s_size_trains_on_what_it_holds_and_the_record_says_how_much(built, tmp_path):
+    # total_tokens is the size the recipe asks for and a ceiling: a corpus built at that size never passes it, so
+    # it may hold fewer tokens of plain text, and training reads them all, found by its triple or given by its id
+    whole = corpora.find(built.store, built.corpus_id)["total_tokens"]
+    asked = whole + 500  # more than the dataset holds: the corpus built at that size holds every token, fewer
+    folder = tmp_path / "data" / "recipes" / "models"
+    recipe = json.loads((folder / "d.json").read_text())
+    recipe["data"]["total_tokens"] = asked
+    (folder / "ceiling.json").write_text(json.dumps(recipe))
+    sized = built.sized("d", asked)
+    assert sized["max_tokens"] == asked and sized["total_tokens"] == whole
+
+    main(["ceiling", "--out", "model"])
+
+    provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
+    assert provenance["corpus"]["id"] == sized["id"] and provenance["learned"]["text"] == whole
+    warned = [event["text"] for event in built.records("wpt train")[-1].events
+              if event["kind"] == "log" and event["severity"] == "warning"]
+    assert any(f"step 1 read-text reads the first {whole:,} tokens of plain text, all that corpus {sized['id']} "
+               f"holds, not the {asked:,} it asks for" in text for text in warned)
+    main(["ceiling", sized["id"], "--out", "given"])  # given by its id, the same rule
+    assert json.loads((tmp_path / "given" / "provenance.json").read_text())["learned"]["text"] == whole
+
+
+def test_each_size_reads_the_smaller_of_its_prefix_and_what_a_corpus_built_at_the_recipe_s_size_holds():
+    # a size of a series sets its own prefix; a corpus built at the series' size reads at most what it holds
+    from wpt.train import with_prefixes
+
+    def stepped(prefix):
+        return {"step": "read-text", "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 1}],
+                                                  "prefix_tokens": prefix}}
+    recipe = {"data": {"total_tokens": 5000}, "steps": [stepped(4000), stepped(800)]}
+    record = {"id": "c", "total_tokens": 900, "dataset": {"id": "d"}, "tokenizer": {"sha256": "0" * 64}}
+    said = []
+
+    at_size = with_prefixes(recipe, {**record, "max_tokens": 5000}, said.append)
+    other = with_prefixes(recipe, {**record, "max_tokens": None}, said.append)
+
+    assert [one["settings"]["prefix_tokens"] for one in at_size["steps"]] == [900, 800]
+    assert len(said) == 1 and said[0].startswith("step 1 read-text reads the first 900 tokens")
+    assert [one["settings"]["prefix_tokens"] for one in other["steps"]] == [4000, 800]  # check_corpus refuses it
 
 
 def test_a_plain_recipe_trains_on_the_first_total_tokens_of_its_corpus(built, tmp_path):

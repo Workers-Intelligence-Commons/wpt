@@ -28,7 +28,10 @@ def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the
     # command to copy, into the git-ignored file; the model it trained comes
     # back out of the store as the folder wpt train wrote, file for file,
     # and the manager's own copy of that folder is gone; it trains on the
-    # corpus last built for the recipe's dataset
+    # corpus of the recipe's dataset, the vocabulary it publishes and the
+    # recipe's total_tokens
+    size = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())["data"]["total_tokens"]
+    corpus = built.sized("d", size)["id"]
     monkeypatch.setenv("WPT_RECIPE", "d")
     monkeypatch.delenv("WPT_RUN", raising=False)
     main([])
@@ -51,7 +54,7 @@ def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
         "manager.corpus", "manager.workers", "manager.train", "manager.model"]
     assert [e["attributes"]["model"] for e in run.events if e.get("name") == "store.model_kept"] == [name]
-    assert train.start["arguments"][:2] == ["d", built.corpus_id] and "--run" in train.start["arguments"]
+    assert train.start["arguments"][:2] == ["d", corpus] and "--run" in train.start["arguments"]
 
 
 def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
@@ -71,7 +74,7 @@ def test_a_recipe_whose_corpus_is_not_built_stops_the_run_before_anything_starts
     with pytest.raises(SystemExit) as refused:
         main([])
     err = capsys.readouterr().err
-    assert refused.value.code == 2 and "build it with `wpt depot build unbuilt`" in err
+    assert refused.value.code == 2 and "`wpt depot build unbuilt --max-tokens N`" in err
     [run] = built.records("wpt manager")
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
         "manager.corpus"]

@@ -100,6 +100,8 @@ TABLES = (*WHOLE, *FOLLOWED)
 # the tables whose rows change what a text adds to the depot's counts (wpt_depot.counts), with the column that names
 # the text
 COUNTED = {"texts_revisions": "id", "text_decisions": "text", "memberships": "text"}
+# the tables whose rows store their text's export key, with the column that names the text
+KEYED = {"memberships": "text", "pins": "text"}
 CLONING, PROGRESS = ".cloning", ".cloning.json"
 
 
@@ -401,11 +403,15 @@ def _put(con, table: str, found: list[dict]):
     """The rows of a page into the table, each replacing the row of its key;
     a revision's latest worked out again for every id it names. Every row
     names the same columns, each one of the table's own: a name the
-    upstream sent never reaches the SQL otherwise (UpstreamUnreachable)."""
+    upstream sent never reaches the SQL otherwise (UpstreamUnreachable).
+    A membership and a pin get their text's export key
+    (wpt_depot.ids) here."""
     if not found:
         return
     if table in REVISED:
         found = [{**one, "latest": 0} for one in found]
+    if table in KEYED:  # the key depends on the text's id alone: made here, whatever the upstream sent
+        found = [{**one, "export_key": ids.export_key(one[KEYED[table]])} for one in found]
     names = list(found[0])
     columns = {one[1] for one in con.execute(f"PRAGMA table_info({table})")}
     strange = sorted({name for one in found for name in one} - columns)
