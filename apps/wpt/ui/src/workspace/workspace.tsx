@@ -44,7 +44,7 @@ import { write, type Answer } from "../api";
 import type { Deciding } from "../blocked";
 import { type EditorHandle } from "../code-editor";
 import { declared, readDeclarant, saveDeclarant, useDeclarant } from "../declarant";
-import { CountingNote, matched, shownCounts, useCounts } from "../counts";
+import { CountingNote, matched, settledCounts, useCounts } from "../counts";
 import { type Decided } from "../decide-forms";
 import { EVERY, FilterBar, fromQuery, named as namedIds, sent, toQuery, useSearch, type Selection, type TextFilter } from "../filter";
 import { Help, plural, Problems, required, RequiredNote, settingsHref, textName, useLibraries, type Library } from "../parts";
@@ -326,8 +326,8 @@ export function Workspace({ current, query }: { current: string | null; query: U
   const savedName = saved.find((s) => JSON.stringify({ ...EVERY, ...s.filter }) === JSON.stringify(filter))?.name;
   const counts = useCounts(filter, version);
   const admittedHere = address(null, toQuery({ ...filter, statuses: ["admitted"] }));
-  const total = counts?.done && !counts.problems ? matched(counts) : null; // how many texts are open, once counted
-  const shown = shownCounts(counts); // the counts to show: those done, or the last ones while counted again
+  const total = counts && (counts.done || counts.settled) && !counts.problems ? matched(counts) : null; // how many texts are open, once counted
+  const shown = settledCounts(counts); // the counts to show: those whose statuses are final, or the last ones while counted again
   const shownTotal = shown ? matched(shown) : null;
   const selection: Selection | null = ticked.all
     ? { filter, change: ticked.change ?? undefined, unticked: [...ticked.ids] }
@@ -362,9 +362,10 @@ export function Workspace({ current, query }: { current: string | null; query: U
           <section className="open-head" aria-label="What is open">
             <h1 className="title open-title">{(choosing ? null : savedName) ?? describe(filter, libraries, idsLabel ?? null)}</h1>
             {(() => {
-              const c = counts && !counts.done && counts.before ? counts.before : counts && counts.counted > 0 ? counts : null;
+              const final = counts && (counts.done || counts.settled);
+              const c = counts && !final && counts.before ? counts.before : counts && (final || counts.counted > 0) ? counts : null;
               return c && <span className={`small aside${c === counts ? "" : " recounting"}`}>
-                {counts!.done || c !== counts ? "" : "so far "}{plural(matched(c), "text")}: {c.statuses["under review"].toLocaleString("en")} under review, {c.statuses.admitted.toLocaleString("en")} admitted, {c.statuses.refused.toLocaleString("en")} refused{c.locked > 0 && <>; {c.locked.toLocaleString("en")} in a locked library</>}
+                {final || c !== counts ? "" : "so far "}{plural(matched(c), "text")}: {c.statuses["under review"].toLocaleString("en")} under review, {c.statuses.admitted.toLocaleString("en")} admitted, {c.statuses.refused.toLocaleString("en")} refused{c.locked > 0 && <>; {c.locked.toLocaleString("en")} in a locked library</>}
               </span>;
             })()}
             <span className="small"><CountingNote counting={counts} /></span>

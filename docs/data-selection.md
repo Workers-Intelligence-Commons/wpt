@@ -110,6 +110,15 @@ and applies a change where its lines are, so scoring every text of a large
 depot takes no more of the program's memory and no larger record of the
 change than scoring a few.
 
+One score is set on, or removed from, every text a condition matches
+through `wpt depot score NAME (--value V | --remove) WHERE`, or `POST
+/api/texts/score` on a selection. A score it sets is made from each text's
+current content version. It is recorded as a change of scores is, one
+decision under review on every text it changes. `wpt depot score-names`,
+or `GET /api/scores`, lists every name of a score a text has, with how
+many texts have it. It reads every current text, so on a large depot the
+route stops at the time limit of the reads.
+
 A score's value comes from a person or from a program a person chose,
 never from the judgment of another company's AI assistant ("Models in
 training", below).

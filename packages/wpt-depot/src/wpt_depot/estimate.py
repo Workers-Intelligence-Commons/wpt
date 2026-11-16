@@ -247,7 +247,8 @@ def _walk(followed: dict, max_tokens: int, item_share: float, shares: list[dict]
     {items: their tokens, plain: {pool: its tokens}, item_texts and
     plain_texts: how many items and plain texts it takes, complete}: a value
     is None where the walk ran out of texts before that part closed, unless
-    the texts followed are every text."""
+    the texts followed are every text, or, for the items, the dataset
+    holds none (item_share 0)."""
     texts, whole = followed["texts"], followed["whole"]
     part = int(max_tokens * item_share)
     items, items_closed, item_texts = 0, False, 0
@@ -274,7 +275,7 @@ def _walk(followed: dict, max_tokens: int, item_share: float, shares: list[dict]
         used[pool] += tokens
         plain_texts += 1
     plain = {pool: (used[pool] if whole or pool in closed else None) for pool in budget}
-    items_known = whole or items_closed
+    items_known = whole or items_closed or item_share == 0  # a dataset without items gives them nothing
     plain_known = all(value is not None for value in plain.values())
     return {"items": items if items_known else None, "plain": plain,
             "item_texts": item_texts if items_known else None, "plain_texts": plain_texts if plain_known else None,

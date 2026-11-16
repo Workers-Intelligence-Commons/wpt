@@ -1,5 +1,6 @@
-// Several values chosen at once: a list of ticks, with a box above it that
-// keeps only the options holding every word typed, and the same list folded
+// Several values chosen at once: a list of every option as ticks, scrolled
+// in place, with a box above it that keeps only the options holding every
+// word typed, and the same list folded
 // into a compact menu for a filter bar, beside a menu of one value of a few.
 
 import { Button } from "@workers-intelligence-commons/components";
@@ -7,8 +8,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 export type Option = { value: string; label: ReactNode; words?: string; count?: number };
 
+const GUTTER = 16; // px a menu's panel keeps from the window's edges
 const wordsOf = (o: Option) => (o.words ?? `${o.value} ${typeof o.label === "string" ? o.label : ""}`).toLowerCase();
-const SHOWN = 80; // ticks shown at once; typing finds the others
 
 // The ticks, the ticked ones first, under their label (a legend, with its
 // markers) and a quiet hint; legend: the label in plain words, for the box
@@ -42,11 +43,10 @@ export function TickList({ label, legend, hint, options, chosen, onChange, searc
     return () => menu.removeEventListener("toggle", opened);
   }, []);
   const ordered = [...found.filter((o) => top.has(o.value)), ...found.filter((o) => !top.has(o.value))];
-  const shown = ordered.slice(0, Math.max(SHOWN, chosen.length));
   // a value chosen from elsewhere (a license added through its dialog) joins
   // the ticked ones when it is not in view: no row it passes is under the pointer
   useEffect(() => {
-    const visible = new Set(shown.map((o) => o.value));
+    const visible = new Set(ordered.map((o) => o.value));
     const hidden = chosen.filter((v) => !visible.has(v) && !top.has(v));
     if (hidden.length) setTop((t) => new Set([...t, ...hidden]));
   }, [chosen]);
@@ -60,14 +60,13 @@ export function TickList({ label, legend, hint, options, chosen, onChange, searc
           aria-label={`Find ${words.toLowerCase()}`} onChange={(e) => { setTyped(e.target.value); setTop(new Set(chosen)); }} />
       )}
       <div className="tick-options" role="group" aria-label={words}>
-        {shown.map((o) => (
+        {ordered.map((o) => (
           <label key={o.value} className="tick">
             <input type="checkbox" className="wic-check-box wic-focus" checked={chosen.includes(o.value)} onChange={(e) => flip(o.value, e.target.checked)} />
             <span className="tick-label">{o.label}</span>
             {o.count !== undefined && <span className="aside tick-count">{o.count.toLocaleString("en")}</span>}
           </label>
         ))}
-        {ordered.length > shown.length && <p className="aside">{ordered.length - shown.length} more: type to find them.</p>}
         {found.length === 0 && (empty ? empty(typed.trim()) : <p className="aside">{typed ? `None holds "${typed}".` : "None."}</p>)}
       </div>
       {chosen.length > 0 && <Button variant="quiet" onClick={() => onChange([])}>Untick all</Button>}
@@ -77,7 +76,9 @@ export function TickList({ label, legend, hint, options, chosen, onChange, searc
 
 // A menu of a filter bar: a button that names it and says what is chosen
 // (said, whole on hover in title), and the panel it opens below it, which
-// closes on Escape or a click outside.
+// closes on Escape or a click outside. A panel that would pass the window's
+// right edge (a menu at the right of a phone's filter bar) moves left, to
+// end a gutter before it.
 function Fold({ label, said, title, children }: { label: string; said: string; title?: string; children: ReactNode }) {
   const ref = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -89,9 +90,23 @@ function Fold({ label, said, title, children }: { label: string; said: string; t
         if (e instanceof KeyboardEvent) menu.querySelector("summary")?.focus();
       }
     };
+    const menu = ref.current;
+    const placed = () => {
+      const panel = menu?.querySelector<HTMLElement>(".tick-panel");
+      if (!menu?.open || !panel) return;
+      panel.style.left = "";
+      const rect = panel.getBoundingClientRect();
+      const over = rect.right - (document.documentElement.clientWidth - GUTTER);
+      if (over > 0) panel.style.left = `${-Math.min(over, rect.left - GUTTER)}px`;
+    };
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", away);
-    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", away); };
+    menu?.addEventListener("toggle", placed);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", away);
+      menu?.removeEventListener("toggle", placed);
+    };
   }, []);
   return (
     <details ref={ref} className="tick-menu">

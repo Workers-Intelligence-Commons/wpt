@@ -515,6 +515,12 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .source-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-count { flex: none; }
 .source-find { width: 100%; margin: var(--gap-hair) 0; }
+/* a tag or license list: every entry, scrolled in place, so the column keeps room for what follows. It ends half way (rows are 31px high)
+   through a row, with a shade over its bottom edge while more is below and a thin scrollbar kept in view, so it reads as scrolled */
+.source-list > .source-scroll-item { display: block; }
+.source-scroll { max-height: calc(18rem + 6px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-gutter: stable;
+  background: linear-gradient(to top, var(--paper) 40%, transparent) bottom / 100% 24px no-repeat local,
+    linear-gradient(to top, color-mix(in srgb, var(--line-strong) 45%, transparent), transparent) bottom / 100% 12px no-repeat scroll; }
 .forget { all: unset; cursor: pointer; flex: none; padding: 0 var(--gap-hair); color: var(--ink-muted); }
 .forget:hover { color: var(--red-ink); }
 .forget:focus-visible { outline: 3px solid var(--ink); outline-offset: 1px; }
@@ -751,3 +757,23 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .pipeline-list > .pipeline-row, .chain-row { grid-template-columns: minmax(0, 1fr); }
   .chain-row > .wic-btn { justify-self: start; }
 }
+
+/* the open text's scores: each one a row, its value editable, then the line that adds one */
+.scores-table { margin-bottom: var(--gap-tight); }
+.scores-table .score-value { width: 9em; }
+.scores-table tr.removed th, .scores-table tr.removed td:not(:last-child) { text-decoration: line-through; color: var(--ink-muted); }
+.score-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--gap-hair) var(--gap-tight); margin-bottom: var(--gap-tight); }
+.score-add .wic-field { margin-bottom: 0; flex: 1 1 10em; min-width: 0; }
+/* on a phone each score is a block of its own: its name, value and removal on one line, its content version under them */
+@media (max-width: 760px) {
+  .scores-table, .scores-table tbody { display: block; width: 100%; }
+  .scores-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .scores-table tr { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); padding: var(--gap-tight) 0; border-bottom: 1px solid var(--line); }
+  .scores-table tr > * { display: block; padding: 0; border: 0; }
+  .scores-table tr > th { flex: 1 1 100%; }
+  .scores-table .score-value { width: 7em; }
+  .scores-table tr > td:nth-child(3) { order: 3; flex: 1 1 100%; }
+  .scores-table tr > td:nth-child(3)::before { content: "made from "; } /* the column's head is hidden */
+}
+.estimate-ask { align-items: center; }
+.estimate-head { margin: 0 0 var(--gap-hair); }

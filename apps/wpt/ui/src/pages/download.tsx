@@ -145,7 +145,7 @@ function EstimateFacts({ e, limited, dataset }: { e: Estimate; limited: boolean;
             <li key={s.tag}><span title={limited ? `target ${s.part.toLocaleString("en")} tokens` : undefined}>{s.tag}{limited && e.plain_tokens ? <span className="aside"> ~{whole(s.tokens / e.plain_tokens)} of the rest</span> : null}</span> <span className="ledger">about {s.tokens.toLocaleString("en")}</span></li>
           )) : <li><span>plain text</span> <span className="ledger">about {e.plain_tokens.toLocaleString("en")}</span></li>}
         </ul>
-        {limited && e.forecast === false && <p className="small aside">Rough past 50,000 texts.<Help label="the forecast">The dataset is long, so past its first 50,000 texts in order a part counts at its share of the size, not as the build will take it.</Help></p>}
+        {limited && e.forecast === false && <p className="small aside">Rough: the forecast stopped after 50,000 texts.<Help label="the forecast">It follows the build's order through the first 50,000 texts of the dataset only. A part still open there is counted at its share of the size, not as the build will take it.</Help></p>}
       </dd>
       <dt className="aside">store</dt><dd>about {bytes(e.bytes)}<Help label="the store's bytes">{bytes(e.token_bytes)} of token files, and {bytes(e.table_bytes)} for the list of its texts with their credits and licenses.</Help></dd>
       <dt className="aside">time</dt><dd>{e.seconds === null ? "unknown: the sample tokenized nothing" : `${e.seconds < 60 ? "" : "about "}${duration(e.seconds)} on this machine`}<Help label="the time">{e.figures ? "Of tokenizing. The build reads the texts in a fixed shuffled order, the export's, and stops once the size is full." : "Of tokenizing. Before it, the build reads the size of every text of the dataset, since this revision's figures are not known; this estimate does not time that."}</Help></dd>
@@ -250,10 +250,15 @@ function NewBuild({ dataset, open, startSize, onStarted, onDataset, quiet = fals
       )}
       {defaulted && !defaulted.ok && <Problems problems={defaulted.problems} />}
       {defaulted?.ok && Number(limit) === dataset.max_tokens && <p className="small done" role="status">Default size: {plural(dataset.max_tokens, "token")}.</p>}
-      <Button type="submit" variant={estimate?.ok || quiet ? "quiet" : "primary"} disabled={!valid || estimating}>{estimating ? "Estimating" : estimate?.ok ? "Estimate again" : "Estimate"}</Button>
+      <p className="row tight estimate-ask">
+        <Button type="submit" variant={estimate?.ok || quiet ? "quiet" : "primary"} disabled={!valid || estimating}>{estimating ? "Estimating" : estimate?.ok ? "Estimate again" : "Estimate"}</Button>
+        <span className="small aside">tokens, store size and build time, before building</span>
+        <Help label="the estimate">What a corpus of {dataset.name} with {chosen ? `${chosen.name ?? chosen.recipe} version ${chosen.version}` : "the chosen vocabulary"} at {all ? "every token" : valid ? plural(Number(limit), "token") : "the chosen size"} would hold in tokens, take in the store, and how long its build would take. A sample of the dataset is tokenized to measure it; nothing is built or written.</Help>
+      </p>
       {estimate && !estimate.ok && <Problems problems={estimate.problems} />}
       {estimate?.ok && (
         <div className="estimate">
+          <p className="cue small estimate-head">Estimate, not built yet</p>
           <Forecast e={estimate.data} dataset={dataset} asked={all ? null : Number(limit)} onSize={(n) => { setLimit(String(n)); clear(); ask(String(n)); }} />
           <div className="row tight">
             <Button variant="primary" disabled={!estimate.data.fits || busy || starting} onClick={start}>

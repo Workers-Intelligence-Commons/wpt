@@ -165,6 +165,7 @@ import functools
 import hashlib
 import itertools
 import json
+import math
 import re
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
@@ -615,9 +616,11 @@ class Depot:
         library holds; tags and licenses: how many of them have each tag and
         name each license, the most first; blocked: {reason: how many of
         them an admission cannot cover for it} (Depot.blocked); next: the
-        start of the next slice, the id of this slice's last text, None when this slice ends
-        the texts}. BadQuery for a condition that is not one; Refused for a
-        size below 1, or texts given with start."""
+        start of the next slice, the id of this slice's last text, None
+        when this slice ends the texts; held: False, read from the texts
+        rather than the depot's counts (held_count)}. BadQuery for a
+        condition that is not one; Refused for a size below 1, or texts
+        given with start."""
         if size < 1:
             raise Refused("a step counts at least one text")
         if texts is not None:
@@ -651,13 +654,82 @@ class Depot:
         statuses = [one for one in found if one["part"] == "status"]
         named_counts = {part: sorted(([one["name"], one["n"]] for one in found if one["part"] == part),
                                      key=lambda one: (-one[1], one[0])) for part in ("tag", "license")}
-        return {**step,
+        return {**step, "held": False,
                 "statuses": {status: sum(one["n"] for one in statuses if one["name"] == status)
                              for status in (UNDER_REVIEW, ADMITTED, REFUSED)},
                 "locked": sum(one["n"] for one in statuses if one["locked"]),
                 "blocked": {one["name"]: one["n"] for one in found if one["part"] == "blocked"},
                 "tags": [{"tag": name, "texts": n} for name, n in named_counts["tag"]],
                 "licenses": [{"license": name, "texts": n} for name, n in named_counts["license"]]}
+
+    def held_count(self, found: Filter) -> dict | None:
+        """The count of the texts a filter matches, in the shape of a count
+        step over every text (count), read at once from the depot's counts
+        (wpt_depot.counts) whatever the depot's size, or None when they
+        cannot give how many texts it matches with their split by status
+        and how many a locked library holds: they hold how many texts the
+        depot has, and how many have each status, tag, license and library,
+        so they answer a filter of every text, or of one status, one tag,
+        one license or one library, and nothing else (no ids, search, SQL,
+        outside, decision, locked part, unticked texts, nor a change number
+        older than the depot's). The status split of one value is known
+        when the value's texts are every text or none, when the filter is a
+        status, or when the depot holds texts of one status alone; the
+        texts a locked library holds are known when no library is locked,
+        when the filter is a locked library, or when the filter matches
+        every text and one library alone is locked. tags, licenses and
+        blocked are None where the counts do not give them: they do when
+        the filter matches every text or none, and blocked also when no
+        upstream is followed and every license a text names is allowed
+        (every text names one). held: True."""
+        parts = [(facet, values) for facet, values in ((counts.STATUS, found.statuses), (counts.TAG, found.tags),
+                                                         (counts.LICENSE, found.licenses),
+                                                         (counts.LIBRARY, found.libraries)) if values]
+        if (found.ids is not None or found.unticked or found.outside or found.decision or found.locked is not None
+                or (found.where or "").strip() or (found.search or "").strip() or len(parts) > 1
+                or any(len(values) > 1 for _, values in parts)
+                or (found.change is not None and found.change < self.change())):
+            return None
+        held = counts.read(self.db.reader())
+        every = held[counts.TEXTS].get("", 0)
+        facet, value = (parts[0][0], parts[0][1][0]) if parts else (None, None)
+        matched = every if facet is None else held[facet].get(value, 0)
+        whole = matched == every  # the filter matches every text, or the depot holds none
+        depot_statuses = {status: held[counts.STATUS].get(status, 0) for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
+        present = [status for status, n in depot_statuses.items() if n]
+        if whole:
+            statuses = depot_statuses
+        elif matched == 0 or facet == counts.STATUS or len(present) <= 1:
+            only = value if facet == counts.STATUS else present[0] if present else None
+            statuses = {status: matched if status == only else 0 for status in depot_statuses}
+        else:
+            return None
+        locked_libraries = [one for (one,) in self.db.reader().execute(
+            "SELECT id FROM libraries WHERE locked_at IS NOT NULL")]
+        if matched == 0 or not locked_libraries:
+            locked = 0
+        elif facet == counts.LIBRARY and value in locked_libraries:
+            locked = matched
+        elif whole and len(locked_libraries) == 1:
+            locked = held[counts.LIBRARY].get(locked_libraries[0], 0)
+        else:
+            return None
+        named = {facet: sorted(([name, n] for name, n in held[facet].items()), key=lambda one: (-one[1], one[0]))
+                 for facet in (counts.TAG, counts.LICENSE)}
+        allowed = {one for (one,) in self.db.reader().execute("SELECT id FROM licenses") if licenses.allowed(one)}
+        unlicensed_none = all(one in allowed for one in held[counts.LICENSE]) or (
+            facet == counts.LICENSE and value in allowed)
+        blocked = None
+        if matched == 0:
+            blocked = {BELONGS_TO_UPSTREAM: 0, NO_ALLOWED_LICENSE: 0}
+        elif self.upstream() is None and unlicensed_none:
+            blocked = {BELONGS_TO_UPSTREAM: 0, NO_ALLOWED_LICENSE: 0}
+        return {"texts": every, "total": every, "next": None, "held": True, "statuses": statuses, "locked": locked,
+                "blocked": blocked,
+                "tags": [{"tag": name, "texts": n} for name, n in named[counts.TAG]] if whole and matched
+                else [] if matched == 0 else None,
+                "licenses": [{"license": name, "texts": n} for name, n in named[counts.LICENSE]] if whole and matched
+                else [] if matched == 0 else None}
 
     def tags(self) -> list[dict]:
         """Every tag a text has, with how many texts have it, by name (wpt_depot.counts)."""
@@ -1297,6 +1369,73 @@ class Depot:
             finally:
                 scoring.close(con)
             return decision, reason, changed, left_out
+
+    @_answers
+    def score(self, texts: Selection, name: str, value: float | None, declaration: Declaration, progress=None,
+              left: dict | None = None) -> tuple[str | None, int, int]:
+        """Set the score name to value on every text selected, made from
+        each text's current content version, or, with value None, remove
+        the score name from each, as edit_scores records it: one decision
+        under review made by declaration on every text it changes, whose
+        reason the depot writes (policy.scores_change); the texts keep their
+        status and libraries. A text whose scores would stay as they are is
+        left out. (the decision's id, None when no text changes and nothing
+        is written; how many texts changed; how many were left out).
+        progress as for decide; left, when given, receives CHANGED_SINCE as
+        _choose says. NotFound when nothing is selected or a given id is no
+        text; BelongsToUpstream when a text is the upstream's; Refused for
+        an empty name or a value that is not a finite number."""
+        name = name.strip()
+        if not name:
+            raise Refused("a score has a name")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not math.isfinite(value)):
+            raise Refused(f"a score's value is a finite number, not {value!r}")
+        stage = progress or _quiet
+        with self._write("scores") as (con, number):
+            try:
+                stage("selecting the texts")
+                changed = {}
+                chosen = self._choose(con, texts, left=changed)
+                if left is not None:
+                    left.update(changed)
+                if not chosen:
+                    raise NotFound(_none_left(texts, changed))
+                stage("checking the texts")
+                con.execute("CREATE TEMP TABLE changes (id TEXT NOT NULL, scores TEXT NOT NULL, remove TEXT NOT NULL)")
+                if value is None:
+                    con.execute("INSERT INTO temp.changes SELECT id, '[]', json_array(:name) FROM temp.chosen",
+                                {"name": name})
+                else:
+                    con.execute("INSERT INTO temp.changes SELECT c.id, json_array(json_object('name', :name, 'value', "
+                                ":value, 'content_version', t.content_version)), '[]' FROM temp.chosen c "
+                                "JOIN texts_revisions t ON t.id = c.id AND t.latest",
+                                {"name": name, "value": float(value)})
+                con.execute("CREATE INDEX temp.changes_id ON changes (id)")
+                total, theirs = scoring.check(con, self.upstream_sql(), NAMED)
+                if total:
+                    self._refuse_upstream("texts", theirs, total=total)
+                stage("writing the new revisions")
+                count, left_out, set_names, removed = scoring.score(con)
+                if not count:
+                    raise _Nothing((None, 0, left_out))
+                decision = self._decision(con, number, UNDER_REVIEW, declaration,
+                                          policy.scores_change(set_names, removed), checked=False)
+                con.execute("CREATE TEMP TABLE scored_ids (id TEXT PRIMARY KEY)")
+                con.execute("INSERT INTO temp.scored_ids SELECT id FROM temp.scored")
+                self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
+                             {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
+                self._link(con, decision, number, "scored_ids")
+                stage("committing")
+            finally:
+                scoring.close(con)
+            return decision, count, left_out
+
+    def score_names(self) -> list[dict]:
+        """Every name of a score a text has now, with how many texts have
+        it, by name: [{name, texts}]. It reads every current text."""
+        return self._rows("SELECT s.value ->> 'name' AS name, count(*) AS texts FROM texts_revisions t, "
+                          "json_each(t.scores) s WHERE t.latest AND t.scores IS NOT NULL GROUP BY 1 ORDER BY 1")
 
     # Libraries
 

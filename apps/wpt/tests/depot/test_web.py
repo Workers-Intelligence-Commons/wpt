@@ -418,6 +418,10 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     # the counts come in steps, each one slice of the texts, which a page adds up
     status, whole = request("POST", "/api/texts/counts", {"filter": {}})
     assert status == 200 and (whole["texts"], whole["total"], whole["next"]) == (4, 4, None)
+    # every text is read at once from the depot's counts, and gives what a step over every text counts
+    assert whole["held"] is True
+    status, stepped = request("POST", "/api/texts/counts", {"filter": {}, "held": False})
+    assert stepped["held"] is False and {**stepped, "held": True} == whole
     assert whole["statuses"] == {"under review": 2, "admitted": 1, "refused": 1} and whole["locked"] == 1
     assert whole["tags"] == [{"tag": "en", "texts": 3}, {"tag": "a", "texts": 2}, {"tag": "fr", "texts": 1}]
     assert whole["licenses"] == [{"license": "CC0-1.0", "texts": 4}]
@@ -619,6 +623,28 @@ def test_scores_from_the_pages_change_many_texts_under_one_decision_and_the_text
                                                            {"id": "test-depot-2", "scores": [rank]}],
                                                  "declaration": ME})[1]["left_out"] == 1
     assert request("GET", "/api/texts/test-depot-1")[1]["text"]["scores"] is None
+
+
+def test_one_score_set_on_a_selection_from_the_pages_is_one_decision_and_its_name_is_listed(web):
+    request, depot = web
+    for words in ("one", "two", "three"):
+        request("POST", "/api/texts", {"text": words, "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
+    selection = {"filter": {"tags": ["en"]}}
+
+    status, done = wrote(request, "/api/texts/score", {"selection": selection, "name": "rank", "value": 3,
+                                                       "declaration": ME})
+
+    assert (status, done) == (200, {"decision": "test-depot-4", "changed": 3, "left_out": 0, "left": {}})
+    assert request("GET", "/api/texts/test-depot-2")[1]["text"]["scores"] == [
+        {"name": "rank", "value": 3.0, "content_version": 1}]
+    assert request("GET", "/api/scores") == (200, [{"name": "rank", "texts": 3}])
+    assert wrote(request, "/api/texts/score", {"selection": named(["test-depot-1"]), "name": "rank", "remove": True,
+                                               "declaration": ME})[1]["changed"] == 1
+    assert request("GET", "/api/scores") == (200, [{"name": "rank", "texts": 2}])
+    # a value and a removal at once, or neither, is no request
+    for wrong in ({"value": 1, "remove": True}, {}, {"remove": False}):
+        assert request("POST", "/api/texts/score", {"selection": selection, "name": "rank", **wrong,
+                                                    "declaration": ME})[0] == 400
 
 
 def test_a_failure_no_route_names_is_answered_with_its_problem(tmp_path):

@@ -49,11 +49,14 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked` | 1 a second | 5, delayed |
+| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked`, `GET /api/scores` | 1 a second | 5, delayed |
 | every other `POST`, except `/api/libraries/measure` | 1 a second | 10, delayed |
 | every other request, `POST` to `/api/libraries/measure` included (it reads only the depot's counts) | 10 a second | 40, at once |
 
-The pages count the texts a filter matches one step at a time, at most
+A filter of every text, or of one status, tag, license or library, gets
+how many texts it matches, their split by status and how many a locked
+library holds at once from the depot's counts, when those hold them. The
+pages count the rest of it, and every other filter, one step at a time, at most
 one step every two seconds, and send a step refused with 429 or for lack
 of a free reader again after a wait, so counting leaves at least half of the first limit to the other
 requests.

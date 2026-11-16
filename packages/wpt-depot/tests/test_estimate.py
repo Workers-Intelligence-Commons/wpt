@@ -6,6 +6,7 @@ from wpt_tokenizer import Tokenizer
 
 from wpt_depot import NewText
 from wpt_depot.corpus import build
+from wpt_depot import estimate as estimates
 from wpt_depot.estimate import estimate
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
@@ -106,3 +107,25 @@ def test_an_estimate_of_a_revision_whose_figures_are_not_known_reads_every_text_
     # the two libraries hold the same texts: what the walk counts is what the figures say
     assert (unknown["item_share"], unknown["items_held"]) == (known["item_share"], known["items_held"])
     assert known["items_held"] == 1 and 0 < known["item_share"] < 1
+
+
+def test_a_dataset_without_conversations_is_forecast_through_the_build_s_order_not_said_rough(
+        make_depot, me, tmp_path, monkeypatch):
+    # the walk follows fewer texts than the dataset holds, and closes the plain text's part at its first text that
+    # does not fit: with no conversation to wait for, that is the whole forecast
+    monkeypatch.setattr(estimates, "FOLLOWED", 20)
+    depot = make_depot()
+    depot.add([NewText(text=f"the quick brown fox {n} jumps over the lazy dog", licenses=("CC0-1.0",))
+               for n in range(40)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("all")
+    depot.put(library, "true")
+    dataset = depot.dataset_by_id(depot.new_dataset("all", "classics", [(None, library)]))
+    whole = estimate(depot, dataset, TOKENIZER, None)["tokens"]
+
+    small = estimate(depot, dataset, TOKENIZER, whole // 4)
+
+    built = build(depot, "all", open_store((tmp_path / "store").as_uri()), TOKENIZER, max_tokens=whole // 4,
+                  log=lambda *_: None)
+    assert small["forecast"] is True and small["item_tokens"] == 0
+    assert abs(small["plain_texts"] - built["texts"]) <= 1

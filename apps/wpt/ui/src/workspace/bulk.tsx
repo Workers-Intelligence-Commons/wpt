@@ -1,6 +1,7 @@
 // What the workspace does with the texts ticked in its playlist: a bar at
 // the bottom of the screen whose actions (admit, refuse, put back under
-// review, which undoes an admission or a refusal, put in a library,
+// review, which undoes an admission or a refusal, put in a library, set or
+// remove one score (scores.tsx),
 // and, when one library is open, take them out of it, report a problem on
 // them or fork it without them) open the review of the ticked texts
 // (review.tsx). The ticked texts are a selection (filter.tsx): those ticked
@@ -22,8 +23,9 @@ import { matched, useCounts } from "../counts";
 import { Outcome, plural, required, RequiredNote, type Library } from "../parts";
 import { href } from "../route";
 import { Review } from "../review";
+import { ScoreForm } from "../scores";
 
-type Action = Deciding | "put" | "take-out" | "report" | "fork";
+type Action = Deciding | "put" | "take-out" | "report" | "fork" | "score";
 const decides = (a: Action | null): a is Deciding => a === "admitted" || a === "refused" || a === "under review";
 const DONE: Record<Deciding, string> = { admitted: "Admitted", refused: "Refused", "under review": "Put back under review" };
 type Put = { joined: number; left_out: number; left: Left };
@@ -32,7 +34,7 @@ type TakenOut = { taken_out: number; not_held: number; left: Left };
 const TITLES: Record<Action, (library: string) => string> = {
   admitted: () => "Admit the ticked texts", refused: () => "Refuse the ticked texts",
   "under review": () => "Put the ticked texts back under review", put: () => "Put the ticked texts in a library",
-  "take-out": (l) => `Take the ticked texts out of ${l}`, report: (l) => `Report a problem with texts of ${l}`, fork: (l) => `Fork ${l} without these texts`,
+  "take-out": (l) => `Take the ticked texts out of ${l}`, score: () => "Set or remove a score on the ticked texts", report: (l) => `Report a problem with texts of ${l}`, fork: (l) => `Fork ${l} without these texts`,
 };
 
 // selection: the ticked texts, null when none is; count: how many, when
@@ -56,9 +58,9 @@ export function Bulk({ selection, count, libraries, library, into, admittedHere,
   const takes = own && !own.locked_at ? own : null;
   // the main button follows what is ticked: once every ticked text is admitted, admitting them does nothing
   const counting = useCounts(selection);
-  const allAdmitted = Boolean(counting?.done && !counting.problems && matched(counting) > 0 && counting.statuses.admitted === matched(counting));
+  const allAdmitted = Boolean((counting?.done || counting?.settled) && !counting.problems && matched(counting) > 0 && counting.statuses.admitted === matched(counting));
   // and once every ticked text is under review, putting them back under review does nothing
-  const allUnderReview = Boolean(counting?.done && !counting.problems && matched(counting) > 0 && counting.statuses["under review"] === matched(counting));
+  const allUnderReview = Boolean((counting?.done || counting?.settled) && !counting.problems && matched(counting) > 0 && counting.statuses["under review"] === matched(counting));
   if (selection === null) return null;
   return (
     <>
@@ -69,6 +71,7 @@ export function Bulk({ selection, count, libraries, library, into, admittedHere,
           <Button variant="quiet" onClick={start("refused")}>Refuse</Button>
           {!allUnderReview && <Button variant="quiet" onClick={start("under review")} title="Undo their admission or refusal: a public decision">Back to review</Button>}
           <Button variant={allAdmitted ? "primary" : "quiet"} onClick={start("put")}>Put in a library</Button>
+          <Button variant="quiet" onClick={start("score")}>Score</Button>
         </>}
         {takes && <Button variant="quiet" onClick={start("take-out")}>Take out of {takes.name}</Button>}
         {own && <Button variant="quiet" onClick={start("report")}>Report a problem on them</Button>}
@@ -87,6 +90,7 @@ export function Bulk({ selection, count, libraries, library, into, admittedHere,
                 : action === "put" ? <PutForm selection={chosen} size={size} libraries={libraries} into={into} onDone={finished} />
                 : action === "take-out" ? <TakeOutForm selection={chosen} size={size} library={takes!} onDone={finished} />
                 : action === "report" ? <ReportForm library={own!} selection={chosen} size={size} onDone={finished} />
+                : action === "score" ? <ScoreForm selection={chosen} size={size} onDone={finished} />
                 : <ForkForm library={library!} without={chosen} onDone={finished} />}
             </Review>
             {failed && <Outcome answer={failed} done={() => ""} />}

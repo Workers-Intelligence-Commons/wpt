@@ -18,16 +18,15 @@
 // what is open changes.
 
 import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { get, type Answer } from "../api";
-import { shownCounts, useCounts, type Counting, type Counts } from "../counts";
+import { settledCounts, shownCounts, useCounts, type Counting, type Counts } from "../counts";
 import { EVERY, toQuery, type TextFilter } from "../filter";
 import { NewLibrary } from "../pages/libraries";
 import { Problems, required, STATUSES, StatusBadge, type Library, type Status } from "../parts";
 import { href } from "../route";
 import { forgetFilter, saveFilter, useSavedFilters } from "../saved-filters";
 
-const SHOWN = 30; // tags and licenses listed before typing finds the others
 
 // the depot's counts: every current text, and how many have each status, tag and license
 type DepotCounts = { texts: number; statuses: Record<Status, number>; tags: Record<string, number>; licenses: Record<string, number>; libraries: Record<string, number> };
@@ -66,11 +65,12 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
   };
   // undefined while it is counted
   // whether a part's counts shown are those of before the change, while they are read again
-  const staleFor = (part: Part) => every(base(part)) ? depotStale : Boolean(counted[part] && !counted[part]!.done);
+  const staleFor = (part: Part) => every(base(part)) ? depotStale
+    : Boolean(counted[part] && !counted[part]!.done && !(part === "statuses" && counted[part]!.settled));
   const countFor = (part: Part, value: string): number | undefined => {
     if (every(base(part))) return counts ? part === "statuses" ? counts.statuses[value as Status] : counts[part][value] ?? 0 : undefined;
     const c = counted[part];
-    const shown = shownCounts(c);
+    const shown = part === "statuses" ? settledCounts(c) : shownCounts(c); // a status's count is final once settled
     return shown ? countOf(shown, part, value) : undefined;
   };
   const saved = useSavedFilters();
@@ -160,22 +160,45 @@ function SourceGroup({ title, tools, children, className }: { title: string; too
   );
 }
 
-// A long list (tags, licenses), the most used first, with a box that keeps the entries holding the words typed.
-// recounting: its counts are those of before a change, read again.
+// A long list (tags, licenses), every entry, the most used first, scrolled in place, with a box that keeps the entries
+// holding the words typed. recounting: its counts are those of before a change, read again. The list is one stop of
+// the Tab key: the arrow keys, Home and End move between its entries, and Tab leaves it.
+const FIND = 8; // entries above which a list has a box to find them
+
 function Findable({ title, loaded, rows, recounting, entry }: { title: string; loaded: boolean; rows: { key: string; n: number }[]; recounting: boolean; entry: (key: string, n: number) => ReactNode }) {
   const [typed, setTyped] = useState("");
   const words = typed.toLowerCase().split(/\s+/).filter(Boolean);
   const found = rows.filter((r) => words.every((w) => r.key.toLowerCase().includes(w)));
+  const list = useRef<HTMLUListElement>(null);
+  const [current, setCurrent] = useState(0); // the entry the Tab key reaches
+  const links = () => [...(list.current?.querySelectorAll<HTMLAnchorElement>("a.source") ?? [])];
+  useEffect(() => { links().forEach((a, i) => { a.tabIndex = i === Math.min(current, found.length - 1) ? 0 : -1; }); });
+  const move = (e: KeyboardEvent<HTMLUListElement>) => {
+    const all = links();
+    const at = all.indexOf(document.activeElement as HTMLAnchorElement);
+    if (at < 0) return;
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[e.key];
+    if (to === undefined || to < 0 || to >= all.length) return;
+    e.preventDefault();
+    all[to].focus();
+  };
   return (
     <SourceGroup title={title} className="source-long" tools={recounting ? <span className="aside">counting again</span> : undefined}>
-      {rows.length > SHOWN && (
+      {rows.length > FIND && (
         <li><input className="wic-input wic-focus source-find" type="search" value={typed} placeholder={`Find ${title.toLowerCase()}`}
           aria-label={`Find ${title.toLowerCase()}`} onChange={(e) => setTyped(e.target.value)} /></li>
       )}
       {!loaded && <li className="aside">counting</li>}
       {loaded && rows.length === 0 && <li className="aside">None.</li>}
-      {found.slice(0, SHOWN).map((r) => <li key={r.key}>{entry(r.key, r.n)}</li>)}
-      {found.length > SHOWN && <li className="aside">{(found.length - SHOWN).toLocaleString("en")} more: type to find them.</li>}
+      {loaded && rows.length > 0 && found.length === 0 && <li className="aside">None holds “{typed.trim()}”.</li>}
+      {found.length > 0 && (
+        <li className="source-scroll-item">
+          <ul ref={list} className="plain source-list source-scroll" aria-label={`${title}, ${found.length.toLocaleString("en")}`} onKeyDown={move}
+            onFocus={(e) => { const at = links().indexOf(e.target as Element as HTMLAnchorElement); if (at >= 0) setCurrent(at); }}>
+            {found.map((r) => <li key={r.key}>{entry(r.key, r.n)}</li>)}
+          </ul>
+        </li>
+      )}
     </SourceGroup>
   );
 }

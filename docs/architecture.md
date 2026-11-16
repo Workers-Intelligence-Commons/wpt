@@ -578,7 +578,7 @@ refused change writes nothing.
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on, the erasure requests it decides or the problem it records; the view of a decision, and of a reported problem |
 | a tag, shown | `sql QUERY` | `POST /api/texts/search` and `POST /api/texts/counts` with the tag; the view of a tag |
 | texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the playlist of the "Workspace" page |
-| the texts a filter matches, counted one slice of the depot at a time | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Workspace" page, its playlist and its review, of the "Overview" and of the views of a tag, a license, a decision and a problem |
+| the texts a filter matches, counted one slice of the depot at a time, or at once from the depot's counts when they hold the answer | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Workspace" page, its playlist and its review, of the "Overview" and of the views of a tag, a license, a decision and a problem |
 | texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Workspace" page |
 | a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the editor of the "Workspace" page, with the text's record |
@@ -587,7 +587,9 @@ refused change writes nothing.
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
 | a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
-| a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
+| a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores`; the "Scores" tab of the current text of the "Workspace" page |
+| one score set on, or removed from, texts | `score NAME (--value V \| --remove) WHERE` | `POST /api/texts/score`, on a selection; the "Workspace" page, on ticked texts |
+| the names of the scores | `score-names` | `GET /api/scores` |
 | libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Workspace" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
 | a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library in the "Workspace" page |
 | what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, read from the counts, and the part of each share the mix keeps; the dataset form, the list of datasets, the page "Libraries" and the head of a library |

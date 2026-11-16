@@ -98,6 +98,14 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           locked library keeps the revision it pinned; a text whose scores
                                           stay as they are is left out; prints how many texts changed and
                                           how many were left out
+    wpt depot score NAME (--value V | --remove) WHERE DECLARATION
+                                          set the score NAME to V, made from each text's current content
+                                          version, on every text the SQL condition WHERE matches, or remove it
+                                          from them, as wpt depot scores records a change: one decision under
+                                          review on every text it changes; a text whose scores stay as they
+                                          are is left out
+    wpt depot score-names                 every name of a score a text has now, with how many texts have it;
+                                          one JSON row per line; it reads every current text
     wpt depot decide admit|refuse --erasure ID DECLARATION [--reason TEXT]
                                           one decision on the erasure request ID; once it is admitted,
                                           the depot carries it out at once and marks stale every corpus
@@ -347,6 +355,23 @@ def cmd_scores(args):
     decision, reason, changed, left_out = opened().edit_scores(Path(args.file), _declaration(args))
     say(f"decision {decision}: under review, {reason}, on {changed:,} texts"
         + (f"; {left_out:,} texts left out, their scores unchanged" if left_out else ""))
+    return 0
+
+
+def cmd_score(args):
+    decision, changed, left_out = opened().score(args.where, args.score, None if args.remove else args.value,
+                                                 _declaration(args), progress=_stage)
+    done = f"removed {args.score}" if args.remove else f"set {args.score} to {args.value:g}"
+    if decision is None:
+        say(f"nothing written: the scores of the {left_out:,} texts are those already")
+    else:
+        say(f"decision {decision}: under review, {done}, on {changed:,} texts"
+            + (f"; {left_out:,} texts left out, their scores unchanged" if left_out else ""))
+    return 0
+
+
+def cmd_score_names(args):
+    _rows(opened().score_names())
     return 0
 
 
@@ -689,6 +714,19 @@ def parser() -> argparse.ArgumentParser:
                                       "\"value\": V, \"content_version\": C}], \"remove\": [N]}")
     _declares(scoring)
     scoring.set_defaults(run=cmd_scores)
+
+    scoring_one = commands.add_parser("score", help="set one score on, or remove it from, every text a condition "
+                                                    "matches, recorded as one decision under review")
+    scoring_one.add_argument("score", metavar="NAME", help="the score's name")
+    given = scoring_one.add_mutually_exclusive_group(required=True)
+    given.add_argument("--value", type=float, help="its value, a finite number")
+    given.add_argument("--remove", action="store_true", help="remove the score from the texts")
+    scoring_one.add_argument("where", help="an SQL condition over the texts table, in SQLite's SQL")
+    _declares(scoring_one)
+    scoring_one.set_defaults(run=cmd_score)
+    naming_scores = commands.add_parser("score-names", help="every name of a score a text has, with how many texts "
+                                                            "have it")
+    naming_scores.set_defaults(run=cmd_score_names)
 
     licensing = commands.add_parser("license", help="the licenses the depot holds")
     licenses = licensing.add_subparsers(dest="action", required=True)

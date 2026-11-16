@@ -420,6 +420,23 @@ def test_a_texts_credits_a_librarys_name_a_dataset_and_the_depots_facts_change_f
     assert [one["change"] for one in again.dataset("mix two")["libraries"]] == [again.change() - 1] * 2
 
 
+def test_the_score_command_sets_one_score_on_the_texts_a_condition_matches_and_score_names_lists_it(depot, capsys):
+    opened = Depot.open(depot)
+    first, second = opened.add([NewText(text="one", licenses=("CC0-1.0",)), NewText(text="two", licenses=("CC0-1.0",))],
+                               _declaration())
+    capsys.readouterr()
+
+    assert depot_command("score", "rank", "--value", "4", "true", *ME) == 0
+
+    assert bare(capsys.readouterr().out.splitlines()[-1]) == (
+        "decision test-depot-2: under review, set rank to 4, on 2 texts")
+    assert depot_command("score", "rank", "--remove", f"id = '{first}'", *ME) == 0
+    assert bare(capsys.readouterr().out.splitlines()[-1]) == (
+        "decision test-depot-3: under review, removed rank, on 1 texts")
+    assert depot_command("score-names") == 0
+    assert printed_rows(capsys) == [{"name": "rank", "texts": 1}]
+
+
 def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path, capsys):
     opened = Depot.open(depot)
     first, second = opened.add([NewText(text="one", licenses=("CC0-1.0",)), NewText(text="two", licenses=("CC0-1.0",))],

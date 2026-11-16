@@ -13,6 +13,7 @@ from wpt_depot import counts, erasure, follow, ids, policy, scoring
 from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, Locked, NoDepotSetting, NotFound,
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
+from wpt_depot.filters import Filter
 from wpt_depot.schema import FORMAT, KEYS
 from wpt_depot.settings import depot_address
 from wpt_depot.corpus import measure as corpus_measure, revision_figures
@@ -1204,6 +1205,68 @@ def test_scores_keep_the_content_version_they_were_made_from_across_a_content_li
     assert (shown["content_version"], shown["scores"]) == (2, [{"name": "rank", "value": 3.0, "content_version": 1}])
     scores_of(depot, [{"id": text, "scores": [score("rank", 4, 2)]}], me)
     assert depot.show(text)["text"]["scores"] == [{"name": "rank", "value": 4.0, "content_version": 2}]
+
+
+def test_the_depot_s_counts_answer_a_filter_of_every_text_or_one_value_at_once_as_the_steps_count_it(make_depot, me):
+    depot = make_depot()
+    depot.add([plain("one", "en"), plain("two", "en", "fr"), plain("three")], me)
+    depot.decide("admitted", "true", me)
+    stepped = depot.count("true")
+
+    whole = depot.held_count(Filter())
+
+    assert whole["held"] is True and (whole["texts"], whole["total"], whole["next"]) == (3, 3, None)
+    assert {key: whole[key] for key in ("statuses", "locked", "blocked", "tags", "licenses")} == {
+        key: stepped[key] for key in ("statuses", "locked", "blocked", "tags", "licenses")}
+    # one tag: how many and their status split (every text is admitted), not the tags or licenses among them
+    tagged = depot.held_count(Filter(tags=("en",)))
+    assert (tagged["statuses"], tagged["locked"], tagged["tags"], tagged["licenses"]) == (
+        {"under review": 0, "admitted": 2, "refused": 0}, 0, None, None)
+    # once the texts have two statuses, one tag's split is not in the counts; one status is
+    depot.decide("refused", "id = 'depot-3'", me)
+    assert depot.held_count(Filter(tags=("en",))) is None
+    assert depot.held_count(Filter(statuses=("refused",)))["statuses"] == {
+        "under review": 0, "admitted": 0, "refused": 1}
+    # anything else is counted by steps
+    for other in (Filter(tags=("en", "fr")), Filter(tags=("en",), statuses=("admitted",)), Filter(search="one"),
+                  Filter(ids=("depot-1",)), Filter(change=depot.change() - 1)):
+        assert depot.held_count(other) is None
+    # a locked library: known for the filter of every text when it is the only one
+    library = depot.new_library("kept")
+    depot.put(library, "id = 'depot-1'")
+    depot.lock(library)
+    assert depot.held_count(Filter())["locked"] == depot.count("true")["locked"] == 1
+
+
+def test_one_score_set_on_a_selection_takes_each_text_s_content_version_and_removing_it_leaves_the_others(
+        make_depot, me):
+    depot = make_depot()
+    first, second, third = depot.add([plain("one", "en"), plain("two", "en"), plain("three")], me)
+    depot.decide("admitted", "true", me)
+    depot.change_content(second, "two, again", None, me)  # under review again, at content version 2
+    scores_of(depot, [{"id": first, "scores": [score("rank", 1)]}], me)
+
+    decision, changed, left_out = depot.score(Filter(tags=("en",)), "machine-made", 0.25, me)
+
+    assert (changed, left_out) == (2, 0)
+    assert depot.show(first)["text"]["scores"] == [score("machine-made", 0.25), score("rank", 1.0)]
+    assert depot.show(second)["text"]["scores"] == [score("machine-made", 0.25, 2)]
+    assert depot.show(third)["text"]["scores"] is None
+    assert [depot.show(one)["status"] for one in (first, second)] == ["admitted", "under review"]
+    assert depot.decision(decision)["decision"]["reason"] == "scores changed: set machine-made"
+    assert depot.score_names() == [{"name": "machine-made", "texts": 2}, {"name": "rank", "texts": 1}]
+    # the same again changes nothing and writes nothing; removing it leaves the other score
+    before = depot.change()
+    assert depot.score(Filter(tags=("en",)), "machine-made", 0.25, me) == (None, 0, 2)
+    assert depot.change() == before
+    removed, changed, left_out = depot.score([first, third], "machine-made", None, me)
+    assert (changed, left_out) == (1, 1)
+    assert depot.show(first)["text"]["scores"] == [score("rank", 1.0)]
+    assert depot.decision(removed)["decision"]["reason"] == "scores changed: removed machine-made"
+    with pytest.raises(Refused):
+        depot.score("true", " ", 1, me)
+    with pytest.raises(Refused):
+        depot.score("true", "rank", float("nan"), me)
 
 
 @pytest.mark.parametrize("change, error", [

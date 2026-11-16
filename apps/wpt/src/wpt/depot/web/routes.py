@@ -128,6 +128,13 @@ def relicense_texts(depot: Depot, selection: Filter, licenses: list[str], declar
             "skipped": skipped, "left": left}
 
 
+def score_texts(depot: Depot, selection: Filter, name: str, value: float | None, declaration: Declaration,
+                progress) -> dict:
+    left = {}
+    decision, changed, left_out = depot.score(selection, name, value, declaration, progress, left)
+    return {"decision": decision, "changed": changed, "left_out": left_out, "left": left}
+
+
 def put_texts(depot: Depot, library: str, selection: Filter, progress) -> dict:
     left = {}
     joined, left_out = depot.put(library, selection, progress, left)
@@ -291,6 +298,18 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         return 200, {"decision": decision, "reason": reason, "changed": changed, "left_out": left_out}
 
     @refusals
+    def score_selected(values, body):
+        value = None if body.get("remove") else body["value"]
+        verb = (f"remove the score {body['name']} from" if value is None
+                else f"set the score {body['name']} to {value:g} on")
+        return job(f"{verb} {subject(body['selection'])}", small(body["selection"]), score_texts,
+                   selected(body["selection"]), body["name"], value, declared(body))
+
+    @refusals
+    def score_names(values, body):
+        return 200, readers.run("score_names")
+
+    @refusals
     def content(values, body):
         changed = depot.change_content(values["id"], body.get("text"),
                                        json.dumps(body["content"], ensure_ascii=False) if "content" in body else None,
@@ -313,6 +332,10 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     @refusals
     def count(values, body):
         found = filter_of(body["filter"], body.get("change"), body.get("unticked", ()))
+        if "start" not in body and body.get("held", True):
+            held = depot.held_count(found)
+            if held is not None:
+                return 200, held
         return 200, readers.run("count", depot.condition(found, depot.change()), body.get("start"),
                                 body.get("size", COUNT_STEP), body["filter"].get("ids"))
 
@@ -746,15 +769,23 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "(no start), null after it; the matches of the slice by status (the status the depot stores), how "
               "many of them a locked library holds, how many an admission cannot cover by reason (as POST "
               "/api/texts/blocked), by tag and by license; next, the start of the next step, null after the last "
-              "one; with change and unticked, the filter is counted as a selection (POST /api/decisions) takes it",
+              "one; with change and unticked, the filter is counted as a selection (POST /api/decisions) takes it; "
+              "held, false for such a step; a first step (no start) of a filter of every text, or of one status, "
+              "tag, license or library, unless held is false in the body, is read at once from the depot's counts "
+              "when they give how many texts it matches, their split by status and how many a locked library "
+              "holds: then held is true, texts and total are every text, next is null, and tags, licenses and "
+              "blocked are null where the counts do not give them, which steps with held false then count",
               body={"type": "object", "required": ["filter"], "properties": {
                   "filter": text_filter, "start": TEXT, "size": {"type": "integer", "minimum": 1,
                                                                  "maximum": COUNT_STEP},
-                  "change": selection["properties"]["change"], "unticked": selection["properties"]["unticked"]}},
+                  "change": selection["properties"]["change"], "unticked": selection["properties"]["unticked"],
+                  "held": {"type": "boolean"}}},
               answer={"type": "object", "required": ["texts", "total", "statuses", "locked", "blocked", "tags",
-                                                     "licenses", "next"],
+                                                     "licenses", "next", "held"],
                       "properties": {"texts": {"type": "integer"}, "total": {"type": ["integer", "null"]},
-                                     "next": {"type": ["string", "null"]}}}),
+                                     "next": {"type": ["string", "null"]}, "held": {"type": "boolean"},
+                                     "tags": {"type": ["array", "null"]}, "licenses": {"type": ["array", "null"]},
+                                     "blocked": {"type": ["object", "null"]}}}),
         Route("POST", "/api/texts/blocked", blocked, "of the texts a selection takes, those a decision of that "
               "status (default admitted) cannot cover, the check a decision applies, a page at a time in the "
               "numeric order of ids: each its id and its reasons (it belongs to the upstream this depot follows, "
@@ -799,6 +830,22 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                     "properties": {"selection": selection, "licenses": {**NAMES, "minItems": 1},
                                    "declaration": DECLARATION}},
               answer=written({"type": "object", "required": ["decisions", "skipped", "left"]})),
+        Route("POST", "/api/texts/score", score_selected, "set one score on the texts a selection takes, "
+              "each made from its current content version, or remove it from them (remove true, no value), as a "
+              "new revision, their ids kept (wpt depot score): the depot records it as one decision under review on "
+              "every text it changes, whose reason names the score set or removed, and the decisions before it keep "
+              "counting, so the texts keep their status and libraries; a locked library keeps the revision it "
+              "pinned; a text whose scores stay as they are is left out: a job whose answer is the decision's id "
+              "(null when no text changes and nothing is written), how many texts changed, how many were left out "
+              "unchanged, and how many were left out, by reason",
+              body={"type": "object", "required": ["selection", "name", "declaration"],
+                    "oneOf": [{"required": ["value"]}, {"required": ["remove"]}],
+                    "properties": {"selection": selection, "name": TEXT, "value": {"type": "number"},
+                                   "remove": {"const": True}, "declaration": DECLARATION}},
+              answer=written({"type": "object", "required": ["decision", "changed", "left_out", "left"]})),
+        Route("GET", "/api/scores", score_names, "every name of a score a text has now, with how many texts have "
+              "it, by name (wpt depot score-names): a read over every current text, in a reader process, stopped "
+              "at its time limit on a large depot", answer=ROWS),
         Route("GET", "/api/decisions/latest", latest, "the ten latest decisions, the newest first, each with how "
               "many texts and erasure requests it decides and the library whose reported problem it records",
               answer=ROWS),

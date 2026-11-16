@@ -6,6 +6,7 @@
 // /api/texts/ID/content, which the depot records as a public decision under
 // review, so the text goes back under review and leaves every open library
 // until it is admitted again, and the confirm says so before the click.
+// "Scores" lists its scores and changes them (scores.tsx).
 // "Record" is its record: credits, its revision and content version and how
 // many it has of each, every decision with its reason (those before its
 // latest license or content change, or before it was put back under review,
@@ -39,6 +40,7 @@ import { Correction } from "../pages/decisions";
 import { href } from "../route";
 import { KIND_WORDS } from "../kind-words";
 import { SchemaForm, type Schema } from "../schema-form";
+import { TextScores, type Score } from "../scores";
 import { isConversation, Transcript } from "../transcript";
 
 // counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
@@ -47,7 +49,7 @@ type Decision = { id: string; status: Status; name: string; email: string; made_
 type Row = {
   id: string; text: string | null; kind: string | null; content: string | null; licenses: string[]; notice: string | null;
   title: string | null; authors: string[] | null; tags: string[]; address: string | null; decisions: string[]; libraries: string[];
-  revision: number; content_version: number;
+  revision: number; content_version: number; scores: Score[] | null;
 };
 // pins: each locked library holding it, with the revision it pinned; upstream: it belongs to the upstream this depot follows
 export type Shown = { text: Row; status: Status; notice: string | null; decisions: Decision[]; libraries: Library[]; revisions: number;
@@ -82,7 +84,7 @@ type Dialogs = "decide" | "relicense" | "credits" | "take-out" | "report" | "era
 function Loaded({ shown, bar, reload, onDirty, handle, find }: { shown: Shown; bar?: ReactNode; reload: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string }) {
   const row = shown.text;
   const item = row.kind !== null;
-  const [tab, setTab] = useState<"text" | "record">("text");
+  const [tab, setTab] = useState<"text" | "scores" | "record">("text");
   const [open, setOpen] = useState<Dialogs | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const done = (words: ReactNode) => { setOpen(null); setSaid(words); reload(); };
@@ -125,10 +127,14 @@ function Loaded({ shown, bar, reload, onDirty, handle, find }: { shown: Shown; b
       {said && <p className="done cue" role="status">{said}</p>}
       <div className="tabs" role="tablist" aria-label="The text and its record">
         <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "text"} onClick={() => setTab("text")}>{item ? "Content" : "Text"}</button>
+        <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "scores"} onClick={() => setTab("scores")}>Scores <span className="aside">{(row.scores ?? []).length}</span></button>
         <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "record"} onClick={() => setTab("record")}>Record <span className="aside">{plural(shown.decisions.length, "decision")}</span></button>
       </div>
       <div role="tabpanel" hidden={tab !== "text"}>
         {theirs ? <ReadOnly row={row} find={find} /> : <EditContent key={`${row.id}:${row.content_version}`} row={row} libraries={shown.libraries} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
+      </div>
+      <div role="tabpanel" hidden={tab !== "scores"}>
+        {tab === "scores" && <TextScores key={`${row.id}:${row.revision}`} id={row.id} scores={row.scores ?? []} contentVersion={row.content_version} readOnly={theirs} onDone={done} />}
       </div>
       <div role="tabpanel" hidden={tab !== "record"}>
         <Record shown={shown} />
