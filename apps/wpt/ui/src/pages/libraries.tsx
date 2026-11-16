@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import { get, part, post, type Answer } from "../api";
 import { WriteProgress, leftOut, useWrite, type Left } from "../decide-forms";
 import { EVERY, sent, type Selection, type TextFilter } from "../filter";
-import { characters, Facts, figures, Help, LibraryLink, PageHead, Pager, plural, Problems, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
+import { characters, Facts, figures, Help, LibraryLink, PageHead, PlacePager, plural, Problems, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
 import { ITEMS } from "../mix";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
@@ -69,14 +69,19 @@ export function NewLibrary({ onMade }: { onMade: (a: Answer<{ id: string }>) => 
   );
 }
 
-type Pins = { total: number; newer: number; rows: { id: string; title: string | null; revision: number; current: number }[] };
+// next: the place after which the next page starts, null on the last page
+type Pins = { total: number; newer: number; next: string | null; rows: { id: string; title: string | null; revision: number; current: number }[] };
 
 // The revisions a locked library pinned, a page at a time, each text marked when its current revision is newer.
+// A page starts after the place of the last row of the one before (places: those of the pages read on the way
+// here), so a far page reads as little as the first.
 export function Pinned({ id }: { id: string }) {
-  const [offset, setOffset] = useState(0);
+  const [places, setPlaces] = useState<string[]>([]);
   const [limit, setLimit] = useState(25);
   const [pins, setPins] = useState<Answer<Pins> | null>(null);
-  useEffect(() => { post<Pins>(`/api/libraries/${encodeURIComponent(id)}/pins`, { offset, limit }).then(setPins); }, [id, offset, limit]);
+  const after = places.at(-1);
+  useEffect(() => { post<Pins>(`/api/libraries/${encodeURIComponent(id)}/pins`, { limit, ...(after ? { after } : {}) }).then(setPins); }, [id, after, limit]);
+  const next = pins?.ok ? pins.data.next : null;
   return (
     <>
       {!pins && <Skeleton lines={3} label="Reading the revisions it pinned" />}
@@ -99,7 +104,9 @@ export function Pinned({ id }: { id: string }) {
               </tbody>
             </table>
           </div>
-          <Pager offset={offset} limit={limit} total={pins.data.total} onOffset={setOffset} onLimit={(n) => { setLimit(n); setOffset(0); }} label="Pages of the revisions it pinned" />
+          <PlacePager onFirst={() => setPlaces([])} onPrevious={places.length ? () => setPlaces(places.slice(0, -1)) : null}
+            onNext={next ? () => setPlaces([...places, next]) : null} limit={limit} onLimit={(n) => { setLimit(n); setPlaces([]); }}
+            label="Pages of the revisions it pinned" />
         </>
       ))}
     </>

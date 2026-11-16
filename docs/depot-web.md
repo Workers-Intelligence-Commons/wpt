@@ -49,7 +49,7 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked`, `GET /api/scores` | 1 a second | 5, delayed |
+| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked`, `GET /api/datasets/{id}/estimate` | 1 a second | 5, delayed |
 | every other `POST`, except `/api/libraries/measure` | 1 a second | 10, delayed |
 | every other request, `POST` to `/api/libraries/measure` included (it reads only the depot's counts) | 10 a second | 40, at once |
 

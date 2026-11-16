@@ -116,8 +116,7 @@ through `wpt depot score NAME (--value V | --remove) WHERE`, or `POST
 current content version. It is recorded as a change of scores is, one
 decision under review on every text it changes. `wpt depot score-names`,
 or `GET /api/scores`, lists every name of a score a text has, with how
-many texts have it. It reads every current text, so on a large depot the
-route stops at the time limit of the reads.
+many texts have it, read from the depot's counts at once.
 
 A score's value comes from a person or from a program a person chose,
 never from the judgment of another company's AI assistant ("Models in

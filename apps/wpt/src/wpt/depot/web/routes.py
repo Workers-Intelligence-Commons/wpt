@@ -29,7 +29,7 @@ from functools import wraps
 from wpt_depot import Declaration, Depot, NewText, counts as facets, errors, follow
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED,
-                             NO_ALLOWED_LICENSE, ORDERS, SORTED)
+                             NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW)
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter
 from wpt_depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
@@ -307,7 +307,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def score_names(values, body):
-        return 200, readers.run("score_names")
+        return 200, depot.score_names()
 
     @refusals
     def content(values, body):
@@ -319,14 +319,14 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def search(values, body):
-        return 200, readers.run("search", depot.condition(filter_of(body["filter"])), body.get("after"),
+        return 200, readers.run("search", filter_of(body["filter"]), body.get("after"),
                                 body.get("before"), body.get("limit", 50), body.get("order", "id"),
                                 body.get("descending", False), body.get("at"))
 
     @refusals
     def passages(values, body):
         return 200, readers.run(
-            "passages", depot.condition(filter_of(body["filter"])), body.get("after"), body.get("limit", 50),
+            "passages", filter_of(body["filter"]), body.get("after"), body.get("limit", 50),
             body.get("characters", PASSAGE_CHARACTERS), body.get("order", "id"), body.get("descending", False))
 
     @refusals
@@ -336,7 +336,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
             held = depot.held_count(found)
             if held is not None:
                 return 200, held
-        return 200, readers.run("count", depot.condition(found, depot.change()), body.get("start"),
+        return 200, readers.run("count", found, body.get("start"),
                                 body.get("size", COUNT_STEP), body["filter"].get("ids"))
 
     @refusals
@@ -399,7 +399,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def pinned(values, body):
-        return 200, jsonable(depot.pinned(values["id"], body.get("offset", 0), body.get("limit", 50)))
+        return 200, jsonable(depot.pinned(values["id"], body.get("offset", 0), body.get("limit", 50), body.get("after")))
 
     @refusals
     def new_library(values, body):
@@ -729,43 +729,52 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "(POST /api/texts/counts counts them): the SQL condition over the texts table the filter stands for, "
               "the page of at most limit rows in the order asked (then by id, in the numeric order of ids; "
               "descending turns the whole order around), each a text's credits, status and length in characters, "
-              "without its text; next, the place of the page's last row when more rows follow it, and previous, the "
+              "without its text; next, the place where the next page starts when rows may follow, and previous, the "
               "place of its first row when rows come before it, each null otherwise; a page starts after a place "
               "(after) or ends before one (before), so a far page is read as fast as the first, and a page before a "
               "place with fewer than limit rows before it is the first page; a page at a text's id (at) starts at "
               "that text's place in the order, with the text when the filter matches it (the first page for an id "
-              "the depot does not hold); an order other than "
-              f"{' or '.join(INDEXED)} sorts every match, so it is refused (422) when more than {SORTED} texts "
-              "match; change, the depot's change number the page was read at, which a selection names",
+              "the depot does not hold); a page reads its candidates from the narrowest listing the filter names "
+              "(one tag, license, library or status, in the order of ids from its index; a decision, several "
+              f"licenses or libraries, or ids, sorted when at most {SORTED}; else every text), at most "
+              f"{WINDOW} of them ({TEXT_WINDOW} with a search in the texts) in the order of ids or of statuses, so "
+              "a page whose filter few texts match can hold fewer than limit rows: partial is then true and next "
+              "names the last candidate read, where the next page reads on; an order other than "
+              f"{' or '.join(INDEXED)} sorts every candidate, so it is refused (422) when the listing holds more "
+              f"than {SORTED} texts, and sortable says whether the listing allows every order; change, the "
+              "depot's change number the page was read at, which a selection names",
               body={"type": "object", "required": ["filter"],
                     "not": {"anyOf": [{"required": ["after", "before"]}, {"required": ["after", "at"]},
                                       {"required": ["before", "at"]}]},
                     "properties": {"filter": text_filter, "after": PLACE, "before": PLACE, "at": TEXT,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                                    "order": {"enum": list(ORDERS)}, "descending": {"type": "boolean"}}},
-              answer={"type": "object", "required": ["rows", "next", "previous", "change"], "properties": {
-                  "next": NULLABLE_PLACE, "previous": NULLABLE_PLACE, "change": {"type": "integer"}}}),
+              answer={"type": "object", "required": ["rows", "next", "previous", "partial", "sortable", "change"],
+                      "properties": {"next": NULLABLE_PLACE, "previous": NULLABLE_PLACE, "partial": {"type": "boolean"},
+                                     "sortable": {"type": "boolean"}, "change": {"type": "integer"}}}),
         Route("POST", "/api/texts/passages", passages, "the texts a filter matches with their text, a page at a "
               "time in the order of POST /api/texts/search, the page bounded both by a count of texts (limit) and "
               "by characters: after the place after (from the first text without it), at most limit texts holding at "
               "most characters characters together, each its id, kind, title, length in characters and passage, its "
               "text or an item's content from its start, whole, or cut at characters for the page's first text when "
-              "it is longer; a later text that does not fit whole starts the next page; next is the place of the "
-              "page's last text, after which the next page starts, null when the page ends the texts matched",
+              "it is longer; a later text that does not fit whole starts the next page; next is the place after which "
+              "the next page starts, null when the page ends the texts matched; the candidates are read as POST "
+              "/api/texts/search reads them, so partial is true for a page cut at its reading bound",
               body={"type": "object", "required": ["filter"],
                     "properties": {"filter": text_filter, "after": PLACE,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                                    "characters": {"type": "integer", "minimum": 1, "maximum": MAX_PASSAGE_CHARACTERS},
                                    "order": {"enum": list(ORDERS)}, "descending": {"type": "boolean"}}},
-              answer={"type": "object", "required": ["rows", "next"], "properties": {
+              answer={"type": "object", "required": ["rows", "next", "partial"], "properties": {
                   "rows": {"type": "array", "items": {"type": "object", "required": [
                       "id", "kind", "title", "length", "passage"]}},
-                  "next": NULLABLE_PLACE}}),
+                  "next": NULLABLE_PLACE, "partial": {"type": "boolean"}}}),
         Route("POST", "/api/texts/counts", count, "one step of counting the texts a filter matches, so a page "
               "counts them in the background, a step after another, each bounded whatever the depot's size: the "
-              f"slice is the size texts (at most {COUNT_STEP}) after the id start (from the first without it) in the "
-              "order of their ids as text, or, for a filter that names its texts, exactly those, in one step; texts, "
-              "how many texts the slice holds; total, how many texts every step goes over, in the first step only "
+              f"slice is the size rows (at most {COUNT_STEP}) after the place start (from the first without it) of "
+              "the listing a page reads (POST /api/texts/search), in the order of ids, or, for a filter that names "
+              "its texts, exactly those, in one step; texts, how many rows the slice holds; total, how many rows "
+              "every step goes over, in the first step only "
               "(no start), null after it; the matches of the slice by status (the status the depot stores), how "
               "many of them a locked library holds, how many an admission cannot cover by reason (as POST "
               "/api/texts/blocked), by tag and by license; next, the start of the next step, null after the last "
@@ -790,11 +799,14 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "status (default admitted) cannot cover, the check a decision applies, a page at a time in the "
               "numeric order of ids: each its id and its reasons (it belongs to the upstream this depot follows, "
               "for any decision; none of its licenses is allowed, for an admission); next, the place the next page "
-              "starts after (after), null after the last page",
+              "starts after (after), null after the last page; answered at once from the depot's counts when no "
+              "upstream is followed and the decision is no admission or every license a text names is allowed; "
+              "else read as POST /api/texts/search reads, from the narrowest of the selection's listing and the "
+              "texts that name a license that is not allowed, partial true for a page cut at its reading bound",
               body={"type": "object", "required": ["selection"],
                     "properties": {"selection": selection, "status": text_status, "after": PLACE,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
-              answer={"type": "object", "required": ["rows", "next"], "properties": {"next": NULLABLE_PLACE,
+              answer={"type": "object", "required": ["rows", "next", "partial"], "properties": {"next": NULLABLE_PLACE,
                   "rows": {"type": "array", "items": {
                       "type": "object", "required": ["id", "reasons"],
                       "properties": {"id": TEXT, "reasons": {"type": "array", "items": {
@@ -844,8 +856,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                    "remove": {"const": True}, "declaration": DECLARATION}},
               answer=written({"type": "object", "required": ["decision", "changed", "left_out", "left"]})),
         Route("GET", "/api/scores", score_names, "every name of a score a text has now, with how many texts have "
-              "it, by name (wpt depot score-names): a read over every current text, in a reader process, stopped "
-              "at its time limit on a large depot", answer=ROWS),
+              "it, by name (wpt depot score-names), read at once from the depot's counts", answer=ROWS),
         Route("GET", "/api/decisions/latest", latest, "the ten latest decisions, the newest first, each with how "
               "many texts and erasure requests it decides and the library whose reported problem it records",
               answer=ROWS),
@@ -883,13 +894,15 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                                "maxItems": 1000}}},
               answer={"type": "array", "items": {"type": "object", "required": ["change", "made_at"]}}),
         Route("POST", "/api/libraries/{id}/pins", pinned, "the revisions a locked library pinned, a page at a time "
-              "(offset and limit, default 0 and 50): how many texts it pinned, how many of them have a newer "
-              "current revision, and the page of rows, each the text's id, the pinned revision's title, the "
-              "revision pinned, the text's current revision and its status when the library was locked, in the "
-              "numeric order of ids; an open library pins none",
+              "(after a row's place, or offset rows, and limit, default 0 and 50): how many texts it pinned and how "
+              "many of them have a newer current revision, both from the depot's counts, and the page of rows, each "
+              "the text's id, the pinned revision's title, the revision pinned, the text's current revision, its "
+              "status when the library was locked, in the numeric order of ids, read from an index of "
+              "the pins; next, the place of the page's last row when more follow; an open library pins none",
               body={"type": "object", "properties": {"offset": {"type": "integer", "minimum": 0},
+                                                     "after": TEXT,
                                                      "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
-              answer={"type": "object", "required": ["total", "newer", "rows"]}),
+              answer={"type": "object", "required": ["total", "newer", "rows", "next"]}),
         Route("POST", "/api/libraries", new_library, "a new open library (wpt depot library new)",
               body={"type": "object", "required": ["name"], "properties": {"name": TEXT}}, answer=ID),
         Route("POST", "/api/libraries/{id}/name", rename_library, "a new name for the library, open or locked (wpt "

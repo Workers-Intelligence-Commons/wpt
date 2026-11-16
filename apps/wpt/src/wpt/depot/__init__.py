@@ -105,7 +105,7 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           review on every text it changes; a text whose scores stay as they
                                           are is left out
     wpt depot score-names                 every name of a score a text has now, with how many texts have it;
-                                          one JSON row per line; it reads every current text
+                                          one JSON row per line, from the depot's counts
     wpt depot decide admit|refuse --erasure ID DECLARATION [--reason TEXT]
                                           one decision on the erasure request ID; once it is admitted,
                                           the depot carries it out at once and marks stale every corpus

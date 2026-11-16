@@ -380,7 +380,7 @@ def test_a_credits_edit_of_a_text_a_locked_library_holds_is_a_new_revision_the_l
     assert shown["pins"] == [{"library": library, "name": "first", "revision": pinned}]
     assert pick(depot.library_texts(library, depot.change()), ["id", "revision", "title", "licenses"]) \
         == [{"id": text, "revision": pinned, "title": "Fox", "licenses": ["CC0-1.0"]}]
-    assert depot.pinned(library) == {"total": 1, "newer": 1, "rows": [
+    assert depot.pinned(library) == {"total": 1, "newer": 1, "next": None, "rows": [
         {"id": text, "title": "Fox", "revision": pinned, "current": pinned + 2, "status": "admitted"}]}
     assert column(depot.sql(f"SELECT revision, title FROM texts_revisions WHERE id = '{text}' ORDER BY revision"), "title") == ["Fox", "The fox", "The fox"]  # added, credits, licenses
 
@@ -1207,35 +1207,35 @@ def test_scores_keep_the_content_version_they_were_made_from_across_a_content_li
     assert depot.show(text)["text"]["scores"] == [{"name": "rank", "value": 4.0, "content_version": 2}]
 
 
-def test_the_depot_s_counts_answer_a_filter_of_every_text_or_one_value_at_once_as_the_steps_count_it(make_depot, me):
+def test_the_depot_s_counts_answer_a_filter_of_statuses_one_value_and_a_locked_part_as_the_steps_count_it(
+        make_depot, me):
     depot = make_depot()
-    depot.add([plain("one", "en"), plain("two", "en", "fr"), plain("three")], me)
-    depot.decide("admitted", "true", me)
-    stepped = depot.count("true")
-
-    whole = depot.held_count(Filter())
-
-    assert whole["held"] is True and (whole["texts"], whole["total"], whole["next"]) == (3, 3, None)
-    assert {key: whole[key] for key in ("statuses", "locked", "blocked", "tags", "licenses")} == {
-        key: stepped[key] for key in ("statuses", "locked", "blocked", "tags", "licenses")}
-    # one tag: how many and their status split (every text is admitted), not the tags or licenses among them
-    tagged = depot.held_count(Filter(tags=("en",)))
-    assert (tagged["statuses"], tagged["locked"], tagged["tags"], tagged["licenses"]) == (
-        {"under review": 0, "admitted": 2, "refused": 0}, 0, None, None)
-    # once the texts have two statuses, one tag's split is not in the counts; one status is
+    depot.add([plain("one", "en"), plain("two", "en", "fr"), plain("three"), plain("four", "fr")], me)
+    depot.decide("admitted", "id <> 'depot-4'", me)
     depot.decide("refused", "id = 'depot-3'", me)
-    assert depot.held_count(Filter(tags=("en",))) is None
-    assert depot.held_count(Filter(statuses=("refused",)))["statuses"] == {
-        "under review": 0, "admitted": 0, "refused": 1}
+    kept, other = depot.new_library("kept"), depot.new_library("other")
+    depot.put(kept, "id IN ('depot-1', 'depot-2')")
+    depot.put(other, "id = 'depot-2'")
+    depot.lock(kept)
+    shapes = [Filter(), Filter(tags=("en",)), Filter(tags=("fr",)), Filter(licenses=("CC0-1.0",)),
+              Filter(libraries=(other,)), Filter(libraries=(kept,)), Filter(statuses=("refused",)),
+              Filter(tags=("fr",), statuses=("admitted", "under review")), Filter(locked=True),
+              Filter(tags=("en",), locked=False), Filter(libraries=(other,), locked=True), Filter(tags=("none",))]
+
+    for found in shapes:
+        held, stepped = depot.held_count(found), depot.count(found)
+        assert held["held"] is True and (held["texts"], held["total"], held["next"]) == (4, 4, None), found
+        assert (held["statuses"], held["locked"]) == (stepped["statuses"], stepped["locked"]), found
+    # the tags, licenses and blocked texts among the matches are known for every text or none
+    whole, stepped = depot.held_count(Filter()), depot.count("true")
+    assert {key: whole[key] for key in ("blocked", "tags", "licenses")} == {
+        key: stepped[key] for key in ("blocked", "tags", "licenses")}
+    assert (depot.held_count(Filter(tags=("en",)))["tags"], depot.held_count(Filter(tags=("none",)))["tags"]) == (
+        None, [])
     # anything else is counted by steps
-    for other in (Filter(tags=("en", "fr")), Filter(tags=("en",), statuses=("admitted",)), Filter(search="one"),
-                  Filter(ids=("depot-1",)), Filter(change=depot.change() - 1)):
-        assert depot.held_count(other) is None
-    # a locked library: known for the filter of every text when it is the only one
-    library = depot.new_library("kept")
-    depot.put(library, "id = 'depot-1'")
-    depot.lock(library)
-    assert depot.held_count(Filter())["locked"] == depot.count("true")["locked"] == 1
+    for other_shape in (Filter(tags=("en", "fr")), Filter(tags=("en",), licenses=("CC0-1.0",)), Filter(search="one"),
+                        Filter(ids=("depot-1",)), Filter(change=depot.change() - 1), Filter(outside=(kept,))):
+        assert depot.held_count(other_shape) is None
 
 
 def test_one_score_set_on_a_selection_takes_each_text_s_content_version_and_removing_it_leaves_the_others(
@@ -1760,12 +1760,17 @@ def test_rows_an_upstream_sends_with_a_column_the_table_lacks_are_refused_and_ne
     assert every_row(depot) == before and not planted.exists()
 
 
-def counted_again(depot) -> dict:
-    """The depot's counts as every write left them, and as a recount from its rows makes them: equal when each
-    write kept them right."""
-    kept = depot.counts()
+def counted_again(depot) -> tuple[dict, dict]:
+    """The depot's counts and its listings of texts by tag and by license as every write left them, and as a recount
+    from its rows makes them: equal when each write kept them right."""
+    def stored():
+        split = {facet: {one["name"]: one["texts"] for one in depot.rows(
+            "SELECT name, texts FROM counts WHERE facet = ? ORDER BY name", (facet,))} for facet in counts.SPLIT}
+        return {**depot.counts(), **split, **{table: depot.rows(f"SELECT * FROM {table} ORDER BY 1, 2")
+                                              for table, _, _ in counts.LISTINGS.values()}}
+    kept = stored()
     depot.recount()
-    return kept, depot.counts()
+    return kept, stored()
 
 
 def stored_and_ruled(depot) -> tuple[dict, dict]:
@@ -1785,9 +1790,12 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
     texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("a",) if n % 2 else ("b",))
                        for n in range(8)], me)
     library = depot.new_library("open")
+    forked = []
     writes = [
         lambda: depot.decide("admitted", "true", me),
         lambda: depot.put(library, texts[:6]),
+        lambda: forked.append(depot.fork(library, "fork")),
+        lambda: depot.lock(forked[0]),  # its pins stay at the revisions of now, below the newer ones of the edits
         lambda: depot.decide("refused", texts[:2], me),
         lambda: depot.take_out(library, texts[2:3]),
         lambda: depot.decide("under review", texts[:3], me),  # a refused, an admitted and a taken out text
@@ -1795,7 +1803,12 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         lambda: depot.change_content(texts[5], "text 5, changed", None, me),
         lambda: depot.edit_credits(texts[6], {"tags": ["a", "c"]}, me),
         lambda: depot.edit_scores([{"id": texts[7], "scores": [score("rank", 1)]}], me),
-        lambda: depot.fork(library, "fork", [texts[6]]),
+        lambda: depot.score(Filter(ids=tuple(texts[5:8])), "length", 2.0, me),
+        lambda: depot.fork(library, "second fork", [texts[6]]),
+        lambda: depot.edit_credits(texts[3], {"tags": ["d"]}, me),  # newer than the locked fork's pin
+        lambda: depot.relicense([texts[4]], ["CC0-1.0", "MIT"], me),
+        lambda: depot.change_content(texts[5], "text 5, changed again", None, me),
+        lambda: depot.edit_scores([{"id": texts[5], "remove": ["length"]}], me),
         lambda: depot.decide_erasure(depot.ask_erasure("all of it", [(texts[7], None, None)], me), "admitted", me),
     ]
     for write in writes:
@@ -1804,7 +1817,9 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         assert kept == made
         stored, ruled = stored_and_ruled(depot)
         assert stored == ruled
-    assert made["texts"] == {"": 7} and made["tag"] == {"a": 4, "b": 3, "c": 1}
+    assert made["texts"] == {"": 7} and made["tag"] == {"a": 3, "b": 3, "c": 1, "d": 1}
+    assert made["score"] == {"length": 1} and made["pinned newer"] == {forked[0]: 3}
+    assert made["license"] == {"CC0-1.0": 6, "MIT": 2} and len(made["text_licenses"]) == 8
 
 
 def test_a_locked_library_shows_each_text_at_the_status_its_decisions_up_to_the_lock_make(make_depot, me):
@@ -1838,6 +1853,16 @@ def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_st
     assert kept_counts == made and made["status"] == {"admitted": 1, "refused": 1}
     assert made["library"] == {open_library: 1, **{key: value for key, value in made["library"].items()
                                                    if key != open_library}}
+    # a lock it brings makes a text it had brought held by a locked library, which the counts tell apart
+    [later] = upstream.add([plain("locked later")], me)
+    upstream.decide("admitted", [later], me)
+    theirs = upstream.new_library("theirs")
+    upstream.put(theirs, [later])
+    pull(follower)
+    upstream.lock(theirs)
+    pull(follower)
+    kept_counts, made = counted_again(follower)
+    assert kept_counts == made and follower.held_count(Filter(locked=True))["locked"] == 3
 
 
 def test_an_operation_on_a_filter_read_at_a_change_leaves_out_the_texts_changed_since_and_says_how_many(
@@ -1882,9 +1907,9 @@ def test_an_operation_on_locked_texts_read_before_the_lock_leaves_out_the_texts_
 
 def test_a_page_and_a_count_step_of_a_decision_read_its_rows_when_few_and_test_each_text_reached_when_many(
         make_depot, me, monkeypatch):
-    # the live depot holds hundreds of millions of decision rows: a page or a count step of a decision on few texts
-    # reads only its rows, never every text, and one of a decision on many texts stays bounded by its own rows
-    # instead of reading the whole decision at each page and each step
+    # the live depot holds hundreds of millions of decision rows: a page or a count step of a decision reads only its
+    # rows, in order, never every text, and one of a decision on many texts tests each text it reads instead of
+    # reading the whole decision at each page and each step
     from wpt_depot.filters import Filter
     depot = make_depot()
     texts = depot.add([plain(str(n)) for n in range(12)], me)
@@ -1895,33 +1920,36 @@ def test_a_page_and_a_count_step_of_a_decision_read_its_rows_when_few_and_test_e
     def planned(where):
         """The ids of a page and the count of the texts where matches, with the
         lines of the query plans of the page and of the first count step that
-        name text_decisions or the slice of a count step."""
+        name text_decisions, its rows l or the slice of a count step."""
         queries = []
         monkeypatch.setattr(depot.db, "person_rows",
                             lambda sql, params=None: queries.append((sql, params)) or read(sql, params))
         page = [one["id"] for one in depot.search(where)["rows"]]
+        searched = len(queries)
         counted = depot.count(where, size=5)
+        stepped = len(queries)
         steps = [counted]
         while steps[-1]["next"] is not None:
             steps.append(depot.count(where, steps[-1]["next"], size=5))
         monkeypatch.setattr(depot.db, "person_rows", read)
-        plans = [[one[3] for one in depot.db.reader().execute(f"EXPLAIN QUERY PLAN {sql}", params)
-                  if "text_decisions" in one[3] or "texts_latest" in one[3]] for sql, params in queries[:2]]
+        plans = [[one[3] for sql, params in part for one in depot.db.reader().execute(
+            f"EXPLAIN QUERY PLAN {sql}", params) if "text_decisions" in one[3] or "texts_latest" in one[3]
+            or one[3].startswith("SEARCH l ")]
+            for part in (queries[:searched], queries[searched:stepped])]
         return page, sum(sum(one["statuses"].values()) for one in steps), plans
 
-    page, counted, [paged, stepped] = planned(depot.condition(Filter(decision=decision)))
+    page, counted, [paged, stepped] = planned(Filter(decision=decision))
     assert (page, counted) == (texts[2:4] + texts[8:], 6)
-    assert "SEARCH l USING COVERING INDEX text_decisions_decision (decision=?)" in paged, paged
-    assert "SEARCH l USING COVERING INDEX text_decisions_decision (decision=?)" in stepped, stepped
+    assert "SEARCH text_decisions USING COVERING INDEX text_decisions_order (decision=?)" in paged, paged
+    assert "SEARCH text_decisions USING COVERING INDEX text_decisions_order (decision=?)" in stepped, stepped
 
     monkeypatch.setattr(depots, "SORTED", 5)
-    page, counted, [paged, stepped] = planned(depot.condition(Filter(decision=decision)))
+    page, counted, [paged, stepped] = planned(Filter(decision=decision))
     assert (page, counted) == (texts[2:4] + texts[8:], 6)
-    for plan in (paged, stepped):
-        assert not any(one.endswith("(decision=?)") for one in plan), plan
+    for plan in (paged, stepped):  # its rows read in order as the page's candidates, each text tested by its key
+        assert "SEARCH text_decisions USING COVERING INDEX text_decisions_order (decision=?)" in plan, plan
         tested = r"SEARCH l EXISTS USING .*\((decision=\? AND text=\?|text=\? AND decision=\?)\)"
         assert any(re.fullmatch(tested, one) for one in plan), plan
-    assert "SEARCH t USING INDEX texts_latest (id>? AND id<?)" in stepped, stepped
 
 
 def test_a_page_in_an_order_no_index_serves_is_refused_past_sorted_matches_with_text_or_without(
@@ -1936,7 +1964,7 @@ def test_a_page_in_an_order_no_index_serves_is_refused_past_sorted_matches_with_
         with pytest.raises(Refused, match="order by id or status"):
             read("true", order="title")
         assert len(read("true", order="id")["rows"]) == 2
-        assert len(read(f"id = '{first}'", order="title")["rows"]) == 1
+        assert len(read(Filter(ids=(first,)), order="title")["rows"]) == 1
 
 
 def recipe_depot(make_depot, me):

@@ -38,7 +38,9 @@ export type Row = {
 // where a page starts or ends: a row's values of the order, as the server gives them
 export type Place = (string | number)[];
 // change: the depot's change number the page was read at, which a selection of its texts names
-export type Found = { rows: Row[]; next: Place | null; previous: Place | null; change: number };
+// partial: the page stopped at the server's reading bound, so it can hold few rows or none and next reads on;
+// sortable: the texts it reads from are few enough for every order, not only id and status
+export type Found = { rows: Row[]; next: Place | null; previous: Place | null; partial: boolean; sortable: boolean; change: number };
 export type Order = { by: "id" | "title" | "status" | "tags" | "licenses" | "libraries" | "length"; descending: boolean };
 export const BY_ID: Order = { by: "id", descending: false };
 // a page: the first (none), the one after a place, the one before it, or the one that starts at a text's place

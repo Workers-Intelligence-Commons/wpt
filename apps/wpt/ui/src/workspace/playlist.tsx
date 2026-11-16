@@ -7,10 +7,10 @@
 // rows are; once the page is ticked, a button beside it ticks every open text
 // (naming how many once their count is done). The bar of ticked texts unticks them all. Its head chooses
 // the order (the orders of POST /api/texts/search: id and status at any size,
-// the others once the count is done and finds at most the depot's limit,
-// which no index serves); its
+// the others when the page says its listing is small enough to sort); its
 // foot is the pager, which moves a page after another and shows the count
-// as it grows. The keys that move and decide are the workspace's
+// as it grows. A page cut at the server's reading bound (partial) can hold
+// few rows or none, and the next page reads on. The keys that move and decide are the workspace's
 // (workspace.tsx), and so is their legend.
 
 import { Button } from "@workers-intelligence-commons/components";
@@ -34,11 +34,10 @@ const short = (n: number) => n < 1000 ? `${n}` : n < 1e6 ? `${Math.round(n / 100
 const INDEXED: Order["by"][] = ["id", "status"];
 
 // isTicked: whether a text is ticked; everyTicked: every open text is, none
-// unticked; total: how many texts are open, once counted; sorted: the most
-// matches the other orders are given for.
-export function Playlist({ found, busy, current, link, isTicked, everyTicked, onTick, onTickAll, onUntickAll, total, sorted, order, onOrder, limit, onFirst, onPrevious, onNext, counting, empty }: {
+// unticked; total: how many texts are open, once counted.
+export function Playlist({ found, busy, current, link, isTicked, everyTicked, onTick, onTickAll, onUntickAll, total, order, onOrder, limit, onFirst, onPrevious, onNext, counting, empty }: {
   found: Found; busy: boolean; current: string | null; link: (id: string) => string; isTicked: (id: string) => boolean; everyTicked: boolean;
-  onTick: (ids: string[], on: boolean) => void; onTickAll: () => void; onUntickAll: () => void; total: number | null; sorted: number;
+  onTick: (ids: string[], on: boolean) => void; onTickAll: () => void; onUntickAll: () => void; total: number | null;
   order: Order; onOrder: (o: Order) => void; limit: number;
   onFirst: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; counting: Counting | null;
   empty?: ReactNode; // what an empty first page says in place of "No text matches."
@@ -63,7 +62,7 @@ export function Playlist({ found, busy, current, link, isTicked, everyTicked, on
   const every = total === null ? "every open text" : `all ${total.toLocaleString("en")}`;
   const boxWords = everyTicked ? `${every[0].toUpperCase()}${every.slice(1)} ticked` : onPage > 0 ? `${onPage.toLocaleString("en")} on this page ticked`
     : onePage ? `Tick ${every}` : `Tick this page (${found.rows.length})`;
-  const orders = ORDERS.filter((o) => INDEXED.includes(o.by) || o.by === order.by || (total !== null && total <= sorted));
+  const orders = ORDERS.filter((o) => INDEXED.includes(o.by) || o.by === order.by || found.sortable);
   return (
     <section className="playlist" aria-label="The open texts, in order">
       {found.rows.length > 0 && (
@@ -88,7 +87,7 @@ export function Playlist({ found, busy, current, link, isTicked, everyTicked, on
         </Button>
         <span className="aside playlist-unit" title="Lengths in characters">chars</span>
       </div>
-      {found.rows.length === 0 ? <p>{found.previous ? "No text matches from here on." : empty ?? "No text matches."}</p> : (
+      {found.rows.length === 0 ? <p>{found.partial ? "No match among the texts read so far: the next page reads on." : found.previous ? "No text matches from here on." : empty ?? "No text matches."}</p> : (
         <ol ref={list} className="playlist-rows" aria-busy={busy}>
           {found.rows.map((r) => (
             <li key={r.id} className={`playlist-row${r.id === current ? " current" : ""}${isTicked(r.id) ? " ticked" : ""}`} aria-current={r.id === current ? "true" : undefined}>

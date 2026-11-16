@@ -427,14 +427,20 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     assert whole["licenses"] == [{"license": "CC0-1.0", "texts": 4}]
     steps, start = [], None
     while True:
-        status, step = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}, "size": 3,
+        status, step = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}, "size": 3, "held": False,
                                                              **({"start": start} if start else {})})
         steps.append(step)
         start = step["next"]
         if start is None:
             break
-    assert [(one["texts"], one["total"]) for one in steps] == [(3, 4), (1, None)]
+    # the steps go over the listing of the tag, its 3 texts; the first step is full, so one more step reads none
+    assert [(one["texts"], one["total"]) for one in steps] == [(3, 3), (0, None)]
     assert sum(one["statuses"]["under review"] + one["statuses"]["admitted"] for one in steps) == 3
+    # one tag is read at once from the depot's counts too, its statuses and locked texts as the steps count them
+    status, tagged = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}})
+    assert tagged["held"] is True and (tagged["statuses"], tagged["locked"]) == (
+        {status: sum(one["statuses"][status] for one in steps) for status in tagged["statuses"]},
+        sum(one["locked"] for one in steps))
     status, given = request("POST", "/api/texts/counts", {"filter": {"ids": ["test-depot-2", "test-depot-9"]}})
     assert (given["texts"], given["total"], given["next"], given["statuses"]["under review"]) == (1, 1, None, 1)
 
@@ -537,10 +543,10 @@ def test_the_review_of_an_admission_gets_the_texts_it_cannot_cover_with_their_re
     request("POST", "/api/libraries/test-depot-1/lock", {})
 
     assert request("POST", "/api/texts/blocked", {"selection": named(["test-depot-3", "test-depot-2", "test-depot-1"])}) == (200, {
-        "rows": [{"id": "test-depot-3", "reasons": ["no allowed license"]}], "next": None})  # a locked library blocks nothing
+        "rows": [{"id": "test-depot-3", "reasons": ["no allowed license"]}], "next": None, "partial": False})  # a locked library blocks nothing
     assert request("POST", "/api/texts/blocked", {"selection": {"filter": {}}, "limit": 1})[1]["rows"] == [
         {"id": "test-depot-3", "reasons": ["no allowed license"]}]
-    assert request("POST", "/api/texts/blocked", {"selection": named([])}) == (200, {"rows": [], "next": None})
+    assert request("POST", "/api/texts/blocked", {"selection": named([])}) == (200, {"rows": [], "next": None, "partial": False})
     assert request("POST", "/api/texts/blocked", {"selection": {}})[0] == 400
 
 
@@ -567,7 +573,7 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_libr
     assert shown["status"] == "under review" and shown["text"]["licenses"] == ["CC0-1.0"]
     assert shown["decisions"][-1]["reason"] == "licenses changed from CC-BY-NC-4.0 to CC0-1.0"
     assert request("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-depot-2"])}) == (
-        200, {"rows": [], "next": None})
+        200, {"rows": [], "next": None, "partial": False})
     locked = {"selection": named(["test-depot-3"]), "licenses": ["CC-BY-NC-4.0"], "declaration": ME}
     assert request("POST", "/api/texts/licenses", {**locked, "selection": named(["test-depot-9"])})[0] == 404
     assert request("POST", "/api/texts/licenses", {**locked, "licenses": []})[0] == 400
@@ -575,7 +581,7 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_libr
     shown = request("GET", "/api/texts/test-depot-3")[1]
     assert (shown["text"]["licenses"], shown["revisions"]) == (["CC-BY-NC-4.0"], 2)
     assert shown["pins"] == [{"library": "test-depot-1", "name": "first", "revision": 1}]
-    assert request("POST", "/api/libraries/test-depot-1/pins", {}) == (200, {"total": 1, "newer": 1, "rows": [
+    assert request("POST", "/api/libraries/test-depot-1/pins", {}) == (200, {"total": 1, "newer": 1, "next": None, "rows": [
         {"id": "test-depot-3", "title": None, "revision": 1, "current": 2, "status": "admitted"}]})
 
 def test_a_content_change_from_the_page_of_a_text_takes_a_plain_text_or_an_item_s_content(web):
@@ -771,7 +777,7 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     assert [(one["id"], one["upstream"]) for one in mine("GET", "/api/libraries")[1]] == [
         ("test-clone-1", False), ("test-depot-1", True)]
     assert mine("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-clone-1"]), "status": "refused"}) == (
-        200, {"rows": [{"id": "test-depot-1", "reasons": ["belongs to the upstream"]}], "next": None})
+        200, {"rows": [{"id": "test-depot-1", "reasons": ["belongs to the upstream"]}], "next": None, "partial": False})
     assert mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-clone-1"]), "declaration": ME})[0] == 200
     assert request("GET", "/api/texts/test-depot-1")[1]["upstream"] is False  # in the upstream, it is its own
 

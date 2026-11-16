@@ -52,9 +52,23 @@ from .errors import Refused
 from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 
 STATUSES = (UNDER_REVIEW, ADMITTED, REFUSED)
-# whether a locked library holds the text: over a row of the texts view named texts
-IN_LOCKED = ("EXISTS (SELECT 1 FROM memberships m JOIN libraries_revisions l ON l.id = m.library AND l.latest "
-             "AND l.locked_at IS NOT NULL WHERE m.text = texts.id AND m.left_change IS NULL)")
+
+
+def in_locked(text: str) -> str:
+    """Whether a locked library holds the text whose id the SQL expression
+    text gives, as an SQL condition, read from the text's side, through the
+    index memberships_held, never a library's rows."""
+    return ("EXISTS (SELECT 1 FROM memberships lm INDEXED BY memberships_held CROSS JOIN libraries_revisions ll "
+            f"ON ll.id = lm.library AND ll.latest AND ll.locked_at IS NOT NULL WHERE lm.text = {text} "
+            "AND lm.left_change IS NULL)")
+
+
+IN_LOCKED = in_locked("texts.id")  # over a row of the texts view named texts
+# the indexes of the keys of memberships (library, text, joined_change) and of texts_revisions (id, revision), which
+# SQLite names, for the queries that name the index they read (KEY_INDEXES: each with its table)
+MEMBERSHIPS_KEY = "sqlite_autoindex_memberships_1"
+TEXTS_KEY = "sqlite_autoindex_texts_revisions_1"
+KEY_INDEXES = {MEMBERSHIPS_KEY: "memberships", TEXTS_KEY: "texts_revisions"}
 
 
 @dataclass(frozen=True)
@@ -96,11 +110,11 @@ def condition(found: Filter, latest: int | None = None, decision_rows: bool = Tr
         chosen = list(dict.fromkeys(found.statuses))
         parts.append(f"status = {literal(chosen[0])}" if len(chosen) == 1 else f"status IN {strings(chosen)}")
     if found.libraries:
-        parts.append("EXISTS (SELECT 1 FROM memberships m WHERE m.text = texts.id AND m.left_change IS NULL "
-                     f"AND m.library IN {strings(found.libraries)})")
+        parts.append("EXISTS (SELECT 1 FROM memberships m INDEXED BY memberships_held WHERE m.text = texts.id "
+                     f"AND m.left_change IS NULL AND m.library IN {strings(found.libraries)})")
     if found.outside:
-        parts.append("NOT EXISTS (SELECT 1 FROM memberships m WHERE m.text = texts.id AND m.left_change IS NULL "
-                     f"AND m.library IN {strings(found.outside)})")
+        parts.append("NOT EXISTS (SELECT 1 FROM memberships m INDEXED BY memberships_held WHERE m.text = texts.id "
+                     f"AND m.left_change IS NULL AND m.library IN {strings(found.outside)})")
     if found.locked is not None:
         parts.append(IN_LOCKED if found.locked else f"NOT {IN_LOCKED}")
     if found.decision is not None:
@@ -126,14 +140,14 @@ def changed_since(change: int) -> str:
     named texts."""
     number = int(change)
     # the memberships of a text, ended or not, are read through their key (library, text, ...), so the test
-    # names every library: no index serves memberships by text alone
+    # names every library, each looked up by that key (INDEXED BY: never a library's rows)
     return (f"(texts.change > {number} "
             f"OR EXISTS (SELECT 1 FROM text_decisions l WHERE l.text = texts.id AND l.change > {number}) "
-            "OR EXISTS (SELECT 1 FROM memberships m WHERE m.text = texts.id "
-            "AND m.library IN (SELECT r.id FROM libraries_revisions r WHERE r.latest) "
+            f"OR EXISTS (SELECT 1 FROM libraries_revisions r CROSS JOIN memberships m INDEXED BY {MEMBERSHIPS_KEY} "
+            f"ON m.library = r.id AND m.text = texts.id WHERE r.latest "
             f"AND (m.joined_change > {number} OR m.left_change > {number})) "
-            "OR EXISTS (SELECT 1 FROM memberships m JOIN libraries_revisions r ON r.id = m.library AND r.latest "
-            f"WHERE m.text = texts.id AND m.left_change IS NULL AND r.change > {number}) "
+            "OR EXISTS (SELECT 1 FROM memberships m INDEXED BY memberships_held CROSS JOIN libraries_revisions r "
+            f"ON r.id = m.library AND r.latest WHERE m.text = texts.id AND m.left_change IS NULL AND r.change > {number}) "
             f"OR EXISTS (SELECT 1 FROM pulls p WHERE p.change > {number}))")
 
 

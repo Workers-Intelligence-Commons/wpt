@@ -27,10 +27,17 @@ column decisions of texts_revisions is unused, kept because removing it
 rewrites the whole table: every revision the current format writes holds '[]'
 there, and a past revision upgraded from an older format keeps the list it
 held. The table counts holds how
-many current texts have each status, tag, license, library and decision,
-and what each library holds by kind and by tag, in texts, characters and
-bytes, and library_moves the change at which what each library holds last
-moved (wpt_depot.counts). Which texts a library holds is
+many current texts have each status, tag, license, score name, library and
+decision, how many pins of each locked library name an older revision than
+their text's current one, every text and the texts of each tag, license and
+library split by status and by whether a locked library holds them, and
+what each library holds by kind and by tag,
+in texts, characters and bytes, and library_moves the change at which what
+each library holds last moved (wpt_depot.counts). text_tags and
+text_licenses list the current texts of each tag and of each license, each
+row a name and the text's place in the numeric order of ids
+(ids.order_sql), so the texts of one tag or license are read in that order
+from their key alone. Which texts a library holds is
 memberships: the change a text joined at and the change it left at (null
 while it is in). A locked library also has pins: the exact revision of each
 text it locked, with the change that locked it. Each row of both also
@@ -82,11 +89,19 @@ and the changes it joined and left, or the revision pinned), so a library's
 texts whose key falls in a range are read in key order from the index alone,
 without reading the other libraries' rows nor its own outside the range
 (Depot.library_range, wpt_depot.order, wpt_depot.exports), and a library is counted from the
-index alone (Depot.library_count). No index serves the other
-orders. The index text_decisions_decision holds the rows of text_decisions
-by decision; its table has no rowid, so the index also holds each row's
-text, and the texts of one decision are read from the index alone
-(filters.Filter.decision).
+index alone (Depot.library_count). The index memberships_order holds each
+library's current memberships, and pins_order each locked library's pins,
+in the numeric order of their texts' ids, so a page of a library's texts
+reads only its own rows; memberships_held holds the open memberships by
+text, so a write of a few texts reads only their rows. No index serves the
+other orders. The index text_decisions_order holds the rows of
+text_decisions by decision, then in the numeric order of their texts' ids;
+its table has no rowid, so the index also holds each row's text, and the
+texts of one decision are read from the index alone, a page of them in
+that order (filters.Filter.decision). The indexes of change numbers
+(memberships_joined, memberships_left, content_lists_change,
+text_decisions_change, pins_change, and texts_change) let a pull read the
+rows past a change without reading a whole table (wpt_depot.follow).
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -115,7 +130,7 @@ Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 
 from . import ids
 
-FORMAT = 9  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 10  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -161,6 +176,8 @@ TABLES = {
     "counts": ("facet TEXT NOT NULL, name TEXT NOT NULL, texts INTEGER NOT NULL, characters INTEGER NOT NULL DEFAULT 0, "
                "bytes INTEGER NOT NULL DEFAULT 0"),
     "library_moves": "library TEXT NOT NULL, change INTEGER",
+    "text_tags": "tag TEXT NOT NULL, key TEXT NOT NULL",
+    "text_licenses": "license TEXT NOT NULL, key TEXT NOT NULL",
 }
 KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name",), "licenses": ("id",),
         "notices": ("id",), "kinds": ("id",), "decisions": ("id",), "texts_revisions": ("id", "revision"),
@@ -169,9 +186,11 @@ KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name"
         "erasures_revisions": ("id", "revision"), "datasets_revisions": ("id", "revision"),
         "pulls": ("depot", "change"), "text_decisions": ("text", "decision"), "counts": ("facet", "name"),
         "tokenizers_revisions": ("id", "revision"), "vocabularies": ("recipe", "version"),
-        "vocabulary_texts": ("recipe", "version", "position"), "library_moves": ("library",)}
+        "vocabulary_texts": ("recipe", "version", "position"), "library_moves": ("library",),
+        "text_tags": ("tag", "key"), "text_licenses": ("license", "key")}
 # the tables stored in the order of their key alone (SQLite's WITHOUT ROWID): small rows read by their key
-WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts", "library_moves"})
+WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts", "library_moves", "text_tags",
+                           "text_licenses"})
 INDEXES = (
     "CREATE UNIQUE INDEX texts_latest ON texts_revisions (id) WHERE latest",
     f"CREATE INDEX texts_order ON texts_revisions ({ids.order_sql()}) WHERE latest",
@@ -186,7 +205,14 @@ INDEXES = (
     "CREATE INDEX pins_key ON pins (library, export_key, text, revision)",
     "CREATE INDEX texts_change ON texts_revisions (change)",
     "CREATE INDEX notices_text ON notices (text)",
-    "CREATE INDEX text_decisions_decision ON text_decisions (decision)",
+    f"CREATE INDEX text_decisions_order ON text_decisions (decision, {ids.order_sql('text')})",
+    f"CREATE INDEX memberships_order ON memberships (library, {ids.order_sql('text')}) WHERE left_change IS NULL",
+    f"CREATE INDEX pins_order ON pins (library, {ids.order_sql('text')})",
+    "CREATE INDEX memberships_joined ON memberships (joined_change)",
+    "CREATE INDEX memberships_left ON memberships (left_change) WHERE left_change IS NOT NULL",
+    "CREATE INDEX content_lists_change ON content_lists (change)",
+    "CREATE INDEX text_decisions_change ON text_decisions (change)",
+    "CREATE INDEX pins_change ON pins (change)",
 )
 # the tables whose rows are revisions of an id, with the flag latest; <name> is the view of their current rows
 REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "datasets_revisions",

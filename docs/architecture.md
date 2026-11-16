@@ -115,15 +115,37 @@ for each library it reads.
 its decisions make, and the index `texts_status` holds the current texts by
 status, then in the numeric order of their ids. The table `counts` holds
 how many current texts the depot has, and how many have each status, each
-tag and each license, each library holds and each decision is on. It also
+tag, each license and each score name, each library holds and each decision
+is on, and how many texts each locked library pinned at a revision older
+than their current one. It splits every text, and the texts of each tag,
+each license and each library, by status and by whether a locked library
+holds them. The tables `text_tags` and `text_licenses` list
+the current texts of each tag and of each license, in the numeric order of
+their ids. It also
 holds what each library holds, each text at its current revision, in
 texts, characters and UTF-8 bytes: by kind (plain texts, the conversations
 and tasks a corpus takes, and items of other kinds) and, for its plain
 texts, by tag, a text with several tags counting once for each. Every
-write keeps the stored statuses and the counts right in its own
-transaction, so a page reads them at once whatever the depot's size; one
-module writes `counts` (`wpt_depot/counts.py`), and `wpt depot recount`
-makes it again from the rows.
+write keeps the stored statuses, the counts and the two listings right in
+its own transaction, so a page reads them at once whatever the depot's
+size; one module writes them (`wpt_depot/counts.py`), and `wpt depot
+recount` makes them again from the rows.
+
+**Reads that do not grow with the depot.** A page, a count step and a write
+of a few texts read only the rows they name, through an index: the
+listings above, the index `memberships_order` of each library's current
+texts in the numeric order of their ids, `pins_order` of each locked
+library's pins in that order, `text_decisions_order` of each decision's
+texts in that order, and `memberships_held` of each text's open
+memberships. A page reads a bounded window of candidates, but a filter no
+listing narrows reads up to every text over its pages: the words of a
+search, texts outside some libraries, texts no locked library holds, and
+two parts of a filter whose texts meet in few. A pull reads each table's
+rows past a change number through an index of their change numbers, the
+rows of every depot numbered in that range. A query names the index or the join
+order it needs where SQLite would otherwise choose to read a whole table.
+`packages/wpt-depot/tests/test_reads.py` runs each such route on two depots,
+one twice the size of the other, and fails when its reads grow.
 
 **A dataset revision's figures.** A dataset reads each library at a change
 number, so what a build of a revision takes is what the libraries held then,
@@ -304,6 +326,16 @@ gives the latest change its memberships joined or left at, which make
 `library_moves`; in a clone, whose rows carry several numberings, the change
 of each library is unknown. Its last transaction gives each dataset
 revision the figures those prove exact.
+The step to format 10 makes the listings `text_tags` and `text_licenses`,
+the counts of score names and the splits by status and by locked library,
+from the current revisions read in rowid order, a batch at a time, marked
+half upgraded until the last, saying how many rows a second it reads; run
+again after a stop, it goes on after the last batch it wrote. It then
+builds `memberships_order`, `pins_order`, `text_decisions_order` and the
+indexes of change numbers, each in one `CREATE INDEX` that a run after a
+stop builds again if it is missing. Its last transaction drops
+`text_decisions_decision`, which `text_decisions_order` serves in its
+place, and counts the pins older than their text's current revision.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
@@ -652,27 +684,32 @@ before it, in its order, or ends before the first row of the page after
 it, so a far page is read as fast as the first and the pages are read one
 after another, never by number. A page can also start at a text's place in
 its order, which the server finds, so the playlist opens on a text that a
-link or the blob opened. The numeric order of ids is the order of
-the index `texts_order`, and the order of statuses that of the index
-`texts_status`, so a first page in either reads only its own rows. No index
-serves the other orders, which sort every text the filter matches, so the
-server gives them only for a filter that matches at most `SORTED` texts
-(`wpt_depot/depot.py`) and refuses them past it; the playlist offers them
-once the filter's count is done and at most that. A filter on a decision
-finds its texts through the index `text_decisions_decision`, which holds
-the rows of `text_decisions` by decision. For a decision on at most
-`SORTED` texts, a page or a count step reads that decision's rows and
-never tests every text, and a page of them sorts at most `SORTED` texts.
-For a decision on more texts, a page or a count step tests each text it
-reaches against the index, so it stays bounded by its own rows instead of
-reading the whole decision each time. The counts of a filter
-come apart, in steps: each step counts the matches in one slice of about a
-million texts, in the order of their ids, so each one stays well under the
-time limit of a reader. A filter that names its texts is counted in one
-step over those texts. The pages run one step at a time, the counts open on
-a page taking turns, and add the steps up. The numbers grow as the steps
-answer, with how many texts are counted out of the depot's texts, a number
-`counts` gives. A count
+link or the blob opened. A page reads its candidates from the narrowest
+listing its filter names, chosen by the counts: the texts of a decision,
+of one tag, or of one or several licenses, libraries or statuses, from
+their indexes in the numeric order of ids, the windows of several values
+merged; the ids named, sorted, when they are at most `SORTED`
+(`wpt_depot/depot.py`); else every current text, from `texts_order`. It
+tests each candidate against the rest of the filter. In the numeric order
+of ids it reads at most `WINDOW` candidates after its place (`TEXT_WINDOW`
+with a search in the texts themselves), and in the order of statuses at
+most that many from `texts_status`, so a page is bounded whatever the
+depot's size and however few texts match. A page cut at that bound is
+partial: it can hold fewer rows than asked, or none, and the next page
+reads on from its last candidate. The playlist and the blob say so and
+read on when asked. No index serves the other orders, which sort every
+candidate, so the server gives them only when the listing holds at most
+`SORTED` texts and refuses them past it; a page says whether its listing
+allows them, and the playlist offers them only then. The counts of a filter
+come apart, in steps: each step counts the matches in one slice of at most
+a million texts of the page's listing, in its order, so each one stays well
+under the time limit of a reader. A filter that names its texts is counted
+in one step over those texts. A filter of statuses, of at most one tag,
+license or library, and of whether a locked library holds the texts is
+counted at once from the depot's counts, with no step. The pages run one step at a time, the counts
+open on a page taking turns, and add the steps up. The numbers grow as the
+steps answer, with how many texts are counted out of the listing's texts, a
+number `counts` gives. A count
 ends when its page leaves it or its filter changes, and it starts again
 after a change of the depot made from the page. A step starts at least two
 seconds after the one before it. A step refused by a proxy's rate limit

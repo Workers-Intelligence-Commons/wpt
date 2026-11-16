@@ -59,6 +59,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .corpus import _depots, _erasures, _fingerprint, _named, depot_name
+from .counts import KINDS
 from .depot import Depot
 from .ids import EXPORT_SEED
 from .order import TRAINING_KINDS
@@ -92,7 +93,8 @@ class Export:
     """The export of the current revision of depot's dataset (its row),
     whose depot url names (wpt_depot.corpus.depot_name). Reading what
     identifies it opens the depots the dataset reads and reads their
-    erasures; counting its texts (texts) reads an index of each library."""
+    erasures; counting its texts (texts) reads the revision's figures, and
+    an index of each library whose figure is not known."""
 
     def __init__(self, depot: Depot, dataset: dict, url: str | None):
         self.depot, self.dataset = depot, dataset
@@ -106,9 +108,14 @@ class Export:
     def texts(self) -> int:
         """How many texts the dataset's libraries held at their change
         numbers, each library counted apart (a text two hold counts twice,
-        and so does one no share takes): what sets the number of parts."""
-        return sum(self.opened[name].library_count(ref["library"], ref["change"])
-                   for name, ref in zip(self.names, self.dataset["libraries"]))
+        and so does one no share takes): what sets the number of parts.
+        Each library's count is the one the dataset's revision stores in its
+        figures (Depot.dataset_figures), read at once, and is counted from
+        the library's index only where that figure is not known."""
+        stored = self.depot.dataset_figures(self.dataset["id"], self.dataset["revision"])["libraries"]
+        return sum(self.opened[name].library_count(ref["library"], ref["change"]) if one["stored"] is None
+                   else sum(one["stored"][kind]["texts"] for kind in KINDS)
+                   for name, ref, one in zip(self.names, self.dataset["libraries"], stored, strict=True))
 
     def members(self, number: int, parts: int) -> Iterator[tuple[str, str, int, str | None]]:
         """The texts of part number of parts, in key order (texts of one key

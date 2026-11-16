@@ -1,15 +1,20 @@
 """The depot's counts: how many current texts it holds, and of them how many
-have each status, each tag and each license, how many each library holds
-now and how many each decision is on, with what each library holds by kind
-and by tag in characters and bytes, kept in the table counts
-(wpt_depot.schema) so that a page reads them at once whatever the depot's
-size.
+have each status, each tag, each license and each score name, how many each
+library holds now, how many each decision is on and how many pins of each
+locked library are older than their text's current revision, with what each
+library holds by kind and by tag in characters and bytes, kept in the table
+counts (wpt_depot.schema) so that a page reads them at once whatever the
+depot's size; and the listings of the current texts of each tag and of each
+license (LISTINGS: the tables text_tags and text_licenses), from which a page
+reads the texts of one of them in the numeric order of ids.
 
-This module is the only code that writes that table. Each write of the
-depot keeps it right in its own transaction: it measures what the texts it
+This module is the only code that writes those tables. Each write of the
+depot keeps them right in its own transaction: it measures what the texts it
 changes add to the counts before and after it changes them (changing), or
 what the memberships it adds or ends add (held), and shifts the counts by
-the difference (shift). recount makes the table again from the depot's
+the difference (shift); changing also takes the texts out of the listings
+before the change (unlist) and puts them back as they are after it
+(enlist). recount makes the table again from the depot's
 rows, which `wpt depot recount` runs to repair it and a clone runs once it
 has copied its upstream.
 
@@ -17,8 +22,16 @@ A row is (facet, name, texts, characters, bytes): facet TEXTS with the name
 '' (every current text), STATUS with a status (wpt_depot.policy), TAG with
 a tag, LICENSE with a license id a text names, LIBRARY with a library id
 (its memberships that have not ended, locked libraries included) and
-DECISION with a decision id (its rows of text_decisions), whose characters
-and bytes stay 0; and the facets of SIZED, which say what each library
+DECISION with a decision id (its rows of text_decisions), SCORE with a
+score name, NEWER with a locked library id (its pins whose text has a newer
+current revision), whose characters and bytes stay 0; the facets of SPLIT,
+which split the texts of TEXTS, TAG, LICENSE and LIBRARY by status and by
+whether a locked library holds them (split_name): SPLIT_TEXTS, SPLIT_TAG,
+SPLIT_LICENSE and SPLIT_LIBRARY with the name `<status> <locked> <name>`,
+locked 1 or 0 and name the facet's own ('' for every text), so a filter of
+one status, one tag, license or library, and whether a locked library holds
+the text, is counted from a few rows read by their key (split); and the
+facets of SIZED, which say what each library
 holds, each text at its current revision, its characters and UTF-8 bytes
 those of the content version it reads (content_lists): LIBRARY_KIND with
 the name `<library id> <kind>`, kind plain (a plain text), items (a
@@ -51,40 +64,66 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 
+from .filters import in_locked
+from .ids import order_sql
 from .order import TRAINING_KINDS
+from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 
 TEXTS, STATUS, TAG, LICENSE, LIBRARY, DECISION = "texts", "status", "tag", "license", "library", "decision"
+SCORE, NEWER = "score", "pinned newer"
 LIBRARY_KIND, LIBRARY_TAG = "library kind", "library tag"
-COUNTED = (TEXTS, STATUS, TAG, LICENSE, LIBRARY, DECISION)  # the facets of counts of texts alone (read)
+COUNTED = (TEXTS, STATUS, TAG, LICENSE, LIBRARY, DECISION, SCORE, NEWER)  # the facets of counts of texts alone (read)
+SPLIT_TEXTS, SPLIT_TAG, SPLIT_LICENSE, SPLIT_LIBRARY = "texts split", "tag split", "license split", "library split"
+SPLITS = {TEXTS: SPLIT_TEXTS, TAG: SPLIT_TAG, LICENSE: SPLIT_LICENSE, LIBRARY: SPLIT_LIBRARY}  # each facet's split
+SPLIT = tuple(SPLITS.values())  # the facets split by status and by whether a locked library holds the text
 SIZED = (LIBRARY_KIND, LIBRARY_TAG)  # the facets with characters and bytes
-FACETS = (*COUNTED, *SIZED)
-HELD = (LIBRARY, *SIZED)  # the facets of what libraries hold, measured from rows of memberships
+FACETS = (*COUNTED, *SPLIT, *SIZED)
+HELD = (LIBRARY, *SIZED)  # the facets of what libraries hold (library_moves), measured from rows of memberships
+ROWS = (*HELD, SPLIT_LIBRARY)  # the facets measured from rows of memberships
 KINDS = ("plain", "items", "other")  # the kinds of LIBRARY_KIND
 COLUMNS = ("texts", "characters", "bytes")
 
-# what each facet adds of the texts of a table of ids `{chosen}` (column id): (facet name, count) rows
+# what each facet adds of the texts of a table of ids `{chosen}` (column id): (facet name, count) rows; each reads
+# from the chosen texts' side (CROSS JOIN fixes that order), each text by its key
 _MEASURES = {
-    TEXTS: "SELECT '', count(*) FROM {chosen} c JOIN texts_revisions t ON t.id = c.id AND t.latest",
-    STATUS: "SELECT t.status, count(*) FROM {chosen} c JOIN texts_revisions t ON t.id = c.id AND t.latest "
+    TEXTS: "SELECT '', count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest",
+    STATUS: "SELECT t.status, count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest "
             "GROUP BY t.status",
-    TAG: "SELECT j.value, count(*) FROM {chosen} c JOIN texts_revisions t ON t.id = c.id AND t.latest, "
+    TAG: "SELECT j.value, count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest, "
          "json_each(t.tags) j GROUP BY j.value",
-    LICENSE: "SELECT j.value, count(*) FROM {chosen} c JOIN texts_revisions t ON t.id = c.id AND t.latest, "
+    LICENSE: "SELECT j.value, count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest, "
              "json_each(t.licenses) j GROUP BY j.value",
-    DECISION: "SELECT l.decision, count(*) FROM {chosen} c JOIN text_decisions l ON l.text = c.id GROUP BY l.decision",
+    DECISION: "SELECT l.decision, count(*) FROM {chosen} c CROSS JOIN text_decisions l ON l.text = c.id "
+              "GROUP BY l.decision",
+    SCORE: "SELECT s.value ->> 'name', count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id "
+           "AND t.latest, json_each(t.scores) s GROUP BY 1",
+    NEWER: "SELECT p.library, count(*) FROM {chosen} c CROSS JOIN pins p ON p.text = c.id CROSS JOIN texts_revisions t "
+           "ON t.id = c.id AND t.latest WHERE t.revision > p.revision GROUP BY p.library",
+    # {locked}: whether a locked library holds the text t (_locked)
+    SPLIT_TEXTS: "SELECT t.status || ' ' || {locked} || ' ', count(*) FROM {chosen} c CROSS JOIN texts_revisions t "
+                 "ON t.id = c.id AND t.latest GROUP BY 1",
+    SPLIT_TAG: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM {chosen} c CROSS JOIN "
+               "texts_revisions t ON t.id = c.id AND t.latest, json_each(t.tags) j GROUP BY 1",
+    SPLIT_LICENSE: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM {chosen} c CROSS JOIN "
+                   "texts_revisions t ON t.id = c.id AND t.latest, json_each(t.licenses) j GROUP BY 1",
 }
 # what the rows of memberships a query `{rows}` gives (columns library and text) hold, in one pass that looks up each
 # row's current revision and content version once: (library, its kind as LIBRARY_KIND names it, NULL for a text with
-# no current revision or no content version, the tags as JSON text of a plain text, NULL for another, count, sum of
-# characters, sum of bytes) rows, few since they group by library, kind and set of tags
+# no current revision or no content version, the tags as JSON text of a plain text, NULL for another, the text's
+# status, NULL with no current revision, whether a locked library holds it ({locked}, _locked), count, sum of
+# characters, sum of bytes) rows, few since they group by library, kind, set of tags, status and locked
 _HELD = ("SELECT h.library, CASE WHEN c.id IS NULL THEN NULL WHEN c.kind IS NULL THEN 'plain' WHEN c.kind IN ("
          + ", ".join(f"'{one}'" for one in TRAINING_KINDS) + ") THEN 'items' ELSE 'other' END, "
-         "CASE WHEN c.id IS NOT NULL AND c.kind IS NULL THEN t.tags END, count(*), sum(c.length), sum(c.bytes) "
-         "FROM ({rows}) h LEFT JOIN texts_revisions t ON t.id = h.text AND t.latest "
-         "LEFT JOIN content_lists c ON c.id = t.id AND c.version = t.content_version GROUP BY 1, 2, 3")
-_LIBRARIES = "SELECT h.library, count(*) FROM ({rows}) h GROUP BY h.library"  # LIBRARY alone, with no lookup
-# the memberships that have not ended of the texts of a table of ids `{chosen}`
-_CHOSEN_ROWS = "SELECT m.library, m.text FROM {chosen} x JOIN memberships m ON m.text = x.id AND m.left_change IS NULL"
+         "CASE WHEN c.id IS NOT NULL AND c.kind IS NULL THEN t.tags END, t.status, {locked}, count(*), sum(c.length), "
+         "sum(c.bytes) FROM ({rows}) h LEFT JOIN texts_revisions t ON t.id = h.text AND t.latest "
+         "LEFT JOIN content_lists c ON c.id = t.id AND c.version = t.content_version GROUP BY 1, 2, 3, 4, 5")
+# LIBRARY and SPLIT_LIBRARY alone, with no lookup of a content version: (library, status, locked, count) rows
+_LIBRARIES = ("SELECT h.library, t.status, {locked}, count(*) FROM ({rows}) h "
+              "LEFT JOIN texts_revisions t ON t.id = h.text AND t.latest GROUP BY 1, 2, 3")
+# the memberships that have not ended of the texts of a table of ids `{chosen}`, each text's read through the index
+# memberships_held (by text), never a library's rows
+_CHOSEN_ROWS = ("SELECT m.library, m.text FROM {chosen} x CROSS JOIN memberships m INDEXED BY memberships_held "
+                "ON m.text = x.id AND m.left_change IS NULL")
 # the same over every text of the depot, for the facets of COUNTED
 _WHOLE = {
     TEXTS: "SELECT '', count(*) FROM texts_revisions WHERE latest",
@@ -94,7 +133,23 @@ _WHOLE = {
              "GROUP BY j.value",
     LIBRARY: "SELECT library, count(*) FROM memberships WHERE left_change IS NULL GROUP BY library",
     DECISION: "SELECT decision, count(*) FROM text_decisions GROUP BY decision",
+    SCORE: "SELECT s.value ->> 'name', count(*) FROM texts_revisions t, json_each(t.scores) s WHERE t.latest GROUP BY 1",
+    NEWER: "SELECT p.library, count(*) FROM pins p JOIN texts_revisions t ON t.id = p.text AND t.latest "
+           "WHERE t.revision > p.revision GROUP BY p.library",
+    SPLIT_TEXTS: "SELECT t.status || ' ' || {locked} || ' ', count(*) FROM texts_revisions t WHERE t.latest GROUP BY 1",
+    SPLIT_TAG: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM texts_revisions t, "
+               "json_each(t.tags) j WHERE t.latest GROUP BY 1",
+    SPLIT_LICENSE: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM texts_revisions t, "
+                   "json_each(t.licenses) j WHERE t.latest GROUP BY 1",
+    SPLIT_LIBRARY: "SELECT t.status || ' ' || {locked} || ' ' || m.library, count(*) FROM memberships m CROSS JOIN "
+                   "texts_revisions t ON t.id = m.text AND t.latest WHERE m.left_change IS NULL GROUP BY 1",
 }
+# the stored listings (LISTINGS): for each facet listed, its table, the column of the name and the column of the
+# current revision that lists the names (a JSON array)
+LISTINGS = {TAG: ("text_tags", "tag", "tags"), LICENSE: ("text_licenses", "license", "licenses")}
+# the rows of a listing of the texts of a table of ids `{chosen}`, at their current revisions
+_LISTED = ("SELECT DISTINCT j.value, " + order_sql("t.id") + " FROM {chosen} c CROSS JOIN texts_revisions t "
+           "ON t.id = c.id AND t.latest, json_each(t.{column}) j")
 
 
 def measure(con, chosen: str, facets: Iterable[str]) -> Counter:
@@ -106,23 +161,58 @@ def measure(con, chosen: str, facets: Iterable[str]) -> Counter:
     rows = _CHOSEN_ROWS.format(chosen=chosen)
     if any(facet in SIZED for facet in facets):
         found.update({key: by for key, by in held(con, rows).items() if key[0] in facets})
-    elif LIBRARY in facets:
-        _add(found, LIBRARY, con.execute(_LIBRARIES.format(rows=rows)))
+    elif LIBRARY in facets or SPLIT_LIBRARY in facets:
+        for library, status, locked, count in con.execute(_LIBRARIES.format(rows=rows,
+                                                                            locked=_locked(con, "h.text"))):
+            if LIBRARY in facets:
+                found[LIBRARY, library] += count
+            if SPLIT_LIBRARY in facets and status is not None:
+                found[SPLIT_LIBRARY, split_name(status, locked, library)] += count
+    locked = _locked(con, "t.id")
     for facet in facets:
-        if facet not in HELD:
-            _add(found, facet, con.execute(_MEASURES[facet].format(chosen=chosen)))
+        if facet not in ROWS:
+            _add(found, facet, con.execute(_MEASURES[facet].format(chosen=chosen, locked=locked)))
     return found
+
+
+def split_name(status: str, locked, name: str) -> str:
+    """The name of a row of a facet of SPLIT: the texts of that status, held
+    by a locked library or not (locked), of that name of the facet split."""
+    return f"{status} {int(locked)} {name}"
+
+
+def split(con, facet: str, name: str) -> dict[tuple[str, bool], int]:
+    """{(status, locked): how many texts} of the name of a facet of SPLITS
+    (TEXTS with the name ''), read from its rows of the split facet by their
+    keys; a pair with no row is left out."""
+    keys = {split_name(status, locked, name): (status, bool(locked))
+            for status in (UNDER_REVIEW, ADMITTED, REFUSED) for locked in (0, 1)}
+    return {keys[one]: count for one, count in con.execute(
+        "SELECT name, texts FROM counts WHERE facet = ? AND name IN (SELECT value FROM json_each(?))",
+        (SPLITS[facet], json.dumps(list(keys))))}
+
+
+def _locked(con, text: str) -> str:
+    """Whether a locked library holds the text whose id the SQL expression
+    text gives, as an SQL expression of 1 or 0: 0 itself while no library is
+    locked, so a depot with none looks nothing up."""
+    if con.execute("SELECT 1 FROM libraries_revisions WHERE latest AND locked_at IS NOT NULL LIMIT 1").fetchall():
+        return in_locked(text)
+    return "0"
 
 
 def held(con, rows: str, params=()) -> Counter:
     """The delta of what the rows of memberships that the query rows gives
     (columns library and text; params its parameters) add to the counts of
-    HELD, as if none of them had ended: what a write that adds those rows
+    HELD and of SPLIT_LIBRARY, as if none of them had ended: what a write that adds those rows
     shifts the counts by, or, negated, one that ends them. The query runs
     once, and each of its rows is looked up once."""
     found = Counter()
-    for library, what, tags, count, length, nbytes in con.execute(_HELD.format(rows=rows), params):
+    for library, what, tags, status, locked, count, length, nbytes in con.execute(
+            _HELD.format(rows=rows, locked=_locked(con, "h.text")), params):
         found[LIBRARY, library] += count
+        if status is not None:
+            found[SPLIT_LIBRARY, split_name(status, locked, library)] += count
         if what is None:
             continue
         names = [(LIBRARY_KIND, f"{library} {what}")]
@@ -172,10 +262,34 @@ def changing(con, chosen: str, facets: Iterable[str]) -> Iterator[None]:
     write inside the block may shift the same facets itself."""
     facets = tuple(facets)
     before = measure(con, chosen, facets)
+    unlist(con, chosen, facets)
     yield
     after = measure(con, chosen, facets)
     after.subtract(before)
     shift(con, after)
+    enlist(con, chosen, facets)
+
+
+def enlist(con, chosen: str, facets: Iterable[str]):
+    """Add to the listings of the facets named among LISTINGS the rows of
+    the texts whose ids the table chosen holds, at their current
+    revisions."""
+    for facet in facets:
+        if facet in LISTINGS:
+            table, name, column = LISTINGS[facet]
+            con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) "
+                        + _LISTED.format(chosen=chosen, column=column))
+
+
+def unlist(con, chosen: str, facets: Iterable[str]):
+    """Take out of the listings of the facets named among LISTINGS the rows
+    of the texts whose ids the table chosen holds, as their current
+    revisions list them: each row read by its key."""
+    for facet in facets:
+        if facet in LISTINGS:
+            table, name, column = LISTINGS[facet]
+            con.execute(f"DELETE FROM {table} WHERE ({name}, key) IN ("
+                        + _LISTED.format(chosen=chosen, column=column) + ")")
 
 
 def recount(con, known: bool):
@@ -184,9 +298,15 @@ def recount(con, known: bool):
     carry its own numbering alone, False in a depot that follows an
     upstream)."""
     con.execute("DELETE FROM counts")
-    for facet in COUNTED:
-        con.execute(f"INSERT INTO counts (facet, name, texts) SELECT '{facet}', * FROM ({_WHOLE[facet]})")
+    locked = _locked(con, "t.id")
+    for facet in (*COUNTED, *SPLIT):
+        con.execute(f"INSERT INTO counts (facet, name, texts) SELECT '{facet}', * FROM "
+                    f"({_WHOLE[facet].format(locked=locked)})")
     con.execute("DELETE FROM counts WHERE texts = 0")
+    for table, name, column in LISTINGS.values():
+        con.execute(f"DELETE FROM {table}")
+        con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) SELECT j.value, {order_sql('t.id')} "
+                    f"FROM texts_revisions t, json_each(t.{column}) j WHERE t.latest")
     fill(con, known)
 
 

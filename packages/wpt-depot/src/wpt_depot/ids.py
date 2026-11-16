@@ -103,6 +103,14 @@ def order_sql(column: str = "id") -> str:
             f"ELSE '0' || printf('%020d', {number}) END || char(1) || {column})")
 
 
+def key_id_sql(column: str = "key") -> str:
+    """The id whose order_sql value is in column, as an SQL expression:
+    what follows the second char(1) of it (neither the depot's name nor the
+    number holds one)."""
+    first = f"instr({column}, char(1))"
+    return f"substr({column}, {first} + instr(substr({column}, {first} + 1), char(1)) + 1)"
+
+
 def order_key(one: str) -> tuple:
     """The same order as order_sql, as a key of Python's sort."""
     found = number(one)

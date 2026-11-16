@@ -7,7 +7,8 @@
 // left. It is read only: a click on a passage, or on the name over it,
 // opens that text in the editor, the playlist's page starting at it. A click
 // on a fold inside a transcript or on a link opens the fold or follows the
-// link instead. A conversation read whole shows as a transcript
+// link instead. A page the server cut at its reading bound can hold no text;
+// the next is then read on a click. A conversation read whole shows as a transcript
 // (transcript.tsx); one cut by the page shows its start as it is stored.
 
 import { Button, Skeleton } from "@workers-intelligence-commons/components";
@@ -58,9 +59,12 @@ export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Ord
     setPages((p) => [...p, { after: from, rows: a.data.rows }]);
     setNext(a.data.next ? { after: a.data.next } : null);
   };
+  // a page cut at the server's reading bound can hold no text: the next one is then read on a click, never
+  // one after another on their own while nothing shows
+  const stalled = pages.length > 0 && pages[pages.length - 1].rows.length === 0 && next !== null;
   useEffect(() => {
     const sentinel = end.current;
-    if (!sentinel || next === null || failed) return;
+    if (!sentinel || next === null || failed || stalled) return;
     const watcher = new IntersectionObserver((seen) => { if (seen.some((s) => s.isIntersecting)) more(); }, { rootMargin: "800px" });
     watcher.observe(sentinel);
     return () => watcher.disconnect();
@@ -73,7 +77,7 @@ export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Ord
   return (
     <div className="blob" aria-label="The open texts, one after another">
       {pages.length === 0 && next !== null && !failed && <Skeleton lines={8} label="Reading the first texts" />}
-      {pages.length > 0 && pages[0].rows.length === 0 && <p>No text matches the filter.</p>}
+      {next === null && pages.length > 0 && pages.every((page) => page.rows.length === 0) && <p>No text matches the filter.</p>}
       {pages.flatMap((page) => page.rows.map((r) => (
         <article key={r.id} className="blob-text" aria-label={r.title ?? r.id}>
           <h2 className="blob-rule small">
@@ -92,7 +96,9 @@ export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Ord
       )))}
       {failed && !failed.ok && <><Problems problems={failed.problems} /><Button variant="quiet" onClick={() => { setFailed(null); setReading(false); }}>Try again</Button></>}
       <div ref={end} className="blob-end small aside" role="status">
-        {next === null ? pages.length > 0 && pages[0].rows.length > 0 && "The end of the open texts." : reading && "Reading the next texts"}
+        {next === null ? pages.some((page) => page.rows.length > 0) && "The end of the open texts."
+          : reading ? "Reading the next texts"
+          : stalled && <>No match among the texts read so far. <Button variant="quiet" onClick={more}>Read on</Button></>}
       </div>
     </div>
   );

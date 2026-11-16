@@ -4,10 +4,10 @@ the bytes it would take in the store and the time its build would take.
 Nothing is written.
 
 The sample is at most POINTS texts of each library the dataset reads,
-spread over the order its depot recorded the library's rows in
-(Depot.library_spread), the same texts for the same depot state. Of them,
-the texts the corpus may take (wpt_depot.order) are read and tokenized in
-the sample's order as the build tokenizes them (a plain text with END
+spread over the order of their export keys (Depot.library_spread), the
+same texts for the same depot state. Of them, the texts the corpus may
+take (wpt_depot.order) are read and tokenized in the sample's order as the
+build tokenizes them (a plain text with END
 after it, a conversation through the chat template, a task as the JSON
 text of its line), until SAMPLE_BYTES are tokenized; a text bigger than
 BIG_TEXT counts by its bytes and is not tokenized. That bounds the work to
@@ -36,9 +36,9 @@ part the walk does not close within those texts is left at its proportion
 of the size. The items' part of the size and the items the dataset holds
 come from the build's census (wpt_depot.corpus.census), as the build counts
 them, rather than from the sample: the figures the dataset's revision
-stores, read at once, or, when they are not known, the same figures
-counted from every text of its libraries, which takes long on a big one and
-which a warning names.
+stores, read at once; when they are not known, they come from the sample's
+weights instead, never from every text of the libraries, and a warning
+says so.
 even_size is the smallest size (max_tokens, or one of a fixed ladder of
 sizes above it, each a quarter more than the one before) at which every share's forecast part of
 the plain text is within UNEVEN of its proportion, the rule the web app's
@@ -55,8 +55,7 @@ every text of the dataset for its census, which the time leaves out, and
 a warning says so.
 
 So what the estimate reads does not grow with the dataset: POINTS texts of
-each library, FOLLOWED texts of the order and the counts of the figures,
-unless the figures are not known.
+each library, FOLLOWED texts of the order and the counts of the figures.
 
     estimate(depot, dataset, tokenizer, max_tokens, url, workers)   the estimate, as a dict
 """
@@ -113,7 +112,7 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     for name, ref in zip(names, dataset["libraries"]):
         source = opened[name]
         members = source.counts()["library"].get(ref["library"], 0)
-        rows = source.library_spread(ref["library"], ref["change"], POINTS, members)
+        rows = source.library_spread(ref["library"], ref["change"], POINTS)
         if not rows:
             continue
         each = members / len(rows)  # the texts of the library one sampled text stands for
@@ -144,7 +143,8 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     if not figures:
         warnings.append("the figures of this revision of the dataset are not known, so its build first reads the "
                         "size of every text it holds, which takes long on a big dataset"
-                        + (", and so did this estimate" if max_tokens is not None else "")
+                        + (", and this estimate takes the items' part from its sample instead"
+                           if max_tokens is not None else "")
                         + ": reading the dataset again on its page stores them for this depot's own libraries")
     available = {pool: weight["plain"][pool] * plain_rate for pool in pools}  # tokens each pool may take
     items = weight["items"] * item_rate
@@ -155,10 +155,12 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     items_held = weight["item_texts"]
     if max_tokens is not None:
         _, libraries = _walked(dataset, names, opened)
-        counted = census(depot, dataset, libraries)  # the items' part as the build counts it
-        item_share = (counted["item_bytes"] / (counted["item_bytes"] + _full_plain(counted["pool_bytes"], shares))
-                      if counted["item_bytes"] else 0.0)
-        items_held = counted["items"]
+        if figures:  # the items' part as the build counts it, from the stored figures
+            counted = census(depot, dataset, libraries)
+            item_bytes, pool_bytes, items_held = counted["item_bytes"], counted["pool_bytes"], counted["items"]
+        else:  # never every text of the dataset in a request: the sample's weights stand for them
+            item_bytes, pool_bytes, items_held = weight["items"], weight["plain"], weight["item_texts"]
+        item_share = (item_bytes / (item_bytes + _full_plain(pool_bytes, shares)) if item_bytes else 0.0)
         followed = _followed(libraries, tags)
         items_taken = min(items, max_tokens * item_share)
         parts = {pool: (max_tokens - items_taken) * proportion[pool] for pool in pools}

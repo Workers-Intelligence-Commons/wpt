@@ -79,7 +79,21 @@ from the counts it filled, for each library they prove exact and null for
 the others, and drops the mark. A library whose memberships and texts no
 change touched after the change a revision reads it at holds what it held
 then, so only those get figures, and an upgraded revision never holds
-wrong ones.
+wrong ones. The step to format 10 marks the depot half upgraded and makes
+the tables text_tags and text_licenses (TABLES_10) in its first
+transaction; then it lists the current texts by tag and by license and
+counts their score names and the splits of every text and of each tag,
+license and library by status and by whether a locked library holds them
+(LISTED_10, SCORES_10, SPLITS_10), reading the current
+revisions in rowid order, BATCH rowids a transaction, each recording the
+last rowid in upgrade_under_way, so a run after a stop goes on after it; it
+says how many rows a second it reads every SAY_EVERY seconds. Then it
+builds each index of INDEXES_10 in one statement, skipping one that
+exists, so a run after a stop builds only those missing. Its last
+transaction drops the index text_decisions_decision, which
+text_decisions_order serves in its place (DROPPED_10), counts the pins
+older than their text's current revision (NEWER_COUNTS_10) and drops the
+mark.
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -195,6 +209,54 @@ MOVES_9 = ("CREATE TABLE IF NOT EXISTS library_moves (library TEXT NOT NULL, cha
 JOINED_OR_LEFT_9 = ("SELECT library, max(max(joined_change, coalesce(left_change, 0))) FROM memberships "
                     "INDEXED BY memberships_key GROUP BY library")
 KINDS_9 = ("plain", "items", "other")
+# format 10: the listings of the current texts by tag and by license, each row a name and the text's place in the
+# numeric order of ids (ORDER over the column text, ORDER_TEXT_10), the facets of counts it adds, and the indexes it
+# builds, by name, in the order they are built
+ORDER_TEXT_10 = ORDER.replace("id", "text")
+TABLES_10 = ("CREATE TABLE IF NOT EXISTS text_tags (tag TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY (tag, key)) "
+             "WITHOUT ROWID",
+             "CREATE TABLE IF NOT EXISTS text_licenses (license TEXT NOT NULL, key TEXT NOT NULL, "
+             "PRIMARY KEY (license, key)) WITHOUT ROWID")
+SCORE_10, NEWER_10 = "score", "pinned newer"
+# what one batch of current revisions, the rowids from :low (excluded) to :high, adds: the rows of each listing, and
+# the count of each score name (NOT INDEXED: the rows are read in rowid order, from the table itself)
+LISTED_10 = (("text_tags", "tag", "tags"), ("text_licenses", "license", "licenses"))
+BATCH_ROWS_10 = "FROM texts_revisions t NOT INDEXED WHERE t.latest AND t.rowid > :low AND t.rowid <= :high"
+SCORES_10 = f"SELECT s.value ->> 'name', count(*) {BATCH_ROWS_10.replace('WHERE', ', json_each(t.scores) s WHERE')} GROUP BY 1"
+# the facets that split every text and the texts of each tag, license and library by status and by whether a locked
+# library holds them, each row named `<status> <locked> <name>` (locked 1 or 0): what one batch adds to each, the
+# locked test (LOCKED_10) read from the text's side through the index memberships_held
+LOCKED_10 = ("EXISTS (SELECT 1 FROM memberships lm INDEXED BY memberships_held CROSS JOIN libraries_revisions ll "
+             "ON ll.id = lm.library AND ll.latest AND ll.locked_at IS NOT NULL WHERE lm.text = t.id "
+             "AND lm.left_change IS NULL)")
+SPLIT_NAME_10 = f"t.status || ' ' || {LOCKED_10} || ' ' || "
+SPLITS_10 = (
+    ("texts split", f"SELECT {SPLIT_NAME_10}'', count(*) {BATCH_ROWS_10} GROUP BY 1"),
+    ("tag split", f"SELECT {SPLIT_NAME_10}j.value, count(*) "
+                  f"{BATCH_ROWS_10.replace('WHERE', ', json_each(t.tags) j WHERE')} GROUP BY 1"),
+    ("license split", f"SELECT {SPLIT_NAME_10}j.value, count(*) "
+                      f"{BATCH_ROWS_10.replace('WHERE', ', json_each(t.licenses) j WHERE')} GROUP BY 1"),
+    ("library split", f"SELECT {SPLIT_NAME_10}m.library, count(*) "
+                      + BATCH_ROWS_10.replace("WHERE", "CROSS JOIN memberships m INDEXED BY memberships_held "
+                                                       "ON m.text = t.id AND m.left_change IS NULL WHERE")
+                      + " GROUP BY 1"))
+NEWER_COUNTS_10 = (f"INSERT INTO counts (facet, name, texts) SELECT '{NEWER_10}', p.library, count(*) FROM pins p "
+                   "JOIN texts_revisions t ON t.id = p.text AND t.latest WHERE t.revision > p.revision "
+                   "GROUP BY p.library")
+INDEXES_10 = (
+    ("memberships_order", f"CREATE INDEX IF NOT EXISTS memberships_order ON memberships (library, {ORDER_TEXT_10}) "
+                          "WHERE left_change IS NULL"),
+    ("pins_order", f"CREATE INDEX IF NOT EXISTS pins_order ON pins (library, {ORDER_TEXT_10})"),
+    ("memberships_joined", "CREATE INDEX IF NOT EXISTS memberships_joined ON memberships (joined_change)"),
+    ("memberships_left", "CREATE INDEX IF NOT EXISTS memberships_left ON memberships (left_change) "
+                         "WHERE left_change IS NOT NULL"),
+    ("content_lists_change", "CREATE INDEX IF NOT EXISTS content_lists_change ON content_lists (change)"),
+    ("text_decisions_change", "CREATE INDEX IF NOT EXISTS text_decisions_change ON text_decisions (change)"),
+    ("pins_change", "CREATE INDEX IF NOT EXISTS pins_change ON pins (change)"),
+    ("text_decisions_order", f"CREATE INDEX IF NOT EXISTS text_decisions_order ON text_decisions (decision, "
+                             f"{ORDER_TEXT_10})"))
+# the index of format 9 that text_decisions_order serves in its place, dropped once that one is built
+DROPPED_10 = "DROP INDEX IF EXISTS text_decisions_decision"
 UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
 BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions), 7 (memberships, pins) and 9
                  # (memberships) goes over
@@ -594,8 +656,73 @@ def _merged_9(held, current, versions):
         yield sums, seen, revised
 
 
+def _to_10(db: Database, log):
+    """Format 9 to 10, in several transactions, as the module says: the
+    listings text_tags and text_licenses, the counts of score names and the
+    splits, from the current revisions read in rowid order, BATCH rowids a
+    transaction; then each index of INDEXES_10, one statement each; then
+    the index text_decisions_decision dropped and the counts of pins whose
+    text has a newer revision."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('texts', 0)")
+            for statement in TABLES_10:
+                con.execute(statement)
+            for table, _, _ in LISTED_10:
+                con.execute(f"DELETE FROM {table}")
+            con.execute(f"DELETE FROM counts WHERE facet IN ('{SCORE_10}', '{NEWER_10}', "
+                        + ", ".join(f"'{facet}'" for facet, _ in SPLITS_10) + ")")
+            _new_format(con, 10)
+    con = db.reader()
+    after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'texts'").fetchall()[0][0]
+    last = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+    total = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'texts'").fetchall()[0][0]
+    log(f"{db.path}: listing the {total:,} current texts by tag and by license and counting their score names, "
+        f"from the revisions read in rowid order, rows {after:,} to {last:,}, {BATCH:,} rowids a transaction"
+        + ("" if after == 0 else "; going on after the last transaction the last run wrote"))
+    began = said = time.monotonic()
+    first = after
+    while after < last:
+        upto = min(after + BATCH, last)
+        bounds = {"low": after, "high": upto}
+        with db.bulk() as written:
+            for table, name, column in LISTED_10:
+                written.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) SELECT j.value, {ORDER.replace('id', 't.id')} "
+                                f"{BATCH_ROWS_10.replace('WHERE', f', json_each(t.{column}) j WHERE')}", bounds)
+            added = [(SCORE_10, name, count) for name, count in written.execute(SCORES_10, bounds)]
+            for facet, query in SPLITS_10:
+                added += [(facet, name, count) for name, count in written.execute(query, bounds)]
+            written.executemany("INSERT INTO counts (facet, name, texts) VALUES (?, ?, ?) ON CONFLICT (facet, name) "
+                                "DO UPDATE SET texts = texts + excluded.texts", added)
+            written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'texts'", (upto,))
+        after = upto
+        if time.monotonic() - said >= SAY_EVERY or after == last:
+            said = time.monotonic()
+            log(f"{db.path}: revision row {after:,} of {last:,}, {(after - first) / max(said - began, 1e-9):,.0f} rows a "
+                f"second, {said - began:.0f} seconds")
+    listed = time.monotonic()
+    for name, statement in INDEXES_10:
+        if db.reader().execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)).fetchall():
+            continue
+        log(f"{db.path}: building the index {name}, in one statement that reads its table once; run again after a "
+            "stop, it builds it again")
+        indexed = time.monotonic()
+        with db.bulk() as written:
+            written.execute(statement)
+        log(f"{db.path}: the index {name} is built, in {time.monotonic() - indexed:.0f} seconds")
+    with db.bulk() as written:
+        written.execute(DROPPED_10)
+        written.execute(f"DELETE FROM counts WHERE facet = '{NEWER_10}'")
+        written.execute(NEWER_COUNTS_10)
+        written.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the listings took {listed - began:.0f} seconds and the indexes {time.monotonic() - listed:.0f}; "
+        f"the depot is at format 10, in {time.monotonic() - began:.0f} seconds")
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):

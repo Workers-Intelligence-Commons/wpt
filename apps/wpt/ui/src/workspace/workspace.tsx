@@ -389,7 +389,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
             {answer && !answer.ok && <Problems problems={answer.problems} />}
             {answer?.ok && (
               <Playlist found={answer.data} busy={playlist.pending} current={current} link={link} isTicked={isTicked} everyTicked={ticked.all && ticked.ids.size === 0}
-                onTick={tick} onTickAll={tickAll} onUntickAll={() => setTicked(NONE)} total={shownTotal} sorted={about?.sorted ?? 0} order={playlist.order} onOrder={playlist.setOrder}
+                onTick={tick} onTickAll={tickAll} onUntickAll={() => setTicked(NONE)} total={shownTotal} order={playlist.order} onOrder={playlist.setOrder}
                 limit={playlist.limit} onFirst={playlist.first} onPrevious={playlist.previous} onNext={playlist.next} counting={counts}
                 empty={library && JSON.stringify(filter) === JSON.stringify({ ...EVERY, libraries: [library.id] })
                   ? <>{library.name} is empty. {!library.locked_at && !library.upstream ? <a href={href(["texts"], { ...toQuery(outsideOf(library.id)), into: library.id })}>Put texts in it</a> : null}</>

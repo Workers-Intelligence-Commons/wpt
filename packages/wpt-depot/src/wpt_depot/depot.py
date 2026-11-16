@@ -180,7 +180,8 @@ from .database import Database, person_columns
 from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
                      UnsupportedAddress)
-from .filters import IN_LOCKED, Filter, changed_since, condition, listed as listed_ids
+from .filters import (IN_LOCKED, MEMBERSHIPS_KEY, TEXTS_KEY, Filter, changed_since, condition, listed as listed_ids,
+                      literal, strings)
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
 from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW,
                      decision_list)
@@ -224,11 +225,82 @@ TRAINS_VOCABULARY = ("depot", "dataset", "sample_bytes", "vocab_size")
 VOCABULARY_BASE = 513  # the smallest vocabulary: 256 bytes, the end of a text and 256 reserved ids (wpt_tokenizer)
 # how many texts a step of Depot.count goes over at most
 COUNT_STEP = 1_000_000
+# how many candidates a page reads at most (Depot.search), and with a search in the texts themselves, which reads
+# each candidate's text
+WINDOW, TEXT_WINDOW = 10_000, 200
 # the columns of the texts view but those that hold a text: what a query reads that never reads a text's parts
 FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
           "decisions, scores, status, libraries")
 # every text with the columns a page reads and orders by (Depot.search), before the condition that picks them
 MATCHED = f"SELECT {FIELDS}, {IN_LOCKED} AS locked FROM texts"
+
+
+@dataclass(frozen=True)
+class _Listing:
+    """Rows a page, a count step or an operation reads its candidates from
+    (Depot._plan): rows, an SQL query whose column key holds each text's
+    place in the numeric order of ids (ids.order_sql); texts, how many rows
+    it gives at most; ordered, whether an index gives them in that order
+    (else they are sorted, so they are read only when at most SORTED);
+    always, whether they are read whatever their number (ids given);
+    parts, for the texts of several values, each value's rows, each in that
+    order through its index, whose union is rows (_window merges them);
+    scans, whether they are the rows of the texts themselves (every text,
+    or one status), which an operation over every match reads as they are
+    stored rather than through the listing."""
+    rows: str
+    texts: int
+    ordered: bool
+    always: bool = False
+    parts: tuple[str, ...] = ()
+    scans: bool = False
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """What reads the texts a selection matches: where, the SQL condition
+    over the texts view that matches them; listing, the rows read as
+    candidates; status, the one status a filter names (None for any
+    other); in_text, whether its plain search reads the texts
+    themselves."""
+    where: str
+    listing: _Listing
+    status: str | None = None
+    in_text: bool = False
+
+
+def _listing(rows: str, values: Sequence[str], held: dict[str, int]) -> _Listing | None:
+    """The listing of the texts that have one of the values (a filter's
+    licenses, libraries or statuses), from rows, a query whose {names} is
+    the test of its name column: each value read in key order from its
+    index, several merged (_window); held gives how many texts have each
+    (the depot's counts), their sum an upper bound of the texts of several.
+    None without a value."""
+    values = list(dict.fromkeys(values))
+    if not values:
+        return None
+    total = sum(held.get(one, 0) for one in values)
+    parts = tuple(rows.format(names=f"= {literal(one)}") for one in values)
+    if len(parts) == 1:
+        return _Listing(parts[0], total, True)
+    return _Listing(" UNION ".join(f"SELECT key FROM ({one})" for one in parts), total, True, parts=parts)
+
+
+def _window(listing: _Listing, compare: str | None, direction: str, size: int) -> tuple[str, int]:
+    """(the SQL of at most size keys of the listing, the first in the order
+    asked (direction: '' or ' DESC') whose key compares with one parameter
+    as compare says ('>', '<=', ...; None: from the first), how many
+    parameters it takes, each that place): each part of the listing read in
+    order through its index, at most size rows of each, then merged, so the
+    read is bounded by size for each part whatever the depot's size."""
+    after = "" if compare is None else f"WHERE key {compare} ?"
+    reads = [f"SELECT key FROM ({one}) {after} ORDER BY key{direction} LIMIT {int(size)}"
+             for one in listing.parts or (listing.rows,)]
+    uses = 0 if compare is None else len(reads)
+    if len(reads) == 1:
+        return reads[0], uses
+    merged = " UNION ".join(f"SELECT key FROM ({one})" for one in reads)
+    return f"SELECT key FROM ({merged}) ORDER BY key{direction} LIMIT {int(size)}", uses
 
 
 class _Nothing(Exception):
@@ -480,38 +552,57 @@ class Depot:
                 "revisions": revisions, "pins": pins, "content_versions": versions,
                 "upstream": bool(self.upstream_owned([text]))}
 
-    def search(self, where: str, after: Sequence | None = None, before: Sequence | None = None, limit: int = 50,
-               order: str = "id", descending: bool = False, at: str | None = None) -> dict:
-        """The texts the SQL condition where matches, a page at a time, with
-        no count (Depot.count counts them a step at a time): {rows: the page
-        of at most limit rows, ordered by the column order (one of ORDERS;
-        then by id, in the numeric order of ids), descending turning the
-        whole order around; next: the place of the page's last row when
-        more rows follow it, None otherwise; previous: the place of its
-        first row when rows come before it, None on the first page, and
-        the place after itself for an empty page after a place, since rows
-        can come before it; change: the depot's change number, read before
-        its rows}. A page in an order of INDEXED reads only its own rows; in
-        another order it sorts every match, so it is refused when more
-        than SORTED texts match. A place is the list of a row's values of the order
-        (_ordered), and a page starts after one (after) or ends before one
-        (before), so a far page is read as fast as the first; a page
-        before a place that has fewer than limit rows before it is the first
-        page. A page at a text's id (at) starts at that text's place in
-        the order, with the text itself when where matches it, so a page
+    def search(self, where: "Selection", after: Sequence | None = None, before: Sequence | None = None,
+               limit: int = 50, order: str = "id", descending: bool = False, at: str | None = None) -> dict:
+        """The texts a selection matches (an SQL condition over the texts
+        view, a filter, or ids), a page at a time, with no count
+        (Depot.count counts them a step at a time): {rows: the page of at
+        most limit rows, ordered by the column order (one of ORDERS; then by
+        id, in the numeric order of ids), descending turning the whole order
+        around; next: the place where the next page starts, None when no
+        row follows; previous: the place of its first row when rows come
+        before it, None on the first page, and the place after itself for
+        an empty page after a place, since rows can come before it; partial:
+        whether the page stopped at its reading bound rather than at limit
+        rows (next then names the last candidate read, and the next page
+        reads on from there); sortable: whether the listing is small enough
+        for every order of ORDERS, not only those of INDEXED; change: the
+        depot's change number, read before its rows}.
+
+        A page reads its candidates from the narrowest stored listing the
+        selection names (_plan): the texts of one tag, one license, one
+        library or one status, in the order of their ids, from their index;
+        a decision's texts, several licenses or libraries, or the ids
+        given, when they are at most SORTED, sorted; else every text in the
+        order of its index. In the order id it reads at most WINDOW
+        candidates (TEXT_WINDOW with a search in the texts themselves) after
+        its place, and tests each on the rest of the selection, so a page
+        is bounded whatever the depot's size and however few texts match:
+        a page with fewer than limit rows and a next place is partial. In
+        the order status, the same over the index of statuses, unless the
+        listing is at most SORTED texts. In another order it sorts every
+        candidate, so it is given only when the listing holds at most SORTED
+        texts.
+
+        A place is the list of a row's values of the order (_ordered), and a
+        page starts after one (after) or ends before one (before), so a far
+        page is read as fast as the first; a page before a place that has
+        fewer than limit rows before it and no reading bound is the first
+        page. A page at a text's id (at) starts at that text's place in the
+        order, with the text itself when the selection matches it, so a page
         can open on a text the rows before it would push out; previous is
         then that page's first place, and an id the depot does not hold
-        gives the first page. A row holds a text's credits, never its text or content: its
-        id, kind, title, authors, tags, licenses, libraries, status, whether
-        a locked library holds it, and its length in characters. BadQuery
-        for a condition that is not one; Refused for an order that is none
-        of ORDERS, an order outside INDEXED for more than SORTED matches,
-        more than one of after, before and at, or a place that is not one
-        of the order."""
+        gives the first page. A row holds a text's credits, never its text
+        or content: its id, kind, title, authors, tags, licenses, libraries,
+        status, whether a locked library holds it, and its length in
+        characters. BadQuery for a condition that is not one; Refused for an
+        order that is none of ORDERS, an order the listing cannot give
+        within SORTED texts, more than one of after, before and at, or a
+        place that is not one of the order."""
         if sum(one is not None for one in (after, before, at)) > 1:
             raise Refused("a page starts after one place, ends before one or starts at one text, only one of them")
         change = self.change()
-        self._sortable(where, order)
+        plan = self._plan(where)
         if at is not None:
             held = self.db.person_rows(f"SELECT json_array({', '.join(_ordered(order))}) AS place FROM ({MATCHED}) "
                                        "WHERE id = ?", (at,))
@@ -519,51 +610,43 @@ class Depot:
                 return self.search(where, limit=limit, order=order, descending=descending)
             after = json.loads(held[0]["place"])
         columns = "id, kind, title, authors, tags, licenses, libraries, status, locked, length"
-        found = self._page(where, columns, order, descending, before if before is not None else after,
-                           before is not None, limit, at is not None)
-        if before is not None and len(found) <= limit:
+        found, edge = self._page(plan, columns, order, descending, before if before is not None else after,
+                                 before is not None, limit, at is not None)
+        if before is not None and len(found) <= limit and edge is None:
             return self.search(where, limit=limit, order=order, descending=descending)
         page = found[:limit]
+        places = [one.pop("place") for one in page]
         if before is not None:
             page.reverse()
-        places = [one.pop("place") for one in page]
-        answer = {"rows": [_decoded({**one, "locked": bool(one["locked"])}) for one in page],
-                  "next": places[-1] if page and (before is not None or len(found) > limit) else None,
-                  "previous": places[0] if page and (after is not None or len(found) > limit and before is not None)
-                  else after, "change": change}
-        return answer
+            places.reverse()
+            more_before = len(found) > limit or edge is not None
+            answer_next, previous = before, (places[0] if page and more_before else edge if more_before else None)
+            partial = len(found) <= limit
+        else:
+            answer_next = places[-1] if len(found) > limit else edge
+            partial = len(found) <= limit and edge is not None
+            previous = (places[0] if page and (after is not None or at is not None) else after)
+        return {"rows": [_decoded({**one, "locked": bool(one["locked"])}) for one in page],
+                "next": answer_next, "previous": previous, "partial": partial,
+                "sortable": plan.listing.always or plan.listing.texts <= SORTED, "change": change}
 
-    def _sortable(self, where: str, order: str):
-        """Refused when order is none of ORDERS, or is outside INDEXED and
-        more than SORTED texts match where: a page in such an order sorts
-        every match."""
-        _ordered(order)
-        if order not in INDEXED:
-            found = self.db.person_rows(f"SELECT count(*) AS n FROM (SELECT 1 FROM texts WHERE ({where}) "
-                                        f"LIMIT {SORTED + 1})")[0]["n"]
-            if found > SORTED:
-                raise Refused(f"a page ordered by {order} sorts every text it matches, so it is given for at most "
-                              f"{SORTED:,} matches, and more match: narrow the filter, or order by "
-                              f"{' or '.join(INDEXED)}")
-
-    def passages(self, where: str, after: Sequence | None = None, limit: int = 50, characters: int = 200_000,
-                 order: str = "id", descending: bool = False) -> dict:
-        """The texts the SQL condition where matches with their text, a page
-        at a time, in the order of search: {rows: after the place after (from
-        the first text when None), at most limit texts holding at most
-        characters characters together, each {id, kind, title, length: its
-        length in characters, passage: its text, or an item's content, from
-        its start, whole, or cut at characters for a first text longer than
-        that}, next: the place of the page's last text, where the next page
-        starts, None when the page ends the texts matched}. A later text
-        that does not fit whole starts the next page. BadQuery for a
-        condition that is not one; Refused for an order that is none of
-        ORDERS, an order outside INDEXED for more than SORTED matches, a
-        place that is not one of the order or a bound below 1."""
+    def passages(self, where: "Selection", after: Sequence | None = None, limit: int = 50,
+                 characters: int = 200_000, order: str = "id", descending: bool = False) -> dict:
+        """The texts a selection matches with their text, a page at a time,
+        in the order of search and read as search reads them: {rows: after
+        the place after (from the first text when None), at most limit texts
+        holding at most characters characters together, each {id, kind,
+        title, length: its length in characters, passage: its text, or an
+        item's content, from its start, whole, or cut at characters for a
+        first text longer than that}, next: the place where the next page
+        starts, None when the page ends the texts matched; partial: as
+        search says}. A later text that does not fit whole starts the next
+        page. BadQuery for a condition that is not one; Refused as search
+        is, and for a bound below 1."""
         if limit < 1 or characters < 1:
             raise Refused("a page holds at least one text and one character")
-        self._sortable(where, order)
-        found = self._page(where, "id, kind, title, length", order, descending, after, False, limit)
+        found, edge = self._page(self._plan(where), "id, kind, title, length", order, descending, after, False,
+                                 limit)
         page, left = [], characters
         for one in found[:limit]:
             if page and one["length"] > left:
@@ -576,75 +659,163 @@ class Depot:
         reader = self.reader()
         found_rows = [{"id": one["id"], "kind": one["kind"], "title": one["title"], "length": one["length"],
                        "passage": Parted(reader, one["id"], listed_parts[one["id"]])[:one["shown"]]} for one in page]
-        return {"rows": found_rows, "next": page[-1]["place"] if len(page) < len(found) else None}
+        cut = len(page) < len(found)
+        return {"rows": found_rows, "next": page[-1]["place"] if cut else edge,
+                "partial": not cut and edge is not None}
 
-    def _page(self, where: str, columns: str, order: str, descending: bool, place: Sequence | None, backward: bool,
-              limit: int, inclusive: bool = False) -> list[dict]:
-        """At most limit + 1 rows of the texts where matches, with columns
-        and their place (_ordered), in the order asked, from the one after
-        place (inclusive: from the one at it), or backward from the one
-        before it, the nearest first."""
+    def _plan(self, texts: "Selection") -> "_Plan":
+        """How a page, a count step or an operation reads the texts a
+        selection matches: the SQL condition over the texts view that
+        matches them, and the listing whose rows it reads as candidates
+        (search says which), with how many rows it holds."""
+        if isinstance(texts, str):
+            return _Plan(texts, self._every())
+        if not isinstance(texts, Filter):
+            given = sorted(set(texts))
+            return _Plan(self._condition(given), _Listing(
+                f"SELECT {ids.order_sql('value')} AS key FROM json_each({literal(_json(given))})", len(given), False))
+        held = counts.read(self.db.reader())
+        found = texts
+        options = [self._every(held)]
+        if found.ids is not None:
+            given = sorted(set(found.ids))
+            options.append(_Listing(f"SELECT {ids.order_sql('value')} AS key FROM json_each({literal(_json(given))})",
+                                    len(given), False, always=True))
+        for tag in found.tags:
+            options.append(_Listing(f"SELECT key FROM text_tags WHERE tag = {literal(tag)}",
+                                    held[counts.TAG].get(tag, 0), True))
+        options.append(_listing("SELECT key FROM text_licenses WHERE license {names}", found.licenses,
+                                held[counts.LICENSE]))
+        options.append(_listing(f"SELECT {ids.order_sql('text')} AS key FROM memberships WHERE library {{names}} "
+                                "AND left_change IS NULL", found.libraries, held[counts.LIBRARY]))
+        statuses = _listing(f"SELECT {ids.order_sql('id')} AS key FROM texts_revisions WHERE latest AND status "
+                            "{names}", found.statuses, held[counts.STATUS])
+        options.append(statuses if statuses is None or statuses.parts else replace(statuses, scans=True))
+        if found.decision is not None:  # in key order through the index text_decisions_order
+            options.append(_Listing(f"SELECT {ids.order_sql('text')} AS key FROM text_decisions WHERE decision = "
+                                    f"{literal(found.decision)}", held[counts.DECISION].get(found.decision, 0), True))
+        listing = min((one for one in options if one is not None and (one.ordered or one.always
+                                                                      or one.texts <= SORTED)),
+                      key=lambda one: one.texts)
+        status = (found.statuses[0] if len(set(found.statuses)) == 1 else None)
+        return _Plan(self.condition(found, self.change()), listing, status, found.in_text)
+
+    def _every(self, held: dict | None = None) -> "_Listing":
+        """The listing of every current text, in the order of its index."""
+        held = counts.read(self.db.reader()) if held is None else held
+        return _Listing(f"SELECT {ids.order_sql('id')} AS key FROM texts_revisions WHERE latest",
+                        held[counts.TEXTS].get("", 0), True, scans=True)
+
+    def _page(self, plan: "_Plan", columns: str, order: str, descending: bool, place: Sequence | None,
+              backward: bool, limit: int, inclusive: bool = False) -> tuple[list[dict], list | None]:
+        """(at most limit + 1 rows of the texts the plan matches, with
+        columns and their place (_ordered), in the order asked, from the one
+        after place (inclusive: from the one at it), or backward from the
+        one before it, the nearest first; edge: the place of the last
+        candidate read when the page stopped at its reading bound, None
+        otherwise), read as search says."""
         keys = _ordered(order)
         down = descending != backward
-        compared = ""
-        if place is not None:
-            if not isinstance(place, (list, tuple)) or len(place) != len(keys) or not all(
-                    isinstance(one, (str, int, float)) and not isinstance(one, bool) for one in place):
-                raise Refused(f"a place in the order {order} is a list of {len(keys)} values, as a page gives it")
-            compared = (f"WHERE ({', '.join(keys)}) {'<' if down else '>'}{'=' if inclusive else ''} "
-                        f"({', '.join('?' * len(keys))})")
-        matched = f"{MATCHED} WHERE ({where})"
-        by = ", ".join(f"{one}{' DESC' if down else ''}" for one in keys)
+        if place is not None and (not isinstance(place, (list, tuple)) or len(place) != len(keys) or not all(
+                isinstance(one, (str, int, float)) and not isinstance(one, bool) for one in place)):
+            raise Refused(f"a place in the order {order} is a list of {len(keys)} values, as a page gives it")
+        listing, size = plan.listing, TEXT_WINDOW if plan.in_text else WINDOW
+        compare = f"{'<' if down else '>'}{'=' if inclusive else ''}"
+        direction = " DESC" if down else ""
+        params: tuple = ()
+        if order == "id":
+            window, uses = _window(listing, None if place is None else compare, direction, size)
+            params = (place[0],) * uses if place is not None else ()
+            last = f"SELECT json_array(key) FROM ({window}) ORDER BY key{' ASC' if down else ' DESC'} LIMIT 1"
+        elif order == "status" and listing.texts > SORTED and not listing.always:
+            # one window per status, each a range of the index texts_status (status, then id order), joined in order
+            statuses = sorted([plan.status] if plan.status is not None else [UNDER_REVIEW, ADMITTED, REFUSED],
+                              reverse=down)
+            if place is not None:
+                statuses = [one for one in statuses if one == place[0] or (one < place[0]) == down]
+            parts = []
+            for one in statuses:
+                after = f" AND key {compare} ?" if place is not None and one == place[0] else ""
+                params += (place[1],) if after else ()
+                parts.append(f"SELECT * FROM (SELECT t.status AS status, {ids.order_sql('t.id')} AS key "
+                             f"FROM texts_revisions t INDEXED BY texts_status WHERE t.latest AND "
+                             f"t.status = {literal(one)}{after.replace('key', ids.order_sql('t.id'))} "
+                             f"ORDER BY key{direction} LIMIT {size})")
+            window = (f"SELECT status, key FROM ({' UNION ALL '.join(parts) or 'SELECT NULL AS status, NULL AS key WHERE 0'})"
+                      f" ORDER BY status{direction}, key{direction} LIMIT {size}")
+            last = (f"SELECT json_array(status, key) FROM ({window}) ORDER BY status{' ASC' if down else ' DESC'}, "
+                    f"key{' ASC' if down else ' DESC'} LIMIT 1")
+        else:
+            if listing.texts > SORTED and not listing.always:
+                raise Refused(f"a page ordered by {order} sorts every text it reads, so it is given only when the "
+                              f"filter names at most {SORTED:,} texts by a tag, a license, a library, a status or a "
+                              f"decision, and this one names more: narrow the filter, or order by "
+                              f"{' or '.join(INDEXED)}")
+            window, last = f"SELECT key FROM ({listing.rows})", None
+        # the window is read on its own (MATERIALIZED), in the order of its index, before any text is looked up
+        matched = (f"SELECT {FIELDS}, {IN_LOCKED} AS locked FROM w CROSS JOIN texts "
+                   f"ON texts.id = {ids.key_id_sql('w.key')} WHERE ({plan.where})")
+        compared = ("" if place is None else
+                    f"WHERE ({', '.join(keys)}) {compare} ({', '.join('?' * len(keys))})")
+        by = ", ".join(f"{one}{direction}" for one in keys)
         found = self.db.person_rows(
-            f"SELECT {columns}, json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} ORDER BY {by} "
-            f"LIMIT {int(limit) + 1}", tuple(place) if place is not None else None)
-        return [{**one, "place": json.loads(one["place"])} for one in found]
+            f"WITH w AS MATERIALIZED (SELECT key FROM ({window})) SELECT {columns}, json_array({', '.join(keys)}) AS place "
+            f"FROM ({matched}) {compared} ORDER BY {by} LIMIT {int(limit) + 1}",
+            params + (tuple(place) if place is not None else ()))
+        edge = None
+        if last is not None and len(found) <= limit:
+            read = self.db.person_rows(f"SELECT count(*) AS n FROM ({window})", params)[0]["n"]
+            if read >= size:
+                edge = json.loads(self.db.person_rows(f"SELECT ({last}) AS place", params)[0]["place"])
+        return [{**one, "place": json.loads(one["place"])} for one in found], edge
 
-    def count(self, where: str, start: str | None = None, size: int = COUNT_STEP,
+    def count(self, where: "Selection", start: str | None = None, size: int = COUNT_STEP,
               texts: Sequence[str] | None = None) -> dict:
-        """How many texts the SQL condition where matches in one slice of
-        the depot's texts, so that every match is counted a step at a time,
-        each step bounded whatever the depot's size: the slice is the size
-        texts after the id start (from the first when None), in the order of
-        their ids as text, which the index texts_latest holds; with texts,
-        it is exactly those of the texts named that the depot holds, in one
-        step. {texts: how many texts the slice holds; total: how many texts
-        every step goes over (the depot's texts, or the texts named that it
-        holds), with the first step only (start None), None after it;
-        statuses: how many of the matches are under review, admitted,
-        refused (the status the depot stores, wpt_depot.policy); locked: how many of them a locked
-        library holds; tags and licenses: how many of them have each tag and
-        name each license, the most first; blocked: {reason: how many of
-        them an admission cannot cover for it} (Depot.blocked); next: the
-        start of the next slice, the id of this slice's last text, None
-        when this slice ends the texts; held: False, read from the texts
-        rather than the depot's counts (held_count)}. BadQuery for a
-        condition that is not one; Refused for a size below 1, or texts
-        given with start."""
+        """How many texts a selection matches in one slice of the rows of
+        the listing it is read from (_plan), so that every match is counted
+        a step at a time, each step bounded whatever the depot's size: the
+        slice is the size rows of the listing after the place start (from
+        the first when None), in the order of its index or sorted, as search
+        reads them; with texts (ids), it is exactly those of the texts named that
+        the depot holds, in one step. {texts: how many rows the slice holds;
+        total: how many rows every step goes over (the listing's, or the
+        texts named that the depot holds), with the first step only (start
+        None), None after it; statuses: how many of the matches are under
+        review, admitted, refused (the status the depot stores,
+        wpt_depot.policy); locked: how many of them a locked library holds;
+        tags and licenses: how many of them have each tag and name each
+        license, the most first; blocked: {reason: how many of them an
+        admission cannot cover for it} (Depot.blocked); next: the start of
+        the next slice, the place of this slice's last row, None when this
+        slice ends the listing; held: False, read from the texts rather
+        than the depot's counts (held_count)}. BadQuery for a condition that
+        is not one; Refused for a size below 1, or texts given with
+        start."""
         if size < 1:
             raise Refused("a step counts at least one text")
+        plan = self._plan(where)
         if texts is not None:
             if start is not None:
                 raise Refused("the texts named are counted in one step, with no start")
-            named = _json(sorted(set(texts)))
-            bound, params = "id IN (SELECT value FROM json_each(:named))", {"named": named}
+            given = sorted(set(texts))
+            listing = _Listing(f"SELECT {ids.order_sql('value')} AS key FROM json_each({literal(_json(given))})",
+                               len(given), False)
+            slice_ = f"SELECT key FROM ({listing.rows})"
             held = self._one("SELECT count(*) FROM texts_revisions WHERE latest AND id IN "
-                             "(SELECT value FROM json_each(?))", (named,))
-            step = {"texts": held, "total": held, "next": None}
+                             "(SELECT value FROM json_each(?))", (_json(given),))
+            step, params = {"texts": held, "total": held, "next": None}, ()
         else:
-            last = self._rows("SELECT id FROM texts_revisions WHERE latest AND id > ? ORDER BY id LIMIT 1 OFFSET ?",
-                              (start or "", size - 1))
-            end = last[0]["id"] if last else None
-            bound = "id > :start" + (" AND id <= :end" if end is not None else "")
-            params = {"start": start or "", **({"end": end} if end is not None else {})}
-            held = size if end is not None else self._one(
-                "SELECT count(*) FROM texts_revisions WHERE latest AND id > ?", (start or "",))
-            total = self._one(f"SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = '{counts.TEXTS}'") \
-                if start is None else None
-            step = {"texts": held, "total": total, "next": end}
+            listing = plan.listing
+            slice_, uses = _window(listing, None if start is None else ">", "", size)
+            params = (start,) * uses
+            read = self.db.person_rows(f"SELECT count(*) AS n, max(key) AS last FROM ({slice_})", params)[0]
+            step = {"texts": read["n"], "total": listing.texts if start is None else None,
+                    "next": read["last"] if read["n"] >= size else None}
         found = self.db.person_rows(
-            f"WITH m AS MATERIALIZED (SELECT status, {IN_LOCKED} AS locked, {self.upstream_sql()} AS theirs, "
-            f"{self._unlicensed_sql('licenses')} AS unlicensed, tags, licenses FROM texts WHERE {bound} AND ({where})) "
+            f"WITH w AS MATERIALIZED ({slice_}), "
+            f"m AS MATERIALIZED (SELECT status, {IN_LOCKED} AS locked, {self.upstream_sql()} AS theirs, "
+            f"{self._unlicensed_sql('licenses')} AS unlicensed, tags, licenses FROM w CROSS JOIN texts "
+            f"ON texts.id = {ids.key_id_sql('w.key')} WHERE ({plan.where})) "
             "SELECT 'status' AS part, status AS name, locked, count(*) AS n FROM m GROUP BY status, locked "
             f"UNION ALL SELECT 'blocked', '{BELONGS_TO_UPSTREAM}', 0, count(*) FROM m WHERE theirs "
             f"UNION ALL SELECT 'blocked', '{NO_ALLOWED_LICENSE}', 0, count(*) FROM m WHERE unlicensed AND NOT theirs "
@@ -666,54 +837,39 @@ class Depot:
         """The count of the texts a filter matches, in the shape of a count
         step over every text (count), read at once from the depot's counts
         (wpt_depot.counts) whatever the depot's size, or None when they
-        cannot give how many texts it matches with their split by status
-        and how many a locked library holds: they hold how many texts the
-        depot has, and how many have each status, tag, license and library,
-        so they answer a filter of every text, or of one status, one tag,
-        one license or one library, and nothing else (no ids, search, SQL,
-        outside, decision, locked part, unticked texts, nor a change number
-        older than the depot's). The status split of one value is known
-        when the value's texts are every text or none, when the filter is a
-        status, or when the depot holds texts of one status alone; the
-        texts a locked library holds are known when no library is locked,
-        when the filter is a locked library, or when the filter matches
-        every text and one library alone is locked. tags, licenses and
-        blocked are None where the counts do not give them: they do when
-        the filter matches every text or none, and blocked also when no
-        upstream is followed and every license a text names is allowed
-        (every text names one). held: True."""
-        parts = [(facet, values) for facet, values in ((counts.STATUS, found.statuses), (counts.TAG, found.tags),
-                                                         (counts.LICENSE, found.licenses),
-                                                         (counts.LIBRARY, found.libraries)) if values]
-        if (found.ids is not None or found.unticked or found.outside or found.decision or found.locked is not None
-                or (found.where or "").strip() or (found.search or "").strip() or len(parts) > 1
-                or any(len(values) > 1 for _, values in parts)
+        cannot give it: they split every text, and the texts of each tag,
+        license and library, by status and by whether a locked library
+        holds them (counts.SPLIT), so they answer a filter of any statuses,
+        of at most one tag, license or library, and of a locked part, and
+        nothing else (no ids, search, SQL, outside, decision, unticked
+        texts, two tags, licenses or libraries, nor a change number older
+        than the depot's). tags, licenses and blocked are None where the
+        counts do not give them: they do when the filter matches every text
+        or none, and blocked also when no upstream is followed and every
+        license a text names is allowed (every text names one). held:
+        True."""
+        named_parts = [(facet, values) for facet, values in ((counts.TAG, found.tags), (counts.LICENSE, found.licenses),
+                                                             (counts.LIBRARY, found.libraries)) if values]
+        if (found.ids is not None or found.unticked or found.outside or found.decision
+                or any(one not in (UNDER_REVIEW, ADMITTED, REFUSED) for one in found.statuses)
+                or (found.where or "").strip() or (found.search or "").strip() or len(named_parts) > 1
+                or any(len(set(values)) > 1 for _, values in named_parts)
                 or (found.change is not None and found.change < self.change())):
             return None
-        held = counts.read(self.db.reader())
+        con = self.db.reader()
+        with con:  # one read transaction: every count is of one state
+            held = counts.read(con)
+            facet, value = (named_parts[0][0], named_parts[0][1][0]) if named_parts else (counts.TEXTS, "")
+            parts = counts.split(con, facet, value)
         every = held[counts.TEXTS].get("", 0)
-        facet, value = (parts[0][0], parts[0][1][0]) if parts else (None, None)
-        matched = every if facet is None else held[facet].get(value, 0)
+        wanted = set(found.statuses) or {UNDER_REVIEW, ADMITTED, REFUSED}
+        kept = [(status, locked, n) for (status, locked), n in parts.items()
+                if status in wanted and (found.locked is None or locked == found.locked)]
+        statuses = {status: sum(n for one, _, n in kept if one == status)
+                    for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
+        locked = sum(n for _, one, n in kept if one)
+        matched = sum(statuses.values())
         whole = matched == every  # the filter matches every text, or the depot holds none
-        depot_statuses = {status: held[counts.STATUS].get(status, 0) for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
-        present = [status for status, n in depot_statuses.items() if n]
-        if whole:
-            statuses = depot_statuses
-        elif matched == 0 or facet == counts.STATUS or len(present) <= 1:
-            only = value if facet == counts.STATUS else present[0] if present else None
-            statuses = {status: matched if status == only else 0 for status in depot_statuses}
-        else:
-            return None
-        locked_libraries = [one for (one,) in self.db.reader().execute(
-            "SELECT id FROM libraries WHERE locked_at IS NOT NULL")]
-        if matched == 0 or not locked_libraries:
-            locked = 0
-        elif facet == counts.LIBRARY and value in locked_libraries:
-            locked = matched
-        elif whole and len(locked_libraries) == 1:
-            locked = held[counts.LIBRARY].get(locked_libraries[0], 0)
-        else:
-            return None
         named = {facet: sorted(([name, n] for name, n in held[facet].items()), key=lambda one: (-one[1], one[0]))
                  for facet in (counts.TAG, counts.LICENSE)}
         allowed = {one for (one,) in self.db.reader().execute("SELECT id FROM licenses") if licenses.allowed(one)}
@@ -825,13 +981,14 @@ class Depot:
         (CROSS JOIN fixes that order), so neither the other libraries' rows
         nor the texts outside the range or past the limit are read."""
         if self._locked_then(library, change):
-            held, revision = "pins h", "h.revision"
+            held, revision = "pins h INDEXED BY pins_key", "h.revision"
             when = ""
             change = self._lock_change(library)
         else:
-            held = "memberships h"
-            revision = ("(SELECT max(r.revision) FROM texts_revisions r WHERE r.id = h.text AND r.change <= "
-                        f"(SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')}))")
+            held = "memberships h INDEXED BY memberships_key"
+            revision = (f"(SELECT max(r.revision) FROM texts_revisions r INDEXED BY {TEXTS_KEY} WHERE r.id = h.text "
+                        "AND r.change <= (SELECT b.value FROM json_each(:bounds) b "
+                        f"WHERE b.key = {ids.owner_sql('r.id')}))")
             when = "AND h.joined_change <= :change AND (h.left_change IS NULL OR h.left_change > :change) "
         cursor = self.db.reader().cursor().execute(
             f"SELECT h.export_key, t.id, t.revision, c.kind, t.tags, c.bytes FROM {held} "
@@ -842,42 +999,54 @@ class Depot:
              "bounds": _json(self.bounds(ids.owner(library), change))})
         yield from cursor
 
-    def library_spread(self, library: str, change: int, points: int, members: int) -> list[tuple]:
+    def library_spread(self, library: str, change: int, points: int) -> list[tuple]:
         """At most points of the texts library_texts gives, as (id,
-        revision, kind, tags as JSON text, bytes), spread over the order
-        the depot recorded the library's rows in (the rowids of its memberships, or of its pins for a library
-        locked then): the first row at or after each of points evenly spaced
-        rowids from its first to its last, the same texts for the same depot state, each read through
-        the table's rowid alone. members, about how many rows the library
-        has, says whether they lie among many others' rows, when the
-        spacing spans the library's own first and last rowids instead of the
-        table's."""
-        table = "pins" if self._locked_then(library, change) else "memberships"
-        low, high = self.db.reader().execute(f"SELECT min(rowid), max(rowid) FROM {table}").fetchone()
+        revision, kind, tags as JSON text, bytes), spread over the order of
+        their export keys (wpt_depot.ids), which spread a library's texts
+        evenly: every text of a library that holds at most points of them,
+        else the first text at or after each of points evenly spaced keys
+        from the library's lowest key to its highest, the same texts for the
+        same depot state. Each point is one seek of the index memberships_key
+        (pins_key for a library locked then) read as library_range reads it,
+        so the read is bounded by points whatever the library's size."""
+        table = "pins INDEXED BY pins_key" if self._locked_then(library, change) else (
+            "memberships INDEXED BY memberships_key")
+        # each end on its own: SQLite reads one end of an index range for a lone min() or max() only
+        low, high = (self.db.reader().execute(f"SELECT {end}(export_key) FROM {table} WHERE library = ?",
+                                              (library,)).fetchone()[0] for end in ("min", "max"))
         if low is None:
             return []
-        if members * 4 < high - low + 1:  # its rows are a few among many: span its own
-            low, high = self.db.reader().execute(f"SELECT min(rowid), max(rowid) FROM {table} WHERE library = ?",
-                                                 (library,)).fetchone()
-            if low is None:
-                return []
-        held, params = self._held(library, change, place=True)
-        query = (f"SELECT t.id, t.revision, c.kind, t.tags, c.bytes, h.place FROM ({held}) h JOIN texts_revisions t "
-                 f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN}")
+        first = [tuple(row[1:]) for row in self.library_range(library, change, low, high, limit=points + 1)]
+        if len(first) <= points:
+            return first
         found, seen = [], set()
-        reader = self.db.reader()
         for at in range(points):
             start = low + (high - low) * at // max(points - 1, 1)
-            for row in reader.execute(query, {**params, "start": start}):
-                if row[5] not in seen:
-                    seen.add(row[5])
-                    found.append(tuple(row[:5]))
+            for _, text, revision, kind, tags, size in self.library_range(library, change, start, high, limit=1):
+                if text not in seen:
+                    seen.add(text)
+                    found.append((text, revision, kind, tags, size))
         return found
 
     def library_count(self, library: str, change: int) -> int:
-        """How many texts library_texts gives, counted without reading them."""
-        held, params = self._held(library, change)
-        return self._rows(f"SELECT count(*) AS n FROM ({held})", params)[0]["n"]
+        """How many texts library_texts gives, counted without reading them:
+        read from the depot's counts at once when the library holds now what
+        it held at that change (wpt_depot.counts.unmoved), else counted from
+        the library's rows of the index memberships_key (of pins_key for a
+        library locked then) alone, which reads every row of the library."""
+        locked = self._locked_then(library, change)
+        con = self.db.reader()
+        with con:  # one read transaction: the move and the count are those of one state
+            if counts.unmoved(con, library, change):
+                found = con.execute("SELECT texts FROM counts WHERE facet = ? AND name = ?",
+                                    (counts.LIBRARY, library)).fetchall()
+                return found[0][0] if found else 0
+            if locked:
+                return con.execute("SELECT count(*) FROM pins INDEXED BY pins_key WHERE library = ?",
+                                   (library,)).fetchall()[0][0]
+            return con.execute("SELECT count(*) FROM memberships INDEXED BY memberships_key WHERE library = ? "
+                               "AND joined_change <= ? AND (left_change IS NULL OR left_change > ?)",
+                               (library, change, change)).fetchall()[0][0]
 
     def measure(self, libraries: Sequence[str], tags: Sequence[str] = ()) -> dict:
         """What the libraries hold now, read from the depot's counts
@@ -924,27 +1093,18 @@ class Depot:
             raise NotFound(f"the depot holds no revision {revision} of the text {text}")
         return found[0]
 
-    def _held(self, library: str, change: int, place: bool = False) -> tuple[str, dict]:
+    def _held(self, library: str, change: int) -> tuple[str, dict]:
         """(the query of each text the library held at that change, as
-        member and revision; its parameters), as library_texts says. With
-        place, only the first such row at or after the rowid :start of
-        memberships, or of pins for a library locked then, read in rowid
-        order, with that rowid as place."""
-        if place:  # the rows are read in rowid order: the index of the library would read them all first
-            column, where, after = ", {0}.rowid AS place", "{0}.rowid >= :start AND +{0}.library", (
-                " ORDER BY {0}.rowid LIMIT 1")
-        else:
-            column, where, after = "", "{0}.library", ""
+        member and revision; its parameters), as library_texts says."""
         if self._locked_then(library, change):
-            held = (f"SELECT p.text AS member, p.revision{column} FROM pins p WHERE {where} = :library"
-                    f"{after}").format("p")
+            held = "SELECT p.text AS member, p.revision FROM pins p WHERE p.library = :library"
             change = self._lock_change(library)
         else:
-            held = ("SELECT m.text AS member, (SELECT max(r.revision) FROM texts_revisions r WHERE r.id = m.text "
+            held = ("SELECT m.text AS member, (SELECT max(r.revision) FROM texts_revisions r INDEXED BY "
+                    f"{TEXTS_KEY} WHERE r.id = m.text "
                     f"AND r.change <= (SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')})"
-                    f") AS revision{column.format('m')} FROM memberships m WHERE {where.format('m')} = :library "
-                    f"AND m.joined_change <= :change AND (m.left_change IS NULL OR m.left_change > :change)"
-                    f"{after.format('m')}")
+                    ") AS revision FROM memberships m WHERE m.library = :library "
+                    "AND m.joined_change <= :change AND (m.left_change IS NULL OR m.left_change > :change)")
         return held, {"library": library, "change": change, "bounds": _json(self.bounds(ids.owner(library), change))}
 
     def _locked_then(self, library: str, change: int) -> bool:
@@ -960,28 +1120,41 @@ class Depot:
         """The change number at which the locked library was locked, in the numbering of the depot that owns it."""
         return _lock_change(self.db.reader(), library)
 
-    def pinned(self, library: str, offset: int = 0, limit: int = 50) -> dict:
+    def pinned(self, library: str, offset: int = 0, limit: int = 50, after: str | None = None) -> dict:
         """The revisions a locked library pinned, a page at a time: {total:
         how many texts it pinned, newer: how many of them have a current
-        revision newer than the one pinned, rows: limit rows from offset in
-        the numeric order of ids, each {id, title: the pinned revision's,
-        revision: the one pinned, current: the text's current revision,
-        status: its status when the library was locked, by the decisions
-        made on it up to then (wpt_depot.policy)}}. An open library pins
-        none. NotFound without such a library."""
-        self._library(library)
-        query = ("SELECT p.text AS id, t.title, p.revision, c.revision AS current FROM pins p "
-                 "JOIN texts_revisions t ON t.id = p.text AND t.revision = p.revision "
-                 "JOIN texts_revisions c ON c.id = p.text AND c.latest WHERE p.library = :library")
-        totals = self._rows(f"SELECT count(*) AS total, count(*) FILTER (WHERE current > revision) AS newer "
-                            f"FROM ({query})", {"library": library})[0]
+        revision newer than the one pinned, both read from the depot's
+        counts at once (wpt_depot.counts: what a locked library holds, and
+        NEWER), rows: limit rows from offset in the numeric order of ids, or
+        after the place after (a row's place) when given, each {id, title:
+        the pinned revision's, revision: the one pinned, current: the
+        text's current revision, status: its status when the library was
+        locked, by the decisions made on it up to then (wpt_depot.policy)},
+        next: the place of the page's last row when more follow, None
+        otherwise}. The rows are read
+        in that order from the index pins_order, skipping offset of its
+        entries. An open library pins none. NotFound without such a
+        library."""
+        found_library = self._library(library)
+        held = counts.read(self.db.reader())
+        pinned = found_library["locked_at"] is not None
+        totals = {"total": held[counts.LIBRARY].get(library, 0) if pinned else 0,
+                  "newer": held[counts.NEWER].get(library, 0)}
+        key = ids.order_sql("p.text")
+        page = (f"SELECT p.text, p.revision, {key} AS place FROM pins p WHERE p.library = :library "
+                + ("" if after is None else f"AND {key} > :after ")
+                + f"ORDER BY {key} LIMIT {int(limit) + 1} OFFSET {int(offset)}")
+        query = ("SELECT h.text AS id, t.title, h.revision, c.revision AS current, h.place FROM "
+                 f"({page}) h CROSS JOIN texts_revisions t ON t.id = h.text AND t.revision = h.revision "
+                 "CROSS JOIN texts_revisions c ON c.id = h.text AND c.latest")
         locked = self._lock_change(library)
         bounds = _json(self.bounds(ids.owner(library), locked)) if locked is not None else "{}"
         bound = f"(SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('q.id')})"
         found = self._rows(f"SELECT q.*, {policy.linked_status_sql('q.id', bound)} AS status FROM ({query}) q "
-                           f"ORDER BY {ids.order_sql('q.id')} LIMIT {int(limit)} OFFSET {int(offset)}",
-                           {"library": library, "bounds": bounds})
-        return {**totals, "rows": found}
+                           "ORDER BY q.place", {"library": library, "bounds": bounds,
+                                                **({} if after is None else {"after": after})})
+        places = [one.pop("place") for one in found]
+        return {**totals, "rows": found[:limit], "next": places[limit - 1] if len(found) > limit else None}
 
     # Licenses
 
@@ -1045,7 +1218,9 @@ class Depot:
             self._choose(con, added)
             self._link(con, decision, number)  # counts the decision's texts
             counts.shift(con, counts.measure(con, "temp.chosen", (counts.TEXTS, counts.STATUS, counts.TAG,
-                                                                  counts.LICENSE)))
+                                                                  counts.LICENSE, counts.SPLIT_TEXTS,
+                                                                  counts.SPLIT_TAG, counts.SPLIT_LICENSE)))
+            counts.enlist(con, "temp.chosen", counts.LISTINGS)
             return added
 
     def blocked(self, texts: Selection, status: str = ADMITTED, after: Sequence | None = None,
@@ -1055,17 +1230,39 @@ class Depot:
         {rows: at most limit rows, each {id, reasons: the reasons that
         hold, BELONGS_TO_UPSTREAM (a row the upstream owns, for any
         decision) and NO_ALLOWED_LICENSE (none of its licenses is allowed,
-        wpt_depot.licenses, for an admission)}, next: the place of the
-        page's last row when more follow, None otherwise}. The decision
-        refuses, or leaves out, every text listed here. NotFound when a
-        given id is no text; BadQuery for a condition that is not one."""
+        wpt_depot.licenses, for an admission)}, next: the place where the
+        next page starts when more may follow, None otherwise; partial: as
+        search says}. The decision refuses, or leaves out, every text listed
+        here. In a depot that follows no upstream, none is blocked when the
+        decision admits no text or every license a text names is allowed
+        (the depot's counts say which licenses texts name): that is answered
+        at once. Otherwise its candidates are read as search reads them, from
+        the narrowest of the selection's listing and the texts that name a
+        license that is not allowed (text_licenses). The decision applies
+        the same check. NotFound when a given id is no text; BadQuery for a
+        condition that is not one."""
+        upstream = self.upstream() is not None
+        named = counts.read(self.db.reader())[counts.LICENSE]
+        refused = sorted(one for one in named if not licenses.allowed(one))
+        if not upstream and (status != ADMITTED or not refused):
+            if not isinstance(texts, (str, Filter)):
+                self._condition(texts)  # NotFound for a named id that is no text
+            return {"rows": [], "next": None, "partial": False}
         theirs, unlicensed = self.upstream_sql(), self._unlicensed_sql("licenses", status)
-        found = self._page(f"({self._condition(texts)}) AND ({theirs} OR {unlicensed})",
-                           f"id, {theirs} AS theirs, {unlicensed} AS unlicensed", "id", False, after, False, limit)
+        plan = self._plan(texts)
+        if not upstream and status == ADMITTED:
+            option = _listing("SELECT key FROM text_licenses WHERE license {names}", refused, named)
+            if option.ordered or option.texts <= SORTED:
+                plan = replace(plan, listing=min((plan.listing, option), key=lambda one: one.texts))
+        found, edge = self._page(replace(plan, where=f"({plan.where}) AND ({theirs} OR {unlicensed})"),
+                                 f"id, {theirs} AS theirs, {unlicensed} AS unlicensed", "id", False, after, False,
+                                 limit)
         rows = [{"id": one["id"], "reasons": [reason for reason, holds in (
             (BELONGS_TO_UPSTREAM, one["theirs"]), (NO_ALLOWED_LICENSE, one["unlicensed"])) if holds]}
             for one in found[:limit]]
-        return {"rows": rows, "next": found[limit - 1]["place"] if len(found) > limit else None}
+        more = len(found) > limit
+        return {"rows": rows, "next": found[limit - 1]["place"] if more else edge,
+                "partial": not more and edge is not None}
 
     def decide(self, status: str, texts: Selection, declaration: Declaration, reason: str | None = None,
                leave_blocked: bool = False, progress=None,
@@ -1113,13 +1310,13 @@ class Depot:
             stage("checking the texts")
             left = {**changed, **self._leave_blocked(con, status, leave_blocked)}
             if again:
-                con.execute(f"DELETE FROM temp.chosen WHERE id IN (SELECT t.id FROM texts_revisions t WHERE t.latest "
-                            f"AND t.status = '{UNDER_REVIEW}' AND t.id IN (SELECT id FROM temp.chosen))")
+                con.execute("DELETE FROM temp.chosen WHERE id IN (SELECT c.id FROM temp.chosen c CROSS JOIN "
+                            f"texts_revisions t ON t.id = c.id AND t.latest WHERE t.status = '{UNDER_REVIEW}')")
                 if con.changes():
                     left[ALREADY_UNDER_REVIEW] = con.changes()
             elif leave_same:
-                con.execute("DELETE FROM temp.chosen WHERE id IN (SELECT t.id FROM texts_revisions t WHERE t.latest "
-                            "AND t.status = ? AND t.id IN (SELECT id FROM temp.chosen))", (status,))
+                con.execute("DELETE FROM temp.chosen WHERE id IN (SELECT c.id FROM temp.chosen c CROSS JOIN "
+                            "texts_revisions t ON t.id = c.id AND t.latest WHERE t.status = ?)", (status,))
                 if con.changes():
                     left[ALREADY[status]] = con.changes()
             decided = con.execute("SELECT count(*) FROM temp.chosen").fetchall()[0][0]
@@ -1184,12 +1381,12 @@ class Depot:
             if unknown:
                 raise Refused(f"the depot holds no license {', '.join(unknown)}")
             lists = [old for (old,) in con.execute(
-                "SELECT t.licenses FROM temp.chosen c JOIN texts_revisions t ON t.id = c.id AND t.latest "
+                "SELECT t.licenses FROM temp.chosen c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest "
                 f"GROUP BY t.licenses ORDER BY min({ids.order_sql('t.id')})")]
             same = [old for old in lists if set(json.loads(old)) == set(new)]
             con.execute("CREATE TEMP TABLE IF NOT EXISTS skipped (id TEXT PRIMARY KEY)")
             con.execute("DELETE FROM temp.skipped")
-            con.execute("INSERT INTO temp.skipped SELECT c.id FROM temp.chosen c JOIN texts_revisions t "
+            con.execute("INSERT INTO temp.skipped SELECT c.id FROM temp.chosen c CROSS JOIN texts_revisions t "
                         "ON t.id = c.id AND t.latest WHERE t.licenses IN (SELECT value FROM json_each(?))",
                         (_json(same),))
             skipped = con.execute("SELECT count(*) FROM temp.skipped").fetchall()[0][0]
@@ -1199,20 +1396,20 @@ class Depot:
                 raise _Nothing(([], skipped))
             stage("writing the new revisions")
             changed = []
-            with counts.changing(con, "temp.chosen", (counts.STATUS, counts.LICENSE)):
+            with counts.changing(con, "temp.chosen", (counts.STATUS, counts.LICENSE, counts.NEWER, *counts.SPLIT)):
                 for old in changed_lists:
                     decision = self._decision(con, number, UNDER_REVIEW, declaration,
                                               policy.license_change(json.loads(old), new), checked=False)
                     con.execute("CREATE TEMP TABLE IF NOT EXISTS grouped (id TEXT PRIMARY KEY)")
                     con.execute("DELETE FROM temp.grouped")
-                    con.execute("INSERT INTO temp.grouped SELECT c.id FROM temp.chosen c JOIN texts_revisions t "
+                    con.execute("INSERT INTO temp.grouped SELECT c.id FROM temp.chosen c CROSS JOIN texts_revisions t "
                                 "ON t.id = c.id AND t.latest WHERE t.licenses = ?", (old,))
                     self._revise(con, "texts_revisions", "SELECT id FROM temp.grouped", number,
                                  {"licenses": ":licenses", "status": f"'{UNDER_REVIEW}'"}, {"licenses": _json(new)})
                     self._link(con, decision, number, "grouped")
                     changed.append((decision, con.execute("SELECT count(*) FROM temp.grouped").fetchall()[0][0]))
-                stage("taking the texts out of the open libraries")
-                self._leave(con, self._open_libraries(), number)
+            stage("taking the texts out of the open libraries")
+            self._leave(con, self._open_libraries(), number)
             stage("committing")
             return changed, skipped
 
@@ -1267,7 +1464,7 @@ class Depot:
             self._store(con, number, [{"id": text, "version": version, "kind": row["kind"],
                                        "source": plain if row["kind"] is None else content}])
             self._choose(con, [text])
-            with counts.changing(con, "temp.chosen", (counts.STATUS, *counts.SIZED)):
+            with counts.changing(con, "temp.chosen", (counts.STATUS, *counts.SIZED, counts.NEWER, *counts.SPLIT)):
                 self._revise(con, "texts_revisions", [text], number,
                              {"content_version": ":version", "status": f"'{UNDER_REVIEW}'"}, {"version": version})
             self._leave(con, self._open_libraries(), number)
@@ -1320,7 +1517,9 @@ class Depot:
                                for name, value in values.items())
             decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
             self._choose(con, [text])
-            with counts.changing(con, "temp.chosen", (counts.TAG, counts.LIBRARY_TAG) if "tags" in values else ()):
+            with counts.changing(con, "temp.chosen", ((counts.TAG, counts.LIBRARY_TAG, counts.SPLIT_TAG)
+                                                      if "tags" in values else ())
+                                 + (counts.NEWER,)):
                 self._revise(con, "texts_revisions", [text], number, {name: f":{name}" for name in values},
                              {name: _json(value) if name in JSON_COLUMNS else value for name, value in values.items()})
             self._link(con, decision, number)
@@ -1363,8 +1562,9 @@ class Depot:
                 decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
                 con.execute("CREATE TEMP TABLE scored_ids (id TEXT PRIMARY KEY)")
                 con.execute("INSERT INTO temp.scored_ids SELECT id FROM temp.scored")
-                self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
-                             {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
+                with counts.changing(con, "temp.scored_ids", (counts.SCORE, counts.NEWER)):
+                    self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
+                                 {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
                 self._link(con, decision, number, "scored_ids")
             finally:
                 scoring.close(con)
@@ -1409,7 +1609,7 @@ class Depot:
                 else:
                     con.execute("INSERT INTO temp.changes SELECT c.id, json_array(json_object('name', :name, 'value', "
                                 ":value, 'content_version', t.content_version)), '[]' FROM temp.chosen c "
-                                "JOIN texts_revisions t ON t.id = c.id AND t.latest",
+                                "CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest",
                                 {"name": name, "value": float(value)})
                 con.execute("CREATE INDEX temp.changes_id ON changes (id)")
                 total, theirs = scoring.check(con, self.upstream_sql(), NAMED)
@@ -1423,8 +1623,9 @@ class Depot:
                                           policy.scores_change(set_names, removed), checked=False)
                 con.execute("CREATE TEMP TABLE scored_ids (id TEXT PRIMARY KEY)")
                 con.execute("INSERT INTO temp.scored_ids SELECT id FROM temp.scored")
-                self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
-                             {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
+                with counts.changing(con, "temp.scored_ids", (counts.SCORE, counts.NEWER)):
+                    self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
+                                 {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
                 self._link(con, decision, number, "scored_ids")
                 stage("committing")
             finally:
@@ -1433,9 +1634,9 @@ class Depot:
 
     def score_names(self) -> list[dict]:
         """Every name of a score a text has now, with how many texts have
-        it, by name: [{name, texts}]. It reads every current text."""
-        return self._rows("SELECT s.value ->> 'name' AS name, count(*) AS texts FROM texts_revisions t, "
-                          "json_each(t.scores) s WHERE t.latest AND t.scores IS NOT NULL GROUP BY 1 ORDER BY 1")
+        it, by name: [{name, texts}], read from the depot's counts
+        (wpt_depot.counts) at once whatever the depot's size."""
+        return self._rows(f"SELECT name, texts FROM counts WHERE facet = '{counts.SCORE}' ORDER BY name")
 
     # Libraries
 
@@ -1476,18 +1677,18 @@ class Depot:
                 raise _Nothing((0, 0))
             stage("putting the admitted texts in the library")
             con.execute("INSERT INTO memberships (library, text, joined_change, left_change, export_key) "
-                        "SELECT :library, c.id, :change, NULL, export_key(c.id) FROM temp.chosen c JOIN texts_revisions t "
-                        f"ON t.id = c.id AND t.latest WHERE t.status = '{ADMITTED}' AND NOT EXISTS "
-                        "(SELECT 1 FROM memberships m WHERE m.library = :library AND m.text = c.id "
-                        "AND m.left_change IS NULL)", {"library": library, "change": number})
+                        "SELECT :library, c.id, :change, NULL, export_key(c.id) FROM temp.chosen c CROSS JOIN "
+                        f"texts_revisions t ON t.id = c.id AND t.latest WHERE t.status = '{ADMITTED}' AND NOT EXISTS "
+                        f"(SELECT 1 FROM memberships m INDEXED BY {MEMBERSHIPS_KEY} WHERE m.library = :library "
+                        "AND m.text = c.id AND m.left_change IS NULL)", {"library": library, "change": number})
             joined = con.changes()
-            left_out = con.execute("SELECT count(*) FROM temp.chosen c JOIN texts_revisions t ON t.id = c.id "
+            left_out = con.execute("SELECT count(*) FROM temp.chosen c CROSS JOIN texts_revisions t ON t.id = c.id "
                                    f"AND t.latest WHERE t.status <> '{ADMITTED}'").fetchall()[0][0]
             if not joined:
                 raise _Nothing((0, left_out))
-            counts.shift(con, counts.held(con, "SELECT m.library, m.text FROM temp.chosen c JOIN memberships m "
-                                               "ON m.library = ? AND m.text = c.id AND m.joined_change = ?",
-                                          (library, number)))
+            counts.shift(con, counts.held(con, "SELECT m.library, m.text FROM temp.chosen c CROSS JOIN memberships m "
+                                               f"INDEXED BY {MEMBERSHIPS_KEY} ON m.library = ? AND m.text = c.id "
+                                               "AND m.joined_change = ?", (library, number)))
             stage("committing")
             return joined, left_out
 
@@ -1509,10 +1710,11 @@ class Depot:
             if not chosen:
                 raise _Nothing((0, 0))
             stage("taking the texts out of the library")
-            leaving = counts.held(con, "SELECT m.library, m.text FROM temp.chosen c JOIN memberships m "
-                                       "ON m.library = ? AND m.text = c.id AND m.left_change IS NULL", (library,))
-            con.execute("UPDATE memberships SET left_change = ? WHERE library = ? AND left_change IS NULL "
-                        "AND text IN (SELECT id FROM temp.chosen)", (number, library))
+            rows = (f"FROM temp.chosen c CROSS JOIN memberships m INDEXED BY {MEMBERSHIPS_KEY} ON m.library = ? "
+                    "AND m.text = c.id AND m.left_change IS NULL")
+            leaving = counts.held(con, f"SELECT m.library, m.text {rows}", (library,))
+            con.execute(f"UPDATE memberships SET left_change = ? WHERE rowid IN (SELECT m.rowid {rows})",
+                        (number, library))
             left = con.changes()
             if not left:
                 raise _Nothing((0, chosen))
@@ -1529,12 +1731,18 @@ class Depot:
             self._refuse_upstream("libraries", [library], FORK)
             if found["locked_at"] is not None:
                 raise Refused(f"the library {library} is locked already")
-            con.execute("INSERT INTO pins (library, text, revision, change, export_key) "
-                        "SELECT m.library, t.id, t.revision, ?, m.export_key "
-                        "FROM memberships m JOIN texts_revisions t ON t.id = m.text AND t.latest "
-                        "WHERE m.library = ? AND m.left_change IS NULL", (number, library))
-            self._revise(con, "libraries_revisions", [library], number, {"locked_at": ":locked_at"},
-                         {"locked_at": _now()})
+            # its texts come to be held by a locked library, which the counts of SPLIT tell apart
+            con.execute("CREATE TEMP TABLE IF NOT EXISTS chosen (id TEXT PRIMARY KEY)")
+            con.execute("DELETE FROM temp.chosen")
+            con.execute("INSERT OR IGNORE INTO temp.chosen (id) SELECT m.text FROM memberships m INDEXED BY "
+                        "memberships_order WHERE m.library = ? AND m.left_change IS NULL", (library,))
+            with counts.changing(con, "temp.chosen", counts.SPLIT):
+                con.execute("INSERT INTO pins (library, text, revision, change, export_key) "
+                            "SELECT m.library, t.id, t.revision, ?, m.export_key "
+                            "FROM memberships m JOIN texts_revisions t ON t.id = m.text AND t.latest "
+                            "WHERE m.library = ? AND m.left_change IS NULL", (number, library))
+                self._revise(con, "libraries_revisions", [library], number, {"locked_at": ":locked_at"},
+                             {"locked_at": _now()})
 
     def fork(self, library: str, name: str, without: Selection | None = None, progress=None,
              left: dict | None = None) -> str:
@@ -1587,12 +1795,13 @@ class Depot:
                 stage("selecting the texts")
                 chosen = self._choose(con, where, left=left)
                 texts = [one for (one,) in con.execute(
-                    "SELECT c.id FROM temp.chosen c WHERE EXISTS (SELECT 1 FROM memberships m WHERE m.library = ? "
-                    f"AND m.text = c.id AND m.left_change IS NULL) ORDER BY {ids.order_sql('c.id')}", (library,))]
+                    f"SELECT c.id FROM temp.chosen c WHERE EXISTS (SELECT 1 FROM memberships m INDEXED BY "
+                    f"{MEMBERSHIPS_KEY} WHERE m.library = ? AND m.text = c.id AND m.left_change IS NULL) "
+                    f"ORDER BY {ids.order_sql('c.id')}", (library,))]
                 if not isinstance(where, (str, Filter)) and len(texts) < chosen:
                     outside = [one for (one,) in con.execute(
                         "SELECT c.id FROM temp.chosen c WHERE NOT EXISTS (SELECT 1 FROM memberships m "
-                        "WHERE m.library = ? AND m.text = c.id AND m.left_change IS NULL) "
+                        f"INDEXED BY {MEMBERSHIPS_KEY} WHERE m.library = ? AND m.text = c.id AND m.left_change IS NULL) "
                         f"ORDER BY {ids.order_sql('c.id')}", (library,))]
                     raise Refused(f"{len(outside)} of the texts named are not in the library {library} (the first: "
                                   f"{outside[0]})")
@@ -1798,6 +2007,7 @@ class Depot:
                 self._choose(con, removed)
                 gone = counts.measure(con, "temp.chosen", counts.FACETS)
                 counts.shift(con, {key: -count for key, count in gone.items()})
+                counts.unlist(con, "temp.chosen", counts.LISTINGS)
             _remove_texts(con, removed)
         return named
 
@@ -2440,7 +2650,13 @@ class Depot:
         if isinstance(texts, Filter):
             if texts.ids:
                 self._condition(list(texts.ids))  # NotFound for a named id that is no text
-            self.db.select_into(con, table, f"SELECT id FROM texts WHERE {condition(replace(texts, change=None))}")
+            plan = self._plan(replace(texts, change=None))
+            if plan.listing.scans:  # every text, or one status: read as stored, never copied into a listing first
+                self.db.select_into(con, table, f"SELECT id FROM texts WHERE {plan.where}")
+            else:
+                self.db.select_into(con, table, f"WITH w AS MATERIALIZED ({plan.listing.rows}) SELECT texts.id FROM w "
+                                                f"CROSS JOIN texts ON texts.id = {ids.key_id_sql('w.key')} "
+                                                f"WHERE {plan.where}")
             if texts.change is not None:
                 con.execute(f"DELETE FROM temp.{table} WHERE EXISTS (SELECT 1 FROM texts_revisions texts "
                             f"WHERE texts.latest AND texts.id = temp.{table}.id AND {changed_since(texts.change)})")
@@ -2469,7 +2685,7 @@ class Depot:
                                                    f"ORDER BY {ids.order_sql('c.id')} LIMIT {NAMED}")]
             self._refuse_upstream("texts", named, total=upstream)
         unlicensed = self._unlicensed_sql("t.licenses", status)
-        found = con.execute(f"SELECT count(*), min(c.id) FROM temp.chosen c JOIN texts_revisions t ON t.id = c.id "
+        found = con.execute(f"SELECT count(*), min(c.id) FROM temp.chosen c CROSS JOIN texts_revisions t ON t.id = c.id "
                             f"AND t.latest WHERE {unlicensed} AND NOT {theirs}").fetchall()[0]
         if found[0] and not leave:
             raise Refused(f"{found[0]} of the texts have no allowed license, so none is admitted (the first: "
@@ -2477,7 +2693,7 @@ class Depot:
         left = {reason: count for reason, count in ((BELONGS_TO_UPSTREAM, upstream), (NO_ALLOWED_LICENSE, found[0]))
                 if count}
         if left:
-            con.execute(f"DELETE FROM temp.chosen WHERE id IN (SELECT c.id FROM temp.chosen c JOIN texts_revisions t "
+            con.execute(f"DELETE FROM temp.chosen WHERE id IN (SELECT c.id FROM temp.chosen c CROSS JOIN texts_revisions t "
                         f"ON t.id = c.id AND t.latest WHERE {theirs} OR {unlicensed})")
         return left
 
@@ -2493,13 +2709,15 @@ class Depot:
     def _restatus(con, status: str, starts_over: bool):
         """Store on the current revision of every text of temp.chosen the
         status one more decision of that status makes of it
-        (policy.combined_sql), and shift the counts of statuses by it."""
+        (policy.combined_sql), and shift the counts of statuses and of
+        wpt_depot.counts.SPLIT by it."""
         new = policy.combined_sql("t.status", status, starts_over)
-        moved = con.execute(f"SELECT t.status, {new}, count(*) FROM temp.chosen c JOIN texts_revisions t "
+        moved = con.execute(f"SELECT t.status, {new}, count(*) FROM temp.chosen c CROSS JOIN texts_revisions t "
                             "ON t.id = c.id AND t.latest GROUP BY t.status").fetchall()
         new = policy.combined_sql("status", status, starts_over)
-        con.execute(f"UPDATE texts_revisions SET status = {new} WHERE latest AND id IN (SELECT id FROM temp.chosen) "
-                    f"AND status IS NOT {new}")
+        with counts.changing(con, "temp.chosen", counts.SPLIT):
+            con.execute(f"UPDATE texts_revisions SET status = {new} WHERE rowid IN (SELECT t.rowid FROM temp.chosen c "
+                        f"CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest) AND status IS NOT {new}")
         delta = {}
         for old, now, count in moved:
             delta[counts.STATUS, old] = delta.get((counts.STATUS, old), 0) - count
@@ -2519,19 +2737,21 @@ class Depot:
         (t) and params, the revision before it no longer latest."""
         con.execute("CREATE TEMP TABLE IF NOT EXISTS revised (id TEXT PRIMARY KEY, revision INTEGER)")
         con.execute("DELETE FROM temp.revised")
+        # each id's current row by its key, from the ids' side (CROSS JOIN fixes that order)
         if isinstance(chosen, str):
-            con.execute(f"INSERT INTO temp.revised SELECT r.id, r.revision FROM {table} r WHERE r.latest "
-                        f"AND r.id IN ({chosen})")
+            con.execute(f"INSERT INTO temp.revised SELECT r.id, r.revision FROM ({chosen}) x CROSS JOIN {table} r "
+                        "ON r.id = x.id AND r.latest")
         else:
-            con.execute(f"INSERT INTO temp.revised SELECT r.id, r.revision FROM {table} r WHERE r.latest "
-                        "AND r.id IN (SELECT value FROM json_each(?))", (_json(list(chosen)),))
-        con.execute(f"UPDATE {table} SET latest = 0 WHERE latest AND id IN (SELECT id FROM temp.revised)")
+            con.execute(f"INSERT INTO temp.revised SELECT r.id, r.revision FROM json_each(?) x CROSS JOIN {table} r "
+                        "ON r.id = x.value AND r.latest", (_json(list(chosen)),))
+        con.execute(f"UPDATE {table} SET latest = 0 WHERE rowid IN (SELECT t.rowid FROM temp.revised c CROSS JOIN "
+                    f"{table} t ON t.id = c.id AND t.revision = c.revision)")
         given = {"revision": "t.revision + 1", "change": ":change", "latest": "1",
                  **({"decisions": "'[]'"} if table == "texts_revisions" else {}), **sets}
         names = self._column_names(table)
         con.execute(f"INSERT INTO {table} ({', '.join(names)}) SELECT "
                     f"{', '.join(given.get(name, f't.{name}') for name in names)} "
-                    f"FROM temp.revised c JOIN {table} t ON t.id = c.id AND t.revision = c.revision",
+                    f"FROM temp.revised c CROSS JOIN {table} t ON t.id = c.id AND t.revision = c.revision",
                     {"change": number, **(params or {})})
         con.execute("DELETE FROM temp.revised")
 
@@ -2541,11 +2761,10 @@ class Depot:
         number, and the counts of those libraries go down by what they held
         of them (wpt_depot.counts.held)."""
         if libraries:
-            leaving = counts.held(con, f"SELECT m.library, m.text FROM temp.{table} c JOIN memberships m "
-                                       "ON m.text = c.id AND m.left_change IS NULL "
-                                       "WHERE m.library IN (SELECT value FROM json_each(?))", (_json(libraries),))
-            con.execute("UPDATE memberships SET left_change = ? WHERE left_change IS NULL "
-                        f"AND library IN (SELECT value FROM json_each(?)) AND text IN (SELECT id FROM temp.{table})",
+            rows = (f"FROM temp.{table} c CROSS JOIN memberships m INDEXED BY memberships_held ON m.text = c.id "
+                    "AND m.left_change IS NULL WHERE m.library IN (SELECT value FROM json_each(?))")
+            leaving = counts.held(con, f"SELECT m.library, m.text {rows}", (_json(libraries),))
+            con.execute(f"UPDATE memberships SET left_change = ? WHERE rowid IN (SELECT m.rowid {rows})",
                         (number, _json(libraries)))
             counts.shift(con, {key: -by for key, by in leaving.items()})
 
@@ -2710,8 +2929,12 @@ def _remove_texts(con, texts: list[str]):
     pins (an erasure's part)."""
     if texts:
         for table, column in (("texts_revisions", "id"), ("content_lists", "id"), ("parts", "id"),
-                              ("text_decisions", "text"), ("memberships", "text"), ("pins", "text")):
+                              ("text_decisions", "text"), ("pins", "text")):
             con.execute(f"DELETE FROM {table} WHERE {column} IN (SELECT value FROM json_each(?))", (_json(texts),))
+        # a text's memberships, ended or not, by their key: each library named, never a library's rows
+        con.execute(f"DELETE FROM memberships WHERE rowid IN (SELECT m.rowid FROM json_each(?) x CROSS JOIN "
+                    f"libraries_revisions r CROSS JOIN memberships m INDEXED BY {MEMBERSHIPS_KEY} "
+                    "ON m.library = r.id AND m.text = x.value WHERE r.latest)", (_json(texts),))
 
 
 def _json(value) -> str | None:

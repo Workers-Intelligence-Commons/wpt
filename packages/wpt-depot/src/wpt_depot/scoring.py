@@ -157,7 +157,7 @@ def score(con) -> tuple[int, int, list[str], list[str]]:
     changed = left_out = 0
     set_names, removed, batch = set(), set(), []
     cursor = con.cursor().execute("SELECT c.id, c.scores, c.remove, t.scores FROM temp.changes c "
-                                  "JOIN texts_revisions t ON t.id = c.id AND t.latest")
+                                  "CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest")
     for text, given, remove, old in cursor:
         given, remove, old = json.loads(given), set(json.loads(remove)), json.loads(old) if old else []
         names = {one["name"] for one in given}

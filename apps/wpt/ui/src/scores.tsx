@@ -7,8 +7,8 @@
 // made from the text's current content version. The bulk form sets one
 // score on, or removes it from, the texts of a selection (POST
 // /api/texts/score), as a job when the selection is large. The names the
-// depot knows (GET /api/scores) read every current text, so a page asks
-// for them once, when a name box is first entered.
+// depot knows (GET /api/scores) come from its counts, asked once a page,
+// when a name box is first entered.
 
 import { Button, Select, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useId, useState, type ReactNode } from "react";
@@ -22,7 +22,7 @@ export type Score = { name: string; value: number; content_version: number };
 type Named = { name: string; texts: number };
 
 // The names of the scores texts have, with how many have each: asked once per page, its answer (a failure
-// included: a large depot's read can pass its time limit) kept for every later box.
+// included) kept for every later box.
 let namesRead: Promise<Answer<Named[]>> | null = null;
 
 // The names, null until a box asked and while read or when the read failed: a name is then typed. load asks.

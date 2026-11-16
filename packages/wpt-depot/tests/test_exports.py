@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import sqlite3
 from compression import zstd
 from pathlib import Path
@@ -117,10 +118,10 @@ def test_a_part_reads_its_library_s_rows_of_its_range_of_keys_alone_for_open_and
         plans.add(index)
     assert plans == {"pins_key", "memberships_key"}
     # a library is counted from the index alone too, never through the table's rows
-    for library, index in ((large, "memberships_key"), (locked, "pins_key")):
+    for library, table in ((large, "memberships"), (locked, "pins")):
         held, params = depot._held(library, depot.change())
         plan = " ".join(row[3] for row in reader.execute(f"EXPLAIN QUERY PLAN SELECT count(*) FROM ({held})", params))
-        assert f"USING COVERING INDEX {index} (library=?)" in plan
+        assert re.search(rf"USING COVERING INDEX {table}_\w+ \(library=\?\)", plan), plan
     # the small library's read of a part gives only its own texts of that part
     low, high = exports.bounds(0, 1)
     assert sorted(row[1] for row in depot.library_range(small, depot.change(), low, high - 1)) == sorted(

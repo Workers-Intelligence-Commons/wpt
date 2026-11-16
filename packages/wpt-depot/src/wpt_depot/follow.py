@@ -75,7 +75,7 @@ from .database import Database, now
 from .depot import About, Depot, _drop_unlisted, _json, _remove_texts, location
 from .errors import BadQuery, DepotExists, NoUpstream, NotFound, OtherFormat, Refused, UpstreamUnreachable
 from .parts import Parted
-from .schema import ADMITTED, FORMAT, KEYS, REVISED
+from .schema import ADMITTED, FORMAT, KEYS, REVISED, WITHOUT_ROWID
 
 PAGE_ROWS = 2000  # rows in one page at most
 PAGE_BYTES = 16 << 20  # bytes of rows in one page, about
@@ -97,9 +97,17 @@ FOLLOWED = {
     "vocabulary_texts": ("recipe", _CHANGED),
 }
 TABLES = (*WHOLE, *FOLLOWED)
+# the followed tables whose rows a pull reads in the order of their change numbers, through an index of each column
+# of change (wpt_depot.schema), rather than in the order of their key: each column in turn (a membership by its
+# joining change, then by its leaving change when it joined outside the range), then each row by its rowid, or by its
+# key for a table without rowid
+BY_CHANGE = {"texts_revisions": ("change",), "content_lists": ("change",), "text_decisions": ("change",),
+             "pins": ("change",), "memberships": ("joined_change", "left_change")}
 # the tables whose rows change what a text adds to the depot's counts (wpt_depot.counts), with the column that names
-# the text
-COUNTED = {"texts_revisions": "id", "content_lists": "id", "text_decisions": "text", "memberships": "text"}
+# the text; a row of libraries_revisions that locks a library changes it for every text the library holds
+# (_Tracked.add_locked)
+COUNTED = {"texts_revisions": "id", "content_lists": "id", "text_decisions": "text", "memberships": "text",
+           "pins": "text"}
 # the tables whose rows store their text's export key, with the column that names the text
 KEYED = {"memberships": "text", "pins": "text"}
 CLONING, PROGRESS = ".cloning", ".cloning.json"
@@ -122,10 +130,15 @@ def rows(depot: Depot, table: str, ranges: dict | None = None, after: list | Non
     then {"next": the key of the last row, or null when the page ends the
     table}. ranges: {depot name: [since, upto]}, the change numbers chosen of
     each depot's rows (FOLLOWED); texts, for content_lists only, the ids of
-    texts whose every version is wanted, ranges aside. BadQuery for a
-    table that does not travel."""
+    texts whose every version is wanted, ranges aside. A pull's page of a
+    table of BY_CHANGE is read by change (_rows_by_change), and its next is
+    then that reading's place, which the follower sends back as it came.
+    BadQuery for a table that does not travel."""
     if table not in TABLES:
         raise BadQuery(f"the table {table} does not travel to a follower")
+    if texts is None and table in BY_CHANGE and ranges and any(since > 0 for since, _ in ranges.values()):
+        yield from _rows_by_change(depot, table, ranges, after)
+        return
     keys = KEYS[table]
     conditions, params = [], {"limit": PAGE_ROWS}
     if after is not None:
@@ -161,6 +174,59 @@ def rows(depot: Depot, table: str, ranges: dict | None = None, after: list | Non
         if size >= PAGE_BYTES:
             break
     yield (json.dumps({"next": last if count == PAGE_ROWS or size >= PAGE_BYTES else None}) + "\n").encode()
+
+
+def _rows_by_change(depot: Depot, table: str, ranges: dict, after: list | None) -> Iterator[bytes]:
+    """One page of rows as rows gives it, for a pull (a range that does not
+    start at 0) of a table of BY_CHANGE: the rows of each column of change
+    in turn, and of each depot's range in turn (in the order of the depots'
+    names), read through the index of that column from the place after,
+    [column's place, depot's place, change, then the rowid or the key], so
+    a page reads only the rows of the index in its range of changes
+    whatever the table's size. The index holds every depot's rows by change
+    alone, so a depot's range also reads the rows of the other depots
+    numbered within it, which its owner test leaves out. BadQuery for a
+    place that is not one."""
+    columns, owner = BY_CHANGE[table], FOLLOWED[table][0]
+    tie = list(KEYS[table]) if table in WITHOUT_ROWID else ["rowid"]
+    if after is not None and (len(after) != 3 + len(tie) or not all(isinstance(one, int) for one in after[:3])):
+        raise BadQuery(f"a page of {table} read by change starts after a place of {3 + len(tie)} values")
+    owners = sorted(ranges)
+    con = depot.db.reader()
+    found, size = [], 0
+    for at, column in enumerate(columns):
+        for who, name in enumerate(owners):
+            if after is not None and [at, who] < after[:2]:
+                continue
+            since, upto = ranges[name]
+            # a membership whose joining change is in the range came in the earlier pass
+            earlier = "".join(f" AND NOT (t.{one} > :since AND t.{one} <= :upto)" for one in columns[:at])
+            place = ""
+            params = {"since": since, "upto": upto, "owner": name, "limit": PAGE_ROWS - len(found)}
+            if after is not None and [at, who] == after[:2]:
+                place = (f" AND (t.{column}, {', '.join(f't.{one}' for one in tie)}) > "
+                         f"({', '.join(f':p{n}' for n in range(1 + len(tie)))})")
+                params.update({f"p{n}": value for n, value in enumerate(after[2:])})
+            cursor = con.cursor().execute(
+                f"SELECT {', '.join(f't.{one} AS tie_{n}' for n, one in enumerate(tie))}, t.* FROM {table} t "
+                f"WHERE t.{column} > :since AND t.{column} <= :upto{place} "
+                f"AND {ids.owner_sql('t.' + owner)} = :owner{earlier} "
+                f"ORDER BY t.{column}, {', '.join(f't.{one}' for one in tie)} LIMIT :limit", params)
+            names = None
+            for one in cursor:
+                names = names or [one[0] for one in cursor.description]
+                row = dict(zip(names, one))
+                place_of = [at, who, row[column], *(row.pop(f"tie_{n}") for n in range(len(tie)))]
+                line = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                yield line
+                found.append(place_of)
+                size += len(line)
+                if size >= PAGE_BYTES:
+                    break
+            if len(found) >= PAGE_ROWS or size >= PAGE_BYTES:
+                yield (json.dumps({"next": found[-1]}) + "\n").encode()
+                return
+    yield (json.dumps({"next": None}) + "\n").encode()
 
 
 def parts(depot: Depot, keys: list[list[str]]) -> Iterator[bytes]:
@@ -371,6 +437,8 @@ def _pull(depot: Depot, upstream: Upstream) -> list[str]:
                 found, after = upstream.page(table, None if table in WHOLE else ranges, after)
                 if table in COUNTED:
                     tracked.add({one[COUNTED[table]] for one in found})
+                if table == "libraries_revisions":
+                    tracked.add_locked([one["id"] for one in found if one.get("locked_at") is not None])
                 _put(con, table, found)
                 if table == "content_lists":
                     _bring_parts(con, upstream, found)
@@ -501,24 +569,42 @@ class _Tracked:
 
     def add(self, texts):
         """Measure the texts named that no earlier call named, before they change."""
+        self._add("SELECT value AS id FROM json_each(?)", (_json(sorted(texts)),))
+
+    def add_locked(self, libraries: list[str]):
+        """Measure, as add does, the texts each library named holds when the
+        depot holds it open: a lock the pull brings changes whether a locked
+        library holds them (wpt_depot.counts.SPLIT)."""
+        for library in libraries:
+            if self.con.execute("SELECT 1 FROM libraries WHERE id = ? AND locked_at IS NULL", (library,)).fetchall():
+                self._add("SELECT m.text AS id FROM memberships m INDEXED BY memberships_order WHERE m.library = ? "
+                          "AND m.left_change IS NULL", (library,))
+
+    def _add(self, query: str, params: tuple):
+        """Measure the texts the query gives (its column id) that no earlier call named, before they change."""
         con = self.con
         con.execute("DELETE FROM temp.fresh")
-        con.execute("INSERT OR IGNORE INTO temp.fresh SELECT value FROM json_each(?) "
-                    "WHERE value NOT IN (SELECT id FROM temp.followed)", (_json(sorted(texts)),))
+        con.execute(f"INSERT OR IGNORE INTO temp.fresh (id) SELECT x.id FROM ({query}) x "
+                    "WHERE x.id NOT IN (SELECT id FROM temp.followed)", params)
         self.before.update(counts.measure(con, "temp.fresh", counts.FACETS))
+        counts.unlist(con, "temp.fresh", counts.LISTINGS)
         con.execute("INSERT INTO temp.followed SELECT id FROM temp.fresh")
 
     def settle(self, depot: Depot, number: int):
         con = self.con
         con.execute(f"UPDATE texts_revisions SET status = {policy.linked_status_sql('texts_revisions.id')} "
-                    "WHERE latest AND id IN (SELECT id FROM temp.followed)")
-        con.execute(f"""UPDATE memberships SET left_change = ? WHERE left_change IS NULL
-            AND library IN (SELECT id FROM libraries WHERE locked_at IS NULL AND {ids.carries_sql(depot.name())})
-            AND text IN (SELECT t.id FROM texts_revisions t JOIN temp.followed f ON f.id = t.id
-                         WHERE t.latest AND t.status <> '{ADMITTED}')""", (number,))
+                    "WHERE rowid IN (SELECT t.rowid FROM temp.followed f CROSS JOIN texts_revisions t ON t.id = f.id "
+                    "AND t.latest)")
+        # each text's open memberships through the index memberships_held, never a library's rows
+        con.execute(f"""UPDATE memberships SET left_change = ? WHERE rowid IN (
+            SELECT m.rowid FROM temp.followed f CROSS JOIN texts_revisions t ON t.id = f.id AND t.latest
+            CROSS JOIN memberships m INDEXED BY memberships_held ON m.text = t.id AND m.left_change IS NULL
+            WHERE t.status <> '{ADMITTED}' AND m.library IN (SELECT id FROM libraries WHERE locked_at IS NULL
+            AND {ids.carries_sql(depot.name())}))""", (number,))
         after = counts.measure(con, "temp.followed", counts.FACETS)
         after.subtract(self.before)
         counts.shift(con, after)
+        counts.enlist(con, "temp.followed", counts.LISTINGS)
 
 
 def _highest(con) -> int:
