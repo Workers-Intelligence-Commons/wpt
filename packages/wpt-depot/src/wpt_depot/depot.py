@@ -180,6 +180,7 @@ from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
                      UnsupportedAddress)
 from .filters import IN_LOCKED, Filter, changed_since, condition, listed as listed_ids
+from .order import TRAINING_KINDS
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
 from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW,
                      decision_list)
@@ -193,6 +194,12 @@ NO_ALLOWED_LICENSE = "no allowed license"
 BELONGS_TO_UPSTREAM = "belongs to the upstream"
 # why an operation on a filter with a change number leaves a text out: something changed it after that number
 CHANGED_SINCE = "changed since"
+# why putting texts back under review leaves a text out: it is under review already, and starting over would only
+# wipe its decisions
+ALREADY_UNDER_REVIEW = "already under review"
+# why a decision asked to leave out the texts whose status it would not change (Depot.decide's leave_same) leaves a
+# text out, by the decision's status
+ALREADY = {ADMITTED: "already admitted", REFUSED: "already refused"}
 # how many ids a refusal of upstream rows names before it gives the count of the rest
 NAMED = 20
 # what a clone can do instead of changing an upstream library: a fork is a library of its own
@@ -220,6 +227,8 @@ COUNT_STEP = 1_000_000
 # the columns of the texts view but those that hold a text: what a query reads that never reads a text's parts
 FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
           "decisions, scores, status, libraries")
+# every text with the columns a page reads and orders by (Depot.search), before the condition that picks them
+MATCHED = f"SELECT {FIELDS}, {IN_LOCKED} AS locked FROM texts"
 
 
 class _Nothing(Exception):
@@ -437,7 +446,8 @@ class Depot:
         """{text: its current row, status (wpt_depot.policy), notice: its
         text, decisions: their rows in order, each with `counts`: whether
         the policy counts it (none before the latest license or content
-        change, wpt_depot.policy),
+        change or putting back under review, wpt_depot.policy), and
+        `put_back`: whether it put the text back under review,
         libraries: the rows of the libraries holding it, each with upstream:
         whether the upstream of this clone owns it, revisions: how many
         revisions it has, pins: {library, name, revision} of each locked
@@ -465,12 +475,13 @@ class Depot:
         counting = {one["id"] for one in policy.counted(decisions)}
         status = row.pop("status")
         return {"text": row, "status": status, "notice": notice,
-                "decisions": [{**one, "counts": one["id"] in counting} for one in decisions], "libraries": held,
+                "decisions": [{**one, "counts": one["id"] in counting, "put_back": policy.put_back(one)}
+                              for one in decisions], "libraries": held,
                 "revisions": revisions, "pins": pins, "content_versions": versions,
                 "upstream": bool(self.upstream_owned([text]))}
 
     def search(self, where: str, after: Sequence | None = None, before: Sequence | None = None, limit: int = 50,
-               order: str = "id", descending: bool = False) -> dict:
+               order: str = "id", descending: bool = False, at: str | None = None) -> dict:
         """The texts the SQL condition where matches, a page at a time, with
         no count (Depot.count counts them a step at a time): {rows: the page
         of at most limit rows, ordered by the column order (one of ORDERS;
@@ -486,19 +497,30 @@ class Depot:
         (_ordered), and a page starts after one (after) or ends before one
         (before), so a far page is read as fast as the first; a page
         before a place that has fewer than limit rows before it is the first
-        page. A row holds a text's credits, never its text or content: its
+        page. A page at a text's id (at) starts at that text's place in
+        the order, with the text itself when where matches it, so a page
+        can open on a text the rows before it would push out; previous is
+        then that page's first place, and an id the depot does not hold
+        gives the first page. A row holds a text's credits, never its text or content: its
         id, kind, title, authors, tags, licenses, libraries, status, whether
         a locked library holds it, and its length in characters. BadQuery
         for a condition that is not one; Refused for an order that is none
         of ORDERS, an order outside INDEXED for more than SORTED matches,
-        both after and before, or a place that is not one of the order."""
-        if after is not None and before is not None:
-            raise Refused("a page starts after one place or ends before one, not both")
+        more than one of after, before and at, or a place that is not one
+        of the order."""
+        if sum(one is not None for one in (after, before, at)) > 1:
+            raise Refused("a page starts after one place, ends before one or starts at one text, only one of them")
         change = self.change()
         self._sortable(where, order)
+        if at is not None:
+            held = self.db.person_rows(f"SELECT json_array({', '.join(_ordered(order))}) AS place FROM ({MATCHED}) "
+                                       "WHERE id = ?", (at,))
+            if not held:
+                return self.search(where, limit=limit, order=order, descending=descending)
+            after = json.loads(held[0]["place"])
         columns = "id, kind, title, authors, tags, licenses, libraries, status, locked, length"
         found = self._page(where, columns, order, descending, before if before is not None else after,
-                           before is not None, limit)
+                           before is not None, limit, at is not None)
         if before is not None and len(found) <= limit:
             return self.search(where, limit=limit, order=order, descending=descending)
         page = found[:limit]
@@ -557,10 +579,11 @@ class Depot:
         return {"rows": found_rows, "next": page[-1]["place"] if len(page) < len(found) else None}
 
     def _page(self, where: str, columns: str, order: str, descending: bool, place: Sequence | None, backward: bool,
-              limit: int) -> list[dict]:
+              limit: int, inclusive: bool = False) -> list[dict]:
         """At most limit + 1 rows of the texts where matches, with columns
         and their place (_ordered), in the order asked, from the one after
-        place, or backward from the one before it, the nearest first."""
+        place (inclusive: from the one at it), or backward from the one
+        before it, the nearest first."""
         keys = _ordered(order)
         down = descending != backward
         compared = ""
@@ -568,8 +591,9 @@ class Depot:
             if not isinstance(place, (list, tuple)) or len(place) != len(keys) or not all(
                     isinstance(one, (str, int, float)) and not isinstance(one, bool) for one in place):
                 raise Refused(f"a place in the order {order} is a list of {len(keys)} values, as a page gives it")
-            compared = f"WHERE ({', '.join(keys)}) {'<' if down else '>'} ({', '.join('?' * len(keys))})"
-        matched = f"SELECT {FIELDS}, {IN_LOCKED} AS locked FROM texts WHERE ({where})"
+            compared = (f"WHERE ({', '.join(keys)}) {'<' if down else '>'}{'=' if inclusive else ''} "
+                        f"({', '.join('?' * len(keys))})")
+        matched = f"{MATCHED} WHERE ({where})"
         by = ", ".join(f"{one}{' DESC' if down else ''}" for one in keys)
         found = self.db.person_rows(
             f"SELECT {columns}, json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} ORDER BY {by} "
@@ -654,25 +678,30 @@ class Depot:
 
     def latest_decisions(self, limit: int = 10) -> list[dict]:
         """The latest decisions, the newest first, each with how many texts
-        (wpt_depot.counts) and erasure requests it decides and the library
-        whose reported problem it records (None for any other)."""
-        return self._rows(
+        (wpt_depot.counts) and erasure requests it decides, the library
+        whose reported problem it records (None for any other) and
+        put_back: whether it put texts back under review
+        (wpt_depot.policy.put_back)."""
+        found = self._rows(
             f"SELECT d.*, {_DECIDED_TEXTS} AS texts, "
             "(SELECT count(*) FROM erasures_revisions e WHERE e.latest "
             "AND EXISTS (SELECT 1 FROM json_each(e.decisions) WHERE value = d.id)) AS erasures, "
             "(SELECT min(l.id) FROM libraries_revisions l, json_each(coalesce(l.problems, '[]')) p "
             "WHERE l.latest AND p.value ->> 'decision' = d.id) AS library "
             f"FROM decisions d ORDER BY d.made_at DESC, d.id DESC LIMIT {int(limit)}")
+        return [{**one, "put_back": policy.put_back(one)} for one in found]
 
     def decision(self, decision: str) -> dict:
-        """{decision: its row, texts: how many texts it is on, erasures: the
-        ids of the erasure requests it decides, problem: the reported
+        """{decision: its row with put_back (wpt_depot.policy.put_back),
+        texts: how many texts it is on, erasures: the ids of the erasure
+        requests it decides, problem: the reported
         problem it records, with its library ({library, texts, problem}),
         or None}. NotFound without such a decision."""
         found = self._rows(f"SELECT d.*, {_DECIDED_TEXTS} AS texts FROM decisions d WHERE d.id = ?", (decision,))
         if not found:
             raise NotFound(f"no decision {decision}")
         row = found[0]
+        row["put_back"] = policy.put_back(row)
         texts = row.pop("texts")
         erasures = [one for (one,) in self.db.reader().execute(
             "SELECT e.id FROM erasures e WHERE EXISTS (SELECT 1 FROM json_each(e.decisions) WHERE value = ?) "
@@ -792,6 +821,55 @@ class Depot:
         """How many texts library_members gives, counted without reading them."""
         held, params = self._held(library, change)
         return self._rows(f"SELECT count(*) AS n FROM ({held})", params)[0]["n"]
+
+    def measure(self, libraries: Sequence[str], tags: Sequence[str] = ()) -> dict:
+        """What the libraries hold now, each text once however many of them
+        hold it, at its current revision: {texts, characters, bytes (UTF-8)
+        of them all; plain, items (conversations and tasks, the items a
+        corpus takes) and other (items of the other kinds): each {texts,
+        characters, bytes}; shares: for each tag of tags, in order, the
+        plain texts that count for it, those whose first tag of tags it is,
+        as a dataset's shares count them (wpt_depot.corpus), each {tag,
+        texts, characters, bytes}; unshared: the plain texts none of tags
+        takes, when tags are given (None otherwise)}. It reads the texts the
+        libraries hold through the index of their memberships, and each
+        text's row and content list, never its parts. NotFound for a
+        library the depot does not hold."""
+        libraries, tags = list(dict.fromkeys(libraries)), list(tags)
+        held = {one for (one,) in self.db.reader().execute(
+            "SELECT id FROM libraries WHERE id IN (SELECT value FROM json_each(?))", (_json(libraries),))}
+        missing = [one for one in libraries if one not in held]
+        if missing:
+            raise NotFound(f"no library {', '.join(missing)}")
+        empty = {"texts": 0, "characters": 0, "bytes": 0}
+        found = {"plain": dict(empty), "items": dict(empty), "other": dict(empty)}
+        pools = {at: dict(empty) for at in range(len(tags))} | {None: dict(empty)}
+        rows = self.db.reader().execute(
+            "WITH held AS (SELECT DISTINCT m.text AS id FROM memberships m WHERE m.left_change IS NULL "
+            "AND m.library IN (SELECT value FROM json_each(:libraries))) "
+            "SELECT CASE WHEN c.kind IS NULL THEN 'plain' WHEN c.kind IN (SELECT value FROM json_each(:items)) "
+            "THEN 'items' ELSE 'other' END AS what, "
+            "CASE WHEN c.kind IS NULL THEN (SELECT min(s.key) FROM json_each(:tags) s JOIN json_each(t.tags) g "
+            "ON g.value = s.value) END AS pool, count(*), sum(c.length), sum(c.bytes) "
+            f"FROM held h JOIN texts_revisions t ON t.id = h.id AND t.latest {CONTENT_JOIN} GROUP BY what, pool",
+            {"libraries": _json(libraries), "items": _json(list(TRAINING_KINDS)), "tags": _json(tags)})
+        for what, pool, texts, characters, size in rows:
+            for into in (found[what], pools[pool] if what == "plain" else None):
+                if into is not None:
+                    into["texts"] += texts
+                    into["characters"] += characters or 0
+                    into["bytes"] += size or 0
+        return {key: sum(one[key] for one in found.values()) for key in empty} | found | {
+            "shares": [{"tag": tag, **pools[at]} for at, tag in enumerate(tags)],
+            "unshared": pools[None] if tags else None}
+
+    def change_times(self, changes: Sequence[int]) -> dict[int, str | None]:
+        """{change number: the UTC time it was made at (None for a change
+        made before format 4)} of each of the depot's changes named that it
+        holds."""
+        return dict(self.db.reader().execute(
+            "SELECT id, made_at FROM changes WHERE id IN (SELECT value FROM json_each(?))",
+            (_json([int(one) for one in changes]),)).fetchall())
 
     def listed_text(self, text: str, revision: int) -> dict:
         """One text at one revision, as library_texts gives a row but with
@@ -949,16 +1027,28 @@ class Depot:
         return {"rows": rows, "next": found[limit - 1]["place"] if len(found) > limit else None}
 
     def decide(self, status: str, texts: Selection, declaration: Declaration, reason: str | None = None,
-               leave_blocked: bool = False, progress=None) -> tuple[str, int, dict[str, int]]:
-        """One decision, admitted or refused, with an optional public reason,
-        on every text selected: a row of text_decisions for each, and its
-        status by the policy (wpt_depot.policy) stored on its current
-        revision, which stays the same revision. A refusal takes them out of
-        every open library; a locked library keeps reading the revision it
-        pinned, at the status its decisions up to the lock make. Its answer:
+               leave_blocked: bool = False, progress=None,
+               leave_same: bool = False) -> tuple[str, int, dict[str, int]]:
+        """One decision, admitted, refused or under review, with an optional
+        public reason, on every text selected: a row of text_decisions for
+        each, and its status by the policy (wpt_depot.policy) stored on its
+        current revision, which stays the same revision. A decision under
+        review puts the texts back under review, undoing their admission or
+        refusal: its reason is the one the depot writes
+        (wpt_depot.policy.review_again, the person's reason after it), the
+        decisions before it no longer count, and a text under review already
+        is left out (ALREADY_UNDER_REVIEW), so it never only wipes a text's
+        decisions. A refusal and a putting back under review take the texts
+        out of every open library, since an open library holds only admitted
+        texts; a locked library keeps reading the revision it pinned, at the
+        status its decisions up to the lock make. Its answer:
         (its id, how many texts it is on, {reason: how many texts were left
-        out for it}: CHANGED_SINCE for a filter with a change number, and
-        with leave_blocked, Depot.blocked's reasons). A text a
+        out for it}: CHANGED_SINCE for a filter with a change number,
+        ALREADY_UNDER_REVIEW, with leave_same ALREADY's reason, and with
+        leave_blocked, Depot.blocked's reasons). An admission or a refusal
+        with leave_same leaves out the texts whose status is the one it
+        gives already (ALREADY), so it records no decision that changes no
+        status; without it, every text selected gets the decision. A text a
         decision cannot cover (Depot.blocked) refuses the whole decision, or,
         with leave_blocked, is left out of it. progress, when given, is
         called with the name of each stage as it starts. NotFound when
@@ -967,8 +1057,12 @@ class Depot:
         upstream owns and Refused when admitting texts none of whose
         licenses is allowed (wpt_depot.licenses), both without
         leave_blocked."""
-        if status not in (ADMITTED, REFUSED):
-            raise Refused(f"a decision on texts admits or refuses them, not {status!r}")
+        if status not in (ADMITTED, REFUSED, UNDER_REVIEW):
+            raise Refused(f"a decision on texts admits them, refuses them or puts them back under review, not "
+                          f"{status!r}")
+        again = status == UNDER_REVIEW
+        if again:
+            _check_declaration(declaration, reason)  # the person's own reason, before the depot's form is added
         stage = progress or _quiet
         with self._write("decide") as (con, number):
             stage("selecting the texts")
@@ -977,15 +1071,36 @@ class Depot:
                 raise NotFound(_none_left(texts, changed))
             stage("checking the texts")
             left = {**changed, **self._leave_blocked(con, status, leave_blocked)}
+            if again:
+                con.execute(f"DELETE FROM temp.chosen WHERE id IN (SELECT t.id FROM texts_revisions t WHERE t.latest "
+                            f"AND t.status = '{UNDER_REVIEW}' AND t.id IN (SELECT id FROM temp.chosen))")
+                if con.changes():
+                    left[ALREADY_UNDER_REVIEW] = con.changes()
+            elif leave_same:
+                con.execute("DELETE FROM temp.chosen WHERE id IN (SELECT t.id FROM texts_revisions t WHERE t.latest "
+                            "AND t.status = ? AND t.id IN (SELECT id FROM temp.chosen))", (status,))
+                if con.changes():
+                    left[ALREADY[status]] = con.changes()
             decided = con.execute("SELECT count(*) FROM temp.chosen").fetchall()[0][0]
             if not decided:
-                raise NotFound(f"no text {'left to be ' + status + ' once ' if left else ''}matches the selection")
-            decision = self._decision(con, number, status, declaration, reason)
+                if left.get(ALREADY_UNDER_REVIEW) and len(left) == 1:
+                    raise NotFound(f"every text the selection takes ({left[ALREADY_UNDER_REVIEW]}) is under review "
+                                   "already, so none is put back under review")
+                if status in ALREADY and left.get(ALREADY[status]) and len(left) == 1:
+                    raise NotFound(f"every text the selection takes ({left[ALREADY[status]]}) is {status} already, so "
+                                   "no decision is recorded")
+                verb = "put back under review" if again else status
+                raise NotFound(f"no text {'left to be ' + verb + ' once ' if left else ''}matches the selection")
+            if again:
+                decision = self._decision(con, number, status, declaration, policy.review_again(reason),
+                                          checked=False)
+            else:
+                decision = self._decision(con, number, status, declaration, reason)
             stage("recording the decision on each text")
             self._link(con, decision, number)
             stage("storing the statuses")
-            self._restatus(con, status, False)
-            if status == REFUSED:
+            self._restatus(con, status, again)
+            if status in (REFUSED, UNDER_REVIEW):
                 stage("taking the texts out of the open libraries")
                 self._leave(con, self._open_libraries(), number)
             stage("committing")
@@ -1652,7 +1767,7 @@ class Depot:
 
     def edit_dataset(self, dataset: str, name: str, libraries: list[tuple[str | None, str]],
                      shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None,
-                     vocabulary: str | None = None):
+                     vocabulary: str | None = None, revision: int | None = None):
         """Change the dataset of that id as a new revision, its id and
         tokenizer kept: its name, the libraries it reads (depot address, None
         for this depot, and library id), its optional ordered shares (tag,
@@ -1666,7 +1781,10 @@ class Depot:
         depot never opened, so a dataset made from a remote whose depots this
         machine cannot reach still changes; a library new to it is read at
         its depot's change number now. A corpus built before keeps its own
-        copy of the dataset's row. NotFound without such a dataset."""
+        copy of the dataset's row. With revision, the revision the change was
+        made from: Refused when the dataset is at another one, so a change
+        made from an older reading never undoes a later one. NotFound without
+        such a dataset."""
         old = self.dataset_by_id(dataset)
         self._refuse_upstream("datasets", [dataset])
         kept = {self._read_from(one["depot"], one["library"]): one for one in old["libraries"]}
@@ -1679,6 +1797,10 @@ class Depot:
                   "max_tokens": max_tokens}
         _checked_dataset({**old, **values})
         with self._write("edit dataset") as (con, number):
+            now = con.execute("SELECT revision FROM datasets WHERE id = ?", (dataset,)).fetchone()[0]
+            if revision is not None and now != revision:
+                raise Refused(f"the dataset {old['name']} changed after it was read: it is at revision {now}, and "
+                              f"this change was made from revision {revision}; read it again and redo the change")
             if self._rows("SELECT id FROM datasets WHERE name = ? AND id <> ?", (name, dataset)):
                 raise Refused(f"the dataset name {name} is taken")
             if vocabulary is not None and not con.execute("SELECT 1 FROM vocabularies WHERE sha256 = ?",
@@ -1980,15 +2102,27 @@ class Depot:
         found = self._rows("SELECT needles, erased FROM erasures WHERE erased IS NOT NULL")
         return [entry for row in found for entry in row["erased"] if row["needles"][entry["needle"]]["text"] == text]
 
+    def condition(self, found: Filter, latest: int | None = None) -> str:
+        """The SQL condition of a filter (filters.condition) for a page or a
+        count step, which reads a decision's rows only when the decision is
+        on at most SORTED texts (the table counts): a page of them then
+        sorts at most as many texts as a page in an order outside INDEXED,
+        and a decision on more texts is tested on each text the page or
+        step reaches. Refused as filters.condition is."""
+        few = found.decision is None or self._one(
+            f"SELECT coalesce(max(texts), 0) FROM counts WHERE facet = '{counts.DECISION}' AND name = ?",
+            (found.decision,)) <= SORTED
+        return condition(found, latest, decision_rows=few)
+
     def _condition(self, texts: Selection) -> str:
         """The SQL condition over the texts view of a selection: the
         condition itself, or the ids given, written as one value
-        (filters.listed), or a filter's (filters.condition). NotFound when a
+        (filters.listed), or a filter's for a page (Depot.condition). NotFound when a
         given id is no text."""
         if isinstance(texts, str):
             return texts
         if isinstance(texts, Filter):
-            return condition(texts)
+            return self.condition(texts)
         given = _json(sorted(set(texts)))
         missing = self.db.reader().execute(
             "SELECT count(*), min(value) FROM json_each(?) WHERE NOT EXISTS (SELECT 1 FROM texts_revisions t "
@@ -2384,10 +2518,11 @@ def _check_text(one: NewText, held_licenses: set, held_kinds: dict):
 def _check_declaration(declaration: Declaration, reason: str | None):
     """Refused for a declaration without its confirmation or with an empty
     name or email, an empty reason, or a reason in a form only the depot
-    writes (wpt_depot.policy.license_change, content_change)."""
+    writes (wpt_depot.policy.license_change, content_change, review_again)."""
     if isinstance(reason, str) and policy.starts_over(reason.strip()):
         start = next(one for one in policy.STARTS_OVER if reason.strip().startswith(one))
-        what = "license change" if start == policy.LICENSE_CHANGE else "content change"
+        what = {policy.LICENSE_CHANGE: "license change", policy.CONTENT_CHANGE: "content change",
+                policy.REVIEW_AGAIN: "text put back under review"}[start]
         raise Refused(f"a reason that starts with {start!r} is the depot's own record of a {what}; write the "
                       "reason another way")
     if declaration.accepted is not True:

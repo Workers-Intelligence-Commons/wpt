@@ -105,7 +105,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
                                              "declaration": ME}) == (200, {"decision": "test-depot-3", "texts": 2, "left": {}})
     assert request("POST", "/api/libraries", {"name": "first model"}) == (200, {"id": "test-depot-1"})
     assert wrote(request, "/api/libraries/test-depot-1/texts", {"selection": named(both)}) == (
-        200, {"joined": 2, "left_out": 0, "left": {}})
+        200, {"library": "test-depot-1", "joined": 2, "left_out": 0, "left": {}})
     assert wrote(request, "/api/libraries/test-depot-1/forks", {"name": "next"}) == (200, {"id": "test-depot-2", "left": {}})
     assert request("POST", "/api/libraries/test-depot-1/lock", {}) == (200, {})
     status, held = request("GET", "/api/libraries")
@@ -315,6 +315,21 @@ def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_lib
     assert depot.dataset("crossed")["libraries"] == stored
 
 
+def test_a_dataset_change_made_from_an_older_reading_is_refused_rather_than_undo_a_later_one(web):
+    # the pages send the revision they read, so publishing a vocabulary never resends a stale row over an edit
+    request, depot = web
+    request("POST", "/api/libraries", {"name": "first"})
+    libraries = [{"library": "test-depot-1"}]
+    dataset = request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": libraries})[1]["id"]
+    read = request("GET", f"/api/datasets/{dataset}")[1]["dataset"]
+    assert request("POST", f"/api/datasets/{dataset}", {"name": "mix", "libraries": libraries, "max_tokens": 1000,
+                                                         "revision": read["revision"]})[0] == 200
+    status, answer = request("POST", f"/api/datasets/{dataset}", {"name": "renamed", "libraries": libraries,
+                                                                  "revision": read["revision"]})
+    assert status == 422 and "revision 2" in answer["problems"][0]
+    assert (depot.dataset_by_id(dataset)["name"], depot.dataset_by_id(dataset)["max_tokens"]) == ("mix", 1000)
+
+
 def test_the_web_command_serves_the_depot_its_setting_names(tmp_path, monkeypatch):
     address = str(tmp_path / "depot")
     Depot.new(address, About("served", "Ada Lovelace", "ada@example.org"))
@@ -373,6 +388,9 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     assert [one["id"] for one in shortest["rows"] + rest["rows"]] == [
         "test-depot-1", "test-depot-2", "test-depot-4", "test-depot-3"]
     assert request("POST", "/api/texts/search", {"filter": {}, "after": ["x", 1]})[0] == 422  # not a place of the order
+    status, opened = request("POST", "/api/texts/search", {"filter": {}, "at": "test-depot-3", "limit": 1})
+    assert [one["id"] for one in opened["rows"]] == ["test-depot-3"] and opened["previous"] is not None
+    assert request("POST", "/api/texts/search", {"filter": {}, "at": "test-depot-3", "after": every["next"]})[0] == 400
 
     # the counts come in steps, each one slice of the texts, which a page adds up
     status, whole = request("POST", "/api/texts/counts", {"filter": {}})
@@ -406,7 +424,8 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     assert counted["statuses"]["under review"] == 2
     status, started = request("POST", "/api/decisions", {"status": "admitted", "selection": selection,
                                                          "declaration": ME})
-    assert status in (200, 202) and (started["kind"], started["title"]) == ("write", "decision")
+    assert status in (200, 202) and (started["kind"], started["title"]) == (  # the Jobs page names the filter
+        "write", "admit texts under review or refused, tagged en, in no locked library, less 1 unticked")
     job = started
     while job["state"] in ("queued", "running"):
         time.sleep(0.05)
@@ -444,7 +463,7 @@ def test_texts_taken_out_of_an_open_library_stay_admitted_and_a_locked_library_r
     request("POST", "/api/libraries/test-depot-2/lock", {})
 
     assert wrote(request, "/api/libraries/test-depot-1/taken-out", {"selection": named(["test-depot-1", "test-depot-3"])}) == (
-        200, {"taken_out": 1, "not_held": 1, "left": {}})
+        200, {"library": "test-depot-1", "taken_out": 1, "not_held": 1, "left": {}})
     status, held = request("POST", "/api/texts/search", {"filter": {"libraries": ["test-depot-1"]}})
     assert [one["id"] for one in held["rows"]] == ["test-depot-2"]
     assert request("GET", "/api/texts/test-depot-1")[1]["status"] == "admitted"
@@ -597,14 +616,49 @@ def test_a_failure_no_route_names_is_answered_with_its_problem(tmp_path):
         server.server_close()
 
 
+def test_a_write_over_several_named_texts_names_its_first_texts_on_the_jobs_page(web):
+    request, depot = web
+    for title in ("Fox", None, "Dog", "Owl"):
+        request("POST", "/api/texts", {"text": f"The {title}.", "licenses": ["CC0-1.0"], "title": title, "declaration": ME})
+    request("POST", "/api/texts", {"kind": "conversation", "content": CONVERSATION, "licenses": ["CC0-1.0"],
+                                   "declaration": ME})
+    ids = [f"test-depot-{n}" for n in range(1, 5)]
+    status, admitted = request("POST", "/api/decisions", {"status": "admitted", "selection": named(ids),
+                                                          "declaration": ME})
+    # the first three by the name the pages give them, never a bare id, so a person tells which texts a job decided
+    assert status in (200, 202) and admitted["title"] == "admit 4 named texts (Fox, an untitled text, Dog, ...)"
+    status, item = request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-5"]),
+                                                      "declaration": ME})
+    assert item["title"] == "admit a conversation"
+
+
+def test_a_decision_that_leaves_out_the_same_status_records_none_on_the_texts_it_would_not_change(web):
+    request, depot = web
+    for title in ("Fox", "Dog", "Owl"):
+        request("POST", "/api/texts", {"text": f"The {title}.", "licenses": ["CC0-1.0"], "title": title, "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]), "declaration": ME})
+    every = named(["test-depot-1", "test-depot-2", "test-depot-3"])
+    status, admitted = wrote(request, "/api/decisions", {"status": "admitted", "selection": every, "leave_same": True,
+                                                         "declaration": ME})
+    assert status == 200 and (admitted["texts"], admitted["left"]) == (2, {"already admitted": 1})
+    assert len(request("GET", "/api/texts/test-depot-1")[1]["decisions"]) == 2  # its add and admission, no second one
+    status, refused = wrote(request, "/api/decisions", {"status": "admitted", "selection": every, "leave_same": True,
+                                                        "declaration": ME})
+    assert status == 404 and "admitted already" in refused["problems"][0]
+    status, again = wrote(request, "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]),
+                                                      "declaration": ME})
+    assert status == 200 and len(request("GET", "/api/texts/test-depot-1")[1]["decisions"]) == 3  # asked for: recorded
+
+
 def test_each_thing_a_page_lists_has_a_view_and_the_details_change_through_the_routes(web, tmp_path, monkeypatch):
     request, depot = web
     monkeypatch.chdir(tmp_path)  # no .env: the settings are the test's alone
     monkeypatch.delenv("WPT_STORE", raising=False)
     request("POST", "/api/texts", {"text": "The fox.", "licenses": ["CC0-1.0"], "tags": ["en"], "title": "Fox",
                                    "declaration": ME})
-    request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]), "reason": "clear",
-                                       "declaration": ME})
+    status, admitted = request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]),
+                                                          "reason": "clear", "declaration": ME})
+    assert admitted["title"] == "admit Fox"  # a write over one text names it on the Jobs page
     request("POST", "/api/libraries", {"name": "first"})
     request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
     request("POST", "/api/libraries/test-depot-1/problems", {"problem": "too short", "selection": named(["test-depot-1"]),
@@ -742,3 +796,64 @@ def test_the_web_command_refuses_a_depot_of_another_format_before_serving(tmp_pa
     assert bare(capsys.readouterr().err).strip() == (
         f"wpt depot web: OtherFormat: {address} is a depot of format {FORMAT + 1}, newer than the format {FORMAT} "
         "this wpt reads: update wpt to read it; a depot is never brought down to an older format")
+
+
+def test_texts_put_back_under_review_from_the_pages_leave_their_open_libraries_and_the_job_says_so(web):
+    request, depot = web
+    for text in ("one", "two"):
+        request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
+    both = ["test-depot-1", "test-depot-2"]
+    request("POST", "/api/decisions", {"status": "admitted", "selection": named(both), "declaration": ME})
+    request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-2"]), "declaration": ME})
+    request("POST", "/api/libraries", {"name": "open"})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
+
+    status, started = request("POST", "/api/decisions", {"status": "under review", "selection": {"filter": {"tags": ["en"]}},
+                                                         "reason": "too quick", "declaration": ME})
+
+    assert status in (200, 202) and started["title"] == "put back under review texts tagged en"
+    job = started
+    while job["state"] in ("queued", "running"):
+        time.sleep(0.05)
+        job = request("GET", f"/api/jobs/{started['id']}")[1]
+    assert (job["state"], job["answer"]) == ("done", {"decision": "test-depot-5", "texts": 2, "left": {}})
+    shown = request("GET", "/api/texts/test-depot-1")[1]
+    assert (shown["status"], shown["text"]["libraries"]) == ("under review", [])
+    assert (shown["decisions"][-1]["reason"], shown["decisions"][-1]["put_back"]) == (
+        "put back under review: too quick", True)
+    assert request("GET", "/api/texts/test-depot-2")[1]["status"] == "under review"
+    status, refused = request("POST", "/api/decisions", {"status": "under review", "selection": named(both),
+                                                         "declaration": ME})
+    assert status == 404 and "under review already" in refused["problems"][0]
+
+
+def test_measure_gives_what_libraries_hold_by_share_and_the_mix_of_the_shares(web):
+    # the dataset form and the build estimate show these figures without sending SQL
+    request, depot = web
+    request("POST", "/api/texts", {"text": "aaaa", "licenses": ["CC0-1.0"], "tags": ["prose"], "declaration": ME})
+    request("POST", "/api/texts", {"text": "bbbbbbbb", "licenses": ["CC0-1.0"], "tags": ["code"], "declaration": ME})
+    request("POST", "/api/decisions", {"status": "admitted", "selection": {"filter": {}}, "declaration": ME})
+    request("POST", "/api/libraries", {"name": "mix"})
+    request("POST", "/api/libraries/test-depot-1/texts", {"selection": {"filter": {}}})
+
+    status, held = request("POST", "/api/libraries/measure", {"libraries": ["test-depot-1"], "shares": [
+        {"tag": "prose", "share": 1}, {"tag": "code", "share": 1}, {"tag": "poems", "share": 1}]})
+
+    assert status == 200 and (held["texts"], held["characters"]) == (2, 12)
+    # prose holds the least for its proportion, so it limits the mix and code keeps as much as prose
+    assert [(one["tag"], one["characters"], one["kept_characters"], one["limits"]) for one in held["shares"]] == [
+        ("prose", 4, 4, True), ("code", 8, 4, False), ("poems", 0, 0, False)]
+    assert held["mix"] == {"kept_bytes": 8, "kept_characters": 8, "items_share": 0}
+    assert request("POST", "/api/libraries/measure", {"libraries": ["test-depot-1"]})[1]["mix"] is None
+    assert request("POST", "/api/libraries/measure", {"libraries": ["test-depot-9"]})[0] == 404
+    assert request("POST", "/api/libraries/measure", {"libraries": []})[0] == 400
+
+
+def test_change_times_gives_the_time_of_each_change_the_depot_holds(web):
+    request, depot = web
+    request("POST", "/api/libraries", {"name": "open"})
+    now = depot.change()
+
+    status, times = request("POST", "/api/changes/times", {"changes": [now, now, now + 50]})
+
+    assert status == 200 and [one["change"] for one in times] == [now] and times[0]["made_at"]

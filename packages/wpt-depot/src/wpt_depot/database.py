@@ -9,9 +9,13 @@ through connections of its own.
 
 Every connection sees the tables by their names (wpt_depot.schema) and the
 views of the current state (schema.VIEWS), made on it as temporary views,
-with three functions: part_text, a part's stored value as its text,
+with four functions: part_text, a part's stored value as its text,
 content_too_big, which refuses a content version too big for one value of
-SQLite, and export_key, a text's export key from its id (wpt_depot.ids). A person's SQL (the query of `wpt depot sql`, a condition
+SQLite, export_key, a text's export key from its id (wpt_depot.ids), and
+has_word(text, word), 1 when text holds word, the case of its ASCII
+letters ignored as LIKE ignores it, with no letter, digit or underscore
+right before or after it (a plain search's whole words,
+wpt_depot.filters), else 0. A person's SQL (the query of `wpt depot sql`, a condition
 selecting texts) runs on a connection of its own that opens the file
 read-only and whose authorizer lets a statement only read (READS): a
 statement that writes, attaches another database, runs a pragma or loads an
@@ -60,6 +64,7 @@ recording back on and sends a full copy.
 """
 
 import contextlib
+import functools
 import os
 import re
 import secrets
@@ -236,6 +241,7 @@ class Database:
         con.create_scalar_function("part_text", _part_text, 1, deterministic=True)
         con.create_scalar_function("content_too_big", _too_big, 3, deterministic=True)
         con.create_scalar_function("export_key", ids.export_key, 1, deterministic=True)
+        con.create_scalar_function("has_word", _has_word, 2, deterministic=True)
         try:
             for pragma in pragmas:
                 con.execute(f"PRAGMA {pragma}").fetchall()
@@ -488,6 +494,21 @@ def _final(pending: Path | None):
     with contextlib.suppress(FileNotFoundError):
         pending.rename(pending.with_name(pending.name.removesuffix(PENDING) + FINAL))
     sync_folder(pending.parent)
+
+
+@functools.lru_cache(maxsize=64)
+def _word_pattern(word: str) -> re.Pattern:
+    return re.compile(rf"(?<!\w){re.escape(_ascii_lower(word))}(?!\w)")
+
+
+def _ascii_lower(text: str) -> str:
+    """text with its ASCII letters lowered and every other letter as it is, as LIKE compares them."""
+    return text.encode("utf-8", "surrogatepass").lower().decode("utf-8", "surrogatepass")
+
+
+def _has_word(text, word) -> int:
+    return int(isinstance(text, str) and isinstance(word, str)
+               and _word_pattern(word).search(_ascii_lower(text)) is not None)
 
 
 def _part_text(value) -> str | None:

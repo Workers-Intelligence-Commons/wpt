@@ -409,8 +409,9 @@ of a model series reads its prefix of the series' one corpus (model.md,
 
 The recipe's `total_tokens` is the size of the corpus the recipe asks for
 and a ceiling on what it reads. A corpus built at that size (its
-`max_tokens`) counts everything, conversations and tasks first, and never
-passes it, so it may hold fewer tokens of plain text than `total_tokens`.
+`max_tokens`) counts everything, its conversations and tasks taking their
+share of it, and never passes it, so it holds fewer tokens of plain text
+than `total_tokens` when the dataset holds items.
 Training reads what such a corpus holds: each step that reads text windows
 reads the smaller of its prefix and the corpus's tokens of plain text, from
 the start, and the run's record says how many it reads when that is fewer

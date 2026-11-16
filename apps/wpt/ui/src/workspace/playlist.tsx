@@ -11,10 +11,10 @@
 // (workspace.tsx), and so is their legend.
 
 import { Button } from "@workers-intelligence-commons/components";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { MatchedCount, type Counting } from "../counts";
 import { type Found, type Order } from "../filter";
-import { PlacePager, plural, type Status } from "../parts";
+import { PlacePager, plural, textName, type Status } from "../parts";
 
 const ORDERS: { by: Order["by"]; label: string }[] = [
   { by: "id", label: "id" }, { by: "title", label: "title" }, { by: "status", label: "status" }, { by: "length", label: "length" },
@@ -33,15 +33,21 @@ const INDEXED: Order["by"][] = ["id", "status"];
 // isTicked: whether a text is ticked; everyTicked: every open text is, none
 // unticked; total: how many texts are open, once counted; sorted: the most
 // matches the other orders are given for.
-export function Playlist({ found, busy, current, link, isTicked, everyTicked, onTick, onTickAll, total, sorted, order, onOrder, limit, onFirst, onPrevious, onNext, counting }: {
+export function Playlist({ found, busy, current, link, isTicked, everyTicked, onTick, onTickAll, total, sorted, order, onOrder, limit, onFirst, onPrevious, onNext, counting, empty }: {
   found: Found; busy: boolean; current: string | null; link: (id: string) => string; isTicked: (id: string) => boolean; everyTicked: boolean;
   onTick: (ids: string[], on: boolean) => void; onTickAll: () => void; total: number | null; sorted: number;
   order: Order; onOrder: (o: Order) => void; limit: number;
   onFirst: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; counting: Counting | null;
+  empty?: ReactNode; // what an empty first page says in place of "No text matches."
 }) {
   const list = useRef<HTMLOListElement>(null);
   // the current row stays in view as the keys move through the list
-  useEffect(() => { list.current?.querySelector("[aria-current='true']")?.scrollIntoView({ block: "nearest" }); }, [current, found]);
+  // and the keyboard's focus moves with it when it was on a row, so one row alone looks current
+  useEffect(() => {
+    const row = list.current?.querySelector<HTMLElement>("[aria-current='true']");
+    row?.scrollIntoView({ block: "nearest" });
+    if (row && document.activeElement?.closest(".playlist-row") && !row.contains(document.activeElement)) row.querySelector<HTMLElement>(".playlist-link")?.focus({ preventScroll: true });
+  }, [current, found]);
   const allTicked = found.rows.length > 0 && found.rows.every((r) => isTicked(r.id));
   const orders = ORDERS.filter((o) => INDEXED.includes(o.by) || o.by === order.by || (total !== null && total <= sorted));
   return (
@@ -60,19 +66,20 @@ export function Playlist({ found, busy, current, link, isTicked, everyTicked, on
           <input type="checkbox" className="wic-check-box wic-focus" checked={allTicked} onChange={(e) => onTick(found.rows.map((r) => r.id), e.target.checked)} />
           <span className="tick-label">this page</span>
         </label>
-        {(found.next || found.previous) && !everyTicked && (
+        {found.rows.length > 0 && !everyTicked && (total !== null || found.next || found.previous) && (total === null || total > 1) && (
           <Button variant="quiet" onClick={onTickAll}>{total ? `Tick all ${total.toLocaleString("en")}` : "Tick all"}</Button>
         )}
+        <span className="aside playlist-unit">lengths in characters</span>
       </div>
-      {found.rows.length === 0 ? <p>{found.previous ? "No text matches from here on." : "No text matches."}</p> : (
+      {found.rows.length === 0 ? <p>{found.previous ? "No text matches from here on." : empty ?? "No text matches."}</p> : (
         <ol ref={list} className="playlist-rows" aria-busy={busy}>
           {found.rows.map((r) => (
             <li key={r.id} className={`playlist-row${r.id === current ? " current" : ""}${isTicked(r.id) ? " ticked" : ""}`} aria-current={r.id === current ? "true" : undefined}>
-              <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${r.id}`} checked={isTicked(r.id)} onChange={(e) => onTick([r.id], e.target.checked)} />
+              <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${textName(r)}`} checked={isTicked(r.id)} onChange={(e) => onTick([r.id], e.target.checked)} />
               <a href={link(r.id)} className="playlist-link" title={`${r.title ?? r.id} (${r.id}), ${r.status}, ${plural(r.length, "character")}`}>
                 <span className={`status-mark ${r.status.replace(" ", "-")}`} aria-label={r.status}>{MARKS[r.status]}</span>
-                <span className="playlist-title">{r.title ?? (r.kind ? `an item of kind ${r.kind}` : "untitled text")}</span>
-                <span className="playlist-length aside">{short(r.length)}</span>
+                <span className="playlist-title">{textName(r)}</span>
+                <span className="playlist-length aside" aria-label={plural(r.length, "character")}>{short(r.length)}</span>
               </a>
             </li>
           ))}

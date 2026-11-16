@@ -14,13 +14,14 @@ import { useEffect, useState } from "react";
 import { post, type Answer } from "./api";
 import { DecideForm, RelicenseForm, relicensed, type Decided, type Relicensed } from "./decide-forms";
 import { EVERY, named, search, sent, type Found, type Place, type Selection } from "./filter";
-import { Cut, Outcome, PlacePager, plural, Problems, StatusBadge } from "./parts";
+import { Cut, Outcome, PlacePager, plural, Problems, StatusBadge, textName } from "./parts";
 import { href } from "./route";
 
 export type Blocked = { id: string; reasons: string[] };
 export const NO_ALLOWED_LICENSE = "no allowed license";
 export const BELONGS_TO_UPSTREAM = "belongs to the upstream";
-export type Deciding = "admitted" | "refused";
+// a decision's status: "under review" puts texts back under review, undoing their admission or refusal
+export type Deciding = "admitted" | "refused" | "under review";
 type Page = { rows: Blocked[]; next: Place | null };
 
 const LIMIT = 25; // blocked texts a page shows
@@ -61,7 +62,7 @@ export function BlockedTexts({ selection, status, total, version, onChanged }: {
   // only a text of this depot's own can be refused or given other licenses here
   const own = found.filter((b) => !b.reasons.includes(BELONGS_TO_UPSTREAM)).map((b) => b.id);
   const chosen = own.filter((id) => ticked.has(id));
-  const decision = status === "admitted" ? "admission" : "refusal";
+  const decision = status === "admitted" ? "admission" : status === "refused" ? "refusal" : "putting back under review";
   const flip = (id: string, on: boolean) => {
     const next = new Set(ticked);
     if (on) next.add(id); else next.delete(id);
@@ -76,7 +77,7 @@ export function BlockedTexts({ selection, status, total, version, onChanged }: {
   const changed = (a: Answer<Relicensed>, licenses: string[]) => done(a, a.ok ? relicensed(a.data, licenses) : "");
   return (
     <section className="blocked" aria-labelledby="blocked-title">
-      <h3 id="blocked-title" className="cue">{plural(total, "text")} cannot be {status}</h3>
+      <h3 id="blocked-title" className="cue">{plural(total, "text")} cannot be {status === "under review" ? "put back under review" : status}</h3>
       <p className="small">
         The {decision} leaves them out: only the upstream this depot follows decides on its own texts, and a text that
         names no allowed license can get other licenses, its decisions then starting over; with an allowed license it joins the admission.
@@ -101,7 +102,7 @@ export function BlockedTexts({ selection, status, total, version, onChanged }: {
                   </td>
                   <td className="ledger nowrap">{b.id}</td>
                   <td className="wide-cell">
-                    <a href={href(["texts", b.id])} target="_blank" rel="noreferrer" className="cut" title={`${r?.title ?? b.id} (opens in a new tab)`}>{r?.title ?? (r?.kind ? `an item of kind ${r.kind}` : "untitled text")}</a>
+                    <a href={href(["texts", b.id])} target="_blank" rel="noreferrer" className="cut" title={`${r?.title ?? b.id} (opens in a new tab)`}>{r ? textName(r) : b.id}</a>
                   </td>
                   <td className="nowrap">{r && <StatusBadge status={r.status} />}</td>
                   <td className="ledger">{r && <Cut text={r.licenses.join(", ")} />}</td>

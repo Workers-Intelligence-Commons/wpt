@@ -5,16 +5,27 @@
 // end of the last one scrolls into view, so the collection is never read
 // whole. A text longer than a page shows its start and says how much is
 // left. It is read only: a click on a passage, or on the name over it,
-// opens that text in the editor, the playlist's page starting where the
-// blob's page that holds it starts (a blob page holds fewer texts than a
-// playlist page, so that page holds it too).
+// opens that text in the editor, the playlist's page starting at it. A click
+// on a fold inside a transcript or on a link opens the fold or follows the
+// link instead. A conversation read whole shows as a transcript
+// (transcript.tsx); one cut by the page shows its start as it is stored.
 
 import { Button, Skeleton } from "@workers-intelligence-commons/components";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { post, type Answer } from "../api";
 import { body, type Order, type Place, type TextFilter } from "../filter";
-import { plural, Problems } from "../parts";
+import { plural, Problems, textName } from "../parts";
 import { codePoints } from "../reader";
+import { isConversation, Transcript } from "../transcript";
+
+// A passage's content as a conversation, when it is one read whole, else null.
+function conversationOf(r: Passage): unknown {
+  if (r.kind === null || codePoints(r.passage) < r.length) return null;
+  try {
+    const content = JSON.parse(r.passage);
+    return isConversation(content) ? content : null;
+  } catch { return null; }
+}
 
 type Passage = { id: string; kind: string | null; title: string | null; length: number; passage: string };
 type Page = { rows: Passage[]; next: Place | null };
@@ -26,8 +37,8 @@ const CHARACTERS = 200_000; // characters a page holds at most
 type Next = { after: Place | null } | null;
 const FIRST: Next = { after: null };
 
-// onOpen: the text clicked, with the place its page starts after (null: the first page).
-export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Order; onOpen: (id: string, after: Place | null) => void }) {
+// onOpen: the text clicked.
+export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Order; onOpen: (id: string) => void }) {
   const [pages, setPages] = useState<{ after: Place | null; rows: Passage[] }[]>([]);
   const [next, setNext] = useState<Next>(FIRST);
   const [reading, setReading] = useState(false);
@@ -54,9 +65,10 @@ export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Ord
     watcher.observe(sentinel);
     return () => watcher.disconnect();
   });
-  const opened = (id: string, after: Place | null) => () => {
+  const opened = (id: string) => (e: MouseEvent) => {
     if (window.getSelection()?.isCollapsed === false) return; // a passage being selected, not a click
-    onOpen(id, after);
+    if (e.target instanceof Element && e.target.closest("summary, details, a, button, input")) return;
+    onOpen(id);
   };
   return (
     <div className="blob" aria-label="The open texts, one after another">
@@ -65,11 +77,16 @@ export function Blob({ filter, order, onOpen }: { filter: TextFilter; order: Ord
       {pages.flatMap((page) => page.rows.map((r) => (
         <article key={r.id} className="blob-text" aria-label={r.title ?? r.id}>
           <h2 className="blob-rule small">
-            <button type="button" className="blob-name wic-focus" onClick={() => onOpen(r.id, page.after)} title="Open it in the editor">
-              <span className="cut">{r.title ?? (r.kind ? `an item of kind ${r.kind}` : "untitled text")}</span> <span className="ledger aside">{r.id}</span>
+            <button type="button" className="blob-name wic-focus" onClick={() => onOpen(r.id)} title="Open it in the editor">
+              <span className="cut">{textName(r)}</span> <span className="ledger aside">{r.id}</span>
             </button>
           </h2>
-          <pre className="blob-passage" onClick={opened(r.id, page.after)}>{r.passage}</pre>
+          {(() => {
+            const conversation = conversationOf(r);
+            return isConversation(conversation)
+              ? <div className="blob-transcript" onClick={opened(r.id)}><Transcript content={conversation} /></div>
+              : <pre className="blob-passage" onClick={opened(r.id)}>{r.passage}</pre>;
+          })()}
           {codePoints(r.passage) < r.length && <p className="aside small">{plural(r.length - codePoints(r.passage), "more character")} in this text: open it to read them.</p>}
         </article>
       )))}

@@ -19,13 +19,15 @@ import { workspace } from "./workspace";
 // group: where the navigation lists it, the data apart from the setup (null:
 // not listed: "Add a text" is a button, the views of one decision or one
 // tag are reached from the lists that name them, a dataset's download and
-// export pages from the dataset, and the addresses of the libraries lead into the
-// workspace). rest: the parts of the address
-// after the page's own; query: the address's query.
+// export pages from the dataset; the address of one library leads into the
+// workspace). under: for a page not listed, the path of the listed page the
+// navigation marks while it shows (a dataset's corpora and export pages mark
+// Datasets). rest: the parts of the address after the page's own; query: the
+// address's query.
 export type Page = {
-  path: string; title: string; group: "data" | "setup" | null;
+  path: string; title: string; group: "data" | "setup" | null; under?: string;
   Component: ComponentType<{ rest: string[]; query: URLSearchParams }>;
 };
 
-export const pages: Page[] = [overview, workspace, datasets, tokenizers, jobs, erasures, licenses, depot, settings, add, decisions, tags,
-  libraries, download, exported];
+export const pages: Page[] = [overview, workspace, libraries, datasets, tokenizers, jobs, erasures, licenses, depot, settings, add, decisions, tags,
+  download, exported];

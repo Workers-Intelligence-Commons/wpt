@@ -22,12 +22,14 @@ const SHOWN = 12; // tags and licenses named in the summary
 const LIMIT = 25; // texts of a page of the list
 
 // decision: the review of a decision of that status; children: the form
-// that sends the operation, given the selection with the texts unticked here
-// and how many texts it takes once counted (blocked ones aside); onChange:
+// that sends the operation, given the selection with the texts unticked here,
+// how many texts it takes once counted (blocked ones aside) and, for a
+// decision, how many of them have its status already (null until counted, or
+// once a text is unticked here, whose status the count does not know); onChange:
 // after a refusal or a license change made from the blocked texts.
 export function Review({ selection, libraries, decision, onChange, children }: {
   selection: Selection; libraries: Library[]; decision?: Deciding; onChange?: () => void;
-  children: (chosen: Selection, size: number | null) => ReactNode;
+  children: (chosen: Selection, size: number | null, already: number | null) => ReactNode;
 }) {
   const [left, setLeft] = useState<Set<string>>(new Set(selection.unticked ?? []));
   const [changes, setChanges] = useState(0); // refusals and license changes made inside the review
@@ -47,6 +49,7 @@ export function Review({ selection, libraries, decision, onChange, children }: {
   const newly = [...left].filter((id) => !(selection.unticked ?? []).includes(id)).length; // unticked here, after the count
   const size = counted ? Math.max(0, matched(counted) - apart - newly) : null;
   const chosen: Selection = { ...selection, unticked: [...left] };
+  const already = counted && decision && newly === 0 ? Math.min(counted.statuses[decision], size ?? 0) : null;
   const tick = (some: string[], on: boolean) => {
     const next = new Set(left);
     some.forEach((id) => (on ? next.delete(id) : next.add(id)));
@@ -98,7 +101,7 @@ export function Review({ selection, libraries, decision, onChange, children }: {
           onFirst={() => setPlaces([null])} onPrevious={places.length > 1 ? () => setPlaces(places.slice(0, -1)) : null}
           onNext={page.data.next ? () => setPlaces([...places, page.data.next]) : null} />
       </>}
-      {children(chosen, size)}
+      {children(chosen, size, already)}
     </div>
   );
 }

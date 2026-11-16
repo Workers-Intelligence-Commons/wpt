@@ -4,10 +4,34 @@ it stands for, the condition a decision, a put, a fork or a report takes.
 A filter holds any of: the ids of chosen texts, tags (a text has every one),
 licenses (a text names one of them), statuses (the text has one of them,
 the status the depot stores by wpt_depot.policy), libraries (one of them
-holds the text), whether a locked library holds it, a free SQL condition of
-the person's own, the ids of texts left out (unticked), and the change
-number a page was read at (change). A text matches when it matches every
-part given; a filter with none matches every text.
+holds the text), libraries none of which holds it (outside), whether a
+locked library holds it, a decision it is on, the words of a plain search,
+a free SQL condition of the person's own, the ids of texts left out
+(unticked), and the change number a page was read at (change). A text
+matches when it matches every part given; a filter with none matches every
+text.
+
+The texts of a decision are found through the index of text_decisions by
+decision (wpt_depot.schema) in one of two ways. Read from the decision's
+rows, the condition reads every row of the decision, and only those, each
+time it runs: what a query over every match needs, and what a page or a
+count step needs for a decision on few texts, whose page then sorts them
+all. Tested on each text, the condition looks up only the texts the query
+reaches, so a page or a count step stays bounded by its own rows for a
+decision on many texts, where reading every row of the decision at each
+page or step would grow with the decision (Depot.condition chooses).
+
+A plain search's words are split at spaces, and a text matches when it
+holds each one in its title or its id, or, with in_text, in its text itself
+too (a plain text's text, an item's JSON content). A word matches in any
+case: SQLite's LIKE ignores the case of ASCII letters, and a % or _ in a
+word is that character, not a wildcard. With whole_words, a word matches
+only where no letter, digit or underscore stands right before or after it
+(the SQL function has_word, wpt_depot.database), so "rivers" never matches
+"drivers"; it ignores the case of ASCII letters as LIKE does. On the
+title and the id, LIKE picks the candidates first; on the text, put
+together from its parts, the function reads it alone, so each text is put
+together once.
 
 With a change number C, a text matches only when nothing changed it after
 C (changed_since): its current revision was made at C or before, no
@@ -44,14 +68,20 @@ class Filter:
     where: str | None = None
     unticked: tuple[str, ...] = ()
     change: int | None = None
+    outside: tuple[str, ...] = ()  # libraries none of which holds the text
+    decision: str | None = None  # a decision the text is on
+    search: str | None = None  # the words of a plain search
+    in_text: bool = False  # the search reads the text itself too
+    whole_words: bool = False  # each word of the search matches only as a whole word
 
 
-def condition(found: Filter, latest: int | None = None) -> str:
+def condition(found: Filter, latest: int | None = None, decision_rows: bool = True) -> str:
     """The SQL condition over the texts view, named texts, that matches the
     texts the filter matches. latest: the depot's change number now, when
     known; a filter's change number at or past it leaves out no text, so
-    its condition is left out. Refused for a status that is none of
-    STATUSES."""
+    its condition is left out. decision_rows: the texts of the filter's
+    decision are read from the decision's rows, else tested one by one, as
+    the module says. Refused for a status that is none of STATUSES."""
     parts = []
     if found.ids is not None:
         parts.append(f"id IN {listed(found.ids)}" if found.ids else "false")
@@ -68,8 +98,19 @@ def condition(found: Filter, latest: int | None = None) -> str:
     if found.libraries:
         parts.append("EXISTS (SELECT 1 FROM memberships m WHERE m.text = texts.id AND m.left_change IS NULL "
                      f"AND m.library IN {strings(found.libraries)})")
+    if found.outside:
+        parts.append("NOT EXISTS (SELECT 1 FROM memberships m WHERE m.text = texts.id AND m.left_change IS NULL "
+                     f"AND m.library IN {strings(found.outside)})")
     if found.locked is not None:
         parts.append(IN_LOCKED if found.locked else f"NOT {IN_LOCKED}")
+    if found.decision is not None:
+        decision = literal(found.decision)
+        if decision_rows:
+            parts.append(f"id IN (SELECT l.text FROM text_decisions l WHERE l.decision = {decision})")
+        else:
+            parts.append(f"EXISTS (SELECT 1 FROM text_decisions l WHERE l.text = texts.id AND l.decision = {decision})")
+    for word in words(found.search):
+        parts.append(_word(word, found.in_text, found.whole_words))
     if found.where is not None and found.where.strip():
         parts.append(f"({found.where})")
     if found.unticked:
@@ -94,6 +135,32 @@ def changed_since(change: int) -> str:
             "OR EXISTS (SELECT 1 FROM memberships m JOIN libraries_revisions r ON r.id = m.library AND r.latest "
             f"WHERE m.text = texts.id AND m.left_change IS NULL AND r.change > {number}) "
             f"OR EXISTS (SELECT 1 FROM pulls p WHERE p.change > {number}))")
+
+
+def words(search: str | None) -> list[str]:
+    """The words of a plain search: what is typed, split at spaces."""
+    return (search or "").split()
+
+
+def _word(word: str, in_text: bool, whole: bool) -> str:
+    """Whether a text holds the word of a plain search in its title or id,
+    or with in_text in its text too, as the module says: an SQL condition
+    over the texts view."""
+    pattern = literal("%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    def has(column):
+        return f"has_word({column}, {literal(word)})"
+
+    found = []
+    for column in ("coalesce(title, '')", "id"):
+        test = f"{column} LIKE {pattern} ESCAPE '\\'"
+        # LIKE first, which picks the candidates the function then reads
+        found.append(f"({test} AND {has(column)})" if whole else test)
+    if in_text:
+        # the text is put together from its parts each time it is read, so a whole word reads it once, through
+        # the function alone, which finds the word wherever LIKE would
+        column = "coalesce(text, content, '')"
+        found.append(has(column) if whole else f"{column} LIKE {pattern} ESCAPE '\\'")
+    return f"({' OR '.join(found)})"
 
 
 def literal(text: str) -> str:

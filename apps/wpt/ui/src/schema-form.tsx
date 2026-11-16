@@ -2,9 +2,19 @@
 // the schema names is shown and editable, so a new field in a shape needs no
 // change here. A value that may take one of several shapes (oneOf, anyOf)
 // shows the shape it has and lets a person pick another; an object whose
-// keys are free (additionalProperties) lists its keys and takes new ones. It
-// only shapes the input; the server's rules decide what is valid
-// (conditions such as "if/then" are left to them).
+// keys are free (additionalProperties, or no properties named) lists its
+// keys and takes new ones, a value of no schema as text, a number or a
+// boolean. An
+// object whose allOf holds "if/then/else" rules shows the fields of the rule
+// its value meets (a block of type text shows its text field, one of type
+// tool_call its id, name and arguments), and when a change makes it meet
+// another rule, drops the fields no rule names any more and adds the newly
+// required ones. A rule's condition is read from its properties' const and
+// enum alone; any other condition never adds fields. It only shapes the
+// input; the server's rules decide what is valid. Words (kind-words.ts)
+// give the fields, the entries of a list and the choices plain names, and
+// a list's new entry its start, where a kind has them; a field without them
+// shows its own name.
 
 import { Button, Select, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useState, type ReactNode } from "react";
@@ -22,6 +32,10 @@ export type Schema = {
   anyOf?: Schema[];
   $ref?: string;
   description?: string;
+  allOf?: Schema[];
+  if?: Schema;
+  then?: Schema;
+  else?: Schema;
 };
 
 type Json = unknown;
@@ -29,8 +43,20 @@ type Json = unknown;
 // carries the red star, or says "optional"); none for an entry of a list.
 // remove: the button that removes this value from what holds it, shown on
 // the value's own line (beside a group's name, or beside a field).
-type Props = { value: Json; schema: Schema; root: Schema; name: string; need?: "required" | "optional"; remove?: ReactNode; onChange: (value: Json) => void };
+// field: the value's own name in the object that holds it, which words look
+// up (name, for an entry of a list, is the entry's name in words).
+type Props = { value: Json; schema: Schema; root: Schema; name: string; field?: string; words?: Words; need?: "required" | "optional"; remove?: ReactNode; onChange: (value: Json) => void };
 
+// Plain names for a kind's fields (names), for one entry of a list field
+// (entries: "messages" gives "message"), and for the choices of a field
+// (values); start: a list field's new entry, given the entries it holds,
+// or undefined for the schema's own start.
+export type Words = {
+  names?: Record<string, string>; entries?: Record<string, string>; values?: Record<string, string>;
+  start?: (field: string, entries: Json[]) => Json | undefined;
+};
+
+const ANY_SCALAR: Schema = { type: ["string", "number", "boolean"] };
 const LONG = new Set(["text", "attribution", "note", "reason", "question"]);
 
 function resolve(schema: Schema, root: Schema): Schema {
@@ -38,6 +64,40 @@ function resolve(schema: Schema, root: Schema): Schema {
   const found = schema.$ref.replace(/^#\//, "").split("/").reduce<any>((at, key) => at?.[key], root);
   return found ? resolve(found, root) : schema;
 }
+
+// Whether an object value meets an "if" condition, read from its
+// properties' const and enum (a property the value lacks meets it, as in
+// JSON Schema); a condition of any other shape is not met.
+function meets(condition: Schema, value: Json): boolean {
+  if (!condition.properties || Object.keys(condition).some((key) => key !== "properties")) return false;
+  const object = (value && typeof value === "object" ? value : {}) as Record<string, Json>;
+  return Object.entries(condition.properties).every(([key, rule]) => {
+    if (!(key in object)) return true;
+    if (rule.const !== undefined) return object[key] === rule.const;
+    if (rule.enum) return rule.enum.includes(object[key] as string);
+    return false;
+  });
+}
+
+// An object schema with the fields its allOf rules add for this value: each
+// rule's then (when met) or else, its properties the schema does not name
+// yet, and its required fields.
+function effective(s: Schema, value: Json): Schema {
+  if (!s.allOf) return s;
+  const properties = { ...(s.properties ?? {}) };
+  const needed = new Set(s.required ?? []);
+  for (const rule of s.allOf) {
+    if (!rule.if) continue;
+    const branch = meets(rule.if, value) ? rule.then : rule.else;
+    for (const [key, field] of Object.entries(branch?.properties ?? {}))
+      if (!(key in properties) && typeof field === "object") properties[key] = field;
+    for (const key of branch?.required ?? []) needed.add(key);
+  }
+  return { ...s, properties, required: [...needed] };
+}
+
+// A list's name for one of its entries: "messages" gives "message".
+const one = (name: string) => (name.length > 3 && name.endsWith("s") && !name.endsWith("ss") ? name.slice(0, -1) : name);
 
 // The JSON kind of a value, as a schema's type names it.
 function kind(value: Json): string {
@@ -75,8 +135,11 @@ export function initial(schema: Schema, root: Schema): Json {
   if (choices) return initial(choices[0], root);
   if (s.const !== undefined) return s.const;
   if (s.enum) return s.enum[0];
-  if (s.type === "object")
-    return Object.fromEntries((s.required ?? []).map((key) => [key, initial(s.properties?.[key] ?? {}, root)]));
+  if (s.type === "object") {
+    const start = Object.fromEntries((s.required ?? []).map((key) => [key, initial(s.properties?.[key] ?? {}, root)]));
+    const shaped = effective(s, start);
+    return Object.fromEntries((shaped.required ?? []).map((key) => [key, key in start ? start[key] : initial(shaped.properties?.[key] ?? {}, root)]));
+  }
   if (s.type === "array") return [];
   if (s.type === "integer" || s.type === "number") return 0;
   return "";
@@ -96,9 +159,10 @@ function Remove({ what, onClick }: { what: string; onClick: () => void }) {
   return <Button variant="quiet" onClick={onClick}>Remove {what}</Button>;
 }
 
-export function SchemaForm({ value, schema, root, name, need, remove, onChange }: Props) {
+export function SchemaForm({ value, schema, root, name: given, field = given, words, need, remove, onChange }: Props) {
   const s = resolve(schema, root);
   const hint = s.description;
+  const name = words?.names?.[field] ?? given;
   const label: ReactNode = need === "required" ? required(name) : need === "optional" ? optional(name) : name;
   const isRequired = need === "required";
 
@@ -117,7 +181,7 @@ export function SchemaForm({ value, schema, root, name, need, remove, onChange }
             })}
           </Select>
         )}
-        <SchemaForm value={value} schema={choices[at]} root={root} name={name} need={need} remove={remove} onChange={onChange} />
+        <SchemaForm value={value} schema={choices[at]} root={root} name={given} field={field} words={words} need={need} remove={remove} onChange={onChange} />
       </div>
     );
   }
@@ -126,30 +190,40 @@ export function SchemaForm({ value, schema, root, name, need, remove, onChange }
     return (
       <Line remove={remove}>
         <Select label={label} required={isRequired} hint={hint} value={String(value)} onChange={(e) => onChange(e.target.value)}>
-          {s.enum.map((option) => <option key={option}>{option}</option>)}
+          {s.enum.map((option) => <option key={option} value={option}>{words?.values?.[option] ?? option}</option>)}
         </Select>
       </Line>
     );
 
-  if (s.type === "object" && !s.properties && typeof s.additionalProperties === "object")
-    return <FreeObject value={value} schema={s} root={root} name={name} need={need} remove={remove} onChange={onChange} />;
+  if (s.type === "object" && !s.properties && s.additionalProperties !== false) // free keys; with no schema for their values, each takes text, a number or a boolean
+    return <FreeObject value={value} schema={typeof s.additionalProperties === "object" ? s : { ...s, additionalProperties: ANY_SCALAR }} root={root} name={name} words={words} need={need} remove={remove} onChange={onChange} />;
 
   if (s.type === "object") {
     const object = (value && typeof value === "object" ? value : {}) as Record<string, Json>;
-    const needed = new Set(s.required ?? []);
-    const keys = Object.keys(s.properties ?? {});
+    const shaped = effective(s, object);
+    const needed = new Set(shaped.required ?? []);
+    const keys = Object.keys(shaped.properties ?? {});
+    // a change that makes the value meet other rules: the fields no rule names go, the newly required ones come
+    const change = (next: Record<string, Json>) => {
+      if (!s.allOf) return onChange(next);
+      const after = effective(s, next);
+      const named = new Set(Object.keys(after.properties ?? {}));
+      const kept = Object.fromEntries(Object.entries(next).filter(([key]) => named.has(key) || !(key in (shaped.properties ?? {}))));
+      for (const key of after.required ?? []) if (!(key in kept)) kept[key] = initial(after.properties?.[key] ?? {}, root);
+      onChange(kept);
+    };
     const missing = keys.filter((key) => !(key in object));
     return (
       <fieldset className="schema-object">
         <Head label={label}>
-          {missing.map((key) => <Button key={key} variant="quiet" onClick={() => onChange({ ...object, [key]: initial(s.properties![key], root) })}>Add {key}</Button>)}
+          {missing.map((key) => <Button key={key} variant="quiet" onClick={() => change({ ...object, [key]: initial(shaped.properties![key], root) })}>Add {words?.names?.[key] ?? key}</Button>)}
           {remove}
         </Head>
         {hint && <p className="wic-field-hint">{hint}</p>}
         {keys.filter((key) => key in object).map((key) => (
-          <SchemaForm key={key} value={object[key]} schema={s.properties![key]} root={root} name={key} need={needed.has(key) ? "required" : "optional"}
-            remove={needed.has(key) ? undefined : <Remove what={key} onClick={() => { const { [key]: _, ...rest } = object; onChange(rest); }} />}
-            onChange={(v) => onChange({ ...object, [key]: v })} />
+          <SchemaForm key={key} value={object[key]} schema={shaped.properties![key]} root={root} name={key} words={words} need={needed.has(key) ? "required" : "optional"}
+            remove={needed.has(key) ? undefined : <Remove what={words?.names?.[key] ?? key} onClick={() => { const { [key]: _, ...rest } = object; change(rest); }} />}
+            onChange={(v) => change({ ...object, [key]: v })} />
         ))}
       </fieldset>
     );
@@ -157,16 +231,18 @@ export function SchemaForm({ value, schema, root, name, need, remove, onChange }
 
   if (s.type === "array") {
     const list = Array.isArray(value) ? value : [];
+    const entry = words?.entries?.[field] ?? one(name);
+    const added = () => words?.start?.(field, list) ?? initial(s.items ?? {}, root);
     return (
       <fieldset className="schema-object">
         <Head label={label}>
-          <Button variant="quiet" onClick={() => onChange([...list, initial(s.items ?? {}, root)])}>Add to {name}</Button>
+          <Button variant="quiet" onClick={() => onChange([...list, added()])}>{entry === name ? `Add to ${name}` : `Add ${/^[aeiou]/i.test(entry) ? "an" : "a"} ${entry}`}</Button>
           {remove}
         </Head>
         {hint && <p className="wic-field-hint">{hint}</p>}
         {list.map((item, i) => (
-          <SchemaForm key={i} value={item} schema={s.items ?? {}} root={root} name={`${name} ${i + 1}`}
-            remove={<Remove what={`${name} ${i + 1}`} onClick={() => onChange(list.filter((_, j) => j !== i))} />}
+          <SchemaForm key={i} value={item} schema={s.items ?? {}} root={root} name={`${entry[0].toUpperCase()}${entry.slice(1)} ${i + 1}`} field={`${field} ${i + 1}`} words={words}
+            remove={<Remove what={`${entry} ${i + 1}`} onClick={() => onChange(list.filter((_, j) => j !== i))} />}
             onChange={(v) => onChange(list.map((old, j) => (j === i ? v : old)))} />
         ))}
       </fieldset>
@@ -193,7 +269,7 @@ export function SchemaForm({ value, schema, root, name, need, remove, onChange }
 
 // An object whose keys are free: each key with its value, removable, and a
 // name to add a new key.
-function FreeObject({ value, schema, root, name, need, remove, onChange }: Props) {
+function FreeObject({ value, schema, root, name, words, need, remove, onChange }: Props) {
   const [key, setKey] = useState("");
   const object = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, Json>;
   const item = schema.additionalProperties as Schema;
@@ -202,7 +278,7 @@ function FreeObject({ value, schema, root, name, need, remove, onChange }: Props
       <Head label={need === "required" ? required(name) : need === "optional" ? optional(name) : name}>{remove}</Head>
       {schema.description && <p className="wic-field-hint">{schema.description}</p>}
       {Object.keys(object).map((k) => (
-        <SchemaForm key={k} value={object[k]} schema={item} root={root} name={k}
+        <SchemaForm key={k} value={object[k]} schema={item} root={root} name={k} words={words}
           remove={<Remove what={k} onClick={() => { const { [k]: _, ...rest } = object; onChange(rest); }} />}
           onChange={(v) => onChange({ ...object, [k]: v })} />
       ))}

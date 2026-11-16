@@ -27,15 +27,21 @@ What it takes: a plain text counts for the first share whose tag it has,
 and a plain text that has none of their tags is left out; items of a kind
 other than conversation and task are no training data and are left out.
 With max_tokens, the corpus's tokens, of plain texts, conversations and
-tasks together, never pass it:
+tasks together, never pass it, and a corpus of any size keeps the
+dataset's mix of items and plain text:
 
-- the items (conversations and tasks) are taken first, in order, before
-  the build writes anything: conversations stop at the first conversation
-  whose tokens would pass what is left of max_tokens, and tasks at the
-  first such task, never scanning on for a smaller one. A conversation
-  counts the tokens of its chat template; a task, kept as a line of
-  tasks.jsonl and never tokenized, counts the tokens of its content as the
-  JSON text of that line (task_text);
+- the items (conversations and tasks) have their natural share of
+  max_tokens: the share of the UTF-8 bytes of the corpus without
+  max_tokens (below: every item, and the plain texts the shares keep) that
+  the items hold, rounded down to a whole token, so every size has the mix
+  of the corpus of every token. Bytes, because they are known for every
+  text before anything is tokenized. A share no text has counts for
+  nothing there. Before the build writes anything, the items are counted in
+  order and taken until the first item whose tokens would pass that part,
+  never scanning on for a smaller one. A conversation counts the tokens of
+  its chat template; a task, kept as a line of tasks.jsonl and never
+  tokenized, counts the tokens of its content as the JSON text of that line
+  (task_text);
 - each share (or, without shares, every plain text) may take its
   proportion of what the items left of max_tokens, in tokens, and stops at
   its first text that would pass it, never scanning on for a smaller one.
@@ -95,7 +101,7 @@ fails leaves no record. The build's key covers what decides the corpus:
 the depot's name, the dataset's id and its row as the corpus copies it
 (without its revision, its change and the vocabulary it publishes, with
 the build's size), the vocabulary's
-sha256 and the erasures every depot read has carried out on a text of the
+sha256, the version of these rules (RULES) and the erasures every depot read has carried out on a text of the
 dataset's libraries, so the same depot state, dataset, vocabulary and size
 build into the same folder, another vocabulary or size into another, and
 building again a corpus whose files were deleted writes the same bytes
@@ -106,6 +112,7 @@ gives the same id. The record names the depot that holds the dataset (its
 name), the dataset's row (its id and the revision built from included),
 the vocabulary (its recipe, version, file and sha256), the size
 (max_tokens, null for none), the number of texts and conversations it holds, the
+tokens of its items (items_tokens: its conversations' and its tasks'), the
 size of every file, and a fingerprint of each part a training step reads,
 `fingerprints`: "text" (the vocabulary and the plain texts' token files),
 "conversations" (the vocabulary and the conversations' token files) and
@@ -185,6 +192,7 @@ CORPUS_SCHEMAS = {
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
 }
+RULES = 2  # the version of the rules of what a build takes, in the build's key: raised whenever they change
 CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", "scores")  # what a text's row copies
 
 
@@ -503,7 +511,7 @@ def _counted(batch: list[tuple]) -> list[int]:
         if kind == "conversation":
             found.append(len(chat.encode(tokenizer, json.loads(content))[0]))
         else:
-            found.append(len(tokenizer.encode(task_text(json.loads(content)).encode("utf-8"))))
+            found.append(task_tokens(tokenizer, json.loads(content)))
     return found
 
 
@@ -511,6 +519,55 @@ def task_text(content) -> str:
     """A task's content as the JSON text of its line in tasks.jsonl, whose
     tokens are what a task counts for the corpus's limit."""
     return json.dumps(content, ensure_ascii=False, sort_keys=True)
+
+
+def task_tokens(tokenizer: Tokenizer, content) -> int:
+    """The tokens a task's content counts for the corpus (task_text)."""
+    return len(tokenizer.encode(task_text(content).encode("utf-8")))
+
+
+def scarcest_trim(available: dict[int, float], shares: list[dict]) -> dict[int, float]:
+    """{pool: what it may take} of the corpus without max_tokens, from what
+    each pool of shares holds (bytes or tokens): the scarcest share all it
+    holds, each other its proportion of the scarcest's, at most all it
+    holds. A share that holds nothing takes nothing, and the others are
+    measured among themselves."""
+    held = [pool for pool in available if available[pool]]
+    if not held:
+        return dict.fromkeys(available, 0)
+    whole = sum(share["share"] for share in shares)
+    proportion = {pool: shares[pool]["share"] / whole for pool in available}
+    scarcest = min(held, key=lambda pool: available[pool] / proportion[pool])
+    total = available[scarcest] / proportion[scarcest]
+    return {pool: available[pool] if pool == scarcest else min(available[pool], proportion[pool] * total)
+            for pool in available}
+
+
+def measure(depot: Depot, libraries: list[str], shares: list[dict]) -> dict:
+    """What the libraries hold now (Depot.measure, each share's tag of
+    shares, [{tag, share}], in order) with the mix of the corpus of every
+    token when shares are given (mix None otherwise): each share's row
+    gains share, kept_bytes and kept_characters (what scarcest_trim keeps
+    of it, its characters in the same proportion; a share of no proportion
+    takes nothing, and the others are measured among themselves) and
+    limits (true on the share that keeps all it holds while another keeps
+    less); mix: {kept_bytes, kept_characters of plain text, items_share:
+    the share of the bytes the conversations and tasks hold then}."""
+    found = depot.measure(libraries, [one["tag"] for one in shares])
+    if not shares:
+        return {**found, "mix": None}
+    held = {at: one["bytes"] for at, one in enumerate(found["shares"]) if shares[at]["share"] > 0}
+    kept = dict.fromkeys(range(len(shares)), 0) | (scarcest_trim(held, shares) if held else {})
+    scarcest = [at for at in held if held[at] and kept[at] == held[at]
+                and any(kept[other] < held[other] for other in held)]
+    rows = [{**one, "share": shares[at]["share"], "kept_bytes": int(kept[at]),
+             "kept_characters": round(one["characters"] * kept[at] / one["bytes"]) if one["bytes"] else 0,
+             "limits": at in scarcest} for at, one in enumerate(found["shares"])]
+    plain = sum(one["kept_bytes"] for one in rows)
+    items = found["items"]["bytes"]
+    return {**found, "shares": rows, "mix": {
+        "kept_bytes": plain, "kept_characters": sum(one["kept_characters"] for one in rows),
+        "items_share": items / (items + plain) if items + plain else 0}}
 
 
 class _Build:
@@ -536,7 +593,8 @@ class _Build:
         self.vocabulary = tokenizer.to_bytes()
         self.vocabulary_sha256 = hashlib.sha256(self.vocabulary).hexdigest()
         self.erasures = _erasures(self.dataset, self.names, self.opened)
-        self.limit_of = [self.vocabulary_sha256, self.limit]  # what the order's limit of the items is counted for
+        # what the order's limit of the items is counted for
+        self.limit_of = [RULES, self.vocabulary_sha256, self.limit]
         self.key = self._key()
         self.folder = f"{FOLDER}/{as_record_name(self.dataset['name'])}-{self.key[:8]}"
         self.room = room(self.folder) if room is not None else corpora.Room(store, None, self.folder)
@@ -545,7 +603,7 @@ class _Build:
         """The build's key: what decides the corpus (the module says)."""
         return _fingerprint({"depot": self.holder, "dataset": self.dataset["id"],
                              "content": _content(self.named), "vocabulary": self.vocabulary_sha256,
-                             "erasures": self.erasures})
+                             "rules": RULES, "erasures": self.erasures})
 
     def run(self) -> dict:
         known = self.store.get_json(f"{self.folder}/{RECORD}")
@@ -560,7 +618,11 @@ class _Build:
                 if self.limit is None:
                     self.order.limit_items([], 0, self.limit_of)
                 else:
-                    self._limit_items(self.limit)
+                    items = self.order.every_item_bytes()
+                    shares = self.dataset["shares"]
+                    plain = sum((self.order.pool_bytes() if shares is None else self._byte_budget(shares, False))
+                                .values())
+                    self._limit_items(self.limit * items // (items + plain) if items else 0)
             return self._stream()
         finally:
             self.order.close()
@@ -573,10 +635,10 @@ class _Build:
         if state.get("key") != self.key:  # a state of another build starts nothing
             state = {"key": self.key, "position": 1, "shards": [], "conversation_shards": [], "texts": [],
                      "tasks": 0, "tasks_count": 0, "pools": {}, "used": {}, "closed": [], "taken": 0,
-                     "conversations": 0, "text_position": 0, "conversation_position": 0}
+                     "conversations": 0, "text_position": 0, "conversation_position": 0, "items_tokens": 0}
         shares = self.dataset["shares"]
         limit = self.limit
-        if limit is not None:  # the items took their tokens first (_limit_items); the shares split what is left
+        if limit is not None:  # the items took their share (_limit_items); the shares split what is left
             budget, counted = _proportions(shares, limit - self.order.items_tokens(self.limit_of)), "tokens"
         elif shares is not None:
             budget, counted = self._byte_budget(shares), "bytes"
@@ -715,10 +777,12 @@ class _Build:
                     pool_tag = tags[entry.pool] if entry.kind is None else ""
                     if entry.kind == "task":
                         start = state["tasks_count"]
+                        content = json.loads(data.decode("utf-8"))
                         tasks_file.write(task_text({"depot": source_name, "id": entry.id,
-                                                    "content": json.loads(data.decode("utf-8"))}).encode("utf-8")
-                                         + b"\n")
+                                                    "content": content}).encode("utf-8") + b"\n")
                         state["tasks_count"] += 1
+                        if limit is None:  # with a limit, the items' tokens were counted already (_limit_items)
+                            state["items_tokens"] += task_tokens(self.tokenizer, content)
                     else:
                         kind = "text" if entry.kind is None else "conversation"
                         start = writers[kind].add(data, source_name, entry.id, pool_tag)
@@ -726,6 +790,7 @@ class _Build:
                             state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + len(data)
                         else:
                             state["conversations"] += 1
+                            state["items_tokens"] += len(data)
                     state["taken"] += 1
                     credits.append({"depot": source_name, "id": entry.id, "revision": entry.revision, **row,
                                     "tokens": start})
@@ -748,12 +813,13 @@ class _Build:
         return [(self.opened[self.sources[entry.source]].address, entry.id, entry.revision, entry.kind, read)
                 for entry, read in batch]
 
-    def _limit_items(self, limit: int):
+    def _limit_items(self, part: int):
         """Count the tokens of the items (conversations and tasks) in order,
-        taking each until the first of its kind whose tokens would pass what
-        is left of limit, and keep in the order file the items left out with
-        the tokens of those taken (Order.limit_items)."""
-        used, closed, left_out = 0, set(), []
+        taking each until the first whose tokens would pass what is left of
+        part, the items' share of the size, and keep in the order file the
+        items left out (that one and every item after it) with the tokens of
+        those taken (Order.limit_items)."""
+        used, first_out = 0, None
         entries = self.order.items()
 
         def batches():
@@ -772,7 +838,7 @@ class _Build:
                     for entry in batch]
 
         with ExitStack() as stack:
-            if self.order.taken_bytes() - _taken_bytes(self.order) > IN_PROCESS:
+            if self.order.every_item_bytes() > IN_PROCESS:
                 sizing = Sizing("counting workers")
                 pool = stack.enter_context(process_pool(sizing, sizing.limit, _start_worker, (self.vocabulary,)))
                 waiting = collections.deque()
@@ -788,28 +854,28 @@ class _Build:
             done = 0
             for batch, found in results:
                 for entry, tokens in zip(batch, found):
-                    if entry.kind in closed or used + tokens > limit:
-                        closed.add(entry.kind)
-                        left_out.append(entry.position)
-                    else:
-                        used += tokens
+                    if used + tokens > part:
+                        first_out = entry.position
+                        break
+                    used += tokens
                 done += len(batch)
                 self.progress({"stage": "counting items", "items": done, "tokens": used})
+                if first_out is not None:
+                    break
+        left_out = [] if first_out is None else [entry.position for entry in self.order.items()
+                                                  if entry.position >= first_out]
         self.order.limit_items(left_out, used, self.limit_of)
 
-    def _byte_budget(self, shares: list[dict]) -> dict[int, int]:
+    def _byte_budget(self, shares: list[dict], refuse: bool = True) -> dict[int, int]:
         """{pool: the bytes it may take} without max_tokens: the scarcest
         share all of its bytes, each other its proportion of the scarcest's.
-        Refused when a share has no text."""
+        A share with no text is refused, or with refuse False takes nothing
+        and the others are measured among themselves."""
         available = {at: 0 for at in range(len(shares))} | self.order.pool_bytes()
         empty = [shares[at]["tag"] for at, size in available.items() if not size]
-        if empty:
+        if empty and refuse:
             raise Refused(f"the shares cannot be met: no text of the libraries has the tag {', '.join(empty)}")
-        whole = sum(share["share"] for share in shares)
-        proportion = {at: share["share"] / whole for at, share in enumerate(shares)}
-        scarcest = min(proportion, key=lambda at: available[at] / proportion[at])
-        total = available[scarcest] / proportion[scarcest]
-        return {at: available[at] if at == scarcest else int(proportion[at] * total) for at in proportion}
+        return {at: int(size) for at, size in scarcest_trim(available, shares).items()}
 
     def _finish(self, state: dict, tasks_path: Path, plain: int) -> dict:
         built_at = datetime.now(UTC)
@@ -860,6 +926,7 @@ class _Build:
             "tables": {"dataset": put("dataset", [{**dataset, "built_at": built_at}]), "texts": state["texts"],
                        "licenses": put("licenses", license_rows), "notices": put("notices", notice_rows)},
             "total_tokens": sum(s["tokens"] for s in state["shards"]),
+            "items_tokens": state["items_tokens"] if self.limit is None else self.order.items_tokens(self.limit_of),
             "shares_tokens": None if self.dataset["shares"] is None else [
                 {"tag": share["tag"], "tokens": state["pools"].get(share["tag"], 0)}
                 for share in self.dataset["shares"]],

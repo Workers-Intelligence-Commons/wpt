@@ -320,30 +320,113 @@ def corpus_tokens(store, record) -> int:
             + sum(len(TOKENIZER.encode(task_text(json.loads(line)["content"]).encode("utf-8"))) for line in tasks))
 
 
-def test_max_tokens_takes_the_items_first_and_gives_the_shares_what_they_leave(make_depot, me, tmp_path):
-    depot, library, conversation, task = items_depot(make_depot, me, plain=6)
-    limit = 2 * conversation + task + 7  # the items fit, and leave 7 tokens: two plain texts of 3
+def items_part(depot, limit: int) -> int:
+    """The items' share of a size: their part of the UTF-8 bytes of every text of the depot, of limit."""
+    rows = depot.rows("SELECT c.kind, c.bytes AS size FROM texts t JOIN content_lists c "
+                      "ON c.id = t.id AND c.version = t.content_version")
+    items = sum(row["size"] for row in rows if row["kind"] is not None)
+    return limit * items // sum(row["size"] for row in rows)
+
+
+def test_a_size_gives_the_items_their_natural_share_and_the_plain_texts_the_rest(make_depot, me, tmp_path):
+    depot, library, conversation, task = items_depot(make_depot, me, plain=300)
     store = open_store((tmp_path / "store").as_uri())
+    every = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
+    limit = every["items_tokens"]  # the items' share of it leaves some of them out, the plain texts' part fills
+    part = items_part(depot, limit)
+    assert part < limit
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
 
-    assert (record["conversations"], record["tasks"]["count"]) == (2, 1)
-    assert record["total_tokens"] == 6 and record["left_out"]["trimmed"] == 4
-    assert corpus_tokens(store, record) == limit - 1
+    # every token: every item and every plain text, the items' tokens counted
+    assert (every["conversations"], every["tasks"]["count"], every["total_tokens"]) == (2, 1, 300 * 3)
+    assert every["items_tokens"] == 2 * conversation + task == corpus_tokens(store, every) - every["total_tokens"]
+    # the items take their share of the size, within one item, and the plain texts what is left, within one text
+    assert part - max(conversation, task) < record["items_tokens"] <= part
+    assert record["items_tokens"] == corpus_tokens(store, record) - record["total_tokens"]
+    assert limit - record["items_tokens"] - 3 < record["total_tokens"] <= limit - record["items_tokens"]
+    # the same depot, dataset, vocabulary and size build the same corpus
+    again = build(depot, "all", open_store((tmp_path / "again").as_uri()), TOKENIZER, max_tokens=limit,
+                  log=lambda *_: None)
+    assert (again["id"], again["folder"]) == (record["id"], record["folder"])
 
 
-def test_items_alone_past_max_tokens_stop_each_kind_at_its_first_item_that_would_pass(make_depot, me, tmp_path):
+def test_with_shares_the_items_have_their_share_of_the_corpus_of_every_token(make_depot, me, tmp_path):
+    depot = make_depot()
+    depot.add([NewText(text="the dog", licenses=("CC0-1.0",), tags=("en",)) for _ in range(300)]
+              + [NewText(text="the fox", licenses=("CC0-1.0",), tags=("fr",)) for _ in range(10)]
+              + [item("conversation", CONVERSATION, "en") for _ in range(6)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 0.5), ("fr", 0.5)])
+    conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
+    items = 6 * len(json.dumps(CONVERSATION).encode("utf-8"))
+    store = open_store((tmp_path / "store").as_uri())
+    every = build(depot, "mix", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
+    limit = every["items_tokens"]
+    part = limit * items // (items + 2 * 10 * 7)  # without a size, en keeps as many bytes as fr: 10 texts of 7
+
+    record = build(depot, "mix", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
+
+    assert [one["tokens"] for one in every["shares_tokens"]] == [30, 30]
+    assert part - conversation < record["items_tokens"] <= part
+    assert record["items_tokens"] > limit * items // (items + 310 * 7)  # more than their share of every plain text
+
+
+def test_the_item_share_stops_at_its_first_item_that_would_pass_its_part(make_depot, me, tmp_path):
     depot, library, conversation, task = items_depot(make_depot, me, plain=3)
-    assert task > conversation + 1  # so one conversation is all that fits, whatever the corpus's order
-    limit = conversation + 1
+    limit = 3 * 3 + conversation + task  # the items hold nearly all the bytes: their part is most of the size
+    part = items_part(depot, limit)
+    assert part < 2 * conversation + task  # so not every item fits
     store = open_store((tmp_path / "store").as_uri())
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
 
-    assert record["conversations"] == 1 and "tasks" not in record
-    assert record["total_tokens"] == 0  # the 1 token the items leave holds no plain text
-    assert record["left_out"]["trimmed items"] == 2 and record["left_out"]["trimmed"] == 3
-    assert corpus_tokens(store, record) == conversation <= limit
+    taken = record["conversations"] + record.get("tasks", {}).get("count", 0)
+    assert 0 < taken < 3 and record["left_out"]["trimmed items"] == 3 - taken
+    assert record["items_tokens"] <= part and corpus_tokens(store, record) <= limit
+
+
+def test_conversations_and_tasks_are_one_share_that_stops_at_its_first_item_that_would_pass(make_depot, me,
+                                                                                            tmp_path):
+    depot = make_depot()
+    depot.add([NewText(text="the dog", licenses=("CC0-1.0",), tags=("en",)) for _ in range(20)]
+              + [item("conversation", CONVERSATION, "en") for _ in range(5)] + [item("task", TASK, "en"), item("task", TASK, "en")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    depot.new_dataset("all", "classics", [(None, library)])
+    conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
+    task = len(TOKENIZER.encode(task_text(TASK).encode("utf-8")))
+    store = open_store((tmp_path / "store").as_uri())
+    every = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
+    kinds = [one["kind"] for one in read_table(store, every, "texts").to_pylist() if one["kind"] is not None]
+    before = kinds.index("task")  # the conversations the corpus's order puts before the first task
+    assert task > conversation and "conversation" in kinds[before + 1:]  # a smaller conversation follows it
+    # the smallest size whose item part fits every conversation before the first task and one more, not the task
+    limit = next(size for size in range(1, 100_000) if items_part(depot, size) >= (before + 1) * conversation)
+    assert items_part(depot, limit) < before * conversation + task
+
+    record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
+
+    # the first task stops the share: no conversation after it is taken, though one would fit
+    assert (record["conversations"], record.get("tasks", {}).get("count", 0)) == (before, 0)
+    assert record["items_tokens"] == before * conversation
+    assert record["left_out"]["trimmed items"] == len(kinds) - before
+
+
+def test_a_dataset_of_items_alone_fills_its_size_with_them(make_depot, me, tmp_path):
+    depot, library, conversation, task = items_depot(make_depot, me, plain=0)
+    limit = 2 * conversation + task - 1  # every item but the last in order fits
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
+
+    assert record["total_tokens"] == 0
+    assert limit - max(conversation, task) < record["items_tokens"] <= limit
+    assert record["items_tokens"] == corpus_tokens(store, record)
+    assert record["left_out"]["trimmed items"] == 1
 
 
 def test_a_depot_moved_to_another_file_builds_the_same_corpus(make_depot, me, tmp_path):
@@ -489,7 +572,7 @@ def test_a_cap_weighs_only_the_items_max_tokens_keeps(make_depot, me, tmp_path):
     library = depot.new_library("mine")
     depot.put(library, "true")
     conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
-    limit = 2 * conversation + 30
+    limit = 2 * conversation + conversation // 2  # the conversations' part holds two of them
     depot.new_dataset("all", "classics", [(None, library)])
     alone = build(depot, "all", open_store((tmp_path / "alone").as_uri()), TOKENIZER, max_tokens=limit,
                   shard_tokens=6,

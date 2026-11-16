@@ -283,16 +283,28 @@ A corpus is built at a size, `max_tokens`: the most tokens the corpus
 holds, or none. The dataset's own `max_tokens`, optional, is only the size
 the web app's build form starts at; nothing else reads it.
 The size counts the tokens of its plain texts, conversations and tasks
-together. Conversations and tasks are
-taken first, in the corpus's order: conversations stop at the first
-conversation that would pass what is left of the limit, and tasks at the
-first such task, never scanning on for a smaller one. A conversation counts
-the tokens of its chat template. A task is kept as a JSON line and never
-tokenized, so it counts the tokens of its content written as the JSON text
-of that line. Each share then takes its proportion of what the items left,
-or, without shares, the plain texts take all of it, and stops at its first
-text that would pass that part, in the corpus's order. Without a size,
-every conversation and task is taken.
+together, and a corpus of any size keeps the dataset's mix of items and
+plain text.
+
+Conversations and tasks together have their natural share of the size:
+the share they hold of the UTF-8 bytes of the corpus built without a size
+(every conversation and task, and the plain texts the shares keep, see
+"Shares"), rounded down to a whole token. So every size has the mix of the
+corpus of every token. A share no text has counts for nothing there. The
+share is measured in bytes because bytes are known for every text before
+anything is tokenized; it reads the same order as the build, so the same
+dataset gives the same share. The
+items are taken in the corpus's order until the first item whose tokens
+would pass that share, never scanning on for a smaller one. A conversation
+counts the tokens of its chat template. A task is kept as a JSON line and
+never tokenized, so it counts the tokens of its content written as the JSON
+text of that line.
+
+Each share then takes its proportion of what the items left, or, without
+shares, the plain texts take all of it, and stops at its first text that
+would pass that part, in the corpus's order. Without a size, every
+conversation and task is taken. The corpus's record keeps the tokens its
+conversations and tasks hold (`items_tokens`).
 
 `wpt depot dataset edit NAME`, or "Edit it" on the view of the dataset,
 changes its name, its libraries, its shares and its `max_tokens` as a new
@@ -339,7 +351,7 @@ trimmed from a share, items `max_tokens` left out, items of the kinds that
 are no training data).
 
 A share with no text refuses the build. Shares apply to plain texts only:
-only a size trims conversations and tasks.
+only a size trims conversations and tasks, to their natural share of it.
 
 ### Remotes
 

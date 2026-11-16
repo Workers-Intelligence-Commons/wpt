@@ -28,7 +28,9 @@ corpora's records, wpt.depot.downloads; no corpus is sent meanwhile),
 text of the latest corpus of the dataset's current revision; nothing builds
 it again by itself), "not built" or "no store". Reading it starts nothing.
 A built corpus gives each of its files, streamed from the store with Range
-support. GET /api/datasets/{id}/download lists the triples the store holds
+support. A browser saves each file under a name made of the dataset's name,
+the vocabulary, the size and what the file is, so a folder of downloads
+tells the files apart. GET /api/datasets/{id}/download lists the triples the store holds
 corpora of, each with its address and state, and with the latest fresh
 corpus of the triple built from any revision of the dataset (latest_fresh,
 its revision named), the corpus training takes (wpt.train.recipe_depot).
@@ -36,7 +38,8 @@ its revision named), the corpus training takes (wpt.train.recipe_depot).
 A dataset's export (GET /api/datasets/{id}/export, the page
 #/export/<id>) gives the texts of its current revision in numbered parts
 (wpt_depot.exports), each made as it is sent, in JSONL compressed with zstd
-or in Parquet, with its size once it was sent whole; it needs no
+or in Parquet, saved under the dataset's name followed by the part's,
+with its size once it was sent whole; it needs no
 tokenizer, no build and no job. A part whose size is known takes one Range
 of bytes. At most downloads.EXPORTS parts (and samples) are sent at once
 in all, and downloads.VISITOR_EXPORTS for one visitor (429 past them).
@@ -50,6 +53,7 @@ import queue
 import re
 import shutil
 import threading
+from collections import Counter
 from contextlib import closing
 from functools import wraps
 
@@ -72,9 +76,12 @@ PROGRESS_SECONDS = 5  # seconds between two lines of progress of a sample being 
 RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 TEXT_PART = re.compile(r"part-(\d{5})\.(jsonl\.zst|parquet)")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")  # what a downloaded file's name replaces by a hyphen
 ALL = "all"  # the size of a build with no max_tokens
 # the columns of a dataset's row a corpus of it depends on: never max_tokens nor vocabulary, which a build never reads
 SAME = ("name", "tokenizer", "libraries", "shares")
+# the media type of a vocabulary file, the JSON of wpt_tokenizer's merges
+JSON_TYPE = "application/json"
 # the one measure of a vocabulary training: (sample bytes, seconds) it took on the public depot's machine
 TRAINING_MEASURE = (10_000_000_000, 49 * 60)
 
@@ -121,7 +128,8 @@ def build_job(depot: Depot, dataset: str, vocabulary: str, max_tokens: int | Non
     vocabulary of that sha256 at the size max_tokens (None: no limit), or,
     with corpus, the deleted corpus of that id again, into the store
     WPT_STORE names, under the cap WPT_CORPORA_CAP sets, going on from the
-    dataset's checkpoint: {corpus, texts, tokens, changed}."""
+    dataset's checkpoint: {corpus, texts (every text and item it took), conversations, tasks, tokens (of plain
+    text), item_tokens (of the conversations and tasks), changed}."""
     store = store_from_settings(shared.env_file())
     downloads = Downloads(job.path)
     cap = shared.corpora_cap()
@@ -137,8 +145,9 @@ def build_job(depot: Depot, dataset: str, vocabulary: str, max_tokens: int | Non
         room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download, downloads.busy, say))
     job.save(None)
     shutil.rmtree(work, ignore_errors=True)
-    return {"corpus": built["id"], "texts": built["texts"], "tokens": built["total_tokens"],
-            "changed": built.get("changed")}
+    return {"corpus": built["id"], "texts": built["texts"], "conversations": built.get("conversations", 0),
+            "tasks": (built.get("tasks") or {}).get("count", 0), "tokens": built["total_tokens"],
+            "item_tokens": built.get("items_tokens") or 0, "changed": built.get("changed")}
 
 
 def size_of(given) -> int | None:
@@ -157,6 +166,11 @@ def size_of(given) -> int | None:
 def size_name(size: int | None) -> str:
     """A build's size as its address names it."""
     return ALL if size is None else str(size)
+
+
+def slug(text: str) -> str:
+    """text as a part of a downloaded file's name: ASCII letters, digits, '.', '_' and '-', the rest each run a hyphen."""
+    return UNSAFE.sub("-", text).strip("-") or "unnamed"
 
 
 def vocabulary_given(given) -> str:
@@ -249,8 +263,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     def vocabulary_file(values, body):
         _, found = vocabulary_row(values)
         data = found["merges"].encode("utf-8")
-        return 200, Stream("application/octet-stream", iter([data]), len(data),
-                           {"Content-Disposition": f'attachment; filename="vocabulary-{found["sha256"][:12]}"'})
+        return 200, Stream(JSON_TYPE, iter([data]), len(data),
+                           {"Content-Disposition": f'attachment; filename="vocabulary-{found["sha256"][:12]}.json"'})
 
     @wrapped
     def vocabulary_texts(values, body, request: Request):
@@ -272,7 +286,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         return 200, {"sample_bytes": recipe["sample_bytes"], "version": recipe["version"],
                      "trained": depot.vocabulary(recipe["id"], recipe["version"]) is not None,
                      "seconds": round(recipe["sample_bytes"] * measured_seconds / measured_bytes),
-                     "basis": f"approximate: {measured_bytes:,} bytes of sample took {measured_seconds // 60} minutes "
+                     "basis": f"approximate: {measured_bytes / 1e9:g} GB of sample took {measured_seconds // 60} minutes "
                               "to train on the public depot's machine, and the time is taken in proportion to the "
                               "sample's bytes"}
 
@@ -328,7 +342,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
             if corpora.triple(record)[1:] != (vocabulary, size):
                 raise errors.Refused(f"the corpus {corpus} was built with another vocabulary or size than the ones "
                                      "named")
-        what = (f"with the vocabulary {vocabulary[:12]} ({named['recipe']} version {named['version']}), "
+        what = (f"with the vocabulary {named['recipe']} version {named['version']}, "
                 f"{'every token' if size is None else f'at most {size:,} tokens'}")
         title = (f"build the corpus of the dataset {row['name']} {what}" if record is None
                  else f"build the corpus {record['id'][:12]} of the dataset {row['name']} again, {what}")
@@ -360,6 +374,29 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
 
     def file_name(record: dict, one: dict) -> str:
         return one["key"].removeprefix(corpora.folder_of(record) + "/")
+
+    def download_names(row: dict, record: dict, vocabulary: str, size: int | None) -> dict:
+        """{file name: the name a browser saves it under} of each file of the
+        corpus: the dataset, the vocabulary, the size and what the file is
+        (numbered when several files are the same thing), so a folder of
+        downloads tells them apart; its own extension kept, and the
+        vocabulary, stored with none, saved as the JSON it is."""
+        named = vocabulary_shown(vocabulary)
+        words = f"{named['recipe']}-v{named['version']}" if named["recipe"] else vocabulary[:12]
+        start = f"{slug(row['name'])}_{slug(words)}_{size_name(size)}"
+        role = roles(record)
+        files = corpora.files(record)
+        alike = Counter(role.get(one["key"], "file") for one in files)
+        seen = Counter()
+        found = {}
+        for one in files:
+            what = role.get(one["key"], "file")
+            seen[what] += 1
+            number = f"-{seen[what]}" if alike[what] > 1 else ""
+            name = file_name(record, one)
+            extension = name[name.index("."):] if "." in name else ".json" if what == "vocabulary" else ""
+            found[name] = f"{start}_{slug(what.replace(' ', '-'))}{number}{extension}"
+        return found
 
     def target_of(vocabulary: str, size: int | None) -> dict:
         return {"vocabulary": vocabulary, "max_tokens": size}
@@ -393,9 +430,29 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         return "not built", None, last
 
     def summary(record: dict | None) -> dict | None:
-        return None if record is None else {key: record.get(key) for key in (
-            "id", "built_at", "texts", "conversations", "total_tokens", "stale", "deleted")} | {
-            "revision": record["dataset"]["revision"]}
+        """What a page says of a corpus: its counts (texts: every text and
+        item it took, of which conversations and tasks), the tokens of each
+        share and of its items (conversations and tasks), its state and the
+        revision of the dataset it was built from."""
+        if record is None:
+            return None
+        return {key: record.get(key) for key in (
+            "id", "built_at", "texts", "conversations", "total_tokens", "items_tokens", "shares_tokens", "stale", "deleted")} | {
+            "revision": record["dataset"]["revision"], "tasks": (record.get("tasks") or {}).get("count", 0)}
+
+    def roles(record: dict) -> dict:
+        """{key: what the file is} of each file of the corpus: "text tokens"
+        and "conversation tokens" (token files), "table NAME", "vocabulary"
+        or "tasks"."""
+        found = {one["key"]: "text tokens" for one in record.get("shards", [])}
+        found |= {one["key"]: "conversation tokens" for one in record.get("conversation_shards", [])}
+        for name, table in record.get("tables", {}).items():
+            found |= {one["key"]: f"table {name}" for one in (table if isinstance(table, list) else [table])}
+        if "vocabulary" in record.get("tokenizer", {}):
+            found[record["tokenizer"]["vocabulary"]["key"]] = "vocabulary"
+        if "tasks" in record:
+            found[record["tasks"]["file"]["key"]] = "tasks"
+        return found
 
     def link(row: dict, vocabulary: str, size: int | None) -> str:
         return f"/api/datasets/{row['id']}/download/{vocabulary}/{size_name(size)}"
@@ -450,12 +507,16 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         state, fresh, last = state_of(row, records, vocabulary, size, job)
         if fresh is None:
             return 200, {**shown, "state": state, "corpus": summary(last)}
-        files = [{"name": file_name(fresh, one), "bytes": one.get("bytes"), "sha256": one["sha256"]}
+        role = roles(fresh)
+        saved = download_names(row, fresh, vocabulary, size)
+        files = [{"name": file_name(fresh, one), "download": saved[file_name(fresh, one)], "bytes": one.get("bytes"),
+                  "sha256": one["sha256"], "role": role.get(one["key"], "other"), "tokens": one.get("tokens")}
                  for one in corpora.files(fresh)]
         return 200, {**shown, "state": "built",
                      "corpus": {**summary(fresh), "tokenizer": fresh["tokenizer"]}, "files": files}
 
-    def fresh_corpus(values) -> dict:
+    def fresh_corpus(values) -> tuple[dict, dict]:
+        """(the dataset's row, the fresh corpus its download address names). Refused or NotFound without one."""
         row = depot.dataset_by_id(values["id"])
         vocabulary, size = vocabulary_given(values["vocabulary"]), size_of(values["size"])
         marking = downloads.pending()
@@ -467,7 +528,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         if found is None:
             raise errors.NotFound(f"the dataset {row['name']} has no corpus of the vocabulary {vocabulary[:12]} at "
                                   f"the size {size_name(size)} to download now: see its download page")
-        return found
+        return row, found
 
     def ranged(request: Request, size: int):
         """(start, end, status) of the bytes to send of size bytes: one Range of them (206), else all (200);
@@ -488,7 +549,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
 
     @wrapped
     def download_file(values, body, request: Request):
-        record = fresh_corpus(values)
+        row, record = fresh_corpus(values)
         chosen = next((one for one in corpora.files(record) if file_name(record, one) == values["name"]), None)
         if chosen is None:
             raise errors.NotFound(f"corpus {record['id']} has no file {values['name']}")
@@ -507,11 +568,13 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                 length = min(CHUNK, end - at)
                 yield store().read_range(reference, at, length)
                 at += length
+        saved = download_names(row, record, vocabulary_given(values["vocabulary"]), size_of(values["size"]))
         headers = {"Accept-Ranges": "bytes", "ETag": f'"{chosen["sha256"]}"',
-                   "Content-Disposition": f'attachment; filename="{values["name"]}"'}
+                   "Content-Disposition": f'attachment; filename="{saved[values["name"]]}"'}
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
-        return status, Stream("application/octet-stream", Guarded(chunks(), guard), end - start, headers)
+        kind = JSON_TYPE if roles(record).get(chosen["key"]) == "vocabulary" else "application/octet-stream"
+        return status, Stream(kind, Guarded(chunks(), guard), end - start, headers)
 
     # Exports of texts
 
@@ -530,6 +593,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         export, texts, parts = export_of(row)
         known = downloads.export_sizes(export.identity, parts)
         listed = [{"part": number, "forms": {form: {"name": f"part-{number:05d}.{form}",
+                                                    "download": f"{slug(row['name'])}_part-{number:05d}.{form}",
                                                     **known.get((number, form), {"bytes": None, "sha256": None})}
                                              for form in FORMS}} for number in range(parts)]
         return 200, {"dataset": shared.jsonable(row), "export": export.identity, "texts": texts,
@@ -566,7 +630,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                     return
             if known is None:
                 downloads.exported(export.identity, parts, number, form, size, digest.hexdigest())
-        headers = {"Content-Disposition": f'attachment; filename="{values["name"]}"'}
+        headers = {"Content-Disposition": f'attachment; filename="{slug(row["name"])}_{values["name"]}"'}
         if known is not None:
             headers.update({"Accept-Ranges": "bytes", "ETag": f'"{known["sha256"]}"'})
         if status == 206:
@@ -716,14 +780,17 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}", download, "the dataset's download of one "
               "vocabulary (its sha256) and size (a number of tokens, or all), at an address that never changes: "
               "state built (the latest fresh corpus built from the dataset's current revision, its max_tokens and "
-              "published vocabulary aside, its files with their sizes and sha256), checking an erasure (nothing is sent meanwhile), being built (the job and "
-              "its progress), stale, not built or no store; it starts nothing",
+              "published vocabulary aside, its files with their sizes, sha256, role (text tokens, conversation "
+              "tokens, table NAME, vocabulary or tasks) and download, the name a browser saves it under: the "
+              "dataset, the vocabulary, the size and the role), checking an erasure (nothing is sent meanwhile), being "
+              "built (the job and its progress), stale, not built or no store; it starts nothing",
               answer={"type": "object", "required": ["state"]}),
         Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}/files/{name}", download_file, "one file of that "
-              "corpus, streamed from the store; one Range of bytes gives 206", request=True),
+              "corpus, streamed from the store and saved under its download name; one Range of bytes gives 206", request=True),
         Route("GET", "/api/datasets/{id}/export", export_listed, "the export of the texts of the dataset's current "
               "revision, with no tokenizer and no build: how many texts its libraries hold, and its parts, each in "
-              "jsonl.zst and parquet, with its size and sha256 once sent whole (null before)",
+              "jsonl.zst and parquet, with its download name (the dataset's name, then the part's) and its size and "
+              "sha256 once sent whole (null before)",
               answer={"type": "object", "required": ["export", "texts", "parts"]}),
         Route("GET", "/api/datasets/{id}/export/{name}", export_part, "one part of the export (part-NNNNN.jsonl.zst "
               "or part-NNNNN.parquet), made as it is sent, the same bytes every time for the same revision; one "

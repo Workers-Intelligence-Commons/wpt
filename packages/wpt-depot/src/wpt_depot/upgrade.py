@@ -45,7 +45,15 @@ memory bounded by the batch, saying how many rows a second it writes; the
 table upgrade_under_way keeps, for each table, the last rowid written, so a
 run after a stop goes on in the table and at the row it reached; then it
 builds the indexes memberships_key and pins_key, each in one
-statement.
+statement. The step to format 8 builds the index text_decisions_decision
+(wpt_depot.schema) in one statement, which reads every row of
+text_decisions once and rewrites no table, between a first transaction
+that marks the depot half upgraded and a last one that drops the mark, so
+a stop while it builds leaves a depot that only the upgrade opens; it says
+what it does before it starts and how long it took. Format 8 is also the
+format of a depot that may hold decisions that put texts back under review
+(wpt_depot.policy), which the code of format 7 does not know: that code
+refuses a depot of format 8.
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -130,6 +138,8 @@ KEYED_7 = (("memberships", "text"), ("pins", "text"))
 INDEXES_7 = (("memberships_key", "CREATE INDEX IF NOT EXISTS memberships_key ON "
                                  "memberships (library, export_key, joined_change, left_change, text)"),
              ("pins_key", "CREATE INDEX IF NOT EXISTS pins_key ON pins (library, export_key, text, revision)"))
+# format 8: the index of text_decisions by decision
+TEXT_DECISIONS_DECISION = "CREATE INDEX IF NOT EXISTS text_decisions_decision ON text_decisions (decision)"
 UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
 BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions) and 7 (memberships, pins) goes over
 SAY_EVERY = 30  # seconds between two lines of progress
@@ -310,6 +320,26 @@ def _to_7(db: Database, log):
     log(f"{db.path}: the depot is at format 7, in {time.monotonic() - began:.0f} seconds")
 
 
+def _to_8(db: Database, log):
+    """Format 7 to 8, as the module says: the index text_decisions_decision,
+    built while the depot is marked half upgraded."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            _new_format(con, 8)
+    # the count kept in counts, since counting the table itself reads every row as the build does
+    rows = db.reader().execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'decision'").fetchall()[0][0]
+    log(f"{db.path}: building the index text_decisions_decision over its {rows} rows of text_decisions, in one "
+        "statement that reads each row once and writes no row of a table; run again after a stop, it builds it again")
+    began = time.monotonic()
+    with db.bulk() as con:
+        con.execute(TEXT_DECISIONS_DECISION)
+        con.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the index text_decisions_decision is built, in {time.monotonic() - began:.0f} seconds; the "
+        "depot is at format 8")
+
+
 def _keys(db: Database, table: str, text: str, log):
     """Write the export key of each row of table, from the text its column
     text names, BATCH rows a transaction from the rowid upgrade_under_way
@@ -339,7 +369,7 @@ def _keys(db: Database, table: str, text: str, log):
 
 
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):

@@ -18,7 +18,9 @@ function checked(found: unknown): TextFilter | null {
   const strings = (v: unknown) => (Array.isArray(v) && v.every((s) => typeof s === "string") ? (v as string[]) : []);
   return {
     ...EVERY, tags: strings(f.tags), licenses: strings(f.licenses), statuses: strings(f.statuses) as TextFilter["statuses"],
-    libraries: strings(f.libraries), locked: typeof f.locked === "boolean" ? f.locked : null, where: typeof f.where === "string" ? f.where : "",
+    libraries: strings(f.libraries), outside: strings(f.outside), locked: typeof f.locked === "boolean" ? f.locked : null,
+    decision: typeof f.decision === "string" ? f.decision : null, search: typeof f.search === "string" ? f.search : "", where: typeof f.where === "string" ? f.where : "",
+    inText: f.inText === true, wholeWords: f.wholeWords === true,
   };
 }
 

@@ -1,6 +1,7 @@
 import { ButtonLink, Mark } from "@workers-intelligence-commons/components";
 import { useAbout } from "./about";
 import { pages, type Page } from "./pages";
+import { RunningJobs } from "./pages/jobs";
 import { href, usePlace } from "./route";
 
 const GROUPS: { group: Page["group"]; label: string }[] = [{ group: "data", label: "Data" }, { group: "setup", label: "Setup" }];
@@ -21,12 +22,13 @@ export function App() {
             <ul key={label} className="page-group cue" aria-label={label}>
               {pages.filter((p) => p.group === group).map((p) => (
                 <li key={p.path}>
-                  <a href={href([p.path])} aria-current={p === page ? "page" : undefined}>{p.title}</a>
+                  <a href={href([p.path])} aria-current={p === page ? "page" : p.path === page.under ? "true" : undefined}>{p.title}</a>
                 </li>
               ))}
             </ul>
           ))}
         </nav>
+        <RunningJobs />
         <ButtonLink variant="quiet" href={href(["add"])}>Add a text</ButtonLink>
       </header>
       <main>

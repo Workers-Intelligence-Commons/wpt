@@ -5,7 +5,7 @@
 import { Badge, Button, type ButtonVariant } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import { useAbout } from "./about";
-import { get, type Answer } from "./api";
+import { get, part, post, type Answer } from "./api";
 import { declared, useDeclarant } from "./declarant";
 import { href } from "./route";
 
@@ -73,15 +73,37 @@ export function StatusBadge({ status }: { status: Status }) {
   return status === "under review" ? <Badge status="pending">under review</Badge> : <Badge status={status} />;
 }
 
-// The depot's own messages for a refused operation.
+// A message as a sentence: its first letter a capital, a full stop at its end.
+export const sentence = (text: string) => {
+  const t = text.trim();
+  return t ? `${t[0].toUpperCase()}${t.slice(1)}${/[.!?:]$/.test(t) ? "" : "."}` : t;
+};
+
+// One of the depot's messages in plain words. The server names the kind of
+// failure before each message ("BadQuery: SQLError: near ..."); the kind
+// says what to do about some of them, and is otherwise left out.
+export function plainProblem(problem: string): string {
+  const found = /^([A-Z][A-Za-z]+): ([\s\S]*)$/.exec(problem);
+  if (!found) return sentence(problem);
+  const [, kind, rest] = found;
+  const sql = /^SQLError: ([\s\S]*)$/.exec(rest);
+  if (sql) return `This SQL condition is not valid (${sql[1].trim()}). Correct it, or clear it.`;
+  if (kind === "TimeLimitReached") return `That took longer than the server allows: ${rest.trim()} Narrow the filter or the query.`;
+  if (kind === "NoReaderFree") return "The server is busy reading for other requests: try again in a moment.";
+  if (kind === "Busy") return `${sentence(rest)} Wait for it on the Jobs page.`;
+  return sentence(rest);
+}
+
+// The depot's own messages for a refused operation, in plain words, each
+// whole as the server gave it on hover.
 export function Problems({ problems }: { problems: string[] }) {
   if (problems.length === 0) return null;
   return (
     <div className="refusal cue" role="alert">
       {problems.map((p) => (
-        <p key={p}>
+        <p key={p} title={p}>
           <span aria-hidden="true">✕ </span>
-          {p}
+          {plainProblem(p)}
         </p>
       ))}
     </div>
@@ -95,6 +117,21 @@ export function Outcome<T>({ answer, done }: { answer: Answer<T> | null; done: (
 }
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
+
+// What a corpus took, counted one way everywhere: its plain texts, then its
+// conversations and tasks, from texts (every text and item it took), and of
+// them its conversations and tasks; held: how many conversations and tasks
+// the dataset holds, when known, so a small corpus says it took some of them.
+export function takenWords(texts: number, conversations = 0, tasks = 0, held: number | null = null) {
+  const items = [conversations ? plural(conversations, "conversation") : null, tasks ? plural(tasks, "task") : null].filter(Boolean).join(" and ");
+  const of = held !== null && held > conversations + tasks ? ` (of the dataset's ${held.toLocaleString("en")})` : "";
+  return `${plural(Math.max(0, texts - conversations - tasks), "plain text")}${items ? ` and ${items}${of}` : ""}`;
+}
+
+// A text's name as every page gives it: its title, else its kind with an
+// article ("a conversation"), else "an untitled text".
+export const textName = (r: { title: string | null; kind: string | null }) =>
+  r.title ?? (r.kind ? `${/^[aeiou]/.test(r.kind) ? "an" : "a"} ${r.kind}` : "an untitled text");
 
 export const SIZES = [25, 50, 100, 200];
 
@@ -171,21 +208,71 @@ export function Cut({ text, className }: { text: string; className?: string }) {
   return <span className={`cut ${className ?? ""}`} title={text}>{text}</span>;
 }
 
+
 export type Problem = { texts: string[]; problem: string; decision: string };
 // upstream: it belongs to the upstream this depot follows, which alone changes it
 export type Library = { id: string; name: string; forked_from: string | null; problems: Problem[] | null; locked_at: string | null; upstream: boolean };
 
-// A library's size, read only when asked (GET /api/libraries/ID/size, from the
-// depot's counts): a "More info" button, then how many texts it holds.
-export function LibrarySize({ id, name }: { id: string; name?: string }) {
+// A library's size (GET /api/libraries/ID/size, from the depot's counts,
+// which it keeps counted): how many texts it holds; version: raised after a
+// change, so it is read again.
+export function LibrarySize({ id, version = 0 }: { id: string; version?: number }) {
   const [size, setSize] = useState<Answer<{ texts: number }> | null>(null);
-  const [asked, setAsked] = useState(false);
-  if (!asked) return (
-    <Button variant="quiet" aria-label={`More info on ${name ?? id}`} onClick={() => { setAsked(true); get<{ texts: number }>(`/api/libraries/${encodeURIComponent(id)}/size`).then(setSize); }}>More info</Button>
-  );
-  if (!size) return <span className="aside">reading its size</span>;
+  useEffect(() => { get<{ texts: number }>(`/api/libraries/${encodeURIComponent(id)}/size`).then(setSize); }, [id, version]);
+  if (!size) return <span className="aside">counting its texts</span>;
   if (!size.ok) return <span className="not-allowed">{size.problems.join(" ")}</span>;
   return <span>{plural(size.data.texts, "text")}</span>;
+}
+
+// What libraries hold now (POST /api/libraries/measure, computed by the
+// server from the index of their memberships), each text once: every text,
+// the plain texts, the conversations and tasks (items) and the items of
+// other kinds, each in texts, characters and bytes; with shares, the plain
+// texts each share takes (the first share whose tag a text has) and the mix
+// of the corpus of every token (what each share keeps, the share that
+// limits the others, the share of the bytes the conversations and tasks
+// hold then).
+export type Held = { texts: number; characters: number; bytes: number };
+export type ShareHeld = Held & { tag: string; share?: number; kept_bytes?: number; kept_characters?: number; limits?: boolean };
+export type Measure = Held & {
+  plain: Held; items: Held; other: Held; shares: ShareHeld[]; unshared: Held | null;
+  mix: { kept_bytes: number; kept_characters: number; items_share: number } | null;
+};
+
+// The measure of libraries, with shares when given: null while it is read,
+// the measure once read, or the problem in words. It reads every membership
+// of the libraries, so it is read once for each set of libraries and shares,
+// never again after a change. Nothing is read without a library.
+export function useMeasure(libraries: string[], shares: { tag: string; share: number }[] | null = null): Measure | string | null {
+  const [found, setFound] = useState<{ key: string; value: Measure | string } | null>(null);
+  const key = JSON.stringify([libraries, shares]);
+  useEffect(() => {
+    if (!libraries.length) return;
+    let live = true;
+    post<Measure>("/api/libraries/measure", { libraries, ...(shares?.length ? { shares } : {}) })
+      .then((a) => live && setFound({ key, value: a.ok ? a.data : plainProblem(a.problems[0] ?? "") }));
+    return () => { live = false; };
+  }, [key]);
+  return found?.key === key ? found.value : null;
+}
+
+// How many characters the texts of libraries hold now (useMeasure): null
+// while it is read, a number once read, or the problem in words.
+export function useCharacters(libraries: string[]): number | string | null {
+  const found = useMeasure(libraries);
+  return found === null || typeof found === "string" ? found : found.characters;
+}
+
+// A number of characters in words: "about 5.4 million characters".
+export const characters = (n: number) => n < 10_000 ? plural(n, "character")
+  : n < 1e6 ? `about ${Math.round(n / 1000).toLocaleString("en")} thousand characters`
+  : n < 1e9 ? `about ${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} million characters` : `about ${(n / 1e9).toFixed(1)} billion characters`;
+
+// What useCharacters found, in words.
+export function CharactersNote({ found }: { found: number | string | null }) {
+  if (found === null) return <span className="aside">measuring their size</span>;
+  if (typeof found === "string") return <span className="aside" title={found}>size not measured</span>;
+  return <span title={plural(found, "character")}>{characters(found)}</span>;
 }
 
 // Every library, read again by reload.
@@ -217,6 +304,16 @@ export function LibraryLink({ library }: { library: Library | { id: string; name
 export type DatasetRef = { depot: string | null; library: string; change: number };
 export type Dataset = { id: string; revision: number; name: string; tokenizer: string; libraries: DatasetRef[]; shares: { tag: string; share: number }[] | null; max_tokens: number | null; vocabulary: string | null; upstream: boolean; here: string[] };
 
+// Sets the vocabulary a dataset publishes (a sha256, or null for none) as a
+// new revision of it, the rest of its row as read (POST /api/datasets/ID,
+// which keeps each library it reads as stored). The revision read goes with
+// it, so the server refuses the change when someone changed the dataset
+// after it was read, rather than undo their change.
+export const publishVocabulary = (dataset: Dataset, vocabulary: string | null) => post(`/api/datasets/${part(dataset.id)}`, {
+  name: dataset.name, libraries: dataset.libraries.map((r) => ({ depot: r.depot, library: r.library })),
+  shares: dataset.shares, max_tokens: dataset.max_tokens, vocabulary, revision: dataset.revision,
+});
+
 // Every dataset, read again by reload.
 export function useDatasets(): { datasets: Answer<Dataset[]> | null; reload: () => void } {
   const [datasets, setDatasets] = useState<Answer<Dataset[]> | null>(null);
@@ -234,6 +331,11 @@ export const local = (dataset: Dataset, ref: DatasetRef) => dataset.here.include
 // or, for a library of the upstream it follows, by the upstream's (the
 // server's here).
 export const readers = (datasets: Dataset[], library: string) => datasets.filter((d) => d.here.includes(library));
+
+// The libraries of this depot a dataset reads, by id: its here when the
+// answer gives it, else the libraries it names with no depot (the
+// download and export routes give the dataset's bare row).
+export const ownLibraries = (dataset: Dataset) => dataset.libraries.filter((r) => (dataset.here ? dataset.here.includes(r.library) : r.depot === null)).map((r) => r.library);
 
 export type Declaration = { name: string; email: string; accepted: true };
 

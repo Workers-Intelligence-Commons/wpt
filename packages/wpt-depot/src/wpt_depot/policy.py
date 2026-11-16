@@ -6,10 +6,12 @@ says what decisions mean, the depot applying it through the functions
 below.
 
 Only the decisions from the latest start over on count. A text starts over
-when its licenses change or its content changes: each is recorded as a
-decision 'under review' whose reason the depot writes in one fixed form
-(license_change, content_change), and every decision before it no longer
-counts. Of the decisions that count,
+when its licenses change, when its content changes, and when a person puts
+it back under review, undoing its admission or refusal: each is recorded as
+a decision 'under review' whose reason the depot writes in one fixed form
+(license_change, content_change, review_again), and every decision before
+it no longer counts. A decision of another status whose reason has one of
+those forms never starts over. Of the decisions that count,
 a text or an erasure is admitted when at least one admits it and none
 refuses it; 'under review' decisions count for neither. It is refused when
 one of them refuses it, and under review while none admits or refuses it.
@@ -23,7 +25,8 @@ from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 # how the reason of a license change, and of a content change, starts; only the depot writes a reason that starts so
 LICENSE_CHANGE = "licenses changed from "
 CONTENT_CHANGE = "content changed from version "
-STARTS_OVER = (LICENSE_CHANGE, CONTENT_CHANGE)
+REVIEW_AGAIN = "put back under review"  # how the reason of a decision that puts a text back under review starts
+STARTS_OVER = (LICENSE_CHANGE, CONTENT_CHANGE, REVIEW_AGAIN)
 
 
 def license_change(old, new) -> str:
@@ -38,6 +41,19 @@ def content_change(old: int, new: int) -> str:
     return f"{CONTENT_CHANGE}{old} to version {new}"
 
 
+def review_again(reason: str | None) -> str:
+    """The reason the depot writes on the decision that puts a text back
+    under review: REVIEW_AGAIN, followed by the person's own reason when
+    they give one."""
+    return REVIEW_AGAIN if reason is None else f"{REVIEW_AGAIN}: {reason.strip()}"
+
+
+def put_back(decision: dict) -> bool:
+    """Whether a decision, with its status and reason, puts a text back
+    under review (review_again): a correction of the decisions before it."""
+    return decision["status"] == UNDER_REVIEW and (decision["reason"] or "").startswith(REVIEW_AGAIN)
+
+
 def scores_change(set_names: list[str], removed: list[str]) -> str:
     """The reason the depot writes on the decision that records a change of
     scores: the names of the scores set and of those removed. It never
@@ -48,15 +64,18 @@ def scores_change(set_names: list[str], removed: list[str]) -> str:
 
 
 def starts_over(reason: str | None) -> bool:
-    """Whether a decision's reason is in the form of license_change or
-    content_change: the decisions before it no longer count."""
+    """Whether a reason is in the form of license_change, content_change or
+    review_again: on a decision under review, the decisions before it no
+    longer count."""
     return reason is not None and reason.startswith(STARTS_OVER)
 
 
 def counted(decisions: list[dict]) -> list[dict]:
     """Of decisions in order, each with its status and reason, those that
-    count: from the latest start over on, or every one without one."""
-    start = max((at for at, one in enumerate(decisions) if starts_over(one["reason"])), default=0)
+    count: from the latest start over (a decision under review whose reason
+    starts_over) on, or every one without one."""
+    start = max((at for at, one in enumerate(decisions)
+                 if one["status"] == UNDER_REVIEW and starts_over(one["reason"])), default=0)
     return decisions[start:]
 
 
@@ -77,7 +96,7 @@ def status(decisions: list[dict]) -> str:
 def _since(decisions: str) -> str:
     """The place in the JSON list of decision ids of the latest start over, 0 without one."""
     return (f"(SELECT coalesce(max(o.key), 0) FROM json_each({decisions}) o JOIN decisions c ON c.id = o.value "
-            f"WHERE {_over('c.reason')})")
+            f"WHERE {_over('c')})")
 
 
 def _having(decisions: str, status: str) -> str:
@@ -105,8 +124,10 @@ def combined_sql(old: str, status: str, starts_over: bool) -> str:
     return old
 
 
-def _over(reason: str) -> str:
-    return " OR ".join(f"substr({reason}, 1, {len(one)}) = '{one}'" for one in STARTS_OVER)
+def _over(decision: str) -> str:
+    """Whether the row decision of the decisions table starts over, as an SQL condition (counted)."""
+    forms = " OR ".join(f"substr({decision}.reason, 1, {len(one)}) = '{one}'" for one in STARTS_OVER)
+    return f"({decision}.status = '{UNDER_REVIEW}' AND ({forms}))"
 
 
 def linked_status_sql(text: str, bound: str | None = None) -> str:
@@ -117,7 +138,7 @@ def linked_status_sql(text: str, bound: str | None = None) -> str:
     def within(alias: str) -> str:
         return f"{alias}.text = {text}" + ("" if bound is None else f" AND {alias}.change <= {bound}")
     since = (f"(SELECT max({ids.order_sql('o.decision')}) FROM text_decisions o JOIN decisions c ON c.id = o.decision "
-             f"WHERE {within('o')} AND ({_over('c.reason')}))")
+             f"WHERE {within('o')} AND {_over('c')})")
 
     def having(status: str) -> str:
         return (f"EXISTS (SELECT 1 FROM text_decisions h JOIN decisions d ON d.id = h.decision WHERE {within('h')} "

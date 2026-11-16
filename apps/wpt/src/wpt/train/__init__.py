@@ -41,9 +41,9 @@ reads the corpus and checks every input against its recorded hash first. Every s
 locked parts, and that the corpus holds something for each step to learn
 from are checked before any step runs. The data part's total_tokens is the
 size of the corpus the recipe asks for and a ceiling on what it reads: a
-corpus built at that size (its max_tokens) counts everything,
-conversations and tasks first, so it may hold fewer tokens of plain text,
-and training reads what it holds. A corpus that is stale (an admitted
+corpus built at that size (its max_tokens) counts everything, its
+conversations and tasks taking their share of it, so it holds fewer tokens
+of plain text, and training reads what it holds. A corpus that is stale (an admitted
 erasure reached a text it was built from), or that holds fewer tokens of
 plain text than total_tokens and was built at another size, is refused. A
 step that reads text windows reads the first prefix_tokens of the corpus
@@ -451,8 +451,8 @@ def check_record(record, recipe):
     """InputError when the corpus cannot train the recipe: it is stale (an
     admitted erasure reached a text it was built from), or it holds fewer
     tokens of plain text than the data part's total_tokens and was not
-    built at that size (built_for: such a corpus counts conversations and
-    tasks first, and training reads what it holds)."""
+    built at that size (built_for: such a corpus gives its conversations
+    and tasks their share of the size, and training reads what it holds)."""
     if "stale" in record:
         page = recipe_depot.download_page(recipe["data"]["depot"], record["dataset"]["id"])
         raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
@@ -504,7 +504,7 @@ def with_prefixes(recipe, record, log=lambda text: None) -> dict:
                 log(f"step {number} {step.name} reads the first {prefix:,} tokens of plain text, all that corpus "
                     f"{record['id']} holds, not the {asked:,} it asks for: built at the recipe's size "
                     f"{recipe['data']['total_tokens']:,} (data.total_tokens), the corpus counts its conversations "
-                    "and tasks first")
+                    "and tasks in it")
             if prefix != step.settings["prefix_tokens"]:
                 entry = {**entry, "settings": {**entry.get("settings", {}), "prefix_tokens": prefix}}
         entries.append(entry)

@@ -1,38 +1,69 @@
-// Libraries: named collections of admitted texts. The workspace
-// (workspace/workspace.tsx) lists them and opens each one, so #/libraries
-// leads there, and #/libraries/ID opens that library in it. This file keeps
+// Libraries: named collections of admitted texts. #/libraries lists them,
+// each with how many texts it holds (the depot's counts, GET /api/counts),
+// whether it is locked and the datasets that read it, and makes a new one;
+// the workspace (workspace/workspace.tsx) opens each one, so
+// #/libraries/ID opens that library in it. This file keeps
 // what the workspace's head of a library uses: the forms that make a
-// library (wpt depot library new), rename it (rename) and fork it (fork),
+// library (wpt depot library new), empty or with the admitted texts of the
+// whole depot or of a filter saved in this browser, put in as one write over
+// that filter, rename it (rename) and fork it (fork),
 // and the list of the revisions a locked library pinned, marking a text
 // whose current revision is newer. #/libraries/ID/problems/DECISION is one
 // reported problem's view: the problem, who reported it, its texts.
 
-import { Button, Skeleton, TextInput } from "@workers-intelligence-commons/components";
+import { Button, Dialog, Select, Skeleton, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
 import { get, part, post, type Answer } from "../api";
-import { JobProgress, leftOut, useWrite, type Left } from "../decide-forms";
-import { EVERY, sent, type Selection } from "../filter";
-import { Facts, LibraryLink, PageHead, Pager, plural, Problems, required, RequiredNote, Section, StatusBadge, useLibraries, type Library } from "../parts";
+import { WriteProgress, leftOut, useWrite, type Left } from "../decide-forms";
+import { EVERY, sent, type Selection, type TextFilter } from "../filter";
+import { Facts, LibraryLink, PageHead, Pager, plural, Problems, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, type Library } from "../parts";
 import { href } from "../route";
+import { useSavedFilters } from "../saved-filters";
 import { MatchedTexts } from "../table";
 import { when, type DecisionShown } from "./decisions";
 import type { Page } from "./index";
 
+// onMade: called once the library is made and, when it starts with texts, once they are in it (or the write failed,
+// which the form says, the library staying, empty).
 export function NewLibrary({ onMade }: { onMade: (a: Answer<{ id: string }>) => void }) {
   const [name, setName] = useState("");
   const [answer, setAnswer] = useState<Answer<{ id: string }> | null>(null);
+  const [start, setStart] = useState("admitted"); // "admitted", "empty", or "saved:NAME"
+  const [admitted, setAdmitted] = useState<number | null>(null);
+  const [problems, setProblems] = useState<string[] | null>(null);
+  const [making, setMaking] = useState(false);
+  const saved = useSavedFilters();
+  const { send, job, busy } = useWrite();
+  useEffect(() => { get<{ statuses: Record<string, number> }>("/api/counts").then((a) => a.ok && setAdmitted(a.data.statuses.admitted ?? 0)); }, []);
+  const filter: TextFilter | null = start === "admitted" ? { ...EVERY, statuses: ["admitted"] } : start.startsWith("saved:") ? saved.find((f) => `saved:${f.name}` === start)?.filter ?? null : null;
   const make = async () => {
+    setProblems(null);
+    setMaking(true);
     const a = await post<{ id: string }>("/api/libraries", { name });
     setAnswer(a);
+    if (a.ok && filter) {
+      const put = await send<{ joined: number; left_out: number; left: Left }>(`/api/libraries/${encodeURIComponent(a.data.id)}/texts`, { selection: sent({ filter }) });
+      if (!put.ok) { setMaking(false); setProblems([`The library ${name.trim()} is made, but its texts were not put in it:`, ...put.problems]); return; }
+    }
+    setMaking(false);
     onMade(a);
   };
   return (
-    <form onSubmit={(e) => { e.preventDefault(); make(); }}>
+    <form onSubmit={(e) => { e.preventDefault(); if (!making) make(); }}>
       <RequiredNote />
-      <TextInput label={required("Name")} required value={name} placeholder="first model, October 2026" onChange={(e) => setName(e.target.value)}
-        hint="It opens empty; admitted texts join it from the workspace." />
+      <TextInput label={required("Name")} required value={name} placeholder="first model, October 2026" onChange={(e) => setName(e.target.value)} />
+      <Select label={required("It starts with")} value={start} onChange={(e) => setStart(e.target.value)}
+        hint="Only admitted texts join a library. Texts can be put in or taken out later in the workspace.">
+        <option value="admitted">every admitted text of the depot{admitted !== null ? ` (${admitted.toLocaleString("en")})` : ""}</option>
+        {saved.map((f) => <option key={f.name} value={`saved:${f.name}`}>the admitted texts of the saved filter {f.name}</option>)}
+        <option value="empty">nothing: choose its texts in the workspace</option>
+      </Select>
       {answer && !answer.ok && <Problems problems={answer.problems} />}
-      <Button type="submit" variant="primary" disabled={!name.trim()}>Make the library</Button>
+      {problems && <Problems problems={problems} />}
+      <WriteProgress job={job} />
+      <Button type="submit" variant="primary" disabled={!name.trim() || making || busy}>
+        {start === "admitted" && admitted !== null ? `Make it with ${plural(admitted, "text")}` : start === "empty" ? "Make it empty" : "Make it with those texts"}
+      </Button>
     </form>
   );
 }
@@ -133,19 +164,61 @@ export function ForkForm({ library, without, onDone }: { library: Library; witho
       <Button variant="primary" disabled={!name.trim() || busy} onClick={fork}>
         {without ? "Fork without the ticked texts" : "Fork with every text"}
       </Button>
-      <JobProgress job={job} />
+      <WriteProgress job={job} />
     </div>
   );
 }
 
-// An address of the libraries that the workspace now shows: replaced by the workspace's own, so the back button skips it.
+// Every library, with its size, its state and the datasets that read it.
+function Libraries() {
+  const { libraries, loaded, problems } = useLibraries();
+  const { datasets } = useDatasets();
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
+  const [making, setMaking] = useState(false);
+  useEffect(() => { get<{ libraries: Record<string, number> }>("/api/counts").then((a) => a.ok && setCounts(a.data.libraries)); }, []);
+  return (
+    <>
+      <PageHead title="Libraries"
+        chain={<>Named collections of admitted texts, which <a href={href(["datasets"])}>datasets</a> read. A library opens in the <a href={href(["texts"])}>workspace</a>, where texts are put in it.</>}
+        actions={<Button variant="primary" onClick={() => setMaking(true)}>New library</Button>} />
+      {!loaded && <Skeleton lines={4} label="Reading the libraries" />}
+      <Problems problems={problems} />
+      {loaded && (libraries.length === 0 ? <p>No library yet. Make one, then put admitted texts in it from the workspace.</p> : (
+        <div className="table-scroll cards">
+          <table className="ledger-table" aria-label="The libraries">
+            <thead><tr><th scope="col">library</th><th scope="col" className="number">texts</th><th scope="col">state</th><th scope="col">read by</th></tr></thead>
+            <tbody>
+              {libraries.map((l) => {
+                const reading = readers(datasets?.ok ? datasets.data : [], l.id);
+                return (
+                  <tr key={l.id}>
+                    <td className="wrap-cell" data-label=""><a href={href(["texts"], { library: l.id })}>{l.name}</a></td>
+                    <td className="number ledger" data-label="texts">{counts ? (counts[l.id] ?? 0).toLocaleString("en") : ""}</td>
+                    <td data-label="">{l.locked_at ? `locked ${l.locked_at.slice(0, 10)}` : "open"}{l.upstream ? <span className="aside">, the upstream's</span> : null}</td>
+                    <td className="wrap-cell" data-label="read by">{reading.length ? reading.map((d, i) => <span key={d.id}>{i > 0 && ", "}<a href={href(["datasets", d.id])}>{d.name}</a></span>)
+                      : <a href={href(["datasets"], { new: "1", library: l.id })}>make a dataset from it</a>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      <Dialog open={making} onClose={() => setMaking(false)} title="New library">
+        {making && <NewLibrary onMade={(a) => { if (a.ok) { setMaking(false); window.location.hash = href(["texts"], { library: a.data.id }); } }} />}
+      </Dialog>
+    </>
+  );
+}
+
+// An address of a library that the workspace now shows: replaced by the workspace's own, so the back button skips it.
 function Moved({ to }: { to: string }) {
   useEffect(() => { window.location.replace(to); }, [to]);
   return <Skeleton lines={2} label="Opening the workspace" />;
 }
 
 export const libraries: Page = {
-  path: "libraries", title: "Libraries", group: null,
+  path: "libraries", title: "Libraries", group: "data",
   Component: ({ rest }) => (rest[0] && rest[1] === "problems" && rest[2] ? <OneProblem key={rest[2]} library={rest[0]} decision={rest[2]} />
-    : <Moved to={rest[0] ? href(["texts"], { library: rest[0] }) : href(["texts"])} />),
+    : rest[0] ? <Moved to={href(["texts"], { library: rest[0] })} /> : <Libraries />),
 };

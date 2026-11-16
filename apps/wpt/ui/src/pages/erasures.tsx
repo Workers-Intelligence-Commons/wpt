@@ -16,7 +16,7 @@ import { EraseForm, type Erasable } from "../erase-form";
 import { ErasureView } from "../erasure-view";
 import { search, EVERY, type Row } from "../filter";
 import { codePoints } from "../reader";
-import { Confirm, Cut, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, StatusBadge, type Declaration, type Status } from "../parts";
+import { Confirm, Cut, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, StatusBadge, textName, type Declaration, type Status } from "../parts";
 import { href } from "../route";
 import type { Page } from "./index";
 
@@ -143,7 +143,7 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
     return (
       <>
         <div className="chosen-text row tight">
-          <span>On <a href={href(["texts", row.id])} target="_blank" rel="noreferrer">{row.title ?? (row.kind ? `an item of kind ${row.kind}` : "an untitled text")}</a> <span className="ledger aside">{row.id}</span>{row.kind === null && <span className="aside">, {plural(codePoints(row.text ?? ""), "character")}</span>}</span>
+          <span>On <a href={href(["texts", row.id])} target="_blank" rel="noreferrer">{textName(row)}</a> <span className="ledger aside">{row.id}</span>{row.kind === null && <span className="aside">, {plural(codePoints(row.text ?? ""), "character")}</span>}</span>
           <Button variant="quiet" onClick={() => setChosen(null)}>Choose another text</Button>
         </div>
         {chosen.data.upstream
@@ -171,7 +171,7 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
             {found.data.rows.map((r) => (
               <li key={r.id}>
                 <button type="button" className="pick wic-focus" onClick={() => open(r.id)}>
-                  <span className="cut">{r.title ?? (r.kind ? `an item of kind ${r.kind}` : "untitled text")}</span>
+                  <span className="cut">{textName(r)}</span>
                   <span className="ledger aside">{r.id}</span>
                   <span className="aside">{r.kind ?? plural(r.length, "character")}</span>
                 </button>

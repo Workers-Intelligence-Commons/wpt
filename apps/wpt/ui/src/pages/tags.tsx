@@ -54,6 +54,6 @@ function Tags() {
 }
 
 export const tags: Page = {
-  path: "tags", title: "Tags", group: null,
+  path: "tags", title: "Tags", group: null, under: "texts",
   Component: ({ rest }) => (rest[0] ? <OneTag key={rest[0]} tag={rest[0]} /> : <Tags />),
 };

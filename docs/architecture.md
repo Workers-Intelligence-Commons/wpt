@@ -232,7 +232,15 @@ column `export_key` of the memberships and of the pins, and the column
 `vocabulary` of the datasets. It writes the export key of every membership,
 then of every pin, a batch of rows at a time, saying how many rows a second it writes; run again after
 a stop, it goes on in the table and at the row it reached. Then it builds
-the indexes `memberships_key` and `pins_key`.
+the indexes `memberships_key` and `pins_key`. The step to format 8 builds
+the index `text_decisions_decision`, the rows of `text_decisions` by
+decision, in one `CREATE INDEX` that reads each row once and rewrites no
+table. It marks the depot as half upgraded before the build and removes the
+mark after it, so a stop during the build leaves a depot that only the
+upgrade opens, and the upgrade run again builds the index whole. It says
+what it does before it starts and how long it took. Format 8 is also the
+format of a depot that may hold decisions that put texts back under review,
+which code of format 7 does not know, so that code refuses such a depot.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
@@ -512,18 +520,20 @@ refused change writes nothing.
 | a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the editor of the "Workspace" page, with the text's record |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
-| a decision on texts | `decide admit\|refuse WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection an admission cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A and R |
+| a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A, R and U |
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
 | a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
-| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; the "Workspace" page lists them and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
-| a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the "More info" button of a library in a list, which lists libraries by name only |
-| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
+| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Workspace" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
+| a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library in the "Workspace" page |
+| what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, and the part of each share the mix keeps; the dataset form and page and the export page |
+| the times of changes | `sql QUERY` | `POST /api/changes/times`; the moment each library of a dataset is read at |
+| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit, refused when made from a revision older than the current one), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
 | tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
 | a tokenizer's vocabulary | `tokenizer train NAME` | `GET /api/tokenizers/{name}/estimate`, then `POST /api/tokenizers/{name}/train`, confirmed, a job; `GET /api/vocabularies`; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
-| a corpus | `build DATASET [--vocabulary SHA256] (--max-tokens N \| --all)`, run in the command | `GET /api/datasets/{id}/estimate`, then `POST /api/datasets/{id}/build` with a trained vocabulary and a size, confirmed, a job; the dataset's page "Download" |
-| a corpus downloaded | none | `GET /api/datasets/{id}/download` (the dataset's corpora), `GET /api/datasets/{id}/download/{vocabulary}/{size}` and its `files/{name}`; the pages "Download" |
+| a corpus | `build DATASET [--vocabulary SHA256] (--max-tokens N \| --all)`, run in the command | `GET /api/datasets/{id}/estimate`, then `POST /api/datasets/{id}/build` with a trained vocabulary and a size, confirmed, a job; the dataset's page "Corpora" |
+| a corpus downloaded | none | `GET /api/datasets/{id}/download` (the dataset's corpora), `GET /api/datasets/{id}/download/{vocabulary}/{size}` and its `files/{name}`; the dataset's page "Corpora" and the page of each corpus |
 | a dataset's texts exported | none | `GET /api/datasets/{id}/export` and its parts `{name}`; the dataset's page "Export" |
 | a dataset's sample, for another depot's vocabulary | none | `GET /api/datasets/{dataset}/sample?bytes=N` |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
@@ -557,27 +567,39 @@ refines. The middle column is the playlist of what is open, a page at a
 time; the right column is the current text in a text editor, with its
 record and its actions beside it. Saving an edit is a content change only:
 the text goes back under review and leaves every open library, and is
-admitted again apart. In the playlist, keys move from text to text, and A
-and R admit or refuse the current text and open the next one. A legend
+admitted again apart. In the playlist, keys move from text to text, A
+and R admit or refuse the current text and open the next one, and U puts
+an admitted or refused text back under review. A legend
 beside the playlist lists the keys and shows the confirmation they make
 with the name and email they record. A line names the text and the
 decision after each press. Without a name or an email, the key asks for
 them and decides nothing. The keys do nothing while the cursor is in a
-field or the editor. The blob mode shows the open texts as one continuous
-text, read a page at a time as it scrolls; a click on a passage opens
-that text in the editor.
+field or the editor. On a phone, a bar at the bottom of the screen moves
+and decides as the keys do, and its Admit and Refuse ask first, in a line
+that holds the confirmation and the name the decision records. The blob
+mode shows the open texts as one continuous text, read a page at a time as
+it scrolls; a click on a passage opens that text in the editor.
 
 A list of texts comes a page at a time with no count, since a count reads
 every text it matches. A page starts after the last row of the page
 before it, in its order, or ends before the first row of the page after
 it, so a far page is read as fast as the first and the pages are read one
-after another, never by number. The numeric order of ids is the order of
+after another, never by number. A page can also start at a text's place in
+its order, which the server finds, so the playlist opens on a text that a
+link or the blob opened. The numeric order of ids is the order of
 the index `texts_order`, and the order of statuses that of the index
 `texts_status`, so a first page in either reads only its own rows. No index
 serves the other orders, which sort every text the filter matches, so the
 server gives them only for a filter that matches at most `SORTED` texts
 (`wpt_depot/depot.py`) and refuses them past it; the playlist offers them
-once the filter's count is done and at most that. The counts of a filter
+once the filter's count is done and at most that. A filter on a decision
+finds its texts through the index `text_decisions_decision`, which holds
+the rows of `text_decisions` by decision. For a decision on at most
+`SORTED` texts, a page or a count step reads that decision's rows and
+never tests every text, and a page of them sorts at most `SORTED` texts.
+For a decision on more texts, a page or a count step tests each text it
+reaches against the index, so it stays bounded by its own rows instead of
+reading the whole decision each time. The counts of a filter
 come apart, in steps: each step counts the matches in one slice of about a
 million texts, in the order of their ids, so each one stays well under the
 time limit of a reader. A filter that names its texts is counted in one
@@ -602,7 +624,10 @@ fork or the report matches the filter when it writes, leaves out the ids
 unticked and every text changed after that change number, and its answer
 says how many it left out. A text that matches the filter only after the
 page was read is left out with them. A text's own page names that one text
-in the filter. The commands and the web reach the same SQL in `wpt_depot`.
+in the filter. A filter reaches the server as fields, which
+`wpt_depot.filters` turns into its SQL condition, and every figure a page
+shows comes from a route of its own, so no page sends SQL but the page
+where a person types it. The commands and the web reach the same SQL in `wpt_depot`.
 
 The server runs its long work as jobs (`wpt/depot/jobs.py`): a write over
 a selection, the training of a vocabulary and the build of a corpus. The
@@ -647,12 +672,13 @@ a pragma or loads an extension, and SQLite has no function that reads
 another file or an address on the network. A filter's condition is a query
 as well, under the same rule. `wpt depot sql` follows it too.
 
-A route that runs a person's SQL, or that reads many texts (`POST
-/api/sql`, `POST /api/texts/search`, `POST /api/texts/passages`, `POST
-/api/texts/counts` and `POST /api/texts/blocked`), runs it in a
+A route that runs a person's SQL, or that reads many texts or
+memberships (`POST /api/sql`, `POST /api/texts/search`, `POST
+/api/texts/passages`, `POST /api/texts/counts`, `POST /api/texts/blocked`
+and `POST /api/libraries/measure`), runs it in a
 reader process of its own (`wpt/depot/web/readers.py`), never in the
 server's process, with at most `READERS` reader processes at a time.
-SQLite stops the statement `SECONDS` after its reader takes it, and the
+SQLite stops a person's statement `SECONDS` after its reader takes it, and the
 server kills the reader once the request has run `SECONDS`, the wait for
 a free reader included; both answer 422 `TimeLimitReached`. A request that
 finds no free reader within `SECONDS` answers 422 `NoReaderFree`, its reads

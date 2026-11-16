@@ -35,11 +35,12 @@ none; without shares, 0 for every plain text; null for an item), bytes
 all, that is, a plain text with a pool or a conversation or a task (an item
 of another kind is no training data).
 
-With max_tokens, a build first counts the items' tokens and keeps in the
-table limited the positions of the items the limit leaves out, with what
-that limit was counted for (its vocabulary and max_tokens, wpt_depot.corpus);
-the texts the corpus takes then leave those out. The order itself depends on
-neither, so builds of one dataset with other vocabularies or sizes share it.
+With max_tokens, the items take their share of it (wpt_depot.corpus), and a build first
+counts the items' tokens up to that part and keeps in the table limited the
+positions of the items it leaves out, with what that part was counted for
+(the version of the rules, its vocabulary and max_tokens, wpt_depot.corpus); the texts the corpus
+takes then leave those out. The order itself depends on neither, so builds
+of one dataset with other vocabularies or sizes share it.
 """
 
 import hashlib
@@ -231,9 +232,9 @@ class Order:
                                       "GROUP BY kind ORDER BY kind"))
         return {"no share": no_share, "kinds": kinds}
 
-    def taken_bytes(self) -> int:
-        """The bytes of every text the corpus may take, plain texts and items."""
-        return list(self.con.execute("SELECT coalesce(sum(bytes), 0) FROM ordered WHERE taken"))[0][0]
+    def every_item_bytes(self) -> int:
+        """The bytes of the conversations and tasks the corpus may take, the limit aside."""
+        return list(self.con.execute("SELECT coalesce(sum(bytes), 0) FROM ordered WHERE taken AND kind IS NOT NULL"))[0][0]
 
     def items_bytes(self) -> int:
         """The bytes of the conversations and tasks the corpus takes, those the limit leaves out aside."""

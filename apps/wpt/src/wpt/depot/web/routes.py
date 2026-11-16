@@ -28,11 +28,11 @@ from functools import wraps
 
 from wpt_depot import Declaration, Depot, NewText, counts as facets, errors, follow
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
-from wpt_depot.depot import (BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED, NO_ALLOWED_LICENSE,
-                             ORDERS, SORTED)
+from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED,
+                             NO_ALLOWED_LICENSE, ORDERS, SORTED)
 from wpt_depot.erasure import CONTEXT
-from wpt_depot.filters import Filter, condition
-from wpt_depot.schema import ADMITTED, REFUSED
+from wpt_depot.filters import Filter
+from wpt_depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
 from wpt_depot.corpora import NoRoom, TooBig
 from wpt_depot.corpora import triple as corpora_triple
 from wpt_store import StoreError
@@ -63,6 +63,7 @@ ID = {"type": "object", "required": ["id"], "properties": {"id": TEXT}}
 IDS = {"type": "array", "items": TEXT, "minItems": 1, "uniqueItems": True}
 INLINE = 100  # a write over at most this many texts runs in the request, not as a job, while no job runs
 WAIT = 1.0  # seconds a request that starts a job waits for its end before it answers the job running
+NAMED_TITLES = 3  # the texts a job's title names, of a write over named texts
 # where a page of texts starts or ends: a row's values of the order, as a page gives them
 PLACE = {"type": "array", "items": {"type": ["string", "integer", "number"]}, "minItems": 1}
 NULLABLE_PLACE = {"oneOf": [PLACE, {"type": "null"}]}
@@ -90,7 +91,9 @@ def filter_of(found: dict, change: int | None = None, unticked=()) -> Filter:
     return Filter(ids=None if ids is None else tuple(ids), tags=tuple(found.get("tags", [])),
                   licenses=tuple(found.get("licenses", [])), statuses=tuple(found.get("statuses", [])),
                   libraries=tuple(found.get("libraries", [])), locked=found.get("locked"), where=found.get("where"),
-                  unticked=tuple(unticked), change=change)
+                  unticked=tuple(unticked), change=change, outside=tuple(found.get("outside", [])),
+                  decision=found.get("decision"), search=found.get("search"), in_text=found.get("in_text", False),
+                  whole_words=found.get("whole_words", False))
 
 
 def selected(selection: dict) -> Filter:
@@ -106,11 +109,12 @@ def small(selection: dict) -> bool:
 
 # The operations a job runs, by name of function, so that a job's process imports them: each takes the depot, its
 # arguments and progress, and gives the JSON answer of its route. left: {reason: how many texts the operation left
-# out for it} (CHANGED_SINCE, and for a decision with leave_blocked, the reasons of Depot.blocked).
+# out for it} (CHANGED_SINCE, and for a decision with leave_blocked, the reasons of Depot.blocked, with leave_same,
+# ALREADY's).
 
 def decide_texts(depot: Depot, status: str, selection: Filter, declaration: Declaration, reason: str | None,
-                 leave_blocked: bool, progress) -> dict:
-    decision, texts, left = depot.decide(status, selection, declaration, reason, leave_blocked, progress)
+                 leave_blocked: bool, leave_same: bool, progress) -> dict:
+    decision, texts, left = depot.decide(status, selection, declaration, reason, leave_blocked, progress, leave_same)
     return {"decision": decision, "texts": texts, "left": left}
 
 
@@ -125,13 +129,13 @@ def relicense_texts(depot: Depot, selection: Filter, licenses: list[str], declar
 def put_texts(depot: Depot, library: str, selection: Filter, progress) -> dict:
     left = {}
     joined, left_out = depot.put(library, selection, progress, left)
-    return {"joined": joined, "left_out": left_out, "left": left}
+    return {"library": library, "joined": joined, "left_out": left_out, "left": left}
 
 
 def take_out_texts(depot: Depot, library: str, selection: Filter, progress) -> dict:
     left = {}
     taken_out, not_held = depot.take_out(library, selection, progress, left)
-    return {"taken_out": taken_out, "not_held": not_held, "left": left}
+    return {"library": library, "taken_out": taken_out, "not_held": not_held, "left": left}
 
 
 def fork_library(depot: Depot, library: str, name: str, without: Filter | None, progress) -> dict:
@@ -152,20 +156,80 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     whose runner the caller starts."""
     readers = Readers(depot.address)
 
-    def job(kind: str, few: bool, operation, *args) -> tuple[int, dict]:
-        """Run operation over the depot with args, in the request when it
+    def job(title: str, few: bool, operation, *args) -> tuple[int, dict]:
+        """Run operation over the depot with args, titled by what it does (the
+        Jobs page shows it), in the request when it
         writes few texts and no write job is open (a write waits for a
         running write job's write lock, which a job shows and a request does
         not; a vocabulary training or a corpus build holds none), as a job
         otherwise: the job's state once it ended (200) or after WAIT
         seconds (202, running), or its refusal with its status."""
         if few and not jobs.writing():
-            state = jobs.record("write", kind, depot, operation, *args)
+            state = jobs.record("write", title, depot, operation, *args)
         else:
-            state = jobs.wait(jobs.add("write", kind, operation, *args)["id"], WAIT)
+            state = jobs.wait(jobs.add("write", title, operation, *args)["id"], WAIT)
         if state["state"] in ("refused", "failed", "cancelled"):
             return state["status"] or 409, {"problems": [state["problem"]], "job": state["id"]}
         return 202 if state["state"] in ("queued", "running") else 200, jsonable(state)
+
+    def library_named(library: str) -> str:
+        """The library's name, for a job's title; its id when the depot holds none of that id (the job refuses it)."""
+        found = depot.rows("SELECT name FROM libraries WHERE id = ?", (library,))
+        return found[0]["name"] if found else library
+
+    def text_names(ids: list[str]) -> dict[str, str]:
+        """Each text's name as the pages give it, by id: its title, else its
+        kind with an article ("a conversation"), else "an untitled text";
+        its id when the depot holds no such text."""
+        rows = {row["id"]: row for row in depot.rows(
+            f"SELECT id, title, kind FROM texts WHERE id IN ({', '.join('?' * len(ids))})", tuple(ids))} if ids else {}
+
+        def name(one: str) -> str:
+            row = rows.get(one)
+            if row is None:
+                return one
+            if row["title"]:
+                return row["title"]
+            if row["kind"]:
+                return f"{'an' if row['kind'][0] in 'aeiou' else 'a'} {row['kind']}"
+            return "an untitled text"
+        return {one: name(one) for one in ids}
+
+    def subject(selection: dict) -> str:
+        """What a write over a selection acts on, for a job's title: the one
+        text's name (named) when the selection names exactly one text, else
+        the texts its filter takes in words ("texts under review, tagged
+        prose, in the library mix"; "3 named texts (fizz.py, note.txt, a
+        conversation), refused", the first NAMED_TITLES by their name;
+        "every text")."""
+        found = selection["filter"]
+        ids = found.get("ids")
+        if ids is not None and len(ids) == 1 and not selection.get("unticked"):
+            return text_names(ids)[ids[0]]
+        names = held_libraries()
+
+        def named(libraries) -> str:
+            return " or ".join(names[one]["name"] if one in names else one for one in libraries)
+        words = [part for part in (
+            " or ".join(found.get("statuses", [])) or None,
+            f"tagged {' and '.join(found['tags'])}" if found.get("tags") else None,
+            f"under {' or '.join(found['licenses'])}" if found.get("licenses") else None,
+            f"in the library {named(found['libraries'])}" if found.get("libraries") else None,
+            f"not in the library {named(found['outside'])}" if found.get("outside") else None,
+            None if found.get("locked") is None else "in a locked library" if found["locked"]
+            else "in no locked library",
+            f"on the decision {found['decision']}" if found.get("decision") else None,
+            f"holding “{found['search'].strip()}”{' as whole words' if found.get('whole_words') else ''}"
+            f"{' in their text' if found.get('in_text') else ''}"
+            if (found.get("search") or "").strip() else None,
+            "matching an SQL condition" if (found.get("where") or "").strip() else None,
+            f"less {len(selection['unticked']):,} unticked" if selection.get("unticked") else None) if part]
+        if ids is not None:
+            first = ids[:NAMED_TITLES]
+            called = text_names(first)
+            shown = ", ".join(called[one] for one in first) + (", ..." if len(ids) > len(first) else "")
+            return ", ".join([f"{len(ids):,} named texts ({shown})" if first else "0 named texts", *words])
+        return f"texts {', '.join(words)}" if words else "every text"
 
     def declared(body) -> Declaration:
         found = body["declaration"]
@@ -234,20 +298,20 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def search(values, body):
-        return 200, readers.run("search", condition(filter_of(body["filter"])), body.get("after"),
+        return 200, readers.run("search", depot.condition(filter_of(body["filter"])), body.get("after"),
                                 body.get("before"), body.get("limit", 50), body.get("order", "id"),
-                                body.get("descending", False))
+                                body.get("descending", False), body.get("at"))
 
     @refusals
     def passages(values, body):
         return 200, readers.run(
-            "passages", condition(filter_of(body["filter"])), body.get("after"), body.get("limit", 50),
+            "passages", depot.condition(filter_of(body["filter"])), body.get("after"), body.get("limit", 50),
             body.get("characters", PASSAGE_CHARACTERS), body.get("order", "id"), body.get("descending", False))
 
     @refusals
     def count(values, body):
         found = filter_of(body["filter"], body.get("change"), body.get("unticked", ()))
-        return 200, readers.run("count", condition(found, depot.change()), body.get("start"),
+        return 200, readers.run("count", depot.condition(found, depot.change()), body.get("start"),
                                 body.get("size", COUNT_STEP), body["filter"].get("ids"))
 
     @refusals
@@ -268,13 +332,15 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def decide(values, body):
-        return job("decision", small(body["selection"]), decide_texts, body["status"], selected(body["selection"]),
-                   declared(body), body.get("reason"), body.get("leave_blocked", False))
+        verb = {ADMITTED: "admit", REFUSED: "refuse", UNDER_REVIEW: "put back under review"}[body["status"]]
+        return job(f"{verb} {subject(body['selection'])}", small(body["selection"]),
+                   decide_texts, body["status"], selected(body["selection"]), declared(body), body.get("reason"),
+                   body.get("leave_blocked", False), body.get("leave_same", False))
 
     @refusals
     def relicense(values, body):
-        return job("license change", small(body["selection"]), relicense_texts, selected(body["selection"]),
-                   body["licenses"], declared(body))
+        return job(f"change the licenses of {subject(body['selection'])}", small(body["selection"]), relicense_texts,
+                   selected(body["selection"]), body["licenses"], declared(body))
 
     @refusals
     def latest(values, body):
@@ -297,6 +363,16 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         return 200, {"id": values["id"], "texts": depot.counts()[facets.LIBRARY].get(values["id"], 0)}
 
     @refusals
+    def measure(values, body):
+        return 200, readers.run("measure", body["libraries"], body.get("shares") or [])
+
+    @refusals
+    def change_times(values, body):
+        found = depot.change_times(body["changes"])
+        return 200, [{"change": number, "made_at": found.get(number)} for number in dict.fromkeys(body["changes"])
+                     if number in found]
+
+    @refusals
     def pinned(values, body):
         return 200, jsonable(depot.pinned(values["id"], body.get("offset", 0), body.get("limit", 50)))
 
@@ -311,11 +387,13 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def put(values, body):
-        return job("put", small(body["selection"]), put_texts, values["id"], selected(body["selection"]))
+        return job(f"put texts in the library {library_named(values['id'])}", small(body["selection"]), put_texts,
+                   values["id"], selected(body["selection"]))
 
     @refusals
     def take_out(values, body):
-        return job("take-out", small(body["selection"]), take_out_texts, values["id"], selected(body["selection"]))
+        return job(f"take texts out of the library {library_named(values['id'])}", small(body["selection"]),
+                   take_out_texts, values["id"], selected(body["selection"]))
 
     @refusals
     def lock(values, body):
@@ -327,13 +405,15 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         without = body.get("without")
         # a fork writes a membership for every admitted text of the library, whatever without takes
         held = depot.counts()[facets.LIBRARY].get(values["id"], 0)
-        return job("fork", held <= INLINE, fork_library, values["id"], body["name"],
+        return job(f"fork the library {library_named(values['id'])} as {body['name']}", held <= INLINE, fork_library,
+                   values["id"], body["name"],
                    None if without is None else selected(without))
 
     @refusals
     def report(values, body):
         chosen = body.get("selection")
-        return job("problem", chosen is None or small(chosen), report_problem, values["id"], body["problem"],
+        return job(f"report a problem with the library {library_named(values['id'])}", chosen is None or small(chosen),
+                   report_problem, values["id"], body["problem"],
                    None if chosen is None else selected(chosen), declared(body))
 
     def held_libraries():
@@ -403,7 +483,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         depot.edit_dataset(values["id"], body["name"],
                            own(body["libraries"], depot.dataset_by_id(values["id"])["libraries"]),
                            None if shares is None else [(one["tag"], one["share"]) for one in shares],
-                           body.get("max_tokens"), body.get("vocabulary"))
+                           body.get("max_tokens"), body.get("vocabulary"), body.get("revision"))
         return 200, {"id": values["id"]}
 
     @refusals
@@ -456,6 +536,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         return 200, streamed("application/octet-stream", follow.parts(depot, keys))
 
     status = {"enum": [ADMITTED, REFUSED]}
+    text_status = {"enum": [ADMITTED, REFUSED, UNDER_REVIEW]}
     library_ref = {"type": "object", "required": ["library"],
                    "properties": {"depot": {"type": ["string", "null"], "description": "this depot's address, in "
                                             "any form; absent or null: this depot; another depot's address is "
@@ -463,8 +544,8 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                             "of another depot the dataset reads already, as it stores it"}, "library": TEXT}}
     share = {"type": "object", "required": ["tag", "share"], "properties": {"tag": TEXT, "share": {"type": "number"}}}
     max_tokens = {"type": ["integer", "null"], "minimum": 1, "description": "the size the build form starts at "
-                  "(nothing else reads it): the most tokens the corpus holds, conversations and tasks first; absent "
-                  "or null: no limit"}
+                  "(nothing else reads it): the most tokens the corpus holds, conversations and tasks taking their "
+                  "natural share; absent or null: no limit"}
     needle = {"type": "object", "required": ["text"],
               "properties": {"text": TEXT, "start": {"type": ["integer", "null"]}, "end": {"type": ["integer", "null"]},
                              "field": {"type": ["string", "null"], "description": "for an item: the JSON Pointer "
@@ -483,8 +564,18 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                   "statuses": {"type": "array", "items": {"enum": list(TEXT_STATUSES)},
                                                "description": "the text has one of them"},
                                   "libraries": {**NAMES, "description": "one of them holds the text"},
+                                  "outside": {**NAMES, "description": "none of these libraries holds the text"},
                                   "locked": {"type": ["boolean", "null"],
                                              "description": "whether a locked library holds the text"},
+                                  "decision": {**nullable, "description": "the id of a decision the text is on"},
+                                  "search": {**nullable, "description": "words, split at spaces, that the text holds "
+                                             "each in its title or id (with in_text, in its text too), in any case; "
+                                             "% and _ are characters, not wildcards"},
+                                  "in_text": {"type": "boolean", "description": "the search reads each text itself "
+                                              "too, a plain text's text or an item's JSON content"},
+                                  "whole_words": {"type": "boolean", "description": "each word of the search "
+                                                  "matches only where no letter, digit or underscore stands right "
+                                                  "before or after it"},
                                   "where": {**nullable, "description": "an SQL condition over the texts table, in "
                                             "SQLite's SQL, which only reads the depot's file (400) and, with the "
                                             f"rest of the request's reads, stops after {limits.SECONDS} seconds or "
@@ -610,11 +701,15 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "without its text; next, the place of the page's last row when more rows follow it, and previous, the "
               "place of its first row when rows come before it, each null otherwise; a page starts after a place "
               "(after) or ends before one (before), so a far page is read as fast as the first, and a page before a "
-              "place with fewer than limit rows before it is the first page; an order other than "
+              "place with fewer than limit rows before it is the first page; a page at a text's id (at) starts at "
+              "that text's place in the order, with the text when the filter matches it (the first page for an id "
+              "the depot does not hold); an order other than "
               f"{' or '.join(INDEXED)} sorts every match, so it is refused (422) when more than {SORTED} texts "
               "match; change, the depot's change number the page was read at, which a selection names",
-              body={"type": "object", "required": ["filter"], "not": {"required": ["after", "before"]},
-                    "properties": {"filter": text_filter, "after": PLACE, "before": PLACE,
+              body={"type": "object", "required": ["filter"],
+                    "not": {"anyOf": [{"required": ["after", "before"]}, {"required": ["after", "at"]},
+                                      {"required": ["before", "at"]}]},
+                    "properties": {"filter": text_filter, "after": PLACE, "before": PLACE, "at": TEXT,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                                    "order": {"enum": list(ORDERS)}, "descending": {"type": "boolean"}}},
               answer={"type": "object", "required": ["rows", "next", "previous", "change"], "properties": {
@@ -658,7 +753,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "for any decision; none of its licenses is allowed, for an admission); next, the place the next page "
               "starts after (after), null after the last page",
               body={"type": "object", "required": ["selection"],
-                    "properties": {"selection": selection, "status": status, "after": PLACE,
+                    "properties": {"selection": selection, "status": text_status, "after": PLACE,
                                    "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
               answer={"type": "object", "required": ["rows", "next"], "properties": {"next": NULLABLE_PLACE,
                   "rows": {"type": "array", "items": {
@@ -670,13 +765,20 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "status, each tag and each license, and how many each library holds, read at once",
               answer={"type": "object", "required": ["texts", "statuses", "tags", "licenses", "libraries"]}),
         Route("POST", "/api/decisions", decide, "one decision on the texts a selection takes, with an optional "
-              "public reason, which never starts with 'licenses changed from ' (the depot's own record of a "
-              "license change) (wpt depot decide): admitting is refused when a text has no allowed license, and any "
-              "decision when a text belongs to the upstream, unless leave_blocked leaves such texts out; a job "
-              "whose answer is the decision's id, how many texts it is on and how many it left out, by reason",
+              "public reason, which never starts with 'licenses changed from ', 'content changed from version ' or "
+              "'put back under review' (the depot's own records) (wpt depot decide): admitting is refused when a "
+              "text has no allowed license, and any decision when a text belongs to the upstream, unless "
+              "leave_blocked leaves such texts out; the status under review puts the texts back under review, "
+              "undoing their admission or refusal: the depot writes its reason, 'put back under review' (then ': ' "
+              "and the reason given), the decisions before it no longer count, the texts leave every open library, "
+              f"and a text under review already is left out ({ALREADY_UNDER_REVIEW!r}); leave_same leaves out of an "
+              f"admission or a refusal the texts admitted or refused already ({ALREADY[ADMITTED]!r}, "
+              f"{ALREADY[REFUSED]!r}), so it records no decision that changes no status; a job whose answer is the "
+              "decision's id, how many texts it is on and how many it left out, by reason",
               body={"type": "object", "required": ["status", "selection", "declaration"],
-                    "properties": {"status": status, "selection": selection, "reason": TEXT,
-                                   "leave_blocked": {"type": "boolean"}, "declaration": DECLARATION}},
+                    "properties": {"status": text_status, "selection": selection, "reason": TEXT,
+                                   "leave_blocked": {"type": "boolean"}, "leave_same": {"type": "boolean"},
+                                   "declaration": DECLARATION}},
               answer=written({"type": "object", "required": ["decision", "texts", "left"]})),
         Route("POST", "/api/texts/licenses", relicense, "change the licenses of the texts a selection takes, as a new "
               "revision, their ids kept (wpt depot relicense): for each distinct old list, a decision under review "
@@ -700,6 +802,29 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "upstream this depot follows, which alone changes it", answer=ROWS),
         Route("GET", "/api/libraries/{id}/size", library_size, "how many texts the library holds now, from the "
               "depot's counts", answer={"type": "object", "required": ["id", "texts"]}),
+        Route("POST", "/api/libraries/measure", measure, "what libraries hold now, each text once however many of "
+              "them hold it, at its current revision, read from the index of their memberships and each text's row, "
+              "never its text: texts, characters and UTF-8 bytes of them all, and of the plain texts (plain), the "
+              "conversations and tasks (items, the items a corpus takes) and the items of other kinds (other); with "
+              "shares, the plain texts each share takes (a plain text counts for the first share whose tag it has, "
+              "as a dataset's shares count them), those no share takes (unshared), and the mix of the corpus of every "
+              "token: kept_bytes and kept_characters of each share (the share that holds the least for its "
+              "proportion keeps all its texts, and limits the others, each its proportion of it, at most all it "
+              "holds; a share with no text takes nothing), limits on the share that limits the others, and mix, "
+              "the bytes and characters of plain text kept and the share of the bytes the conversations and tasks "
+              "hold then (items_share), the share they take of any size; 404 for a library the depot does not hold",
+              body={"type": "object", "required": ["libraries"],
+                    "properties": {"libraries": {**NAMES, "minItems": 1},
+                                   "shares": {"type": ["array", "null"], "items": share}}},
+              answer={"type": "object", "required": ["texts", "characters", "bytes", "plain", "items", "other",
+                                                     "shares", "unshared", "mix"]}),
+        Route("POST", "/api/changes/times", change_times, "the UTC time each of the depot's changes named was made "
+              "at, null for a change made before format 4, in the order named; a change the depot does not hold is "
+              "left out",
+              body={"type": "object", "required": ["changes"],
+                    "properties": {"changes": {"type": "array", "items": {"type": "integer", "minimum": 0},
+                                               "maxItems": 1000}}},
+              answer={"type": "array", "items": {"type": "object", "required": ["change", "made_at"]}}),
         Route("POST", "/api/libraries/{id}/pins", pinned, "the revisions a locked library pinned, a page at a time "
               "(offset and limit, default 0 and 50): how many texts it pinned, how many of them have a newer "
               "current revision, and the page of rows, each the text's id, the pinned revision's title, the "
@@ -714,16 +839,16 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "depot library rename)",
               body={"type": "object", "required": ["name"], "properties": {"name": TEXT}}, answer=OBJECT),
         Route("POST", "/api/libraries/{id}/texts", put, "every admitted text a selection takes joins the open "
-              "library (wpt depot library put): a job whose answer is how many joined it, how many were left out "
-              "because they are not admitted, and how many were left out, by reason",
+              "library (wpt depot library put): a job whose answer is the library's id, how many joined it, how many "
+              "were left out because they are not admitted, and how many were left out, by reason",
               body={"type": "object", "required": ["selection"], "properties": {"selection": selection}},
-              answer=written({"type": "object", "required": ["joined", "left_out", "left"]})),
+              answer=written({"type": "object", "required": ["library", "joined", "left_out", "left"]})),
         Route("POST", "/api/libraries/{id}/taken-out", take_out, "every text a selection takes that the open "
               "library holds leaves it and keeps its status, admitted included (wpt depot library take-out): a job "
-              "whose answer is how many were taken out, how many it did not hold, and how many were left out, by "
+              "whose answer is the library's id, how many were taken out, how many it did not hold, and how many were left out, by "
               "reason",
               body={"type": "object", "required": ["selection"], "properties": {"selection": selection}},
-              answer=written({"type": "object", "required": ["taken_out", "not_held", "left"]})),
+              answer=written({"type": "object", "required": ["library", "taken_out", "not_held", "left"]})),
         Route("POST", "/api/libraries/{id}/lock", lock, "lock the library for good: it pins the current revision of "
               "each text it holds (wpt depot library lock)",
               body=OBJECT, answer=OBJECT),
@@ -763,14 +888,16 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         Route("POST", "/api/datasets/{id}", edit_dataset, "change the dataset of that id as a new revision, its id "
               "and tokenizer kept, with the checks of a new one (wpt depot dataset edit): a library it read already "
               "keeps its change number (one of another depot included, named as the dataset stores it), a new one "
-              "is read at its depot's change number now; a corpus built before keeps its own copy",
+              "is read at its depot's change number now; a corpus built before keeps its own copy; with revision, "
+              "the revision the change was made from, refused (422) when the dataset is at another one",
               body={"type": "object", "required": ["name", "libraries"],
                     "properties": {"name": TEXT, "libraries": {"type": "array", "minItems": 1, "items": library_ref},
                                    "shares": {"type": ["array", "null"], "items": share},
                                    "max_tokens": max_tokens,
                                    "vocabulary": {"type": ["string", "null"], "description": "the sha256 of the "
                                                   "vocabulary the dataset publishes, one this depot holds (422 "
-                                                  "otherwise), whose corpus training takes; absent or null: none"}}},
+                                                  "otherwise), whose corpus training takes; absent or null: none"},
+                                   "revision": {"type": "integer", "minimum": 1}}},
               answer=ID),
         Route("GET", "/api/datasets/{name}/remote", export, "the dataset as a remote (wpt depot dataset export)",
               answer=OBJECT),

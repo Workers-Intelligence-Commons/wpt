@@ -1,5 +1,6 @@
-// The texts of one page as a table of one-line rows: a long value is cut
-// and shown whole on hover. A column header that names an order sorts by
+// The texts of one page as a table of one-line rows, each named by its
+// title, its id in the title's hover text: a long value is cut and shown
+// whole on hover. A column header that names an order sorts by
 // it, and a second click turns the order around; a box ticks each row when
 // ticked is given. A library's own page names that library in otherLibraries,
 // and its libraries column then shows only the other libraries of each text,
@@ -11,16 +12,15 @@ import { Skeleton } from "@workers-intelligence-commons/components";
 import { type ReactNode } from "react";
 import { MatchedCount, useCounts } from "./counts";
 import { useSearch, type Order, type Row, type TextFilter } from "./filter";
-import { LibraryLink, PlacePager, Problems, StatusBadge, useLibraries, type Library } from "./parts";
+import { LibraryLink, PlacePager, Problems, StatusBadge, textName, useLibraries, type Library } from "./parts";
 import { href } from "./route";
 
-const name = (r: Row) => r.title ?? (r.kind ? `an item of kind ${r.kind}` : "untitled text");
+const name = textName;
 
 type Column = { by: Order["by"]; label: string; className?: string; cell: (r: Row, byId: Map<string, Library>) => ReactNode };
 
 const COLUMNS: Column[] = [
-  { by: "id", label: "id", className: "ledger nowrap", cell: (r) => r.id },
-  { by: "title", label: "title", className: "wide-cell", cell: (r) => <a href={href(["texts", r.id])} title={name(r)} className="cut">{name(r)}</a> },
+  { by: "title", label: "title", className: "wide-cell", cell: (r) => <a href={href(["texts", r.id])} title={`${name(r)} (${r.id})`} className="cut">{name(r)}</a> },
   { by: "status", label: "status", className: "nowrap", cell: (r) => <StatusBadge status={r.status} /> },
   { by: "tags", label: "tags", cell: (r) => <Links values={r.tags} part="tags" /> },
   { by: "licenses", label: "licenses", className: "ledger", cell: (r) => <Links values={r.licenses} part="licenses" /> },
@@ -99,7 +99,7 @@ export function TextTable({ rows, libraries, order, onOrder, ticked, onTick, bus
             <tr key={r.id} className={ticked?.has(r.id) ? "ticked" : undefined}>
               {ticked && onTick && (
                 <td className="tick-cell">
-                  <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${r.id}`} checked={ticked.has(r.id)}
+                  <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${name(r)}`} checked={ticked.has(r.id)}
                     onChange={(e) => onTick([r.id], e.target.checked)} />
                 </td>
               )}

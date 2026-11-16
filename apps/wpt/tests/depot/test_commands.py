@@ -131,6 +131,26 @@ def test_texts_change_licenses_by_their_ids_and_start_over_under_review(depot, t
     assert depot_command("decide", "refuse", "true", "--reason", "licenses changed from MIT to CC0-1.0", *ME) == 2
     assert Depot.open(depot).show(first)["status"] == "under review"
 
+
+def test_back_to_review_undoes_an_admission_or_a_refusal_and_never_an_erasure_decision(depot, capsys):
+    admitted, refused = Depot.open(depot).add([NewText(text="one", licenses=("CC0-1.0",)),
+                                               NewText(text="two", licenses=("CC0-1.0",))], _declaration())
+    assert depot_command("decide", "admit", f"id = '{admitted}'", *ME) == 0
+    assert depot_command("decide", "refuse", f"id = '{refused}'", *ME) == 0
+    capsys.readouterr()
+
+    assert depot_command("decide", "back-to-review", "true", "--reason", "decided too fast", *ME) == 0
+
+    assert "put back under review, on 2 texts" in capsys.readouterr().out
+    for text in (admitted, refused):
+        shown = Depot.open(depot).show(text)
+        assert shown["status"] == "under review"
+        assert shown["decisions"][-1]["reason"] == "put back under review: decided too fast"
+    assert depot_command("decide", "back-to-review", "true", *ME) == 2  # every text is under review already
+    with pytest.raises(SystemExit):
+        depot_command("decide", "back-to-review", "--erasure", "test-depot-1", *ME)
+
+
 def test_a_texts_content_changes_from_a_file_and_it_starts_over_under_review(depot, tmp_path, capsys):
     [text] = Depot.open(depot).add([NewText(text="old words", licenses=("CC0-1.0",))], _declaration())
     (tmp_path / "new.txt").write_text("new words", encoding="utf-8")

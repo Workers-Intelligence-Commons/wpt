@@ -1,4 +1,5 @@
-// The workspace's right column: one text or item as it is now, in two tabs.
+// The workspace's right column: one text or item as it is now, in two tabs,
+// under a header naming the libraries that hold it.
 // "Text" is its editor: a plain text in CodeMirror (code-editor.tsx), with
 // find and replace inside this text, an item through the form of its
 // kind's schema; saving is save only, a new content version through POST
@@ -7,10 +8,12 @@
 // until it is admitted again, and the confirm says so before the click.
 // "Record" is its record: credits, its revision and content version and how
 // many it has of each, every decision with its reason (those before its
-// latest license or content change marked as no longer counting), its
+// latest license or content change, or before it was put back under review,
+// marked as no longer counting; a put back shown as a correction), its
 // libraries, each locked one with the revision it pinned, its reported
 // problems and erasure requests. Above both stand its actions, each opening
-// its form in a dialog: decide on it, change its licenses, edit its credits
+// its form in a dialog: decide on it (admit, refuse, or put an admitted or
+// refused text back under review), change its licenses, edit its credits
 // (a new revision; a locked library keeps the revision it pinned), take it
 // out of an open library that holds it (it stays admitted), report a
 // problem to a library that holds it, and ask to erase a passage
@@ -24,18 +27,23 @@ import type { Text } from "@codemirror/state";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { get, post, write, type Answer } from "../api";
 import type { EditorHandle } from "../code-editor";
+import type { Deciding } from "../blocked";
 import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../decide-forms";
 import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
-import { Confirm, Cut, Facts, Joined, LibraryLink, optional, Outcome, plural, Problems, required, RequiredNote, Section, StatusBadge, type Declaration, type Library, type Status } from "../parts";
+import { Confirm, Cut, Facts, Joined, LibraryLink, optional, Outcome, plural, Problems, required, RequiredNote, Section, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
 import { codePoints, TextViewer } from "../reader";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
+import { Correction } from "../pages/decisions";
 import { href } from "../route";
+import { KIND_WORDS } from "../kind-words";
 import { SchemaForm, type Schema } from "../schema-form";
+import { isConversation, Transcript } from "../transcript";
 
-// counts: whether the policy counts it (none made before the text's latest license or content change)
-type Decision = { id: string; status: Status; name: string; email: string; made_at: string; reason: string | null; counts: boolean };
+// counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
+// put_back: it put the text back under review, a correction of the decisions before it
+type Decision = { id: string; status: Status; name: string; email: string; made_at: string; reason: string | null; counts: boolean; put_back: boolean };
 type Row = {
   id: string; text: string | null; kind: string | null; content: string | null; licenses: string[]; notice: string | null;
   title: string | null; authors: string[] | null; tags: string[]; address: string | null; decisions: string[]; libraries: string[];
@@ -49,11 +57,12 @@ export const showText = (id: string) => get<Shown>(`/api/texts/${encodeURICompon
 
 // id: the text; version: raised by the workspace whenever the text may have changed elsewhere (a key decided on it);
 // onChanged: after any change made here; onDirty: whether its editor holds unsaved changes; handle: the editor's;
-// onShown: the id of the text it shows now, or null while it shows none (the keys act only on the text shown).
+// onShown: the id of the text it shows now, or null while it shows none (the keys act only on the text shown);
+// find: the words the search looked for inside the texts, marked in it, the first one scrolled to.
 // Only the answer for the id asked last is kept, so a text read slowly never replaces the one asked after it.
-export function TextPanel({ id, version, onChanged, onDirty, handle, onShown }: {
+export function TextPanel({ id, version, onChanged, onDirty, handle, onShown, find }: {
   id: string; version: number; onChanged: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void;
-  onShown: (id: string | null) => void;
+  onShown: (id: string | null) => void; find?: string;
 }) {
   const [shown, setShown] = useState<{ id: string; answer: Answer<Shown> } | null>(null);
   const asked = useRef(id);
@@ -65,19 +74,20 @@ export function TextPanel({ id, version, onChanged, onDirty, handle, onShown }: 
   useEffect(() => () => onShown(null), [onShown]);
   if (!shown || shown.id !== id) return <Skeleton lines={6} label="Reading the text" />;
   if (!shown.answer.ok) return <Problems problems={shown.answer.problems} />;
-  return <Loaded key={id} shown={shown.answer.data} reload={() => { load(); onChanged(); }} onDirty={onDirty} handle={handle} />;
+  return <Loaded key={id} shown={shown.answer.data} reload={() => { load(); onChanged(); }} onDirty={onDirty} handle={handle} find={find} />;
 }
 
 type Dialogs = "decide" | "relicense" | "credits" | "take-out" | "report" | "erase";
 
-function Loaded({ shown, reload, onDirty, handle }: { shown: Shown; reload: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void }) {
+function Loaded({ shown, reload, onDirty, handle, find }: { shown: Shown; reload: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string }) {
   const row = shown.text;
   const item = row.kind !== null;
   const [tab, setTab] = useState<"text" | "record">("text");
   const [open, setOpen] = useState<Dialogs | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const done = (words: ReactNode) => { setOpen(null); setSaid(words); reload(); };
-  const title = row.title ?? (item ? `An item of kind ${row.kind}` : "Untitled text");
+  const named = textName(row);
+  const title = row.title ? named : named[0].toUpperCase() + named.slice(1); // a real title (often a file name) stays as written
   const theirs = shown.upstream;
   const reportable = shown.libraries.filter((l) => !l.upstream); // only the depot's own libraries take a problem
   const leavable = reportable.filter((l) => !l.locked_at); // and only its own open ones let a text out
@@ -92,9 +102,14 @@ function Loaded({ shown, reload, onDirty, handle }: { shown: Shown; reload: () =
       <header className="text-head">
         <h2 className="title text-title">{title}</h2>
         <div className="page-meta small">
-          <StatusBadge status={shown.status} /><span className="ledger">{row.id}</span>
+          <StatusBadge status={shown.status} />
+          {row.licenses.map((l) => <a key={l} href={href(["licenses", l])} className="ledger" title={`The license ${l}`}>{l}</a>)}
+          {row.authors?.length ? <span className="aside">by {row.authors.join(", ")}</span> : null}
+          {row.tags.length > 0 && <span className="aside">tags {row.tags.map((t, i) => <span key={t}>{i > 0 && ", "}<a href={href(["texts"], { tag: t })}>{t}</a></span>)}</span>}
+          <span className="aside">{shown.libraries.length ? <>in {shown.libraries.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>)}</> : "in no library"}</span>
           {theirs && <span className="aside">the upstream's</span>}
-          {item && <span>an item of kind <span className="ledger">{row.kind}</span></span>}
+          {item && <span>kind <span className="ledger">{row.kind}</span></span>}
+          <span className="ledger aside">{row.id}</span>
         </div>
         <div className="head-buttons text-actions">
           {!theirs && <Button variant="quiet" onClick={() => setOpen("decide")}>Decide</Button>}
@@ -119,13 +134,13 @@ function Loaded({ shown, reload, onDirty, handle }: { shown: Shown; reload: () =
         <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "record"} onClick={() => setTab("record")}>Record <span className="aside">{plural(shown.decisions.length, "decision")}</span></button>
       </div>
       <div role="tabpanel" hidden={tab !== "text"}>
-        {theirs ? <ReadOnly row={row} /> : <EditContent key={`${row.id}:${row.content_version}`} row={row} libraries={shown.libraries} onDone={done} onDirty={onDirty} handle={handle} />}
+        {theirs ? <ReadOnly row={row} find={find} /> : <EditContent key={`${row.id}:${row.content_version}`} row={row} libraries={shown.libraries} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
       </div>
       <div role="tabpanel" hidden={tab !== "record"}>
         <Record shown={shown} />
       </div>
       <Dialog open={open === "decide"} onClose={() => setOpen(null)} title="Decide on this text">
-        {open === "decide" && <DecideOn id={row.id} onDone={done} />}
+        {open === "decide" && <DecideOn id={row.id} status={shown.status} onDone={done} />}
       </Dialog>
       <Dialog open={open === "relicense"} onClose={() => setOpen(null)} title="Change the licenses of this text">
         {open === "relicense" && <Relicense row={row} onDone={done} />}
@@ -146,10 +161,11 @@ function Loaded({ shown, reload, onDirty, handle }: { shown: Shown; reload: () =
   );
 }
 
-// An upstream text, read only: its text or its content as JSON.
-function ReadOnly({ row }: { row: Row }) {
+// An upstream text, read only: its text, a conversation as a transcript, or another item's content as JSON.
+function ReadOnly({ row, find }: { row: Row; find?: string }) {
   const item = row.kind !== null;
   const content = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
+  if (isConversation(content)) return <div className="viewer"><Transcript content={content} find={find} /></div>;
   return <TextViewer item={item} content={content} text={row.text ?? ""} mark={null} />;
 }
 
@@ -189,7 +205,7 @@ function Record({ shown }: { shown: Shown }) {
         <ol className="decisions">
           {shown.decisions.map((d) => (
             <li key={d.id} className={d.counts ? undefined : "uncounted"}>
-              <span className="row tight"><StatusBadge status={d.status} /><time dateTime={d.made_at} className="ledger">{d.made_at.replace("T", " ").slice(0, 16)}</time>{!d.counts && <span className="aside">no longer counts</span>}</span>
+              <span className="row tight"><StatusBadge status={d.status} /><Correction d={d} /><time dateTime={d.made_at} className="ledger">{d.made_at.replace("T", " ").slice(0, 16)}</time>{!d.counts && <span className="aside">no longer counts</span>}</span>
               {d.reason && <span>{d.reason}</span>}
               <span className="quiet"><a className="ledger" href={href(["decisions", d.id])}>{d.id}</a>, {d.name}, <span className="ledger">{d.email}</span></span>
             </li>
@@ -214,27 +230,32 @@ function Record({ shown }: { shown: Shown }) {
   );
 }
 
-function DecideOn({ id, onDone }: { id: string; onDone: (words: ReactNode) => void }) {
-  const [status, setStatus] = useState<"admitted" | "refused">("admitted");
+// Admit, refuse, or, for a text admitted or refused, put it back under
+// review: a decision that undoes the admission or refusal, after which the
+// decisions before it no longer count.
+function DecideOn({ id, status: now, onDone }: { id: string; status: Status; onDone: (words: ReactNode) => void }) {
+  const [status, setStatus] = useState<Deciding>("admitted");
   const [reason, setReason] = useState("");
   const [answer, setAnswer] = useState<Answer<Decided> | null>(null);
   const send = async (declaration: Declaration) => {
     const a = await write<Decided>("/api/decisions", { status, selection: sent(named([id])), ...(reason.trim() ? { reason: reason.trim() } : {}), declaration });
     setAnswer(a);
-    if (a.ok) onDone(`Decision ${a.data.decision}: ${status}.`);
+    if (a.ok) onDone(`Decision ${a.data.decision}: ${status === "under review" ? "put back under review" : status}.`);
   };
   return (
     <div className="action-form">
       <RequiredNote />
       <div className="fields">
-        <Select label={required("Decision")} required value={status} onChange={(e) => setStatus(e.target.value as "admitted" | "refused")}>
+        <Select label={required("Decision")} required value={status} onChange={(e) => setStatus(e.target.value as Deciding)}>
           <option value="admitted">Admit it</option>
           <option value="refused">Refuse it</option>
+          {now !== "under review" && <option value="under review">Put it back under review (undo its {now === "admitted" ? "admission" : "refusal"})</option>}
         </Select>
         <TextInput label={optional("Reason")} hint="Public, with the decision." value={reason} onChange={(e) => setReason(e.target.value)} />
       </div>
-      <Confirm label={status === "admitted" ? "Confirm and admit" : "Confirm and refuse"} onConfirm={send}
-        note={status === "refused" ? "A refusal takes it out of every open library." : undefined} />
+      <Confirm label={status === "admitted" ? "Confirm and admit" : status === "refused" ? "Confirm and refuse" : "Confirm and put back under review"} onConfirm={send}
+        note={status === "refused" ? "A refusal takes it out of every open library."
+          : status === "under review" ? "A public decision that puts it back under review: the decisions before it no longer count, and it leaves every open library until it is admitted again; a locked library keeps the revision it pinned." : undefined} />
       <Outcome answer={answer} done={() => ""} />
     </div>
   );
@@ -252,12 +273,21 @@ function Relicense({ row, onDone }: { row: Row; onDone: (words: ReactNode) => vo
 }
 
 // The text in the editor, or an item's content through the form of its
-// kind's schema, prefilled; saved only once it differs, as a new content version.
-function EditContent({ row, libraries, onDone, onDirty, handle }: {
-  row: Row; libraries: Library[]; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void;
+// kind's schema, prefilled; saved only once it differs, as a new content
+// version. A conversation is read as a transcript first, and its form opens
+// on "Edit" or the E key (the handle's focus).
+function EditContent({ row, libraries, onDone, onDirty, handle, find }: {
+  row: Row; libraries: Library[]; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string;
 }) {
   const item = row.kind !== null;
   const original = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
+  const conversation = isConversation(original);
+  const [editing, setEditing] = useState(!conversation);
+  useEffect(() => {
+    if (!conversation) return;
+    handle({ focus: () => setEditing(true), openFind: () => {} });
+    return () => handle(null);
+  }, [conversation, handle]);
   const [doc, setDoc] = useState<{ text: Text; changed: boolean } | null>(null); // the editor's, once edited
   const [content, setContent] = useState<unknown>(original);
   const [schema, setSchema] = useState<Schema | null>(null);
@@ -294,8 +324,16 @@ function EditContent({ row, libraries, onDone, onDirty, handle }: {
   };
   return (
     <div className="edit-content">
-      {item ? (
-        schema ? <SchemaForm value={content} schema={schema} root={schema} name={row.kind!} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />
+      {conversation && !editing ? (
+        <>
+          <div className="editor-tools small">
+            <Button variant="quiet" onClick={() => setEditing(true)} aria-keyshortcuts="E" title="Opens the form of its messages, roles and blocks (E)">Edit</Button>
+            <span className="aside editor-count">{plural(original.messages.length, "message")}</span>
+          </div>
+          <Transcript content={original} find={find} />
+        </>
+      ) : item ? (
+        schema ? <SchemaForm value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />
       ) : (
         <>
           <div className="editor-tools small">
@@ -303,14 +341,14 @@ function EditContent({ row, libraries, onDone, onDirty, handle }: {
             <span className="aside editor-count">{plural(doc ? doc.text.lines : lineCount(row.text ?? ""), "line")}{changed && ", changed"}</span>
           </div>
           <Suspense fallback={<Skeleton lines={8} label="Opening the editor" />}>
-            <CodeEditor initial={row.text ?? ""} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} />
+            <CodeEditor initial={row.text ?? ""} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
           </Suspense>
         </>
       )}
       {changed ? (
         <Confirm label="Save, under review" onConfirm={send}
           note={<>Saving (or Ctrl+S) is a public decision under review and nothing else: it makes content version {row.content_version + 1}, the decisions before it no longer count, so the text goes back under review and leaves {open.length ? <>its open {open.length === 1 ? "library" : "libraries"} ({open.map((l) => l.name).join(", ")})</> : "every open library"}. It is read again only once it is admitted again, separately, and put back.{locked.length > 0 && <> A locked library ({locked.map((l) => l.name).join(", ")}) keeps reading the content of the revision it pinned.</>}</>} />
-      ) : <p className="save-idle small aside">Nothing changed yet. Saving makes a new content version and puts the text back under review.</p>}
+      ) : editing ? <p className="save-idle small aside">Nothing changed yet. Saving makes a new content version and puts the text back under review.{conversation && <> <Button variant="quiet" onClick={() => setEditing(false)}>Back to reading it</Button></>}</p> : null}
       <Outcome answer={answer} done={() => ""} />
     </div>
   );

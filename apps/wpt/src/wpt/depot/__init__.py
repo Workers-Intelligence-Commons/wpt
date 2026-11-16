@@ -51,12 +51,17 @@ and items, the decisions on them, its libraries, datasets and erasures.
     wpt depot show ID                     one text or item as it is now (its scores included), with its
                                           decisions, libraries, how many revisions it has and the revision
                                           each locked library holding it pinned, as JSON
-    wpt depot decide admit|refuse WHERE DECLARATION [--reason TEXT]
+    wpt depot decide admit|refuse|back-to-review WHERE DECLARATION [--reason TEXT]
                                           one decision on every text the SQL condition WHERE matches;
-                                          admitting is refused when a text has no allowed license; the
-                                          optional reason is public, and never starts with 'licenses
-                                          changed from ' or 'content changed from version ', the depot's
-                                          own records of a license or content change
+                                          admitting is refused when a text has no allowed license;
+                                          back-to-review undoes an admission or a refusal: the depot
+                                          records it as a decision under review with the reason 'put back
+                                          under review' (then ': ' and the reason given), the decisions
+                                          before it no longer count, the texts leave every open library as
+                                          a refusal makes them, and a text under review already is left
+                                          out; the optional reason is public, and never starts with
+                                          'licenses changed from ', 'content changed from version ' or 'put
+                                          back under review', the depot's own records
     wpt depot relicense ID [...] --license L [...] DECLARATION
                                           change the licenses of the texts ID as a new revision, their ids
                                           kept: the depot records it as a decision under review with the
@@ -147,8 +152,10 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           one the dataset publishes; refused when it publishes none) at
                                           that size (--all: every token the dataset's rules take), built
                                           into the store WPT_STORE names under the cap WPT_CORPORA_CAP;
-                                          a size counts everything, conversations and tasks first, and the
-                                          corpus never passes it; the older corpora of the same
+                                          a size counts everything, conversations and tasks taking the
+                                          share of the bytes they hold in the corpus of every token, and
+                                          the corpus never passes it;
+                                          the older corpora of the same
                                           dataset, vocabulary and size are deleted once it is whole
     wpt depot jobs [cancel ID]            the web app's jobs, one JSON row per line; cancel: a queued job
                                           never runs, a running one is stopped
@@ -192,7 +199,7 @@ from wpt_depot import remote as remotes
 from wpt_depot.errors import DepotError
 from wpt_depot.filters import literal
 from wpt_depot.parts import FileText
-from wpt_depot.schema import ADMITTED, FORMAT, REFUSED
+from wpt_depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from wpt_depot.settings import depot_address
 from wpt_depot import corpora
 from wpt_store import StoreError, StoreSettingError, store_from_settings
@@ -204,7 +211,8 @@ from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_cor
                      corpora_cap, import_tokenizer, jsonable, opened, pulled,
                      train_vocabulary)
 
-STATUSES = {"admit": ADMITTED, "refuse": REFUSED}
+STATUSES = {"admit": ADMITTED, "refuse": REFUSED, "back-to-review": UNDER_REVIEW}
+BACK = "back-to-review"  # the status of decide that puts texts back under review, never an erasure request
 
 
 def cmd_new(args):
@@ -292,9 +300,10 @@ def cmd_decide(args):
                                       args.reason, say)[args.erasure]
         say(f"erasure {args.erasure}: {STATUSES[args.status]}" + (", carried out" if carried_out else ""))
         return 0
-    decision, texts, _ = opened().decide(STATUSES[args.status], args.where, _declaration(args), args.reason,
-                                         progress=_stage)
-    say(f"decision {decision}: {STATUSES[args.status]}, on {texts:,} texts")
+    decision, texts, left = opened().decide(STATUSES[args.status], args.where, _declaration(args), args.reason,
+                                            progress=_stage)
+    say(f"decision {decision}: {'put back under review' if args.status == BACK else STATUSES[args.status]}, on "
+        f"{texts:,} texts" + "".join(f"; {count:,} left out, {reason}" for reason, count in left.items()))
     return 0
 
 
@@ -629,9 +638,10 @@ def parser() -> argparse.ArgumentParser:
     deciding.add_argument("where", nargs="?", help="an SQL condition over the texts table, in SQLite's SQL: "
                                                    "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')")
     deciding.add_argument("--erasure", help="decide this erasure request instead of texts")
-    deciding.add_argument("--reason", help="why, public (optional); never starting with 'licenses changed from ' or "
-                                           "'content changed from version ', the forms the depot keeps for its "
-                                           "records of a license or content change")
+    deciding.add_argument("--reason", help="why, public (optional); never starting with 'licenses changed from ', "
+                                           "'content changed from version ' or 'put back under review', the forms "
+                                           "the depot keeps for its records of a license or content change and of "
+                                           "a text put back under review")
     _declares(deciding)
     deciding.set_defaults(run=cmd_decide)
     relicensing = commands.add_parser("relicense", help="change the licenses of texts as a new revision; their "
@@ -824,6 +834,8 @@ def main(argv=None) -> int:
     args = found.parse_args(argv)
     if args.run is cmd_decide and (args.where is None) == (args.erasure is None):
         found.error("decide takes a condition WHERE for texts, or --erasure ID for an erasure request, not both")
+    if args.run is cmd_decide and args.erasure is not None and args.status == BACK:
+        found.error("decide back-to-review puts texts back under review; an erasure request is admitted or refused")
     if args.run is cmd_erase and (args.start is None) != (args.end is None):
         found.error("erase takes START and END together, or neither for the whole text")
     if args.run is cmd_erase and args.field is not None and args.start is None:

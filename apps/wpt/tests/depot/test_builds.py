@@ -2,6 +2,7 @@ import hashlib
 import http.client
 import io
 import json
+import re
 import socket
 import threading
 import time
@@ -12,6 +13,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from wpt_depot import About, Declaration, Depot, NewText
+from wpt_depot.corpus import build
+from wpt_store import store_from_settings
 from wpt.depot import shared
 from wpt.depot.downloads import Downloads
 from wpt.depot.jobs import Jobs
@@ -24,12 +27,13 @@ TEXTS = ["the quick brown fox jumps over the lazy dog", "pack my box with five d
 PUBLIC = "https://depot.example"  # the served depot's public address, WPT_DEPOT_URL
 
 
-def depot_with_texts(address: str, name: str) -> Depot:
-    """A new depot whose four plain texts, admitted, fill the library "all", which the dataset "first" reads
-    with the tokenizer recipe "tiny" that it does not hold yet."""
+def depot_with_texts(address: str, name: str, tags=((),) * len(TEXTS)) -> Depot:
+    """A new depot whose four plain texts, admitted, each with its tags, fill the library "all", which the
+    dataset "first" reads with the tokenizer recipe "tiny" that it does not hold yet."""
     depot = Depot.new(address, About(name, "Ada Lovelace", "ada@example.org"))
     depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
-    depot.add([NewText(text=text, licenses=("CC0-1.0",)) for text in TEXTS], ME)
+    depot.add([NewText(text=text, licenses=("CC0-1.0",), tags=tuple(tagged)) for text, tagged in zip(TEXTS, tags)],
+              ME)
     depot.decide("admitted", "true", ME)
     library = depot.new_library("all")
     depot.put(library, "true")
@@ -138,12 +142,23 @@ def test_a_build_needs_a_trained_vocabulary_a_size_and_a_confirmation_and_each_s
     assert ended(call, job["id"])["state"] == "done"
     status, _, shown = call("GET", link)
     assert status == 200 and shown["state"] == "built" and shown["corpus"]["texts"] == len(TEXTS)
+    assert (shown["corpus"]["conversations"], shown["corpus"]["tasks"]) == (0, 0)  # what the texts count holds
+    assert ended(call, job["id"])["answer"]["conversations"] == 0
 
     # a token file: whole, the same twice and as listed; one range of it; a range past its end
     listed = max(shown["files"], key=lambda one: one["bytes"] or 0)
     status, headers, whole = call("GET", f"{link}/files/{listed['name']}")
     assert status == 200 and hashlib.sha256(whole).hexdigest() == listed["sha256"]
     assert headers["Accept-Ranges"] == "bytes" and int(headers["Content-Length"]) == len(whole)
+    # saved under a name that says which dataset, vocabulary and size it comes from, each file's name its own
+    assert headers["Content-Disposition"] == f'attachment; filename="{listed["download"]}"'
+    assert listed["download"].startswith("first_") and "_all_" in listed["download"]
+    assert len({one["download"] for one in shown["files"]}) == len(shown["files"])
+    # the vocabulary, stored with no extension, is saved and sent as the JSON it is
+    words = next(one for one in shown["files"] if one["role"] == "vocabulary")
+    status, headers, data = call("GET", f"{link}/files/{words['name']}")
+    assert words["download"].endswith("_vocabulary.json") and headers["Content-Type"] == "application/json"
+    assert status == 200 and data["format"] == "wpt-bpe" and data["merges"]  # read as JSON by the helper
     assert call("GET", f"{link}/files/{listed['name']}")[2] == whole
     status, headers, piece = call("GET", f"{link}/files/{listed['name']}", headers={"Range": "bytes=2-9"})
     assert (status, piece, headers["Content-Range"]) == (206, whole[2:10], f"bytes 2-9/{len(whole)}")
@@ -159,6 +174,33 @@ def test_a_build_needs_a_trained_vocabulary_a_size_and_a_confirmation_and_each_s
     listing = call("GET", f"{base}/download")[2]
     assert sorted((one["size"], one["state"], one["link"]) for one in listing["corpora"]) == [
         ("5", "built", small), ("all", "built", link)]
+
+
+def test_a_built_corpus_page_gives_each_share_s_tokens_and_each_file_its_role_tokens_and_numbered_name(
+        served, tmp_path):
+    # the corpus page compares the shares asked with those built and warns when no plain text was taken from them
+    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot", tags=[["a"], ["b"], ["a"], ["b"]])
+    call = served(depot)
+    row = depot.dataset("first")
+    depot.edit_dataset(row["id"], "first", [(None, one["library"]) for one in row["libraries"]],
+                       [("a", 0.5), ("b", 0.5)])
+    vocabulary = trained(call, depot)
+    recipe, version, tokenizer = shared.vocabulary_by_sha256(depot, vocabulary)
+    # built here rather than by the queue, so its token files can be small: one for every few tokens
+    record = build(depot, "first", store_from_settings(), tokenizer, version, url=shared.public_url(),
+                   max_tokens=None, recipe=recipe["name"], shard_tokens=8, log=lambda *args: None)
+    shown = call("GET", f"/api/datasets/{row['id']}/download/{vocabulary}/all")[2]
+
+    corpus = shown["corpus"]
+    assert shown["state"] == "built" and corpus["id"] == record["id"]
+    assert [one["tag"] for one in corpus["shares_tokens"]] == ["a", "b"]
+    assert sum(one["tokens"] for one in corpus["shares_tokens"]) == corpus["total_tokens"] > 0
+    assert corpus["items_tokens"] == 0  # no conversation or task in the dataset
+    texts = [one for one in shown["files"] if one["role"] == "text tokens"]
+    assert len(texts) > 1 and sum(one["tokens"] for one in texts) == corpus["total_tokens"]
+    numbers = [re.fullmatch(r"first_.+_all_text-tokens-(\d+)\..+", one["download"]) for one in texts]
+    assert [int(found[1]) for found in numbers] == list(range(1, len(texts) + 1))
+    assert len({one["download"] for one in shown["files"]}) == len(shown["files"])
 
 
 def test_an_estimate_names_tokens_bytes_time_and_room_and_writes_and_queues_nothing(served, tmp_path, monkeypatch):
@@ -191,8 +233,10 @@ def test_the_export_gives_every_text_in_parts_the_same_bytes_each_time_with_no_t
 
     assert status == 200 and shown["texts"] == len(TEXTS)
     [part] = shown["parts"]
-    assert part["forms"]["jsonl.zst"] == {"name": "part-00000.jsonl.zst", "bytes": None, "sha256": None}
-    first = call("GET", f"{base}/part-00000.jsonl.zst")[2]
+    assert part["forms"]["jsonl.zst"] == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst",
+                                          "bytes": None, "sha256": None}
+    status, headers, first = call("GET", f"{base}/part-00000.jsonl.zst")
+    assert headers["Content-Disposition"] == 'attachment; filename="first_part-00000.jsonl.zst"'  # saved by its dataset's name
     assert call("GET", f"{base}/part-00000.jsonl.zst")[2] == first
     rows = [json.loads(line) for line in zstd.decompress(first).decode().splitlines()]
     assert sorted(row["text"] for row in rows) == sorted(TEXTS)
@@ -200,7 +244,7 @@ def test_the_export_gives_every_text_in_parts_the_same_bytes_each_time_with_no_t
     table = call("GET", f"{base}/part-00000.parquet")[2]
     assert pq.read_table(io.BytesIO(table)).to_pylist() == rows
     known = call("GET", base)[2]["parts"][0]["forms"]["jsonl.zst"]
-    assert known == {"name": "part-00000.jsonl.zst", "bytes": len(first), "sha256": hashlib.sha256(first).hexdigest()}
+    assert known == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst", "bytes": len(first), "sha256": hashlib.sha256(first).hexdigest()}
     status, headers, piece = call("GET", f"{base}/part-00000.jsonl.zst", headers={"Range": "bytes=3-10"})
     assert (status, piece, headers["Content-Range"]) == (206, first[3:11], f"bytes 3-10/{len(first)}")
     assert call("GET", f"{base}/part-00001.parquet")[0] == 404

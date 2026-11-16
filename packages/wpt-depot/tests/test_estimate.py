@@ -34,5 +34,52 @@ def test_an_estimate_of_a_dataset_its_sample_covers_gives_the_tokens_its_build_h
     assert (found["plain_tokens"], found["item_tokens"]) == (record["total_tokens"], conversation_tokens)
     assert found["texts"] == record["texts"] and found["sample"]["tokenized"] == 31
     assert found["bytes"] > 0 and found["seconds"] is not None and found["workers"] == 1
-    # a size cuts the estimate as it cuts the build: the items first, the plain texts what they leave
-    assert estimate(depot, dataset, TOKENIZER, conversation_tokens + 10)["tokens"] == conversation_tokens + 10
+    # a size cuts the estimate as it cuts the build: the items their share of the bytes, the plain texts the rest,
+    # each taking texts in the build's order until the first that does not fit, so the forecast is what it builds
+    size = 4 * conversation_tokens
+    rows = depot.rows("SELECT c.kind, c.bytes FROM texts t JOIN content_lists c ON c.id = t.id "
+                      "AND c.version = t.content_version")
+    share = sum(r["bytes"] for r in rows if r["kind"]) / sum(r["bytes"] for r in rows)
+    cut = estimate(depot, dataset, TOKENIZER, size)
+    built = build(depot, "all", open_store((tmp_path / "store").as_uri()), TOKENIZER, max_tokens=size,
+                  log=lambda *_: None)
+    assert cut["item_share"] == share and cut["forecast"] is True
+    # each text counted at the sample's tokens per byte: off by a few tokens, never by a whole text
+    one_text = record["total_tokens"] / 30
+    assert abs(cut["plain_tokens"] - built["total_tokens"]) < one_text and cut["item_tokens"] == built["items_tokens"]
+    assert cut["tokens"] <= size
+    # and it counts the texts as the build does: the conversations it takes of those the dataset holds, then the
+    # plain texts, the one at the edge of a part in or out as the rate per byte falls
+    assert (cut["item_texts"], cut["items_held"]) == (built["conversations"], record["conversations"])
+    assert abs(cut["plain_texts"] - (built["texts"] - built["conversations"])) <= 1
+    assert cut["texts"] == cut["plain_texts"] + cut["item_texts"]
+
+
+def test_at_a_small_size_the_estimate_forecasts_the_share_a_long_text_leaves_short_and_the_size_where_shares_even_out(
+        make_depot, me, tmp_path):
+    # a share whose texts are each longer than its part at a small size gets nothing from the build, which takes
+    # a share's texts in order until the first that does not fit; the estimate says so, and names a size where
+    # every share comes within 10 points of its proportion
+    depot = make_depot()
+    sentence = "the quick brown fox jumps over the lazy dog. "
+    depot.add([NewText(text=f"{n} " + sentence * 40, licenses=("CC0-1.0",), tags=("long",)) for n in range(12)]
+              + [NewText(text=f"{n} " + sentence * 2, licenses=("CC0-1.0",), tags=("short",)) for n in range(60)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("all")
+    depot.put(library, "true")
+    dataset = depot.dataset_by_id(depot.new_dataset("mix", "classics", [(None, library)], [("long", 0.5), ("short", 0.5)]))
+    store = open_store((tmp_path / "store").as_uri())
+    long_text = estimate(depot, dataset, TOKENIZER, None)["share_tokens"][0]["tokens"] / 12
+    size = int(long_text)  # half of it, the long share's part, holds no long text
+
+    small = estimate(depot, dataset, TOKENIZER, size)
+    built = build(depot, "mix", store, TOKENIZER, max_tokens=size, log=lambda *_: None)
+
+    got = {one["tag"]: one["tokens"] for one in built["shares_tokens"]}
+    forecast = {one["tag"]: one["tokens"] for one in small["share_tokens"]}
+    assert got["long"] == forecast["long"] == 0 and got["short"] > 0 and small["forecast"] is True
+    assert abs(forecast["short"] - got["short"]) < long_text / 40 * 3  # a few short texts at most
+    assert small["even_size"] is not None and small["even_size"] > size
+    even = build(depot, "mix", store, TOKENIZER, max_tokens=small["even_size"], log=lambda *_: None)
+    shares = {one["tag"]: one["tokens"] / even["total_tokens"] for one in even["shares_tokens"]}
+    assert abs(shares["long"] - 0.5) <= 0.1 + 0.02  # the forecast's tokens per byte may be off by a little

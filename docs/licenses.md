@@ -725,6 +725,15 @@ public, and is not verified; the form says so before anyone confirms.
 - `wpt depot decide admit|refuse WHERE` makes one decision, admitted or
   refused, and appends it to every text the SQL condition `WHERE`
   matches.
+- `wpt depot decide back-to-review WHERE` (or "Back to review" in the
+  workspace, and its key U) puts admitted or refused texts back under
+  review, to undo an admission or a refusal. It is a decision under review
+  that carries the decider's declaration and a reason the depot writes
+  itself, `put back under review`, followed by the person's reason when
+  one is given. A text already under review is left out and reported.
+  A depot that may hold such a decision is of format 8 or newer, so code
+  that does not know the decision refuses it
+  ([architecture.md](architecture.md), "Format").
 - `wpt depot relicense ID ... --license L ...` (or "Change licenses" beside
   a text in the workspace, and "Change their licenses" in the review of an
   admission) changes the licenses of texts as a new revision of each, their
@@ -768,16 +777,16 @@ and "Datasets").
 
 Anyone's decisions are appended. The depot keeps every decision on a text
 in order, and the app's policy (`wpt_depot.policy`), not the depot, says
-how they combine. A text starts over when its licenses change or its
-content changes. Only the decisions from its latest start over on count,
+how they combine. A text starts over when its licenses change, when its
+content changes, or when it is put back under review. Only the decisions from its latest start over on count,
 so a refusal made before it no longer blocks the text, an admission made
 before it no longer admits it, and the text is under review again. Of the decisions that
 count, a text is admitted when at least one admits it and none refuses it,
 and decisions under review count for neither. Only an admitted text joins
-a library and trains. A refusal, a license change or a content change
+a library and trains. A refusal, a put back under review, a license change or a content change
 takes the text out of every open library that holds it. Nothing puts it
 back by itself: once it is admitted again, a person puts it back. A locked
-library keeps the revision it pinned, whatever decision, license change,
+library keeps the revision it pinned, whatever decision, put back, license change,
 content change or change of credits comes after ([data-selection.md](data-selection.md), "Libraries"). A refused text
 stays in the depot as a reference: a decision never deletes a text.
 
@@ -787,10 +796,10 @@ build), but admitting a text is always a human decision.
 
 A decision may carry a public `reason`, written by its decider
 (`--reason` on `wpt depot decide`); `wpt depot show` and the web pages show
-it. A reason that starts with `licenses changed from ` or `content changed
-from version ` is the depot's own record of a license or content change,
-which the policy recognises, so a person's decision with such a reason is
-refused.
+it. A reason that starts with `licenses changed from `, `content changed
+from version ` or `put back under review` is the depot's own record of a
+license change, a content change or a put back, which the policy
+recognises, so a person's decision with such a reason is refused.
 
 A license question the maintainer cannot settle alone goes into
 [LEGAL-QUESTIONS.html](../LEGAL-QUESTIONS.html), the page for legal

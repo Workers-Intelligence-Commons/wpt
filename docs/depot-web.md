@@ -49,7 +49,7 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked` | 1 a second | 5, delayed |
+| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts`, `/api/texts/blocked` and `/api/libraries/measure` | 1 a second | 5, delayed |
 | every other `POST` | 1 a second | 10, delayed |
 | every other request | 10 a second | 40, at once |
 
@@ -97,8 +97,9 @@ answers 429.
 
 A corpus is built for a dataset, one vocabulary the depot holds (by its
 sha256) and a size: a number of tokens, or all. A build at a size counts
-everything, conversations and tasks first, and the corpus never passes
-that size. The dataset's `max_tokens` is only the size the build form
+everything, and the corpus never passes that size: conversations and
+tasks take the share of the bytes they hold in the corpus of every token,
+and the shares split the rest ([data-selection.md](data-selection.md), "Datasets"). The dataset's `max_tokens` is only the size the build form
 fills in. The page "Download" lists the
 dataset's corpora and holds the form of a new build: a trained vocabulary,
 the one the dataset publishes filled in, and a size, then an estimate (`GET /api/datasets/{id}/estimate`: the
@@ -107,7 +108,15 @@ and whether it fits under the cap, from a small sample tokenized, writing
 nothing; the time leaves out the pass that orders the dataset, which
 every build makes first, and names how many texts that pass reads), and
 only after it a start that restates the estimate and asks for a
-confirmation. A build never trains a vocabulary: the training is the
+confirmation.
+At a size, the estimate's tokens are a forecast that walks the dataset's
+order as the build does, where a share stops at its first text that does
+not fit. Its headline, above the start, says how many tokens will come
+out and which share will come out short. It also names the smallest size
+at which every share comes within 10 percentage points of its proportion; a built
+corpus whose shares came out uneven offers the same size. The forecast
+counts the texts as the build does: the plain texts, and how many of the
+dataset's conversations and tasks the size takes. A build never trains a vocabulary: the training is the
 recipe page's own action, with its own estimate and confirmation.
 
 Each dataset, vocabulary and size has one fixed download link

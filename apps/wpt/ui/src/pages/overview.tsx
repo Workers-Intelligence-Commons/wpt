@@ -1,5 +1,7 @@
 // What needs the maintainer: the chain of the depot (texts, libraries,
-// datasets) with their counts, the number of texts under review (the depot's
+// datasets, tokenizer recipes, jobs waiting or running, with their counts,
+// then the corpora, which the box leads to without counting them: they are
+// listed per dataset, from the store), the number of texts under review (the depot's
 // own counts, GET /api/counts), those texts counted by tag and by license (a
 // count made in steps, which grows as it goes, counts.tsx), each tag and
 // license linked to its view and each count to those texts, the latest decisions, the open erasure requests and the problems
@@ -7,7 +9,7 @@
 
 import { Notice, Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
-import { get, type Answer } from "../api";
+import { get, waiting as queued, type Answer } from "../api";
 import { CountingNote, matched, useCounts } from "../counts";
 import { declared, useDeclarant } from "../declarant";
 import { EVERY, type TextFilter } from "../filter";
@@ -15,6 +17,7 @@ import { Cut, LibraryLink, PageHead, plural, Problems, Section, useDatasets, use
 import { href } from "../route";
 import { DecisionTable, type Latest } from "./decisions";
 import type { Page } from "./index";
+import { MARK_SECONDS, useJobs } from "./jobs";
 
 type Needle = { text: string };
 type Erasure = { id: string; reason: string; status: Status; needles: Needle[] };
@@ -41,11 +44,15 @@ function Overview() {
   const [counts, setCounts] = useState<Answer<DepotCounts> | null>(null);
   const [latest, setLatest] = useState<Answer<Latest[]> | null>(null);
   const [erasures, setErasures] = useState<Answer<Erasure[]> | null>(null);
+  const [recipes, setRecipes] = useState<Answer<{ name: string; trained?: number | boolean }[]> | null>(null);
+  const only = datasets?.ok && datasets.data.length === 1 ? datasets.data[0] : null; // the corpora box leads to its corpora
+  const jobs = useJobs(MARK_SECONDS);
   const known = counts?.ok ? counts.data : null;
   useEffect(() => {
     get<DepotCounts>("/api/counts").then(setCounts);
     get<Latest[]>("/api/decisions/latest").then(setLatest);
     get<Erasure[]>("/api/erasures").then(setErasures);
+    get<{ name: string; trained?: number | boolean }[]>("/api/tokenizers").then(setRecipes);
   }, []);
   const open = erasures?.ok ? erasures.data.filter((e) => e.status === REVIEW) : [];
   const reported = libraries.flatMap((l) => (l.problems ?? []).map((p) => ({ library: l, problem: p })))
@@ -64,7 +71,7 @@ function Overview() {
           <li>
             <a className="chain-step" href={href(["texts"])}>
               <span className="cue">{count(known?.texts, "text")}</span>
-              <span className="quiet">added under review, then admitted</span>
+              <span className="quiet">{known ? `${known.statuses.admitted.toLocaleString("en")} admitted, ${known.statuses[REVIEW].toLocaleString("en")} under review, ${known.statuses.refused.toLocaleString("en")} refused` : "added, then admitted"}</span>
             </a>
           </li>
           <li>
@@ -76,7 +83,25 @@ function Overview() {
           <li>
             <a className="chain-step" href={href(["datasets"])}>
               <span className="cue">{count(datasets?.ok ? datasets.data.length : undefined, "dataset")}</span>
-              <span className="quiet">read libraries, build a corpus</span>
+              <span className="quiet">read libraries</span>
+            </a>
+          </li>
+          <li>
+            <a className="chain-step" href={href(["tokenizers"])}>
+              <span className="cue">{count(recipes?.ok ? recipes.data.length : undefined, "tokenizer recipe")}</span>
+              <span className="quiet">{recipes?.ok ? `${recipes.data.filter((r) => r.trained).length.toLocaleString("en")} with a vocabulary` : "train vocabularies"}</span>
+            </a>
+          </li>
+          <li>
+            <a className="chain-step" href={href(["jobs"])}>
+              <span className="cue">{jobs?.ok ? plural(jobs.data.filter((j) => queued(j.state)).length, "job") : "jobs"}</span>
+              <span className="quiet">waiting or running</span>
+            </a>
+          </li>
+          <li>
+            <a className="chain-step" href={only ? href(["download", only.id]) : href(["datasets"])}>
+              <span className="cue">corpora</span>
+              <span className="quiet">{only ? `built from ${only.name}` : "built from each dataset"}</span>
             </a>
           </li>
         </ol>
@@ -90,8 +115,8 @@ function Overview() {
           {known?.statuses[REVIEW] === 0 && <p className="small">Nothing waits for a decision.</p>}
           {waiting && matched(waiting) > 0 && (
             <div className="two-lists">
-              <Counted title="by tag" rows={waiting.tags.map((t) => ({ key: t.tag, n: t.texts, view: href(["tags", t.tag]), link: href(["texts"], { status: REVIEW, tag: t.tag }) }))} />
-              <Counted title="by license" ledger rows={waiting.licenses.map((l) => ({ key: l.license, n: l.texts, view: href(["licenses", l.license]), link: href(["texts"], { status: REVIEW, license: l.license }) }))} />
+              <Counted title="by tag" more={href(["tags"])} rows={waiting.tags.map((t) => ({ key: t.tag, n: t.texts, view: href(["tags", t.tag]), link: href(["texts"], { status: REVIEW, tag: t.tag }) }))} />
+              <Counted title="by license" ledger more={href(["licenses"])} rows={waiting.licenses.map((l) => ({ key: l.license, n: l.texts, view: href(["licenses", l.license]), link: href(["texts"], { status: REVIEW, license: l.license }) }))} />
             </div>
           )}
         </Section>
@@ -130,8 +155,9 @@ function Overview() {
   );
 }
 
-// Counts, each name linked to its view and each count to the texts it counts.
-function Counted({ title, rows, ledger }: { title: string; rows: { key: string; n: number; view: string; link: string }[]; ledger?: boolean }) {
+// Counts, each name linked to its view and each count to the texts it counts;
+// past the first ones, "N more" links to the page that lists them all (more).
+function Counted({ title, rows, ledger, more }: { title: string; rows: { key: string; n: number; view: string; link: string }[]; ledger?: boolean; more: string }) {
   return (
     <div>
       <h3 className="aside">{title}</h3>
@@ -139,7 +165,7 @@ function Counted({ title, rows, ledger }: { title: string; rows: { key: string; 
         {rows.slice(0, 15).map((r) => (
           <li key={r.key}><a href={r.view} className={ledger ? "ledger cut" : "cut"} title={r.key}>{r.key}</a><a href={r.link} className="number" title={`The ${plural(r.n, "text")} under review`}>{r.n.toLocaleString("en")}</a></li>
         ))}
-        {rows.length > 15 && <li className="aside">{rows.length - 15} more</li>}
+        {rows.length > 15 && <li className="aside"><a href={more}>{rows.length - 15} more</a></li>}
       </ul>
     </div>
   );

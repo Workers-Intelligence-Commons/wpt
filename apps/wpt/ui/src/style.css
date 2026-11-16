@@ -22,8 +22,12 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); overflow-x: hidden; }
-a:not(.wic-btn) { color: var(--ink); text-decoration-color: var(--red); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+/* one unbroken line under a link, so a link of several words never reads as several links */
+a:not(.wic-btn) { color: var(--ink); text-decoration-color: var(--red); text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
 a:not(.wic-btn):focus-visible, summary:focus-visible, button.sort:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+/* a button that reads as a link: it acts on this page (scrolls to a part of it) rather than going elsewhere */
+.link-button { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline;
+  text-decoration-color: var(--red); text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
 p { margin: 0 0 var(--gap-tight); }
 h2, h3 { margin: 0 0 var(--gap-tight); }
 .ledger { overflow-wrap: anywhere; }
@@ -58,7 +62,7 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .page-group + .page-group { padding-left: var(--gap-block); border-left: 1px solid var(--line-strong); }
 .page-group a { text-decoration: none; font-size: 15px; }
 /* the current page: an ochre bar under the letters, below their descenders */
-.page-group a[aria-current="page"], .home[aria-current="page"] .cue { text-decoration: underline var(--ochre); text-decoration-thickness: var(--space-1); text-underline-offset: 6px; text-decoration-skip-ink: none; }
+.page-group a[aria-current="page"], .page-group a[aria-current="true"], .home[aria-current="page"] .cue { text-decoration: underline var(--ochre); text-decoration-thickness: var(--space-1); text-underline-offset: 6px; text-decoration-skip-ink: none; }
 
 /* a page's head: its title, a line of facts, the line that places it in the
    chain of the depot, and on the right its actions with the note about them */
@@ -81,6 +85,9 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .refusal { margin: 0 0 var(--gap-group); padding: var(--gap-tight) var(--gap-group); background: var(--red-soft); color: var(--red-ink); overflow-wrap: anywhere; }
 .refusal p { margin: 0; }
 .done { margin: 0 0 var(--gap-group); }
+/* a finished job's result, below its headline, starts as a sentence */
+div.done > p { margin: 0; }
+div.done > p + p::first-letter { text-transform: uppercase; }
 .not-allowed { color: var(--red-ink); }
 
 /* forms: the red star of a required field and the note that explains it */
@@ -93,6 +100,7 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .form-narrow { max-width: 880px; }
 .form-small { max-width: 560px; }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 0 var(--gap-group); align-items: start; }
+.fields > .full-row { grid-column: 1 / -1; }
 .entry-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--gap-tight); margin-bottom: var(--gap-tight); }
 .entry-row .wic-field { margin-bottom: 0; }
 
@@ -127,12 +135,20 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 
 /* the filter bar: one even row of menus, each named inside its control and
    as wide as its words at least, the room left shared out evenly, and the
-   SQL condition, which takes twice a menu's share; on a narrow screen, two
-   even columns */
-.filter-bar { display: flex; align-items: stretch; gap: var(--gap-tight); margin-bottom: var(--gap-group); }
+   SQL condition, which takes twice a menu's share; what does not fit goes to
+   a second row, so nothing covers anything; on a narrow screen, two even
+   columns */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--gap-tight); margin-bottom: var(--gap-group); }
+.filter-bar > .in-text { flex: none; }
 .filter-bar > .tick-menu { flex: 1 0 max-content; min-width: 0; }
-.filter-bar > .sql { flex: 2 1 240px; min-width: 0; width: auto; font-family: var(--font-typewriter); }
+.filter-bar > .sql { flex: 1 1 60%; min-width: 0; width: auto; font-family: var(--font-typewriter); }
+.filter-bar > .sql.pending { border-color: var(--ochre); box-shadow: inset 0 -3px 0 var(--ochre); }
+.filter-bar > .find { flex: 1.5 1 180px; min-width: 0; width: auto; }
+.filter-bar > .sql-note { flex: none; align-self: center; }
+/* texts in the workspace: a monospace type unless the person chose the serif of prose */
+.workspace-frame.mono { --text-font: var(--font-typewriter); }
 .filter-bar > .wic-btn { flex: none; align-self: center; }
+.filter-bar > .filter-toggle { display: none; }
 .tick-menu { position: relative; }
 .tick-menu > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--gap-hair); height: 100%; min-width: 0; }
 .tick-menu > summary::-webkit-details-marker { display: none; }
@@ -152,6 +168,15 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .tick .wic-check-box { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
 .tick-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tick-count { flex: none; }
+
+/* a button that cannot act yet: faded, never struck through, which would read as deleted */
+.wic-btn:disabled { text-decoration: none; opacity: 0.55; }
+
+/* an SQL condition the page made, shown by its name */
+.chip { display: inline-flex; align-items: center; gap: var(--gap-hair); justify-self: start; padding: 2px var(--gap-tight); border: 1px solid var(--line-strong); background: var(--paper-raised); }
+
+/* on a phone, the moves and decisions of the workspace's keys, stuck to the bottom of the screen */
+.phone-bar { display: none; }
 
 /* the bar of the ticked rows, stuck to the bottom of the screen */
 .selection-bar { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group);
@@ -176,6 +201,8 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .blocked-form { margin-top: var(--gap-group); padding-top: var(--gap-tight); border-top: 1px solid var(--line-strong); }
 .review .blocked-form .action-form { margin: 0 0 var(--gap-tight); padding: 0; border: 0; }
 .review .action-form { margin-top: var(--gap-block); padding-top: var(--gap-group); border-top: 2px solid var(--ink); }
+/* the form that sends the operation stays at the bottom of the dialog while the list of texts scrolls under it */
+.review > .action-form { position: sticky; bottom: calc(-1 * var(--space-6)); z-index: 3; background: var(--paper-raised); padding-bottom: var(--space-6); box-shadow: 0 -8px 12px -8px color-mix(in srgb, var(--ink) 25%, transparent); }
 
 /* the confirm of a decision: the button, and beside it, quieter, the words it confirms */
 .confirm-area { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--gap-tight) var(--gap-group); margin-top: var(--gap-tight); }
@@ -183,6 +210,14 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .confirm-words { flex: 1 1 320px; min-width: 0; color: var(--ink-muted); }
 .confirm-words p { margin: 0 0 var(--gap-hair); }
 .confirm-words .act { color: var(--ink); }
+
+/* a job: the mark in the navigation while one waits or runs, and the line that follows one */
+.running-mark { display: inline-flex; align-items: center; gap: var(--gap-hair); text-decoration: none; padding: var(--gap-hair) var(--gap-tight); background: var(--paper-raised); }
+.running-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ochre); animation: running 1.2s ease-in-out infinite; }
+@keyframes running { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .running-dot { animation: none; } }
+.job-line { margin: 0 0 var(--gap-group); }
+.ledger-table td.wrap-cell { white-space: normal; max-width: 36em; }
 
 /* the overview: the chain of the depot, then what waits */
 .chain-strip { list-style: none; margin: 0 0 var(--gap-block); padding: 0; display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--gap-tight); }
@@ -211,6 +246,17 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 .json-key, .json-other { color: var(--ink-muted); }
 .json-string > span { white-space: pre-wrap; font-family: var(--font-serif); }
 mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(--red); }
+/* a conversation read as a transcript, in the design system's messages, a little smaller than in a chat */
+.transcript { display: flex; flex-direction: column; gap: var(--gap-group); }
+.edit-content > .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: var(--gap-group); border: 1px solid var(--line-strong); }
+.transcript .wic-message-body { font-size: 16px; line-height: 25px; }
+.turn-text { margin: 0 0 var(--gap-tight); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--text-font, var(--font-serif)); font-size: inherit; line-height: inherit; }
+.turn-aside { display: grid; gap: var(--gap-hair); margin-bottom: var(--gap-tight); padding-left: var(--gap-tight); border-left: 3px solid var(--line-strong); }
+.turn-label { font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); font-size: 14px; }
+.turn-json { margin: 0 0 var(--gap-tight); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-typewriter); font-size: 13px; line-height: 19px; }
+.turn-extras summary { cursor: pointer; }
+.blob-transcript { cursor: pointer; }
+.blob-transcript:hover { background: var(--paper-raised); }
 .decisions { list-style: none; padding: 0; display: grid; gap: var(--gap-tight); margin: 0; }
 .decisions li { display: grid; gap: 0; }
 .decisions li.uncounted { color: var(--ink-muted); }
@@ -256,7 +302,25 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .schema-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-tight); padding: 0; margin-bottom: var(--gap-tight); }
 .schema-object > .wic-field-hint { margin: calc(-1 * var(--gap-hair)) 0 var(--gap-tight); }
 .field-line { margin-bottom: var(--gap-group); }
-.code textarea { font-family: var(--font-typewriter); }
+.code textarea, textarea.code { font-family: var(--font-typewriter); }
+.file-pick { display: inline-block; margin: calc(-1 * var(--gap-tight)) 0 var(--gap-group); cursor: pointer; }
+.file-pick:focus-within .wic-btn { outline: 3px solid var(--ink); outline-offset: 2px; }
+/* what an estimate or a step warns about, set apart; the next step of a page */
+.warning { margin: var(--gap-group) 0; padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--red); background: var(--paper-raised); }
+.warning p { margin: 0 0 var(--gap-hair); }
+.estimate { margin-top: var(--gap-group); display: grid; gap: var(--gap-group); }
+.kinds { margin-top: var(--gap-hair); }
+.kinds li { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: var(--gap-tight); align-items: baseline; max-width: 44em; }
+.kinds li > .ledger { text-align: right; white-space: nowrap; }
+.fields.roomy { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+/* a long file name, whole: it wraps where it must, so every part that tells files apart stays in view */
+.ledger-table td.file-name { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; min-width: 16ch; }
+.playlist-unit { margin-left: auto; }
+.in-text { white-space: nowrap; }
+.next-step { margin: 0 0 var(--gap-group); padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--ochre); background: var(--paper-raised); }
+.holds { margin: var(--gap-group) 0; }
+.raw summary { cursor: pointer; }
+.vocabulary { margin-bottom: var(--gap-group); }
 
 /* the workspace: what can be opened, the playlist of what is open, and the
    current text in its editor, three columns that fill the screen under the
@@ -284,6 +348,11 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .said-line { flex: none; margin: var(--gap-tight) 0 0; }
 .workspace-frame > .selection-bar { position: static; flex: none; margin-top: var(--gap-tight); }
 .said-line .refusal { margin: 0; }
+/* under the columns: the question before a decision, the line of what was done, and on a phone the bar of the keys */
+.dock { flex: none; }
+.decide-ask { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group); padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--ink); background: var(--paper-raised); }
+.decide-ask.refusing { border-left-color: var(--red); }
+.decide-reason { flex: 1 1 220px; width: auto; min-width: 0; }
 
 /* the left column: groups of links, each a filter, the open one marked */
 .sources { padding-right: var(--gap-hair); }
@@ -359,7 +428,7 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .blob-name { all: unset; cursor: pointer; display: flex; align-items: baseline; gap: var(--gap-tight); max-width: 100%; font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
 .blob-name:hover { color: var(--ink); }
 .blob-name:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
-.blob-passage { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-serif); font-size: 15px; line-height: 23px; cursor: pointer; }
+.blob-passage { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--text-font, var(--font-serif)); font-size: 15px; line-height: 23px; cursor: pointer; }
 .blob-passage:hover { background: var(--paper-raised); }
 .blob-end { padding: var(--gap-group) 0; }
 
@@ -391,8 +460,46 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .facts dd { margin-bottom: var(--gap-hair); }
   .ledger-table td { max-width: 12em; }
+  /* a table marked cards: each row a card, each cell under its label, nothing hidden sideways */
+  .cards .ledger-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .cards .ledger-table, .cards .ledger-table tbody, .cards .ledger-table tr, .cards .ledger-table td { display: block; width: 100%; }
+  .cards .ledger-table tr { padding: var(--gap-tight) 0; border-bottom: 1px solid var(--line-strong); }
+  .cards .ledger-table td { max-width: none; border: 0; padding: 0 var(--gap-tight); white-space: normal; }
+  .cards .ledger-table td[data-label]::before { content: attr(data-label) " "; font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
+  .filter-bar > .find { grid-column: 1 / -1; }
+  /* the workspace on a phone: the search and the filters' button, then the open text, then the playlist, then what to open */
+  .filter-bar:not(.shown) > :not(.find):not(.filter-toggle) { display: none; }
+  .filter-bar > .filter-toggle { display: inline-flex; grid-column: 1 / -1; justify-self: start; }
+  .workspace > .editor-column { order: 1; }
+  .dock { position: sticky; z-index: 20; bottom: 0; background: var(--paper); }
+  .phone-bar { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--gap-hair); margin: var(--gap-tight) 0 0;
+    padding: var(--gap-tight) 0 calc(var(--gap-tight) + env(safe-area-inset-bottom, 0px)); background: var(--paper); border-top: 2px solid var(--ink); }
+  .phone-bar > .wic-btn { justify-content: center; padding-inline: var(--gap-hair); }
+  .workspace > .playlist-column { order: 2; max-height: 50vh; overflow-y: auto; }
+  .workspace > .sources { order: 3; }
+  .workspace .code-editor { max-height: 65vh; }
   .blocked .why { max-width: none; white-space: nowrap; } /* one line high: the table scrolls sideways */
   .filter-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-bar > .tick-menu:last-of-type:nth-of-type(odd), .filter-bar > .sql { grid-column: 1 / -1; }
   .filter-bar > .wic-btn { justify-self: start; }
 }
+
+/* a fold inside a line of facts: its summary one fact among the others, its body under the line once opened */
+.inline-fold > summary { cursor: pointer; list-style: none; }
+.inline-fold > summary::-webkit-details-marker { display: none; }
+.inline-fold[open] { flex-basis: 100%; }
+.fold-body { margin: var(--gap-hair) 0 0; max-width: 60em; }
+
+/* the main button of a long form in a dialog, kept in view at the bottom of the dialog while the form scrolls */
+.sticky-submit { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group);
+  margin-top: var(--gap-group); padding: var(--gap-tight) 0; background: var(--paper-raised); border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -8px 12px -8px color-mix(in srgb, var(--ink) 25%, transparent); }
+/* the size beside an export part's link, on its own line and whole, never cut */
+.part-size { display: block; white-space: normal; }
+/* a suggested tag the text has already: marked, in its place */
+.tag-suggestions .wic-btn[aria-pressed="true"] { background: var(--paper-raised); box-shadow: inset 0 -3px 0 var(--ochre); }
+.recounting { opacity: 0.6; }
+/* a key hint stands apart from its button's words, which a flex button would otherwise join to it */
+.key-hint { margin-left: 0.35em; }
+/* key hints mean nothing on a touch screen with no keyboard */
+@media (hover: none) and (pointer: coarse) { .key-hint { display: none; } }

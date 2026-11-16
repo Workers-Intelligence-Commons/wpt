@@ -72,7 +72,10 @@ texts whose key falls in a range are read in key order from the index alone,
 without reading the other libraries' rows nor its own outside the range
 (Depot.library_range, wpt_depot.exports), and a library is counted from the
 index alone (Depot.library_count). No index serves the other
-orders.
+orders. The index text_decisions_decision holds the rows of text_decisions
+by decision; its table has no rowid, so the index also holds each row's
+text, and the texts of one decision are read from the index alone
+(filters.Filter.decision).
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -101,7 +104,7 @@ Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 
 from . import ids
 
-FORMAT = 7  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 8  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -170,6 +173,7 @@ INDEXES = (
     "CREATE INDEX pins_key ON pins (library, export_key, text, revision)",
     "CREATE INDEX texts_change ON texts_revisions (change)",
     "CREATE INDEX notices_text ON notices (text)",
+    "CREATE INDEX text_decisions_decision ON text_decisions (decision)",
 )
 # the tables whose rows are revisions of an id, with the flag latest; <name> is the view of their current rows
 REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "datasets_revisions",

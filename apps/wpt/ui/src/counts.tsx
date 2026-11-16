@@ -15,7 +15,10 @@
 // has no slice, so its step is not sent again. A count ends when its page
 // no longer shows it: its component leaves, or its filter or version
 // changes. A selection (filter.tsx) is counted as a write takes it: less its
-// unticked texts and those changed since its change number.
+// unticked texts and those changed since its change number. While a count
+// starts again after a change (its version raised), it carries the last
+// finished counts of the same selection as before, so a page keeps showing
+// them, marked as being counted again, until the new count is done.
 
 import { useEffect, useState } from "react";
 import { post } from "./api";
@@ -28,7 +31,8 @@ export type Counts = {
   tags: { tag: string; texts: number }[]; licenses: { license: string; texts: number }[];
 };
 // counted: texts gone over so far; total: how many there are to go over, known from the first step
-export type Counting = Counts & { counted: number; total: number | null; done: boolean; problems: string[] | null };
+// before: while not done, the last finished counts of the same selection at an earlier version, else null
+export type Counting = Counts & { counted: number; total: number | null; done: boolean; problems: string[] | null; before: Counts | null };
 
 type Step = Counts & { texts: number; total: number | null; next: string | null };
 
@@ -51,8 +55,11 @@ let lastStart = 0;
 
 const EMPTY: Counting = {
   statuses: { "under review": 0, admitted: 0, refused: 0 }, locked: 0, blocked: {}, tags: [], licenses: [],
-  counted: 0, total: null, done: false, problems: null,
+  counted: 0, total: null, done: false, problems: null, before: null,
 };
+
+// The last finished counts of each selection (whatever its version), for a count of it that starts again.
+const finished = new Map<string, Counts>();
 
 // The sum of two lists of named counts, the most first, then by name.
 function added<K extends string>(key: K, a: ({ [k in K]: string } & { texts: number })[], b: ({ [k in K]: string } & { texts: number })[]) {
@@ -104,7 +111,7 @@ async function run() {
         locked: s.locked + step.locked, tags: added("tag", s.tags, step.tags), licenses: added("license", s.licenses, step.licenses),
         blocked: Object.fromEntries([...new Set([...Object.keys(s.blocked), ...Object.keys(step.blocked)])]
           .map((reason) => [reason, (s.blocked[reason] ?? 0) + (step.blocked[reason] ?? 0)])),
-        counted: s.counted + step.texts, total: s.total ?? step.total, done: step.next === null, problems: null,
+        counted: s.counted + step.texts, total: s.total ?? step.total, done: step.next === null, problems: null, before: null,
       });
     }
   } finally {
@@ -117,6 +124,7 @@ async function run() {
 export function useCounts(what: TextFilter | Selection | null, version = 0): Counting | null {
   const selection: Selection | null = what === null ? null : "filter" in what ? what : { filter: what };
   const key = selection === null ? null : JSON.stringify([selection, version]);
+  const same = selection === null ? null : JSON.stringify(selection);
   const [state, setState] = useState<{ key: string | null; counting: Counting | null }>({ key: null, counting: null });
   useEffect(() => {
     if (key === null) return;
@@ -126,9 +134,13 @@ export function useCounts(what: TextFilter | Selection | null, version = 0): Cou
       jobs.set(key, job);
     }
     const mine = job;
-    const listen = (counting: Counting) => setState({ key, counting });
+    const listen = (counting: Counting) => {
+      if (counting.done && !counting.problems && same !== null) finished.set(same, counting);
+      setState({ key, counting });
+    };
     mine.users += 1;
     mine.listeners.add(listen);
+    if (mine.state.done && !mine.state.problems && same !== null) finished.set(same, mine.state);
     setState({ key, counting: mine.state });
     run();
     return () => {
@@ -137,8 +149,13 @@ export function useCounts(what: TextFilter | Selection | null, version = 0): Cou
       if (mine.users === 0) jobs.delete(key);
     };
   }, [key]);
-  return state.key === key ? state.counting : key === null ? null : EMPTY;
+  const counting = state.key === key ? state.counting : key === null ? null : EMPTY;
+  const before = same !== null ? finished.get(same) ?? null : null;
+  return counting && !counting.done && before ? { ...counting, before } : counting;
 }
+
+// The counts to show: the finished ones, else, while counted again, those of before; null otherwise.
+export const shownCounts = (c: Counting | null): Counts | null => (c?.done && !c.problems ? c : c?.before ?? null);
 
 // How far a count has gone, while it goes on: nothing once it is done.
 export function CountingNote({ counting }: { counting: Counting | null }) {
@@ -147,7 +164,7 @@ export function CountingNote({ counting }: { counting: Counting | null }) {
   if (counting.done) return null;
   return (
     <span className="aside" role="status">
-      counting: {counting.total === null ? "starting" : `${counting.counted.toLocaleString("en")} of ${plural(counting.total, "text")}`}
+      {counting.before ? "counting again after the change" : "counting"}: {counting.total === null ? "starting" : `${counting.counted.toLocaleString("en")} of ${plural(counting.total, "text")}`}
     </span>
   );
 }

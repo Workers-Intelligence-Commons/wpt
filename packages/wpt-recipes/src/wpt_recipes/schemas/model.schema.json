@@ -18,7 +18,7 @@
       "properties": {
         "depot": {"type": "string", "description": "the depot's public address, the name its corpora record for it (wpt_depot.corpus.depot_name): the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"},
         "dataset": {"type": "string", "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"},
-        "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the corpus the recipe asks for (the max_tokens it is built at) and a ceiling on the tokens of plain text it reads: a corpus built at that size counts conversations and tasks first, and training reads what it holds"}
+        "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the corpus the recipe asks for (the max_tokens it is built at) and a ceiling on the tokens of plain text it reads: a corpus built at that size gives its conversations and tasks their share of it, and training reads what it holds"}
       }
     },
     "model": {

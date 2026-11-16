@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import time
 import tracemalloc
 from pathlib import Path
@@ -908,6 +909,25 @@ def test_pages_of_texts_follow_one_another_in_the_numeric_order_of_ids_forward_a
     assert [one["id"] for one in depot.search(left, before=emptied["previous"], limit=5)["rows"]] == ids[4:9]
 
 
+def test_a_page_at_a_text_starts_with_that_text_in_any_order_and_direction(make_depot, me):
+    # the workspace opens a text the playlist's page does not hold on the page that starts with it
+    depot = make_depot()
+    ids = depot.add([plain("x" * n) for n in range(1, 13)], me)  # depot-10 sorts after depot-9, the lengths by id
+    page = depot.search("true", at=ids[9], limit=3)
+    assert [one["id"] for one in page["rows"]] == ids[9:12] and page["next"] is None
+    back = depot.search("true", before=page["previous"], limit=3)
+    assert [one["id"] for one in back["rows"]] == ids[6:9]
+    assert [one["id"] for one in depot.search("true", at=ids[9], limit=3, descending=True)["rows"]] == [
+        ids[9], ids[8], ids[7]]
+    assert [one["id"] for one in depot.search("true", at=ids[4], limit=2, order="length")["rows"]] == ids[4:6]
+
+    # a text the condition leaves out: the page starts where it would stand; an id the depot lacks: the first page
+    assert [one["id"] for one in depot.search(f"id <> '{ids[4]}'", at=ids[4], limit=2)["rows"]] == ids[5:7]
+    assert [one["id"] for one in depot.search("true", at="nowhere-1", limit=2)["rows"]] == ids[:2]
+    with pytest.raises(Refused):
+        depot.search("true", after=page["previous"], at=ids[1])
+
+
 def test_several_erasure_requests_are_decided_together_only_when_each_can_be(make_depot, me):
     depot = make_depot()
     first, second = depot.add([plain("call 555-0100 now"), plain("my name is Ann")], me)
@@ -1679,6 +1699,7 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         lambda: depot.put(library, texts[:6]),
         lambda: depot.decide("refused", texts[:2], me),
         lambda: depot.take_out(library, texts[2:3]),
+        lambda: depot.decide("under review", texts[:3], me),  # a refused, an admitted and a taken out text
         lambda: depot.relicense(texts[3:5], ["MIT"], me),
         lambda: depot.change_content(texts[5], "text 5, changed", None, me),
         lambda: depot.edit_credits(texts[6], {"tags": ["a", "c"]}, me),
@@ -1766,6 +1787,50 @@ def test_an_operation_on_locked_texts_read_before_the_lock_leaves_out_the_texts_
 
     assert depot.show(text)["status"] == "admitted"
     assert depot.decide("refused", Filter(locked=True, change=depot.change()), me)[1:] == (1, {})
+
+
+def test_a_page_and_a_count_step_of_a_decision_read_its_rows_when_few_and_test_each_text_reached_when_many(
+        make_depot, me, monkeypatch):
+    # the live depot holds hundreds of millions of decision rows: a page or a count step of a decision on few texts
+    # reads only its rows, never every text, and one of a decision on many texts stays bounded by its own rows
+    # instead of reading the whole decision at each page and each step
+    from wpt_depot.filters import Filter
+    depot = make_depot()
+    texts = depot.add([plain(str(n)) for n in range(12)], me)
+    decision = depot.decide("admitted", texts[8:] + texts[2:4], me)[0]
+    depot.decide("refused", texts[3:5], me)
+    read = depot.db.person_rows
+
+    def planned(where):
+        """The ids of a page and the count of the texts where matches, with the
+        lines of the query plans of the page and of the first count step that
+        name text_decisions or the slice of a count step."""
+        queries = []
+        monkeypatch.setattr(depot.db, "person_rows",
+                            lambda sql, params=None: queries.append((sql, params)) or read(sql, params))
+        page = [one["id"] for one in depot.search(where)["rows"]]
+        counted = depot.count(where, size=5)
+        steps = [counted]
+        while steps[-1]["next"] is not None:
+            steps.append(depot.count(where, steps[-1]["next"], size=5))
+        monkeypatch.setattr(depot.db, "person_rows", read)
+        plans = [[one[3] for one in depot.db.reader().execute(f"EXPLAIN QUERY PLAN {sql}", params)
+                  if "text_decisions" in one[3] or "texts_latest" in one[3]] for sql, params in queries[:2]]
+        return page, sum(sum(one["statuses"].values()) for one in steps), plans
+
+    page, counted, [paged, stepped] = planned(depot.condition(Filter(decision=decision)))
+    assert (page, counted) == (texts[2:4] + texts[8:], 6)
+    assert "SEARCH l USING COVERING INDEX text_decisions_decision (decision=?)" in paged, paged
+    assert "SEARCH l USING COVERING INDEX text_decisions_decision (decision=?)" in stepped, stepped
+
+    monkeypatch.setattr(depots, "SORTED", 5)
+    page, counted, [paged, stepped] = planned(depot.condition(Filter(decision=decision)))
+    assert (page, counted) == (texts[2:4] + texts[8:], 6)
+    for plan in (paged, stepped):
+        assert not any(one.endswith("(decision=?)") for one in plan), plan
+        tested = r"SEARCH l EXISTS USING .*\((decision=\? AND text=\?|text=\? AND decision=\?)\)"
+        assert any(re.fullmatch(tested, one) for one in plan), plan
+    assert "SEARCH t USING INDEX texts_latest (id>? AND id<?)" in stepped, stepped
 
 
 def test_a_page_in_an_order_no_index_serves_is_refused_past_sorted_matches_with_text_or_without(
@@ -1856,3 +1921,137 @@ def test_a_clone_receives_the_upstream_s_tokenizer_recipes_and_vocabularies_and_
     assert follower.vocabulary_texts(recipe, 2) == [{"position": 0, "depot": "", "text": "upstream-1"}]
     with pytest.raises(BelongsToUpstream):
         follower.edit_tokenizer(recipe, None, dataset, 3000, 600)
+
+
+def test_an_admitted_text_put_back_under_review_leaves_its_open_libraries_and_can_be_decided_again(make_depot, me):
+    # an admission made by mistake must be undone by a recorded decision, and the text then reviewed afresh
+    depot = make_depot()
+    undone, kept = depot.add([plain("one"), plain("two")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("open")
+    depot.put(library, "true")
+
+    decision, decided, left = depot.decide("under review", [undone], me, reason="admitted by mistake")
+
+    assert (decided, left) == (1, {})
+    shown = depot.show(undone)
+    assert [(one["status"], one["reason"], one["counts"], one["put_back"]) for one in shown["decisions"]] == [
+        ("under review", None, False, False), ("admitted", None, False, False),
+        ("under review", "put back under review: admitted by mistake", True, True)]
+    assert shown["decisions"][-1]["id"] == decision
+    assert statuses_everywhere(depot, undone) == {"under review"}
+    assert shown["text"]["libraries"] == [] and depot.show(kept)["text"]["libraries"] == [library]
+    assert depot.put(library, [undone]) == (0, 1)
+    depot.decide("admitted", [undone], me)
+    assert statuses_everywhere(depot, undone) == {"admitted"}
+    assert depot.put(library, [undone]) == (1, 0)
+
+
+def test_a_refused_text_put_back_under_review_no_longer_blocks_an_admission(make_depot, me):
+    depot = make_depot()
+    [text] = depot.add([plain("one")], me)
+    depot.decide("refused", [text], me)
+
+    depot.decide("under review", [text], me)
+
+    assert depot.show(text)["decisions"][-1]["reason"] == "put back under review"
+    assert statuses_everywhere(depot, text) == {"under review"}
+    depot.decide("admitted", [text], me)
+    assert statuses_everywhere(depot, text) == {"admitted"}
+    assert depot.count("true")["statuses"] == {"under review": 0, "admitted": 1, "refused": 0}
+
+
+def test_putting_back_under_review_leaves_out_texts_under_review_already_and_never_only_wipes_decisions(
+        make_depot, me):
+    depot = make_depot()
+    decided, waiting = depot.add([plain("one"), plain("two")], me)
+    depot.decide("admitted", [decided], me)
+    depot.decide("admitted", [waiting], me)
+    depot.decide("under review", [waiting], me)
+
+    assert depot.decide("under review", [decided, waiting], me)[1:] == (1, {depots.ALREADY_UNDER_REVIEW: 1})
+    with pytest.raises(NotFound, match="under review already"):
+        depot.decide("under review", [decided, waiting], me)
+    assert [len(depot.show(one)["decisions"]) for one in (decided, waiting)] == [3, 3]
+
+
+def test_a_person_s_reason_cannot_pass_for_the_depot_s_own_put_back(make_depot, me):
+    depot = make_depot()
+    [text] = depot.add([plain("one")], me)
+    depot.decide("admitted", [text], me)
+    before = every_row(depot)
+
+    for status in ("refused", "under review"):
+        with pytest.raises(Refused, match="put back under review"):
+            depot.decide(status, [text], me, reason="put back under review: really")
+
+    assert every_row(depot) == before
+
+
+def test_a_locked_library_keeps_a_text_put_back_under_review_at_its_status_at_the_lock(make_depot, me):
+    depot = make_depot()
+    [text] = depot.add([plain("one")], me)
+    depot.decide("admitted", [text], me)
+    library = depot.new_library("first")
+    depot.put(library, [text])
+    depot.lock(library)
+
+    depot.decide("under review", [text], me)
+
+    assert depot.show(text)["status"] == "under review"
+    assert pick(depot.library_texts(library, depot.change()), ["id", "status"]) == [{"id": text, "status": "admitted"}]
+
+
+def test_a_filter_finds_texts_outside_libraries_on_a_decision_and_by_whole_words(make_depot, me):
+    from wpt_depot.filters import Filter, condition
+    depot = make_depot()
+    river, drivers, other = depot.add([NewText(text="by the river bank", licenses=("CC0-1.0",), title="Rivers"),
+                                       NewText(text="the drivers", licenses=("CC0-1.0",), title="Drivers"),
+                                       plain("nothing here")], me)
+    decision, _, _ = depot.decide("admitted", [river, drivers], me)
+    library = depot.new_library("open")
+    depot.put(library, [river])
+
+    def found(**fields):
+        return column(depot.search(condition(Filter(**fields)))["rows"], "id")
+
+    assert found(outside=(library,)) == [drivers, other]
+    assert found(decision=decision) == [river, drivers]
+    assert found(search="river") == [river, drivers]  # the titles
+    assert found(search="river", whole_words=True) == []  # neither title holds the whole word
+    assert found(search="river", in_text=True, whole_words=True) == [river]
+    assert found(search="RIVER", in_text=True, whole_words=True) == [river]  # in any case of its ASCII letters
+    assert found(search="RIVER BANK", in_text=True) == [river]
+
+
+def test_measure_counts_what_libraries_hold_each_text_once_by_kind_and_by_its_first_share(make_depot, me):
+    # a dataset's form and its build estimate show these figures, and a dataset's shares take a plain text by
+    # the first of their tags it has
+    depot = make_depot()
+    first, both, untagged = depot.add([plain("abc", "prose"), plain("défg", "code", "prose"), plain("hi")], me)
+    depot.decide("admitted", "true", me)
+    one, two = depot.new_library("one"), depot.new_library("two")
+    depot.put(one, [first, both])
+    depot.put(two, [both, untagged])
+
+    held = depot.measure([one, two], ["prose", "code"])
+
+    assert {key: held[key] for key in ("texts", "characters", "bytes")} == {"texts": 3, "characters": 9, "bytes": 10}
+    assert held["plain"] == {"texts": 3, "characters": 9, "bytes": 10}
+    assert held["items"] == held["other"] == {"texts": 0, "characters": 0, "bytes": 0}
+    assert held["shares"] == [{"tag": "prose", "texts": 2, "characters": 7, "bytes": 8},
+                              {"tag": "code", "texts": 0, "characters": 0, "bytes": 0}]
+    assert held["unshared"] == {"texts": 1, "characters": 2, "bytes": 2}
+    assert depot.measure([one])["unshared"] is None
+    with pytest.raises(NotFound):
+        depot.measure(["depot-no-such-library"])
+
+
+def test_change_times_gives_the_time_of_each_change_named_the_depot_holds(make_depot, me):
+    depot = make_depot()
+    depot.add([plain("one")], me)
+    now = depot.change()
+
+    times = depot.change_times([now, now + 100])
+
+    assert list(times) == [now] and times[now] == depot.sql(f"SELECT made_at FROM changes WHERE id = {now}")[0]["made_at"]
