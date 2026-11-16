@@ -1,4 +1,5 @@
 import { ButtonLink, Mark } from "@workers-intelligence-commons/components";
+import { useEffect, useRef } from "react";
 import { useAbout } from "./about";
 import { pages, type Page } from "./pages";
 import { RunningJobs } from "./pages/jobs";
@@ -10,6 +11,12 @@ export function App() {
   const place = usePlace();
   const { about } = useAbout();
   const page = pages.find((p) => p.path === (place.parts[0] ?? "")) ?? pages[0];
+  // on a phone the navigation is one line that scrolls sideways: the current page is brought into it
+  const nav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const at = nav.current?.querySelector<HTMLElement>("[aria-current]");
+    if (at && nav.current && nav.current.scrollWidth > nav.current.clientWidth) nav.current.scrollLeft = at.offsetLeft - nav.current.offsetLeft - 16;
+  }, [page]);
   return (
     <div className={`wrap${page.path === "texts" ? " full" : ""}`}>
       <header className="top">
@@ -17,7 +24,7 @@ export function App() {
           <Mark name="wpt" height={24} />
           <span className="cue">{about ? about.about.name : "depot"}</span>
         </a>
-        <nav aria-label="Pages of the depot" className="pages">
+        <nav ref={nav} aria-label="Pages of the depot" className="pages">
           {GROUPS.map(({ group, label }) => (
             <ul key={label} className="page-group cue" aria-label={label}>
               {pages.filter((p) => p.group === group).map((p) => (

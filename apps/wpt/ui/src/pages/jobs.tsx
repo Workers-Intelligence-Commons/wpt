@@ -13,8 +13,9 @@
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, waiting, type Answer, type Job } from "../api";
-import { PageHead, plainProblem, plural, Problems, takenWords, useDatasets, useLibraries } from "../parts";
+import { PageHead, plainProblem, plural, Problems, Section, takenWords, useDatasets, useLibraries } from "../parts";
 import { href } from "../route";
+import { pipelineChanged, StageMark, standing, StepButton, useCorpora, useRecipesAndVocabularies, vocabularyNames } from "../pipeline";
 import type { Page } from "./index";
 
 const EVERY_SECONDS = 3; // seconds between two readings of the queue on its page
@@ -34,7 +35,7 @@ const ago = (seconds: number, now: number) => {
 
 // What the pages know that a job's answer names by id: the dataset that
 // publishes each vocabulary (by its sha256), and each library's name.
-export type Known = { published?: Map<string, { id: string; name: string }>; libraries?: Map<string, string> };
+export type Known = { published?: Map<string, { id: string; name: string }>; libraries?: Map<string, string>; vocabularies?: Map<string, string> };
 
 // A length of time, short: 1 s, 45 s, 3 min 20 s, 2 h 5 min.
 export function lasted(seconds: number): string {
@@ -86,11 +87,12 @@ export function JobProgress({ job }: { job: Job<unknown> }) {
 
 const sizePart = (n: number | null) => (n === null ? "all" : String(n));
 
-// Where a job's result is: a corpus's page, a recipe's page, and for a
-// write that ended well, the library it changed, the decision it recorded or
-// the library it made.
-function resultLink(job: Job<unknown>): string | null {
-  if (job.kind === "corpus" && job.dataset && job.target) return href(["download", job.dataset, job.target.vocabulary, sizePart(job.target.max_tokens)]);
+// Where a job's result is: a corpus's page (its vocabulary by its name in
+// names, else by its sha256), a recipe's page, and for a write that ended
+// well, the library it changed, the decision it recorded or the library it made.
+function resultLink(job: Job<unknown>, names?: Map<string, string>): string | null {
+  const target = job.target;
+  if (job.kind === "corpus" && job.dataset && target) return href(["download", job.dataset, names?.get(target.vocabulary) ?? target.vocabulary, sizePart(target.max_tokens)]);
   if (job.kind === "corpus" && job.dataset) return href(["download", job.dataset]);
   if (job.kind === "vocabulary" && job.recipe) return href(["tokenizers", job.recipe]);
   const a = (job.state === "done" ? job.answer ?? {} : {}) as Record<string, unknown>;
@@ -116,14 +118,12 @@ const leftWords = (left: unknown) => {
 function answered(job: Job<unknown>, known: Known = {}): ReactNode {
   const a = (job.answer ?? {}) as Record<string, unknown>;
   const n = (key: string) => (typeof a[key] === "number" ? (a[key] as number) : 0);
-  const link = resultLink(job);
+  const link = resultLink(job, known.vocabularies);
   if (job.kind === "corpus") return <>{takenWords(n("texts"), n("conversations"), n("tasks"))}, {plural(n("tokens") + n("item_tokens"), "token")} in all{n("item_tokens") ? ` (${n("tokens").toLocaleString("en")} of plain text, ${n("item_tokens").toLocaleString("en")} of conversations and tasks)` : ""}{link && <>: <a href={link}>download it</a></>}</>;
   if (job.kind === "vocabulary") {
     const on = typeof a.vocabulary === "string" ? known.published?.get(a.vocabulary) : undefined;
     if (on) return <>the vocabulary is trained and {on.name} publishes it: <a href={href(["download", on.id])}>build a corpus</a></>;
-    return <>the vocabulary is trained{link && (shownNow(link)
-      ? <>. Next: <button type="button" className="link-button wic-focus" onClick={() => document.querySelector(".publish-on")?.scrollIntoView({ block: "center", behavior: "smooth" })}>publish it on a dataset</button>, under "Vocabularies" on this page</>
-      : <>: <a href={link}>see it and publish it</a></>)}</>;
+    return link && !shownNow(link) ? <>Trained: <a href={link}>publish it</a></> : null;
   }
   const library = typeof a.library === "string" ? a.library : null;
   const libraryLink = library ? <>: <a href={href(["texts"], { library })}>open {known.libraries?.get(library) ?? "the library"}</a></> : null;
@@ -178,19 +178,21 @@ export function JobLine({ job: started, onEnded, known }: { job: Job<unknown>; o
         if (!a.ok) { setFailed((f) => ({ times: (f?.times ?? 0) + 1, problems: a.problems })); return; }
         setFailed(null);
         setJob(a.data);
-        if (!waiting(a.data.state)) onEnded?.(a.data);
+        if (!waiting(a.data.state)) { pipelineChanged(); onEnded?.(a.data); }
       });
     }, wait * 1000);
     return () => { live = false; window.clearTimeout(timer); };
   }, [job, failed, onEnded]);
   const now = useNow(waiting(job.state));
+  const { trained } = useRecipesAndVocabularies();
+  const gave = job.state === "done" ? answered(job, { ...known, vocabularies: trained?.ok ? vocabularyNames(trained.data) : undefined }) : null;
   return (
     <>
       {job.state === "done" ? (
         // a short headline, then what it gave and the next step on a line of their own
         <div className="done" role="status">
           <p className="cue">{capital(job.title)}: <JobState job={job} now={now} />.</p>
-          <p>{answered(job, known)}.</p>
+          {gave && <p>{gave}.</p>}
         </div>
       ) : (
         <p className="job-line" role="status">
@@ -255,10 +257,33 @@ export function RunningJobs() {
 export function useKnown(): Known {
   const { datasets } = useDatasets();
   const { libraries } = useLibraries();
+  const { trained } = useRecipesAndVocabularies();
   return {
+    vocabularies: trained?.ok ? vocabularyNames(trained.data) : undefined,
     published: new Map((datasets?.ok ? datasets.data : []).filter((d) => d.vocabulary).map((d) => [d.vocabulary!, { id: d.id, name: d.name }])),
     libraries: new Map(libraries.map((l) => [l.id, l.name])),
   };
+}
+
+// The next step of each dataset that has one, the first the page's main
+// button: what a job could start from, or lead to (a recipe made first), apart
+// from the jobs, each with its dataset and where it stands.
+function NextSteps() {
+  const { datasets } = useDatasets();
+  const { recipes, trained } = useRecipesAndVocabularies();
+  const corpora = useCorpora(datasets?.ok ? datasets.data.map((d) => d.id) : []);
+  const steps = (datasets?.ok ? datasets.data : []).map((d) => ({ d, at: standing(d, recipes?.ok ? recipes.data : null, trained?.ok ? trained.data : null, corpora.get(d.id)) }))
+    .filter((s) => s.at.next);
+  if (!steps.length) return null;
+  return (
+    <Section title="Can start next">
+      <ul className="plain next-steps">
+        {steps.map(({ d, at }, i) => (
+          <li key={d.id}><a className="cue" href={href(["datasets", d.id])}>{d.name}</a><StageMark at={at} /><StepButton at={at} primary={i === 0} /></li>
+        ))}
+      </ul>
+    </Section>
+  );
 }
 
 function Jobs() {
@@ -269,16 +294,19 @@ function Jobs() {
   return (
     <>
       <PageHead title="Jobs"
+        meta={jobs?.ok && list.length > 0 ? <><span>{list.filter((j) => j.state === "running").length.toLocaleString("en")} running</span><span>{list.filter((j) => j.state === "queued").length.toLocaleString("en")} waiting</span></> : undefined}
         chain={<>The long work the server runs, one job at a time: training a <a href={href(["tokenizers"])}>tokenizer recipe</a>'s vocabulary, building a <a href={href(["datasets"])}>dataset</a>'s corpus, and a write over many texts. A job that ended links to what it made. A job cannot be cancelled here; the command line can, on the depot's machine.</>} />
       {!jobs && <Skeleton lines={5} label="Reading the queue" />}
       {jobs && !jobs.ok && <Problems problems={jobs.problems} />}
-      {jobs?.ok && (list.length === 0 ? <p>No job yet. A job starts from a tokenizer recipe (train its vocabulary), from a dataset's download page (build a corpus), or from a write over many ticked texts.</p> : (
+      {jobs?.ok && (list.length === 0 ? (
+        <p className="empty-state">No job yet.</p>
+      ) : (
         <div className="table-scroll cards">
           <table className="ledger-table" aria-label="The jobs">
             <thead><tr><th scope="col">job</th><th scope="col">state</th><th scope="col">what it gave, or its progress</th><th scope="col">queued</th></tr></thead>
             <tbody>
               {list.map((j) => {
-                const link = resultLink(j);
+                const link = resultLink(j, known.vocabularies);
                 return (
                   <tr key={j.id}>
                     <td className="wrap-cell" data-label="job">{link ? <a href={link}>{capital(j.title)}</a> : capital(j.title)}</td>
@@ -294,6 +322,7 @@ function Jobs() {
           </table>
         </div>
       ))}
+      {jobs?.ok && <NextSteps />}
     </>
   );
 }

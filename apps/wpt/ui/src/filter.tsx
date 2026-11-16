@@ -141,8 +141,9 @@ const PAUSE = 400; // milliseconds after the last change before a filter applies
 // Licenses menus count the texts of the depot, or, given within, the open
 // texts. The parts a link sets and no menu edits (the texts named, the
 // libraries that hold none of them, the decision they are on) show as
-// chips, each removed by its cross. On a phone, only the search shows, and
-// a button opens the rest.
+// chips, each removed by its cross. The locked choice and the SQL condition
+// show after "More filters", or at once while one of them is set. On a
+// phone, only the search shows, and a button opens the rest.
 export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, idsLabel, within }: {
   value: TextFilter; onApply: (f: TextFilter) => void; libraries: Library[]; fixedLibrary?: string; onLeave?: () => void;
   idsLabel?: string; // what the texts named are, in words ("the 2 texts added just now")
@@ -178,6 +179,9 @@ export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, id
   const lockedFixed = fixedLibrary !== undefined && Boolean(libraries.find((l) => l.id === fixedLibrary)?.locked_at);
   const pendingWhere = typedWhere !== draft.where;
   const [shown, setShown] = useState(false); // on a phone, the menus show only once asked for
+  // the filters used less often (the locked choice, the SQL condition) show once asked for, or while one is set
+  const [more, setMore] = useState(false);
+  const extra = more || draft.where !== "" || typedWhere !== "" || draft.locked !== null;
   const narrowed = JSON.stringify({ ...draft, search: "" }) !== JSON.stringify({ ...cleared, search: "" });
   const nameOf = (id: string) => libraries.find((l) => l.id === id)?.name ?? id;
   const chips: [string, Partial<TextFilter>][] = [
@@ -211,7 +215,7 @@ export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, id
         <TickMenu label="Libraries" options={libraries.map((l) => ({ value: l.id, label: `${l.name}${l.locked_at ? " (locked)" : ""}`, words: `${l.id} ${l.name}` }))}
           chosen={draft.libraries} onChange={(libraries) => change({ libraries })} />
       )}
-      {!lockedFixed && (
+      {!lockedFixed && extra && (
         <ChoiceMenu label="In a locked library" chosen={draft.locked === null ? "either" : draft.locked ? "yes" : "no"}
           options={[{ value: "either", label: "either" }, { value: "no", label: "no" }, { value: "yes", label: "yes" }]}
           onChange={(v) => change({ locked: v === "either" ? null : v === "yes" })} />
@@ -221,14 +225,15 @@ export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, id
           <button type="button" className="forget wic-focus" aria-label={`Remove the filter: ${label}`} onClick={() => change(removed)}>✕</button>
         </span>
       ))}
-      <input className={`wic-input wic-focus sql${pendingWhere ? " pending" : ""}`} type="text" value={typedWhere} aria-label="SQL condition, applied on Enter"
+      {!extra && <Button variant="quiet" aria-expanded={false} onClick={() => setMore(true)}>More filters</Button>}
+      {extra && <input className={`wic-input wic-focus sql${pendingWhere ? " pending" : ""}`} type="text" value={typedWhere} aria-label="SQL condition, applied on Enter"
         placeholder="SQL condition, then Enter"
         title="An SQL condition over the columns of the texts view, each text as it is now (id, revision, change, text, kind, content, licenses, notice, title, authors, tags, address, decisions, libraries), such as title LIKE '%fox%'. It applies on Enter; Escape puts back the one that applies. Either way the keys go back to the list."
         onChange={(e) => setTypedWhere(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") { e.preventDefault(); change({ where: typedWhere }); leave(e.currentTarget); }
           else if (e.key === "Escape") { e.preventDefault(); setTypedWhere(draft.where); leave(e.currentTarget); }
-        }} />
+        }} />}
       {pendingWhere && <span className="small aside sql-note">Enter applies it</span>}
       {(JSON.stringify(draft) !== JSON.stringify(cleared) || typedWhere !== "") && (
         <Button variant="quiet" onClick={() => { setDraft(cleared); setTypedWhere(""); }}>Clear the filter</Button>

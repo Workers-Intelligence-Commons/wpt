@@ -2,10 +2,13 @@
 // page at a time (the depot can hold a hundred million, so only one page is
 // ever read): each a link that opens it in the editor, with its status, its
 // length and a tick for the actions on ticked texts. The current text is
-// marked. Its head chooses the order (the orders of POST /api/texts/search:
-// id and status at any size, the others once the count is done and finds at
-// most the depot's limit, which no index serves) and ticks every text open,
-// naming how many once their count is done; its
+// marked. Above it, one box in the column of the rows' boxes ticks the page
+// shown (every open text when there is one page), half ticked while only some
+// rows are; once the page is ticked, a button beside it ticks every open text
+// (naming how many once their count is done). The bar of ticked texts unticks them all. Its head chooses
+// the order (the orders of POST /api/texts/search: id and status at any size,
+// the others once the count is done and finds at most the depot's limit,
+// which no index serves); its
 // foot is the pager, which moves a page after another and shows the count
 // as it grows. The keys that move and decide are the workspace's
 // (workspace.tsx), and so is their legend.
@@ -33,9 +36,9 @@ const INDEXED: Order["by"][] = ["id", "status"];
 // isTicked: whether a text is ticked; everyTicked: every open text is, none
 // unticked; total: how many texts are open, once counted; sorted: the most
 // matches the other orders are given for.
-export function Playlist({ found, busy, current, link, isTicked, everyTicked, onTick, onTickAll, total, sorted, order, onOrder, limit, onFirst, onPrevious, onNext, counting, empty }: {
+export function Playlist({ found, busy, current, link, isTicked, everyTicked, onTick, onTickAll, onUntickAll, total, sorted, order, onOrder, limit, onFirst, onPrevious, onNext, counting, empty }: {
   found: Found; busy: boolean; current: string | null; link: (id: string) => string; isTicked: (id: string) => boolean; everyTicked: boolean;
-  onTick: (ids: string[], on: boolean) => void; onTickAll: () => void; total: number | null; sorted: number;
+  onTick: (ids: string[], on: boolean) => void; onTickAll: () => void; onUntickAll: () => void; total: number | null; sorted: number;
   order: Order; onOrder: (o: Order) => void; limit: number;
   onFirst: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; counting: Counting | null;
   empty?: ReactNode; // what an empty first page says in place of "No text matches."
@@ -48,10 +51,31 @@ export function Playlist({ found, busy, current, link, isTicked, everyTicked, on
     row?.scrollIntoView({ block: "nearest" });
     if (row && document.activeElement?.closest(".playlist-row") && !row.contains(document.activeElement)) row.querySelector<HTMLElement>(".playlist-link")?.focus({ preventScroll: true });
   }, [current, found]);
-  const allTicked = found.rows.length > 0 && found.rows.every((r) => isTicked(r.id));
+  // the box at the head of the rows' boxes ticks the page shown (on a single page, every open text); once the page
+  // is ticked, a link beside it ticks every open text, as a mail list does; half ticked while only some rows are
+  const pageIds = found.rows.map((r) => r.id);
+  const onPage = found.rows.filter((r) => isTicked(r.id)).length;
+  const onePage = !found.next && !found.previous;
+  const pageTicked = found.rows.length > 0 && (everyTicked || onPage === found.rows.length);
+  const someTicked = !pageTicked && onPage > 0;
+  const allBox = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (allBox.current) allBox.current.indeterminate = someTicked; }, [someTicked]);
+  const every = total === null ? "every open text" : `all ${total.toLocaleString("en")}`;
+  const boxWords = everyTicked ? `${every[0].toUpperCase()}${every.slice(1)} ticked` : onPage > 0 ? `${onPage.toLocaleString("en")} on this page ticked`
+    : onePage ? `Tick ${every}` : `Tick this page (${found.rows.length})`;
   const orders = ORDERS.filter((o) => INDEXED.includes(o.by) || o.by === order.by || (total !== null && total <= sorted));
   return (
     <section className="playlist" aria-label="The open texts, in order">
+      {found.rows.length > 0 && (
+        <div className="playlist-ticks small">
+          <label className="tick">
+            <input ref={allBox} type="checkbox" className="wic-check-box wic-focus" checked={pageTicked}
+              onChange={(e) => (e.target.checked ? onTick(pageIds, true) : everyTicked ? onUntickAll() : onTick(pageIds, false))} />
+            <span className="tick-label">{boxWords}</span>
+          </label>
+          {!onePage && !everyTicked && pageTicked && <Button variant="quiet" onClick={onTickAll}>Tick {every}</Button>}
+        </div>
+      )}
       <div className="playlist-head small">
         <label className="row tight">
           <span className="aside">order</span>
@@ -62,14 +86,7 @@ export function Playlist({ found, busy, current, link, isTicked, everyTicked, on
         <Button variant="quiet" onClick={() => onOrder({ ...order, descending: !order.descending })} aria-label={order.descending ? "Descending; make it ascending" : "Ascending; make it descending"}>
           {order.descending ? "↓ descending" : "↑ ascending"}
         </Button>
-        <label className="tick">
-          <input type="checkbox" className="wic-check-box wic-focus" checked={allTicked} onChange={(e) => onTick(found.rows.map((r) => r.id), e.target.checked)} />
-          <span className="tick-label">this page</span>
-        </label>
-        {found.rows.length > 0 && !everyTicked && (total !== null || found.next || found.previous) && (total === null || total > 1) && (
-          <Button variant="quiet" onClick={onTickAll}>{total ? `Tick all ${total.toLocaleString("en")}` : "Tick all"}</Button>
-        )}
-        <span className="aside playlist-unit">lengths in characters</span>
+        <span className="aside playlist-unit" title="Lengths in characters">chars</span>
       </div>
       {found.rows.length === 0 ? <p>{found.previous ? "No text matches from here on." : empty ?? "No text matches."}</p> : (
         <ol ref={list} className="playlist-rows" aria-busy={busy}>

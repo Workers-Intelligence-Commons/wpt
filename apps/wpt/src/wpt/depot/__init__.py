@@ -435,6 +435,16 @@ def cmd_dataset_edit(args):
     return 0
 
 
+def cmd_dataset_read_again(args):
+    depot = opened()
+    row = depot.dataset(args.name)
+    read = depot.read_again(row["id"])
+    say(f"dataset {row['id']}: {row['name']}, {read:,} libraries of this depot read again as they are now"
+        if read else f"dataset {row['id']}: {row['name']} already reads its libraries as they are now: nothing "
+                     "written")
+    return 0
+
+
 def cmd_dataset_export(args):
     sys.stdout.write(remotes.to_json(opened().export_dataset(args.name)))
     return 0
@@ -752,6 +762,10 @@ def parser() -> argparse.ArgumentParser:
                                                  "training takes the corpus of that vocabulary")
     publishing.add_argument("--no-vocabulary", action="store_true", help="it publishes no vocabulary")
     editing.set_defaults(run=cmd_dataset_edit)
+    reading = datasets.add_parser("read-again", help="a new revision reading every library of this depot at the "
+                                                      "change number now, the others kept: what the next build takes")
+    reading.add_argument("name", help="the dataset's name")
+    reading.set_defaults(run=cmd_dataset_read_again)
     exporting = datasets.add_parser("export", help="the dataset as a remote, JSON on standard output")
     exporting.add_argument("name")
     exporting.set_defaults(run=cmd_dataset_export)

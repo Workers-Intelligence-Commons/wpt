@@ -15,6 +15,7 @@ from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
 from wpt_depot.schema import FORMAT, KEYS
 from wpt_depot.settings import depot_address
+from wpt_depot.corpus import measure as corpus_measure, revision_figures
 
 
 def column(rows: list[dict], name: str) -> list:
@@ -121,6 +122,32 @@ def test_a_locked_library_refuses_a_take_out_and_writes_nothing(make_depot, me):
 
     assert depot.change() == before
     assert column(depot.library_texts(library, depot.change()), "id") == [text]
+
+
+def test_a_clone_and_a_pull_keep_the_counts_of_what_libraries_hold_exact(serve, make_depot, me, tmp_path,
+                                                                        library_figures):
+    # a clone's dataset form reads its own counts, which a clone fills and every pull keeps
+    upstream = make_depot("upstream")
+    texts = upstream.add([plain("one text", "prose"), plain("two texts", "code"), plain("three", "prose", "en")], me)
+    upstream.decide("admitted", texts, me)
+    library = upstream.new_library("open")
+    upstream.put(library, texts[:2])
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
+    stored, direct = library_figures(follower)
+    assert stored == direct and stored
+    upstream.put(library, [texts[2]])
+    upstream.edit_credits(texts[0], {"tags": ["poems"]}, me)
+    upstream.decide_erasure(upstream.ask_erasure("a word", [(texts[1], 0, 4)], me), "admitted", me)
+    upstream.change_content(texts[2], "three, changed", None, me)  # it leaves the open library
+    own = follower.new_library("own")
+    follower.put(own, texts[:2])
+
+    pull(follower)
+
+    stored, direct = library_figures(follower)
+    assert stored == direct
+    assert {key: value for key, value in stored.items() if key[1].startswith(f"{library} ")} == (
+        library_figures(upstream)[0])
 
 
 def test_a_pull_brings_a_take_out_made_upstream(serve, make_depot, me, tmp_path):
@@ -1390,6 +1417,7 @@ REFUSED_ON_UPSTREAM_ROWS = {
     "take out of a library": lambda depot, me, ids: depot.take_out(ids["library"], [ids["text"]]),
     "report on a library": lambda depot, me, ids: depot.report(ids["locked"], "a problem", None, me),
     "edit a dataset": lambda depot, me, ids: depot.edit_dataset(ids["dataset"], "renamed", [(None, ids["library"])]),
+    "read a dataset again": lambda depot, me, ids: depot.read_again(ids["dataset"]),
 }
 
 
@@ -2024,27 +2052,218 @@ def test_a_filter_finds_texts_outside_libraries_on_a_decision_and_by_whole_words
     assert found(search="RIVER BANK", in_text=True) == [river]
 
 
-def test_measure_counts_what_libraries_hold_each_text_once_by_kind_and_by_its_first_share(make_depot, me):
-    # a dataset's form and its build estimate show these figures, and a dataset's shares take a plain text by
-    # the first of their tags it has
+def test_measure_sums_what_each_library_holds_by_kind_and_by_each_share_tag(make_depot, me):
+    # a dataset's form and page show these figures at once, from the counts, for libraries of any size; each library
+    # counts apart, and a text with several share tags counts for each
     depot = make_depot()
-    first, both, untagged = depot.add([plain("abc", "prose"), plain("défg", "code", "prose"), plain("hi")], me)
+    talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
+    first, both, untagged, chat = depot.add([plain("abc", "prose"), plain("défg", "code", "prose"), plain("hi"),
+                                             NewText(kind="conversation", content=talk, licenses=("CC0-1.0",))], me)
     depot.decide("admitted", "true", me)
     one, two = depot.new_library("one"), depot.new_library("two")
-    depot.put(one, [first, both])
+    depot.put(one, [first, both, chat])
     depot.put(two, [both, untagged])
+    size = depot.rows("SELECT length, bytes FROM content_lists WHERE id = ?", (chat,))[0]
 
     held = depot.measure([one, two], ["prose", "code"])
 
-    assert {key: held[key] for key in ("texts", "characters", "bytes")} == {"texts": 3, "characters": 9, "bytes": 10}
-    assert held["plain"] == {"texts": 3, "characters": 9, "bytes": 10}
-    assert held["items"] == held["other"] == {"texts": 0, "characters": 0, "bytes": 0}
-    assert held["shares"] == [{"tag": "prose", "texts": 2, "characters": 7, "bytes": 8},
-                              {"tag": "code", "texts": 0, "characters": 0, "bytes": 0}]
-    assert held["unshared"] == {"texts": 1, "characters": 2, "bytes": 2}
+    assert held["plain"] == {"texts": 4, "characters": 3 + 4 + 4 + 2, "bytes": 3 + 5 + 5 + 2}  # both, in each library
+    assert held["items"] == {"texts": 1, "characters": size["length"], "bytes": size["bytes"]}
+    assert held["other"] == {"texts": 0, "characters": 0, "bytes": 0}
+    assert {key: held[key] for key in ("texts", "characters", "bytes")} == {
+        "texts": 5, "characters": 13 + size["length"], "bytes": 15 + size["bytes"]}
+    assert held["shares"] == [{"tag": "prose", "texts": 3, "characters": 11, "bytes": 13},
+                              {"tag": "code", "texts": 2, "characters": 8, "bytes": 10}]
+    assert held["unshared"] == {"texts": 0, "characters": 0, "bytes": 0}  # both counted twice over: floored at none
+    assert depot.measure([two], ["prose"])["unshared"] == {"texts": 1, "characters": 2, "bytes": 2}
     assert depot.measure([one])["unshared"] is None
     with pytest.raises(NotFound):
         depot.measure(["depot-no-such-library"])
+
+
+def test_a_dataset_revision_stores_what_its_libraries_held_at_its_change_or_says_it_does_not_know(
+        make_depot, me, figures_at):
+    # the dataset's pages show what a build of the revision takes, read at once from the figures it stores, so they
+    # must equal a direct computation at the change it reads each library at, or be unknown: never wrong
+    depot = make_depot()
+    talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
+    texts = depot.add([plain("abc", "prose"), plain("défg", "code"), plain("hi", "prose", "code"), plain("later"),
+                       NewText(kind="conversation", content=talk, licenses=("CC0-1.0",))], me)
+    depot.decide("admitted", "true", me)
+    one, two = depot.new_library("one"), depot.new_library("two")
+    depot.put(one, texts[:3] + texts[4:])
+    depot.put(two, texts[:1])
+    shares = [("prose", 0.6), ("code", 0.4)]
+    dataset = depot.new_dataset("mix", "mix-tok", [(None, one), (None, two)], shares)
+
+    def stored():
+        return [entry["stored"] for entry in depot.dataset_figures(dataset)["libraries"]]
+
+    def shown():
+        return revision_figures(depot, depot.dataset_by_id(dataset))
+
+    made = figures_at(depot, dataset)
+    assert stored() == made and made[0]["items"]["texts"] == 1 and made[0]["tags"][1]["texts"] == 2
+    assert shown()["measure"] == corpus_measure(depot, [one, two], [{"tag": t, "share": s} for t, s in shares])
+    assert shown()["since"] == 0
+
+    depot.put(one, texts[3:4])  # after the revision's change: the revision still reads what it read
+    assert stored() == figures_at(depot, dataset) == made and shown()["since"] == 1
+
+    # an edit keeps the change a library is read at, and the library moved since: its figures are not known
+    depot.edit_dataset(dataset, "mix", [(None, one), (None, two)], shares)
+    assert stored() == [None, made[1]] and shown() == {"measure": None, "since": None}
+    # read again now (taken out, then named again), it is known
+    depot.edit_dataset(dataset, "mix", [(None, two)], shares)
+    depot.edit_dataset(dataset, "mix", [(None, two), (None, one)], shares)
+    assert stored() == figures_at(depot, dataset) and shown()["since"] == 0
+
+    # a tag changed on a text both libraries hold: the revision still reads the revision before it, but an edit that
+    # keeps reading them at that change cannot prove what they held then any more
+    before = stored()
+    depot.edit_credits(texts[0], {"tags": ["code"]}, me)
+    assert stored() == figures_at(depot, dataset) == before
+    depot.edit_dataset(dataset, "mix", [(None, two), (None, one)], shares)
+    assert stored() == [None, None]
+    depot.edit_dataset(dataset, "mix", [(None, depot.new_library("three"))], shares)
+    depot.edit_dataset(dataset, "mix", [(None, one), (None, two)], shares)
+    assert stored() == figures_at(depot, dataset)
+
+    # an erasure carried out after the figures were read reaches the past the revision reads: unknown
+    depot.decide_erasure(depot.ask_erasure("a passage", [(texts[1], 0, 2)], me), "admitted", me)
+    assert stored()[0] is None and stored()[1] is not None  # the library two never held the text
+    depot.edit_dataset(dataset, "mix", [(None, two)], shares)
+    depot.edit_dataset(dataset, "mix", [(None, two), (None, one)], shares)
+    assert stored() == figures_at(depot, dataset)
+
+    # a library locked then is read as it pinned it: known while nothing it holds moved since
+    depot.lock(two)
+    locked = depot.new_dataset("locked", "mix-tok", [(None, two)], shares)
+    assert [entry["stored"] for entry in depot.dataset_figures(locked)["libraries"]] == figures_at(depot, locked)
+    assert depot.dataset_figures(locked, 1) == depot.dataset_figures(locked)
+
+
+def test_reading_a_dataset_again_moves_only_this_depot_s_libraries_to_now_with_exact_figures(
+        make_depot, me, tmp_path, figures_at):
+    # an edit keeps each library at its change; reading again is the one way to take what this depot's libraries
+    # hold now, and what it stores must be what a build of the new revision takes
+    depot = make_depot()
+    texts = depot.add([plain("abc", "prose"), plain("défg", "code"), plain("later", "prose")], me)
+    depot.decide("admitted", "true", me)
+    one, two = depot.new_library("one"), depot.new_library("two")
+    depot.put(one, texts[:2])
+    depot.put(two, texts[:1])
+    other = make_depot("other")
+    theirs = other.new_library("theirs")
+    shares = [("prose", 0.5), ("code", 0.5)]
+    dataset = depot.new_dataset("mix", "tok", [(None, one), (None, two), (other.address, theirs)], shares)
+    first = depot.dataset_by_id(dataset)
+    depot.put(one, texts[2:])
+    depot.lock(two)
+    depot.put(depot.new_library("unread"), texts[2:])  # moves the depot's change past the lock
+    other.add([plain("elsewhere")], me)  # another depot moving on is never read again
+
+    assert depot.read_again_shows(dataset)
+    assert depot.read_again(dataset, revision=first["revision"]) == 2
+    row = depot.dataset_by_id(dataset)
+    assert {key: row[key] for key in ("name", "shares", "tokenizer", "vocabulary", "max_tokens")} == {
+        key: first[key] for key in ("name", "shares", "tokenizer", "vocabulary", "max_tokens")}
+    assert [ref["change"] for ref in row["libraries"][:2]] == [depot.change() - 1] * 2  # the change it was read at
+    assert row["libraries"][2] == first["libraries"][2]
+    stored = [entry["stored"] for entry in depot.dataset_figures(dataset)["libraries"]]
+    assert stored == figures_at(depot, dataset) and stored[0]["plain"]["texts"] == 3 and stored[2] is None
+    with pytest.raises(Refused):  # made from the revision before: never undoes the read
+        depot.read_again(dataset, revision=first["revision"])
+    # the other depot's library stays unknown, which reading again cannot change: the page offers nothing, and a
+    # read again with nothing to move writes no revision, so a corpus built from this one stays current
+    assert not depot.read_again_shows(dataset)
+    change = depot.change()
+    assert depot.read_again(dataset) == 0
+    assert (depot.change(), depot.dataset_by_id(dataset)["revision"]) == (change, row["revision"])
+
+
+def test_a_clone_s_own_dataset_keeps_its_figures_through_an_upstream_erasure_pulled_before_it_was_saved(
+        serve, make_depot, me, tmp_path, figures_at):
+    # an upstream erasure a pull brought before the revision was saved is already in what the revision reads, so its
+    # figures stay known; one pulled after it may have cut a text it reads, and a recount, whose rows carry the
+    # upstream's numbering, proves nothing about a later save
+    upstream = make_depot("upstream")
+    texts = upstream.add([plain("my number is 123"), plain("another text")], me)
+    upstream.decide("admitted", texts, me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
+    early = upstream.ask_erasure("a number", [(texts[0], 13, 16)], me)
+    upstream.decide_erasure(early, "admitted", me)
+    assert pull(follower) == [early]
+    library = follower.new_library("mine")
+    follower.put(library, texts)
+    dataset = follower.new_dataset("mine", "tok", [(None, library)])
+
+    def stored(of=dataset):
+        return [one["stored"] for one in follower.dataset_figures(of)["libraries"]]
+
+    made = figures_at(follower, dataset)
+    assert stored() == made and made[0]["plain"]["texts"] == 2
+
+    late = upstream.ask_erasure("a word", [(texts[1], 0, 7)], me)
+    upstream.decide_erasure(late, "admitted", me)
+    assert pull(follower) == [late]
+    assert stored() == [None]
+
+    follower.recount()
+    assert stored(follower.new_dataset("after", "tok", [(None, library)])) == [None]
+
+
+def test_the_counts_of_what_libraries_hold_stay_exact_through_every_kind_of_write(make_depot, me, library_figures):
+    # the dataset form reads these counts instead of the texts, so every write that changes what a library holds, or
+    # the tags, content or kind of a text it holds, must leave them equal to a full computation
+    depot = make_depot()
+    talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
+    texts = depot.add([plain(f"text {n} " + "é" * n, *[("prose", "code", "en")[k] for k in range(n % 4)])
+                       for n in range(10)] + [NewText(kind="conversation", content=talk, licenses=("CC0-1.0",))], me)
+
+    def exact(write: str):
+        stored, direct = library_figures(depot)
+        assert stored == direct, write
+
+    depot.decide("admitted", texts[:8] + texts[10:], me)
+    one, two = depot.new_library("one"), depot.new_library("two")
+    depot.put(one, texts[:6] + texts[10:])
+    depot.put(two, texts[3:8])
+    exact("put")
+    depot.take_out(one, texts[:2])
+    exact("take out")
+    depot.decide("admitted", texts[8:10], me)
+    depot.put(two, texts[8:10])
+    depot.decide("refused", [texts[3]], me)
+    exact("refusal")
+    depot.decide("under review", [texts[4]], me, reason="checked again")
+    exact("back to review")
+    depot.edit_credits(texts[5], {"tags": ["poems", "en"]}, me)
+    exact("tag edit")
+    depot.change_content(texts[2], "a new text, longer than before", None, me)
+    exact("content edit")
+    depot.decide("admitted", [texts[2], texts[4]], me)
+    depot.put(one, [texts[2], texts[4]])
+    depot.lock(two)
+    depot.change_content(texts[6], "changed in a locked library", None, me)  # it stays in the locked one
+    exact("content edit in a locked library")
+    depot.change_content(texts[10], None, json.dumps({"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "A longer question?"}]}]}), me)
+    exact("item content edit")
+    depot.fork(one, "fork", without=[texts[2]])
+    depot.fork(two, "fork of the locked")
+    exact("fork")
+    depot.decide_erasure(depot.ask_erasure("a passage", [(texts[5], 0, 4)], me), "admitted", me)
+    exact("erasure of a passage")
+    depot.decide_erasure(depot.ask_erasure("the whole text", [(texts[9], None, None)], me), "admitted", me)
+    exact("erasure of a whole text")
+    stored, _ = library_figures(depot)
+    with depot.db.bulk() as con:
+        con.execute("UPDATE counts SET characters = 0 WHERE facet = 'library kind'")
+    depot.recount()
+    assert library_figures(depot)[0] == stored
+    exact("recount")
+    assert stored
 
 
 def test_change_times_gives_the_time_of_each_change_named_the_depot_holds(make_depot, me):

@@ -1,5 +1,6 @@
 // Libraries: named collections of admitted texts. #/libraries lists them,
-// each with how many texts it holds (the depot's counts, GET /api/counts),
+// each with how many texts it holds (the depot's counts, GET /api/counts) and
+// the characters of its plain texts and of its items (POST /api/libraries/measure),
 // whether it is locked and the datasets that read it, and makes a new one;
 // the workspace (workspace/workspace.tsx) opens each one, so
 // #/libraries/ID opens that library in it. This file keeps
@@ -16,7 +17,8 @@ import { useEffect, useState } from "react";
 import { get, part, post, type Answer } from "../api";
 import { WriteProgress, leftOut, useWrite, type Left } from "../decide-forms";
 import { EVERY, sent, type Selection, type TextFilter } from "../filter";
-import { Facts, LibraryLink, PageHead, Pager, plural, Problems, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, type Library } from "../parts";
+import { characters, Facts, figures, Help, LibraryLink, PageHead, Pager, plural, Problems, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
+import { ITEMS } from "../mix";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
 import { MatchedTexts } from "../table";
@@ -52,8 +54,7 @@ export function NewLibrary({ onMade }: { onMade: (a: Answer<{ id: string }>) => 
     <form onSubmit={(e) => { e.preventDefault(); if (!making) make(); }}>
       <RequiredNote />
       <TextInput label={required("Name")} required value={name} placeholder="first model, October 2026" onChange={(e) => setName(e.target.value)} />
-      <Select label={required("It starts with")} value={start} onChange={(e) => setStart(e.target.value)}
-        hint="Only admitted texts join a library. Texts can be put in or taken out later in the workspace.">
+      <Select label={required("It starts with")} hint="Only admitted texts join a library. Texts can be put in or taken out later in the workspace." value={start} onChange={(e) => setStart(e.target.value)}>
         <option value="admitted">every admitted text of the depot{admitted !== null ? ` (${admitted.toLocaleString("en")})` : ""}</option>
         {saved.map((f) => <option key={f.name} value={`saved:${f.name}`}>the admitted texts of the saved filter {f.name}</option>)}
         <option value="empty">nothing: choose its texts in the workspace</option>
@@ -82,7 +83,7 @@ export function Pinned({ id }: { id: string }) {
       {pins && !pins.ok && <Problems problems={pins.problems} />}
       {pins?.ok && (pins.data.total === 0 ? <p>It pinned no text.</p> : (
         <>
-          <p className="small">{plural(pins.data.total, "text")}, each at the revision it reads; {pins.data.newer > 0 ? <>{plural(pins.data.newer, "text")} {pins.data.newer === 1 ? "has" : "have"} a newer revision now, which it does not read.</> : "none has a newer revision."}</p>
+          <p className="small">{plural(pins.data.total, "text")}{pins.data.newer > 0 ? <>, {pins.data.newer.toLocaleString("en")} with a newer revision</> : null}.<Help label="pinned revisions">Each text is read at the revision the library pinned; a newer revision is not read.</Help></p>
           <div className="table-scroll">
             <table className="ledger-table" aria-label="The revisions it pinned">
               <thead><tr><th scope="col">text</th><th scope="col">id</th><th scope="col" className="number">pinned revision</th><th scope="col" className="number">current revision</th></tr></thead>
@@ -113,7 +114,7 @@ export function RenameForm({ library, onDone }: { library: Library; onDone: (a: 
     <form className="action-form" onSubmit={(e) => { e.preventDefault(); rename(); }}>
       <RequiredNote />
       <TextInput label={required("Name")} required value={name} onChange={(e) => setName(e.target.value)}
-        hint={library.locked_at ? "Locked, it still takes a new name: the name is not what it holds." : "Its id and its texts stay."} />
+        hint={library.locked_at ? "Locked libraries can be renamed too." : "Its id and texts stay."} />
       <Button type="submit" variant="primary" disabled={!name.trim() || name.trim() === library.name}>Rename it</Button>
     </form>
   );
@@ -169,37 +170,46 @@ export function ForkForm({ library, without, onDone }: { library: Library; witho
   );
 }
 
-// Every library, with its size, its state and the datasets that read it.
-function Libraries() {
+const short = (n: number) => characters(n).replace(/ characters?$/, "");
+
+// One library's row: its texts, the characters of its plain texts and of its
+// conversations and tasks (useMeasure, the depot's counts), its state and the
+// datasets that read it.
+function LibraryRow({ library: l, texts, reading }: { library: Library; texts: number | null; reading: { id: string; name: string }[] }) {
+  const found = figures(useMeasure([l.id]));
+  return (
+    <tr>
+      <td className="wrap-cell" data-label=""><a href={href(["texts"], { library: l.id })}>{l.name}</a></td>
+      <td className="number figure" data-label="texts">{texts !== null ? texts.toLocaleString("en") : ""}</td>
+      <td className="number figure" data-label="plain chars" title={found ? plural(found.plain.characters, "character") : undefined}>{found ? short(found.plain.characters) : ""}</td>
+      <td className="number figure" data-label={`${ITEMS} chars`} title={found ? plural(found.items.characters, "character") : undefined}>{found ? short(found.items.characters) : ""}</td>
+      <td data-label="">{l.locked_at ? `locked ${l.locked_at.slice(0, 10)}` : "open"}{l.upstream ? <span className="aside">, the upstream's</span> : null}</td>
+      <td className="wrap-cell" data-label="read by"><span className="row-links">{reading.length ? reading.map((d, i) => <span key={d.id}>{i > 0 && ", "}<a href={href(["datasets", d.id])}>{d.name}</a></span>)
+        : <a href={href(["datasets"], { new: "1", library: l.id })}>make a dataset from it</a>}</span></td>
+    </tr>
+  );
+}
+
+// Every library, with its size, its state and the datasets that read it; ?new=1 opens the form of a new one.
+function Libraries({ query }: { query: URLSearchParams }) {
   const { libraries, loaded, problems } = useLibraries();
   const { datasets } = useDatasets();
   const [counts, setCounts] = useState<Record<string, number> | null>(null);
-  const [making, setMaking] = useState(false);
+  const [making, setMaking] = useState(query.get("new") === "1"); // ?new=1: the form opens at once
   useEffect(() => { get<{ libraries: Record<string, number> }>("/api/counts").then((a) => a.ok && setCounts(a.data.libraries)); }, []);
   return (
     <>
       <PageHead title="Libraries"
         chain={<>Named collections of admitted texts, which <a href={href(["datasets"])}>datasets</a> read. A library opens in the <a href={href(["texts"])}>workspace</a>, where texts are put in it.</>}
-        actions={<Button variant="primary" onClick={() => setMaking(true)}>New library</Button>} />
+        actions={<Button variant="quiet" onClick={() => setMaking(true)}>New library</Button>} />
       {!loaded && <Skeleton lines={4} label="Reading the libraries" />}
       <Problems problems={problems} />
-      {loaded && (libraries.length === 0 ? <p>No library yet. Make one, then put admitted texts in it from the workspace.</p> : (
+      {loaded && (libraries.length === 0 ? <p className="aside">No library yet.</p> : (
         <div className="table-scroll cards">
           <table className="ledger-table" aria-label="The libraries">
-            <thead><tr><th scope="col">library</th><th scope="col" className="number">texts</th><th scope="col">state</th><th scope="col">read by</th></tr></thead>
+            <thead><tr><th scope="col">library</th><th scope="col" className="number">texts</th><th scope="col" className="number" title="Characters of plain text">plain chars</th><th scope="col" className="number" title={`Characters of ${ITEMS}`}>{ITEMS} chars</th><th scope="col">state</th><th scope="col">read by</th></tr></thead>
             <tbody>
-              {libraries.map((l) => {
-                const reading = readers(datasets?.ok ? datasets.data : [], l.id);
-                return (
-                  <tr key={l.id}>
-                    <td className="wrap-cell" data-label=""><a href={href(["texts"], { library: l.id })}>{l.name}</a></td>
-                    <td className="number ledger" data-label="texts">{counts ? (counts[l.id] ?? 0).toLocaleString("en") : ""}</td>
-                    <td data-label="">{l.locked_at ? `locked ${l.locked_at.slice(0, 10)}` : "open"}{l.upstream ? <span className="aside">, the upstream's</span> : null}</td>
-                    <td className="wrap-cell" data-label="read by">{reading.length ? reading.map((d, i) => <span key={d.id}>{i > 0 && ", "}<a href={href(["datasets", d.id])}>{d.name}</a></span>)
-                      : <a href={href(["datasets"], { new: "1", library: l.id })}>make a dataset from it</a>}</td>
-                  </tr>
-                );
-              })}
+              {libraries.map((l) => <LibraryRow key={l.id} library={l} texts={counts ? counts[l.id] ?? 0 : null} reading={readers(datasets?.ok ? datasets.data : [], l.id)} />)}
             </tbody>
           </table>
         </div>
@@ -219,6 +229,6 @@ function Moved({ to }: { to: string }) {
 
 export const libraries: Page = {
   path: "libraries", title: "Libraries", group: "data",
-  Component: ({ rest }) => (rest[0] && rest[1] === "problems" && rest[2] ? <OneProblem key={rest[2]} library={rest[0]} decision={rest[2]} />
-    : rest[0] ? <Moved to={href(["texts"], { library: rest[0] })} /> : <Libraries />),
+  Component: ({ rest, query }) => (rest[0] && rest[1] === "problems" && rest[2] ? <OneProblem key={rest[2]} library={rest[0]} decision={rest[2]} />
+    : rest[0] ? <Moved to={href(["texts"], { library: rest[0] })} /> : <Libraries key={query.toString()} query={query} />),
 };

@@ -21,8 +21,7 @@ export function LicenseForm({ initialId = "", onSaved }: { initialId?: string; o
     <form onSubmit={(e) => { e.preventDefault(); send(); }}>
       <RequiredNote />
       <div className="fields">
-        <TextInput label={required("Id")} required value={id} placeholder="CC-BY-SA-4.0" onChange={(e) => setId(e.target.value)}
-          hint="An SPDX name, a license with its exception, or licenses that apply together ('MIT AND CC-BY-4.0')." />
+        <TextInput label={required("Id")} hint="An SPDX name, a license with its exception, or licenses that apply together ('MIT AND CC-BY-4.0')." required value={id} placeholder="CC-BY-SA-4.0" onChange={(e) => setId(e.target.value)} />
         <TextInput label={required("Name")} required value={name} placeholder="Creative Commons Attribution Share Alike 4.0 International" onChange={(e) => setName(e.target.value)} />
       </div>
       <div className="wic-field">
@@ -30,7 +29,7 @@ export function LicenseForm({ initialId = "", onSaved }: { initialId?: string; o
         <input id="license-file" className="wic-focus" type="file" accept="text/plain,.txt,.md"
           onChange={async (e) => { const file = e.target.files?.[0]; if (file) setText(await file.text()); }} />
       </div>
-      <TextArea label={required("Official text")} required rows={8} value={text} onChange={(e) => setText(e.target.value)} hint="Filled from the file, or pasted. For combined licenses, every part's text." />
+      <TextArea label={required("Official text")} required rows={8} value={text} onChange={(e) => setText(e.target.value)} hint="For combined licenses, every part's text." />
       <Problems problems={problems} />
       <Button type="submit" variant="primary" disabled={!id.trim() || !name.trim() || !text.trim()}>Save the license</Button>
     </form>

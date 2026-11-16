@@ -180,7 +180,6 @@ from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
                      UnsupportedAddress)
 from .filters import IN_LOCKED, Filter, changed_since, condition, listed as listed_ids
-from .order import TRAINING_KINDS
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
 from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW,
                      decision_list)
@@ -665,16 +664,17 @@ class Depot:
         return self._rows(f"SELECT name AS tag, texts FROM counts WHERE facet = '{counts.TAG}' ORDER BY name")
 
     def counts(self) -> dict[str, dict[str, int]]:
-        """{facet: {name: count}} of the depot's counts (wpt_depot.counts):
-        its current texts, and how many of them have each status, tag and
-        license, each library holds and each decision is on."""
+        """{facet: {name: count}} of the depot's counts of texts
+        (wpt_depot.counts.COUNTED): its current texts, and how many of them
+        have each status, tag and license, each library holds and each
+        decision is on."""
         return counts.read(self.db.reader())
 
     def recount(self):
         """Make the depot's counts again from its rows (wpt_depot.counts),
         as one change that writes nothing else."""
         with self._write("recount") as (con, _):
-            counts.recount(con)
+            counts.recount(con, known=self.upstream() is None)
 
     def latest_decisions(self, limit: int = 10) -> list[dict]:
         """The latest decisions, the newest first, each with how many texts
@@ -718,16 +718,7 @@ class Depot:
         when it follows an upstream, the upstream's rows up to the upstream
         change brought by its last pull at or before change (pulls, its
         clone included), and so on back through the upstream's own pulls."""
-        pulls = self._rows("SELECT * FROM pulls")
-        found = {}
-        while depot not in found:
-            found[depot] = change
-            last = max((one for one in pulls if one["depot"] == depot and one["change"] <= change),
-                       key=lambda one: one["change"], default=None)
-            if last is None:
-                break
-            depot, change = last["upstream"], last["upstream_change"]
-        return found
+        return _bounds(self.db.reader(), depot, change)
 
     def library_texts(self, library: str, change: int) -> list[dict]:
         """Every text the library held at the change number change of the
@@ -823,45 +814,31 @@ class Depot:
         return self._rows(f"SELECT count(*) AS n FROM ({held})", params)[0]["n"]
 
     def measure(self, libraries: Sequence[str], tags: Sequence[str] = ()) -> dict:
-        """What the libraries hold now, each text once however many of them
-        hold it, at its current revision: {texts, characters, bytes (UTF-8)
-        of them all; plain, items (conversations and tasks, the items a
-        corpus takes) and other (items of the other kinds): each {texts,
-        characters, bytes}; shares: for each tag of tags, in order, the
-        plain texts that count for it, those whose first tag of tags it is,
-        as a dataset's shares count them (wpt_depot.corpus), each {tag,
-        texts, characters, bytes}; unshared: the plain texts none of tags
-        takes, when tags are given (None otherwise)}. It reads the texts the
-        libraries hold through the index of their memberships, and each
-        text's row and content list, never its parts. NotFound for a
-        library the depot does not hold."""
+        """What the libraries hold now, read from the depot's counts
+        (wpt_depot.counts, its rows of each library alone, so at once
+        whatever their size), each text at its current revision: {texts,
+        characters, bytes (UTF-8) of them all; plain, items (conversations
+        and tasks, the items a corpus takes) and other (items of the other
+        kinds): each {texts, characters, bytes}; shares: for each tag of
+        tags, in order, the plain texts that have it, each {tag, texts,
+        characters, bytes}; unshared: the plain texts left once the shares
+        are taken away, when tags are given (None otherwise)}. Each library
+        counts apart and the figures are their sum: a text that several of
+        them hold counts once for each. A plain text with several tags of
+        tags counts once for each of them, where a dataset's share takes it
+        only for the first (wpt_depot.corpus): the shares and unshared are
+        exact when each plain text has at most one tag of tags. Read in one
+        read transaction, so they are those of one state of the depot.
+        NotFound for a library the depot does not hold."""
         libraries, tags = list(dict.fromkeys(libraries)), list(tags)
-        held = {one for (one,) in self.db.reader().execute(
-            "SELECT id FROM libraries WHERE id IN (SELECT value FROM json_each(?))", (_json(libraries),))}
-        missing = [one for one in libraries if one not in held]
-        if missing:
-            raise NotFound(f"no library {', '.join(missing)}")
-        empty = {"texts": 0, "characters": 0, "bytes": 0}
-        found = {"plain": dict(empty), "items": dict(empty), "other": dict(empty)}
-        pools = {at: dict(empty) for at in range(len(tags))} | {None: dict(empty)}
-        rows = self.db.reader().execute(
-            "WITH held AS (SELECT DISTINCT m.text AS id FROM memberships m WHERE m.left_change IS NULL "
-            "AND m.library IN (SELECT value FROM json_each(:libraries))) "
-            "SELECT CASE WHEN c.kind IS NULL THEN 'plain' WHEN c.kind IN (SELECT value FROM json_each(:items)) "
-            "THEN 'items' ELSE 'other' END AS what, "
-            "CASE WHEN c.kind IS NULL THEN (SELECT min(s.key) FROM json_each(:tags) s JOIN json_each(t.tags) g "
-            "ON g.value = s.value) END AS pool, count(*), sum(c.length), sum(c.bytes) "
-            f"FROM held h JOIN texts_revisions t ON t.id = h.id AND t.latest {CONTENT_JOIN} GROUP BY what, pool",
-            {"libraries": _json(libraries), "items": _json(list(TRAINING_KINDS)), "tags": _json(tags)})
-        for what, pool, texts, characters, size in rows:
-            for into in (found[what], pools[pool] if what == "plain" else None):
-                if into is not None:
-                    into["texts"] += texts
-                    into["characters"] += characters or 0
-                    into["bytes"] += size or 0
-        return {key: sum(one[key] for one in found.values()) for key in empty} | found | {
-            "shares": [{"tag": tag, **pools[at]} for at, tag in enumerate(tags)],
-            "unshared": pools[None] if tags else None}
+        con = self.db.reader()
+        with con:  # one read transaction: a savepoint opens it and holds its snapshot to the end
+            held = {one for (one,) in con.execute(
+                "SELECT id FROM libraries WHERE id IN (SELECT value FROM json_each(?))", (_json(libraries),))}
+            missing = [one for one in libraries if one not in held]
+            if missing:
+                raise NotFound(f"no library {', '.join(missing)}")
+            return counts.summed([counts.figures(con, library, tags) for library in libraries], tags)
 
     def change_times(self, changes: Sequence[int]) -> dict[int, str | None]:
         """{change number: the UTC time it was made at (None for a change
@@ -908,16 +885,14 @@ class Depot:
         """Whether the library was locked at that change. NotFound without
         such a library, or when it did not exist yet at that change."""
         self._library(library)
-        state = self._rows("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
-                           "ORDER BY revision DESC LIMIT 1", (library, change))
-        if not state:
+        locked = _locked_then(self.db.reader(), library, change)
+        if locked is None:
             raise NotFound(f"the library {library} did not exist yet at the change {change}")
-        return state[0]["locked_at"] is not None
+        return locked
 
     def _lock_change(self, library: str) -> int:
         """The change number at which the locked library was locked, in the numbering of the depot that owns it."""
-        return self._one("SELECT change FROM libraries_revisions WHERE id = ? AND locked_at IS NOT NULL "
-                         "ORDER BY revision LIMIT 1", (library,))
+        return _lock_change(self.db.reader(), library)
 
     def pinned(self, library: str, offset: int = 0, limit: int = 50) -> dict:
         """The revisions a locked library pinned, a page at a time: {total:
@@ -1226,10 +1201,10 @@ class Depot:
             self._store(con, number, [{"id": text, "version": version, "kind": row["kind"],
                                        "source": plain if row["kind"] is None else content}])
             self._choose(con, [text])
-            with counts.changing(con, "temp.chosen", (counts.STATUS,)):
+            with counts.changing(con, "temp.chosen", (counts.STATUS, *counts.SIZED)):
                 self._revise(con, "texts_revisions", [text], number,
                              {"content_version": ":version", "status": f"'{UNDER_REVIEW}'"}, {"version": version})
-                self._leave(con, self._open_libraries(), number)
+            self._leave(con, self._open_libraries(), number)
             self._link(con, decision, number)
             return decision, version
 
@@ -1279,7 +1254,7 @@ class Depot:
                                for name, value in values.items())
             decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
             self._choose(con, [text])
-            with counts.changing(con, "temp.chosen", (counts.TAG,) if "tags" in values else ()):
+            with counts.changing(con, "temp.chosen", (counts.TAG, counts.LIBRARY_TAG) if "tags" in values else ()):
                 self._revise(con, "texts_revisions", [text], number, {name: f":{name}" for name in values},
                              {name: _json(value) if name in JSON_COLUMNS else value for name, value in values.items()})
             self._link(con, decision, number)
@@ -1377,7 +1352,9 @@ class Depot:
                                    f"AND t.latest WHERE t.status <> '{ADMITTED}'").fetchall()[0][0]
             if not joined:
                 raise _Nothing((0, left_out))
-            counts.shift(con, {(counts.LIBRARY, library): joined})
+            counts.shift(con, counts.held(con, "SELECT m.library, m.text FROM temp.chosen c JOIN memberships m "
+                                               "ON m.library = ? AND m.text = c.id AND m.joined_change = ?",
+                                          (library, number)))
             stage("committing")
             return joined, left_out
 
@@ -1399,12 +1376,14 @@ class Depot:
             if not chosen:
                 raise _Nothing((0, 0))
             stage("taking the texts out of the library")
+            leaving = counts.held(con, "SELECT m.library, m.text FROM temp.chosen c JOIN memberships m "
+                                       "ON m.library = ? AND m.text = c.id AND m.left_change IS NULL", (library,))
             con.execute("UPDATE memberships SET left_change = ? WHERE library = ? AND left_change IS NULL "
                         "AND text IN (SELECT id FROM temp.chosen)", (number, library))
             left = con.changes()
             if not left:
                 raise _Nothing((0, chosen))
-            counts.shift(con, {(counts.LIBRARY, library): -left})
+            counts.shift(con, {key: -by for key, by in leaving.items()})
             stage("committing")
             return left, chosen - left
 
@@ -1449,7 +1428,7 @@ class Depot:
                         f"AND t.status = '{ADMITTED}'"
                         + (" AND m.text NOT IN (SELECT id FROM temp.chosen)" if without is not None else ""),
                         {"fork": fork, "change": number, "library": library})
-            counts.shift(con, {(counts.LIBRARY, fork): con.changes()})
+            counts.shift(con, counts.held(con, "SELECT library, text FROM memberships WHERE library = ?", (fork,)))
             stage("committing")
             return fork
 
@@ -1641,6 +1620,9 @@ class Depot:
             "SELECT id, version, bytes FROM content_lists WHERE id IN (SELECT value FROM json_each(?))",
             (_json(sorted(found)),))}
         cut, removed, passages = erasure.carried_out(documents, held, items)
+        if write:  # a cut version may be the one a text reads now, which changes what its libraries hold
+            self._choose(write[0], sorted(cut), "cut")
+            sized = counts.measure(write[0], "temp.cut", counts.SIZED)
         for text, versions in cut.items():
             known = self._held_parts(text) if write else set()
             for version, value in sorted(versions.items()):
@@ -1675,6 +1657,9 @@ class Depot:
                   "at": at, "needle": kept[merged.needles[0]]} for merged, passage, at in passages]
         if write:
             con, _ = write
+            now = counts.measure(con, "temp.cut", counts.SIZED)
+            now.subtract(sized)
+            counts.shift(con, now)
             _drop_unlisted(con, sorted(cut))
             if removed:
                 self._choose(con, removed)
@@ -1809,30 +1794,110 @@ class Depot:
                               "the depot's trained vocabularies")
             self._revise(con, "datasets_revisions", [dataset], number,
                          {"name": ":name", "libraries": ":libraries", "shares": ":shares",
-                          "max_tokens": ":max_tokens", "vocabulary": ":vocabulary"},
+                          "max_tokens": ":max_tokens", "vocabulary": ":vocabulary", "figures": ":figures"},
                          {"name": name, "libraries": _json(refs), "shares": _json(values["shares"]),
-                          "max_tokens": max_tokens, "vocabulary": vocabulary})
+                          "max_tokens": max_tokens, "vocabulary": vocabulary,
+                          "figures": self._figures(con, number, refs, values["shares"])})
+
+    @_answers
+    def read_again(self, dataset: str, revision: int | None = None) -> int:
+        """A new revision of the dataset of that id, the same as its current
+        one except that every library this depot holds and reads (_read_here)
+        is read at the change number now, as _refs reads a library new to a
+        dataset; a library locked then is read as its lock leaves it, as
+        every read of a library at a change is (_locked_then). A library of
+        another depot keeps its change number, its depot never opened. The
+        revision stores the figures of what it reads (_figures). The current
+        row is read inside the write, so a change committed before it is
+        kept. Returns the number of libraries whose change number changed.
+        It writes nothing and returns 0 when none did, or when the depot's
+        latest change is this dataset's own read again, after which nothing
+        moved. With revision, the revision the change was
+        made from: Refused when the dataset is at another one. NotFound
+        without such a dataset."""
+        with self._write("read dataset again") as (con, number):
+            old = self.dataset_by_id(dataset)
+            self._refuse_upstream("datasets", [dataset])
+            if revision is not None and old["revision"] != revision:
+                raise Refused(f"the dataset {old['name']} changed after it was read: it is at revision "
+                              f"{old['revision']}, and this change was made from revision {revision}; read it again "
+                              "and redo the change")
+            # the latest change is this dataset's own read again: nothing moved since, so a read now is the same
+            if con.execute("SELECT 1 FROM changes c JOIN datasets_revisions r ON r.change = c.id WHERE c.id = ? "
+                           "AND c.kind = 'read dataset again' AND r.id = ? AND r.latest",
+                           (number - 1, dataset)).fetchall():
+                raise _Nothing(0)
+            refs = [self._read_here(con, number - 1, one["depot"], one["library"]) or dict(one)
+                    for one in old["libraries"]]
+            moved = sum(ref != one for ref, one in zip(refs, old["libraries"], strict=True))
+            if not moved:
+                raise _Nothing(0)
+            self._revise(con, "datasets_revisions", [dataset], number,
+                         {"libraries": ":libraries", "figures": ":figures"},
+                         {"libraries": _json(refs), "figures": self._figures(con, number, refs, old["shares"])})
+        return moved
+
+    def read_again_shows(self, dataset: str) -> bool:
+        """Whether reading the dataset of that id again (read_again) changes
+        what its current revision says it reads, where the dataset's page
+        shows it: a library this depot owns and reads whose stored figures
+        are not known (dataset_figures) while a read now would know them
+        (_figures), or that holds another number of texts now, or another
+        library this depot holds and reads (in a clone, the upstream's)
+        that a pull moved past the change it is read at. False for a dataset the upstream owns, which read_again refuses.
+        NotFound without such a dataset."""
+        row = self.dataset_by_id(dataset)
+        if self.upstream_owned([dataset]):
+            return False
+        found = self.dataset_figures(dataset, row["revision"])
+        con = self.db.reader()
+        for ref, one in zip(row["libraries"], found["libraries"], strict=True):
+            now = self._read_here(con, self.change(), ref["depot"], ref["library"])
+            if now is None or now == ref:
+                continue
+            if ids.owner(ref["library"]) != self.name():
+                return True
+            if one["stored"] is None:
+                if json.loads(self._figures(con, now["change"], [now], row["shares"]))["libraries"][0] is not None:
+                    return True
+            elif counts.summed([one["now"]], found["tags"])["texts"] != counts.summed([one["stored"]],
+                                                                                    found["tags"])["texts"]:
+                return True
+        return False
+
+    def _read_here(self, con, change: int, address: str | None, library: str) -> dict | None:
+        """A library a dataset names (its depot's address, None for this
+        depot, and its id) as a dataset stores it when read at this depot's
+        change number change, read through con: when this depot holds it and
+        reads it (reads_here), no address, which means the depot that holds
+        the row, so the row reads the same in a clone, and the number of
+        what this depot held of its owner then (bounds), so a library of the
+        upstream is read by the upstream's numbers; None for a library read
+        elsewhere."""
+        if not (self.reads_here(address, library)
+                and con.execute("SELECT 1 FROM libraries WHERE id = ?", (library,)).fetchall()):
+            return None
+        return {"depot": None, "library": library, "change": _bounds(con, self.name(), change)[ids.owner(library)]}
 
     def _refs(self, libraries: list[tuple[str | None, str]]) -> list[dict]:
         """Each library (depot address, None for this depot, and library id)
         as a dataset names it, at a change number now of the depot that owns
         it. A library this depot holds and reads (reads_here: named by no
         address or this depot's, or a library of its upstream named by the
-        upstream's web address once a pull brought it) is stored with no
-        address, which means the depot that holds the row, so the row reads
-        the same in a clone; its number is what this depot holds of its
-        owner (bounds), so a library of the upstream is read by the
-        upstream's numbers. A library at a web address (an upstream's library
+        upstream's web address once a pull brought it) is read as _read_here
+        stores it, at the change number now. A library at a web address (an upstream's library
         no pull brought yet, or another depot's) is asked of that depot's web
         app (wpt_depot.follow.library_change); one at another file, of that
         file. NotFound for a library its depot does not hold."""
         refs = []
+        con = self.db.reader()
         for address, library in libraries:
             place = self._place(address)
-            if place is None or (self.reads_here(address, library) and self._holds_library(library)):
-                self._library(library)
-                refs.append({"depot": None, "library": library,
-                             "change": self.bounds(self.name(), self.change())[ids.owner(library)]})
+            here = self._read_here(con, self.change(), address, library)
+            if here is not None:
+                refs.append(here)
+            elif place is None:
+                self._library(library)  # NotFound: this depot does not hold it
             elif isinstance(place, str) and place.startswith(("http://", "https://")):
                 from .follow import library_change
                 refs.append({"depot": place, "library": library, "change": library_change(place, library)})
@@ -1841,9 +1906,6 @@ class Depot:
                 depot._library(library)
                 refs.append({"depot": depot.address, "library": library, "change": depot.change()})
         return refs
-
-    def _holds_library(self, library: str) -> bool:
-        return bool(self._rows("SELECT 1 FROM libraries WHERE id = ?", (library,)))
 
     def _read_from(self, address: str | None, library: str) -> tuple:
         """What a library a dataset names leads to, so two names of one
@@ -1892,8 +1954,98 @@ class Depot:
                                                  "name": row["name"], "tokenizer": row["tokenizer"],
                                                  "libraries": _json(row["libraries"]),
                                                  "shares": _json(row["shares"]),
-                                                 "max_tokens": row.get("max_tokens")}])
+                                                 "max_tokens": row.get("max_tokens"),
+                                                 "figures": self._figures(con, number, row["libraries"],
+                                                                          row["shares"])}])
             return dataset
+
+    def _figures(self, con, number: int, refs: list[dict], shares: list[dict] | None) -> str:
+        """The figures (wpt_depot.schema) of a revision of a dataset that
+        reads the libraries refs with shares, written at the change number,
+        as JSON text: what each library held at the change it is read at,
+        copied from the counts of that library (wpt_depot.counts.figures)
+        when they prove it exact (counts.unmoved at that change, or, for a
+        library locked then, whose pins it reads, at the change that locked
+        it); None for a library they do not prove, and for one this depot
+        does not own (another depot's, or in a clone its upstream's), whose
+        change is of another numbering."""
+        tags = [one["tag"] for one in shares or []]
+        found = []
+        for ref in refs:
+            library, change = ref["library"], ref["change"]
+            if ref["depot"] is not None or ids.owner(library) != self.name():
+                found.append(None)
+                continue
+            if _locked_then(con, library, change):
+                change = _lock_change(con, library)
+            found.append(counts.figures(con, library, tags) if counts.unmoved(con, library, change) else None)
+        return _json({"at": number, "libraries": found})
+
+    def dataset_figures(self, dataset: str, revision: int | None = None) -> dict:
+        """What each library a revision of the dataset of that id reads (its
+        current revision by default) held at the change it reads it at, as
+        the revision stores it (figures, wpt_depot.schema), and what it
+        holds now: {tags: those of the revision's shares, in order,
+        libraries: for each library, in order, {stored: its figures (as
+        wpt_depot.counts.figures gives them, for tags), None when not
+        known; now: the same from the counts now, None for a library this
+        depot does not hold}}. A stored figure is not known when the write
+        of the revision could not prove it (_figures), or when an erasure
+        carried out after the figures were read may have reached a text the
+        library held: one whose text the library holds or held, one that
+        removed a text whole (which leaves no row naming its libraries), and
+        one of a depot whose rows the dataset's depot did not hold at the
+        figures' change, whose change cannot be compared. An erasure a pull
+        brought before the figures' change was carried out before them
+        (bounds). NotFound without such a revision."""
+        found = self._rows("SELECT libraries, shares, figures FROM datasets_revisions WHERE id = :id AND "
+                           + ("latest" if revision is None else "revision = :revision"),
+                           {"id": dataset, "revision": revision})
+        if not found:
+            raise NotFound(f"no {'current' if revision is None else f'revision {revision} of the'} dataset {dataset}")
+        row = found[0]
+        tags = [one["tag"] for one in row["shares"] or []]
+        figures = row["figures"] or {"at": None, "libraries": [None] * len(row["libraries"])}
+        stored = list(figures["libraries"])
+        con = self.db.reader()
+        with con:  # one read transaction: the stored figures, the erasures and the counts of one state
+            reached = self._reached(con, ids.owner(dataset), figures["at"])
+            held = {one for (one,) in con.execute("SELECT id FROM libraries")}
+            libraries = []
+            for ref, one in zip(row["libraries"], stored, strict=True):
+                library = ref["library"]
+                here = self.reads_here(ref["depot"], library) and library in held
+                if one is not None and (reached is None or any(
+                        _held_ever(con, library, text) for text in reached)):
+                    one = None
+                libraries.append({"stored": one, "now": counts.figures(con, library, tags) if here else None})
+        return {"tags": tags, "libraries": libraries}
+
+    @staticmethod
+    def _reached(con, owner: str, at: int | None) -> list[str] | None:
+        """The ids of the texts whose passages the erasures cut that the
+        depot named owner did not hold carried out at its change at (bounds:
+        one of another depot's numbering counts as held once a pull at or
+        before at brought its carrying out), None when one of them removed
+        a text whole, is of a depot whose rows owner held none of at at, or
+        at is None."""
+        if at is None:
+            return None
+        held = _bounds(con, owner, at)
+        texts = set()
+        for erasure, carried, needles in con.execute(
+                "SELECT e.id, (SELECT min(r.change) FROM erasures_revisions r WHERE r.id = e.id "
+                "AND r.erased IS NOT NULL), e.needles FROM erasures e WHERE e.erased IS NOT NULL").fetchall():
+            bound = held.get(ids.owner(erasure))
+            if bound is None:
+                return None
+            if carried <= bound:
+                continue
+            for needle in json.loads(needles):
+                if needle["start"] is None and needle["field"] is None:
+                    return None
+                texts.add(needle["text"])
+        return sorted(texts)
 
     # Tokenizer recipes and their vocabularies
 
@@ -2253,16 +2405,16 @@ class Depot:
     @staticmethod
     def _leave(con, libraries: list[str], number: int, table: str = "chosen"):
         """The texts of the temporary table leave the libraries at the change
-        number, and the counts of those libraries go down by it."""
+        number, and the counts of those libraries go down by what they held
+        of them (wpt_depot.counts.held)."""
         if libraries:
-            leaving = dict(con.execute(
-                f"SELECT m.library, count(*) FROM temp.{table} c JOIN memberships m ON m.text = c.id "
-                "AND m.left_change IS NULL WHERE m.library IN (SELECT value FROM json_each(?)) GROUP BY m.library",
-                (_json(libraries),)).fetchall())
+            leaving = counts.held(con, f"SELECT m.library, m.text FROM temp.{table} c JOIN memberships m "
+                                       "ON m.text = c.id AND m.left_change IS NULL "
+                                       "WHERE m.library IN (SELECT value FROM json_each(?))", (_json(libraries),))
             con.execute("UPDATE memberships SET left_change = ? WHERE left_change IS NULL "
                         f"AND library IN (SELECT value FROM json_each(?)) AND text IN (SELECT id FROM temp.{table})",
                         (number, _json(libraries)))
-            counts.shift(con, {(counts.LIBRARY, library): -count for library, count in leaving.items()})
+            counts.shift(con, {key: -by for key, by in leaving.items()})
 
     def _store(self, con, number: int, contents: Sequence[dict]):
         """Write the content versions a change numbered number adds
@@ -2380,6 +2532,44 @@ def _drop_unlisted(con, texts: list[str]):
         con.execute("DELETE FROM parts WHERE id IN (SELECT value FROM json_each(?)) AND NOT EXISTS "
                     "(SELECT 1 FROM content_lists c, json_each(c.parts) j WHERE c.id = parts.id "
                     "AND unhex(j.value ->> 'hash') = parts.hash)", (_json(texts),))
+
+
+def _bounds(con, depot: str, change: int) -> dict[str, int]:
+    """What the depot called depot held at its change number change, read through con, as Depot.bounds says."""
+    pulls = con.execute("SELECT depot, change, upstream, upstream_change FROM pulls").fetchall()
+    found = {}
+    while depot not in found:
+        found[depot] = change
+        last = max((one for one in pulls if one[0] == depot and one[1] <= change), key=lambda one: one[1], default=None)
+        if last is None:
+            break
+        depot, change = last[2], last[3]
+    return found
+
+
+def _locked_then(con, library: str, change: int) -> bool | None:
+    """Whether the library was locked at that change number of the depot
+    that owns it, read through con; None when it did not exist yet then.
+    What a build reads (Depot._held) and a revision's figures
+    (Depot._figures) both read it so."""
+    state = con.execute("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
+                        "ORDER BY revision DESC LIMIT 1", (library, change)).fetchall()
+    return None if not state else state[0][0] is not None
+
+
+def _lock_change(con, library: str) -> int | None:
+    """The change number at which the library was locked, in the numbering of the depot that owns it, read through
+    con; None for one never locked."""
+    found = con.execute("SELECT change FROM libraries_revisions WHERE id = ? AND locked_at IS NOT NULL "
+                        "ORDER BY revision LIMIT 1", (library,)).fetchall()
+    return found[0][0] if found else None
+
+
+def _held_ever(con, library: str, text: str) -> bool:
+    """Whether the library holds or held the text: a membership or a pin of it, read by their keys."""
+    return bool(con.execute("SELECT 1 FROM memberships WHERE library = ? AND text = ? UNION ALL "
+                            "SELECT 1 FROM pins WHERE library = ? AND text = ? LIMIT 1",
+                            (library, text, library, text)).fetchall())
 
 
 def _remove_texts(con, texts: list[str]):

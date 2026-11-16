@@ -157,7 +157,7 @@ from wpt_tokenizer import END, Tokenizer, chat
 from wpt_utils.lines import say
 from wpt_utils.parallel import Sizing, in_order, process_pool
 
-from . import corpora
+from . import corpora, counts
 from .depot import Depot, location
 from .errors import NotADepot, NotFound, Refused, UpstreamUnreachable
 from .follow import Upstream
@@ -545,6 +545,12 @@ def scarcest_trim(available: dict[int, float], shares: list[dict]) -> dict[int, 
 
 def measure(depot: Depot, libraries: list[str], shares: list[dict]) -> dict:
     """What the libraries hold now (Depot.measure, each share's tag of
+    shares, [{tag, share}], in order), with its mix (mixed)."""
+    return mixed(depot.measure(libraries, [one["tag"] for one in shares]), shares)
+
+
+def mixed(found: dict, shares: list[dict]) -> dict:
+    """What libraries hold (as Depot.measure gives it for the tags of
     shares, [{tag, share}], in order) with the mix of the corpus of every
     token when shares are given (mix None otherwise): each share's row
     gains share, kept_bytes and kept_characters (what scarcest_trim keeps
@@ -553,7 +559,6 @@ def measure(depot: Depot, libraries: list[str], shares: list[dict]) -> dict:
     limits (true on the share that keeps all it holds while another keeps
     less); mix: {kept_bytes, kept_characters of plain text, items_share:
     the share of the bytes the conversations and tasks hold then}."""
-    found = depot.measure(libraries, [one["tag"] for one in shares])
     if not shares:
         return {**found, "mix": None}
     held = {at: one["bytes"] for at, one in enumerate(found["shares"]) if shares[at]["share"] > 0}
@@ -568,6 +573,23 @@ def measure(depot: Depot, libraries: list[str], shares: list[dict]) -> dict:
     return {**found, "shares": rows, "mix": {
         "kept_bytes": plain, "kept_characters": sum(one["kept_characters"] for one in rows),
         "items_share": items / (items + plain) if items + plain else 0}}
+
+
+def revision_figures(depot: Depot, dataset: dict) -> dict:
+    """What the revision of the dataset whose row is dataset reads, from
+    the figures it stores (Depot.dataset_figures): {measure: as measure
+    gives it for the dataset's libraries and shares, None when the figures
+    of one of its libraries are not known; since: how many texts its
+    libraries hold now minus that, None when the measure is not known or a
+    library is not held here}."""
+    found = depot.dataset_figures(dataset["id"], dataset["revision"])
+    stored = [one["stored"] for one in found["libraries"]]
+    if any(one is None for one in stored):
+        return {"measure": None, "since": None}
+    then = counts.summed(stored, found["tags"])
+    now = [one["now"] for one in found["libraries"]]
+    since = None if any(one is None for one in now) else counts.summed(now, found["tags"])["texts"] - then["texts"]
+    return {"measure": mixed(then, dataset["shares"] or []), "since": since}
 
 
 class _Build:

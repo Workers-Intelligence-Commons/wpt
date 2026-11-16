@@ -6,7 +6,7 @@ from pathlib import Path
 import apsw
 import pytest
 
-from wpt_depot import About, Depot, NewText, clone, counts, ids, upgrade
+from wpt_depot import About, Depot, NewText, clone, ids, upgrade
 from wpt_depot.errors import DepotExists, HalfUpgraded, OtherFormat, Refused
 from wpt_depot.legacy import Legacy
 from wpt_depot.database import FULL_COPY_NEXT
@@ -53,7 +53,7 @@ def test_an_upgrade_of_a_format_3_folder_writes_a_new_file_holding_what_the_fold
     assert [one["revision"] for one in depot.library_texts("old-2", depot.change())] == [2]  # the revision it pinned
     assert depot.sql("SELECT id, revision FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = "
                      "'book')") == [{"id": "old-1", "revision": 2}]
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8]
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9]
     assert depot.erasures()[0]["needles"][0]["text"] == "old-2"
     # the ids go on from the highest number of each kind the folder held
     assert depot.add([NewText(text="new", licenses=("CC0-1.0",))], me) == ["old-3"]
@@ -111,8 +111,8 @@ def test_an_upgrade_stopped_once_its_file_is_whole_only_renames_it_when_run_agai
 
     depot, _ = Depot.upgrade(str(folder))
 
-    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 5
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8]
+    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 6
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9]
 
 
 def test_the_upgrade_of_a_clone_takes_its_upstream_s_web_address(make_legacy):
@@ -172,7 +172,9 @@ def schema_of(path) -> list[tuple]:
 
 
 def made_older(depot, format_: int):
-    """The depot as a depot of format_ (4, 5, 6 or 7) holds what it holds: no index text_decisions_decision; for 6
+    """The depot as a depot of format_ (4 to 8) holds what it holds: no columns characters and bytes of counts and
+    none of its rows of what libraries hold by kind and by tag, no column figures of the dataset revisions and no
+    table library_moves; for 7 and older also no index text_decisions_decision; for 6
     and older also no export keys, no indexes
     memberships_key and pins_key and no vocabulary of the datasets; for 5 and 4 also each text's decisions as the JSON list of its current revision, no
     status, text_decisions, counts, tokenizer recipes, vocabularies or max_tokens; for 4 also no index texts_order.
@@ -182,6 +184,19 @@ def made_older(depot, format_: int):
         con.execute("UPDATE texts_revisions SET status = NULL WHERE NOT latest")
     before = table_rows(depot.address)
     with depot.db.bulk() as con:
+        con.execute("DELETE FROM counts WHERE facet IN ('library kind', 'library tag')")
+        for column in ("characters", "bytes"):
+            con.execute(f"ALTER TABLE counts DROP COLUMN {column}")
+        for view in VIEWS:  # the connection's own views read the columns
+            con.execute(f"DROP VIEW IF EXISTS temp.{view}")
+        con.execute("ALTER TABLE datasets_revisions DROP COLUMN figures")
+        con.execute("DROP TABLE library_moves")
+        con.execute("UPDATE about_revisions SET format = ?", (format_,))
+    if format_ == 8:
+        depot.db.close()
+        (depot.db.waiting / FULL_COPY_NEXT).unlink()
+        return before
+    with depot.db.bulk() as con:
         con.execute("DROP INDEX text_decisions_decision")
         con.execute("UPDATE about_revisions SET format = ?", (format_,))
     if format_ == 7:
@@ -190,7 +205,7 @@ def made_older(depot, format_: int):
         return before
     with depot.db.bulk() as con:
         for view in VIEWS:  # the connection's own views read the columns
-            con.execute(f"DROP VIEW temp.{view}")
+            con.execute(f"DROP VIEW IF EXISTS temp.{view}")
         for index in ("memberships_key", "pins_key"):
             con.execute(f"DROP INDEX {index}")
         for table in ("memberships", "pins"):
@@ -244,7 +259,7 @@ def test_an_upgrade_of_a_format_4_file_builds_its_indexes_tables_and_statuses_in
     assert start == 4 and upgraded.format() == FORMAT and upgraded.address == depot.address
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8] and after["changes"][-1][1] == "upgrade"
+    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9] and after["changes"][-1][1] == "upgrade"
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert (depot.db.waiting / FULL_COPY_NEXT).exists()  # the change files hold no change of layout
@@ -260,27 +275,27 @@ def test_an_upgrade_to_format_6_cut_short_marks_the_depot_and_goes_on_when_run_a
     # the step runs in several transactions, so a stop between two leaves a depot only the upgrade reads
     depot = decided(make_depot(), me)
     before = made_older(depot, 5)
-    real = counts.recount
+    real = upgrade._recount_6
 
     def stops(con):
         raise OSError("the machine stopped")
 
     with monkeypatch.context() as patch:
         patch.setattr(upgrade, "BATCH", 5)
-        patch.setattr(counts, "recount", stops)
+        patch.setattr(upgrade, "_recount_6", stops)
         with pytest.raises(OSError):
             upgrade.upgrade(depot.address, log=lambda line: None)
     for way_in in (Depot.view, Depot.open):  # at format 6 half-way, so older than this code's too
         with pytest.raises((HalfUpgraded, OtherFormat), match="wpt depot upgrade"):
             way_in(depot.address)
-    assert counts.recount is real
+    assert upgrade._recount_6 is real
     said = []
 
     upgraded, start = upgrade.upgrade(depot.address, log=said.append)
 
     assert start == 5 and upgraded.format() == FORMAT
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8]
+    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert any("at format 6" in line for line in said)
@@ -323,7 +338,7 @@ def test_an_upgrade_to_format_7_writes_every_export_key_goes_on_from_its_last_ba
     assert len(made) == 6 + 3 + 4  # the 3 memberships left, then the 4 pins
     assert any("rows a second" in line for line in said)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8]
+    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     for table, count in (("memberships", 8), ("pins", 4)):
@@ -347,8 +362,8 @@ def test_an_upgrade_to_format_8_stopped_while_it_builds_the_decision_index_build
         patch.setattr(upgrade, "TEXT_DECISIONS_DECISION", "CREATE INDEX text_decisions_decision ON no_table (x)")
         with pytest.raises(apsw.SQLError):
             upgrade.upgrade(depot.address, log=lambda line: None)
-    for way_in in (Depot.view, Depot.open):  # at format 8, marked half upgraded
-        with pytest.raises(HalfUpgraded, match="wpt depot upgrade"):
+    for way_in in (Depot.view, Depot.open):  # at format 8 half-way, so older than this code's too
+        with pytest.raises((HalfUpgraded, OtherFormat), match="wpt depot upgrade"):
             way_in(depot.address)
     said = []
 
@@ -357,10 +372,110 @@ def test_an_upgrade_to_format_8_stopped_while_it_builds_the_decision_index_build
     assert start == 7 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [7, 8]
+    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
-    assert "text_decisions_decision" in said[0] and "seconds" in said[-1] and "at format 8" in said[-1]
+    assert "text_decisions_decision" in said[0] and any("at format 8" in line for line in said)
 
     _, start = upgrade.upgrade(depot.address, log=said.append)
     assert start == FORMAT and table_rows(depot.address) == after
+
+
+def test_an_upgrade_to_format_9_fills_what_libraries_hold_exactly_and_goes_on_after_a_stop(
+        make_depot, me, monkeypatch, library_figures):
+    # the dataset form of an upgraded depot reads these counts, so the fill must give what every write keeps, and on
+    # the public depot it runs for a long time, so a stop must not start it over
+    depot = decided(make_depot(), me)
+    texts = [one["id"] for one in depot.rows("SELECT id FROM texts WHERE status = 'admitted'")]
+    depot.put(depot.new_library("second"), texts)  # texts two libraries hold
+    stored, direct = library_figures(depot)
+    assert stored == direct and stored
+    before = made_older(depot, 8)
+    real = upgrade._merged_9
+    given = []
+
+    def stops_after_its_first_sums(*streams):
+        for one in real(*streams):
+            given.append(one)
+            yield one
+            raise OSError("the machine stopped")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(upgrade, "BATCH", 2)
+        patch.setattr(upgrade, "_merged_9", stops_after_its_first_sums)
+        with pytest.raises(OSError):
+            upgrade.upgrade(depot.address, log=lambda line: None)
+    with pytest.raises(HalfUpgraded, match="wpt depot upgrade"):
+        Depot.open(depot.address)
+    reader = apsw.Connection(f"file:{Path(depot.address).as_posix()}?mode=ro",
+                             flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI)
+    last_text = reader.execute("SELECT max(text) FROM memberships").fetchall()[0][0]
+    reader.close()
+    assert given[0][1] < last_text  # it stopped with texts left to count
+    said = []
+
+    with monkeypatch.context() as patch:
+        patch.setattr(upgrade, "BATCH", 2)
+        upgraded, start = upgrade.upgrade(depot.address, log=said.append)
+
+    assert start == 8 and upgraded.format() == FORMAT
+    assert f"going on after the text {given[0][1]}" in said[0] and any("rows a second" in line for line in said)
+    after = table_rows(depot.address)
+    assert [one[-1] for one in after["about_revisions"]] == [8, 9]
+    assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
+        table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
+    assert library_figures(upgraded)[0] == stored
+
+
+def test_an_upgrade_to_format_9_gives_a_dataset_revision_figures_only_when_they_are_exact(make_depot, me, figures_at):
+    # the pages show a revision's stored figures as what a build of it takes, so the upgrade gives them only to a
+    # revision whose libraries nothing changed after the change it reads them at, and leaves the others unknown
+    depot = decided(make_depot(), me)
+    first = depot.rows("SELECT id FROM libraries WHERE name = 'first'")[0]["id"]
+    texts = [one["id"] for one in depot.rows("SELECT id FROM texts WHERE status = 'admitted' ORDER BY id")]
+    second = depot.new_library("second")
+    depot.put(second, texts[:2])
+    still = depot.new_dataset("still", "tok", [(None, first)], [("a", 1.0)])
+    moved = depot.new_dataset("moved", "tok", [(None, second), (None, first)])
+    depot.put(second, texts[2:4])  # after the change moved reads it at
+    # a text the library holds gets another tag after the change the dataset reads it at: no membership moves
+    tagged, kept = depot.add([NewText(text="tagged", licenses=("CC0-1.0",), tags=("a",)),
+                              NewText(text="kept", licenses=("CC0-1.0",), tags=("a",))], me)
+    depot.decide("admitted", [tagged, kept], me)
+    third, fourth = depot.new_library("third"), depot.new_library("fourth")
+    depot.put(third, [tagged])
+    retagged = depot.new_dataset("retagged", "tok", [(None, third)], [("a", 1.0)])
+    depot.edit_credits(tagged, {"tags": ["b"]}, me)
+    # a locked library is read by its pins, at the change that locked it: a pinned text's tag changed after that
+    depot.put(fourth, [kept])
+    depot.lock(fourth)
+    depot.edit_credits(kept, {"tags": ["b"]}, me)
+    pinned = depot.new_dataset("pinned", "tok", [(None, fourth)], [("a", 1.0)])
+    exact = {one: figures_at(depot, one) for one in (still, moved, retagged, pinned)}
+    assert exact[retagged][0]["tags"][0]["texts"] == exact[pinned][0]["tags"][0]["texts"] == 1  # read before the change
+    made_older(depot, 8)
+
+    upgraded, _ = upgrade.upgrade(depot.address, log=lambda line: None)
+
+    assert [one["stored"] for one in upgraded.dataset_figures(still)["libraries"]] == exact[still]
+    assert [one["stored"] for one in upgraded.dataset_figures(moved)["libraries"]] == [None, exact[moved][1]]
+    assert [one["stored"] for one in upgraded.dataset_figures(retagged)["libraries"]] == [None]
+    assert [one["stored"] for one in upgraded.dataset_figures(pinned)["libraries"]] == [None]
+    assert {one: figures_at(upgraded, one) for one in exact} == exact  # what a build reads is what it was
+
+
+def test_an_upgrade_to_format_9_of_a_clone_gives_its_own_dataset_revisions_no_figures(make_depot, me, serve, tmp_path):
+    # a clone's rows carry its upstream's numbering beside its own, so the upgrade cannot prove when its libraries last
+    # moved, and leaves the figures of its own datasets unknown rather than risk wrong ones
+    upstream = decided(make_depot("upstream"), me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace", "grace@example.org"))
+    texts = [one["id"] for one in follower.rows("SELECT id FROM texts WHERE status = 'admitted'")]
+    library = follower.new_library("mine")
+    follower.put(library, texts)
+    dataset = follower.new_dataset("mine", "tok", [(None, library)])
+    assert follower.dataset_figures(dataset)["libraries"][0]["stored"] is not None
+    made_older(follower, 8)
+
+    upgraded, _ = upgrade.upgrade(follower.address, log=lambda line: None)
+
+    assert [one["stored"] for one in upgraded.dataset_figures(dataset)["libraries"]] == [None]

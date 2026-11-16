@@ -1,7 +1,6 @@
 """A person's SQL, run by `wpt depot web` in processes of their own: the
 query of POST /api/sql and the condition of a filter (search, passages,
-count, blocked), and the measure of libraries (POST /api/libraries/measure),
-which reads every membership of the libraries it is given.
+count, blocked).
 
 A reader process opens the depot's file read-only (Depot.view): every
 statement of a person runs on a connection that opens the file with
@@ -33,7 +32,6 @@ import time
 import weakref
 
 from wpt_depot import Depot, errors
-from wpt_depot.corpus import measure
 from wpt_depot.errors import TimeLimitReached
 
 from .server import Encoded
@@ -106,14 +104,12 @@ def _serve(address: str, memory: int, answer: tuple[int, int], seconds: float, c
     depot.passages("false")
     depot.count("false", texts=[])
     depot.blocked("false")
-    measure(depot, [], [])
     if sys.platform == "linux":
         import resource
         held = _held()
         resource.setrlimit(resource.RLIMIT_DATA, (held + memory, held + memory))
     jobs = {"sql": lambda query: _sql(depot, query, *answer), "search": depot.search, "passages": depot.passages,
-            "count": depot.count, "blocked": depot.blocked,
-            "measure": lambda libraries, shares: measure(depot, libraries, shares)}
+            "count": depot.count, "blocked": depot.blocked}
     while True:
         try:
             job, args = connection.recv()
@@ -164,7 +160,7 @@ class Readers:
         weakref.finalize(self, _stop, self._kept)  # the kept readers end with the routes that use them
 
     def run(self, job: str, *args) -> Encoded:
-        """The answer of job (sql, search, passages, count, blocked or measure) over
+        """The answer of job (sql, search, passages, count or blocked) over
         the depot with args, within SECONDS, as JSON the reader encoded: the
         depot's failure as it is; NoReaderFree when
         no reader was free within SECONDS; TimeLimitReached or ReaderLost

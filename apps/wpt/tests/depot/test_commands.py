@@ -410,6 +410,15 @@ def test_a_texts_credits_a_librarys_name_a_dataset_and_the_depots_facts_change_f
     assert (after["text"]["title"], after["text"]["tags"], after["notice"]) == ("Hen", ["en", "birds"], "(c) Ann")
     assert after["decisions"][-1]["reason"].startswith("title changed from none to Hen; tags changed from en to en, birds")
 
+    # the second library moved after the edit read it: reading the dataset again takes both libraries as they are now
+    shown.decide("admitted", [other], _declaration())
+    assert depot_command("library", "put", "test-depot-2", "true") == 0
+    capsys.readouterr()
+    assert depot_command("dataset", "read-again", "mix two") == 0
+    assert "2 libraries of this depot read again" in bare(capsys.readouterr().out)
+    again = Depot.open(depot)
+    assert [one["change"] for one in again.dataset("mix two")["libraries"]] == [again.change() - 1] * 2
+
 
 def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path, capsys):
     opened = Depot.open(depot)

@@ -35,6 +35,8 @@ from wpt_depot.filters import Filter
 from wpt_depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
 from wpt_depot.corpora import NoRoom, TooBig
 from wpt_depot.corpora import triple as corpora_triple
+from wpt_depot.corpus import measure as corpus_measure
+from wpt_depot.corpus import revision_figures
 from wpt_store import StoreError
 from wpt_utils.lines import say
 
@@ -364,7 +366,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def measure(values, body):
-        return 200, readers.run("measure", body["libraries"], body.get("shares") or [])
+        return 200, jsonable(corpus_measure(depot, body["libraries"], body.get("shares") or []))
 
     @refusals
     def change_times(values, body):
@@ -470,9 +472,11 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                               "locked_at": held[ref["library"]]["locked_at"] if mine else None})
         corpora, unreachable = shared.corpora_of(depot, row["id"])
         return 200, jsonable({"dataset": row, "upstream": upstream, "libraries": libraries, "remote": depot.export_dataset(row["name"]),
+                              "figures": revision_figures(depot, found),
+                              "read_again": depot.read_again_shows(found["id"]),
                               "corpora": None if corpora is None else [
                                   {**{key: one.get(key) for key in ("id", "built_at", "texts", "conversations",
-                                                                    "total_tokens", "stale", "deleted")},
+                                                                    "total_tokens", "items_tokens", "stale", "deleted")},
                                    "revision": one["dataset"]["revision"], "vocabulary": corpora_triple(one)[1],
                                    "max_tokens": corpora_triple(one)[2]} for one in corpora],
                               "store": unreachable})
@@ -485,6 +489,10 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                            None if shares is None else [(one["tag"], one["share"]) for one in shares],
                            body.get("max_tokens"), body.get("vocabulary"), body.get("revision"))
         return 200, {"id": values["id"]}
+
+    @refusals
+    def read_again(values, body):
+        return 200, {"id": values["id"], "libraries": depot.read_again(values["id"], body.get("revision"))}
 
     @refusals
     def export(values, body):
@@ -802,17 +810,19 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "upstream this depot follows, which alone changes it", answer=ROWS),
         Route("GET", "/api/libraries/{id}/size", library_size, "how many texts the library holds now, from the "
               "depot's counts", answer={"type": "object", "required": ["id", "texts"]}),
-        Route("POST", "/api/libraries/measure", measure, "what libraries hold now, each text once however many of "
-              "them hold it, at its current revision, read from the index of their memberships and each text's row, "
-              "never its text: texts, characters and UTF-8 bytes of them all, and of the plain texts (plain), the "
-              "conversations and tasks (items, the items a corpus takes) and the items of other kinds (other); with "
-              "shares, the plain texts each share takes (a plain text counts for the first share whose tag it has, "
-              "as a dataset's shares count them), those no share takes (unshared), and the mix of the corpus of every "
-              "token: kept_bytes and kept_characters of each share (the share that holds the least for its "
-              "proportion keeps all its texts, and limits the others, each its proportion of it, at most all it "
-              "holds; a share with no text takes nothing), limits on the share that limits the others, and mix, "
-              "the bytes and characters of plain text kept and the share of the bytes the conversations and tasks "
-              "hold then (items_share), the share they take of any size; 404 for a library the depot does not hold",
+        Route("POST", "/api/libraries/measure", measure, "what libraries hold now, each text at its current "
+              "revision, read at once from the depot's counts of each library, whatever its size: texts, characters "
+              "and UTF-8 bytes of them all, and of the plain texts (plain), the conversations and tasks (items, the "
+              "items a corpus takes) and the items of other kinds (other); each library counts apart and the figures "
+              "are their sum, so a text several of them hold counts once for each; with shares, the plain texts that "
+              "have each share's tag (a text with several of the shares' tags counts once for each, where a dataset's "
+              "share takes it only for the first: exact when each text has at most one of them), those left once the "
+              "shares are taken away (unshared), and the mix of the corpus of every token: kept_bytes and "
+              "kept_characters of each share (the share that holds the least for its proportion keeps all its texts, "
+              "and limits the others, each its proportion of it, at most all it holds; a share with no text takes "
+              "nothing), limits on the share that limits the others, and mix, the bytes and characters of plain text "
+              "kept and the share of the bytes the conversations and tasks hold then (items_share), the share they "
+              "take of any size; 404 for a library the depot does not hold",
               body={"type": "object", "required": ["libraries"],
                     "properties": {"libraries": {**NAMES, "minItems": 1},
                                    "shares": {"type": ["array", "null"], "items": share}}},
@@ -881,10 +891,19 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "whether it belongs to the upstream this depot follows (which alone changes it), each library it "
               "reads with its change number and local, whether it is read here as GET /api/datasets says (and "
               "for such a library its name and whether it is locked), its remote, and the corpora the store holds "
-              "built from it, through its renames, each with the revision of the dataset it was built from, its "
-              "vocabulary's sha256 and its size (max_tokens, null for none), the last built first (null, with why in store, when the store cannot be read)",
+              "built from it, through its renames, each with its counts (texts, conversations, total_tokens of "
+              "plain text, items_tokens of conversations and tasks), the revision of the dataset it was built from, its "
+              "vocabulary's sha256 and its size (max_tokens, null for none), the last built first (null, with why in store, when the store cannot be read); "
+              "and figures: what its current revision reads, each library at the change it reads it at, as the "
+              "revision stores it (measure, as POST /api/libraries/measure gives it for its libraries and shares; "
+              "null when the figures of one of its libraries are not known: one of another depot, or one the "
+              "revision's write or an erasure since left unproved) and since, how "
+              "many texts its libraries hold now minus that (null when not known); and read_again, whether "
+              "POST /api/datasets/{id}/read-again changes what the page shows of it: a library of this depot whose "
+              "figures are unknown while a read now knows them, or that holds another number of texts now, or, in "
+              "a clone, an upstream's library a pull moved",
               answer={"type": "object", "required": ["dataset", "upstream", "libraries", "remote", "corpora",
-                                                     "store"]}),
+                                                     "store", "figures", "read_again"]}),
         Route("POST", "/api/datasets/{id}", edit_dataset, "change the dataset of that id as a new revision, its id "
               "and tokenizer kept, with the checks of a new one (wpt depot dataset edit): a library it read already "
               "keeps its change number (one of another depot included, named as the dataset stores it), a new one "
@@ -899,6 +918,16 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                                   "otherwise), whose corpus training takes; absent or null: none"},
                                    "revision": {"type": "integer", "minimum": 1}}},
               answer=ID),
+        Route("POST", "/api/datasets/{id}/read-again", read_again, "a new revision of the dataset of that id, the "
+              "same except that every library of this depot it reads is read at the change number now (a locked one "
+              "as its lock leaves it), with the figures of what it reads; a library of another depot keeps its change "
+              "number; what the next build takes changes (wpt depot dataset read-again): libraries, how many "
+              "libraries' change numbers changed, 0 with nothing written when none did or when the depot's latest "
+              "change is this dataset's own read again; with revision, the revision the change was made from, refused (422) when the dataset is "
+              "at another one",
+              body={"type": "object", "properties": {"revision": {"type": "integer", "minimum": 1}}},
+              answer={"type": "object", "required": ["id", "libraries"],
+                      "properties": {"id": TEXT, "libraries": {"type": "integer", "minimum": 0}}}),
         Route("GET", "/api/datasets/{name}/remote", export, "the dataset as a remote (wpt depot dataset export)",
               answer=OBJECT),
         Route("GET", "/api/erasures", erasures, "every erasure request, with its status and whether it belongs to "

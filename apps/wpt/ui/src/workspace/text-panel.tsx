@@ -31,7 +31,7 @@ import type { Deciding } from "../blocked";
 import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../decide-forms";
 import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
-import { Confirm, Cut, Facts, Joined, LibraryLink, optional, Outcome, plural, Problems, required, RequiredNote, Section, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
+import { Confirm, Cut, Facts, Help, Joined, LibraryLink, MoreMenu, optional, Outcome, plural, Problems, required, RequiredNote, Section, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
 import { codePoints, TextViewer } from "../reader";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
@@ -55,13 +55,13 @@ export type Shown = { text: Row; status: Status; notice: string | null; decision
 
 export const showText = (id: string) => get<Shown>(`/api/texts/${encodeURIComponent(id)}`);
 
-// id: the text; version: raised by the workspace whenever the text may have changed elsewhere (a key decided on it);
+// id: the text; bar: what shows under its head (the workspace's bar of moves and decisions, on a phone); version: raised by the workspace whenever the text may have changed elsewhere (a key decided on it);
 // onChanged: after any change made here; onDirty: whether its editor holds unsaved changes; handle: the editor's;
 // onShown: the id of the text it shows now, or null while it shows none (the keys act only on the text shown);
 // find: the words the search looked for inside the texts, marked in it, the first one scrolled to.
 // Only the answer for the id asked last is kept, so a text read slowly never replaces the one asked after it.
-export function TextPanel({ id, version, onChanged, onDirty, handle, onShown, find }: {
-  id: string; version: number; onChanged: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void;
+export function TextPanel({ id, bar, version, onChanged, onDirty, handle, onShown, find }: {
+  id: string; bar?: ReactNode; version: number; onChanged: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void;
   onShown: (id: string | null) => void; find?: string;
 }) {
   const [shown, setShown] = useState<{ id: string; answer: Answer<Shown> } | null>(null);
@@ -74,12 +74,12 @@ export function TextPanel({ id, version, onChanged, onDirty, handle, onShown, fi
   useEffect(() => () => onShown(null), [onShown]);
   if (!shown || shown.id !== id) return <Skeleton lines={6} label="Reading the text" />;
   if (!shown.answer.ok) return <Problems problems={shown.answer.problems} />;
-  return <Loaded key={id} shown={shown.answer.data} reload={() => { load(); onChanged(); }} onDirty={onDirty} handle={handle} find={find} />;
+  return <Loaded key={id} bar={bar} shown={shown.answer.data} reload={() => { load(); onChanged(); }} onDirty={onDirty} handle={handle} find={find} />;
 }
 
 type Dialogs = "decide" | "relicense" | "credits" | "take-out" | "report" | "erase";
 
-function Loaded({ shown, reload, onDirty, handle, find }: { shown: Shown; reload: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string }) {
+function Loaded({ shown, bar, reload, onDirty, handle, find }: { shown: Shown; bar?: ReactNode; reload: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string }) {
   const row = shown.text;
   const item = row.kind !== null;
   const [tab, setTab] = useState<"text" | "record">("text");
@@ -91,16 +91,13 @@ function Loaded({ shown, reload, onDirty, handle, find }: { shown: Shown; reload
   const theirs = shown.upstream;
   const reportable = shown.libraries.filter((l) => !l.upstream); // only the depot's own libraries take a problem
   const leavable = reportable.filter((l) => !l.locked_at); // and only its own open ones let a text out
-  const more = useRef<HTMLDetailsElement>(null); // the less used actions, closed again once one is chosen or a click lands elsewhere
-  useEffect(() => {
-    const away = (e: MouseEvent) => { if (more.current && !more.current.contains(e.target as Node)) more.current.removeAttribute("open"); };
-    document.addEventListener("click", away);
-    return () => document.removeEventListener("click", away);
-  }, []);
   return (
     <div className="text-panel">
       <header className="text-head">
-        <h2 className="title text-title">{title}</h2>
+        <div className="text-title-row">
+          <h2 className="title text-title">{title}</h2>
+          <span className="aside ledger small" title="Its id, which the command line names it by">{row.id}</span>
+        </div>
         <div className="page-meta small">
           <StatusBadge status={shown.status} />
           {row.licenses.map((l) => <a key={l} href={href(["licenses", l])} className="ledger" title={`The license ${l}`}>{l}</a>)}
@@ -109,25 +106,22 @@ function Loaded({ shown, reload, onDirty, handle, find }: { shown: Shown; reload
           <span className="aside">{shown.libraries.length ? <>in {shown.libraries.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>)}</> : "in no library"}</span>
           {theirs && <span className="aside">the upstream's</span>}
           {item && <span>kind <span className="ledger">{row.kind}</span></span>}
-          <span className="ledger aside">{row.id}</span>
         </div>
         <div className="head-buttons text-actions">
-          {!theirs && <Button variant="quiet" onClick={() => setOpen("decide")}>Decide</Button>}
+          {!theirs && <Button variant="ink" onClick={() => setOpen("decide")}>Decide</Button>}
           {!theirs && <Button variant="quiet" onClick={() => setOpen("relicense")}>Change licenses</Button>}
           {!theirs && <Button variant="quiet" onClick={() => setOpen("credits")}>Edit credits</Button>}
           {(leavable.length > 0 || reportable.length > 0 || !theirs) && (
-            <details className="more-menu" ref={more}>
-              <summary className="wic-btn wic-btn-quiet wic-focus">More ▾</summary>
-              <div className="more-items" onClick={() => more.current?.removeAttribute("open")}>
-                {leavable.length > 0 && <Button variant="quiet" onClick={() => setOpen("take-out")}>Take out of a library</Button>}
-                {reportable.length > 0 && <Button variant="quiet" onClick={() => setOpen("report")}>Report a problem</Button>}
-                {!theirs && <Button variant="quiet" onClick={() => setOpen("erase")}>Ask to erase</Button>}
-              </div>
-            </details>
+            <MoreMenu label="More on this text">
+              {leavable.length > 0 && <Button variant="quiet" onClick={() => setOpen("take-out")}>Take out of a library</Button>}
+              {reportable.length > 0 && <Button variant="quiet" onClick={() => setOpen("report")}>Report a problem</Button>}
+              {!theirs && <Button variant="quiet" onClick={() => setOpen("erase")}>Ask to erase</Button>}
+            </MoreMenu>
           )}
         </div>
         {theirs && <p className="head-note-left small">It belongs to the upstream this depot follows: only the upstream decides on it, changes its licenses, content or credits, or erases it, and a pull brings what it did here.</p>}
       </header>
+      {bar}
       {said && <p className="done cue" role="status">{said}</p>}
       <div className="tabs" role="tablist" aria-label="The text and its record">
         <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "text"} onClick={() => setTab("text")}>{item ? "Content" : "Text"}</button>
@@ -348,7 +342,7 @@ function EditContent({ row, libraries, onDone, onDirty, handle, find }: {
       {changed ? (
         <Confirm label="Save, under review" onConfirm={send}
           note={<>Saving (or Ctrl+S) is a public decision under review and nothing else: it makes content version {row.content_version + 1}, the decisions before it no longer count, so the text goes back under review and leaves {open.length ? <>its open {open.length === 1 ? "library" : "libraries"} ({open.map((l) => l.name).join(", ")})</> : "every open library"}. It is read again only once it is admitted again, separately, and put back.{locked.length > 0 && <> A locked library ({locked.map((l) => l.name).join(", ")}) keeps reading the content of the revision it pinned.</>}</>} />
-      ) : editing ? <p className="save-idle small aside">Nothing changed yet. Saving makes a new content version and puts the text back under review.{conversation && <> <Button variant="quiet" onClick={() => setEditing(false)}>Back to reading it</Button></>}</p> : null}
+      ) : editing ? <p className="save-idle small aside">Saving puts the text back under review.{conversation && <> <Button variant="quiet" onClick={() => setEditing(false)}>Back to reading it</Button></>}</p> : null}
       <Outcome answer={answer} done={() => ""} />
     </div>
   );
@@ -394,8 +388,8 @@ function Credits({ row, notice, onDone }: { row: Row; notice: string | null; onD
       </div>
       <TextArea label={optional("Notice")} hint="The copyright notice exactly as the source gives it, or why the work is public domain." rows={4} value={noticeText} onChange={(e) => setNoticeText(e.target.value)} />
       <Confirm label="Confirm and save the credits" disabled={Object.keys(changes).length === 0} onConfirm={send}
-        note={Object.keys(changes).length === 0 ? "Nothing is changed yet."
-          : <>Saved as a decision under review whose reason names what changed ({Object.keys(changes).join(", ")}). The decisions before it keep counting: the text keeps its status and its libraries, and a locked library keeps the revision it pinned.</>} />
+        note={Object.keys(changes).length === 0 ? "Nothing changed yet."
+          : <>Changes: {Object.keys(changes).join(", ")}.<Help label="saving credits">Saved as a decision under review whose reason names what changed. The decisions before it keep counting: the text keeps its status and its libraries, and a locked library keeps the revision it pinned.</Help></>} />
       <Outcome answer={answer} done={() => ""} />
     </div>
   );

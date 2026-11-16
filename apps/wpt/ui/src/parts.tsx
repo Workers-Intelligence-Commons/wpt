@@ -3,23 +3,26 @@
 // one line, the libraries, and the confirm of every decision.
 
 import { Badge, Button, type ButtonVariant } from "@workers-intelligence-commons/components";
-import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useAbout } from "./about";
-import { get, part, post, type Answer } from "./api";
+import { get, post, type Answer } from "./api";
 import { declared, useDeclarant } from "./declarant";
 import { href } from "./route";
 
-// A page's head: its one title, a line of facts (meta), one short line that
-// places the page in the chain of the depot with links to its neighbours
-// (chain), and its actions, the main one emphasized and the others quiet,
-// with a quiet note about them (note) right under them.
+// A page's head: its one title, with what the page is for behind a "?"
+// beside it (chain: the explanation and the links to its neighbours, never
+// shown until asked for), a line of facts (meta), and its actions, the main
+// one emphasized and the others quiet, with a short note about them (note)
+// right under them.
 export function PageHead({ title, meta, chain, actions, note }: { title: ReactNode; meta?: ReactNode; chain?: ReactNode; actions?: ReactNode; note?: ReactNode }) {
   return (
     <header className="page-head">
       <div className="page-head-main">
-        <h1 className="title page-title">{title}</h1>
+        <div className="title-row">
+          <h1 className="title page-title">{title}</h1>
+          {chain && <Help label="this page">{chain}</Help>}
+        </div>
         {meta && <div className="page-meta small">{meta}</div>}
-        {chain && <p className="chain small">{chain}</p>}
       </div>
       {(actions || note) && (
         <div className="head-actions">
@@ -31,22 +34,81 @@ export function PageHead({ title, meta, chain, actions, note }: { title: ReactNo
   );
 }
 
-// A section of a page under a rule: its title, optional tools beside the
-// title (what acts on the whole section), then its body. Without a title it
-// is only the rule that sets the body apart.
-export function Section({ title, tools, children, className }: { title?: ReactNode; tools?: ReactNode; children: ReactNode; className?: string }) {
+// A block of a page: its title, the explanation behind a "?" beside it
+// (help), optional tools beside the title (what acts on the whole block),
+// then its body. Without a title it is only the block that sets the body
+// apart.
+export function Section({ title, help, tools, children, className }: { title?: ReactNode; help?: ReactNode; tools?: ReactNode; children: ReactNode; className?: string }) {
   const id = useId();
   return (
     <section className={`section ${className ?? ""}`} aria-labelledby={title ? id : undefined}>
       {(title || tools) && (
         <div className="section-head">
-          {title && <h2 id={id} className="cue section-title">{title}</h2>}
+          {title && (
+            <div className="title-row">
+              <h2 id={id} className="cue section-title">{title}</h2>
+              {help && <Help label={typeof title === "string" ? title : "this part"}>{help}</Help>}
+            </div>
+          )}
           {tools}
         </div>
       )}
       {children}
     </section>
   );
+}
+
+// A small "?" that opens an explanation under it and closes on a second
+// click, on Escape (which then closes nothing else, such as the dialog
+// around it), on a click elsewhere or when the focus leaves it. label: what
+// it explains, for the button's name ("About Most tokens"). It sits beside a
+// heading or in a line of text, never inside a heading or a field's label,
+// whose name would take its words; a field's explanation is its hint. It
+// opens toward the side of the screen with room.
+export function Help({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState<null | "left" | "right">(null);
+  const ref = useRef<HTMLSpanElement>(null);
+  const id = useId();
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(null); };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open]);
+  const toggle = () => {
+    const box = ref.current?.getBoundingClientRect();
+    setOpen(open ? null : box && box.left > window.innerWidth / 2 ? "right" : "left");
+  };
+  return (
+    <span className="help" ref={ref} onBlur={(e) => { if (open && e.relatedTarget && !ref.current?.contains(e.relatedTarget)) setOpen(null); }} onKeyDown={(e) => { if (open && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(null); } }}>
+      <button type="button" className="help-button wic-focus" aria-expanded={Boolean(open)} aria-controls={open ? id : undefined} aria-label={`About ${label}`} title={`About ${label}`} onClick={toggle}>?</button>
+      {open && <span id={id} role="note" className={`help-pop small help-${open}`}>{children}</span>}
+    </span>
+  );
+}
+
+// The less used actions behind one button (label), as a list that opens
+// under it toward side, and closes again once one is chosen or a click lands
+// elsewhere.
+export function MoreMenu({ label, side = "left", children }: { label: string; side?: "left" | "right"; children: ReactNode }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) ref.current.removeAttribute("open"); };
+    document.addEventListener("click", away);
+    return () => document.removeEventListener("click", away);
+  }, []);
+  return (
+    <details className="more-menu" ref={ref}>
+      <summary className="wic-focus small">{label}</summary>
+      <div className={`more-items more-${side}`} onClick={() => ref.current?.removeAttribute("open")}>{children}</div>
+    </details>
+  );
+}
+
+// A number set big, with what it counts under it: the figures a page leads with.
+export function Stat({ value, label, href: to }: { value: ReactNode; label: ReactNode; href?: string }) {
+  const body = <><span className="stat-value">{value}</span><span className="stat-label small">{label}</span></>;
+  return to ? <a className="stat" href={to}>{body}</a> : <div className="stat">{body}</div>;
 }
 
 // The markers of form fields, the same in every form: a required field's
@@ -213,39 +275,47 @@ export type Problem = { texts: string[]; problem: string; decision: string };
 // upstream: it belongs to the upstream this depot follows, which alone changes it
 export type Library = { id: string; name: string; forked_from: string | null; problems: Problem[] | null; locked_at: string | null; upstream: boolean };
 
-// A library's size (GET /api/libraries/ID/size, from the depot's counts,
-// which it keeps counted): how many texts it holds; version: raised after a
-// change, so it is read again.
-export function LibrarySize({ id, version = 0 }: { id: string; version?: number }) {
-  const [size, setSize] = useState<Answer<{ texts: number }> | null>(null);
-  useEffect(() => { get<{ texts: number }>(`/api/libraries/${encodeURIComponent(id)}/size`).then(setSize); }, [id, version]);
-  if (!size) return <span className="aside">counting its texts</span>;
-  if (!size.ok) return <span className="not-allowed">{size.problems.join(" ")}</span>;
-  return <span>{plural(size.data.texts, "text")}</span>;
-}
-
-// What libraries hold now (POST /api/libraries/measure, computed by the
-// server from the index of their memberships), each text once: every text,
-// the plain texts, the conversations and tasks (items) and the items of
-// other kinds, each in texts, characters and bytes; with shares, the plain
-// texts each share takes (the first share whose tag a text has) and the mix
-// of the corpus of every token (what each share keeps, the share that
-// limits the others, the share of the bytes the conversations and tasks
-// hold then).
+// What libraries hold now (POST /api/libraries/measure, read by the server
+// from the depot's counts, at once whatever their size), each library
+// counted apart and summed: every text, the plain texts, the conversations
+// and tasks (items) and the items of other kinds, each in texts, characters
+// and bytes; with shares, the plain texts that have each share's tag (a text
+// with several counts for each) and the mix of the corpus of every token
+// (what each share keeps, the share that limits the others, the share of the
+// bytes the conversations and tasks hold then).
 export type Held = { texts: number; characters: number; bytes: number };
 export type ShareHeld = Held & { tag: string; share?: number; kept_bytes?: number; kept_characters?: number; limits?: boolean };
 export type Measure = Held & {
   plain: Held; items: Held; other: Held; shares: ShareHeld[]; unshared: Held | null;
   mix: { kept_bytes: number; kept_characters: number; items_share: number } | null;
 };
+export type MeasureState = Measure | string | null;
+// The figures once they are there, else null.
+export const figures = (found: MeasureState): Measure | null => (found === null || typeof found === "string" ? null : found);
+
+// What a dataset's revision reads, as the revision stores it (figures of GET
+// /api/datasets/ID): measure, null when not known (a library of another
+// depot, or one its save could not prove);
+// since, the texts its libraries hold now minus those, null when not known.
+export type RevisionFigures = { measure: Measure | null; since: number | null };
+
+// "+2 texts since" (or "−2") when the libraries hold another number of texts
+// now than the revision reads, else nothing.
+export function Since({ since }: { since: number | null }) {
+  if (!since) return null;
+  return <span className="aside" title="How many more or fewer texts its libraries hold now than at the change this revision reads them at: a text gained and one lost cancel out">{since > 0 ? "+" : "−"}{plural(Math.abs(since), "text")} since</span>;
+}
+
+// What the "?" beside figures of several libraries or of shares says.
+export const SUMMED_NOTE = "Each library counts apart: a text that several of them hold counts once for each.";
+export const SHARES_NOTE = "A text with several of the shares' tags counts once for each; the build takes it for the first only.";
 
 // The measure of libraries, with shares when given: null while it is read,
-// the measure once read, or the problem in words. It reads every membership
-// of the libraries, so it is read once for each set of libraries and shares,
-// never again after a change. Nothing is read without a library.
-export function useMeasure(libraries: string[], shares: { tag: string; share: number }[] | null = null): Measure | string | null {
+// the measure once read, or the problem in words; read again when version
+// changes. Nothing is read without a library.
+export function useMeasure(libraries: string[], shares: { tag: string; share: number }[] | null = null, version = 0): MeasureState {
   const [found, setFound] = useState<{ key: string; value: Measure | string } | null>(null);
-  const key = JSON.stringify([libraries, shares]);
+  const key = JSON.stringify([libraries, shares, version]);
   useEffect(() => {
     if (!libraries.length) return;
     let live = true;
@@ -257,9 +327,10 @@ export function useMeasure(libraries: string[], shares: { tag: string; share: nu
 }
 
 // How many characters the texts of libraries hold now (useMeasure): null
-// while it is read, a number once read, or the problem in words.
-export function useCharacters(libraries: string[]): number | string | null {
-  const found = useMeasure(libraries);
+// while it is read, a number once read, or the problem in words; read again
+// when version changes.
+export function useCharacters(libraries: string[], version = 0): number | string | null {
+  const found = useMeasure(libraries, null, version);
   return found === null || typeof found === "string" ? found : found.characters;
 }
 
@@ -270,8 +341,8 @@ export const characters = (n: number) => n < 10_000 ? plural(n, "character")
 
 // What useCharacters found, in words.
 export function CharactersNote({ found }: { found: number | string | null }) {
-  if (found === null) return <span className="aside">measuring their size</span>;
-  if (typeof found === "string") return <span className="aside" title={found}>size not measured</span>;
+  if (found === null) return <span className="aside">…</span>;
+  if (typeof found === "string") return <span className="aside" title={found}>size not read</span>;
   return <span title={plural(found, "character")}>{characters(found)}</span>;
 }
 
@@ -303,16 +374,6 @@ export function LibraryLink({ library }: { library: Library | { id: string; name
 
 export type DatasetRef = { depot: string | null; library: string; change: number };
 export type Dataset = { id: string; revision: number; name: string; tokenizer: string; libraries: DatasetRef[]; shares: { tag: string; share: number }[] | null; max_tokens: number | null; vocabulary: string | null; upstream: boolean; here: string[] };
-
-// Sets the vocabulary a dataset publishes (a sha256, or null for none) as a
-// new revision of it, the rest of its row as read (POST /api/datasets/ID,
-// which keeps each library it reads as stored). The revision read goes with
-// it, so the server refuses the change when someone changed the dataset
-// after it was read, rather than undo their change.
-export const publishVocabulary = (dataset: Dataset, vocabulary: string | null) => post(`/api/datasets/${part(dataset.id)}`, {
-  name: dataset.name, libraries: dataset.libraries.map((r) => ({ depot: r.depot, library: r.library })),
-  shares: dataset.shares, max_tokens: dataset.max_tokens, vocabulary, revision: dataset.revision,
-});
 
 // Every dataset, read again by reload.
 export function useDatasets(): { datasets: Answer<Dataset[]> | null; reload: () => void } {
@@ -365,14 +426,17 @@ export function Confirm({ label, disabled, onConfirm, variant = "primary", note 
           <Problems problems={["The server's confirmation could not be read, so no decision can be sent.", ...problems]} />
         ) : <p className="aside">Reading the confirmation</p>}
         {ready ? (
-          <p>Recorded as {who.name}, <span className="ledger">{who.email}</span>. <a href={href(["settings"])}>Change</a></p>
+          <p>Recorded as {who.name}, <span className="ledger">{who.email}</span>. <a href={settingsHref()}>Change</a></p>
         ) : (
-          <p className="act"><strong>No legal name and email are set in this browser.</strong> <a href={href(["settings"])}>Set them in the settings</a> to decide.</p>
+          <p className="act"><strong>No name and email set.</strong> <a href={settingsHref()}>Set them</a> to decide.</p>
         )}
       </div>
     </div>
   );
 }
+
+// The address of Settings, carrying the page it was opened from, which it links back to once saved.
+export const settingsHref = () => href(["settings"], { back: window.location.hash || null });
 
 // Facts as a list of italic labels and their values; empty values are left out.
 export function Facts({ rows }: { rows: [string, ReactNode][] }) {

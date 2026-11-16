@@ -90,19 +90,26 @@ function LatestDecisions() {
 }
 
 // Decisions as a table, each linked to its view.
+// A column every row says the same in (the decider, the minute) is said
+// once above the table instead; the reasons only when one row has one.
 export function DecisionTable({ rows, libraryName }: { rows: Latest[]; libraryName?: (id: string) => string }) {
+  const same = (key: (d: Latest) => string) => rows.length > 1 && rows.every((d) => key(d) === key(rows[0]));
+  const oneName = same((d) => d.name);
+  const oneTime = same((d) => when(d.made_at));
+  const reasons = rows.some((d) => d.reason);
   return (
     <div className="table-scroll">
       <table className="ledger-table" aria-label="The latest decisions">
-        <thead><tr><th scope="col">what was decided</th><th scope="col">status</th><th scope="col">by</th><th scope="col">when (UTC)</th><th scope="col">reason</th></tr></thead>
+        {(oneName || oneTime) && <caption className="table-caption small aside">{[oneName ? `by ${rows[0].name}` : null, oneTime ? `${when(rows[0].made_at)} UTC` : null].filter(Boolean).join(" · ")}</caption>}
+        <thead><tr><th scope="col">what was decided</th><th scope="col">status</th>{!oneName && <th scope="col">by</th>}{!oneTime && <th scope="col">when (UTC)</th>}{reasons && <th scope="col">reason</th>}</tr></thead>
         <tbody>
           {rows.map((d) => (
             <tr key={d.id}>
               <td className="nowrap"><a href={href(["decisions", d.id])} title={`decision ${d.id}`}>{d.library ? <>a problem of {libraryName?.(d.library) ?? d.library}</> : d.erasures ? plural(d.erasures, "erasure request") : plural(d.texts, "text")}</a></td>
               <td className="nowrap"><StatusBadge status={d.status} /> <Correction d={d} /></td>
-              <td><Cut text={d.name} /></td>
-              <td className="ledger nowrap">{when(d.made_at)}</td>
-              <td className="wide-cell">{d.reason ? <Cut text={d.reason} /> : <span className="aside">none</span>}</td>
+              {!oneName && <td><Cut text={d.name} /></td>}
+              {!oneTime && <td className="ledger nowrap">{when(d.made_at)}</td>}
+              {reasons && <td className="wide-cell">{d.reason ? <Cut text={d.reason} /> : <span className="aside" aria-label="none">—</span>}</td>}
             </tr>
           ))}
         </tbody>

@@ -7,24 +7,26 @@
 // whole (read again every few seconds after a download starts until its
 // size is known, "downloading" shown meanwhile, then "downloaded" with it). Before its first download,
 // a part shows a ceiling of its size: the characters its dataset's libraries
-// hold, shared out over the parts, as text before compression, which both
-// forms compress. Parts are counted from 1
+// held at the change its revision reads them at, as the revision stores them
+// (figures), shared out over the parts, as text before compression, which
+// both forms compress; none while the revision does not know them. Parts are counted from 1
 // for people; the files keep their names, numbered from 0, which the
 // browser saves after the dataset's name. The download buttons come first,
-// one per part and form; below them the page says what each form is, what a line or a
+// one per part and form; folded below them, what each form is, what a line or a
 // row holds, what it leaves out (titles, authors, licenses, notices) and
 // where those are. Nothing on this page starts a job.
 
 import { ButtonLink, Skeleton } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useState } from "react";
 import { get, part, type Answer } from "../api";
-import { CharactersNote, ownLibraries, PageHead, plural, Problems, Section, useCharacters, type Dataset } from "../parts";
+import { CharactersNote, ownLibraries, PageHead, plural, Problems, Section, Since, type Dataset, type RevisionFigures } from "../parts";
 import { href } from "../route";
 import { bytes } from "./download";
+import { DatasetStages } from "../stages";
 import type { Page } from "./index";
 
 type Form = { name: string; download: string; bytes: number | null; sha256: string | null };
-type Shown = { dataset: Dataset; export: string; texts: number; texts_per_part: number; parts: { part: number; forms: Record<string, Form> }[] };
+type Shown = { dataset: Dataset; export: string; texts: number; texts_per_part: number; parts: { part: number; forms: Record<string, Form> }[]; figures: RevisionFigures };
 
 // each form, its name, what it is in plain words, to choose one, and its button's words
 const FORMS: [string, string, string, string][] = [
@@ -47,35 +49,49 @@ function Export({ id }: { id: string }) {
     return () => window.clearTimeout(timer);
   }, [unknown, readings, shown, load]);
   const mine = shown?.ok ? ownLibraries(shown.data.dataset) : [];
-  const size = useCharacters(mine);
   if (!shown) return <Skeleton lines={6} label="Reading the dataset's export" />;
   if (!shown.ok) return <Problems problems={shown.problems} />;
   const { dataset, parts, texts } = shown.data;
+  const size = shown.data.figures.measure?.characters ?? null; // null: this revision does not know it
   const base = `/api/datasets/${part(id)}/export`;
   // a ceiling of a part's size before its first download: its share of the libraries' characters, uncompressed
-  const ceiling = typeof size === "number" && parts.length ? `at most about ${bytes(Math.ceil(size / parts.length))} before compression; exact after its first download` : "size known after its first download";
+  const ceiling = typeof size === "number" && parts.length ? `${parts.length > 1 ? "each " : ""}at most ${bytes(Math.ceil(size / parts.length))} before compression` : "size after a first download";
+  const clicked = (f: Form) => { setMeasuring(new Set([...measuring, f.name])); setReadings(0); };
   const known = (form: string) => parts.map((p) => p.forms[form].bytes).filter((b): b is number => b !== null);
   return (
     <>
       <PageHead title={`Export ${dataset.name}`}
-        meta={<><span>{plural(parts.length, "part")}</span><span>{dataset.libraries.length === 1 ? "" : "about "}{plural(texts, "text")}</span>{mine.length > 0 && <CharactersNote found={size} />}</>}
-        chain={<>The texts of the <a href={href(["datasets", dataset.id])}>dataset {dataset.name}</a> as it is now, with no tokenizer and no size limit: every plain text a share takes, and every conversation and task. Nothing here starts a job. The token files for training are on <a href={href(["download", dataset.id])}>its corpora page</a>.</>} />
-      <Section title="Download its texts">
-        <p>{parts.length === 1 ? <>One part holds the whole dataset, in two forms holding the same texts: take one.</>
-          : <>The texts are split into {plural(parts.length, "part")} of about {plural(Math.round(shown.data.texts_per_part), "text")} each: download every part, in one of the two forms, to get the whole dataset.</>}</p>
+        meta={<>{parts.length > 1 && <span>{plural(parts.length, "part")}</span>}<span>{dataset.libraries.length === 1 ? "" : "about "}{plural(texts, "text")}</span>{mine.length > 0 && (size === null ? <span className="aside" title="This revision cannot say what its libraries held at the change it reads them at">characters unknown</span> : <CharactersNote found={size} />)}<Since since={shown.data.figures.since} />{(dataset.shares?.length || dataset.max_tokens) ? <span title="The shares' proportions and the token limit apply to corpora, not here">no shares, no size limit</span> : null}</>}
+        chain={<>The texts of the dataset as it is now, with no tokenizer and no size limit: every plain text a share takes, and every conversation and task. No build and no job is needed. The token files for training are on <a href={href(["download", dataset.id])}>its corpora page</a>.</>}
+        actions={<ButtonLink variant="quiet" href={href(["datasets", dataset.id])}>Back to {dataset.name}</ButtonLink>} />
+      <DatasetStages id={dataset.id} here="dataset" action="none" />
+      <Section title="Download" help={parts.length === 1 ? "One part holds the whole dataset, in two forms holding the same texts: take one." : `The texts are split into ${plural(parts.length, "part")} of about ${plural(Math.round(shown.data.texts_per_part), "text")} each: download every part, in one of the two forms, to get the whole dataset.`}>
+        {parts.length === 1 ? (
+          <>
+          <p className="small aside">{ceiling}</p>
+          <div className="export-choices">
+            {FORMS.map(([form, words, , button]) => (
+              <div key={form} className="export-choice">
+                <ExportButton file={parts[0].forms[form]} base={base} label={button} clicked={measuring.has(parts[0].forms[form].name)} gaveUp={readings >= MOST_READINGS}
+                  onClick={clicked} before={`${words} · `} />
+              </div>
+            ))}
+          </div>
+          </>
+        ) : (
+        <>
+        <p className="small aside">Every part, in one form; {ceiling}.</p>
         <div className="table-scroll">
           <table className="ledger-table" aria-label="The parts of its texts">
             <thead><tr><th scope="col" className="number">part</th>{FORMS.map(([form, words]) => <th key={form} scope="col">{words}</th>)}</tr></thead>
             <tbody>
               {parts.map((p) => (
                 <tr key={p.part}>
-                  <td className="number ledger">{parts.length === 1 ? "all" : `${p.part + 1} of ${parts.length}`}</td>
+                  <td className="number ledger">{`${p.part + 1} of ${parts.length}`}</td>
                   {FORMS.map(([form, , , button]) => (
-                    <td key={form}>
-                      <ButtonLink variant={form === FORMS[0][0] ? "primary" : "quiet"} href={`${base}/${part(p.forms[form].name)}`} download={p.forms[form].download}
-                        onClick={() => { setMeasuring(new Set([...measuring, p.forms[form].name])); setReadings(0); }}>{button}{parts.length > 1 ? `, part ${p.part + 1}` : ""}</ButtonLink>
-                      <br /><span className="aside small part-size">{p.forms[form].bytes !== null ? `${measuring.has(p.forms[form].name) ? "downloaded, " : ""}${bytes(p.forms[form].bytes!)}` : measuring.has(p.forms[form].name) ? (readings >= MOST_READINGS ? "reload the page for its size" : "downloading; its size shows once it is sent whole") : ceiling}</span>
-                      <br /><span className="aside small ledger">saved as {p.forms[form].download}</span>
+                    <td key={form} className="export-cell">
+                      <ExportButton file={p.forms[form]} base={base} label={`${button}, part ${p.part + 1}`} clicked={measuring.has(p.forms[form].name)} gaveUp={readings >= MOST_READINGS}
+                        onClick={clicked} before=" " />
                     </td>
                   ))}
                 </tr>
@@ -83,11 +99,14 @@ function Export({ id }: { id: string }) {
             </tbody>
           </table>
         </div>
-        {FORMS.some(([form]) => known(form).length === parts.length) && (
+        </>
+        )}
+        {parts.length > 1 && FORMS.some(([form]) => known(form).length === parts.length) && (
           <p className="small">In all: {FORMS.filter(([form]) => known(form).length === parts.length).map(([form, words]) => `${bytes(known(form).reduce((t, b) => t + b, 0))} as ${words}`).join(", ")}.</p>
         )}
       </Section>
-      <Section title="What the files hold">
+      <details className="fold small">
+        <summary className="cue">What the files hold</summary>
         <ul className="small">
           {FORMS.map(([form, name, what]) => <li key={form}><strong>{name}</strong> (<span className="ledger">.{form}</span>): {what}.</li>)}
         </ul>
@@ -96,7 +115,7 @@ function Export({ id }: { id: string }) {
           <dt className="aside ledger">depot</dt><dd>the depot that holds the text, by the name a corpus records for it</dd>
           <dt className="aside ledger">id</dt><dd>the text's id in that depot, the one its page in the workspace shows</dd>
           <dt className="aside ledger">revision</dt><dd>the revision of the text the dataset reads</dd>
-          <dt className="aside ledger">kind</dt><dd>empty for a plain text, else the item's kind, such as <span className="ledger">conversation</span> or <span className="ledger">task</span></dd>
+          <dt className="aside ledger">kind</dt><dd><span className="ledger">null</span> for a plain text, else the item's kind, such as <span className="ledger">conversation</span> or <span className="ledger">task</span></dd>
           <dt className="aside ledger">text</dt><dd>the plain text itself, or an item's content as JSON text</dd>
         </dl>
         <p className="small">Titles, authors, tags, licenses and notices are left out. Each text's page in the <a href={href(["texts"])}>workspace</a> shows them, and a corpus built from this dataset on <a href={href(["download", dataset.id])}>its corpora page</a> holds them as tables: its texts with their credits and licenses, the licenses' texts, and the notices.</p>
@@ -104,7 +123,19 @@ function Export({ id }: { id: string }) {
           <summary>More about the parts</summary>
           The texts are in a fixed shuffled order, and a part is made as it is sent, the same bytes every time, so its size is known after its first download. A text two libraries hold is counted twice above, so a part may hold a few fewer. At most two parts are sent at once, one to each visitor.
         </details>
-      </Section>
+      </details>
+    </>
+  );
+}
+
+// One file's download button, and its size beside it once read (clicked: it
+// was downloaded here; gaveUp: the page stopped reading its size).
+function ExportButton({ file, base, label, clicked, gaveUp, onClick, before }: { file: Form; base: string; label: string; clicked: boolean; gaveUp: boolean; onClick: (f: Form) => void; before: string }) {
+  const size = file.bytes !== null ? `${clicked ? "downloaded, " : ""}${bytes(file.bytes)}` : clicked ? (gaveUp ? "reload the page for its size" : "downloading") : null;
+  return (
+    <>
+      <ButtonLink variant="ink" href={`${base}/${part(file.name)}`} download={file.download} title={`saved as ${file.download}`} onClick={() => onClick(file)}>{label}</ButtonLink>
+      {size && <span className="small aside part-size">{before}{size}</span>}
     </>
   );
 }

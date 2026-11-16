@@ -2,9 +2,12 @@
 // one vocabulary the depot holds (by its sha256) and a size (a number of
 // tokens, or all). #/download/ID lists the corpora the store holds of the
 // dataset (GET /api/datasets/ID/download), one row per vocabulary and size,
-// each with its own page, and holds the form of a new build: a trained
-// vocabulary (the one the dataset publishes filled in when it has one), a
-// size (the dataset's max_tokens filled in when it has one),
+// each with its own page, under the dataset's stages (pipeline.tsx), and
+// under them, folded, the corpora of the dataset's older revisions (GET
+// /api/datasets/ID), and the form of a new build, folded once a corpus is built, and folded
+// behind the dataset's next step while it has no vocabulary of its own: a
+// trained vocabulary (the one the dataset publishes, else its own recipe's
+// latest, filled in), a size (the dataset's max_tokens filled in when it has one),
 // then "Estimate" (GET /api/datasets/ID/estimate: tokens, store bytes, time,
 // whether it fits under the store's cap), and only once an estimate is shown
 // "Confirm and build", right under the estimate's warnings and above its
@@ -35,10 +38,13 @@
 // the Export page.
 
 import { Button, ButtonLink, Select, Skeleton, TextInput } from "@workers-intelligence-commons/components";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { get, part, post, type Answer, type Job } from "../api";
-import { PageHead, plural, Problems, required, Section, takenWords, type Dataset } from "../parts";
+import { Cut, Help, PageHead, plural, Problems, required, Section, Stat, takenWords, type Dataset } from "../parts";
 import { href } from "../route";
+import { built, mixLine, MixBar, off, UNEVEN, whole, type Mixed } from "../mix";
+import { trainedWords, useCorpora, usePipeline, useRecipesAndVocabularies, vocabularyName, type BuiltCorpus, type Trained } from "../pipeline";
+import { DatasetStages } from "../stages";
 import { JobLine } from "./jobs";
 import type { Page } from "./index";
 
@@ -55,7 +61,6 @@ type Shown = {
   state: State; dataset: Dataset; vocabulary: Vocabulary; max_tokens: number | null; size: string; job: Job<unknown> | null;
   corpus: Corpus | null; files?: File[]; erasures?: string[]; problem?: string;
 };
-type Trained = { sha256: string; recipe: string; name: string | null; version: number; texts: number; made_at: string };
 type ShareForecast = { tag: string; tokens: number; part: number };
 type Estimate = {
   tokens: number; plain_tokens: number; item_tokens: number; item_share: number; share_tokens: ShareForecast[] | null; forecast: boolean | null;
@@ -79,7 +84,6 @@ export const duration = (seconds: number) => {
 };
 const sizeWords = (maxTokens: number | null) => (maxTokens === null ? "every token" : `at most ${plural(maxTokens, "token")}`);
 const vocabularyWords = (v: Vocabulary) => (v.recipe ? `${v.recipe} version ${v.version}` : "a vocabulary the depot does not hold");
-const percent = (n: number) => `${Math.round(n * 1000) / 10}\u00a0%`; // a no-break space: the number and % never part
 const fileSize = (n: number | null) => (n === null ? "size unknown" : bytes(n));
 
 // the tokens of a corpus's conversations and tasks
@@ -87,9 +91,8 @@ const itemTokens = (c: Corpus) => c.items_tokens ?? null;
 
 const QUICK = 100_000; // tokens a new build is filled in with when the dataset names no size: a quick test
 
-// UNEVEN: how far, in points, a share's part of the plain text may be from
+// UNEVEN (mix.tsx): how far, in points, a share's part of the plain text may be from
 // its proportion and still count as even (wpt_depot.estimate uses the same)
-const UNEVEN = 0.1;
 
 // The shares of a forecast that come out short: more than UNEVEN under their proportion of the plain text (the
 // others then hold more than theirs, which follows from it and is said by the numbers).
@@ -104,8 +107,9 @@ function offShares(e: Estimate): ShareForecast[] {
 // off its proportion, why and what to do. onSize: asks for the estimate of another size.
 function Forecast({ e, dataset, asked, onSize }: { e: Estimate; dataset: Dataset; asked: number | null; onSize: (tokens: number) => void }) {
   const off = asked === null ? [] : offShares(e);
-  const items = e.item_tokens > 0 ? `conversations and tasks about ${e.item_tokens.toLocaleString("en")}` : null;
-  const parts = [...(e.share_tokens ?? []).map((s) => `${s.tag} about ${s.tokens.toLocaleString("en")}`), ...(items ? [items] : [])];
+  // the mix said as every page says it (mix.tsx): the conversations' part of the whole, then each share's part of the plain text
+  const items = e.item_tokens > 0 ? `conversations ~${whole(e.item_share)}` : null;
+  const parts = [...(items ? [items] : []), ...(e.share_tokens ?? []).map((s) => `${s.tag} ~${whole(e.plain_tokens ? s.tokens / e.plain_tokens : 0)}`)];
   const head = asked === null ? `About ${plural(e.tokens, "token")}` : `About ${plural(e.tokens, "token")} of the ${asked.toLocaleString("en")} asked`;
   const empty = off.filter((s) => s.tokens === 0);
   return (
@@ -115,14 +119,11 @@ function Forecast({ e, dataset, asked, onSize }: { e: Estimate; dataset: Dataset
         {parts.length > 1 && <> <span className="aside">{parts.join(", ")}.</span></>}
       </p>
       {off.length > 0 && (
-        <>
-          <p className="small">Texts are never cut: a share stops at its first text that does not fit in what is left of its part, in the dataset's fixed order. Here {empty.length ? `an early ${empty.map((s) => s.tag).join(" or ")} text is` : "a long text comes"} too long for {off.length === 1 ? "its part" : "their parts"}, so the corpus holds fewer tokens than asked{e.item_tokens ? ", and the conversations take a bigger part of it" : ""}.</p>
-          <ul className="plain small choices">
-            {e.even_size !== null && asked !== null && e.even_size > asked && <li><Button variant="quiet" onClick={() => onSize(e.even_size!)}>Use {e.even_size.toLocaleString("en")} tokens</Button> the smallest size where every share's part of the plain text comes within {Math.round(UNEVEN * 100)} percentage points of the part it asks (a share of 60 % gets between 50 and 70 %), by the same forecast.</li>}
-            {!dataset.upstream && <li><a href={href(["datasets", dataset.id], { edit: "1" })}>Change the shares</a> of the dataset, lowering {off.map((s) => s.tag).join(" and ")}: a new revision, so the estimate is asked again after.</li>}
-            <li>Or keep this size: <q>Confirm and build</q> below builds this mix, and the corpus page shows the shares it got.</li>
-          </ul>
-        </>
+        <p className="row tight small">
+          <Help label="uneven shares">Texts are never cut: a share stops at its first text that does not fit in what is left of its part, in the dataset's fixed order. Here {empty.length ? `an early ${empty.map((s) => s.tag).join(" or ")} text is` : "a long text comes"} too long for {off.length === 1 ? "its part" : "their parts"}, so the corpus holds fewer tokens than asked{e.item_tokens ? ", and the conversations take a bigger part of it" : ""}. The even size is the smallest where every share's part of the plain text comes within {Math.round(UNEVEN * 100)} percentage points of the part it asks (a share of 60 % gets between 50 and 70 %), by the same forecast. Changing the shares makes a new revision of the dataset. Keeping this size builds this mix as forecast.</Help>
+          {e.even_size !== null && asked !== null && e.even_size > asked && <Button variant="quiet" onClick={() => onSize(e.even_size!)}>Use {e.even_size.toLocaleString("en")} tokens</Button>}
+          {!dataset.upstream && <a href={href(["datasets", dataset.id], { edit: "1" })}>Change the shares</a>}
+        </p>
       )}
     </div>
   );
@@ -137,30 +138,30 @@ function EstimateFacts({ e, limited }: { e: Estimate; limited: boolean }) {
     <dl className="facts">
       <dt className="aside">holds</dt>
       <dd>
-        about {plural(e.tokens, "token")} from about {e.item_texts || e.items_held ? <>{plural(e.plain_texts, "plain text")} and {e.item_texts.toLocaleString("en")} of the dataset's {plural(e.items_held, "conversation or task", "conversations and tasks")}</> : plural(e.plain_texts, "plain text")}:
+        about {plural(e.tokens, "token")}, from {e.item_texts || e.items_held ? <>{plural(e.plain_texts, "plain text")} and {e.item_texts.toLocaleString("en")} of {plural(e.items_held, "conversation or task", "conversations and tasks")}</> : plural(e.plain_texts, "plain text")}:
         <ul className="plain kinds">
-          {items && <li><span>conversations and tasks{limited ? <span className="aside"> (their part: {percent(e.item_share)} of the size, as in the corpus of every token)</span> : <span className="aside"> (every one)</span>}</span> <span className="ledger">about {e.item_tokens.toLocaleString("en")}</span></li>}
+          {items && <li><span>conversations and tasks{limited ? <span className="aside"> ~{whole(e.item_share)}</span> : null}<Help label="conversations and tasks">{limited ? `Their part: about ${whole(e.item_share)} of the size, as in the corpus of every token. A conversation is never cut, so at a small size a few long ones make the part swing.` : "Every one is taken."}</Help></span> <span className="ledger">about {e.item_tokens.toLocaleString("en")}</span></li>}
           {e.share_tokens?.length ? e.share_tokens.map((s) => (
-            <li key={s.tag}><span>plain text tagged {s.tag}{limited ? <span className="aside"> (its part: about {s.part.toLocaleString("en")})</span> : null}</span> <span className="ledger">about {s.tokens.toLocaleString("en")}</span></li>
+            <li key={s.tag}><span title={limited ? `target ${s.part.toLocaleString("en")} tokens` : undefined}>{s.tag}{limited && e.plain_tokens ? <span className="aside"> ~{whole(s.tokens / e.plain_tokens)} of the rest</span> : null}</span> <span className="ledger">about {s.tokens.toLocaleString("en")}</span></li>
           )) : <li><span>plain text</span> <span className="ledger">about {e.plain_tokens.toLocaleString("en")}</span></li>}
         </ul>
-        {limited && e.forecast === false && <p className="small aside">The dataset is long, so past its first 50,000 texts in order a part counts at its share of the size, not as the build will take it.</p>}
+        {limited && e.forecast === false && <p className="small aside">Rough past 50,000 texts.<Help label="the forecast">The dataset is long, so past its first 50,000 texts in order a part counts at its share of the size, not as the build will take it.</Help></p>}
       </dd>
-      <dt className="aside">store</dt><dd>about {bytes(e.bytes)}: {bytes(e.token_bytes)} of token files, and {bytes(e.table_bytes)} for the list of its texts with their credits and licenses</dd>
-      <dt className="aside">time</dt><dd>{e.seconds === null ? "unknown: the sample tokenized nothing" : `${e.seconds < 60 ? "" : "about "}${duration(e.seconds)} of tokenizing on this machine`}. Before it, the build reads the list of the dataset's {plural(e.order_texts, "text")} once to put them in order; that pass reads no text's content, and this estimate does not time it.</dd>
-      <dt className="aside">cap</dt><dd>{e.cap === null ? "no cap: the store keeps every corpus" : e.fits
-        ? <>fits under the store's cap of {bytes(e.cap)}{e.others !== null && <>; the other corpora take {bytes(e.others)}{e.evicts ? <>, and the build deletes about {bytes(e.evicts)} of the corpora downloaded least recently to make room</> : null}</>}</>
-        : <span className="not-allowed">more than the store's cap of {bytes(e.cap)} on its own: the build would be refused; choose a smaller size</span>}</dd>
+      <dt className="aside">store</dt><dd>about {bytes(e.bytes)}<Help label="the store's bytes">{bytes(e.token_bytes)} of token files, and {bytes(e.table_bytes)} for the list of its texts with their credits and licenses.</Help></dd>
+      <dt className="aside">time</dt><dd>{e.seconds === null ? "unknown: the sample tokenized nothing" : `${e.seconds < 60 ? "" : "about "}${duration(e.seconds)} on this machine`}<Help label="the time">Of tokenizing. Before it, the build reads the list of the dataset's {plural(e.order_texts, "text")} once to put them in order; that pass reads no text's content, and this estimate does not time it.</Help></dd>
+      <dt className="aside">cap</dt><dd>{e.cap === null ? "no cap" : e.fits
+        ? <>fits under {bytes(e.cap)}{e.others !== null && <>; others take {bytes(e.others)}{e.evicts ? <>; deletes about {bytes(e.evicts)} of old corpora<Help label="the deletion">To make room, the build deletes the corpora downloaded least recently.</Help></> : null}</>}</>
+        : <span className="not-allowed">over the cap of {bytes(e.cap)}: choose a smaller size</span>}</dd>
       {e.store && <><dt className="aside">store</dt><dd className="not-allowed">{e.store}</dd></>}
-      <dt className="aside">basis</dt><dd className="small">Estimated from {plural(e.sample.tokenized, "text")} ({bytes(e.sample.bytes)}) tokenized in {e.sample.seconds} s, out of a sample of {plural(e.sample.texts, "text")}; the build's counts can differ a little.{e.warnings.map((w) => <span key={w}> {w}.</span>)}</dd>
+      <dt className="aside">basis</dt><dd className="small">a sample of {plural(e.sample.texts, "text")}<Help label="the basis">Estimated from {plural(e.sample.tokenized, "text")} ({bytes(e.sample.bytes)}) tokenized in {e.sample.seconds} s, out of a sample of {plural(e.sample.texts, "text")}; the build's counts can differ a little.</Help>{e.warnings.map((w) => <span key={w} className="not-allowed"> {w}.</span>)}</dd>
     </dl>
   );
 }
 
 // The form of a new build: a vocabulary, a size, an estimate, then the confirmed start under it, followed to its end.
 // onDataset: after the size is made the dataset's default, a new revision of it, to read it again.
-function NewBuild({ dataset, open, startSize, onStarted, onDataset }: { dataset: Dataset; open: Job<unknown> | null; startSize: string | null; onStarted: (job: Job<unknown>) => void; onDataset: () => void }) {
-  const [trained, setTrained] = useState<Answer<Trained[]> | null>(null);
+function NewBuild({ dataset, open, startSize, onStarted, onDataset, quiet = false }: { dataset: Dataset; open: Job<unknown> | null; startSize: string | null; onStarted: (job: Job<unknown>) => void; onDataset: () => void; quiet?: boolean }) {
+  const { trained } = useRecipesAndVocabularies();
   const [vocabulary, setVocabulary] = useState("");
   const [all, setAll] = useState(false);
   const given = startSize && Number.isInteger(Number(startSize)) && Number(startSize) >= 1 ? startSize : null;
@@ -183,12 +184,16 @@ function NewBuild({ dataset, open, startSize, onStarted, onDataset }: { dataset:
     setDefaulted(a);
     if (a.ok) onDataset();
   };
+  // the vocabulary chosen first: the published one, else its own recipe's latest, else any; chosen again
+  // when the dataset's recipe or published vocabulary changes, or the one chosen is gone
+  const chosenFor = useRef("");
   useEffect(() => {
-    get<Trained[]>("/api/vocabularies").then((a) => {
-      setTrained(a);
-      if (a.ok && a.data.length) setVocabulary((a.data.find((v) => v.sha256 === dataset.vocabulary) ?? a.data.find((v) => v.name === dataset.tokenizer) ?? a.data[0]).sha256);
-    });
-  }, [dataset.tokenizer, dataset.vocabulary]);
+    if (!trained?.ok || !trained.data.length) return;
+    const key = `${dataset.tokenizer}\u0000${dataset.vocabulary}`;
+    if (chosenFor.current === key && trained.data.some((v) => v.sha256 === vocabulary)) return;
+    chosenFor.current = key;
+    setVocabulary((trained.data.find((v) => v.sha256 === dataset.vocabulary) ?? trained.data.filter((v) => v.name === dataset.tokenizer).at(-1) ?? trained.data[0]).sha256);
+  }, [trained, dataset.tokenizer, dataset.vocabulary, vocabulary]);
   const size = all ? "all" : limit.trim();
   const estimatedGiven = useRef(false); // the size the address named is estimated once, as soon as a vocabulary is chosen
   useEffect(() => {
@@ -218,34 +223,34 @@ function NewBuild({ dataset, open, startSize, onStarted, onDataset }: { dataset:
   };
   if (!trained) return <Skeleton lines={3} label="Reading the vocabularies" />;
   if (!trained.ok) return <Problems problems={trained.problems} />;
-  if (trained.data.length === 0) return <p>No vocabulary is trained yet, and a build needs one. <a href={href(["tokenizers", dataset.tokenizer])}>Train the vocabulary of {dataset.tokenizer}</a> first; a build never trains one.</p>;
+  if (trained.data.length === 0) return <p>No vocabulary is trained here, and a build needs one. <a href={href(["tokenizers", dataset.tokenizer])}>Train the vocabulary of {dataset.tokenizer}</a> first; a build never trains one.</p>;
   const chosen = trained.data.find((v) => v.sha256 === vocabulary);
+  // published first, then the dataset's own recipe's, then the others
+  const rank = (v: Trained) => (v.sha256 === dataset.vocabulary ? 0 : v.name === dataset.tokenizer ? 1 : 2);
+  const ordered = [...trained.data].sort((a, b) => rank(a) - rank(b));
   const busy = Boolean(open);
   return (
     <form className="new-build" onSubmit={(e) => { e.preventDefault(); if (valid) ask(); }}>
       <div className="fields roomy">
-        <Select label={required("Vocabulary")} required value={vocabulary} onChange={(e) => { setVocabulary(e.target.value); clear(); }}
-          hint={dataset.vocabulary ? "The one the dataset publishes, which model training takes, is filled in." : "The dataset publishes no vocabulary yet; any trained one can build a corpus."}>
-          {trained.data.map((v) => <option key={v.sha256} value={v.sha256}>{v.name ?? v.recipe} version {v.version}{v.sha256 === dataset.vocabulary ? " (published)" : ""}</option>)}
+        <Select label={required("Vocabulary")} required value={vocabulary} onChange={(e) => { setVocabulary(e.target.value); clear(); }}>
+          {ordered.map((v) => <option key={v.sha256} value={v.sha256}>{v.name ?? v.recipe} version {v.version}{v.sha256 === dataset.vocabulary ? " (published)" : v.name === dataset.tokenizer ? "" : ", another recipe's"}</option>)}
         </Select>
-        <Select label={required("Size")} value={all ? "all" : "limit"} onChange={(e) => { setAll(e.target.value === "all"); clear(); }}
-          hint="Every token the dataset's rules take, or at most a number of tokens.">
+        <Select label={required("Size")} value={all ? "all" : "limit"} onChange={(e) => { setAll(e.target.value === "all"); clear(); }}>
           <option value="limit">a number of tokens</option>
           <option value="all">every token</option>
         </Select>
         {!all && <TextInput label={required("Most tokens")} required type="number" min="1" step="1" value={limit} onChange={(e) => { setLimit(e.target.value); clear(); }}
-          hint={given && limit === given ? "The size the corpus page offered is filled in." : dataset.max_tokens && limit === String(dataset.max_tokens) ? `The dataset's default size, ${dataset.max_tokens.toLocaleString("en")}, is filled in.` : !dataset.max_tokens && limit === String(QUICK) ? `The dataset names no default size; ${QUICK.toLocaleString("en")} tokens is a quick test.` : "The corpus never passes it."} />}
+          hint={given && limit === given ? "From the corpus page." : dataset.max_tokens && limit === String(dataset.max_tokens) ? "The dataset's default." : !dataset.max_tokens && limit === String(QUICK) ? "A quick test." : undefined} />}
       </div>
       {!all && !dataset.upstream && valid && Number(limit) !== dataset.max_tokens && (
         <p className="small row tight">
-          <span className="aside">A new corpus of {dataset.name} starts at {dataset.max_tokens ? plural(dataset.max_tokens, "token") : "no set size"}.</span>
-          <Button variant="quiet" disabled={defaulting} onClick={makeDefault}>Make {Number(limit).toLocaleString("en")} tokens its default size</Button>
-          <span className="aside">A new revision of the dataset; its corpora stay as they are.</span>
+          <button type="button" className="link-button wic-focus" disabled={defaulting} onClick={makeDefault}>Make it the default size</button>
+          <Help label="the default size">A new corpus of {dataset.name} starts at {dataset.max_tokens ? plural(dataset.max_tokens, "token") : "no set size"} now. Making {Number(limit).toLocaleString("en")} tokens its default is a new revision of the dataset; its corpora stay as they are.</Help>
         </p>
       )}
       {defaulted && !defaulted.ok && <Problems problems={defaulted.problems} />}
-      {defaulted?.ok && Number(limit) === dataset.max_tokens && <p className="small done" role="status">{dataset.name} now starts a new corpus at {plural(dataset.max_tokens, "token")}.</p>}
-      <Button type="submit" variant={estimate?.ok ? "quiet" : "primary"} disabled={!valid || estimating}>{estimating ? "Estimating" : estimate?.ok ? "Estimate again" : "Estimate"}</Button>
+      {defaulted?.ok && Number(limit) === dataset.max_tokens && <p className="small done" role="status">Default size: {plural(dataset.max_tokens, "token")}.</p>}
+      <Button type="submit" variant={estimate?.ok || quiet ? "quiet" : "primary"} disabled={!valid || estimating}>{estimating ? "Estimating" : estimate?.ok ? "Estimate again" : "Estimate"}</Button>
       {estimate && !estimate.ok && <Problems problems={estimate.problems} />}
       {estimate?.ok && (
         <div className="estimate">
@@ -254,7 +259,7 @@ function NewBuild({ dataset, open, startSize, onStarted, onDataset }: { dataset:
             <Button variant="primary" disabled={!estimate.data.fits || busy || starting} onClick={start}>
               Confirm and build{chosen ? ` with ${chosen.name ?? chosen.recipe} version ${chosen.version}` : ""}
             </Button>
-            <span className="small aside">{busy ? "A build of this dataset waits or runs: one at a time." : `Queues the build of about ${plural(estimate.data.tokens, "token")}, ${bytes(estimate.data.bytes)} in the store. It cannot be cancelled here.`}</span>
+            <span className="small aside">{busy ? "Another build of it waits or runs." : `${bytes(estimate.data.bytes)}; cannot be cancelled here.`}</span>
           </div>
           <EstimateFacts e={estimate.data} limited={!all} />
         </div>
@@ -269,6 +274,7 @@ function NewBuild({ dataset, open, startSize, onStarted, onDataset }: { dataset:
 function Listing({ id, size }: { id: string; size: string | null }) {
   const [listed, setListed] = useState<Answer<Listed> | null>(null);
   const [mine, setMine] = useState<Job<unknown> | null>(null); // the build the form below started, followed at the top
+  const every = useCorpora([id]).get(id); // the corpora of every revision, for those of older revisions
   const load = useCallback(() => { get<Listed>(`/api/datasets/${part(id)}/download`).then(setListed); }, [id]);
   useEffect(load, [load]);
   useEffect(() => {  // a build or an erasure's marking under way: read again until it ends
@@ -279,44 +285,103 @@ function Listing({ id, size }: { id: string; size: string | null }) {
   if (!listed) return <Skeleton lines={6} label="Reading the dataset's corpora" />;
   if (!listed.ok) return <Problems problems={listed.problems} />;
   const { state, dataset, corpora, job } = listed.data;
+  const built = corpora.filter((c) => c.state === "built").length;
+  const build = (
+    <NewBuild dataset={dataset} open={job} startSize={size} onDataset={load} quiet={built > 0}
+      onStarted={(j) => { setMine(j); load(); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
+  );
   return (
     <>
-      <PageHead title={`Corpora of ${dataset.name}`} meta={<><span>{plural(corpora.filter((c) => c.state === "built").length, "corpus", "corpora")} built</span>{job && <span className="cue">1 {job.state === "queued" ? "waiting its turn" : "being built"}</span>}</>}
-        chain={<>The token files of the <a href={href(["datasets", dataset.id])}>dataset {dataset.name}</a> for training, one corpus per vocabulary and size, each at an address that stays the same whatever is built next. Its texts, with no tokenizer, are on <a href={href(["export", dataset.id])}>its export page</a>.</>} />
+      <PageHead title={`Corpora of ${dataset.name}`} meta={job ? <span className="cue">1 {job.state === "queued" ? "waiting its turn" : "being built"}</span> : undefined}
+        chain={<>The token files of the dataset for training, one corpus per vocabulary and size, each at an address that stays the same whatever is built next. Its texts, with no tokenizer, are on <a href={href(["export", dataset.id])}>its export page</a>.</>} />
+      <DatasetStages id={dataset.id} here="corpus" action="none" />
       {state === "no store" && <Problems problems={[listed.data.problem ?? "the store cannot be read here"]} />}
-      {state === "checking an erasure" && <p>Checking an erasure: the corpora holding a text of {listed.data.erasures?.join(", ")} are being marked stale. Nothing is sent until that ends.</p>}
+      {state === "checking an erasure" && <p>Checking erasure {listed.data.erasures?.join(", ")}: downloads wait.</p>}
       {mine && <JobLine key={mine.id} job={mine} onEnded={load} />}
       {job && job.id !== mine?.id && <JobLine key={job.id} job={job} onEnded={load} />}
-      <Section title="Corpora built">
-        {corpora.length === 0 ? <p className="small">No corpus is built yet: the form below builds the first.</p> : (
+      {corpora.length > 0 && (
+        <Section title="Corpora built">
           <div className="table-scroll cards">
             <table className="ledger-table" aria-label="The corpora of the dataset">
-              <thead><tr><th scope="col">vocabulary</th><th scope="col">size</th><th scope="col">state</th><th scope="col" className="number">texts</th><th scope="col" className="number">tokens of plain text</th><th scope="col" className="number">tokens of conversations and tasks</th><th scope="col" className="number">tokens in all</th><th scope="col">shares got</th><th scope="col"><span className="visually-hidden">download</span></th></tr></thead>
+              <thead><tr><th scope="col">vocabulary</th><th scope="col">size</th><th scope="col">state</th><th scope="col" className="number">texts</th><th scope="col" className="number">tokens</th><th scope="col">mix</th><th scope="col"><span className="visually-hidden">download</span></th></tr></thead>
               <tbody>
                 {corpora.map((c) => (
                   <tr key={c.link}>
                     <td data-label="vocabulary"><a href={corpusHref(dataset.id, c, corpora)}>{vocabularyWords(c.vocabulary)}</a></td>
                     <td data-label="size">{sizeWords(c.max_tokens)}</td>
-                    <td data-label="state" className={c.state === "stale" ? "not-allowed" : ""}>{c.state}</td>
-                    <td data-label="texts" className="small">{c.corpus?.texts !== undefined ? takenWords(c.corpus.texts, c.corpus.conversations, c.corpus.tasks) : ""}</td>
-                    <td data-label="plain text" className="number ledger">{c.corpus?.total_tokens?.toLocaleString("en") ?? ""}</td>
-                    <td data-label="conversations and tasks" className="number ledger" title={c.corpus?.conversations !== undefined ? plural(c.corpus.conversations, "conversation") : undefined}>{c.corpus ? itemTokens(c.corpus)?.toLocaleString("en") ?? "" : ""}</td>
-                    <td data-label="in all" className="number ledger">{c.corpus ? ((c.corpus.total_tokens ?? 0) + (itemTokens(c.corpus) ?? 0)).toLocaleString("en") : ""}</td>
-                    <td data-label="shares got" className="small wrap-cell">{sharesGotWords(dataset, c.corpus)}</td>
-                    <td data-label="">{c.state === "built" && <ButtonLink variant="quiet" href={corpusHref(dataset.id, c, corpora)}>Download</ButtonLink>}</td>
+                    <td data-label="state" className={c.state === "stale" ? "not-allowed" : ""}>{c.state}{c.state === "stale" && c.corpus?.stale && <>: {c.corpus.stale.erasures.map((e, i) => <span key={e}>{i > 0 && ", "}<a href={href(["erasures"], { request: e })}>{e}</a></span>)}</>}</td>
+                    <td data-label="texts" className="number ledger" title={c.corpus?.texts !== undefined ? takenWords(c.corpus.texts, c.corpus.conversations, c.corpus.tasks) : undefined}>{c.corpus?.texts?.toLocaleString("en") ?? ""}</td>
+                    <td data-label="tokens" className="number ledger" title={c.corpus ? `${(c.corpus.total_tokens ?? 0).toLocaleString("en")} of plain text, ${(itemTokens(c.corpus) ?? 0).toLocaleString("en")} of conversations and tasks` : undefined}>{c.corpus ? ((c.corpus.total_tokens ?? 0) + (itemTokens(c.corpus) ?? 0)).toLocaleString("en") : ""}</td>
+                    <td data-label="mix" className="small">{c.corpus ? mixLine(mixOf(dataset, c.corpus)) : ""}</td>
+                    <td data-label="">{c.state === "built" && <ButtonLink variant="ink" href={corpusHref(dataset.id, c, corpora)}>Download</ButtonLink>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        )}
-      </Section>
-      <Section title="New build">
-        <p className="small aside">A build names a trained vocabulary and a size. It starts only after its estimate is shown and confirmed.</p>
-        <NewBuild dataset={dataset} open={job} startSize={size} onDataset={load} onStarted={(j) => { setMine(j); load(); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
-      </Section>
+        </Section>
+      )}
+      <BuildPlace dataset={dataset} built={built > 0}>{build}</BuildPlace>
+      <OlderCorpora dataset={dataset} corpora={every} />
     </>
   );
+}
+
+// The corpora built from the dataset's older revisions, folded: this page's
+// list and the corpus pages serve only the current revision, and wpt train
+// still takes one of them by its id. Each says its id, the revision it was
+// built from, its vocabulary and size, what it holds, when it was built, and
+// whether it is deleted (and why) or stale (and the erasures that made it so).
+function OlderCorpora({ dataset, corpora }: { dataset: Dataset; corpora: BuiltCorpus[] | null | undefined }) {
+  const { trained } = useRecipesAndVocabularies();
+  const older = (corpora ?? []).filter((c) => c.revision < dataset.revision);
+  if (older.length === 0) return null;
+  const words = (sha256: string) => { const v = trained?.ok ? trained.data.find((t) => t.sha256 === sha256) : undefined; return v ? trainedWords(v) : <span className="ledger">{sha256.slice(0, 12)}</span>; };
+  return (
+    <details className="fold small">
+      <summary className="cue">Of older revisions: {plural(older.length, "corpus", "corpora")}</summary>
+      <div className="table-scroll cards">
+        <table className="ledger-table" aria-label="The corpora of older revisions of the dataset">
+          <thead><tr><th scope="col">corpus id</th><th scope="col" className="number">revision</th><th scope="col">vocabulary, size</th><th scope="col" className="number">texts</th><th scope="col" className="number">tokens</th><th scope="col">built (UTC)</th><th scope="col">state</th></tr></thead>
+          <tbody>
+            {older.map((c) => (
+              <tr key={c.id}>
+                <td className="ledger" data-label=""><Cut text={c.id} /></td>
+                <td className="number ledger" data-label="revision">{c.revision}</td>
+                <td data-label="vocabulary, size">{words(c.vocabulary)}, {sizeWords(c.max_tokens)}</td>
+                <td className="number ledger" data-label="texts" title={takenWords(c.texts, c.conversations)}>{c.texts.toLocaleString("en")}</td>
+                <td className="number ledger" data-label="tokens">{(c.total_tokens + (c.items_tokens ?? 0)).toLocaleString("en")}</td>
+                <td className="ledger nowrap" data-label="built (UTC)">{c.built_at.replace("T", " ").slice(0, 16)}</td>
+                <td data-label="state">{c.deleted ? <span className="aside">deleted: {c.deleted.why}</span>
+                  : c.stale ? <span className="not-allowed">stale: {c.stale.erasures.map((e, i) => <span key={e}>{i > 0 && ", "}<a href={href(["erasures"], { request: e })}>{e}</a></span>)}</span> : "fresh"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+// Where the form of a new build sits: in its own block while nothing is
+// built; folded once a corpus is built, so its download leads the page; and
+// while the dataset has no vocabulary of its own yet, folded behind its next
+// step, since a build then takes another recipe's vocabulary.
+function BuildPlace({ dataset, built, children }: { dataset: Dataset; built: boolean; children: ReactNode }) {
+  const at = usePipeline(dataset);
+  if (!at) return null;
+  const ownMissing = !dataset.vocabulary && at.own.length === 0;
+  if (ownMissing) return (
+    <Section title="Needs a vocabulary first">
+      <p className="row tight">{at.next ? <ButtonLink variant="primary" href={at.next.href}>{at.next.label}</ButtonLink> : <span className="aside">Vocabulary: {at.vocabulary.word}</span>}</p>
+      <details className="small">
+        <summary className="cue">Build with another recipe's vocabulary</summary>
+        {children}
+      </details>
+    </Section>
+  );
+  if (built) return <details className="fold"><summary className="cue">New build</summary>{children}</details>;
+  return <Section title="New build" help="A build names a trained vocabulary and a size. It starts only after its estimate is shown and confirmed.">{children}</Section>;
 }
 
 function OneCorpus({ id, vocabulary, size }: { id: string; vocabulary: string; size: string }) {
@@ -335,16 +400,36 @@ function OneCorpus({ id, vocabulary, size }: { id: string; vocabulary: string; s
   return (
     <>
       <PageHead title={`Corpus of ${dataset.name}`}
-        meta={<><span>{vocabularyWords(shown.data.vocabulary)}</span><span>{sizeWords(shown.data.max_tokens)}</span><span className="cue">{state}</span></>}
-        chain={<>The corpus of the <a href={href(["datasets", dataset.id])}>dataset {dataset.name}</a> as it is now, with the vocabulary {vocabularyWords(shown.data.vocabulary)}, {sizeWords(shown.data.max_tokens)}. This address stays the same whatever is built next, so it can be shared. <a href={href(["download", dataset.id])}>Its other corpora, and a new build</a>.</>}
-        actions={<CopyLink />} />
+        meta={<><span>{vocabularyWords(shown.data.vocabulary)}</span><span>{sizeWords(shown.data.max_tokens)}</span><span className="cue">{state}</span>{corpus?.built_at && state === "built" && <span>{corpus.built_at.replace("T", " ").slice(0, 16)} UTC</span>}</>}
+        chain={<>The corpus of the <a href={href(["datasets", dataset.id])}>dataset {dataset.name}</a> as it is now. This address stays the same whatever is built next, so it can be shared.</>}
+        actions={<><CopyLink /><ButtonLink variant="quiet" href={href(["download", dataset.id])}>Other corpora</ButtonLink></>} />
+      <DatasetStages id={dataset.id} here="corpus" action="none" />
       {state === "no store" && <Problems problems={[shown.data.problem ?? "the store cannot be read here"]} />}
-      {state === "checking an erasure" && <p>Checking an erasure: the corpora holding a text of {shown.data.erasures?.join(", ")} are being marked stale. Nothing is sent until that ends.</p>}
-      {state === "being built" && job && <><JobLine key={job.id} job={job} onEnded={load} /><p className="small">Nothing to download until it ends.</p></>}
-      {state === "stale" && <p>Stale: an admitted erasure reached a text of its latest corpus{corpus?.stale ? <> ({corpus.stale.erasures.join(", ")})</> : null}. Nothing to download until it is built again, which nothing starts by itself.</p>}
-      {state === "not built" && <p>Not built{corpus?.deleted ? <>: its latest corpus was deleted ({corpus.deleted.why})</> : <> from the dataset as it is now</>}. Nothing to download; <a href={href(["download", dataset.id])}>a new build</a> starts one, after its estimate.</p>}
+      {state === "checking an erasure" && <p>Checking erasure {shown.data.erasures?.join(", ")}: downloads wait.</p>}
+      {state === "being built" && job && <JobLine key={job.id} job={job} onEnded={load} />}
+      {state === "stale" && <p className="not-allowed">Stale{corpus?.stale ? <> ({corpus.stale.erasures.join(", ")})</> : null}: <a href={href(["download", dataset.id])}>build it again</a> to download.<Help label="a stale corpus">An admitted erasure reached a text of its latest corpus. Nothing starts a new build by itself.</Help></p>}
+      {state === "not built" && <p>Not built{corpus?.deleted ? <> (deleted: {corpus.deleted.why})</> : null}. <a href={href(["download", dataset.id])}>Build one</a>.</p>}
       {state === "built" && corpus && <Built corpus={corpus} files={shown.data.files!} base={base} dataset={dataset} asked={shown.data.max_tokens} vocabulary={vocabulary} />}
     </>
+  );
+}
+
+// A button that copies, for a terminal, one curl command per file of the
+// corpus, each saving under the name the page gives it; its "?" names the
+// training command that reads the corpus.
+function CopyCommands({ files, base, corpus }: { files: File[]; base: string; corpus: string }) {
+  const [copied, setCopied] = useState<boolean | null>(null);
+  const quote = (t: string) => `'${t.replace(/'/g, "'\\''")}'`;
+  const lines = files.map((f) => `curl -fL -o ${quote(f.download)} ${quote(new URL(`${base}/files/${part(f.name)}`, window.location.href).href)}`);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(`${lines.join("\n")}\n`); setCopied(true); } catch { setCopied(false); }
+  };
+  return (
+    <span className="row tight">
+      <Button variant="quiet" onClick={copy}>{copied === null ? "Copy the download commands" : copied ? "Commands copied" : "Copying refused: select them below"}</Button>
+      <Help label="training on it">Training reads it from the store: <span className="ledger">uv run wpt train RECIPE {corpus.slice(0, 12)}</span>.</Help>
+      {copied === false && <pre className="remote ledger small copy-by-hand" tabIndex={0}>{lines.join("\n")}</pre>}
+    </span>
   );
 }
 
@@ -365,19 +450,10 @@ function corpusHref(id: string, c: Row, rows: Row[]): string {
   return href(["download", id, alone ? name! : c.vocabulary.sha256, c.size]);
 }
 
-// The shares a built corpus got, each as a part of its plain text, beside
-// the share asked when it differs by more than UNEVEN ("code 0 % of 60 %").
-function sharesGotWords(dataset: Dataset, corpus: Corpus | null): string {
-  const got = corpus?.shares_tokens;
-  const built = got?.reduce((t, s) => t + s.tokens, 0) ?? 0;
-  if (!got?.length || !built) return "";
-  const asked = dataset.shares ?? [];
-  const whole = asked.reduce((t, s) => t + s.share, 0) || 1;
-  return got.map((s) => {
-    const share = s.tokens / built;
-    const wanted = (asked.find((a) => a.tag === s.tag)?.share ?? 0) / whole;
-    return Math.abs(share - wanted) > UNEVEN ? `${s.tag} ${percent(share)} of ${percent(wanted)} asked` : `${s.tag} ${percent(share)}`;
-  }).join(", ");
+// The mix a built corpus got (mix.tsx): its conversations and tasks, a part
+// of all its tokens, and each share, a part of its plain tokens, beside the part asked.
+function mixOf(dataset: Dataset, corpus: Corpus | null): Mixed {
+  return built(dataset.shares ?? null, corpus?.shares_tokens, corpus ? itemTokens(corpus) ?? 0 : 0, Boolean(corpus?.tasks), corpus?.total_tokens ?? 0);
 }
 
 // The shares a dataset asks for and those a built corpus got, each as a
@@ -385,34 +461,27 @@ function sharesGotWords(dataset: Dataset, corpus: Corpus | null): string {
 // When one is, it asks the estimate of the corpus's vocabulary and size for
 // the size where every share comes even (even_size), the number the build
 // form offers for that size.
-function SharesGot({ asked, got, dataset, vocabulary, size }: { asked: { tag: string; share: number }[]; got: { tag: string; tokens: number }[]; dataset: Dataset; vocabulary: string; size: number | null }) {
-  const whole = asked.reduce((t, s) => t + s.share, 0) || 1;
-  const built = got.reduce((t, s) => t + s.tokens, 0);
-  const rows = asked.map((s) => ({ tag: s.tag, asked: s.share / whole, got: (got.find((g) => g.tag === s.tag)?.tokens ?? 0) / built }));
-  const off = rows.some((r) => Math.abs(r.asked - r.got) > UNEVEN);
+function MixStat({ corpus, dataset, vocabulary, size }: { corpus: Corpus; dataset: Dataset; vocabulary: string; size: number | null }) {
+  const m = mixOf(dataset, corpus);
+  const uneven = off(m);
   const [even, setEven] = useState<number | null>(null);
   useEffect(() => {
-    if (!off || size === null) return;
+    if (!uneven || size === null) return;
     get<Estimate>(`/api/datasets/${part(dataset.id)}/estimate?vocabulary=${part(vocabulary)}&max_tokens=${size}`)
       .then((a) => setEven(a.ok && a.data.even_size !== null && a.data.even_size > size ? a.data.even_size : null));
-  }, [off, size, dataset.id, vocabulary]);
-  const rebuild = even;
-  if (!built) return null;
+  }, [uneven, size, dataset.id, vocabulary]);
+  if (!m.items && !m.shares.length) return null;
   return (
-    <div className={off ? "warning" : undefined}>
-      <p className="small">
-        {off ? <strong>Shares asked {rows.map((r) => percent(r.asked)).join(" / ")}, got {rows.map((r) => percent(r.got)).join(" / ")} </strong> : <>Shares asked {rows.map((r) => percent(r.asked)).join(" / ")}, got {rows.map((r) => percent(r.got)).join(" / ")} </>}
-        ({rows.map((r) => r.tag).join(" / ")}).
-        {off && <> Texts are never cut, and a share stops at its first text that does not fit in what is left of its part, so at a small size one long text can end a share early. A bigger size keeps closer to the shares.</>}
-        {off && got.length > 0 && <> When the plain text comes out short, the conversations and tasks hold a bigger part of the corpus than in the estimate, since their tokens stay the same.</>}
-      </p>
-      {off && (
-        <p className="row tight small">
-          {rebuild !== null && <ButtonLink variant="quiet" href={href(["download", dataset.id], { size: String(rebuild) })}>Estimate a build at {plural(rebuild, "token")}</ButtonLink>}
-          {rebuild !== null && <span className="aside">the smallest size where every share comes within {Math.round(UNEVEN * 100)} percentage points of the part it asks, by the build estimate's forecast;</span>}
-          {!dataset.upstream && <a href={href(["datasets", dataset.id], { edit: "1" })}>change the shares</a>}
-          <span className="aside">{dataset.upstream ? "" : "or "}keep this corpus as it is.</span>
-        </p>
+    <div className={`stat stat-mix${uneven ? " stat-off" : ""}`}>
+      <MixBar m={m} />
+      <span className="stat-label small">mix got
+        {uneven && <Help label="uneven shares">Texts are never cut, and a share stops at its first text that does not fit in what is left of its part, so at a small size one long text can end a share early. A bigger size keeps closer to the shares.{even !== null && ` ${plural(even, "token")} is the smallest size where every share comes within ${Math.round(UNEVEN * 100)} percentage points of the part it asks, by the build estimate's forecast.`}</Help>}
+      </span>
+      {uneven && (
+        <span className="row tight small">
+          {even !== null && <a href={href(["download", dataset.id], { size: String(even) })}>Estimate {plural(even, "token")}</a>}
+          {!dataset.upstream && <a href={href(["datasets", dataset.id], { edit: "1" })}>Change the shares</a>}
+        </span>
       )}
     </div>
   );
@@ -442,21 +511,18 @@ function Built({ corpus, files, base, dataset, asked, vocabulary }: { corpus: Co
   const plain = corpus.total_tokens ?? 0;
   const items = itemTokens(corpus);
   const inAll = plain + (items ?? 0);
-  const tasks = files.some((f) => f.role === "tasks");
   return (
     <>
-      <p>
-        {takenWords(corpus.texts ?? 0, corpus.conversations, corpus.tasks)}: {plural(plain, "token")} of plain text
-        {corpus.shares_tokens?.length ? <> ({corpus.shares_tokens.map((s) => `${s.tag} ${s.tokens.toLocaleString("en")}`).join(", ")})</> : null}
-        {items !== null && items > 0 ? <>, and {plural(items, "token")} of conversations{tasks ? " and tasks" : ""}{inAll ? <> ({percent(items / inAll)} of its tokens)</> : null}</> : null}.
-        {" "}<span className="aside">Built {corpus.built_at.replace("T", " ").slice(0, 16)} UTC; {bytes(total)} in all.</span>
-      </p>
-      {asked !== null && items !== null && <p className="small aside">{plural(inAll, "token")} in all, of the {plural(asked, "token")} at most asked for; the conversations and tasks take their share of the corpus of every token, the plain text the rest.</p>}
-      {dataset.shares?.length && corpus.shares_tokens?.length ? <SharesGot asked={dataset.shares} got={corpus.shares_tokens} dataset={dataset} vocabulary={vocabulary} size={asked} /> : null}
-      <Section title="Its files">
-        <p className="small aside">The token files are what training reads; the tables say what the tokens came from. The token files and the tables are Parquet, the vocabulary is JSON, and the tasks are JSON lines.</p>
+      <div className="stats">
+        <Stat value={inAll.toLocaleString("en")} label={asked !== null ? `tokens of ${asked.toLocaleString("en")} asked` : "tokens"} />
+        <Stat value={(corpus.texts ?? 0).toLocaleString("en")} label={corpus.conversations || corpus.tasks ? takenWords(corpus.texts ?? 0, corpus.conversations, corpus.tasks) : "plain texts"} />
+        <Stat value={bytes(total)} label="in all files" />
+        <MixStat corpus={corpus} dataset={dataset} vocabulary={vocabulary} size={asked} />
+      </div>
+      <Section title="Files" help="The token files are what training reads; the tables say what the tokens came from. The token files and the tables are Parquet, the vocabulary is JSON, and the tasks are JSON lines."
+        tools={<CopyCommands files={sorted} base={base} corpus={corpus.id} />}>
         <div className="table-scroll cards">
-          <table className="ledger-table" aria-label="The corpus's files">
+          <table className="ledger-table files-table" aria-label="The corpus's files">
             <thead><tr><th scope="col">what it is</th><th scope="col" className="number">size</th><th scope="col"><span className="visually-hidden">download</span></th><th scope="col">saved as</th></tr></thead>
             <tbody>
               {sorted.map((f) => {
@@ -465,8 +531,8 @@ function Built({ corpus, files, base, dataset, asked, vocabulary }: { corpus: Co
                   <tr key={f.name}>
                     <td className="wrap-cell" data-label="">{r.tokens ? <strong>{r.what}</strong> : r.what}{f.tokens !== null && r.tokens ? <span className="aside">, {plural(f.tokens, "token")}</span> : null}</td>
                     <td className="number ledger" data-label="size">{fileSize(f.bytes)}</td>
-                    <td data-label=""><ButtonLink variant={r.tokens ? "primary" : "quiet"} href={`${base}/files/${part(f.name)}`} download={f.download}>Download</ButtonLink></td>
-                    <td className="ledger small aside file-name" data-label="saved as" title={`stored as ${f.name}, sha256 ${f.sha256}`}>{f.download}</td>
+                    <td data-label=""><ButtonLink variant={r.tokens ? "ink" : "quiet"} href={`${base}/files/${part(f.name)}`} download={f.download}>Download</ButtonLink></td>
+                    <td className="ledger small aside file-name" data-label="saved as" title={`${f.download}, stored as ${f.name}, sha256 ${f.sha256}`}>{f.download}</td>
                   </tr>
                 );
               })}
@@ -483,10 +549,8 @@ function Built({ corpus, files, base, dataset, asked, vocabulary }: { corpus: Co
 // sha256, which the server's routes take. An address with the sha256 is
 // shown with the name instead, without reading the page again.
 const SHA256 = /^[0-9a-f]{64}$/;
-const vocabularyName = (v: Trained) => `${v.name ?? v.recipe}-v${v.version}`;
 function CorpusAt({ id, vocabulary, size }: { id: string; vocabulary: string; size: string }) {
-  const [trained, setTrained] = useState<Answer<Trained[]> | null>(null);
-  useEffect(() => { get<Trained[]>("/api/vocabularies").then(setTrained); }, []);
+  const { trained } = useRecipesAndVocabularies();
   const given = SHA256.test(vocabulary);
   const named = trained?.ok ? trained.data.filter((v) => vocabularyName(v) === vocabulary) : [];
   const sha = given ? vocabulary : named.length === 1 ? named[0].sha256 : null;

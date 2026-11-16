@@ -64,22 +64,168 @@ h2, h3 { margin: 0 0 var(--gap-tight); }
 /* the current page: an ochre bar under the letters, below their descenders */
 .page-group a[aria-current="page"], .page-group a[aria-current="true"], .home[aria-current="page"] .cue { text-decoration: underline var(--ochre); text-decoration-thickness: var(--space-1); text-underline-offset: 6px; text-decoration-skip-ink: none; }
 
-/* a page's head: its title, a line of facts, the line that places it in the
-   chain of the depot, and on the right its actions with the note about them */
+/* a page's head: its title with the "?" of what the page is for, a line of
+   facts, and on the right its actions with the note about them */
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--gap-tight) var(--gap-block); margin-bottom: var(--gap-block); }
 .page-head-main { flex: 1 1 420px; min-width: 0; display: grid; gap: var(--gap-hair); }
 .page-title { margin: 0; overflow-wrap: anywhere; }
-.page-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); }
+/* a line of facts, a dot between two facts on one line: each fact keeps a gap
+   before it, the dot set in that gap outside the fact (never in its link), and the
+   gap of a fact that starts a line lies left of the line, cut off with its dot */
+.page-meta { --meta-gap: calc(2 * var(--gap-tight)); display: flex; flex-wrap: wrap; align-items: center; row-gap: var(--gap-hair); margin-left: calc(-1 * var(--meta-gap));
+  clip-path: inset(-100vmax -100vmax -100vmax var(--meta-gap)); color: var(--ink-muted); }
+.page-meta > * { position: relative; margin-left: var(--meta-gap); }
+.page-meta > :not(.wic-btn)::before { content: "·"; position: absolute; left: calc(-1 * var(--meta-gap) / 2); transform: translateX(-50%); color: var(--line-strong); text-decoration: none; }
 .chain { margin: 0; max-width: 60em; color: var(--ink-muted); }
 .head-actions { flex: 0 1 auto; display: grid; justify-items: end; gap: var(--gap-tight); }
 .head-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: var(--gap-tight); }
 .head-note { margin: 0; max-width: 28em; text-align: right; color: var(--ink-muted); }
 
-/* a section of a page: a rule, its title, then its body */
-.section { margin-top: var(--gap-section); padding-top: var(--gap-tight); border-top: 2px solid var(--ink); min-width: 0; }
+/* a block of a page: a raised card, its title, then its body */
+.section { margin-top: var(--gap-group); padding: var(--gap-group) var(--gap-block) var(--gap-group); background: var(--paper-raised); border: 1px solid var(--line); min-width: 0; }
 .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--gap-tight) var(--gap-group); margin-bottom: var(--gap-tight); }
 .section-title { margin: 0; }
+.section > :last-child { margin-bottom: 0; }
 .page-head + .section { margin-top: 0; }
+/* what is raised on the page sits on the paper inside a block */
+.section :is(.warning, .next-step, .viewer, .license-text, .remote, .chip, .blocked) { background: var(--paper); }
+.section .passage pre { background: var(--paper); }
+.section .ledger-table tbody tr:hover td, .section .ledger-table tr.ticked td { background: var(--paper); }
+
+/* the "?" beside a title or in a line, and the explanation it opens under it;
+   the target is 24 pixels, the circle drawn inside it 20 */
+.title-row { display: flex; align-items: center; min-width: 0; }
+.help { position: relative; display: inline-block; margin-left: var(--gap-hair); vertical-align: middle; font-weight: 400; }
+.help-button { all: unset; box-sizing: border-box; position: relative; isolation: isolate; display: inline-grid; place-items: center; width: 24px; height: 24px;
+  font-family: var(--font-gothic); font-size: 12px; font-weight: 700; line-height: 1; color: var(--ink-muted); cursor: pointer; }
+.help-button::before { content: ""; position: absolute; inset: 2px; z-index: -1; border-radius: var(--radius-round); border: 1px solid var(--line-strong); }
+.help-button:hover, .help-button[aria-expanded="true"] { color: var(--ink); }
+.help-button:hover::before, .help-button[aria-expanded="true"]::before { border-color: var(--ink); background: var(--paper-raised); }
+.help-button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.help-pop { position: absolute; z-index: 40; top: calc(100% + var(--gap-hair)); width: min(360px, calc(100vw - 2 * var(--gap-group))); padding: var(--gap-tight) var(--gap-group);
+  background: var(--paper-raised); color: var(--ink); border: 1px solid var(--ink); box-shadow: var(--shadow-misprint);
+  font-family: var(--font-serif); font-size: 15px; line-height: 23px; font-weight: 400; font-style: normal; text-align: left; white-space: normal; letter-spacing: normal; }
+.help-left { left: -8px; }
+.help-right { right: -8px; }
+.help-pop p { margin: 0 0 var(--gap-hair); }
+
+/* figures set big: the number, and what it counts under it */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: var(--gap-tight); margin: 0 0 var(--gap-block); padding: 0; list-style: none; }
+.stat { display: grid; align-content: start; gap: 0; padding: var(--gap-group); background: var(--paper-raised); border: 1px solid var(--line); text-decoration: none; min-width: 0; }
+a.stat:hover { border-color: var(--ink); }
+.stat-value, .stage-value { font-family: var(--font-gothic); font-weight: 800; font-size: 32px; line-height: 38px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat-label, .stage-label { color: var(--ink-muted); }
+
+/* a pipeline: one card per stage, the state marked by a glyph and a word,
+   the next stage lit (an ochre frame), the stage of the page shown marked
+   (an ink bar under it), the stages still waiting faded; .stages-small is the
+   same cards without their numbers, the strip of a list of datasets */
+.stages { list-style: none; margin: 0 0 var(--gap-block); padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; gap: var(--gap-block); --stage-gap: var(--gap-block); }
+.stages[aria-busy="true"] { min-height: 160px; }
+.stage { position: relative; display: flex; flex-direction: column; gap: 0; padding: var(--gap-tight) var(--gap-group) var(--gap-group); background: var(--paper-raised); border: 1px solid var(--line); border-top: 4px solid var(--ink); min-width: 0; }
+.stage-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--gap-tight); min-height: 22px; margin-bottom: var(--gap-hair); }
+.stage-name { margin: 0; font-size: 15px; }
+.stage-name a { text-underline-offset: 3px; }
+.stage-mark { flex: none; padding: 0 var(--gap-tight); font-size: 13px; line-height: 20px; transform: rotate(var(--tilt-1)); background: var(--ink); color: var(--paper); white-space: nowrap; }
+.stage-line { margin-top: var(--gap-hair); }
+/* the button at the foot of its card, so the buttons of a row line up */
+.stage-action { margin-top: auto; padding-top: var(--gap-tight); }
+/* the flow: a chevron in the gutter between one stage and the next, clear of both cards */
+.stage + .stage::before { content: "›"; position: absolute; left: calc(-1 * var(--stage-gap) / 2 - 1px); top: 22px; transform: translate(-50%, -50%);
+  color: var(--ink-muted); font-family: var(--font-gothic); font-weight: 800; font-size: 22px; line-height: 1; }
+/* a stage done is quiet: its mark a muted tick, no badge, so the next stage carries the weight; a plain "done" is
+   said by the tick alone, the word kept for assistive technology, and a word that tells more ("published") shows */
+.stage-done { border-top-color: var(--line-strong); }
+.stage-done .stage-mark { background: transparent; color: var(--ink-muted); transform: none; padding: 0; }
+.stage-done .mark-plain { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.stage-next { border-color: var(--ochre); border-top-color: var(--ochre); box-shadow: inset 0 0 0 1px var(--ochre); }
+.stage-next .stage-mark { background: var(--ochre); color: var(--on-ochre); }
+.stage-waiting { background: transparent; border-style: dashed; border-top: 4px solid var(--line-strong); }
+.stage-waiting .stage-mark { background: transparent; color: var(--ink-muted); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.stage-waiting .stage-value { color: var(--ink-muted); }
+.stage-problem { border-top-color: var(--red); }
+.stage-problem .stage-mark { background: var(--red-soft); color: var(--red-ink); }
+/* the stage of the page shown: an ink bar under it and its name in bold, one mark and no second frame */
+.stage-current { box-shadow: inset 0 -4px 0 var(--ink); }
+.stage-current.stage-next { box-shadow: inset 0 0 0 1px var(--ochre), inset 0 -4px 0 var(--ink); }
+.stage-current .stage-name { font-weight: 800; }
+/* a stage whose state is still read: a grey card with no state word, never a state that may be false */
+.stage-unknown { border-top-color: var(--line); }
+.stage-unknown .stage-mark { visibility: hidden; }
+/* a stage with nothing to count yet: a word, small and muted, never a big one */
+.stage-value.empty { color: var(--ink-muted); font-family: var(--font-serif); font-weight: 400; font-size: 17px; line-height: 38px; }
+
+/* the small strip: the same five cards, name and mark only */
+.stages-small { margin: 0; }
+.stages-small .stage { padding-bottom: var(--gap-tight); }
+.stages-small .stage-top { margin: 0; }
+
+@media (max-width: 1100px) { .stages { align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); } .stages .stage + .stage::before { display: none; } }
+@media (max-width: 760px) {
+  .stages { grid-template-columns: minmax(0, 1fr); gap: var(--gap-hair); }
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--gap-group); align-items: end; }
+  .stage :is(.stage-top, .stage-line) { grid-column: 1 / -1; }
+  .stage-value { grid-column: 1; font-size: 26px; line-height: 32px; }
+  .stage-label { grid-column: 1; }
+  .stage-action { grid-column: 2; grid-row: 2 / span 2; padding-top: 0; min-height: 0; align-self: center; }
+  /* a stage done, and every stage of the small strip, take one line: its name, its number and its mark */
+  :is(.stage-done, .stages-small .stage) { display: flex; flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: var(--gap-tight); padding: var(--gap-tight) var(--gap-group); border-top-width: 1px; }
+  .stages-small .stage-top { flex: 1; }
+  .stage-done .stage-top { display: contents; }
+  .stage-done .stage-name { order: 0; }
+  .stage-done .stage-value { order: 1; font-size: 15px; line-height: 20px; }
+  .stage-done .stage-mark { order: 3; margin-left: auto; }
+  .stage-done .stage-label { order: 2; flex: 1 1 8em; min-width: 0; }
+  .stage-done .stage-line { order: 5; flex-basis: 100%; margin-top: 0; }
+  .stage-done .stage-action { order: 6; flex-basis: 100%; padding-top: var(--gap-tight); }
+  .stage-done:not(:last-child) .stage-action { display: none; }
+  /* the parts of a mix stay a list under the stage's line, never cut */
+  .stage-done .stage-value:has(.mix) { flex-basis: 100%; order: 4; }
+  .section { padding: var(--gap-tight) var(--gap-group) var(--gap-group); }
+  /* fixed to the screen, so a "?" near the bottom, as in the decision's confirm, opens in view */
+  .help-pop { position: fixed; left: var(--gap-group); right: var(--gap-group); top: var(--gap-group); width: auto; max-height: calc(100vh - 2 * var(--gap-group)); overflow-y: auto; }
+  .page-group a { white-space: nowrap; }
+  /* the navigation: every page in view under the depot's name, on as many lines as it takes, nothing hidden sideways */
+  .top { row-gap: var(--gap-hair); }
+  .pages { order: 5; flex: 1 0 100%; flex-wrap: wrap; gap: var(--gap-hair) var(--gap-group); padding-bottom: 6px; }
+  .page-group { display: contents; }
+  .page-group + .page-group { padding-left: 0; border-left: 0; }
+}
+
+/* a dataset's strip with its next step's button, in a row of the overview: every strip in one column,
+   every button in the next, so the stages line up */
+.chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 12em; align-items: center; gap: var(--gap-tight) var(--gap-group); }
+.chain-row > .wic-btn { justify-self: end; }
+.chain-glyph { font-family: var(--font-gothic); font-weight: 800; }
+/* the tick of a stage done, drawn: a face's "✓" can read as a root sign */
+.check { display: inline-block; width: 0.32em; height: 0.62em; margin: 0 0.15em 0.15em; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); vertical-align: middle; }
+.chain-done .chain-glyph { color: var(--ink-muted); }
+.chain-problem a, .stage-word.chain-problem { color: var(--red-ink); }
+.stage-word { white-space: nowrap; }
+.stage-word.chain-next .chain-glyph { color: var(--ochre); }
+.pipeline-list { gap: var(--gap-tight); }
+.pipeline-list > .pipeline-row { display: grid; grid-template-columns: 8em minmax(0, 1fr); align-items: center; gap: var(--gap-tight) var(--gap-group); padding: var(--gap-tight) 0; border-bottom: 1px solid var(--line); }
+.pipeline-list > .pipeline-row:last-child { border-bottom: 0; }
+.pipeline-name { min-width: 8em; text-decoration: none; font-size: 17px; }
+.pipeline-name:hover { text-decoration: underline var(--red) 2px; }
+/* the stages of a row are links, and look like links */
+.pipeline-list .stage-name a { text-decoration-line: underline; }
+.row-links { display: inline-flex; gap: var(--gap-group); }
+/* the pages of a row, beside its next step: quiet, so the step leads */
+.row-links :is(a, .link-button) { color: var(--ink-muted); }
+.stat-off { border-left: 4px solid var(--red); }
+.export-cell { white-space: nowrap; }
+
+/* links inside tables and counted lists: the ink of the text, underlined on hover only, so a dense page
+   does not underline every cell; links in running text keep their line */
+.ledger-table td a:not(.wic-btn), .ledger-table td .link-button, .counted a, .plain.small li > a, .pipeline-list a { text-decoration-line: none; }
+.ledger-table td a:not(.wic-btn):hover, .ledger-table td .link-button:hover, .counted a:hover, .plain.small li > a:hover, .ledger-table td a:not(.wic-btn):focus-visible { text-decoration-line: underline; }
+.ledger-table td:first-child a:not(.wic-btn) { font-weight: 600; }
+
+/* details below the main figures, folded: one line each until opened */
+.fold { margin-top: var(--gap-group); padding: var(--gap-tight) var(--gap-block); background: var(--paper-raised); border: 1px solid var(--line); }
+.fold > summary { cursor: pointer; }
+.fold[open] > summary { margin-bottom: var(--gap-tight); }
 
 /* what an operation answered */
 .refusal { margin: 0 0 var(--gap-group); padding: var(--gap-tight) var(--gap-group); background: var(--red-soft); color: var(--red-ink); overflow-wrap: anywhere; }
@@ -95,7 +241,7 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 .form-note { margin: 0 0 var(--gap-tight); color: var(--ink-muted); }
 .form-note .required-mark { margin: 0 var(--gap-hair) 0 0; }
 .form-part { border: 0; padding: 0; margin: 0 0 var(--gap-group); min-width: 0; }
-.form-part > legend { padding: 0; margin-bottom: var(--gap-tight); }
+.form-part > .title-row { padding: 0; margin-bottom: var(--gap-tight); }
 .form-part > .wic-field-hint { margin: calc(-1 * var(--gap-hair)) 0 var(--gap-tight); }
 .form-narrow { max-width: 880px; }
 .form-small { max-width: 560px; }
@@ -219,26 +365,28 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 .job-line { margin: 0 0 var(--gap-group); }
 .ledger-table td.wrap-cell { white-space: normal; max-width: 36em; }
 
-/* the overview: the chain of the depot, then what waits */
-.chain-strip { list-style: none; margin: 0 0 var(--gap-block); padding: 0; display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--gap-tight); }
-.chain-strip li { display: flex; align-items: center; gap: var(--gap-tight); }
-.chain-strip li + li::before { content: "→"; color: var(--ink-muted); }
-.chain-step { display: grid; gap: 0; padding: var(--gap-tight) var(--gap-group); background: var(--paper-raised); text-decoration: none; }
-.board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--gap-block); }
+/* the overview: the figures of the depot, then what waits */
+/* each block keeps its own height: an empty one never stretches to its neighbour's */
+.board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--gap-group); align-items: start; margin-top: var(--gap-group); }
 .board > .section:nth-child(-n + 2) { margin-top: 0; }
 .board > .span-2 { grid-column: 1 / -1; }
 .board > .tall { grid-row: span 2; }
 .board:has(> .tall) { grid-template-rows: auto 1fr auto; }
-.two-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: var(--gap-group); }
+.table-caption { caption-side: top; text-align: left; padding: 0 var(--gap-tight) var(--gap-hair); }
+.two-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 320px)); gap: var(--gap-group) var(--gap-block); }
 .counted li { display: flex; justify-content: space-between; gap: var(--gap-tight); }
 .counted .number { font-family: var(--font-typewriter); }
-.status-counts { max-width: 320px; margin-bottom: var(--gap-group); }
-.tag-list { max-width: 480px; }
+/* each tag: its name, its count right after it, and a bar on a logarithmic scale, so a small tag still shows */
+.tag-list { columns: 20em auto; column-gap: var(--gap-block); display: block; }
+.tag-list li { break-inside: avoid; padding: 2px 0; display: grid; grid-template-columns: minmax(0, 11em) 6ch minmax(32px, 1fr); gap: var(--gap-tight); }
+.tag-list li > .number { text-align: right; }
+.tag-list .tag-bar { align-self: center; height: 6px; background: linear-gradient(to right, var(--ochre) var(--share), transparent var(--share)); }
 
 /* a text: the text beside its record, and the passage to erase */
 .text-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 360px); gap: var(--gap-block); align-items: start; }
 .record > .section:first-child { margin-top: 0; }
-.record .section { margin-top: var(--gap-block); }
+/* in the workspace's record, a block is a rule and its title, not a card: the column is narrow */
+.record .section { margin-top: var(--gap-block); padding: var(--gap-tight) 0 0; background: none; border: 0; border-top: 2px solid var(--ink); }
 .viewer { background: var(--paper-raised); padding: var(--gap-group); max-height: 75vh; overflow: auto; }
 .text-page { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-serif); font-size: 15px; line-height: 23px; }
 .json { font-size: 14px; line-height: 21px; }
@@ -319,7 +467,6 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .in-text { white-space: nowrap; }
 .next-step { margin: 0 0 var(--gap-group); padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--ochre); background: var(--paper-raised); }
 .holds { margin: var(--gap-group) 0; }
-.raw summary { cursor: pointer; }
 .vocabulary { margin-bottom: var(--gap-group); }
 
 /* the workspace: what can be opened, the playlist of what is open, and the
@@ -375,6 +522,8 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .save-filter .wic-field { margin-bottom: var(--gap-hair); }
 
 /* the playlist: one row per text, the current one marked, ticks on the left */
+.playlist-ticks { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-group); padding: var(--gap-hair) var(--gap-tight); border-bottom: 2px solid var(--ink); }
+.playlist-ticks .tick { flex: 0 1 auto; font-weight: 700; }
 .playlist-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight); margin-bottom: var(--gap-tight); }
 .playlist-head select { width: auto; }
 .playlist-rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line-strong); }
@@ -404,10 +553,6 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .text-panel > [role="tabpanel"]:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .edit-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .save-idle { margin: var(--gap-tight) 0 0; }
-.more-menu { position: relative; }
-.more-menu > summary { list-style: none; display: inline-flex; align-items: center; cursor: pointer; }
-.more-menu > summary::-webkit-details-marker { display: none; }
-.more-items { position: absolute; z-index: 2; top: 100%; left: 0; display: grid; justify-items: start; gap: var(--gap-hair); padding: var(--gap-tight); background: var(--paper-raised); border: 1px solid var(--line-strong); box-shadow: 0 4px 12px color-mix(in srgb, var(--ink) 15%, transparent); white-space: nowrap; }
 .text-head { display: grid; gap: var(--gap-hair); margin-bottom: var(--gap-tight); }
 .text-title { margin: 0; overflow-wrap: anywhere; font-size: 22px; line-height: 28px; }
 .text-actions { justify-content: flex-start; }
@@ -444,12 +589,9 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .editor-column { position: static; }
   .board { grid-template-columns: minmax(0, 1fr); }
-  .board > .section:nth-child(2) { margin-top: var(--gap-section); }
+  .board > .section:nth-child(2) { margin-top: var(--gap-group); }
   .board > .tall { grid-row: auto; }
   .board:has(> .tall) { grid-template-rows: none; }
-  .chain-strip { display: grid; justify-items: start; }
-  .chain-strip li { flex-direction: column; align-items: flex-start; gap: var(--gap-hair); }
-  .chain-strip li + li::before { content: "↓"; padding-left: var(--gap-group); }
   .text-layout, .erase-layout { grid-template-columns: minmax(0, 1fr); }
   .top { justify-content: space-between; margin-bottom: var(--gap-group); }
   .pages { order: 1; flex-basis: 100%; gap: var(--gap-hair) var(--gap-group); }
@@ -465,17 +607,50 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .cards .ledger-table, .cards .ledger-table tbody, .cards .ledger-table tr, .cards .ledger-table td { display: block; width: 100%; }
   .cards .ledger-table tr { padding: var(--gap-tight) 0; border-bottom: 1px solid var(--line-strong); }
   .cards .ledger-table td { max-width: none; border: 0; padding: 0 var(--gap-tight); white-space: normal; }
-  .cards .ledger-table td[data-label]::before { content: attr(data-label) " "; font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
+  /* each value after its label, the labels in one column on the left, a value that wraps hanging under its own start */
+  .cards .ledger-table td[data-label]:not([data-label=""]) { text-align: left; padding-left: calc(var(--gap-tight) + 7.5em); }
+  .cards .ledger-table td[data-label]:not([data-label=""])::before { content: attr(data-label); display: inline-block; width: 7.5em; margin-left: -7.5em; vertical-align: top;
+    font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
+  /* a corpus's files on a phone: what it is on one line, its size and its download on the next, the name it is saved as in its title */
+  .cards .files-table tr { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-group); }
+  .cards .files-table td { width: auto; }
+  .cards .files-table td:first-child { flex-basis: 100%; }
+  .cards .files-table td[data-label="size"]:not([data-label=""]) { padding-left: var(--gap-tight); }
+  .cards .files-table td[data-label="size"]:not([data-label=""])::before { content: none; }
+  /* the sizes in one column, so every download button starts at the same place */
+  .cards .files-table td[data-label="size"]:not([data-label=""]) { width: 6em; text-align: left; }
+  /* a corpus's mix takes the whole row, its names never cut */
+  .stats > .stat:has(.mix) { grid-column: 1 / -1; }
+  .cards .files-table td.file-name { display: none; }
   .filter-bar > .find { grid-column: 1 / -1; }
   /* the workspace on a phone: the search and the filters' button, then the open text, then the playlist, then what to open */
   .filter-bar:not(.shown) > :not(.find):not(.filter-toggle) { display: none; }
   .filter-bar > .filter-toggle { display: inline-flex; grid-column: 1 / -1; justify-self: start; }
-  .workspace > .editor-column { order: 1; }
-  .dock { position: sticky; z-index: 20; bottom: 0; background: var(--paper); }
-  .phone-bar { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--gap-hair); margin: var(--gap-tight) 0 0;
-    padding: var(--gap-tight) 0 calc(var(--gap-tight) + env(safe-area-inset-bottom, 0px)); background: var(--paper); border-top: 2px solid var(--ink); }
+  /* the list first, then the open text, its bar of moves and decisions under its head (text-panel.tsx); a decision's confirm at the bottom of the screen */
+  .workspace > .editor-column { order: 2; }
+  /* stuck to the bottom of the screen at the end of the page's flow, so it covers nothing at the page's end */
+  .dock { position: sticky; z-index: 30; bottom: 0; margin: 0 calc(-1 * var(--gap-group)); padding: 0 var(--gap-group); background: var(--paper); }
+  /* no line numbers on a phone: its narrow lines wrap, and the gutter would be measured only once in view */
+  .workspace .code-editor .cm-gutters { display: none; }
+  /* a wrapped line hangs under its own start, so a wrap never reads as a line of its own */
+  .workspace .code-editor .cm-content .cm-line { padding-left: calc(6px + 2ch); text-indent: -2ch; }
+  /* the tag and license lists stay in the filters' menus: the column keeps the statuses, the libraries and the saved filters */
+  .workspace > .sources { max-height: none; overflow: visible; }
+  .sources .source-long { display: none; }
+  .phone-bar > .wic-btn { white-space: nowrap; }
+  /* the keys mean nothing without a keyboard; the confirm of each decision names who signs */
+  .key-legend { display: none; }
+  /* under the open text's head, so it covers none of it; stuck to the top of the screen while the text scrolls under it */
+  .phone-bar { position: sticky; top: 0; z-index: 30; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--gap-hair);
+    margin: 0 calc(-1 * var(--gap-group)) var(--gap-tight); padding: var(--gap-tight) var(--gap-group); background: var(--paper); border-bottom: 2px solid var(--ink); }
   .phone-bar > .wic-btn { justify-content: center; padding-inline: var(--gap-hair); }
-  .workspace > .playlist-column { order: 2; max-height: 50vh; overflow-y: auto; }
+  /* a short list, so the open text's head and start show above the bar on the first screen */
+  .workspace > .playlist-column { order: 1; max-height: 20vh; overflow-y: auto; }
+  /* the moves of the bar: plain arrows in a thin frame, no underline, since they decide nothing */
+  .phone-bar > .move-button::after { display: none; }
+  .phone-bar > .move-button { box-shadow: inset 0 0 0 1px var(--line-strong); font-size: 20px; }
+  /* the text's actions on their own lines, clear of each other and of the bar */
+  .text-actions { row-gap: var(--gap-tight); margin-top: var(--gap-hair); }
   .workspace > .sources { order: 3; }
   .workspace .code-editor { max-height: 65vh; }
   .blocked .why { max-width: none; white-space: nowrap; } /* one line high: the table scrolls sideways */
@@ -492,8 +667,9 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 
 /* the main button of a long form in a dialog, kept in view at the bottom of the dialog while the form scrolls */
 .sticky-submit { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group);
-  margin-top: var(--gap-group); padding: var(--gap-tight) 0; background: var(--paper-raised); border-top: 1px solid var(--line-strong);
-  box-shadow: 0 -8px 12px -8px color-mix(in srgb, var(--ink) 25%, transparent); }
+  margin-top: var(--gap-group); padding: var(--gap-tight) 0; background: var(--paper-raised); border-top: 1px solid var(--line-strong); }
+/* what a form's button waits for, beside it: plain ink, readable, never faint */
+.sticky-submit .blocking { color: var(--ink); font-weight: 700; }
 /* the size beside an export part's link, on its own line and whole, never cut */
 .part-size { display: block; white-space: normal; }
 /* a suggested tag the text has already: marked, in its place */
@@ -503,3 +679,75 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .key-hint { margin-left: 0.35em; }
 /* key hints mean nothing on a touch screen with no keyboard */
 @media (hover: none) and (pointer: coarse) { .key-hint { display: none; } }
+.tag-find { max-width: 320px; margin-bottom: var(--gap-group); }
+/* actions used less often, folded under "More" */
+.more-menu { position: relative; }
+.more-menu > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: var(--gap-hair); height: 36px; padding: 0 var(--gap-tight); border: 1px solid var(--line-strong); }
+.more-menu > summary::-webkit-details-marker { display: none; }
+.more-menu > summary::after { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink); transform: rotate(45deg) translateY(-2px); }
+.more-items { position: absolute; z-index: 25; top: calc(100% + var(--gap-hair)); display: grid; justify-items: start; gap: var(--gap-hair); min-width: 200px; padding: var(--gap-tight); background: var(--paper-raised); border: 1px solid var(--line-strong); box-shadow: 0 4px 12px color-mix(in srgb, var(--ink) 15%, transparent); white-space: nowrap; }
+.more-left { left: 0; }
+.more-right { right: 0; }
+/* a status no open text has: its badge as it is, its count muted */
+.none-held .source-count { color: var(--ink-muted); }
+/* a button in a table row keeps the row's height */
+.wrap .ledger-table td .wic-btn { height: 28px; }
+/* the links of a row that lead to other pages read as links, even in a dense table */
+.ledger-table td .row-links a, .ledger-table td .row-links .link-button { text-decoration-line: underline; }
+/* a text column after a number column starts apart from it, so the two never read as one */
+.ledger-table th.number + th:not(.number), .ledger-table td.number + td:not(.number) { padding-left: var(--gap-block); }
+/* a page with nothing in it yet: one line and its actions */
+.empty-state { display: grid; justify-items: start; gap: var(--gap-group); padding: var(--gap-block); background: var(--paper-raised); border: 1px solid var(--line); }
+.empty-state p { margin: 0; }
+/* beside a share of the dataset form: its part of the plain texts, and how many it takes */
+.share-said { display: inline-flex; align-items: center; gap: var(--gap-tight); min-height: 36px; white-space: nowrap; }
+/* the export of one part: its two forms side by side, each a button over its form and size */
+.export-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15em), 15em)); gap: var(--gap-group) var(--gap-block); }
+.export-choice { display: grid; justify-items: start; gap: var(--gap-hair); }
+.next-steps li { display: flex; align-items: center; gap: var(--gap-group); }
+.next-steps .cue { min-width: 8em; }
+/* a short table: as wide as its columns, so a number stays near its label */
+.ledger-table.fit { width: auto; min-width: min(100%, 560px); }
+/* a dialog starts clear of the page's head and its rule */
+.wic-dialog-center:not(:has(.wide)) { margin: 88px auto 32px; }
+.wic-dialog-center:not(:has(.wide)) .wic-dialog-sheet { max-height: calc(100dvh - 120px); }
+/* a filled button that cannot act yet keeps its shape, greyed, so it reads as the button it will be */
+.wic-btn:not(.wic-btn-quiet):disabled { opacity: 1; color: var(--ink-muted); }
+.wic-btn:not(.wic-btn-quiet):disabled::before { display: block; background: var(--line); }
+.sticky-submit .aside { font-style: normal; color: var(--ink); }
+/* what is hidden for the eye inside a part that scrolls sideways stays inside it, so the page never scrolls sideways */
+.table-scroll { position: relative; }
+/* a share's number needs a few digits only, so the row keeps its buttons on its line */
+.entry-row .wic-field:has(input[type="number"]) { flex: 0 0 7em; }
+.entry-row .wic-field:has(input[list]) { flex: 0 1 14em; }
+
+/* a recipe a dataset names and nobody made yet: above the recipes, with the button that makes it */
+.wanted { justify-content: space-between; padding: var(--gap-tight) var(--gap-group); border: 1px dashed var(--ochre); background: var(--paper-raised); }
+/* the commands a refused copy shows instead, ready to select */
+.copy-by-hand { flex-basis: 100%; max-height: 12em; overflow: auto; user-select: all; }
+
+/* a mix as a bar (mix.tsx, MixBar): each part a piece as wide as its part of
+   the corpus, the conversations hatched (they take their own natural part),
+   the shares solid; under it a legend, a part per line, figure first */
+.mix { display: grid; gap: var(--gap-hair); font-family: var(--font-serif); font-weight: 400; font-size: 14px; line-height: 18px; color: var(--ink-muted); }
+.mix-bar { display: flex; gap: 2px; height: 10px; margin: 6px 0 2px; }
+.mix-seg { flex-basis: 0; min-width: 3px; }
+.mix-legend { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 2px var(--gap-tight); }
+.mix-legend li { display: contents; }
+.mix-part { display: inline; }
+.mix-swatch { display: inline-block; width: 10px; height: 10px; margin-right: var(--gap-hair); }
+.mix-items { background: repeating-linear-gradient(135deg, var(--ink-muted) 0 2px, transparent 2px 5px); box-shadow: inset 0 0 0 1px var(--ink-muted); }
+.mix-share-0 { background: var(--ink); }
+.mix-share-1 { background: var(--ochre); }
+.mix-share-2 { background: var(--line-strong); }
+.mix-figure { font-family: var(--font-gothic); font-weight: 800; font-size: 18px; line-height: 24px; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+.mix-rest-word { font-style: italic; font-size: 13px; }
+/* a figure in a table that is a quantity in words ("about 5.4 million"): the body face with even digits, never the typewriter */
+.ledger-table td.figure { font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* a text's title with its id beside it, so the line of facts under it keeps to its facts */
+.text-title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-tight); min-width: 0; }
+.text-title-row .text-title { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .pipeline-list > .pipeline-row, .chain-row { grid-template-columns: minmax(0, 1fr); }
+  .chain-row > .wic-btn { justify-self: start; }
+}

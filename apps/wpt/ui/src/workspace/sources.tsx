@@ -45,9 +45,11 @@ function countOf(c: Counts, part: Part, value: string): number {
   return c.licenses.find((l) => l.license === value)?.texts ?? 0;
 }
 
-// version: raised after any change, so the counts are read again.
-export function Sources({ open, libraries, version, onLibraryMade }: {
-  open: TextFilter; libraries: Library[]; version: number; onLibraryMade: () => void;
+// version: raised after any change, so the counts are read again. into: the
+// library texts are being chosen for, which a status, tag or license link
+// keeps in the address, so narrowing the texts stays inside that task.
+export function Sources({ open, libraries, version, onLibraryMade, into = null }: {
+  open: TextFilter; libraries: Library[]; version: number; onLibraryMade: () => void; into?: string | null;
 }) {
   const [read, setRead] = useState<{ answer: Answer<DepotCounts>; version: number } | null>(null);
   useEffect(() => { get<DepotCounts>("/api/counts").then((answer) => setRead({ answer, version })); }, [version]);
@@ -89,7 +91,7 @@ export function Sources({ open, libraries, version, onLibraryMade }: {
     const alone = open[key].length === 1 && open[key][0] === value;
     const count = countFor(key, value);
     return (
-      <a className="source wic-focus" href={href(["texts"], toQuery(narrowed(key, value)))} aria-current={alone ? "true" : undefined}
+      <a className="source wic-focus" href={href(["texts"], { ...toQuery(narrowed(key, value)), into })} aria-current={alone ? "true" : undefined}
         title={alone ? "Applies now; press again to drop it from the filter"
           : `Narrows the open filter, which keeps its search and its other parts${count === undefined ? "; its count shows once counted" : `: ${count.toLocaleString("en")} texts${staleFor(key) ? ", counted before the change, counting again" : ""}`}`}>
         <span className="source-label">{label}</span>
@@ -115,7 +117,7 @@ export function Sources({ open, libraries, version, onLibraryMade }: {
         {answer && !answer.ok && <li><Problems problems={answer.problems} /></li>}
       </ul>
       <SourceGroup title="Statuses" tools={staleFor("statuses") ? <span className="aside">counting again</span> : undefined}>
-        {STATUSES.map((s) => <li key={s}>{part("statuses", s, <StatusBadge status={s} />)}</li>)}
+        {STATUSES.map((s) => <li key={s} className={countFor("statuses", s) === 0 ? "none-held" : undefined}>{part("statuses", s, <StatusBadge status={s} />)}</li>)}
       </SourceGroup>
       <SourceGroup title="Libraries" tools={<Button variant="quiet" onClick={() => setMaking(true)}>New library</Button>}>
         {libraries.length === 0 && <li className="aside">No library yet.</li>}
@@ -149,9 +151,9 @@ export function Sources({ open, libraries, version, onLibraryMade }: {
   );
 }
 
-function SourceGroup({ title, tools, children }: { title: string; tools?: ReactNode; children: ReactNode }) {
+function SourceGroup({ title, tools, children, className }: { title: string; tools?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className="source-group" aria-label={title}>
+    <section className={`source-group ${className ?? ""}`} aria-label={title}>
       <div className="source-head"><h2 className="cue source-title">{title}</h2>{tools}</div>
       <ul className="plain source-list">{children}</ul>
     </section>
@@ -165,11 +167,12 @@ function Findable({ title, loaded, rows, recounting, entry }: { title: string; l
   const words = typed.toLowerCase().split(/\s+/).filter(Boolean);
   const found = rows.filter((r) => words.every((w) => r.key.toLowerCase().includes(w)));
   return (
-    <SourceGroup title={title} tools={recounting ? <span className="aside">counting again</span> : undefined}>
+    <SourceGroup title={title} className="source-long" tools={recounting ? <span className="aside">counting again</span> : undefined}>
       {rows.length > SHOWN && (
         <li><input className="wic-input wic-focus source-find" type="search" value={typed} placeholder={`Find ${title.toLowerCase()}`}
           aria-label={`Find ${title.toLowerCase()}`} onChange={(e) => setTyped(e.target.value)} /></li>
       )}
+      {!loaded && <li className="aside">counting</li>}
       {loaded && rows.length === 0 && <li className="aside">None.</li>}
       {found.slice(0, SHOWN).map((r) => <li key={r.key}>{entry(r.key, r.n)}</li>)}
       {found.length > SHOWN && <li className="aside">{(found.length - SHOWN).toLocaleString("en")} more: type to find them.</li>}

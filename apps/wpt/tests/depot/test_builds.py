@@ -196,6 +196,10 @@ def test_a_built_corpus_page_gives_each_share_s_tokens_and_each_file_its_role_to
     assert [one["tag"] for one in corpus["shares_tokens"]] == ["a", "b"]
     assert sum(one["tokens"] for one in corpus["shares_tokens"]) == corpus["total_tokens"] > 0
     assert corpus["items_tokens"] == 0  # no conversation or task in the dataset
+    # the dataset's page counts the same corpus with the same figures, so both pages show one size for it
+    listed = call("GET", f"/api/datasets/{row['id']}")[2]["corpora"]
+    assert [(one["id"], one["texts"], one["total_tokens"], one["items_tokens"]) for one in listed] == [
+        (corpus["id"], corpus["texts"], corpus["total_tokens"], corpus["items_tokens"])]
     texts = [one for one in shown["files"] if one["role"] == "text tokens"]
     assert len(texts) > 1 and sum(one["tokens"] for one in texts) == corpus["total_tokens"]
     numbers = [re.fullmatch(r"first_.+_all_text-tokens-(\d+)\..+", one["download"]) for one in texts]

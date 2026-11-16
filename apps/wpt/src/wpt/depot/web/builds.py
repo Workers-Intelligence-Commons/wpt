@@ -58,7 +58,7 @@ from contextlib import closing
 from functools import wraps
 
 from wpt_depot import Depot, corpora, errors
-from wpt_depot.corpus import sample, sample_lines
+from wpt_depot.corpus import revision_figures, sample, sample_lines
 from wpt_depot.estimate import estimate
 from wpt_depot.exports import FORMS, Export, parts_for
 from wpt_store import StoreError, store_from_settings
@@ -597,7 +597,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                                                     **known.get((number, form), {"bytes": None, "sha256": None})}
                                              for form in FORMS}} for number in range(parts)]
         return 200, {"dataset": shared.jsonable(row), "export": export.identity, "texts": texts,
-                     "texts_per_part": texts / parts, "parts": listed}
+                     "texts_per_part": texts / parts, "parts": listed,
+                     "figures": shared.jsonable(revision_figures(depot, row))}
 
     @wrapped
     def export_part(values, body, request: Request):
@@ -790,8 +791,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         Route("GET", "/api/datasets/{id}/export", export_listed, "the export of the texts of the dataset's current "
               "revision, with no tokenizer and no build: how many texts its libraries hold, and its parts, each in "
               "jsonl.zst and parquet, with its download name (the dataset's name, then the part's) and its size and "
-              "sha256 once sent whole (null before)",
-              answer={"type": "object", "required": ["export", "texts", "parts"]}),
+              "sha256 once sent whole (null before), and the figures of that revision as GET /api/datasets/ID gives them",
+              answer={"type": "object", "required": ["export", "texts", "parts", "figures"]}),
         Route("GET", "/api/datasets/{id}/export/{name}", export_part, "one part of the export (part-NNNNN.jsonl.zst "
               "or part-NNNNN.parquet), made as it is sent, the same bytes every time for the same revision; one "
               f"Range of bytes gives 206 once its size is known; at most {EXPORTS} at once in all and "

@@ -99,7 +99,7 @@ FOLLOWED = {
 TABLES = (*WHOLE, *FOLLOWED)
 # the tables whose rows change what a text adds to the depot's counts (wpt_depot.counts), with the column that names
 # the text
-COUNTED = {"texts_revisions": "id", "text_decisions": "text", "memberships": "text"}
+COUNTED = {"texts_revisions": "id", "content_lists": "id", "text_decisions": "text", "memberships": "text"}
 # the tables whose rows store their text's export key, with the column that names the text
 KEYED = {"memberships": "text", "pins": "text"}
 CLONING, PROGRESS = ".cloning", ".cloning.json"
@@ -310,7 +310,7 @@ def clone(address: str, to: str, about: About) -> Depot:
                         f"WHERE r.id = {table}.id))")
         con.execute(f"UPDATE texts_revisions SET status = {policy.linked_status_sql('texts_revisions.id')} "
                     "WHERE latest")
-        counts.recount(con)
+        counts.recount(con, known=False)  # its rows carry its upstream's numbering
         number = _highest(con) + 1
         con.execute("INSERT INTO changes (id, kind, made_at) VALUES (?, 'clone', ?)", (number, now()))
         con.execute("INSERT OR REPLACE INTO pulls (depot, change, upstream, upstream_change) VALUES (?, ?, ?, ?)",
@@ -471,7 +471,7 @@ def _carry_out(con, depot: Depot, upstream: Upstream, erasure: str, tracked: "_T
     needles = json.loads(con.execute("SELECT needles FROM erasures WHERE id = ?", (erasure,)).fetchall()[0][0])
     removed = sorted({one["text"] for one in needles if one["start"] is None and one["field"] is None})
     cut = sorted({one["text"] for one in needles} - set(removed))
-    tracked.add(removed)
+    tracked.add([*removed, *cut])  # a cut changes the characters and bytes of a version a text may read
     _remove_texts(con, removed)
     if cut:
         con.execute("DELETE FROM content_lists WHERE id IN (SELECT value FROM json_each(?))", (_json(cut),))

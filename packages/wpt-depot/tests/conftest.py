@@ -31,6 +31,63 @@ def make_depot(tmp_path):
 
 
 @pytest.fixture
+def library_figures():
+    """library_figures(depot): (what the depot's counts say each library
+    holds by kind and by tag, the same computed from its rows directly: each
+    open membership's text at its current revision and content version),
+    each {(facet, name): (texts, characters, bytes)}."""
+    def figures(depot: Depot):
+        con = depot.db.reader()
+        stored = {(facet, name): (texts, characters, size) for facet, name, texts, characters, size in con.execute(
+            "SELECT facet, name, texts, characters, bytes FROM counts WHERE facet IN ('library kind', 'library tag')")}
+        direct = {}
+        for library, kind, length, size, tags in con.execute(
+                "SELECT m.library, c.kind, c.length, c.bytes, t.tags FROM memberships m "
+                "JOIN texts_revisions t ON t.id = m.text AND t.latest "
+                "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version WHERE m.left_change IS NULL"):
+            what = "plain" if kind is None else "items" if kind in ("conversation", "task") else "other"
+            keys = [("library kind", f"{library} {what}")]
+            if kind is None:
+                keys += [("library tag", f"{library} {tag}") for tag in json.loads(tags)]
+            for key in keys:
+                texts, characters, held = direct.get(key, (0, 0, 0))
+                direct[key] = (texts + 1, characters + length, held + size)
+        return stored, direct
+    return figures
+
+
+@pytest.fixture
+def figures_at():
+    """figures_at(depot, dataset): for each library of the dataset's current revision, in order, what it held at the
+    change the revision reads it at, computed directly from the texts it held then (Depot.library_texts, each at its
+    revision then), as a revision's figures name them: {plain, items, other: each {texts, characters, bytes}, tags:
+    the same for the plain texts that have each tag of its shares}; None for a library named by another depot's
+    address, which no revision's figures know."""
+    def figures(depot: Depot, dataset: str) -> list[dict]:
+        row = depot.dataset_by_id(dataset)
+        tags = [one["tag"] for one in row["shares"] or []]
+        found = []
+        for ref in row["libraries"]:
+            if ref["depot"] is not None:
+                found.append(None)
+                continue
+            one = {kind: {"texts": 0, "characters": 0, "bytes": 0} for kind in ("plain", "items", "other")}
+            one["tags"] = [{"texts": 0, "characters": 0, "bytes": 0} for _ in tags]
+            for text in depot.library_texts(ref["library"], ref["change"]):
+                kind = text["kind"]
+                what = "plain" if kind is None else "items" if kind in ("conversation", "task") else "other"
+                into = [one[what]] + ([one["tags"][at] for at, tag in enumerate(tags) if tag in text["tags"]]
+                                      if kind is None else [])
+                for sums in into:
+                    sums["texts"] += 1
+                    sums["characters"] += text["length"]
+                    sums["bytes"] += text["bytes"]
+            found.append(one)
+        return found
+    return figures
+
+
+@pytest.fixture
 def serve():
     """serve(depot): the web address of a server answering the follow routes
     over the depot, as the web app's do (wpt_depot.follow), stopped after

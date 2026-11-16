@@ -4,9 +4,10 @@ import sys
 import threading
 import time
 
+import apsw
 import pytest
 
-from wpt_depot import About, Depot, clone, pull
+from wpt_depot import About, Declaration, Depot, NewText, clone, pull
 from wpt_depot.schema import FORMAT
 from wpt_utils.lines import bare
 from wpt.depot import main
@@ -328,6 +329,28 @@ def test_a_dataset_change_made_from_an_older_reading_is_refused_rather_than_undo
                                                                   "revision": read["revision"]})
     assert status == 422 and "revision 2" in answer["problems"][0]
     assert (depot.dataset_by_id(dataset)["name"], depot.dataset_by_id(dataset)["max_tokens"]) == ("mix", 1000)
+
+
+def test_reading_a_dataset_again_through_the_pages_takes_what_its_libraries_hold_now(web):
+    # the dataset page's button: since tells how many texts the next build would add, and reading again makes it 0
+    request, depot = web
+    [first, later] = depot.add([NewText(text="One.", licenses=("CC0-1.0",)), NewText(text="Two.", licenses=("CC0-1.0",))],
+                               Declaration("Ada Lovelace", "ada@example.org", True))
+    depot.decide("admitted", "true", Declaration("Ada Lovelace", "ada@example.org", True))
+    library = depot.new_library("first")
+    depot.put(library, [first])
+    dataset = depot.new_dataset("mix", "t", [(None, library)])
+    depot.put(library, [later])
+    read = request("GET", f"/api/datasets/{dataset}")[1]
+    assert read["figures"]["since"] == 1 and read["read_again"]
+
+    assert request("POST", f"/api/datasets/{dataset}/read-again", {"revision": read["dataset"]["revision"]}) == (
+        200, {"id": dataset, "libraries": 1})
+    figures = request("GET", f"/api/datasets/{dataset}")[1]["figures"]
+    assert figures["since"] == 0 and figures["measure"]["plain"]["texts"] == 2
+    assert not request("GET", f"/api/datasets/{dataset}")[1]["read_again"]
+    status, answer = request("POST", f"/api/datasets/{dataset}/read-again", {"revision": read["dataset"]["revision"]})
+    assert status == 422 and "revision 2" in answer["problems"][0]
 
 
 def test_the_web_command_serves_the_depot_its_setting_names(tmp_path, monkeypatch):
@@ -677,6 +700,8 @@ def test_each_thing_a_page_lists_has_a_view_and_the_details_change_through_the_r
     status, dataset = request("GET", "/api/datasets/test-depot-1")
     assert status == 200 and dataset["dataset"]["name"] == "mix" and dataset["remote"]["name"] == "mix"
     assert [(one["name"], one["local"]) for one in dataset["libraries"]] == [("first", True)]
+    # what its revision reads, as it stores it: the library's one text then, and none gained or lost since
+    assert (dataset["figures"]["measure"]["texts"], dataset["figures"]["since"]) == (1, 0)
     assert dataset["corpora"] is None and dataset["store"]  # no store is set: only the definition
     monkeypatch.setenv("WPT_STORE", (tmp_path / "store").as_uri())
     assert request("GET", "/api/datasets/test-depot-1")[1]["corpora"] == []
@@ -760,6 +785,9 @@ def test_a_clone_s_page_of_an_upstream_dataset_marks_the_upstream_library_as_rea
     assert status == 200
     assert [(one["library"], one["local"], one["name"], one["locked_at"]) for one in shown["libraries"]] == [
         ("test-depot-1", True, "theirs", None)]
+    # the figures the upstream stored with the revision come with it, the clone holding the same rows
+    assert shown["figures"] == request("GET", "/api/datasets/test-depot-1")[1]["figures"]
+    assert shown["figures"]["measure"] is not None
 
 
 def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_a_pull_brings_it(
@@ -827,17 +855,30 @@ def test_texts_put_back_under_review_from_the_pages_leave_their_open_libraries_a
     assert status == 404 and "under review already" in refused["problems"][0]
 
 
-def test_measure_gives_what_libraries_hold_by_share_and_the_mix_of_the_shares(web):
-    # the dataset form and the build estimate show these figures without sending SQL
+def test_measure_gives_what_libraries_hold_by_share_and_the_mix_of_the_shares(web, monkeypatch):
+    # the dataset form and the build estimate show these figures without sending SQL, at once for a library of any
+    # size: the route reads the depot's counts, never a text, a membership or a content version
     request, depot = web
     request("POST", "/api/texts", {"text": "aaaa", "licenses": ["CC0-1.0"], "tags": ["prose"], "declaration": ME})
     request("POST", "/api/texts", {"text": "bbbbbbbb", "licenses": ["CC0-1.0"], "tags": ["code"], "declaration": ME})
     request("POST", "/api/decisions", {"status": "admitted", "selection": {"filter": {}}, "declaration": ME})
     request("POST", "/api/libraries", {"name": "mix"})
     request("POST", "/api/libraries/test-depot-1/texts", {"selection": {"filter": {}}})
+    read = set()
+
+    def watched(con):  # every connection opened from here on records the tables its statements read
+        def authorize(action, table, column, database, trigger):
+            if action == apsw.SQLITE_READ:
+                read.add(table)
+            return apsw.SQLITE_OK
+        con.authorizer = authorize
+
+    monkeypatch.setattr(apsw, "connection_hooks", [*apsw.connection_hooks, watched])
 
     status, held = request("POST", "/api/libraries/measure", {"libraries": ["test-depot-1"], "shares": [
         {"tag": "prose", "share": 1}, {"tag": "code", "share": 1}, {"tag": "poems", "share": 1}]})
+
+    assert "counts" in read and not read & {"texts_revisions", "memberships", "content_lists", "parts"}
 
     assert status == 200 and (held["texts"], held["characters"]) == (2, 12)
     # prose holds the least for its proportion, so it limits the mix and code keeps as much as prose

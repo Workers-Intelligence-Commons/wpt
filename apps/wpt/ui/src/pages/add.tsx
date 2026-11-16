@@ -21,7 +21,7 @@ import { Button, Select, TextArea, TextInput } from "@workers-intelligence-commo
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { get, post, type Answer } from "../api";
 import { LicensePicker } from "../license-picker";
-import { Confirm, only, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, Section, type Declaration } from "../parts";
+import { Confirm, Help, only, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, Section, type Declaration } from "../parts";
 import { href } from "../route";
 import { KIND_WORDS, kindStart } from "../kind-words";
 import { SchemaForm, initial, type Schema } from "../schema-form";
@@ -159,7 +159,7 @@ function Add() {
           {kind && <p className="wic-field-hint">{(kinds.find((k) => k.id === kind)?.meaning ?? "").replace(/^./, (c) => c.toUpperCase())}.</p>}
           {cleared.length > 0 && (
             <p className="form-note small row tight">
-              <span>The tags {cleared.join(", ")} of the text before are taken off, since it was {addedKind ? an(addedKind) : "a plain text"}.</span>
+              <span>Tags {cleared.join(", ")} taken off.<Help label="the tags taken off">They came from the text before, which was {addedKind ? an(addedKind) : "a plain text"}.</Help></span>
               <Button variant="quiet" onClick={() => { setTags([...new Set([...tags, ...cleared])]); setCleared([]); }}>Put them back</Button>
             </p>
           )}
@@ -167,7 +167,7 @@ function Add() {
             ? <>
                 <div className="file-pick small">
                   <Button variant="quiet" onClick={() => jsonPicker.current?.click()}>Load it from a JSON file</Button>
-                  <span className="aside">or fill in the fields below.</span>
+                  <span className="aside">or fill in below.</span>
                   <input ref={jsonPicker} type="file" accept=".json,application/json" hidden onChange={(e) => { readJson(e.target.files); e.target.value = ""; }} />
                 </div>
                 {fileProblem && <Problems problems={[fileProblem]} />}
@@ -176,7 +176,7 @@ function Add() {
             : (
               <div onDragOver={(e) => e.preventDefault()} onDrop={dropped}>
                 <TextArea label={required(only("Text", "for a plain text"))} required rows={8} value={text} className="code" onChange={(e) => setText(e.target.value)}
-                  hint="Type or paste it, drop a file on it, or choose a file." />
+                  hint="Type, paste or drop a file." />
                 <div className="file-pick small">
                   <Button variant="quiet" onClick={() => picker.current?.click()}>Choose a file</Button>
                   <input ref={picker} type="file" hidden onChange={(e) => { read(e.target.files); e.target.value = ""; }} />
@@ -186,19 +186,18 @@ function Add() {
             )}
         </Section>
 
-        {kept && <p className="form-note small">The licenses, notice{cleared.length ? " and authors" : ", authors and tags"} are kept from the text added before{tags.length && !cleared.length ? ` (tags ${tags.join(", ")})` : ""}; change them if this one differs.</p>}
+        {kept && <p className="form-note small">Kept from the text before.<Help label="what is kept">The licenses, notice{cleared.length ? " and authors" : ", authors and tags"} are kept from the text added before{tags.length && !cleared.length ? ` (tags ${tags.join(", ")})` : ""}; change them if this one differs.</Help></p>}
         <Section title="Licenses and notice">
           <LicensePicker chosen={chosen} onChange={setChosen} />
-          <TextArea label={optional("Notice")} rows={3} value={notice} onChange={(e) => setNotice(e.target.value)} hint="The copyright notice exactly as the source gives it, or why the work is in the public domain." />
+          <TextArea label={optional("Notice")} hint="The copyright notice exactly as the source gives it, or why the work is in the public domain." rows={3} value={notice} onChange={(e) => setNotice(e.target.value)} />
         </Section>
 
         <Section title="Credits">
           <div className="fields">
             <TextInput label={optional("Title")} value={title} onChange={(e) => setTitle(e.target.value)} />
-            <TextInput label={optional("Authors")} value={authors} onChange={(e) => setAuthors(e.target.value)} hint="Separated by commas." />
+            <TextInput label={optional("Authors")} value={authors} hint="Separated by commas." onChange={(e) => setAuthors(e.target.value)} />
             <div className="full-row">
-              <TextInput label={optional("Tags")} value={typing} placeholder={tags.length ? "another tag" : "wikipedia, en"} onChange={(e) => typed(e.target.value)} onKeyDown={tagKey}
-                hint="Enter or a comma adds the tag typed; the depot's tags below add or remove one with a click." />
+              <TextInput label={optional("Tags")} hint="Enter or a comma adds the tag typed; the depot's tags below add or remove one with a click." value={typing} placeholder={tags.length ? "another tag" : "wikipedia, en"} onChange={(e) => typed(e.target.value)} onKeyDown={tagKey} />
               {tags.some((t) => !suggested.some((s) => s.tag === t)) && (
                 <div className="row tight small tag-chips" aria-label="Its other tags">
                   {tags.filter((t) => !suggested.some((s) => s.tag === t)).map((t) => (
@@ -222,7 +221,7 @@ function Add() {
                 </div>
               )}
             </div>
-            <TextInput className="full-row" label={optional("Address")} value={address} placeholder="https://example.org/where-it-came-from" onChange={(e) => setAddress(e.target.value)} hint="Where it came from." />
+            <TextInput className="full-row" label={optional("Address")} value={address} placeholder="https://example.org/where-it-came-from" onChange={(e) => setAddress(e.target.value)} />
           </div>
         </Section>
 
@@ -234,9 +233,9 @@ function Add() {
             </div>
           )}
           {answer && !answer.ok && <Outcome answer={answer} done={() => null} />}
-          {!answer?.ok && addedIds.length > 0 && <p className="small aside">{plural(addedIds.length, "text")} added on this page so far: <a href={addedHere}>see {addedIds.length === 1 ? "it" : "them"}</a>.</p>}
+          {!answer?.ok && addedIds.length > 0 && <p className="small aside"><a href={addedHere}>{plural(addedIds.length, "text")} added here</a>.</p>}
           <Confirm label="Confirm and add" disabled={why !== null || answer?.ok === true} onConfirm={send}
-            note={answer?.ok ? <>Added. Press <q>Add another</q> for the next text.</> : why ?? <>Adds {title.trim() || (kind ? `this ${kind}` : "this text")} under {chosen.join(" or ")}, {sentTags.length ? `tagged ${sentTags.join(", ")}` : "with no tag"}, under review.</>} />
+            note={answer?.ok ? <>Added.</> : why ?? <>Under {chosen.join(" or ")}, {sentTags.length ? `tagged ${sentTags.join(", ")}` : "no tag"}, under review.</>} />
         </Section>
       </div>
     </>

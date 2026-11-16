@@ -35,7 +35,7 @@ tokenizer recipes, their vocabularies and the texts each vocabulary trained
 on, and the column max_tokens of the datasets, all empty; then it writes
 each current text's decisions as rows of text_decisions and its status,
 BATCH rows of texts_revisions a transaction, then builds the index
-texts_status and fills the counts (wpt_depot.counts.recount). The step to
+texts_status and fills the counts of format 6 (COUNTS_6). The step to
 format 7 adds, in its first transaction, the column export_key of
 memberships and pins and the column vocabulary of the datasets, empty;
 then it writes the export key (wpt_depot.ids.export_key) of every row of
@@ -53,7 +53,33 @@ a stop while it builds leaves a depot that only the upgrade opens; it says
 what it does before it starts and how long it took. Format 8 is also the
 format of a depot that may hold decisions that put texts back under review
 (wpt_depot.policy), which the code of format 7 does not know: that code
-refuses a depot of format 8.
+refuses a depot of format 8. The step to format 9 marks the depot half
+upgraded and adds the columns characters and bytes of counts, the column
+figures of the dataset revisions and the table library_moves (MOVES_9) in
+its first transaction; then it fills the counts of what each library holds by kind
+and by tag (LIBRARY_KIND_9, LIBRARY_TAG_9): the memberships that have not
+ended, the current revisions and the content versions are each read in
+one sequential scan (SCANS_9), sorted by text id by SQLite in its
+temporary folder, and merged (_merged_9), so the time grows with the rows
+whatever order the file stores them in and no row is looked up through an
+index. SQLite sorts the three scans before the first row comes back, so
+its temporary folder (SQLITE_TMPDIR) holds the three sorts at once, about
+SORTED_9 bytes a membership, which the step says before it starts. Every
+BATCH memberships or so, at the end of a text, one transaction adds their
+sums to counts, raises the change of library_moves of each library to
+the latest change a text it holds among them was revised at, and records
+that text's id in upgrade_under_way; a run after a stop scans only the
+texts after it. It says how many memberships a second it counts every
+SAY_EVERY seconds. Its last transaction raises library_moves to the latest
+change each library's memberships joined or left at, read from the index
+memberships_key alone (JOINED_OR_LEFT_9), or, in a depot that follows an
+upstream, whose rows carry several numberings, makes every change of it
+null; then it gives each dataset revision its figures (_figures_9), read
+from the counts it filled, for each library they prove exact and null for
+the others, and drops the mark. A library whose memberships and texts no
+change touched after the change a revision reads it at holds what it held
+then, so only those get figures, and an upgraded revision never holds
+wrong ones.
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -90,7 +116,7 @@ from pathlib import Path
 
 from wpt_utils.lines import say
 
-from . import counts, ids, policy
+from . import ids, policy
 from .database import Database, now
 from .errors import DepotExists, OtherFormat, Refused
 from .follow import Upstream
@@ -129,6 +155,16 @@ TABLES_6 = ("CREATE TABLE IF NOT EXISTS text_decisions (text TEXT NOT NULL, deci
             "CREATE TABLE IF NOT EXISTS vocabulary_texts (recipe TEXT NOT NULL, version INTEGER NOT NULL, "
             "position INTEGER NOT NULL, depot TEXT NOT NULL, text TEXT NOT NULL, change INTEGER NOT NULL, "
             "PRIMARY KEY (recipe, version, position)) WITHOUT ROWID")
+# format 6: each facet of counts, with the query of its (name, texts) rows over the whole depot
+COUNTS_6 = {
+    "texts": "SELECT '', count(*) FROM texts_revisions WHERE latest",
+    "status": "SELECT status, count(*) FROM texts_revisions WHERE latest GROUP BY status",
+    "tag": "SELECT j.value, count(*) FROM texts_revisions t, json_each(t.tags) j WHERE t.latest GROUP BY j.value",
+    "license": "SELECT j.value, count(*) FROM texts_revisions t, json_each(t.licenses) j WHERE t.latest "
+               "GROUP BY j.value",
+    "library": "SELECT library, count(*) FROM memberships WHERE left_change IS NULL GROUP BY library",
+    "decision": "SELECT decision, count(*) FROM text_decisions GROUP BY decision",
+}
 # format 6 columns added to tables of format 5: (table, column, its declaration)
 COLUMNS_6 = (("texts_revisions", "status", "TEXT"), ("datasets_revisions", "max_tokens", "INTEGER"))
 # format 7 columns added to tables of format 6: (table, column, its declaration)
@@ -140,8 +176,28 @@ INDEXES_7 = (("memberships_key", "CREATE INDEX IF NOT EXISTS memberships_key ON 
              ("pins_key", "CREATE INDEX IF NOT EXISTS pins_key ON pins (library, export_key, text, revision)"))
 # format 8: the index of text_decisions by decision
 TEXT_DECISIONS_DECISION = "CREATE INDEX IF NOT EXISTS text_decisions_decision ON text_decisions (decision)"
+# format 9: the columns added to counts, the facets of its new rows, the kinds of item a corpus takes, and the three
+# scans the counts are filled from, each in the order of the texts' ids, after the text `{after}` names when given (+
+# keeps SQLite from reading an index for that order, and NOT INDEXED from reading the rows through one)
+COLUMNS_9 = ("characters", "bytes")
+LIBRARY_KIND_9, LIBRARY_TAG_9 = "library kind", "library tag"
+FACETS_9 = f"('{LIBRARY_KIND_9}', '{LIBRARY_TAG_9}')"
+ITEMS_9 = ("conversation", "task")
+SCANS_9 = ("SELECT text, library FROM memberships NOT INDEXED WHERE left_change IS NULL{after} ORDER BY +text",
+           "SELECT id, content_version, tags, change FROM texts_revisions NOT INDEXED WHERE latest{after} ORDER BY +id",
+           "SELECT id, version, kind, length, bytes FROM content_lists NOT INDEXED WHERE 1{after} ORDER BY +id, +version")
+SCANNED_9 = ("text", "id", "id")  # the column of each scan of SCANS_9 that names the text
+SORTED_9 = 100  # bytes of temporary files the three sorts of SCANS_9 take for each membership, about
+# format 9: the table library_moves, and the latest change each library's memberships joined or left at, read from the
+# index memberships_key alone
+MOVES_9 = ("CREATE TABLE IF NOT EXISTS library_moves (library TEXT NOT NULL, change INTEGER, PRIMARY KEY (library)) "
+           "WITHOUT ROWID")
+JOINED_OR_LEFT_9 = ("SELECT library, max(max(joined_change, coalesce(left_change, 0))) FROM memberships "
+                    "INDEXED BY memberships_key GROUP BY library")
+KINDS_9 = ("plain", "items", "other")
 UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
-BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions) and 7 (memberships, pins) goes over
+BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions), 7 (memberships, pins) and 9
+                 # (memberships) goes over
 SAY_EVERY = 30  # seconds between two lines of progress
 # each format 3 table, by its folder's name: the table of format 4 its rows go into
 TARGETS = {"about": "about_revisions", "licenses": "licenses", "notices": "notices", "kinds": "kinds",
@@ -289,9 +345,17 @@ def _to_6(db: Database, log):
         con.execute(TEXTS_STATUS)
     log(f"{db.path}: counting the texts of each status, tag, license, library and decision")
     with db.bulk() as con:
-        counts.recount(con)
+        _recount_6(con)
         con.execute(f"DROP TABLE {UNDER_WAY}")
     log(f"{db.path}: the depot is at format 6, in {time.monotonic() - began:.0f} seconds")
+
+
+def _recount_6(con):
+    """The counts of format 6 made from the depot's rows (COUNTS_6)."""
+    con.execute("DELETE FROM counts")
+    for facet, query in COUNTS_6.items():
+        con.execute(f"INSERT INTO counts (facet, name, texts) SELECT '{facet}', * FROM ({query})")
+    con.execute("DELETE FROM counts WHERE texts = 0")
 
 
 def _to_7(db: Database, log):
@@ -368,8 +432,170 @@ def _keys(db: Database, table: str, text: str, log):
                 f"a second, {said - began:.0f} seconds")
 
 
+def _to_9(db: Database, log):
+    """Format 8 to 9, in several transactions, as the module says: the
+    columns characters and bytes of counts, and the counts of what each
+    library holds by kind and by tag, from one sorted merge of three
+    sequential scans (_merged_9)."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after TEXT)")
+            con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('memberships', NULL)")
+            held = {one[1] for one in con.execute("PRAGMA table_info(counts)")}
+            for column in COLUMNS_9:
+                if column not in held:
+                    con.execute(f"ALTER TABLE counts ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+            if "figures" not in {one[1] for one in con.execute("PRAGMA table_info(datasets_revisions)")}:
+                con.execute("ALTER TABLE datasets_revisions ADD COLUMN figures TEXT")
+            con.execute(MOVES_9)
+            con.execute("DELETE FROM library_moves")
+            con.execute(f"DELETE FROM counts WHERE facet IN {FACETS_9}")
+            _new_format(con, 9)
+    con = db.reader()
+    after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'memberships'").fetchall()[0][0]
+    total = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'library'").fetchall()[0][0]
+    log(f"{db.path}: counting what each library holds by kind and by tag, in characters and bytes: its {total:,} "
+        "memberships that have not ended, the current revisions and the content versions, each read in one "
+        "sequential scan sorted by text id, then merged, the sums written about every "
+        f"{BATCH:,} memberships. SQLite sorts the three scans at once in its temporary folder (SQLITE_TMPDIR, "
+        f"else /var/tmp, /usr/tmp or /tmp), which needs about {total * SORTED_9 / 1e9:,.1f} GB of free disk"
+        + ("" if after is None else f"; going on after the text {after}, where the last run stopped"))
+    began = said = time.monotonic()
+    params = () if after is None else (after,)
+    read = 0
+    for sums, last, revised in _merged_9(*(con.execute(scan.format(after="" if after is None else f" AND {column} > ?"),
+                                                       params) for scan, column in zip(SCANS_9, SCANNED_9))):
+        with db.bulk() as written:
+            written.executemany("INSERT INTO counts (facet, name, texts, characters, bytes) VALUES (?, ?, ?, ?, ?) "
+                                "ON CONFLICT (facet, name) DO UPDATE SET texts = texts + excluded.texts, "
+                                "characters = characters + excluded.characters, bytes = bytes + excluded.bytes",
+                                [(facet, name, *by) for (facet, name), by in sums.items()])
+            _moved_9(written, revised.items())
+            written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'memberships'", (last,))
+        read += sum(by[0] for (facet, _), by in sums.items() if facet == LIBRARY_KIND_9)
+        if time.monotonic() - said >= SAY_EVERY:
+            said = time.monotonic()
+            log(f"{db.path}: {read:,} memberships counted of {total:,}, the last text {last}, "
+                f"{read / max(said - began, 1e-9):,.0f} rows a second, {said - began:.0f} seconds")
+    counted = time.monotonic()
+    log(f"{db.path}: {read:,} memberships counted, {read / max(counted - began, 1e-9):,.0f} rows a second, in "
+        f"{counted - began:.0f} seconds; reading the latest change each library's memberships joined or left at "
+        "from the index memberships_key, and the figures of each dataset revision the counts prove exact")
+    with db.bulk() as written:
+        _moved_9(written, written.execute(JOINED_OR_LEFT_9).fetchall())
+        if written.execute("SELECT upstream FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchall()[0][0]:
+            written.execute("UPDATE library_moves SET change = NULL")  # its rows carry several numberings
+        figured = _figures_9(written)
+        written.execute(f"DROP TABLE {UNDER_WAY}")
+    took = time.monotonic() - began
+    log(f"{db.path}: {figured[0]:,} of {figured[1]:,} libraries read by a dataset revision have figures, in "
+        f"{time.monotonic() - counted:.0f} seconds; the depot is at format 9, in {took:.0f} seconds")
+
+
+def _moved_9(con, found):
+    """library_moves raised to each (library, change) of found where it is lower, or made."""
+    con.executemany("INSERT INTO library_moves (library, change) VALUES (?, ?) ON CONFLICT (library) "
+                    "DO UPDATE SET change = max(change, excluded.change)", list(found))
+
+
+def _figures_9(con) -> tuple[int, int]:
+    """The figures of every dataset revision (the layout of format 9, as
+    wpt_depot.schema says), read at the upgrade's change from the counts
+    of format 9: those of a library this depot owns, read here, whose row
+    of library_moves names a change at or before the change it is read at
+    (the change that locked it, for a library locked then), or that has no
+    row; null for any other. (libraries given figures, libraries read)."""
+    name, at = con.execute("SELECT name, change FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchall()[0]
+    given = read = 0
+    for dataset, revision, libraries, shares in con.execute(
+            "SELECT id, revision, libraries, shares FROM datasets_revisions").fetchall():
+        tags = [one["tag"] for one in json.loads(shares or "[]")]
+        found = []
+        for ref in json.loads(libraries):
+            read += 1
+            library, change = ref["library"], ref["change"]
+            if ref.get("depot") is not None or ids.owner(library) != name:
+                found.append(None)
+                continue
+            state = con.execute("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
+                                "ORDER BY revision DESC LIMIT 1", (library, change)).fetchall()
+            if state and state[0][0] is not None:
+                change = con.execute("SELECT min(change) FROM libraries_revisions WHERE id = ? "
+                                     "AND locked_at IS NOT NULL", (library,)).fetchall()[0][0]
+            moved = con.execute("SELECT change FROM library_moves WHERE library = ?", (library,)).fetchall()
+            if moved and (moved[0][0] is None or moved[0][0] > change):
+                found.append(None)
+                continue
+            names = ([(LIBRARY_KIND_9, f"{library} {kind}") for kind in KINDS_9]
+                     + [(LIBRARY_TAG_9, f"{library} {tag}") for tag in tags])
+            sized = []
+            for facet, row_name in names:
+                row = con.execute("SELECT texts, characters, bytes FROM counts WHERE facet = ? AND name = ?",
+                                  (facet, row_name)).fetchall()
+                sized.append(dict(zip(("texts", "characters", "bytes"), row[0] if row else (0, 0, 0))))
+            found.append(dict(zip(KINDS_9, sized)) | {"tags": sized[len(KINDS_9):]})
+            given += 1
+        con.execute("UPDATE datasets_revisions SET figures = ? WHERE id = ? AND revision = ?",
+                    (json.dumps({"at": at, "libraries": found}, ensure_ascii=False, separators=(",", ":")),
+                     dataset, revision))
+    return given, read
+
+
+def _merged_9(held, current, versions):
+    """What the memberships held adds to the counts of format 9's new
+    facets, from three streams in the order of the texts' ids (SCANS_9):
+    held, (text, library) of each membership that has not ended; current,
+    (id, content version, tags as JSON text, change) of each current
+    revision; versions, (id, version, kind, length, bytes) of each content
+    version. It goes through the three at once, as one sorted merge, and
+    gives (sums: {(facet, name): [texts, characters, bytes]}, the id of the
+    last text they cover, revised: {library: the latest change a text it
+    holds among them was revised at}) each time about BATCH memberships are
+    summed, at the end of a text, then the rest. Each membership adds to `<library>
+    <kind>` (plain, items: ITEMS_9, other) and, for a plain text, to
+    `<library> <tag>` for each of its tags; one of a text with no current
+    revision or no content version counts for nothing."""
+    sums, summed, seen, size, revised, change = {}, 0, None, None, {}, None
+    text_row, version_row = next(current, None), next(versions, None)
+    for text, library in held:
+        if text != seen:
+            if summed >= BATCH:
+                yield sums, seen, revised
+                sums, summed, revised = {}, 0, {}
+            seen, size, change = text, None, None
+            while text_row is not None and text_row[0] < text:
+                text_row = next(current, None)
+            if text_row is not None and text_row[0] == text:
+                change = text_row[3]
+                wanted = (text, text_row[1])
+                while version_row is not None and (version_row[0], version_row[1]) < wanted:
+                    version_row = next(versions, None)
+                if version_row is not None and (version_row[0], version_row[1]) == wanted:
+                    kind = version_row[2]
+                    what = "plain" if kind is None else "items" if kind in ITEMS_9 else "other"
+                    size = (what, version_row[3] or 0, version_row[4] or 0,
+                            json.loads(text_row[2] or "[]") if kind is None else ())
+        summed += 1
+        if change is not None and revised.get(library, -1) < change:
+            revised[library] = change
+        if size is None:
+            continue
+        what, length, nbytes, tags = size
+        for key in ((LIBRARY_KIND_9, f"{library} {what}"), *((LIBRARY_TAG_9, f"{library} {tag}") for tag in tags)):
+            one = sums.get(key)
+            if one is None:
+                sums[key] = [1, length, nbytes]
+            else:
+                one[0] += 1
+                one[1] += length
+                one[2] += nbytes
+    if sums or seen is not None:
+        yield sums, seen, revised
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):

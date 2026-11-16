@@ -49,9 +49,9 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts`, `/api/texts/blocked` and `/api/libraries/measure` | 1 a second | 5, delayed |
-| every other `POST` | 1 a second | 10, delayed |
-| every other request | 10 a second | 40, at once |
+| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked` | 1 a second | 5, delayed |
+| every other `POST`, except `/api/libraries/measure` | 1 a second | 10, delayed |
+| every other request, `POST` to `/api/libraries/measure` included (it reads only the depot's counts) | 10 a second | 40, at once |
 
 The pages count the texts a filter matches one step at a time, at most
 one step every two seconds, and send a step refused with 429 or for lack
@@ -102,7 +102,7 @@ tasks take the share of the bytes they hold in the corpus of every token,
 and the shares split the rest ([data-selection.md](data-selection.md), "Datasets"). The dataset's `max_tokens` is only the size the build form
 fills in. The page "Download" lists the
 dataset's corpora and holds the form of a new build: a trained vocabulary,
-the one the dataset publishes filled in, and a size, then an estimate (`GET /api/datasets/{id}/estimate`: the
+the one the dataset publishes filled in, else the latest of its own recipe, and a size, then an estimate (`GET /api/datasets/{id}/estimate`: the
 tokens, the bytes in the store, the time of tokenizing on this machine
 and whether it fits under the cap, from a small sample tokenized, writing
 nothing; the time leaves out the pass that orders the dataset, which

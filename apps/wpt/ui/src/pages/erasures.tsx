@@ -16,7 +16,7 @@ import { EraseForm, type Erasable } from "../erase-form";
 import { ErasureView } from "../erasure-view";
 import { search, EVERY, type Row } from "../filter";
 import { codePoints } from "../reader";
-import { Confirm, Cut, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, StatusBadge, textName, type Declaration, type Status } from "../parts";
+import { Confirm, Cut, Help, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, StatusBadge, textName, type Declaration, type Status } from "../parts";
 import { href } from "../route";
 import type { Page } from "./index";
 
@@ -147,7 +147,7 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
           <Button variant="quiet" onClick={() => setChosen(null)}>Choose another text</Button>
         </div>
         {chosen.data.upstream
-          ? <p className="small">It belongs to the upstream this depot follows: ask the upstream to erase it, and a pull carries out here what the upstream erased.</p>
+          ? <p className="small">The upstream's text: ask the upstream.<Help label="an upstream's text">It belongs to the upstream this depot follows: ask the upstream to erase it, and a pull carries out here what the upstream erased.</Help></p>
           : <EraseForm key={row.id} row={row} onDone={onDone} />}
       </>
     );
@@ -157,14 +157,13 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
     <div className="action-form form-narrow">
       <RequiredNote />
       <div className="entry-row">
-        <TextInput label={required("The text: a part of its title or id")} required value={words} onChange={(e) => setWords(e.target.value)}
+        <TextInput label={required("Text: a part of its title or id")} hint={<>Matching texts are listed as you type; Enter, or "Open this id", opens the text with exactly this id.</>} required value={words} onChange={(e) => setWords(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && typed) open(typed); }} />
         <Button variant="quiet" disabled={!typed} onClick={() => open(typed)}>Open this id</Button>
       </div>
-      <p className="form-note small">Matching texts are listed as you type; Enter, or "Open this id", opens the text with exactly this id.</p>
       {chosen && !chosen.ok && <Problems problems={chosen.problems} />}
       {found && !found.ok && <Problems problems={found.problems} />}
-      {found?.ok && (found.data.rows.length === 0 ? <p className="small">No text's title or id holds these words.</p> : (
+      {found?.ok && (found.data.rows.length === 0 ? <p className="small aside">No match.</p> : (
         <>
           {found.data.next !== null && <p className="small aside">More texts match; the first {found.data.rows.length} by id.</p>}
           <ul className="plain picks">

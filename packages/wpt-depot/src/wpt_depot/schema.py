@@ -27,8 +27,10 @@ column decisions of texts_revisions is unused, kept because removing it
 rewrites the whole table: every revision the current format writes holds '[]'
 there, and a past revision upgraded from an older format keeps the list it
 held. The table counts holds how
-many current texts have each status, tag, license, library and decision
-(wpt_depot.counts). Which texts a library holds is
+many current texts have each status, tag, license, library and decision,
+and what each library holds by kind and by tag, in texts, characters and
+bytes, and library_moves the change at which what each library holds last
+moved (wpt_depot.counts). Which texts a library holds is
 memberships: the change a text joined at and the change it left at (null
 while it is in). A locked library also has pins: the exact revision of each
 text it locked, with the change that locked it. Each row of both also
@@ -42,20 +44,29 @@ by its depot ('' for the depot that holds the recipe, else that depot's
 web address, or the name of another local depot its dataset reads) and id.
 A dataset's vocabulary, when set, is the sha256 of one of the depot's
 vocabularies: the one it publishes, which training takes its corpus of
-(its max_tokens is only the size a build form starts at). numbers holds, for each kind of id, the
+(its max_tokens is only the size a build form starts at). Each revision of
+a dataset stores, in figures, what each of its libraries held at the
+change it reads it at, copied from counts by the write that made the
+revision when the counts prove them exact (Depot.dataset_figures).
+numbers holds, for each kind of id, the
 last number of the depot's own ids, so a number is never given twice, even
 once an erasure removed its row.
 
 A list is JSON text: a text's licenses, authors, tags and scores, the
 decisions (ids, in order) the texts view gives, a content version's parts, a library's problems, an
 erasure request's decisions, needles and erased passages, a dataset's
-libraries and shares. A list of names is a JSON array of strings, so a tag
+libraries, shares and figures. A list of names is a JSON array of strings, so a tag
 test is `EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'book')`; a
 part is {"hash": its SHA-256 in hexadecimal, "length": its characters}; a
 score is {"name", "value", "content_version"}, in the order of their names
 (null: none); an erased passage is {"length", "hash_a", "hash_b" (both in
 hexadecimal), "at", "needle"}; a problem is {"texts", "problem",
-"decision"}; a needle is {"text", "field", "start", "end", "version"}. A
+"decision"}; a needle is {"text", "field", "start", "end", "version"}; a
+dataset revision's figures are {"at": the change they were read at, in the
+numbering of the depot that owns the dataset, "libraries": one entry for
+each library it reads, in order, null when not known, else {"plain",
+"items", "other": each {"texts", "characters", "bytes"}, "tags": the same
+for the plain texts that have each tag of its shares, in order}}. A
 time is ISO 8601 text in UTC.
 
 Every table has a declared primary key (KEYS): the sessions that record
@@ -104,7 +115,7 @@ Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 
 from . import ids
 
-FORMAT = 8  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 9  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -138,7 +149,7 @@ TABLES = {
         latest INTEGER NOT NULL, reason TEXT NOT NULL, decisions TEXT NOT NULL, needles TEXT NOT NULL, erased TEXT""",
     "datasets_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, name TEXT NOT NULL, tokenizer TEXT NOT NULL, libraries TEXT NOT NULL, shares TEXT,
-        max_tokens INTEGER, vocabulary TEXT""",
+        max_tokens INTEGER, vocabulary TEXT, figures TEXT""",
     "tokenizers_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
         latest INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL, depot TEXT, dataset TEXT NOT NULL,
         sample_bytes INTEGER NOT NULL, vocab_size INTEGER NOT NULL, note TEXT""",
@@ -147,7 +158,9 @@ TABLES = {
     "vocabulary_texts": """recipe TEXT NOT NULL, version INTEGER NOT NULL, position INTEGER NOT NULL,
         depot TEXT NOT NULL, text TEXT NOT NULL, change INTEGER NOT NULL""",
     "pulls": "depot TEXT NOT NULL, change INTEGER NOT NULL, upstream TEXT NOT NULL, upstream_change INTEGER NOT NULL",
-    "counts": "facet TEXT NOT NULL, name TEXT NOT NULL, texts INTEGER NOT NULL",
+    "counts": ("facet TEXT NOT NULL, name TEXT NOT NULL, texts INTEGER NOT NULL, characters INTEGER NOT NULL DEFAULT 0, "
+               "bytes INTEGER NOT NULL DEFAULT 0"),
+    "library_moves": "library TEXT NOT NULL, change INTEGER",
 }
 KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name",), "licenses": ("id",),
         "notices": ("id",), "kinds": ("id",), "decisions": ("id",), "texts_revisions": ("id", "revision"),
@@ -156,9 +169,9 @@ KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name"
         "erasures_revisions": ("id", "revision"), "datasets_revisions": ("id", "revision"),
         "pulls": ("depot", "change"), "text_decisions": ("text", "decision"), "counts": ("facet", "name"),
         "tokenizers_revisions": ("id", "revision"), "vocabularies": ("recipe", "version"),
-        "vocabulary_texts": ("recipe", "version", "position")}
+        "vocabulary_texts": ("recipe", "version", "position"), "library_moves": ("library",)}
 # the tables stored in the order of their key alone (SQLite's WITHOUT ROWID): small rows read by their key
-WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts"})
+WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts", "library_moves"})
 INDEXES = (
     "CREATE UNIQUE INDEX texts_latest ON texts_revisions (id) WHERE latest",
     f"CREATE INDEX texts_order ON texts_revisions ({ids.order_sql()}) WHERE latest",
@@ -180,7 +193,7 @@ REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "data
            "tokenizers_revisions")
 # the columns that hold JSON text, by name, in any table or view
 JSON_COLUMNS = frozenset({"licenses", "authors", "tags", "decisions", "scores", "libraries", "parts", "problems",
-                          "needles", "erased", "shares"})
+                          "needles", "erased", "shares", "figures"})
 
 
 def ddl() -> list[str]:

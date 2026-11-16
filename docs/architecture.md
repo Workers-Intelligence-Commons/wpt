@@ -115,11 +115,43 @@ for each library it reads.
 its decisions make, and the index `texts_status` holds the current texts by
 status, then in the numeric order of their ids. The table `counts` holds
 how many current texts the depot has, and how many have each status, each
-tag and each license, each library holds and each decision is on. Every
+tag and each license, each library holds and each decision is on. It also
+holds what each library holds, each text at its current revision, in
+texts, characters and UTF-8 bytes: by kind (plain texts, the conversations
+and tasks a corpus takes, and items of other kinds) and, for its plain
+texts, by tag, a text with several tags counting once for each. Every
 write keeps the stored statuses and the counts right in its own
 transaction, so a page reads them at once whatever the depot's size; one
 module writes `counts` (`wpt_depot/counts.py`), and `wpt depot recount`
 makes it again from the rows.
+
+**A dataset revision's figures.** A dataset reads each library at a change
+number, so what a build of a revision takes is what the libraries held then,
+not what they hold now. The same module keeps, in `library_moves`, the
+change at which what each library holds last moved. A library that has not
+moved since the change a revision reads it at holds now what it held then,
+so its counts are exact for that change. The write that makes a dataset
+revision copies those counts into the revision, in its own transaction, for
+each library they prove exact, and stores nothing for the others: a library
+of another depot, an upstream's library in a clone, whose change numbers
+are of another numbering, and a library that moved since the change an edit
+keeps reading it at. The dataset's pages show the stored figures, with how
+many more or fewer texts the libraries hold now, and "unknown" where nothing
+is stored. An edit keeps each library at the change it was first read at.
+Reading a dataset again (`wpt depot dataset read-again`) is the one write
+that moves its libraries: a new revision, the same otherwise, that reads
+every library of this depot at the change number now, a locked one as its
+lock leaves it, and stores their figures; a library of another depot keeps
+its change. It reads the dataset's current row inside its own write. It writes
+nothing when no library's change number would change, or when the depot's
+latest change is the dataset's own read again, since nothing moved after it. The
+dataset's page offers it only where it changes what the page shows. An erasure carried out after the figures were read reaches the past
+a revision reads, so a revision's figures are unknown once one reached a
+text its library holds or held, or removed a text whole, which leaves no
+row naming its libraries. In a clone, an upstream's erasure counts from the
+pull that brought it. The upgrade to format 9 gives figures to a
+revision only when nothing touched its libraries after the change it reads
+them at, so a stored figure is never wrong.
 
 **Contents.** A content version, a plain text or an item's JSON, is the
 ordered list of its parts, and its row of `content_lists` holds that list,
@@ -241,6 +273,23 @@ upgrade opens, and the upgrade run again builds the index whole. It says
 what it does before it starts and how long it took. Format 8 is also the
 format of a depot that may hold decisions that put texts back under review,
 which code of format 7 does not know, so that code refuses such a depot.
+The step to format 9 makes the columns `characters` and `bytes` of
+`counts` and fills what each library holds by kind and by tag. It reads
+the memberships that have not ended, the current revisions and the content
+versions in one sequential scan each, sorted by text id, and merges them,
+so no row is looked up through an index and the time grows with the rows
+whatever order the file stores them in. SQLite sorts the three scans at
+once in its temporary folder, which `SQLITE_TMPDIR` names, and they take
+about 100 bytes of free disk a membership; the step says how much before
+it starts. It writes the sums a batch of
+memberships at a time, marked half upgraded until the last, saying how
+many rows a second it counts; run again after a stop, it goes on after the
+last text it wrote. The same merge gives the latest change each library's
+current texts were revised at, and one read of the index `memberships_key`
+gives the latest change its memberships joined or left at, which make
+`library_moves`; in a clone, whose rows carry several numberings, the change
+of each library is unknown. Its last transaction gives each dataset
+revision the figures those prove exact.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. A step names the columns it
@@ -527,9 +576,9 @@ refused change writes nothing.
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores` |
 | libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Workspace" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
 | a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library in the "Workspace" page |
-| what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, and the part of each share the mix keeps; the dataset form and page and the export page |
+| what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, read from the counts, and the part of each share the mix keeps; the dataset form, the list of datasets, the page "Libraries" and the head of a library |
 | the times of changes | `sql QUERY` | `POST /api/changes/times`; the moment each library of a dataset is read at |
-| datasets and remotes | `dataset new`, `edit`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it), `POST /api/datasets/{id}` (its edit, refused when made from a revision older than the current one), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
+| datasets and remotes | `dataset new`, `edit`, `read-again`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it and the figures its revision stores), `POST /api/datasets/{id}` (its edit, refused when made from a revision older than the current one), `POST /api/datasets/{id}/read-again` (its libraries of this depot read at the change number now, refused the same way), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
 | tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
 | a tokenizer's vocabulary | `tokenizer train NAME` | `GET /api/tokenizers/{name}/estimate`, then `POST /api/tokenizers/{name}/train`, confirmed, a job; `GET /api/vocabularies`; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
 | a corpus | `build DATASET [--vocabulary SHA256] (--max-tokens N \| --all)`, run in the command | `GET /api/datasets/{id}/estimate`, then `POST /api/datasets/{id}/build` with a trained vocabulary and a size, confirmed, a job; the dataset's page "Corpora" |
@@ -574,9 +623,10 @@ beside the playlist lists the keys and shows the confirmation they make
 with the name and email they record. A line names the text and the
 decision after each press. Without a name or an email, the key asks for
 them and decides nothing. The keys do nothing while the cursor is in a
-field or the editor. On a phone, a bar at the bottom of the screen moves
-and decides as the keys do, and its Admit and Refuse ask first, in a line
-that holds the confirmation and the name the decision records. The blob
+field or the editor. On a phone, a bar under the open text's head, which
+stays at the top of the screen while the text scrolls, moves and decides
+as the keys do. Its Admit and Refuse ask first, in a line at the bottom of
+the screen that holds the confirmation and the name the decision records. The blob
 mode shows the open texts as one continuous text, read a page at a time as
 it scrolls; a click on a passage opens that text in the editor.
 
@@ -674,8 +724,8 @@ as well, under the same rule. `wpt depot sql` follows it too.
 
 A route that runs a person's SQL, or that reads many texts or
 memberships (`POST /api/sql`, `POST /api/texts/search`, `POST
-/api/texts/passages`, `POST /api/texts/counts`, `POST /api/texts/blocked`
-and `POST /api/libraries/measure`), runs it in a
+/api/texts/passages`, `POST /api/texts/counts` and `POST /api/texts/blocked`),
+runs it in a
 reader process of its own (`wpt/depot/web/readers.py`), never in the
 server's process, with at most `READERS` reader processes at a time.
 SQLite stops a person's statement `SECONDS` after its reader takes it, and the

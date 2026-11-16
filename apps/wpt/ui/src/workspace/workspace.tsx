@@ -8,7 +8,7 @@
 // #/texts/ID?library=L&view=blob. The filter bar refines it. When it is one
 // library, its head stands above the columns (library-head.tsx); ticked
 // texts are acted on through the bar at the bottom (bulk.tsx). The ticked
-// texts are those ticked one by one, or, once "Tick all" is pressed, every
+// texts are those ticked one by one, or, once the box of every text is ticked, every
 // text the filter matches less those unticked since, at the change number
 // the playlist's page was read at; either way the bar sends them as a
 // selection (filter.tsx), never as the list of every id. Opened from a
@@ -22,7 +22,8 @@
 // dialog: J or the down arrow (in the playlist) opens the next text, K or
 // the up arrow the previous one, X ticks the current text, E puts the
 // cursor in the editor (on a conversation, it opens its form), A admits the
-// current text and opens the next one, R asks first, in one line with an
+// current text and opens the next one (asking first when the text was
+// refused, since that reverses a decision), R asks first, in one line with an
 // optional reason, then refuses it on Enter and opens the next one (Escape
 // refuses nothing), and U puts an admitted or refused text back under
 // review the same way, undoing its admission or refusal. Each sends a public decision under the declaration this
@@ -46,7 +47,7 @@ import { declared, readDeclarant, saveDeclarant, useDeclarant } from "../declara
 import { CountingNote, matched, shownCounts, useCounts } from "../counts";
 import { type Decided } from "../decide-forms";
 import { EVERY, FilterBar, fromQuery, named as namedIds, sent, toQuery, useSearch, type Selection, type TextFilter } from "../filter";
-import { plural, Problems, required, RequiredNote, textName, useLibraries, type Library } from "../parts";
+import { Help, plural, Problems, required, RequiredNote, settingsHref, textName, useLibraries, type Library } from "../parts";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
 import { Blob } from "./blob";
@@ -111,6 +112,9 @@ export function Workspace({ current, query }: { current: string | null; query: U
   const intoLibrary = into ? libraries.find((l) => l.id === into) ?? null : null;
   const outsideKey = (f: TextFilter, library: string) => JSON.stringify(f.outside) === JSON.stringify(outsideOf(library).outside);
   const choosing = intoLibrary && outsideKey(filter, intoLibrary.id) ? intoLibrary : null; // its filter still open
+  // the open filter narrows the texts it offers further than the admitted texts it does not hold
+  const base = choosing ? outsideOf(choosing.id) : null;
+  const narrowed = base !== null && (Object.keys(EVERY) as (keyof TextFilter)[]).some((k) => JSON.stringify(filter[k]) !== JSON.stringify(base[k]));
   // what a link's named texts are, in words (#/texts?id=...&what=...), shown in place of their number while they stay named
   const what = query.get("what");
   const idsLabel = what && filter.ids ? what : undefined;
@@ -295,7 +299,7 @@ export function Workspace({ current, query }: { current: string | null; query: U
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
       if (key === "j" || (key === "ArrowDown" && inList)) move(1);
       else if (key === "k" || (key === "ArrowUp" && inList)) move(-1);
-      else if (key === "a") decide("admitted");
+      else if (key === "a") { if (currentStatus === "refused") ask("admitted"); else decide("admitted"); } // reversing a refusal asks first
       else if (key === "r") ask("refused");
       else if (key === "u") ask("under review");
       else if (key === "t") takeOut();
@@ -330,25 +334,33 @@ export function Workspace({ current, query }: { current: string | null; query: U
     : ticked.ids.size ? { ...namedIds([...ticked.ids]), change: ticked.change ?? undefined } : null;
   const tickedCount = ticked.all ? (total === null ? null : Math.max(0, total - ticked.ids.size)) : ticked.ids.size;
 
+  // the bar of moves and decisions a phone shows under the open text's head, stuck to the top of the screen as the text scrolls
+  const phoneBar = (
+    <div className="phone-bar" role="group" aria-label="Move and decide">
+      <Button variant="quiet" className="move-button" onClick={() => move(-1)} aria-keyshortcuts="K" aria-label="Previous text" title="Previous text">‹</Button>
+      <Button variant={currentStatus === "under review" ? "primary" : "quiet"} onClick={() => ask("admitted")} disabled={deciding} aria-label="Admit…">Admit</Button>
+      <Button variant="quiet" onClick={() => ask("refused")} disabled={deciding} aria-keyshortcuts="R" aria-label="Refuse…">Refuse</Button>
+      {currentStatus && currentStatus !== "under review" && <Button variant="quiet" onClick={() => ask("under review")} disabled={deciding} aria-keyshortcuts="U" aria-label="Back to review…" title="Back to review: undo its admission or refusal">Review</Button>}
+      <Button variant="quiet" className="move-button" onClick={() => move(1)} aria-keyshortcuts="J" aria-label="Next text" title="Next text">›</Button>
+    </div>
+  );
   return (
     <div className={`workspace-frame${mono ? " mono" : ""}`} onClickCapture={guard}>
       <FilterBar value={filter} onApply={apply} libraries={libraries} onLeave={toList}
         idsLabel={idsLabel} within={counts?.done && !counts.problems ? counts : null} />
-      {choosing && total === 0 && (
-        <p className="next-step into-banner" role="note">
-          Every admitted text is in <strong>{choosing.name}</strong>. <a href={href(["texts"], { library: choosing.id })}>Open it</a>, or <a href={href(["datasets"], { new: "1", library: choosing.id })}>make a dataset from it</a>.
-        </p>
-      )}
-      {choosing && total !== 0 && (
-        <p className="next-step into-banner" role="note">
-          Choosing texts to put in <strong>{choosing.name}</strong>: the admitted texts it does not hold yet{total !== null ? <> ({total.toLocaleString("en")})</> : null}. Tick them, or tick them all, then press <q>Put in {choosing.name}</q> at the bottom.{" "}
-          <a href={href(["texts"], { library: choosing.id })}>Back to {choosing.name}</a>
+      {choosing && (
+        <p className="next-step into-banner row tight" role="note">
+          <span>{total === 0
+            ? <>Nothing left to put in <strong>{choosing.name}</strong>{narrowed ? " under this filter" : ""}.</>
+            : <>Putting texts in <strong>{choosing.name}</strong>: tick, then <q>Put in</q>.</>}</span>
+          <a href={href(["texts"], { library: choosing.id })}>{total === 0 ? `Open ${choosing.name}` : "Back"}</a>
+          {total === 0 && <a href={href(["datasets"], { new: "1", library: choosing.id })}>Make a dataset from it</a>}
         </p>
       )}
       <div className="open-bar">
         {library ? <LibraryHead library={library} libraries={libraries} onChanged={changed} version={version} /> : (
           <section className="open-head" aria-label="What is open">
-            <h1 className="title open-title">{choosing ? `Admitted texts not in ${choosing.name}` : savedName ?? describe(filter, libraries, idsLabel ?? null)}</h1>
+            <h1 className="title open-title">{(choosing ? null : savedName) ?? describe(filter, libraries, idsLabel ?? null)}</h1>
             {(() => {
               const c = counts && !counts.done && counts.before ? counts.before : counts && counts.counted > 0 ? counts : null;
               return c && <span className={`small aside${c === counts ? "" : " recounting"}`}>
@@ -363,28 +375,28 @@ export function Workspace({ current, query }: { current: string | null; query: U
           </section>
         )}
         <div className="view-switch small" role="group" aria-label="How the open texts are shown">
-          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: null })} aria-current={!blob ? "true" : undefined}>Playlist and editor</a>
-          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: "blob" })} aria-current={blob ? "true" : undefined}>Blob: every text in one</a>
-          <label className="tick"><input type="checkbox" className="wic-check-box wic-focus" checked={mono} onChange={(e) => { setMono(e.target.checked); keepMono(e.target.checked); }} /> <span>Monospace type</span></label>
+          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: null })} aria-current={!blob ? "true" : undefined} title="The playlist and the current text in its editor">Playlist</a>
+          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: "blob" })} aria-current={blob ? "true" : undefined} title="Every open text one after another">Blob</a>
+          <label className="tick"><input type="checkbox" className="wic-check-box wic-focus" checked={mono} onChange={(e) => { setMono(e.target.checked); keepMono(e.target.checked); }} /> <span>Monospace</span></label>
         </div>
       </div>
       <div className={`workspace${blob ? " blob-mode" : ""}`}>
-        <Sources open={filter} libraries={libraries} version={version} onLibraryMade={changed} />
+        <Sources open={filter} libraries={libraries} version={version} onLibraryMade={changed} into={choosing?.id ?? null} />
         {blob ? <Blob filter={filter} order={playlist.order} onOpen={openFromBlob} /> : <>
           <div className="playlist-column">
             {!answer && <p className="aside">Reading the texts</p>}
             {answer && !answer.ok && <Problems problems={answer.problems} />}
             {answer?.ok && (
               <Playlist found={answer.data} busy={playlist.pending} current={current} link={link} isTicked={isTicked} everyTicked={ticked.all && ticked.ids.size === 0}
-                onTick={tick} onTickAll={tickAll} total={shownTotal} sorted={about?.sorted ?? 0} order={playlist.order} onOrder={playlist.setOrder}
+                onTick={tick} onTickAll={tickAll} onUntickAll={() => setTicked(NONE)} total={shownTotal} sorted={about?.sorted ?? 0} order={playlist.order} onOrder={playlist.setOrder}
                 limit={playlist.limit} onFirst={playlist.first} onPrevious={playlist.previous} onNext={playlist.next} counting={counts}
                 empty={library && JSON.stringify(filter) === JSON.stringify({ ...EVERY, libraries: [library.id] })
                   ? <>{library.name} is empty. {!library.locked_at && !library.upstream ? <a href={href(["texts"], { ...toQuery(outsideOf(library.id)), into: library.id })}>Put texts in it</a> : null}</>
-                  : choosing ? <>Every admitted text is in {choosing.name} already. <a href={href(["texts"], { library: choosing.id })}>Back to {choosing.name}</a></> : undefined} />
+                  : choosing ? <>None left.</> : undefined} />
             )}
           </div>
           <div className="editor-column">
-            {current ? <TextPanel id={current} version={version} onChanged={changed} onDirty={onDirty} handle={handle} onShown={onShown} find={filter.inText ? filter.search : undefined} />
+            {current ? <TextPanel id={current} bar={phoneBar} version={version} onChanged={changed} onDirty={onDirty} handle={handle} onShown={onShown} find={filter.inText ? filter.search : undefined} />
               : <p className="aside">No text is open: choose one in the playlist, or press J for the first.</p>}
           </div>
         </>}
@@ -392,19 +404,10 @@ export function Workspace({ current, query }: { current: string | null; query: U
       <Bulk selection={selection} count={tickedCount} libraries={libraries} library={library} into={choosing?.id ?? into} admittedHere={admittedHere} onUntick={() => setTicked(NONE)}
         onDone={(words) => { setSaid({ words }); setTicked(NONE); recheck(); changed(); }} />
       <div className="dock">
-        {confirming && <DecideAsk title={confirming.title} status={confirming.status} busy={deciding} who={who} confirmation={about?.confirmation ?? null}
+        {confirming && <DecideAsk title={confirming.title} status={confirming.status} busy={deciding} who={who} confirmation={about?.confirmation ?? null} requirements={about?.requirements ?? null}
           onDecide={(reason) => { setConfirming(null); decide(confirming.status, reason); toList(); }}
           onCancel={() => { setConfirming(null); toList(); }} />}
         {said && <SaidLine said={said} />}
-        {!blob && current && (
-          <div className="phone-bar" role="group" aria-label="Move and decide">
-            <Button variant="quiet" onClick={() => move(-1)} aria-keyshortcuts="K">Previous</Button>
-            <Button variant="primary" onClick={() => ask("admitted")} disabled={deciding}>Admit…</Button>
-            <Button variant="quiet" onClick={() => ask("refused")} disabled={deciding} aria-keyshortcuts="R">Refuse…</Button>
-            {currentStatus && currentStatus !== "under review" && <Button variant="quiet" onClick={() => ask("under review")} disabled={deciding} aria-keyshortcuts="U" aria-label="Back to review" title="Back to review: undo its admission or refusal">To review…</Button>}
-            <Button variant="quiet" onClick={() => move(1)} aria-keyshortcuts="J">Next</Button>
-          </div>
-        )}
       </div>
       {!blob && <Legend takes={Boolean(library && !library.locked_at && !library.upstream)} who={declared(who) ? who : null} confirmation={about?.confirmation ?? null} requirements={about?.requirements ?? null} />}
       <Dialog open={asking !== null} onClose={() => setAsking(null)} title="Who decides from this browser?">
@@ -444,12 +447,13 @@ const VERBS: Record<Deciding, string> = { admitted: "admit", refused: "refuse", 
 const DONE: Record<Deciding, string> = { admitted: "Admitted", refused: "Refused", "under review": "Put back under review" };
 const NOT_DONE: Record<Deciding, string> = { admitted: "Not admitted", refused: "Not refused", "under review": "Not put back under review" };
 
-// The question before a decision, in one line above the phone's bar: what
-// it does, the confirmation it makes and the name it records, then a button
-// that decides. A refusal and a putting back under review take an optional
+// The question before a decision, in one line above the phone's bar (and
+// before A reverses a refusal): what it does, the name and email it records,
+// the confirmation it makes and the link to the requirements, then a button
+// that decides; what else the decision does is behind its "?". A refusal and a putting back under review take an optional
 // public reason, and Enter decides; Escape decides nothing.
-function DecideAsk({ title, status, busy, who, confirmation, onDecide, onCancel }: {
-  title: string; status: Deciding; busy: boolean; who: { name: string; email: string }; confirmation: string | null;
+function DecideAsk({ title, status, busy, who, confirmation, requirements, onDecide, onCancel }: {
+  title: string; status: Deciding; busy: boolean; who: { name: string; email: string }; confirmation: string | null; requirements: string | null;
   onDecide: (reason: string) => void; onCancel: () => void;
 }) {
   const [reason, setReason] = useState("");
@@ -461,8 +465,9 @@ function DecideAsk({ title, status, busy, who, confirmation, onDecide, onCancel 
   return (
     <form className={`decide-ask said-line${refusing ? " refusing" : ""}`} role="group" aria-label={`${head} ${title}`}
       onSubmit={(e) => { e.preventDefault(); onDecide(reason); }} onKeyDown={escape}>
-      <span>{head} <strong>{title}</strong>? A public decision{refusing ? ": it leaves every open library" : again ? " that undoes its admission or refusal: the decisions before it no longer count, and it leaves every open library until admitted again" : ""}, recorded as {who.name}, <span className="ledger">{who.email}</span>.
-        {confirmation && <span className="small"> It confirms: <q>{confirmation}</q></span>}</span>
+      <span>{head} <strong>{title}</strong>? Public, as {who.name}, <span className="ledger">{who.email}</span>.
+        {confirmation && <> It confirms: <q>{confirmation}</q></>}{requirements && <> <a href={requirements} target="_blank" rel="noreferrer">The requirements</a>.</>}
+        {(refusing || again) && <Help label="this decision">{refusing ? "It leaves every open library." : "It undoes its admission or refusal: the decisions before it no longer count, and it leaves every open library until admitted again."}</Help>}</span>
       {reasoned && <input className="wic-input wic-focus decide-reason" autoFocus value={reason} placeholder="Reason, optional and public" aria-label="Reason (optional, public)"
         onChange={(e) => setReason(e.target.value)} />}
       <Button type="submit" variant="primary" disabled={busy} autoFocus={!reasoned}>{refusing ? "Refuse it" : again ? "Put it back" : "Admit it"}{reasoned && <span className="key-hint">(Enter)</span>}</Button>
@@ -486,19 +491,20 @@ function SaidLine({ said }: { said: Said }) {
 // The keys of the playlist, in one line under the columns, and what A, R and U confirm and record.
 function Legend({ takes, who, confirmation, requirements }: { takes: boolean; who: { name: string; email: string } | null; confirmation: string | null; requirements: string | null }) {
   const keys: [string, string][] = [
-    ["J K", "next, previous"], ["A", "admit, then next"], ["R", "refuse (asks a reason), then next"], ["U", "back to review (asks a reason), then next"], ["X", "tick"], ["E", "edit"], ["Ctrl F", "find and replace"], ["Ctrl S", "save"],
-    ...(takes ? [["T", "take out of this library, then next"] as [string, string]] : []),
+    ["J K", "move"], ["A", "admit"], ["R", "refuse"], ["U", "to review"], ["X", "tick"], ["E", "edit"], ["Ctrl F", "find"], ["Ctrl S", "save"],
+    ...(takes ? [["T", "take out"] as [string, string]] : []),
   ];
   return (
     <section className="key-legend small" aria-label="Keys">
       <span className="keys key-hint">
         {keys.map(([key, what]) => <span key={key} className="key"><kbd>{key}</kbd> {what}</span>)}
+        <Help label="the keys">J and K move to the next and previous text. A admits, R refuses and U puts back under review, then each moves to the next; R and U ask a reason. X ticks the text, E edits it, Ctrl F finds and replaces in it, Ctrl S saves it.{takes && " T takes it out of this library, then moves to the next."}</Help>
       </span>
       {who ? (
         <span className="aside" title={confirmation ? `Each press of A, R or U is a public decision and confirms: “${confirmation}”` : undefined}>
-          A, R and U decide in public as {who.name}, <span className="ledger">{who.email}</span> (<a href={href(["settings"])}>change</a>){requirements && <>; each press confirms the <a href={requirements} target="_blank" rel="noreferrer">requirements</a></>}.
+          A, R and U decide in public as {who.name}, <span className="ledger">{who.email}</span> (<a href={settingsHref()}>change</a>){requirements && <>; each press confirms the <a href={requirements} target="_blank" rel="noreferrer">requirements</a></>}.
         </span>
-      ) : <span className="act"><strong>No name and email set:</strong> A, R and U ask for them first.</span>}
+      ) : <span className="act"><strong>No name and email set:</strong> A, R and U ask for them first. <a href={settingsHref()}>Set them</a></span>}
     </section>
   );
 }
