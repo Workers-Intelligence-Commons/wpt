@@ -619,6 +619,7 @@ refused change writes nothing.
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
 | a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
+| a change of the credits of many texts | `credits-file FILE` | `POST /api/texts/credits` |
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores`; the "Scores" tab of the current text of the "Workspace" page |
 | one score set on, or removed from, texts | `score NAME (--value V \| --remove) WHERE` | `POST /api/texts/score`, on a selection; the "Workspace" page, on ticked texts |
 | the names of the scores | `score-names` | `GET /api/scores` |

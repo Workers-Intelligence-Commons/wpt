@@ -78,6 +78,98 @@ counting, so the text keeps its status and its libraries
 ([licenses.md](licenses.md), "Who decides"). A changed notice is stored
 once, as on an add.
 
+The credits of many texts change at once through `wpt depot credits-file
+FILE`, or `POST /api/texts/credits` ([architecture.md](architecture.md),
+"Two interfaces"). FILE holds one JSON object per line, one line per text,
+
+    {"id": "my-depot-17", "title": "owner/repo/src/main.py", "authors": ["Ann Lee"]}
+
+with any of the credits `title`, `authors`, `tags`, `address` and
+`notice`. A credit given replaces the text's, `null` clears it, and a
+credit left out stays as it is. Each text the change changes gets a new
+revision, and the change is one decision under review on all of them, with
+the person's declaration, whose reason the depot writes naming the credits
+that changed (`credits changed: title, authors`). As for one text's
+credits, the decisions before it keep counting, so the texts keep their
+status and their libraries, and a locked library keeps reading the
+revision it pinned. A text whose credits would stay as they are is left
+out of the change, and the command and the route report how many texts
+changed and how many were left out.
+
+A line may also name the values its writer read of some credits, under
+`was`:
+
+    {"id": "my-depot-17", "title": "owner/repo/src/main.py", "was": {"title": null}}
+
+The depot changes the text only while each credit named there still has
+that value, `null` meaning none, and otherwise leaves the text out. A file
+written from an earlier reading of the depot therefore never undoes a
+change made since.
+
+One change names at most 350,000 texts. The change holds the depot's
+lock while it writes, so a larger set of texts is sent as several changes,
+each its own decision, and the depot's other writers wait for one change
+at a time only. The depot refuses the whole change, writing nothing, when
+a line is not of that shape, when it names more texts than that, when no
+text would change, when a text is named twice or is no text of the depot,
+or when a text belongs to the upstream of a clone. The depot checks and
+applies a change where its lines are, so the program's memory stays the
+same whatever the number of texts.
+
+### Titles from a text's source
+
+A text's title comes from its source, by the rule of the kind of source
+it came from. Most rules read the text's own row: its address, its notice
+or its own text; Project Gutenberg's rule reads the project's catalogue. A
+rule that finds nothing leaves the title empty; no title is made up. A
+text that has a title keeps it.
+
+- A code file from a dataset of source files (Stack V2 Edu, Stack V2
+  HTML), whose address is
+  `https://raw.githubusercontent.com/<owner>/<repo>/<commit>/<path>`:
+  `<owner>/<repo>/<path>`, as the address writes it.
+- A GitHub repository, whose address is `https://github.com/<owner>/<name>`:
+  `<owner>/<name>`.
+- A GitHub issue or pull request (GitHub Archive): the first line of its
+  text, when a blank line or the end of the text follows it.
+- A research paper of peS2o: the first line of its text, when a blank
+  line or the end of the text follows it. When every line of the text's
+  first paragraph but the last ends in a backslash, a hard line break, the
+  paragraph is the title, its lines joined by a space.
+- A Python Enhancement Proposal: the `Title:` field of the header that
+  starts its text, up to the header's next field.
+- A Standard Ebooks book: the first `dc:title` of the
+  `=== src/epub/content.opf` block inside its text.
+- A Bible translation of eBible.org: its notice's text before
+  `, eBible.org`.
+- A Project Gutenberg ebook: the title Project Gutenberg's catalogue
+  `pg_catalog.csv` (https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv)
+  gives the ebook number in the text's address, the last folder of the
+  address made of digits alone. A catalogue title of several lines is
+  its lines, each trimmed, the empty ones skipped, joined by `: `.
+- A PubMed Central article has no title.
+
+A title read from a text is read as its Markdown shows it: a backslash
+that escapes a punctuation character is dropped, a hard line break (a
+backslash at the end of a line) is a space, and spaces at both ends are
+trimmed.
+
+A title read from the first line or paragraph of a text is left empty when
+it is longer than 300 characters or holds `\documentclass`: such a line
+runs into the text's body.
+
+An author stored as the text of a Python dict, `{'first': 'Jean M',
+'last': 'Feugang'}`, is the name its parts make, `Jean M Feugang`: the
+parts that are not empty, in the order first, last. An author whose parts
+are both empty is dropped, and a text left with no author has none.
+
+`scripts/source_credits.py` reads a depot, read only, and writes the
+files of `wpt depot credits-file` by these rules, one family of sources
+at a time, in files of at most 350,000 lines. Each line names under
+`was` the title or authors it read, so a title set after the reading
+stays. It learns which source each text came from from the ledgers of the
+run that added them.
+
 ### Scores
 
 A text's scores are pairs of a name and a decimal number, under any name,

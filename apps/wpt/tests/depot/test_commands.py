@@ -437,6 +437,26 @@ def test_the_score_command_sets_one_score_on_the_texts_a_condition_matches_and_s
     assert printed_rows(capsys) == [{"name": "rank", "texts": 1}]
 
 
+def test_the_credits_file_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path,
+                                                                                                    capsys):
+    opened = Depot.open(depot)
+    first, second = opened.add([NewText(text="one", licenses=("CC0-1.0",), title="One"),
+                                NewText(text="two", licenses=("CC0-1.0",))], _declaration())
+    lines = [{"id": first, "title": "One"}, {"id": second, "title": "owner/repo", "authors": ["Ann Lee"]}]
+    (tmp_path / "credits.jsonl").write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+    capsys.readouterr()
+
+    assert depot_command("credits-file", str(tmp_path / "credits.jsonl"), *ME) == 0
+
+    assert bare(capsys.readouterr().out).strip() == (
+        "decision test-depot-2: under review, credits changed: title, authors, on 1 texts; 1 texts left out, their "
+        "credits unchanged")
+    shown = Depot.open(depot).show(second)["text"]
+    assert (shown["title"], shown["authors"]) == ("owner/repo", ["Ann Lee"])
+    assert depot_command("credits-file", str(tmp_path / "credits.jsonl"), *ME) == 2  # nothing changes
+    assert depot_command("credits-file", str(tmp_path / "missing.jsonl"), *ME) == 2
+
+
 def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path, capsys):
     opened = Depot.open(depot)
     first, second = opened.add([NewText(text="one", licenses=("CC0-1.0",)), NewText(text="two", licenses=("CC0-1.0",))],

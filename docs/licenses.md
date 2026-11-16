@@ -763,6 +763,10 @@ public, and is not verified; the form says so before anyone confirms.
   z`); a notice is named by its id. Unlike a license or content change, it
   starts nothing over: the decisions before it keep counting, so an admitted text
   stays admitted and in its libraries.
+- `wpt depot credits-file FILE` changes the credits of many texts the same
+  way, as one decision under review on every text it changes, whose
+  reason the depot writes naming the credits that changed (`credits
+  changed: title, authors`). It starts nothing over either.
 - An erasure request is decided the same way, by
   `wpt depot decide admit|refuse --erasure ID` or on the "Erasures" page
   ([erasure.md](erasure.md)).

@@ -63,6 +63,13 @@ def scores_change(set_names: list[str], removed: list[str]) -> str:
     return f"scores changed: {'; '.join(parts)}"
 
 
+def credits_change(names: list[str]) -> str:
+    """The reason the depot writes on the decision that records a change of
+    the credits of many texts at once: the names of the credits that
+    changed. It never starts over (starts_over)."""
+    return f"credits changed: {', '.join(names)}"
+
+
 def starts_over(reason: str | None) -> bool:
     """Whether a reason is in the form of license_change, content_change or
     review_again: on a decision under review, the decisions before it no

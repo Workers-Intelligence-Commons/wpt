@@ -653,6 +653,32 @@ def test_one_score_set_on_a_selection_from_the_pages_is_one_decision_and_its_nam
                                                     "declaration": ME})[0] == 400
 
 
+def test_credits_of_many_texts_change_under_one_decision_from_the_route(web):
+    request, depot = web
+    for words in ("one", "two"):
+        request("POST", "/api/texts", {"text": words, "licenses": ["CC0-1.0"], "declaration": ME})
+
+    assert request("POST", "/api/texts/credits", {"texts": [{"id": "test-depot-1", "licenses": ["MIT"]}],
+                                                  "declaration": ME})[0] == 400
+    assert request("POST", "/api/texts/credits", {"texts": [{"id": "test-depot-9", "title": "x"}],
+                                                  "declaration": ME})[0] == 404
+    assert request("POST", "/api/texts/credits", {"texts": [{"id": "test-depot-1", "title": "owner/repo"},
+                                                            {"id": "test-depot-2", "authors": ["Ann Lee"]}],
+                                                  "declaration": ME}) == (
+        200, {"decision": "test-depot-3", "reason": "credits changed: title, authors", "changed": 2, "left_out": 0})
+    shown = request("GET", "/api/texts/test-depot-1")[1]
+    assert (shown["text"]["title"], shown["revisions"]) == ("owner/repo", 2)
+    assert request("POST", "/api/texts/credits", {"texts": [{"id": "test-depot-1", "title": "owner/repo"}],
+                                                  "declaration": ME})[0] == 422
+    assert request("POST", "/api/texts/credits", {"texts": [{"id": "test-depot-2", "title": "x",
+                                                             "was": {"licenses": None}}], "declaration": ME})[0] == 400
+    assert request("POST", "/api/texts/credits", {"texts": [{"id": "test-depot-1", "title": "x",
+                                                             "was": {"title": None}},
+                                                            {"id": "test-depot-2", "title": "Two",
+                                                             "was": {"title": None}}], "declaration": ME})[1] == {
+        "decision": "test-depot-4", "reason": "credits changed: title", "changed": 1, "left_out": 1}
+
+
 def test_a_failure_no_route_names_is_answered_with_its_problem(tmp_path):
     # without an answer the browser gets a closed connection, and the page could show nothing
     def broken(values, body):

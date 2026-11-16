@@ -106,6 +106,21 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           are is left out
     wpt depot score-names                 every name of a score a text has now, with how many texts have it;
                                           one JSON row per line, from the depot's counts
+    wpt depot credits-file FILE DECLARATION
+                                          change the credits of many texts at once, each as a new
+                                          revision: FILE (UTF-8) holds one JSON object per line, one line
+                                          per text, {"id": ID, "title": T, "authors": [A, ...], "tags": [T,
+                                          ...], "address": A, "notice": N}, each credit optional: one given
+                                          replaces the text's, null clears it, one left out stays; a line
+                                          may add "was": {CREDIT: VALUE, ...}, the values its writer read,
+                                          and changes the text only while they still hold; at most
+                                          350,000 lines; the depot records it as one decision under
+                                          review on every text it changes, whose reason names the credits
+                                          changed; the decisions before it keep counting, so the texts keep
+                                          their status and libraries, and a locked library keeps the
+                                          revision it pinned; a text whose credits stay as they are, or
+                                          whose was no longer holds, is left out; prints how many texts
+                                          changed and how many were left out
     wpt depot decide admit|refuse --erasure ID DECLARATION [--reason TEXT]
                                           one decision on the erasure request ID; once it is admitted,
                                           the depot carries it out at once and marks stale every corpus
@@ -372,6 +387,15 @@ def cmd_score(args):
 
 def cmd_score_names(args):
     _rows(opened().score_names())
+    return 0
+
+
+def cmd_credits_file(args):
+    if not Path(args.file).is_file():
+        raise FileNotFoundError(f"no file {args.file}")
+    decision, reason, changed, left_out = opened().edit_credits_many(Path(args.file), _declaration(args))
+    say(f"decision {decision}: under review, {reason}, on {changed:,} texts"
+        + (f"; {left_out:,} texts left out, their credits unchanged" if left_out else ""))
     return 0
 
 
@@ -707,6 +731,15 @@ def parser() -> argparse.ArgumentParser:
                            help="empty that credit")
     _declares(crediting)
     crediting.set_defaults(run=cmd_credits)
+
+    crediting_file = commands.add_parser("credits-file", help="change the credits of many texts as new revisions, "
+                                                              "recorded as one decision under review")
+    crediting_file.add_argument("file", help="one JSON object per line: {\"id\": ID, \"title\": T, \"authors\": [A], "
+                                             "\"tags\": [T], \"address\": A, \"notice\": N}, each credit optional, "
+                                             "null clearing it, and optionally \"was\": {CREDIT: VALUE}, the "
+                                             "values it was written from; at most 350,000 lines")
+    _declares(crediting_file)
+    crediting_file.set_defaults(run=cmd_credits_file)
 
     scoring = commands.add_parser("scores", help="change the scores of many texts as new revisions, recorded as one "
                                                  "decision under review")

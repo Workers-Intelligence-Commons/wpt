@@ -175,7 +175,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import apsw
 
-from . import counts, erasure, ids, kinds, licenses, policy, scoring
+from . import counts, crediting, erasure, ids, kinds, licenses, policy, scoring
 from .database import Database, person_columns
 from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
@@ -208,7 +208,7 @@ FORK = ", or fork it into a library of this depot"
 SINGULAR = {"texts": "text", "libraries": "library", "erasure requests": "erasure request", "datasets": "dataset",
             "tokenizer recipes": "tokenizer recipe"}
 # the credits of a text that change as a new revision (Depot.edit_credits), in the order its reason names them
-CREDITS = ("title", "authors", "tags", "address", "notice")
+CREDITS = crediting.CREDITS
 # what the rows of a search can be ordered by: each the SQL expressions over the searched rows it orders by, in turn,
 # before the numeric order of ids (_ordered); none of them is ever null, so a row's values of them compare as a whole
 ORDERS = {"id": [], "title": ["title IS NOT NULL", "coalesce(title, '')"],
@@ -1525,6 +1525,55 @@ class Depot:
             self._link(con, decision, number)
             return decision, reason
 
+    def edit_credits_many(self, changes: str | Path | list[dict],
+                          declaration: Declaration) -> tuple[str, str, int, int]:
+        """Change the credits of many texts at once, each as a new revision,
+        its id kept. changes is a JSON-lines file, or the lines as objects
+        (a web request's): one {id, title, authors, tags, address, notice}
+        per text, each credit optional, as edit_credits takes them (a credit
+        given replaces the text's, null clears it, one left out stays). The
+        change is recorded as one decision 'under review' made by
+        declaration, on every text it changes, whose reason the depot writes
+        naming the credits that changed (policy.credits_change); the
+        decisions before it keep counting, so each text keeps its status and
+        its libraries, and a locked library keeps reading the revision it
+        pinned. A line may name, under "was", the values its writer read of
+        some credits: the text changes only while they still hold. A text
+        whose credits would stay as they are, or whose was no longer holds,
+        is left out. The lines go into a temporary table a few at a time and
+        every check is a query over it (wpt_depot.crediting), so the memory
+        it takes stays the same whatever the number of texts. (the
+        decision's id, its
+        reason, how many texts changed, how many were left out). NotFound
+        for a text the depot does not hold; BelongsToUpstream for a text its
+        upstream owns; Refused for changes that are not JSON lines of that
+        shape, more than crediting.MOST lines, a text named twice, or when
+        no text would change."""
+        with self._write("credits") as (con, number):
+            try:
+                crediting.open_changes(con, changes)
+                total, theirs = crediting.check(con, self.upstream_sql(), NAMED)
+                if total:
+                    self._refuse_upstream("texts", theirs, total=total)
+                made = {}
+                changed, left_out, names = crediting.credit(con, lambda text: self._notice(con, number, text, made))
+                if not changed:
+                    raise Refused("no text named changes: each one's credits are those already, or no longer the "
+                                  "values its line's was names")
+                reason = policy.credits_change(names)
+                decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
+                con.execute("CREATE TEMP TABLE credited_ids (id TEXT PRIMARY KEY)")
+                con.execute("INSERT INTO temp.credited_ids SELECT id FROM temp.credited")
+                facets = (counts.TAG, counts.LIBRARY_TAG) if "tags" in names else ()
+                with counts.changing(con, "temp.credited_ids", facets):
+                    self._revise(con, "texts_revisions", "SELECT id FROM temp.credited_ids", number,
+                                 {name: f"s.{name}" for name in CREDITS},
+                                 joined="JOIN temp.credited s ON s.id = t.id")
+                self._link(con, decision, number, "credited_ids")
+            finally:
+                crediting.close(con)
+            return decision, reason, changed, left_out
+
     def edit_scores(self, changes: str | Path | list[dict], declaration: Declaration) -> tuple[str, str, int, int]:
         """Change the scores of many texts at once, each as a new revision,
         its id kept. changes is a JSON-lines file, or the lines as objects
@@ -2730,11 +2779,13 @@ class Depot:
         return self._names[table]
 
     def _revise(self, con, table: str, chosen: list[str] | str, number: int, sets: dict[str, str],
-                params: dict | None = None):
+                params: dict | None = None, joined: str = ""):
         """A new revision, made at the change number, of each id chosen (a
         list, or a query of ids) of a revised table: its current row with
         each column of sets given by its SQL expression over the current row
-        (t) and params, the revision before it no longer latest."""
+        (t), params and the rows joined (a JOIN clause after the current
+        row's, one row for each), the revision before it no longer
+        latest."""
         con.execute("CREATE TEMP TABLE IF NOT EXISTS revised (id TEXT PRIMARY KEY, revision INTEGER)")
         con.execute("DELETE FROM temp.revised")
         # each id's current row by its key, from the ids' side (CROSS JOIN fixes that order)
@@ -2751,7 +2802,7 @@ class Depot:
         names = self._column_names(table)
         con.execute(f"INSERT INTO {table} ({', '.join(names)}) SELECT "
                     f"{', '.join(given.get(name, f't.{name}') for name in names)} "
-                    f"FROM temp.revised c CROSS JOIN {table} t ON t.id = c.id AND t.revision = c.revision",
+                    f"FROM temp.revised c CROSS JOIN {table} t ON t.id = c.id AND t.revision = c.revision {joined}",
                     {"change": number, **(params or {})})
         con.execute("DELETE FROM temp.revised")
 

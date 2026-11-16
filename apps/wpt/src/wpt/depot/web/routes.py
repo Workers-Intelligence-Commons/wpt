@@ -26,7 +26,7 @@ import itertools
 import json
 from functools import wraps
 
-from wpt_depot import Declaration, Depot, NewText, counts as facets, errors, follow
+from wpt_depot import Declaration, Depot, NewText, counts as facets, crediting, errors, follow
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED,
                              NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW)
@@ -291,6 +291,11 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         decision, reason = depot.edit_credits(values["id"], {name: body[name] for name in CREDITS if name in body},
                                               declared(body))
         return 200, {"decision": decision, "reason": reason}
+
+    @refusals
+    def credits_many(values, body):
+        decision, reason, changed, left_out = depot.edit_credits_many(body["texts"], declared(body))
+        return 200, {"decision": decision, "reason": reason, "changed": changed, "left_out": left_out}
 
     @refusals
     def scores(values, body):
@@ -586,6 +591,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "description": "characters [start, end) of a text, or of the field of an item, in one content version; "
                              "start and end absent or null: the whole text or item"}
     nullable = {"type": ["string", "null"]}
+    # the credits a line of a change of many texts' credits names, each optional, null clearing it
+    credits_given = {"title": nullable, "authors": {"type": ["array", "null"], "items": TEXT},
+                "tags": {**NAMES, "type": ["array", "null"]}, "address": nullable, "notice": nullable}
     text_filter = {"type": "object", "description": "a text matches when it matches every part given; no part: "
                    "every text",
                    "properties": {"ids": {"type": ["array", "null"], "items": TEXT,
@@ -693,6 +701,27 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                    "tags": NAMES, "address": nullable, "notice": nullable,
                                    "declaration": DECLARATION}},
               answer={"type": "object", "required": ["decision", "reason"]}),
+        Route("POST", "/api/texts/credits", credits_many, "change the credits of many texts at once, each as a "
+              "new revision, its id kept (wpt depot credits-file): for each text named once, the credits to change "
+              "(title, authors, tags, address, notice; null clears one, one left out stays), and under was the "
+              "values its writer read of some credits, the text changing only while they still hold; the depot "
+              "records it "
+              "as one decision under review on every text it changes, whose reason names the credits changed, and "
+              "the decisions before it keep counting; a locked library keeps the revision it pinned; a text whose "
+              "credits stay as they are, or whose was no longer holds, is left out, and the change is refused when "
+              "every text is, or when it names "
+              f"more than {crediting.MOST:,} texts: the decision's id, its reason, how many texts changed and how "
+              "many were left out",
+              body={"type": "object", "required": ["texts", "declaration"],
+                    "properties": {"texts": {"type": "array", "minItems": 1, "maxItems": crediting.MOST, "items": {
+                        "type": "object", "required": ["id"], "additionalProperties": False,
+                        "properties": {"id": TEXT, **credits_given,
+                                       "was": {"type": "object", "additionalProperties": False,
+                                               "properties": credits_given}}}},
+                                   "declaration": DECLARATION}},
+              answer={"type": "object", "required": ["decision", "reason", "changed", "left_out"],
+                      "properties": {"decision": TEXT, "reason": TEXT, "changed": {"type": "integer"},
+                                     "left_out": {"type": "integer"}}}),
         Route("POST", "/api/texts/scores", scores, "change the scores of many texts at once, each as a new "
               "revision, its id kept (wpt depot scores): for each text named once, the scores to set (a name it has "
               "already is replaced; the value a finite number, the content version one of the text's, the one the "

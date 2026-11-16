@@ -9,7 +9,7 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, Needle, NewText, clone, pull
 from wpt_depot import depot as depots
-from wpt_depot import counts, erasure, follow, ids, policy, scoring
+from wpt_depot import counts, crediting, erasure, follow, ids, policy, scoring
 from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, Locked, NoDepotSetting, NotFound,
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
@@ -1360,6 +1360,150 @@ def test_a_clone_receives_the_upstream_s_scores_and_a_pull_brings_their_changes(
     assert follower.show(second)["decisions"][-1]["reason"] == "scores changed: set rank; removed rank"
     [mine] = follower.add([plain("mine")], me)
     assert scores_of(follower, [{"id": mine, "scores": [score("rank", 3)]}], me)[2] == 1
+
+
+def test_one_credits_change_sets_each_text_s_own_credits_and_the_texts_stay_admitted_where_they_are(make_depot, me):
+    depot = make_depot()
+    first, second, third = depot.add([
+        NewText(text="one", licenses=("CC0-1.0",), title="Kept", authors=("{'first': 'Ann', 'last': 'Lee'}",),
+                tags=("en",), address="https://example.org/1", notice="(c) Ann"),
+        plain("two", "en"), plain("three", "en")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("open")
+    depot.put(library, "true")
+    locked = depot.new_library("locked")
+    depot.put(locked, "true")
+    depot.lock(locked)
+    tags_before = depot.counts()["tag"]
+
+    decision, reason, changed, left_out = depot.edit_credits_many(
+        [{"id": first, "authors": ["Ann Lee"]},
+         {"id": second, "title": "owner/repo/src/main.py", "notice": "(c) Bo"},
+         {"id": third, "title": None, "authors": None}], me)
+
+    assert (reason, changed, left_out) == ("credits changed: title, authors, notice", 2, 1)
+    one, two = depot.show(first), depot.show(second)
+    assert (one["text"]["title"], one["text"]["authors"], one["text"]["tags"], one["text"]["address"],
+            one["notice"]) == ("Kept", ["Ann Lee"], ["en"], "https://example.org/1", "(c) Ann")
+    assert (two["text"]["title"], two["text"]["authors"], two["notice"]) == ("owner/repo/src/main.py", None, "(c) Bo")
+    assert depot.show(third)["revisions"] == 1
+    for shown in (one, two):
+        assert (shown["status"], shown["text"]["libraries"]) == ("admitted", [library, locked])
+        assert [(one["id"], one["status"], one["reason"]) for one in shown["decisions"]][-1] == (
+            decision, "under review", reason)
+        assert all(one["counts"] for one in shown["decisions"])
+    assert pick(depot.library_texts(library, depot.change()), ["id", "title", "authors"]) == [
+        {"id": first, "title": "Kept", "authors": ["Ann Lee"]},
+        {"id": second, "title": "owner/repo/src/main.py", "authors": None},
+        {"id": third, "title": None, "authors": None}]
+    assert pick(depot.library_texts(locked, depot.change()), ["id", "revision", "title", "authors"]) == [
+        {"id": first, "revision": 1, "title": "Kept", "authors": ["{'first': 'Ann', 'last': 'Lee'}"]},
+        {"id": second, "revision": 1, "title": None, "authors": None},
+        {"id": third, "revision": 1, "title": None, "authors": None}]
+    assert depot.counts()["decision"][decision] == 2
+    assert depot.counts()["tag"] == tags_before
+
+
+def test_tags_changed_in_one_credits_change_move_the_counts_of_tags(make_depot, me, library_figures):
+    depot = make_depot()
+    first, second = depot.add([plain("one", "en"), plain("two", "en")], me)
+    depot.decide("admitted", "true", me)
+    depot.put(depot.new_library("open"), "true")
+
+    depot.edit_credits_many([{"id": first, "tags": ["fr", "fr", "book"]}, {"id": second, "tags": None}], me)
+
+    assert depot.show(first)["text"]["tags"] == ["fr", "book"]
+    assert depot.show(second)["text"]["tags"] == []
+    assert depot.counts()["tag"] == {"fr": 1, "book": 1}
+    stored, direct = library_figures(depot)
+    assert stored == direct
+
+
+@pytest.mark.parametrize("change, error", [
+    ([], Refused),
+    ([{"id": "depot-99", "title": "x"}], NotFound),
+    ([{"id": "depot-1", "title": "one"}, {"id": "depot-99", "title": "x"}], NotFound),
+    ([{"id": "depot-1", "title": "One"}], Refused),  # nothing changes
+    ([{"id": "depot-1"}], Refused),  # nothing changes
+    ([{"id": "depot-1", "title": "a"}, {"id": "depot-1", "title": "b"}], Refused),
+    ([{"id": "depot-1", "title": ""}], Refused),
+    ([{"id": "depot-1", "title": "   "}], Refused),
+    ([{"id": "depot-1", "title": 3}], Refused),
+    ([{"id": "depot-1", "authors": "Ann"}], Refused),
+    ([{"id": "depot-1", "authors": ["Ann", ""]}], Refused),
+    ([{"id": "depot-1", "licenses": ["MIT"]}], Refused),
+    ([{"title": "x"}], Refused),
+    ([{"id": "depot-1", "title": "x", "was": {"title": None}}], Refused),  # its was no longer holds
+    ([{"id": "depot-1", "title": "x", "was": "One"}], Refused),
+    ([{"id": "depot-1", "title": "x", "was": {"licenses": None}}], Refused),
+    ([{"id": "depot-1", "title": "x", "was": {"title": ""}}], Refused),
+])
+def test_a_credits_change_that_breaks_a_rule_or_changes_nothing_writes_nothing(make_depot, me, change, error):
+    depot = make_depot()
+    [text] = depot.add([NewText(text="one", licenses=("CC0-1.0",), title="One")], me)
+    assert text == "depot-1"
+    before = depot.change(), depot.sql("SELECT count(*) AS n FROM decisions")
+
+    with pytest.raises(error):
+        depot.edit_credits_many(change, me)
+
+    assert (depot.change(), depot.sql("SELECT count(*) AS n FROM decisions")) == before
+    assert depot.show(text)["revisions"] == 1
+
+
+def test_a_credits_line_changes_its_text_only_while_the_credits_its_was_names_still_hold(make_depot, me):
+    depot = make_depot()
+    untitled, retitled, authored, tagged = depot.add([
+        plain("one"), plain("two"), NewText(text="three", licenses=("CC0-1.0",), authors=("{'first': 'Ann'}",),
+                                            notice="(c) Ann"),
+        plain("four", "en", "book")], me)
+    depot.edit_credits(retitled, {"title": "Set by a person"}, me)  # after the lines below were written
+
+    decision, reason, changed, left_out = depot.edit_credits_many([
+        {"id": untitled, "title": "From the source", "was": {"title": None}},
+        {"id": retitled, "title": "From the source", "was": {"title": None}},
+        {"id": authored, "authors": None, "was": {"authors": ["{'first': 'Ann'}"], "notice": "(c) Ann"}},
+        {"id": tagged, "title": "Tagged", "was": {"tags": ["book", "en"]}}], me)
+
+    assert (reason, changed, left_out) == ("credits changed: title, authors", 3, 1)
+    assert [depot.show(one)["text"]["title"] for one in (untitled, retitled, tagged)] == [
+        "From the source", "Set by a person", "Tagged"]
+    assert depot.show(authored)["text"]["authors"] is None
+
+
+def test_credits_read_from_a_json_lines_file_and_more_lines_than_one_change_takes_are_refused(
+        make_depot, me, tmp_path, monkeypatch):
+    depot = make_depot()
+    first, second, third = depot.add([plain("one"), plain("two"), plain("three")], me)
+    path = tmp_path / "credits.jsonl"
+    path.write_text(json.dumps({"id": first, "title": "One"}) + "\n\n" + json.dumps({"id": second, "title": "Two"})
+                    + "\n", encoding="utf-8")
+    monkeypatch.setattr(crediting, "MOST", 2)
+
+    assert depot.edit_credits_many(path, me)[2:] == (2, 0)
+
+    assert [depot.show(one)["text"]["title"] for one in (first, second)] == ["One", "Two"]
+    path.write_text("".join(json.dumps({"id": one, "title": "x"}) + "\n" for one in (first, second, third)),
+                    encoding="utf-8")
+    with pytest.raises(Refused, match="at most 2 texts"):
+        depot.edit_credits_many(path, me)
+    path.write_text(json.dumps({"id": first, "title": "x"}) + "\nnot json\n", encoding="utf-8")
+    with pytest.raises(Refused, match="not JSON lines"):
+        depot.edit_credits_many(path, me)
+    assert depot.show(first)["revisions"] == 2
+
+
+def test_a_clone_refuses_a_credits_change_of_its_upstream_s_texts(serve, make_depot, me, tmp_path):
+    upstream = make_depot("upstream")
+    [theirs] = upstream.add([plain("one")], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
+    [mine] = follower.add([plain("mine")], me)
+
+    with pytest.raises(BelongsToUpstream):
+        follower.edit_credits_many([{"id": mine, "title": "Mine"}, {"id": theirs, "title": "Theirs"}], me)
+
+    assert follower.edit_credits_many([{"id": mine, "title": "Mine"}], me)[2] == 1
+    assert follower.show(theirs)["text"]["title"] is None
 
 
 def test_a_library_open_or_locked_takes_a_new_name_and_keeps_its_texts(make_depot, me):
