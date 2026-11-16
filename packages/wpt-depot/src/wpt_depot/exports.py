@@ -122,7 +122,7 @@ class Export:
         tags = None if shares is None else [one["tag"] for one in shares]
 
         def read(name: str, ref: dict) -> Iterator[tuple]:
-            for key, text, revision, kind, held_tags in self.opened[name].library_range(
+            for key, text, revision, kind, held_tags, _ in self.opened[name].library_range(
                     ref["library"], ref["change"], low, high - 1):
                 yield key, name, text, revision, kind, held_tags
 

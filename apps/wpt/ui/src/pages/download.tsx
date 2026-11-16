@@ -65,7 +65,7 @@ type ShareForecast = { tag: string; tokens: number; part: number };
 type Estimate = {
   tokens: number; plain_tokens: number; item_tokens: number; item_share: number; share_tokens: ShareForecast[] | null; forecast: boolean | null;
   even_size: number | null; texts: number; plain_texts: number; item_texts: number; items_held: number; bytes: number; token_bytes: number; table_bytes: number;
-  seconds: number | null; workers: number; order_texts: number; cap: number | null; others: number | null; fits: boolean; evicts: number | null;
+  seconds: number | null; workers: number; figures: boolean; read_again: boolean; cap: number | null; others: number | null; fits: boolean; evicts: number | null;
   sample: { texts: number; tokenized: number; bytes: number; seconds: number }; warnings: string[]; store: string | null;
 };
 
@@ -132,7 +132,7 @@ function Forecast({ e, dataset, asked, onSize }: { e: Estimate; dataset: Dataset
 // What an estimate says, in words: what the size holds of each kind (the
 // conversations and tasks, then each share's forecast beside its part), the
 // store's bytes, the time, the cap, and what it was estimated from.
-function EstimateFacts({ e, limited }: { e: Estimate; limited: boolean }) {
+function EstimateFacts({ e, limited, dataset }: { e: Estimate; limited: boolean; dataset: Dataset }) {
   const items = e.item_share > 0;
   return (
     <dl className="facts">
@@ -148,12 +148,12 @@ function EstimateFacts({ e, limited }: { e: Estimate; limited: boolean }) {
         {limited && e.forecast === false && <p className="small aside">Rough past 50,000 texts.<Help label="the forecast">The dataset is long, so past its first 50,000 texts in order a part counts at its share of the size, not as the build will take it.</Help></p>}
       </dd>
       <dt className="aside">store</dt><dd>about {bytes(e.bytes)}<Help label="the store's bytes">{bytes(e.token_bytes)} of token files, and {bytes(e.table_bytes)} for the list of its texts with their credits and licenses.</Help></dd>
-      <dt className="aside">time</dt><dd>{e.seconds === null ? "unknown: the sample tokenized nothing" : `${e.seconds < 60 ? "" : "about "}${duration(e.seconds)} on this machine`}<Help label="the time">Of tokenizing. Before it, the build reads the list of the dataset's {plural(e.order_texts, "text")} once to put them in order; that pass reads no text's content, and this estimate does not time it.</Help></dd>
+      <dt className="aside">time</dt><dd>{e.seconds === null ? "unknown: the sample tokenized nothing" : `${e.seconds < 60 ? "" : "about "}${duration(e.seconds)} on this machine`}<Help label="the time">{e.figures ? "Of tokenizing. The build reads the texts in a fixed shuffled order, the export's, and stops once the size is full." : "Of tokenizing. Before it, the build reads the size of every text of the dataset, since this revision's figures are not known; this estimate does not time that."}</Help></dd>
       <dt className="aside">cap</dt><dd>{e.cap === null ? "no cap" : e.fits
         ? <>fits under {bytes(e.cap)}{e.others !== null && <>; others take {bytes(e.others)}{e.evicts ? <>; deletes about {bytes(e.evicts)} of old corpora<Help label="the deletion">To make room, the build deletes the corpora downloaded least recently.</Help></> : null}</>}</>
         : <span className="not-allowed">over the cap of {bytes(e.cap)}: choose a smaller size</span>}</dd>
       {e.store && <><dt className="aside">store</dt><dd className="not-allowed">{e.store}</dd></>}
-      <dt className="aside">basis</dt><dd className="small">a sample of {plural(e.sample.texts, "text")}<Help label="the basis">Estimated from {plural(e.sample.tokenized, "text")} ({bytes(e.sample.bytes)}) tokenized in {e.sample.seconds} s, out of a sample of {plural(e.sample.texts, "text")}; the build's counts can differ a little.</Help>{e.warnings.map((w) => <span key={w} className="not-allowed"> {w}.</span>)}</dd>
+      <dt className="aside">basis</dt><dd className="small">a sample of {plural(e.sample.texts, "text")}<Help label="the basis">Estimated from {plural(e.sample.tokenized, "text")} ({bytes(e.sample.bytes)}) tokenized in {e.sample.seconds} s, out of a sample of {plural(e.sample.texts, "text")}; the build's counts can differ a little.</Help>{e.warnings.map((w) => <span key={w} className="not-allowed"> {w}.</span>)}{!e.figures && e.read_again && <> <a href={href(["datasets", dataset.id])}>Read again</a></>}</dd>
     </dl>
   );
 }
@@ -261,7 +261,7 @@ function NewBuild({ dataset, open, startSize, onStarted, onDataset, quiet = fals
             </Button>
             <span className="small aside">{busy ? "Another build of it waits or runs." : `${bytes(estimate.data.bytes)}; cannot be cancelled here.`}</span>
           </div>
-          <EstimateFacts e={estimate.data} limited={!all} />
+          <EstimateFacts e={estimate.data} limited={!all} dataset={dataset} />
         </div>
       )}
       {started && !started.ok && <Problems problems={started.problems} />}

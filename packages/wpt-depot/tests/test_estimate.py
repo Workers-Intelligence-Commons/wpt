@@ -83,3 +83,26 @@ def test_at_a_small_size_the_estimate_forecasts_the_share_a_long_text_leaves_sho
     even = build(depot, "mix", store, TOKENIZER, max_tokens=small["even_size"], log=lambda *_: None)
     shares = {one["tag"]: one["tokens"] / even["total_tokens"] for one in even["shares_tokens"]}
     assert abs(shares["long"] - 0.5) <= 0.1 + 0.02  # the forecast's tokens per byte may be off by a little
+
+
+def test_an_estimate_of_a_revision_whose_figures_are_not_known_reads_every_text_and_says_so(make_depot, me):
+    # figures are known only for this depot's own libraries: a dataset reading another depot's has none, so the
+    # estimate counts the items' part by reading every text, as its build will, and warns that it does
+    depot, other = make_depot("depot"), make_depot("other")
+    libraries = []
+    for one in (depot, other):
+        one.add([NewText(text=f"the quick brown fox {n}", licenses=("CC0-1.0",), tags=("en",)) for n in range(10)]
+                + [NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",))], me)
+        one.decide("admitted", "true", me)
+        libraries.append(one.new_library("all"))
+        one.put(libraries[-1], "true")
+    mine = depot.dataset_by_id(depot.new_dataset("mine", "classics", [(None, libraries[0])]))
+    theirs = depot.dataset_by_id(depot.new_dataset("theirs", "classics", [(other.address, libraries[1])]))
+
+    known, unknown = (estimate(depot, row, TOKENIZER, 200) for row in (mine, theirs))
+
+    assert (known["figures"], known["warnings"]) == (True, [])
+    assert unknown["figures"] is False and "reading the dataset again" in unknown["warnings"][0]
+    # the two libraries hold the same texts: what the walk counts is what the figures say
+    assert (unknown["item_share"], unknown["items_held"]) == (known["item_share"], known["items_held"])
+    assert known["items_held"] == 1 and 0 < known["item_share"] < 1

@@ -48,7 +48,7 @@ export function lasted(seconds: number): string {
 // The stages a vocabulary training and a corpus build report
 // (wpt.depot.shared, wpt_depot.corpus), in words.
 const STAGES: Record<string, string> = {
-  ordering: "putting the texts in the build's order",
+  measuring: "reading every text's size: the dataset's figures are not known",
   "counting items": "counting the tokens of the conversations and tasks",
   reading: "tokenizing the texts",
   finishing: "writing the corpus's tables",

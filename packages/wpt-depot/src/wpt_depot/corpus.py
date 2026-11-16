@@ -2,21 +2,31 @@
 says everything about what it holds even once the depots it read change or
 vanish, and the sample of a dataset that trains a vocabulary.
 
-The build is a stream. It reads the dataset's texts in their seeded order
-(wpt_depot.order: every text of its libraries, each library as it stood at
-the change number of its depot the dataset names, a text two libraries
-hold once, choosing nothing by score) from an order file in its work
-folder, tokenizes them in worker processes (wpt_utils.parallel), and takes
+The build is a stream. It walks the dataset's texts in the order of their
+export keys (wpt_depot.order: every text of its libraries, each library as
+it stood at the change number of its depot the dataset names, a text two
+libraries hold once, choosing nothing by score), reading only the texts it
+reaches, tokenizes them in worker processes (wpt_utils.parallel), and takes
 their results in that order. A token file (wpt_store.shards) is uploaded to
 the store as soon as it is full, with the part of the texts table that
 lists its texts, and its local copies deleted, so the memory and the local
 disk the build takes stay bounded whatever the dataset's size: one token
-file of each kind and one part of the texts table at a time, the order
-file (about 50 bytes a text) and the tasks.jsonl it writes. After each
-upload it hands its caller the state that resumes it (checkpoint): a build
-started again with that state and the same work folder goes on from the
-first text after the last token file uploaded, and writes the same bytes
-as a build that never stopped.
+file of each kind and one part of the texts table at a time, the
+tasks.jsonl it writes and the ids of the licenses and notices its texts
+name (named.sqlite). After each upload it hands its caller the state that
+resumes it (checkpoint): a build started again with that state and the
+same work folder goes on from the first text after the last token file
+uploaded, and writes the same bytes as a build that never stopped.
+
+What a build needs of the whole dataset before it walks it (the bytes of
+the plain texts of each share and of the items, which set the items' part
+of a size and the shares' bytes without one, and the counts of what it
+leaves out) is its census (census): the figures the dataset's revision
+stores (revision_figures), or, when they are not known, the same figures
+counted from every text of each library, which takes long on a big
+dataset. Both count a text two libraries hold once for each, and a plain
+text with several of the shares' tags once for each tag, so the same depot
+state gives the same census either way.
 
 A build is one dataset, one vocabulary and one size: max_tokens, a number
 of tokens or none (every text the rules below take), which its caller
@@ -87,7 +97,7 @@ by a file's path: the depot that holds the dataset by its public address
 (depot_name: the WPT_DEPOT_URL its caller passes as url, the upstream's web
 address for a dataset a clone's pull brought, else the depot's name), and
 another local depot by the name in its own settings (its about row's). That
-name is the one the order's keys, the build's key and its erasures, the
+name is the one the build's key and its erasures, the
 token files' `source`, the texts table, tasks.jsonl and the corpus's copy
 of the dataset's row carry. A build where two depots it reads would carry
 one name is refused (Refused). Whatever reads the texts again finds the
@@ -131,7 +141,8 @@ upload, the build hands the cap its estimated size (Room.expect).
     build(depot, name, store, tokenizer, ...)   the corpus of a dataset, its record
     depot_name(depot, dataset, url)             the name a corpus of the dataset records for its depot
     sources(depot, record)                      every depot a corpus read, by the name it records, opened
-    sample(depot, name, sample_bytes, work)     the plain texts that train a vocabulary, as a stream
+    sample(depot, name, sample_bytes)           the plain texts that train a vocabulary, as a stream
+    census(depot, dataset, libraries)           what a corpus of the dataset may take, whatever its size
     sample_lines(texts, here)                   that stream as a depot's web app sends it
     remote_sample(url, dataset, sample_bytes)   that stream read from another depot's web app
 """
@@ -148,6 +159,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+import apsw
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -161,7 +173,7 @@ from . import corpora, counts
 from .depot import Depot, location
 from .errors import NotADepot, NotFound, Refused, UpstreamUnreachable
 from .follow import Upstream
-from .order import Order, seed_of
+from .order import HIGHEST, LOWEST, TRAINING_KINDS, walk
 from .parts import scan
 
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
@@ -171,6 +183,7 @@ FOLDER, RECORD = corpora.FOLDER, corpora.RECORD
 BATCH_BYTES = 8 << 20  # bytes of texts one worker's item reads and tokenizes
 BATCH_TEXTS = 4096  # texts one worker's item holds at most
 SAMPLE_TIMEOUT = 600  # seconds a read of a remote sample may wait for its next bytes
+MEASURED = 100_000  # rows a census that counts libraries reads between two reports of its progress
 IN_PROCESS = 16 << 20  # bytes of texts the corpus may take below which the build tokenizes in its own process
 TIME = pa.timestamp("us", tz="UTC")
 NAMES = pa.list_(pa.string())
@@ -192,7 +205,7 @@ CORPUS_SCHEMAS = {
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
 }
-RULES = 2  # the version of the rules of what a build takes, in the build's key: raised whenever they change
+RULES = 3  # the version of the rules of what a build takes, in the build's key: raised whenever they change
 CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", "scores")  # what a text's row copies
 
 
@@ -207,7 +220,7 @@ def build(depot: Depot, name: str, store, tokenizer: Tokenizer, tokenizer_versio
     number of tokens, None for none): the corpus's record. url: the depot's public address
     (depot_name), None when it has none.
 
-    work: the folder the build keeps its order file and its local files in
+    work: the folder the build keeps its local files in
     (default: a temporary folder, removed at the end); checkpoint: the state
     a former build in the same folder handed save, to go on from it; save:
     called with that state after each upload; progress: called with
@@ -225,63 +238,55 @@ def build(depot: Depot, name: str, store, tokenizer: Tokenizer, tokenizer_versio
                       save, progress, room, shard_tokens, max_tokens, recipe, log).run()
 
 
-def sample(depot: Depot, name: str, sample_bytes: int, work: Path, progress=lambda state: None
-           ) -> Iterator[tuple[str, str, bytes]]:
+def sample(depot: Depot, name: str, sample_bytes: int) -> Iterator[tuple[str, str, bytes]]:
     """The sample of depot's dataset name that trains a vocabulary, read as
-    a stream in one pass over the corpus's order: (the depot that holds it,
-    '' for depot and another depot's name as the corpus records it; its
-    id; its text as UTF-8 bytes) of plain texts the
+    a stream in one walk of the corpus's order (wpt_depot.order): (the
+    depot that holds it, '' for depot and another depot's name as the
+    corpus records it; its id; its text as UTF-8 bytes) of plain texts the
     corpus may take, each whole, each share (without shares, every plain
     text) taking its proportion of sample_bytes and stopping at its first
-    text that would pass it. Items are no sample. The order file goes in the
-    folder work, kept there for the next sample of the same libraries, shares
-    and erasures (order_identity)."""
+    text that would pass it. Items are no sample. The walk ends once every
+    share has stopped."""
     dataset = depot.dataset(name)
     names, opened = _depots(depot, dataset, "")
-    dataset = _named(dataset, names, "")
-    order = _order(depot, dataset, names, opened, work, progress,
-                   order_identity("", dataset, names, _erasures(dataset, names, opened)))
-    sources = order.sources()
-    try:
-        shares = dataset["shares"]
-        budget = _proportions(shares, sample_bytes)
-        used = dict.fromkeys(budget, 0)
-        closed = set()
-        for entry in order.entries():
-            if len(closed) == len(budget):
-                break
-            if entry.kind is not None or entry.pool in closed:
-                continue
-            if used[entry.pool] + entry.bytes > budget[entry.pool]:
-                closed.add(entry.pool)
-                continue
-            used[entry.pool] += entry.bytes
-            source_name = sources[entry.source]
-            source = opened[source_name]
-            row = source.listed_text(entry.id, entry.revision)
-            pieces = [value for _, value in scan(source.reader(), {entry.id: row["parts"]}) if value is not None]
-            yield source_name, entry.id, "".join(pieces).encode("utf-8")
-    finally:
-        order.close()
+    sources, libraries = _walked(dataset, names, opened)
+    shares = dataset["shares"]
+    budget = _proportions(shares, sample_bytes)
+    used = dict.fromkeys(budget, 0)
+    closed = set()
+    for entry in walk(libraries, _tags(shares)):
+        if len(closed) == len(budget):
+            break
+        if not entry.taken or entry.kind is not None or entry.pool in closed:
+            continue
+        if used[entry.pool] + entry.bytes > budget[entry.pool]:
+            closed.add(entry.pool)
+            continue
+        used[entry.pool] += entry.bytes
+        source_name = sources[entry.source]
+        source = opened[source_name]
+        row = source.listed_text(entry.id, entry.revision)
+        pieces = [value for _, value in scan(source.reader(), {entry.id: row["parts"]}) if value is not None]
+        yield source_name, entry.id, "".join(pieces).encode("utf-8")
 
 
 def sample_lines(texts: Iterator[tuple[str, str, bytes]]) -> Iterator[bytes]:
     """The sample texts (sample) as the sample route of a depot's web app
     sends them: for each text one JSON line {"depot", "text", "bytes"},
     depot as sample gives it, then the text's bytes; a last line {"end": true, "texts",
-    "bytes"}. A line {"ordering": texts read} may come between texts."""
+    "bytes"}. A line {"waiting": true} may come between texts, for each
+    (None, None, b"") of texts: the sample is slow to find its next text."""
     count = total = 0
     for address, text, data in texts:
         if address is None:
-            yield (json.dumps({"ordering": text}) + "\n").encode()
+            yield (json.dumps({"waiting": True}) + "\n").encode()
             continue
         yield (json.dumps({"depot": address, "text": text, "bytes": len(data)}) + "\n").encode() + data
         count, total = count + 1, total + len(data)
     yield (json.dumps({"end": True, "texts": count, "bytes": total}) + "\n").encode()
 
 
-def remote_sample(url: str, dataset: str, sample_bytes: int, progress=lambda state: None
-                  ) -> Iterator[tuple[str, str, bytes]]:
+def remote_sample(url: str, dataset: str, sample_bytes: int) -> Iterator[tuple[str, str, bytes]]:
     """The sample of the dataset named so of the depot whose web app is at
     url, read through its sample route as sample gives it: (the depot's
     web address for its own texts, another depot's name as the route
@@ -307,8 +312,7 @@ def remote_sample(url: str, dataset: str, sample_bytes: int, progress=lambda sta
             head = json.loads(line)
             if head.get("end"):
                 return
-            if "ordering" in head:
-                progress({"stage": "ordering", "texts read": head["ordering"]})
+            if head.get("waiting"):
                 continue
             data = answer.read(head["bytes"])
             if len(data) != head["bytes"]:
@@ -422,36 +426,83 @@ def _erasures(dataset: dict, names: list[str], opened: dict[str, Depot]) -> dict
     return found
 
 
-def order_identity(holder: str, named: dict, names: list[str], erasures: dict) -> str:
-    """What decides a dataset's order file: the name of the depot that holds
-    the dataset, the row's libraries (as its corpus copies them, _named)
-    and shares, each library's depot's name, and the erasures: never its
-    name, tokenizer recipe or max_tokens, so every build of the dataset's
-    libraries and shares reads the same order file."""
-    return _fingerprint({"depot": holder, "libraries": named["libraries"], "shares": named["shares"],
-                         "names": names, "erasures": erasures})
-
-
-def _order(depot: Depot, dataset: dict, named: list[str], opened: dict[str, Depot], work: Path, progress,
-           identity: str) -> Order:
-    """The order file in work of the dataset (its row as its corpus copies
-    it, _named), made when it is not whole, its sources the depots' names
-    (named and opened, from _depots)."""
-    work.mkdir(parents=True, exist_ok=True)
-    sources, keys, refs = [], [], []
-    for name, ref in zip(named, dataset["libraries"]):
+def _walked(dataset: dict, names: list[str], opened: dict[str, Depot]) -> tuple[list[str], list[tuple]]:
+    """(the names of the depots the dataset reads, each once, in the order
+    of its libraries: what an Entry's source indexes; for each library, in
+    order, (its source, its depot opened, its id, its change number), what
+    wpt_depot.order.walk reads), from names and opened (_depots)."""
+    sources, libraries = [], []
+    for name, ref in zip(names, dataset["libraries"], strict=True):
         if name not in sources:
             sources.append(name)
-            keys.append("" if opened[name] is depot else name)  # its name in the order's keys (wpt_depot.order)
-        refs.append((sources.index(name), opened[name], ref))
+        libraries.append((sources.index(name), opened[name], ref["library"], ref["change"]))
+    return sources, libraries
 
-    def members():
-        for source, read, ref in refs:
-            yield source, read.library_members(ref["library"], ref["change"])
 
-    order = Order.made(work / "order.sqlite", members(), sources, seed_of(_content(dataset)), dataset["shares"],
-                       identity, lambda count: progress({"stage": "ordering", "texts read": count}), keys)
-    return order
+def _tags(shares: list[dict] | None) -> list[str] | None:
+    """The tags of a dataset's shares, in order; None without shares."""
+    return None if shares is None else [one["tag"] for one in shares]
+
+
+def census(depot: Depot, dataset: dict, libraries: list[tuple], progress=lambda state: None) -> dict:
+    """What a corpus of depot's dataset (its row) may take whatever its
+    size: {pool_bytes: {pool: the bytes of the plain texts of that pool
+    (wpt_depot.order)}, plain: how many such texts, item_bytes and items:
+    the bytes and number of the conversations and tasks, no_share: the
+    plain texts no share takes, other: the items of the other kinds,
+    texts: every text, known: whether they come from stored figures}, all
+    from the figures of the dataset's libraries summed (counts.summed),
+    which count a text two libraries hold once for each, and a plain text
+    with several tags of the shares once for each of them (in each of
+    those shares' pool), where the order takes it once, in its first
+    share. The figures are those the dataset's revision stores
+    (revision_figures), read at once, when every library's are known.
+    Otherwise each library's are counted the same way from its rows (as
+    libraries _walked gives them), which reads the row of each text and
+    takes long on a big dataset (known False), progress getting {stage:
+    "measuring", texts read} now and then; so both give the same census
+    for the same depot state."""
+    shares = dataset["shares"]
+    tags = _tags(shares) or []
+    measure = revision_figures(depot, dataset)["measure"]
+    known = measure is not None
+    if not known:
+        read = [0]
+        measure = counts.summed([_library_figures(one, tags, read, progress) for one in libraries], tags)
+    if shares is None:
+        pool_bytes, plain, no_share = {0: measure["plain"]["bytes"]}, measure["plain"]["texts"], 0
+    else:
+        pool_bytes = {at: one["bytes"] for at, one in enumerate(measure["shares"])}
+        plain = sum(one["texts"] for one in measure["shares"])
+        no_share = measure["unshared"]["texts"]
+    return {"pool_bytes": pool_bytes, "plain": plain, "item_bytes": measure["items"]["bytes"],
+            "items": measure["items"]["texts"], "no_share": no_share, "other": measure["other"]["texts"],
+            "texts": measure["texts"], "known": known}
+
+
+def _library_figures(library: tuple, tags: list[str], read: list[int], progress) -> dict:
+    """The figures of one library (source, its depot opened, its id, its
+    change number), as wpt_depot.counts.figures gives them for tags, its
+    characters left at 0 (a census reads none), counted from its rows at
+    that change (Depot.library_range); read[0] counts the rows read across
+    calls, progress getting {stage: "measuring", texts read} every
+    MEASURED of them."""
+    _, held, name, change = library
+    kinds = {kind: dict.fromkeys(counts.COLUMNS, 0) for kind in counts.KINDS}
+    tagged = [dict.fromkeys(counts.COLUMNS, 0) for _ in tags]
+    for _, _, _, kind, text_tags, size in held.library_range(name, change, LOWEST, HIGHEST):
+        what = "plain" if kind is None else "items" if kind in TRAINING_KINDS else "other"
+        into = [kinds[what]]
+        if kind is None:
+            held_tags = json.loads(text_tags or "[]")
+            into += [tagged[at] for at, tag in enumerate(tags) if tag in held_tags]
+        for one in into:
+            one["texts"] += 1
+            one["bytes"] += size or 0
+        read[0] += 1
+        if read[0] % MEASURED == 0:
+            progress({"stage": "measuring", "texts read": read[0]})
+    return kinds | {"tags": tagged}
 
 
 # What one worker of the build holds: the vocabulary and the depots it read, opened once in each process
@@ -606,6 +657,7 @@ class _Build:
             raise Refused(f"a corpus's size is a whole number of tokens above 0, or none: {self.limit!r}")
         self.holder = depot_name(depot, self.dataset, url)
         self.names, self.opened = _depots(depot, self.dataset, self.holder)
+        self.sources, self.libraries = _walked(self.dataset, self.names, self.opened)
         # what the corpus copies and its keys cover: the row, its max_tokens the build's size, without the
         # vocabulary the dataset publishes, which a build never reads (it is given one)
         self.named = {**{key: value for key, value in _named(self.dataset, self.names, self.holder).items()
@@ -615,8 +667,6 @@ class _Build:
         self.vocabulary = tokenizer.to_bytes()
         self.vocabulary_sha256 = hashlib.sha256(self.vocabulary).hexdigest()
         self.erasures = _erasures(self.dataset, self.names, self.opened)
-        # what the order's limit of the items is counted for
-        self.limit_of = [RULES, self.vocabulary_sha256, self.limit]
         self.key = self._key()
         self.folder = f"{FOLDER}/{as_record_name(self.dataset['name'])}-{self.key[:8]}"
         self.room = room(self.folder) if room is not None else corpora.Room(store, None, self.folder)
@@ -632,36 +682,41 @@ class _Build:
         if known is not None and corpora.fresh(known):
             self.log(f"corpus {known['id']} of {self.dataset['name']} is already built")
             return known
-        self.order = _order(self.depot, self.named, self.names, self.opened, self.work, self.progress,
-                            order_identity(self.holder, self.named, self.names, self.erasures))
-        self.sources = self.order.sources()
+        self.census = census(self.depot, self.dataset, self.libraries, self.progress)
+        if not self.census["known"]:
+            self.log(f"the figures of the dataset {self.dataset['name']}'s revision {self.dataset['revision']} are "
+                     f"not known: the build read the size of each of its {self.census['texts']:,} texts first")
+        self.work.mkdir(parents=True, exist_ok=True)
+        named = apsw.Connection(str(self.work / "named.sqlite"))
         try:
-            if self.order.items_tokens(self.limit_of) is None:
-                if self.limit is None:
-                    self.order.limit_items([], 0, self.limit_of)
-                else:
-                    items = self.order.every_item_bytes()
-                    shares = self.dataset["shares"]
-                    plain = sum((self.order.pool_bytes() if shares is None else self._byte_budget(shares, False))
-                                .values())
-                    self._limit_items(self.limit * items // (items + plain) if items else 0)
-            return self._stream()
+            named.execute("CREATE TABLE IF NOT EXISTS named (kind TEXT NOT NULL, id TEXT NOT NULL, "
+                          "PRIMARY KEY (kind, id)) WITHOUT ROWID")
+            return self._stream(named)
         finally:
-            self.order.close()
+            named.close()
 
-    def _stream(self) -> dict:
+    def _stream(self, named_file) -> dict:
         state = self.state
         if state.get("key") == self.key and (gone := corpora.missing(self.store, self.folder, _uploaded(state))):
             self.log(f"{len(gone)} files this build uploaded are no longer in the store: it starts over")
             state = {}
         if state.get("key") != self.key:  # a state of another build starts nothing
-            state = {"key": self.key, "position": 1, "shards": [], "conversation_shards": [], "texts": [],
-                     "tasks": 0, "tasks_count": 0, "pools": {}, "used": {}, "closed": [], "taken": 0,
-                     "conversations": 0, "text_position": 0, "conversation_position": 0, "items_tokens": 0}
+            state = {"key": self.key, "after": None, "walked": 0, "items": None, "shards": [],
+                     "conversation_shards": [], "texts": [], "tasks": 0, "tasks_count": 0, "pools": {}, "used": {},
+                     "closed": [], "taken": 0, "conversations": 0, "text_position": 0, "conversation_position": 0,
+                     "items_tokens": 0}
+            named_file.execute("DELETE FROM named")
         shares = self.dataset["shares"]
         limit = self.limit
+        if state["items"] is None:  # with a limit, the items take their share of it first (_limit_items)
+            state["items"] = self._limit_items(shares) if limit is not None else {
+                "tokens": None, "texts": self.census["items"], "bytes": self.census["item_bytes"], "last": None,
+                "first_out": None}
+        items = state["items"]
+        first_out = None if items["first_out"] is None else tuple(items["first_out"])
+        last_item = None if items["last"] is None else tuple(items["last"])
         if limit is not None:  # the items took their share (_limit_items); the shares split what is left
-            budget, counted = _proportions(shares, limit - self.order.items_tokens(self.limit_of)), "tokens"
+            budget, counted = _proportions(shares, limit - items["tokens"]), "tokens"
         elif shares is not None:
             budget, counted = self._byte_budget(shares), "bytes"
         else:
@@ -672,13 +727,11 @@ class _Build:
         tasks_path = self.work / "tasks.jsonl"
         with open(tasks_path, "ab") as tasks_file:
             tasks_file.truncate(state["tasks"])
-        self.order.con.execute("CREATE TABLE IF NOT EXISTS named (kind TEXT NOT NULL, id TEXT NOT NULL, "
-                               "PRIMARY KEY (kind, id)) WITHOUT ROWID")
         writers = {"text": _Shards(self.work, "text", state["text_position"]),
                    "conversation": _Shards(self.work, "conversation", state["conversation_position"])}
         credits, named, credit_bytes = [], set(), [0]
         read_bytes = {"plain": 0, "items": 0}  # the bytes of the texts this run took: the size estimate's base
-        last_item, count, plain = self.order.last_item(), self.order.count(), self.order.plain()
+        plain = self.census["plain"]
 
         def limited(entry, held_used: dict, held_closed: set, size: int) -> bool:
             """Whether a limit leaves the plain text out, size counted in its pool's unit; held_used and
@@ -692,21 +745,26 @@ class _Build:
             return False
 
         def batches():
-            """The texts from the state's position on, in batches, each (entry, read): read is whether it is
-            read, which a closed pool, or a limit in bytes reached, saves. The batches end once every pool
-            is closed and no item follows."""
+            """The texts the corpus takes from the state's place on, in batches of (entry, read, walked): read
+            is whether it is read, walked how many texts the walk passed up to it; read is whether a text is read,
+            which a closed pool, or a limit in bytes reached, saves. With a limit, an item from its first
+            left out on is passed, and the batches end once every pool is closed and no item taken follows."""
             ahead_used, ahead_closed = dict(used), set(closed)  # the limit in bytes, worked out ahead of the results
-            batch, size = [], 0
-            for entry in self.order.entries(state["position"]):
+            batch, size, walked = [], 0, state["walked"]
+            for entry in walk(self.libraries, _tags(shares), state["after"]):
+                walked += 1
                 if counted == "tokens":
                     ahead_closed = closed
-                if counted is not None and len(ahead_closed) == len(budget) and entry.position > last_item:
-                    break
+                    if len(ahead_closed) == len(budget) and (last_item is None or tuple(entry.place()) > last_item):
+                        break
+                if not entry.taken or (entry.kind is not None and first_out is not None
+                                       and tuple(entry.place()) >= first_out):
+                    continue
                 if counted == "bytes":
                     read = not limited(entry, ahead_used, ahead_closed, entry.bytes)
                 else:
                     read = entry.kind is not None or entry.pool not in closed
-                batch.append((entry, read))
+                batch.append((entry, read, walked))
                 size += entry.bytes if read else 0
                 if size >= BATCH_BYTES or len(batch) >= BATCH_TEXTS:
                     yield batch
@@ -724,22 +782,21 @@ class _Build:
         def estimate(local: int, final: bool) -> int:
             """The corpus's whole size in bytes, from the local files of its first upload: those files when the
             build ends with them, else their size times the bytes the corpus may take over the bytes they
-            hold (the order is seeded, so its start stands for the whole)."""
+            hold (the order is shuffled, so its start stands for the whole)."""
             if final:
                 return local
-            plain_all = sum(self.order.pool_bytes().values())
-            items = self.order.items_bytes()
+            plain_all = sum(self.census["pool_bytes"].values())
             if counted == "bytes":
-                plain = min(plain_all, sum(budget.values()))
+                plain_bytes = min(plain_all, sum(budget.values()))
             elif counted == "tokens":
                 tokens = sum(state["pools"].values())
-                plain = plain_all if not tokens else min(plain_all, int(sum(budget.values()) * read_bytes["plain"]
-                                                                        / tokens))
+                plain_bytes = plain_all if not tokens else min(plain_all, int(sum(budget.values())
+                                                                              * read_bytes["plain"] / tokens))
             else:
-                plain = plain_all
-            return int(local * (plain + items) / max(read_bytes["plain"] + read_bytes["items"], 1))
+                plain_bytes = plain_all
+            return int(local * (plain_bytes + items["bytes"]) / max(read_bytes["plain"] + read_bytes["items"], 1))
 
-        def checkpoint(position: int, final: bool = False):
+        def checkpoint(after: list, walked: int, final: bool = False):
             """Upload the token files and the texts' part begun, and hand the state that resumes after them;
             before a build's first upload, the cap's check of its estimated size (Room.expect)."""
             tasks_file.flush()
@@ -762,17 +819,17 @@ class _Build:
                 self.room.expect(estimate(sum(path.stat().st_size for path, *_ in ready), final))
             for path, key, kept, added in ready:
                 kept.append({**upload(path, key), **added})
-            with self.order.con:
-                self.order.con.executemany("INSERT OR IGNORE INTO named (kind, id) VALUES (?, ?)", sorted(named))
+            with named_file:
+                named_file.executemany("INSERT OR IGNORE INTO named (kind, id) VALUES (?, ?)", sorted(named))
             named.clear()
-            state.update(position=position, used={str(pool): value for pool, value in used.items()},
+            state.update(after=after, walked=walked, used={str(pool): value for pool, value in used.items()},
                          closed=sorted(closed), text_position=writers["text"].position,
                          conversation_position=writers["conversation"].position, tasks=tasks_path.stat().st_size)
             self.save(json.loads(json.dumps(state)))
 
         with ExitStack() as stack:
             tasks_file = stack.enter_context(open(tasks_path, "ab"))
-            if _taken_bytes(self.order) > IN_PROCESS:
+            if sum(self.census["pool_bytes"].values()) > IN_PROCESS:
                 sizing = Sizing("tokenizing workers")
                 pool = stack.enter_context(process_pool(sizing, sizing.limit, _start_worker, (self.vocabulary,)))
                 waiting = collections.deque()  # the batches handed to in_order, whose results come in their order
@@ -786,7 +843,7 @@ class _Build:
                 _start_worker(self.vocabulary)
                 results = ((batch, _tokenized(self._items(batch))) for batch in batches())
             for batch, found in results:
-                for (entry, read), (row, data) in zip(batch, found):
+                for (entry, read, walked), (row, data) in zip(batch, found):
                     if counted is not None and entry.kind is None:
                         left = limited(entry, used, closed, len(data) if counted == "tokens" and read else entry.bytes)
                         if counted == "bytes" and left == read:
@@ -822,31 +879,40 @@ class _Build:
                     if row["notice"] is not None:
                         named.add(("notice", row["notice"]))
                     if any(writer.full(self.shard_tokens) for writer in writers.values()):
-                        checkpoint(entry.position + 1)
-                state["position"] = batch[-1][0].position + 1
-                self.progress({"stage": "reading", "position": batch[-1][0].position, "of": count,
+                        checkpoint(entry.place(), walked)
+                state["after"], state["walked"] = batch[-1][0].place(), batch[-1][2]
+                self.progress({"stage": "reading", "position": state["walked"], "of": self.census["texts"],
                                "texts": state["taken"], "tokens": sum(state["pools"].values()),
                                "token files": len(state["shards"]) + len(state["conversation_shards"])})
-            checkpoint(state["position"], final=True)
+            checkpoint(state["after"], state["walked"], final=True)
         self.progress({"stage": "finishing", "texts": state["taken"]})
-        return self._finish(state, tasks_path, plain)
+        return self._finish(state, tasks_path, plain, named_file)
 
     def _items(self, batch) -> list[tuple]:
         return [(self.opened[self.sources[entry.source]].address, entry.id, entry.revision, entry.kind, read)
-                for entry, read in batch]
+                for entry, read, _ in batch]
 
-    def _limit_items(self, part: int):
-        """Count the tokens of the items (conversations and tasks) in order,
-        taking each until the first whose tokens would pass what is left of
-        part, the items' share of the size, and keep in the order file the
-        items left out (that one and every item after it) with the tokens of
-        those taken (Order.limit_items)."""
-        used, first_out = 0, None
-        entries = self.order.items()
+    def _limit_items(self, shares: list[dict] | None) -> dict:
+        """The items (conversations and tasks) a build at max_tokens takes:
+        their share of it (the items' part of the bytes of the corpus
+        without max_tokens, from the census), then their tokens counted in
+        the order, each taken until the first whose tokens would pass what
+        is left of that part. {tokens, texts, bytes: of the items taken,
+        last: the place of the last item taken (None: none), first_out: the
+        place of the first left out (None: none)}; the walk ends at the first
+        left out, or at the end of the dataset when every item fits."""
+        item_bytes = self.census["item_bytes"]
+        found = {"tokens": 0, "texts": 0, "bytes": 0, "last": None, "first_out": None}
+        if not self.census["items"]:
+            return found
+        plain = sum((self.census["pool_bytes"] if shares is None else self._byte_budget(shares, False)).values())
+        part = self.limit * item_bytes // (item_bytes + plain) if item_bytes else 0
 
         def batches():
             batch, size = [], 0
-            for entry in entries:
+            for entry in walk(self.libraries, _tags(shares)):
+                if not entry.taken or entry.kind is None:
+                    continue
                 batch.append(entry)
                 size += entry.bytes
                 if size >= BATCH_BYTES or len(batch) >= BATCH_TEXTS:
@@ -860,7 +926,7 @@ class _Build:
                     for entry in batch]
 
         with ExitStack() as stack:
-            if self.order.every_item_bytes() > IN_PROCESS:
+            if item_bytes > IN_PROCESS:
                 sizing = Sizing("counting workers")
                 pool = stack.enter_context(process_pool(sizing, sizing.limit, _start_worker, (self.vocabulary,)))
                 waiting = collections.deque()
@@ -869,41 +935,42 @@ class _Build:
                     for batch in batches():
                         waiting.append(batch)
                         yield items(batch)
-                results = ((waiting.popleft(), found) for found in in_order(_counted, feeding(), pool, sizing))
+                results = ((waiting.popleft(), counted) for counted in in_order(_counted, feeding(), pool, sizing))
             else:
                 _start_worker(self.vocabulary)
                 results = ((batch, _counted(items(batch))) for batch in batches())
             done = 0
-            for batch, found in results:
-                for entry, tokens in zip(batch, found):
-                    if used + tokens > part:
-                        first_out = entry.position
+            for batch, counted in results:
+                for entry, tokens in zip(batch, counted):
+                    if found["tokens"] + tokens > part:
+                        found["first_out"] = entry.place()
                         break
-                    used += tokens
+                    found["tokens"] += tokens
+                    found["texts"] += 1
+                    found["bytes"] += entry.bytes
+                    found["last"] = entry.place()
                 done += len(batch)
-                self.progress({"stage": "counting items", "items": done, "tokens": used})
-                if first_out is not None:
+                self.progress({"stage": "counting items", "items": done, "tokens": found["tokens"]})
+                if found["first_out"] is not None:
                     break
-        left_out = [] if first_out is None else [entry.position for entry in self.order.items()
-                                                  if entry.position >= first_out]
-        self.order.limit_items(left_out, used, self.limit_of)
+        return found
 
     def _byte_budget(self, shares: list[dict], refuse: bool = True) -> dict[int, int]:
         """{pool: the bytes it may take} without max_tokens: the scarcest
-        share all of its bytes, each other its proportion of the scarcest's.
-        A share with no text is refused, or with refuse False takes nothing
-        and the others are measured among themselves."""
-        available = {at: 0 for at in range(len(shares))} | self.order.pool_bytes()
+        share all of its bytes, each other its proportion of the scarcest's
+        (from the census). A share with no text is refused, or with refuse
+        False takes nothing and the others are measured among themselves."""
+        available = {at: 0 for at in range(len(shares))} | self.census["pool_bytes"]
         empty = [shares[at]["tag"] for at, size in available.items() if not size]
         if empty and refuse:
             raise Refused(f"the shares cannot be met: no text of the libraries has the tag {', '.join(empty)}")
         return {at: int(size) for at, size in scarcest_trim(available, shares).items()}
 
-    def _finish(self, state: dict, tasks_path: Path, plain: int) -> dict:
+    def _finish(self, state: dict, tasks_path: Path, plain: int, named_file) -> dict:
         built_at = datetime.now(UTC)
         dataset = {k: v for k, v in self.named.items() if k != "change"}
-        named = {kind: [one for (one,) in self.order.con.execute("SELECT id FROM named WHERE kind = ? ORDER BY id",
-                                                                (kind,))] for kind in ("license", "notice")}
+        named = {kind: [one for (one,) in named_file.execute("SELECT id FROM named WHERE kind = ? ORDER BY id",
+                                                             (kind,))] for kind in ("license", "notice")}
         licenses, notices = {}, {}
         for source_name in self.sources:
             read = self.opened[source_name]
@@ -936,7 +1003,9 @@ class _Build:
         self.room.make(len(self.vocabulary))
         vocabulary = {**self.store.put_named(f"{self.folder}/vocabulary", self.vocabulary).reference(),
                       "bytes": len(self.vocabulary)}
-        left_out = {**self.order.left_out(), "trimmed": plain - plain_taken, "trimmed items": self.order.limited()}
+        items_taken = state["conversations"] + state["tasks_count"]
+        left_out = {"no share": self.census["no_share"], "other kinds": self.census["other"],
+                    "trimmed": max(0, plain - plain_taken), "trimmed items": max(0, self.census["items"] - items_taken)}
         record = {
             "id": corpus_id, "depot": self.holder, "dataset": dataset, "folder": self.folder,
             "build": self.key, "erasures": self.erasures, "built_at": built_at.isoformat(),
@@ -948,7 +1017,7 @@ class _Build:
             "tables": {"dataset": put("dataset", [{**dataset, "built_at": built_at}]), "texts": state["texts"],
                        "licenses": put("licenses", license_rows), "notices": put("notices", notice_rows)},
             "total_tokens": sum(s["tokens"] for s in state["shards"]),
-            "items_tokens": state["items_tokens"] if self.limit is None else self.order.items_tokens(self.limit_of),
+            "items_tokens": state["items_tokens"] if self.limit is None else state["items"]["tokens"],
             "shares_tokens": None if self.dataset["shares"] is None else [
                 {"tag": share["tag"], "tokens": state["pools"].get(share["tag"], 0)}
                 for share in self.dataset["shares"]],
@@ -1009,10 +1078,6 @@ class _Build:
 def _uploaded(state: dict) -> list[dict]:
     """The references of the files a build's state says it uploaded."""
     return [*state["shards"], *state["conversation_shards"], *state["texts"]]
-
-
-def _taken_bytes(order: Order) -> int:
-    return sum(order.pool_bytes().values())
 
 
 class _Shards:

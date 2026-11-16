@@ -68,7 +68,7 @@ from wpt_utils.parallel import Sizing
 
 from .. import shared
 from ..downloads import EXPORTS, VISITOR_EXPORTS, Downloads
-from ..jobs import Job, Jobs, work_folder
+from ..jobs import Job, Jobs
 from .server import Request, Route, Stream
 
 CHUNK = 8 << 20  # bytes of a stored file read at a time to send it
@@ -186,7 +186,6 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     status (wpt.depot.web.routes.refusals)."""
     downloads = Downloads(jobs.path)
     held = {}
-    sampling = threading.Lock()
     shared.settle_marks(depot, downloads, say)  # the marking a stop of the web app cut short
 
     def store():
@@ -365,7 +364,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         except (StoreError, OSError) as error:
             problem = f"{type(error).__name__}: {error}"
         return 200, {**found, "vocabulary": {"sha256": vocabulary, "recipe": recipe["name"], "version": version},
-                     "max_tokens": size, "cap": cap, "others": others,
+                     "max_tokens": size, "cap": cap, "others": others, "read_again": depot.read_again_shows(row["id"]),
                      "fits": cap is None or found["bytes"] <= cap,
                      "evicts": None if cap is None or others is None else max(0, others + found["bytes"] - cap),
                      "store": problem}
@@ -658,8 +657,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         stop = threading.Event()  # set once the server closes the stream: the client went away, or it ended
 
         def offer(item):
-            """Hand item to the stream; _Stopped once the stream is closed, so the producer lets go of the
-            sampling lock instead of waiting on a queue nobody reads."""
+            """Hand item to the stream; _Stopped once the stream is closed, so the producer stops instead of
+            waiting on a queue nobody reads."""
             while True:
                 if stop.is_set():
                     raise _Stopped
@@ -670,16 +669,11 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                     continue
 
         def produce():
-            folder = work_folder(depot.address) / f"sample-{row['id']}"
             try:
-                with sampling:  # one sample at a time keeps one order file per dataset whole
-                    if stop.is_set():
-                        return
-                    texts = sample(Depot.view(depot.address), row["name"], size, folder,
-                                   lambda state: offer((None, state["texts read"], b"")))
-                    with closing(texts):
-                        for found in texts:
-                            offer(found)
+                texts = sample(Depot.view(depot.address), row["name"], size)
+                with closing(texts):
+                    for found in texts:
+                        offer(found)
                 offer(StopIteration())
             except _Stopped:
                 pass
@@ -696,7 +690,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                 try:
                     found = waiting.get(timeout=PROGRESS_SECONDS)
                 except queue.Empty:
-                    yield None, 0, b""
+                    yield None, None, b""
                     continue
                 if isinstance(found, StopIteration):
                     return
@@ -769,7 +763,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               "with a vocabulary at a size, from a small sample tokenized (wpt_depot.estimate): its tokens, the "
               "bytes it takes in the store, the seconds its build takes here (an estimate), and whether it fits "
               "under the store's cap (WPT_CORPORA_CAP) beside the bytes the other corpora take, which the build "
-              "would delete as it needs room (evicts); nothing is written or queued",
+              "would delete as it needs room (evicts), and read_again, whether reading the dataset again would "
+              "change what it reads (as GET /api/datasets/{id} says); nothing is written or queued",
               answer={"type": "object", "required": ["tokens", "bytes", "seconds", "fits"]}, request=True,
               query={"vocabulary": "the vocabulary's sha256", "max_tokens": "a number of tokens, or all (default)"}),
         Route("GET", "/api/datasets/{id}/download", downloads_listed, "the corpora the store holds of the dataset, "
@@ -798,8 +793,9 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               f"Range of bytes gives 206 once its size is known; at most {EXPORTS} at once in all and "
               f"{VISITOR_EXPORTS} per visitor (429)", request=True),
         Route("GET", "/api/datasets/{dataset}/sample", sample_route, "the sample of the dataset (its id or name) that "
-              "trains a vocabulary, in its corpus's seeded order, each share stopping at its first text that would "
-              "pass its part of the bytes: lines {depot ('' for this depot), text, bytes} each followed by the "
-              "text's bytes, {ordering} lines while the order is made, and a last line {end, texts, bytes}",
+              "trains a vocabulary, in its corpus's order (the texts' export keys), each share stopping at its first "
+              "text that would pass its part of the bytes: lines {depot ('' for this depot), text, bytes} each "
+              "followed by the text's bytes, a line {waiting: true} while the next text is slow to come, and a last "
+              "line {end, texts, bytes}",
               request=True, query={"bytes": "the sample's size in bytes"}),
     ]

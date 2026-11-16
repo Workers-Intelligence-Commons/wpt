@@ -741,24 +741,17 @@ class Depot:
                  f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN} ORDER BY {ids.order_sql('t.id')}")
         return self._rows(query, params)
 
-    def library_members(self, library: str, change: int) -> Iterator[tuple]:
-        """The texts library_texts gives, read one at a time as the query
-        goes, in no set order: (id, revision, kind, tags as JSON text,
-        bytes) of each."""
-        held, params = self._held(library, change)
-        cursor = self.db.reader().cursor().execute(
-            f"SELECT t.id, t.revision, c.kind, t.tags, c.bytes FROM ({held}) h JOIN texts_revisions t "
-            f"ON t.id = h.member AND t.revision = h.revision {CONTENT_JOIN}", params)
-        yield from cursor
-
-    def library_range(self, library: str, change: int, low: int, high: int) -> Iterator[tuple]:
-        """The texts library_members gives whose export key (wpt_depot.ids)
-        is from low to high, both included, in the order of their keys: (export
-        key, id, revision, kind, tags as JSON text) of each. They are read from
-        the library's side, as that range of the index memberships_key (of
-        pins_key for a library locked then), which holds every column of the
-        row it needs, each row's text revision looked up after it (CROSS JOIN fixes that order), so neither the other
-        libraries' rows nor the texts outside the range are read."""
+    def library_range(self, library: str, change: int, low: int, high: int, limit: int | None = None
+                      ) -> Iterator[tuple]:
+        """The texts library_texts gives whose export key (wpt_depot.ids)
+        is from low to high, both included, in the order of their keys, the
+        first limit of them (None: all): (export key, id, revision, kind,
+        tags as JSON text, bytes) of each. They are read from the library's
+        side, as that range of the index memberships_key (of pins_key for a
+        library locked then), which holds every column of the row it needs,
+        each row's text revision and content version looked up after it
+        (CROSS JOIN fixes that order), so neither the other libraries' rows
+        nor the texts outside the range or past the limit are read."""
         if self._locked_then(library, change):
             held, revision = "pins h", "h.revision"
             when = ""
@@ -769,17 +762,18 @@ class Depot:
                         f"(SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')}))")
             when = "AND h.joined_change <= :change AND (h.left_change IS NULL OR h.left_change > :change) "
         cursor = self.db.reader().cursor().execute(
-            f"SELECT h.export_key, t.id, t.revision, c.kind, t.tags FROM {held} "
+            f"SELECT h.export_key, t.id, t.revision, c.kind, t.tags, c.bytes FROM {held} "
             f"CROSS JOIN texts_revisions t ON t.id = h.text AND t.revision = {revision} {CONTENT_JOIN} "
-            f"WHERE h.library = :library AND h.export_key BETWEEN :low AND :high {when}ORDER BY h.export_key",
+            f"WHERE h.library = :library AND h.export_key BETWEEN :low AND :high {when}ORDER BY h.export_key"
+            + ("" if limit is None else f" LIMIT {int(limit)}"),
             {"library": library, "change": change, "low": low, "high": high,
              "bounds": _json(self.bounds(ids.owner(library), change))})
         yield from cursor
 
     def library_spread(self, library: str, change: int, points: int, members: int) -> list[tuple]:
-        """At most points of the texts library_members gives, as it gives
-        them, spread over the order the depot recorded the library's rows
-        in (the rowids of its memberships, or of its pins for a library
+        """At most points of the texts library_texts gives, as (id,
+        revision, kind, tags as JSON text, bytes), spread over the order
+        the depot recorded the library's rows in (the rowids of its memberships, or of its pins for a library
         locked then): the first row at or after each of points evenly spaced
         rowids from its first to its last, the same texts for the same depot state, each read through
         the table's rowid alone. members, about how many rows the library
@@ -809,7 +803,7 @@ class Depot:
         return found
 
     def library_count(self, library: str, change: int) -> int:
-        """How many texts library_members gives, counted without reading them."""
+        """How many texts library_texts gives, counted without reading them."""
         held, params = self._held(library, change)
         return self._rows(f"SELECT count(*) AS n FROM ({held})", params)[0]["n"]
 

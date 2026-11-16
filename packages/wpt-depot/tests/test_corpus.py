@@ -12,10 +12,12 @@ from wpt_store import open_store
 from wpt_store.shards import read_verified
 from wpt_tokenizer import END, Tokenizer, chat
 from wpt_depot import About, Depot, NewText, clone
-from wpt_depot import corpora
+from wpt_depot import corpora, order
 from wpt_depot.corpora import Room, TooBig, latest, mark_stale, read_table, records
 from wpt_depot.corpus import build, sample, task_text
 from wpt_depot.errors import Refused
+from wpt_depot.exports import Export
+from wpt_depot.ids import export_key
 from wpt_depot.notice import model_notice
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
@@ -71,7 +73,7 @@ def test_a_corpus_holds_its_libraries_texts_tokenized_with_their_credits_and_a_n
     assert list(conversation[0]) == chat.encode(TOKENIZER, CONVERSATION)[0]
     [kept_task] = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines()
     assert json.loads(kept_task) == {"depot": HERE, "id": task, "content": TASK}
-    assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0, "kinds": {"probe": 1}}
+    assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0, "other kinds": 1}
 
     texts = {(one["depot"], one["id"]): one for one in read_table(store, record, "texts").to_pylist()}
     assert probe not in {id_ for _, id_ in texts}
@@ -142,18 +144,18 @@ def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seede
     assert again["id"] == record["id"]  # the seed makes the same subset
 
 
-def test_the_sample_gives_each_share_its_part_of_the_bytes_in_the_corpus_s_order(make_depot, me, tmp_path):
+def test_the_sample_gives_each_share_its_part_of_the_bytes_in_the_corpus_s_order(make_depot, me):
     depot, library = shared_depot(make_depot, me, english=12, french=3)
     depot.new_dataset("mix", "classics", [(None, library)], [("en", 0.75), ("fr", 0.25)])
 
     # each text is 7 bytes: 28 bytes give the english share 21 (3 texts) and the french one 7 (1 text)
-    found = list(sample(depot, "mix", 28, tmp_path / "work"))
+    found = list(sample(depot, "mix", 28))
 
     assert {where for where, _, _ in found} == {""}  # '' names the depot that holds the dataset
     pools = [depot.show(text)["text"]["tags"][0] for _, text, _ in found]
     assert (pools.count("en"), pools.count("fr")) == (3, 1)
     assert {data for _, _, data in found} == {b"the dog", b"the fox"}
-    assert list(sample(depot, "mix", 28, tmp_path / "work")) == found  # the seeded order, whatever the run
+    assert list(sample(depot, "mix", 28)) == found  # the order of the export keys, whatever the run
 
 
 def test_shares_naming_a_tag_no_text_has_refuse_the_build(make_depot, me, tmp_path):
@@ -274,6 +276,64 @@ def test_an_erasure_carried_out_while_a_corpus_is_built_makes_it_stale_once_writ
     kept = {one["id"]: one for one in records(store)}
     assert kept[record["id"]]["stale"] == {"erasures": asked}
     assert corpora.fresh(kept[older["id"]])  # a stale corpus supersedes nothing
+
+
+def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_a_smaller_size_its_start(
+        make_depot, me, tmp_path, monkeypatch):
+    # the build reads each library a page at a time by key and merges them: with pages of 3 rows, the 20 texts
+    # of two libraries that share 5 of them come in the export's order, each once, and a size cuts that order short
+    monkeypatch.setattr(order, "PAGE", 3)
+    depot = make_depot()
+    ids = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("en",)) for n in range(20)], me)
+    depot.decide("admitted", "true", me)
+    first, second = depot.new_library("first"), depot.new_library("second")
+    depot.put(first, ids[:12])
+    depot.put(second, ids[7:])
+    dataset = depot.new_dataset("all", "classics", [(None, first), (None, second)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "all", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
+
+    taken = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    export = Export(depot, depot.dataset_by_id(dataset), HERE)
+    assert taken == [text for _, text, _, _ in export.members(0, 1)] == sorted(ids, key=export_key)
+    smaller = build(depot, "all", store, TOKENIZER, max_tokens=record["total_tokens"] // 2, url=HERE,
+                    log=lambda *_: None)
+    cut = [document for shard in smaller["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    assert 0 < len(cut) < len(taken) and cut == taken[:len(cut)]
+
+
+def test_a_build_counted_from_the_texts_takes_what_a_build_from_stored_figures_takes(make_depot, me, tmp_path):
+    # the figures count a text two libraries hold once for each, and a text with both share tags once in each
+    # share; a dataset reading another depot's libraries has no figures, so its build counts their texts, the
+    # same way: it takes the same texts as the same dataset built in that depot from its stored figures
+    other, depot = make_depot("other"), make_depot("depot")
+    ids = other.add([NewText(text=f"the quick brown fox {n}", licenses=("CC0-1.0",),
+                             tags=("en", "fr") if n % 3 == 0 else ("en",) if n % 3 == 1 else ("fr",))
+                     for n in range(30)]
+                    + [NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",))], me)
+    other.decide("admitted", "true", me)
+    first, second = other.new_library("first"), other.new_library("second")
+    other.put(first, ids[:20])
+    other.put(second, ids[10:])
+    shares = [("en", 0.5), ("fr", 0.5)]
+    other.new_dataset("mix", "classics", [(None, first), (None, second)], shares)
+    depot.new_dataset("mix", "classics", [(other.address, first), (other.address, second)], shares)
+
+    def taken(record, store):
+        return ([document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)],
+                record["shares_tokens"], record["items_tokens"], record["left_out"])
+
+    for size in (None, 60):
+        said = {}
+        for name, held in (("known", other), ("counted", depot)):
+            store = open_store((tmp_path / f"{name}-{size}").as_uri())
+            lines = said[name] = []
+            said[name, "record"] = taken(build(held, "mix", store, TOKENIZER, max_tokens=size, log=lines.append),
+                                         store)
+        assert said["known", "record"] == said["counted", "record"]
+        assert not any("not known" in line for line in said["known"])
+        assert any("not known" in line for line in said["counted"])
 
 
 def test_max_tokens_stops_each_share_at_its_first_text_that_would_pass_its_part(make_depot, me, tmp_path):

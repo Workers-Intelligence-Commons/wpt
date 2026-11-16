@@ -81,7 +81,7 @@ export key, with every other column a read of the library needs (the text,
 and the changes it joined and left, or the revision pinned), so a library's
 texts whose key falls in a range are read in key order from the index alone,
 without reading the other libraries' rows nor its own outside the range
-(Depot.library_range, wpt_depot.exports), and a library is counted from the
+(Depot.library_range, wpt_depot.order, wpt_depot.exports), and a library is counted from the
 index alone (Depot.library_count). No index serves the other
 orders. The index text_decisions_decision holds the rows of text_decisions
 by decision; its table has no rowid, so the index also holds each row's

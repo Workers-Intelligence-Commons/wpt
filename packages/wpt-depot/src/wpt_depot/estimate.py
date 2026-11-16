@@ -25,17 +25,20 @@ proportion of what they leave; without it, each share trimmed to its
 proportion of the scarcest.
 
 With max_tokens, the tokens a share and the items get are a forecast that
-follows the build's rule: the build takes the texts in the dataset's
-seeded order (wpt_depot.order) and a share stops at its first text that
+follows the build's rule: the build takes the texts in the order of their
+export keys (wpt_depot.order) and a share stops at its first text that
 does not fit in what is left of its part, so at a small size one long text
-can leave a share far below its part, or empty. The forecast reads the id,
-tags and bytes of every member of the dataset's libraries (no content, as
-the pass that orders the dataset reads them), keeps the first FOLLOWED
-texts of that order in memory, and walks them as the build does, each
-text's tokens its bytes at the sample's tokens per byte. The items' part
-of the size comes from those members' bytes too, as the build counts it,
-rather than from the sample. A part the walk does not close within those
-texts is left at its proportion of the size.
+can leave a share far below its part, or empty. The forecast walks the
+first FOLLOWED texts of that order, as the build reads them, keeps the kind,
+pool and bytes of those the corpus may take, and applies the build's rule
+to them, each text's tokens its bytes at the sample's tokens per byte. A
+part the walk does not close within those texts is left at its proportion
+of the size. The items' part of the size and the items the dataset holds
+come from the build's census (wpt_depot.corpus.census), as the build counts
+them, rather than from the sample: the figures the dataset's revision
+stores, read at once, or, when they are not known, the same figures
+counted from every text of its libraries, which takes long on a big one and
+which a warning names.
 even_size is the smallest size (max_tokens, or one of a fixed ladder of
 sizes above it, each a quarter more than the one before) at which every share's forecast part of
 the plain text is within UNEVEN of its proportion, the rule the web app's
@@ -46,10 +49,14 @@ file takes, written as the build writes it but in memory, plus a row of
 the texts table for each text taken at the bytes the sample's rows take,
 plus the tasks' lines. The time is the bytes the build reads over the
 sample's speed of reading and tokenizing, measured in one process, times
-the processes the build tokenizes in (workers). It leaves out the pass
-that orders the dataset (wpt_depot.order), which every build makes before
-it tokenizes and which nothing here measures: order_texts says how many
-texts that pass reads, the members of every library the dataset reads.
+the processes the build tokenizes in (workers). figures says whether the
+revision's figures are known: when they are not, the build first counts
+every text of the dataset for its census, which the time leaves out, and
+a warning says so.
+
+So what the estimate reads does not grow with the dataset: POINTS texts of
+each library, FOLLOWED texts of the order and the counts of the figures,
+unless the figures are not known.
 
     estimate(depot, dataset, tokenizer, max_tokens, url, workers)   the estimate, as a dict
 """
@@ -63,10 +70,10 @@ import pyarrow.parquet as pq
 from wpt_store.shards import SCHEMA as SHARD_SCHEMA
 from wpt_tokenizer import END, Tokenizer, chat
 
-from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, _content, _depots, _named, _proportions, depot_name,
-                     scarcest_trim, task_text)
+from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, _depots, _proportions, _walked, census,
+                     depot_name, revision_figures, scarcest_trim, task_text)
 from .depot import Depot
-from .order import TRAINING_KINDS, key_of, seed_of
+from .order import TRAINING_KINDS, walk
 from .parts import scan
 
 POINTS = 256  # texts sampled from each library, at most
@@ -91,8 +98,9 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     even_size, texts (the plain texts and the items), plain_texts (as the
     corpus record's texts counts them), item_texts (the conversations and
     tasks it takes), items_held (those the dataset holds), bytes,
-    token_bytes, table_bytes, read_bytes, seconds, workers, order_texts,
-    sample: {texts, tokenized, bytes, seconds}, warnings}.
+    token_bytes, table_bytes, read_bytes, seconds, workers, figures
+    (whether the revision's figures are known), sample: {texts, tokenized,
+    bytes, seconds}, warnings}.
     NotFound and NotADepot as reading the libraries meets them."""
     holder = depot_name(depot, dataset, url)
     names, opened = _depots(depot, dataset, holder)
@@ -102,11 +110,9 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     weight = {"plain": dict.fromkeys(pools, 0.0), "plain_texts": dict.fromkeys(pools, 0.0), "items": 0.0,
               "item_texts": 0.0, "task_bytes": 0.0}
     sampled = []  # (source name, id, revision, kind, pool, bytes)
-    order_texts = 0  # the texts the pass that orders the dataset reads
     for name, ref in zip(names, dataset["libraries"]):
         source = opened[name]
         members = source.counts()["library"].get(ref["library"], 0)
-        order_texts += members
         rows = source.library_spread(ref["library"], ref["change"], POINTS, members)
         if not rows:
             continue
@@ -134,6 +140,12 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     item_rate = measured["item_tokens"] / measured["item_bytes"] if measured["item_bytes"] else plain_rate
     plain_rate = plain_rate or item_rate
     warnings = []
+    figures = revision_figures(depot, dataset)["measure"] is not None
+    if not figures:
+        warnings.append("the figures of this revision of the dataset are not known, so its build first reads the "
+                        "size of every text it holds, which takes long on a big dataset"
+                        + (", and so did this estimate" if max_tokens is not None else "")
+                        + ": reading the dataset again on its page stores them for this depot's own libraries")
     available = {pool: weight["plain"][pool] * plain_rate for pool in pools}  # tokens each pool may take
     items = weight["items"] * item_rate
     item_share = weight["items"] / (weight["items"] + _full_plain(weight["plain"], shares)) if weight["items"] else 0.0
@@ -142,11 +154,12 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
     parts, forecast, even_size, walked = None, None, None, None
     items_held = weight["item_texts"]
     if max_tokens is not None:
-        followed = _followed(depot, dataset, names, opened, holder, tags)
-        if followed["item_bytes"]:  # the items' part from every member's bytes, as the build counts it
-            item_share = followed["item_bytes"] / (followed["item_bytes"]
-                                                   + _full_plain(followed["pool_bytes"], shares))
-        items_held = followed["items"]
+        _, libraries = _walked(dataset, names, opened)
+        counted = census(depot, dataset, libraries)  # the items' part as the build counts it
+        item_share = (counted["item_bytes"] / (counted["item_bytes"] + _full_plain(counted["pool_bytes"], shares))
+                      if counted["item_bytes"] else 0.0)
+        items_held = counted["items"]
+        followed = _followed(libraries, tags)
         items_taken = min(items, max_tokens * item_share)
         parts = {pool: (max_tokens - items_taken) * proportion[pool] for pool in pools}
         plain = {pool: min(available[pool], parts[pool]) for pool in pools}
@@ -203,55 +216,25 @@ def estimate(depot: Depot, dataset: dict, tokenizer: Tokenizer, max_tokens: int 
             "bytes": round(token_bytes + table_bytes), "token_bytes": round(token_bytes),
             "table_bytes": round(table_bytes), "read_bytes": round(read_bytes),
             "seconds": round(read_bytes / (speed * used)) if speed else None, "workers": used,
-            "order_texts": order_texts,
+            "figures": figures,
             "sample": {"texts": len(sampled), "tokenized": measured["texts"], "bytes": measured["bytes"],
                        "seconds": round(measured["seconds"], 3)},
             "warnings": warnings}
 
 
-def _followed(depot: Depot, dataset: dict, names: list[str], opened: dict[str, Depot], holder: str,
-              tags: list[str] | None) -> dict:
-    """The first FOLLOWED texts the corpus may take in the dataset's order
-    (wpt_depot.order: the same seed, keys and ties, a text two libraries
-    hold once), read from every member's id, tags and bytes, at most a few
-    times FOLLOWED of them in memory at once: {texts: [(kind, pool,
-    bytes)], whole: whether they are every text it may take, item_bytes and
-    pool_bytes ({pool: bytes}): the bytes of every item and of every plain
-    text of each pool it may take, a text two libraries hold counting
-    twice, items: how many items it may take, a text two libraries hold
-    counting once when the texts followed are every text}."""
-    seed = seed_of(_content(_named(dataset, names, holder)))
-    sources, first = [], []
-    item_bytes, pool_bytes, items = 0, dict.fromkeys(range(1 if tags is None else len(tags)), 0), 0
-    for library, (name, ref) in enumerate(zip(names, dataset["libraries"])):
-        if name not in sources:
-            sources.append(name)
-        source = sources.index(name)
-        address = "" if opened[name] is depot else name
-        for text, _, kind, held_tags, size in opened[name].library_members(ref["library"], ref["change"]):
-            if kind is None:
-                pool = 0 if tags is None else next((at for at, tag in enumerate(tags)
-                                                    if tag in json.loads(held_tags)), None)
-                if pool is None:
-                    continue
-                pool_bytes[pool] += size
-            elif kind not in TRAINING_KINDS:
-                continue
-            else:
-                pool = None
-                item_bytes += size
-                items += 1
-            if len(first) >= FOLLOWED * 3:  # the smallest keys, room left for a text two libraries hold
-                first = sorted(first)[:FOLLOWED * 2]
-            first.append((key_of(seed, address, text), source, text, library, kind, pool, size))
-    seen, texts = set(), []
-    for _key, source, text, _library, kind, pool, size in sorted(first):
-        if (source, text) not in seen:
-            seen.add((source, text))
-            texts.append((kind, pool, size))
-    whole = len(texts) <= FOLLOWED
-    return {"texts": texts[:FOLLOWED], "whole": whole, "item_bytes": item_bytes, "pool_bytes": pool_bytes,
-            "items": sum(kind is not None for kind, _, _ in texts) if whole else items}
+def _followed(libraries: list[tuple], tags: list[str] | None) -> dict:
+    """The texts the corpus may take among the first FOLLOWED texts of the
+    dataset's order (wpt_depot.order.walk over libraries, as
+    wpt_depot.corpus._walked gives them), whatever it takes or not: {texts:
+    [(kind, pool, bytes)] in order, whole: whether they are every text}."""
+    texts, read = [], 0
+    for entry in walk(libraries, tags):
+        if read == FOLLOWED:
+            return {"texts": texts, "whole": False}
+        read += 1
+        if entry.taken:
+            texts.append((entry.kind, entry.pool, entry.bytes))
+    return {"texts": texts, "whole": True}
 
 
 def _walk(followed: dict, max_tokens: int, item_share: float, shares: list[dict] | None, plain_rate: float,

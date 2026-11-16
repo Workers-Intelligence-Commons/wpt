@@ -105,8 +105,7 @@ dataset's corpora and holds the form of a new build: a trained vocabulary,
 the one the dataset publishes filled in, else the latest of its own recipe, and a size, then an estimate (`GET /api/datasets/{id}/estimate`: the
 tokens, the bytes in the store, the time of tokenizing on this machine
 and whether it fits under the cap, from a small sample tokenized, writing
-nothing; the time leaves out the pass that orders the dataset, which
-every build makes first, and names how many texts that pass reads), and
+nothing), and
 only after it a start that restates the estimate and asks for a
 confirmation.
 At a size, the estimate's tokens are a forecast that walks the dataset's
@@ -116,7 +115,13 @@ out and which share will come out short. It also names the smallest size
 at which every share comes within 10 percentage points of its proportion; a built
 corpus whose shares came out uneven offers the same size. The forecast
 counts the texts as the build does: the plain texts, and how many of the
-dataset's conversations and tasks the size takes. A build never trains a vocabulary: the training is the
+dataset's conversations and tasks the size takes. The estimate and the
+build read the bytes of each share and of the conversations and tasks from
+the figures the dataset's revision stores. When that revision's figures are
+not known, both count the same figures from every text instead, and the
+estimate warns that it did. When reading the dataset again would change
+what it reads, the form also links to the dataset's page, whose "Read
+again" stores figures for the depot's own libraries. A build never trains a vocabulary: the training is the
 recipe page's own action, with its own estimate and confirmation.
 
 Each dataset, vocabulary and size has one fixed download link

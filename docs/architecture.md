@@ -153,6 +153,20 @@ pull that brought it. The upgrade to format 9 gives figures to a
 revision only when nothing touched its libraries after the change it reads
 them at, so a stored figure is never wrong.
 
+**A dataset's order.** A corpus build, its estimate and the sample that
+trains a vocabulary read a dataset's texts in the order of their export
+keys, the order its export reads too (`wpt_depot/order.py`). Each library
+is read as its own rows by key, from the index `memberships_key`, or
+`pins_key` for a library locked at the change the dataset reads it at, a
+page at a time, each row's revision looked up as it is read, and the
+libraries' reads are merged by key. Only the texts the walk reaches are
+read, so a build at a small size and an estimate start at once whatever
+the dataset's size. What a build needs of the whole dataset (the bytes of
+each share and of the conversations and tasks, and how many texts it holds
+of each kind) comes from the figures its revision stores. When they are not
+known, the build and the estimate count the same figures from every text
+of the dataset's libraries instead.
+
 **Contents.** A content version, a plain text or an item's JSON, is the
 ordered list of its parts, and its row of `content_lists` holds that list,
 each part's SHA-256 and length, with the version's length in characters
@@ -776,7 +790,7 @@ a recipe whose dataset is another depot's reads that depot's sample route.
 
 | Package | Role |
 | --- | --- |
-| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store as a stream (`corpus.py`), in the seeded order of its texts (`order.py`), what the store keeps of corpora (`corpora.py`), a corpus's texts made into parts to download (`exports.py`) and a model's notice from a corpus (`notice.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
+| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store as a stream (`corpus.py`), in the order of its texts' export keys (`order.py`), estimated before it is built (`estimate.py`), what the store keeps of corpora (`corpora.py`), a corpus's texts made into parts to download (`exports.py`) and a model's notice from a corpus (`notice.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
 | `wpt-recipes` | the model and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results, and the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot; a kept model folder copied out, checked against its sha256s (`models.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |

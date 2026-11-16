@@ -268,8 +268,7 @@ def build_corpus(depot: Depot, dataset: str, log, *, vocabulary: str | None = No
     return built
 
 
-def sample_of(depot: Depot, recipe: dict, work: Path, progress=lambda state: None
-              ) -> Iterator[tuple[str, str, bytes]]:
+def sample_of(depot: Depot, recipe: dict) -> Iterator[tuple[str, str, bytes]]:
     """The sample of the dataset a tokenizer recipe of depot names: (the
     depot vocabulary_texts keeps, '' for depot, another local depot's name
     (wpt_depot.corpus.sample), or a depot's web address from its sample
@@ -278,9 +277,9 @@ def sample_of(depot: Depot, recipe: dict, work: Path, progress=lambda state: Non
     another depot's web app (wpt_depot.corpus.remote_sample)."""
     if recipe["depot"] is None:
         name = depot.dataset_by_id(recipe["dataset"])["name"]
-        yield from sample(depot, name, recipe["sample_bytes"], work, progress)
+        yield from sample(depot, name, recipe["sample_bytes"])
     else:
-        yield from remote_sample(recipe["depot"], recipe["dataset"], recipe["sample_bytes"], progress)
+        yield from remote_sample(recipe["depot"], recipe["dataset"], recipe["sample_bytes"])
 
 
 def train_vocabulary(depot: Depot, name: str, log, *, work: Path | None = None, progress=lambda state: None) -> str:
@@ -300,7 +299,7 @@ def train_vocabulary(depot: Depot, name: str, log, *, work: Path | None = None, 
         counted = {"texts": 0, "bytes": 0}
         with open(listed, "w", encoding="utf-8") as held:
             def texts():
-                for address, text, data in sample_of(depot, recipe, Path(folder) / "order", progress):
+                for address, text, data in sample_of(depot, recipe):
                     held.write(json.dumps([address, text]) + "\n")
                     counted["texts"] += 1
                     counted["bytes"] += len(data)

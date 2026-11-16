@@ -292,8 +292,12 @@ the share they hold of the UTF-8 bytes of the corpus built without a size
 "Shares"), rounded down to a whole token. So every size has the mix of the
 corpus of every token. A share no text has counts for nothing there. The
 share is measured in bytes because bytes are known for every text before
-anything is tokenized; it reads the same order as the build, so the same
-dataset gives the same share. The
+anything is tokenized. The bytes are those of the figures the dataset's
+revision stores, which count a text two libraries hold once for each, and a
+plain text with several of the shares' tags once for each tag. When a
+revision's figures are not known, the build counts the same figures from
+every text of its libraries, which takes long on a big dataset, so the same
+depot state builds the same corpus either way. The
 items are taken in the corpus's order until the first item whose tokens
 would pass that share, never scanning on for a smaller one. A conversation
 counts the tokens of its chat template. A task is kept as a JSON line and
@@ -339,12 +343,15 @@ taken.
 The build brings the shares to their proportions without repeating a text.
 Without `max_tokens`, it finds the share with the fewest bytes relative to
 its proportion and keeps every text of that share; each other share stops,
-in the corpus's seeded order, at its first text whose bytes would pass its
-proportion of the scarcest share's bytes. With a size, each share stops at
-its part of it. A text enters a corpus once at most. The seed comes from
-the dataset's libraries and shares, so the same dataset builds the same
-corpus, and a change of its name, of its `max_tokens` or of the build's
-size keeps its order. The
+in the corpus's order, at its first text whose bytes would pass its
+proportion of the scarcest share's bytes. The bytes of each share come from
+the figures, as the items' share does. A text the figures count twice
+makes its shares hold more bytes there than the build can take of them, so
+the shares and the items' share then come out off their proportions. With a size, each share stops at
+its part of it. A text enters a corpus once at most. The order depends on
+the texts' ids alone, so the same dataset builds the same corpus, and a
+change of its name, of its `max_tokens` or of the build's size keeps its
+order. The
 corpus's record keeps how many tokens each share holds (`shares_tokens`) and
 how many texts the build left out (`left_out`: texts no share took, texts
 trimmed from a share, items `max_tokens` left out, items of the kinds that
@@ -383,9 +390,11 @@ publishes, and a dataset that publishes none refuses a build that names
 none. Without it nothing is built: a build never trains a vocabulary. The size is always named: a number of tokens,
 or `--all`.
 
-The build is a stream. Worker processes tokenize the texts, and the build
-takes their results in the corpus's order. It uploads each token file to
-the store as soon as it is full, with the part of the `texts` table that
+The build is a stream. It reads each library in the corpus's order
+through an index, so it reads only the texts it reaches, and a build at a
+small size starts at once whatever the dataset's size. Worker processes
+tokenize the texts, and the build takes their results in that order. It
+uploads each token file to the store as soon as it is full, with the part of the `texts` table that
 lists its texts, and deletes its local copies, so the memory and the local
 disk it takes stay bounded whatever the dataset's size. A build cut short
 goes on from the first text after the last token file uploaded and writes
@@ -403,11 +412,12 @@ once. It chooses nothing by score. It then keeps:
 - every task, as one line of `tasks.jsonl`.
 
 Items of other kinds are not training data: the build leaves them out and
-counts them in the record. The texts go in a seeded order drawn from the
-dataset's row, so that any first part of the corpus is drawn from all of
-it. The order does not depend on where the depot's file is: a text of the
-dataset's own depot is placed by its id alone, and a text of another depot
-by that depot's name and its id. Every size of a model series reads the same corpus, the smaller sizes
+counts them in the record. The texts go in the order of their export keys,
+a hash of each text's id that its depot stores, the order the dataset's
+export uses too, so that any first part of the corpus is drawn from all of
+it. The order depends on no dataset and not on where a depot's file is.
+Texts of one key go by the place of their depot among the depots the
+dataset reads, then by their id. Every size of a model series reads the same corpus, the smaller sizes
 its first part ([model.md](model.md), "Model series").
 
 A corpus names a depot by what no place of its file changes. The depot
