@@ -80,11 +80,14 @@ the others, and drops the mark. A library whose memberships and texts no
 change touched after the change a revision reads it at holds what it held
 then, so only those get figures, and an upgraded revision never holds
 wrong ones. The step to format 10 marks the depot half upgraded and makes
-the tables text_tags and text_licenses (TABLES_10) in its first
-transaction; then it lists the current texts by tag and by license and
-counts their score names and the splits of every text and of each tag,
-license and library by status and by whether a locked library holds them
-(LISTED_10, SCORES_10, SPLITS_10), reading the current
+the tables text_tags and text_licenses (TABLES_10) and the title index
+with its owners (TITLES_10) in its first transaction; then it lists the
+current texts by tag and by license, puts their titles into the title
+index (TITLE_ROWS_10, a slot in title_owners for each depot name first, and
+refused for an id the index cannot number, ODD_TITLE_10) and counts their
+score names and the splits of every text and of each tag, license and
+library by status and by whether a locked library holds them (LISTED_10,
+SCORES_10, SPLITS_10), reading the current
 revisions in rowid order, BATCH rowids a transaction, each recording the
 last rowid in upgrade_under_way, so a run after a stop goes on after it; it
 says how many rows a second it reads every SAY_EVERY seconds. Then it
@@ -240,6 +243,28 @@ SPLITS_10 = (
                       + BATCH_ROWS_10.replace("WHERE", "CROSS JOIN memberships m INDEXED BY memberships_held "
                                                        "ON m.text = t.id AND m.left_change IS NULL WHERE")
                       + " GROUP BY 1"))
+# the title index (wpt_depot.titles at format 10): an FTS5 table of the trigrams of each current title, each row
+# numbered by its text's id, its owner's slot (title_owners) times SPAN_10 plus its number; what one batch adds to it,
+# in the order of the row numbers (each lower number than the one before writes a new segment out), and the test of an
+# id the index cannot number
+SPAN_10 = 1 << 44
+TITLES_10 = ("CREATE TABLE IF NOT EXISTS title_owners (owner TEXT NOT NULL, slot INTEGER NOT NULL, "
+             "PRIMARY KEY (owner))",
+             "CREATE VIRTUAL TABLE IF NOT EXISTS text_titles USING fts5(title, content='', columnsize=0, detail=none, "
+             "tokenize='trigram')")
+OWNER_10 = (f"(CASE WHEN rtrim(t.id, '0123456789') <> t.id AND rtrim(t.id, '0123456789') GLOB '*-' "
+            f"THEN substr(t.id, 1, length(rtrim(t.id, '0123456789')) - 1) ELSE t.id END)")
+NUMBER_10 = (f"(CASE WHEN rtrim(t.id, '0123456789') <> t.id AND rtrim(t.id, '0123456789') GLOB '*-' "
+             f"THEN CAST(substr(t.id, length(rtrim(t.id, '0123456789')) + 1) AS INTEGER) END)")
+TITLED_10 = BATCH_ROWS_10 + " AND t.title IS NOT NULL"
+ODD_TITLE_10 = (f"SELECT t.id {TITLED_10} AND NOT ({NUMBER_10} IS NOT NULL AND {NUMBER_10} < {SPAN_10} "
+                f"AND t.id = {OWNER_10} || '-' || {NUMBER_10}) LIMIT 1")
+OWNERS_10 = ("INSERT INTO title_owners (owner, slot) SELECT n.owner, "
+             "(SELECT coalesce(max(slot), -1) FROM title_owners) + row_number() OVER (ORDER BY n.owner) "
+             f"FROM (SELECT DISTINCT {OWNER_10} AS owner {TITLED_10}) n "
+             "WHERE n.owner NOT IN (SELECT owner FROM title_owners)")
+TITLE_ROWS_10 = (f"INSERT INTO text_titles (rowid, title) SELECT (SELECT o.slot FROM title_owners o WHERE o.owner = "
+                 f"{OWNER_10}) * {SPAN_10} + {NUMBER_10}, t.title {TITLED_10} ORDER BY 1")
 NEWER_COUNTS_10 = (f"INSERT INTO counts (facet, name, texts) SELECT '{NEWER_10}', p.library, count(*) FROM pins p "
                    "JOIN texts_revisions t ON t.id = p.text AND t.latest WHERE t.revision > p.revision "
                    "GROUP BY p.library")
@@ -668,10 +693,12 @@ def _to_10(db: Database, log):
         with db.bulk() as con:
             con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
             con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('texts', 0)")
-            for statement in TABLES_10:
+            for statement in TABLES_10 + TITLES_10:
                 con.execute(statement)
             for table, _, _ in LISTED_10:
                 con.execute(f"DELETE FROM {table}")
+            con.execute("INSERT INTO text_titles (text_titles) VALUES ('delete-all')")
+            con.execute("DELETE FROM title_owners")
             con.execute(f"DELETE FROM counts WHERE facet IN ('{SCORE_10}', '{NEWER_10}', "
                         + ", ".join(f"'{facet}'" for facet, _ in SPLITS_10) + ")")
             _new_format(con, 10)
@@ -679,11 +706,12 @@ def _to_10(db: Database, log):
     after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'texts'").fetchall()[0][0]
     last = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
     total = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'texts'").fetchall()[0][0]
-    log(f"{db.path}: listing the {total:,} current texts by tag and by license and counting their score names, "
+    log(f"{db.path}: listing the {total:,} current texts by tag and by license, indexing their titles and counting "
+        f"their score names, "
         f"from the revisions read in rowid order, rows {after:,} to {last:,}, {BATCH:,} rowids a transaction"
         + ("" if after == 0 else "; going on after the last transaction the last run wrote"))
     began = said = time.monotonic()
-    first = after
+    first, titled = after, 0.0
     while after < last:
         upto = min(after + BATCH, last)
         bounds = {"low": after, "high": upto}
@@ -696,6 +724,17 @@ def _to_10(db: Database, log):
                 added += [(facet, name, count) for name, count in written.execute(query, bounds)]
             written.executemany("INSERT INTO counts (facet, name, texts) VALUES (?, ?, ?) ON CONFLICT (facet, name) "
                                 "DO UPDATE SET texts = texts + excluded.texts", added)
+            indexing = time.monotonic()
+            odd = written.execute(ODD_TITLE_10, bounds).fetchall()
+            if odd:
+                raise Refused(f"the title index numbers a text by its depot's name, a hyphen and its number, which "
+                              f"{odd[0][0]} is not: the upgrade stops before this batch, the depot half upgraded, "
+                              "which every other wpt depot command refuses; give that text such an id, or no title, "
+                              "with SQL on the depot's file through the sqlite3 program, then run wpt depot upgrade "
+                              "again, which goes on with this batch")
+            written.execute(OWNERS_10, bounds)
+            written.execute(TITLE_ROWS_10, bounds)
+            titled += time.monotonic() - indexing
             written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'texts'", (upto,))
         after = upto
         if time.monotonic() - said >= SAY_EVERY or after == last:
@@ -717,7 +756,8 @@ def _to_10(db: Database, log):
         written.execute(f"DELETE FROM counts WHERE facet = '{NEWER_10}'")
         written.execute(NEWER_COUNTS_10)
         written.execute(f"DROP TABLE {UNDER_WAY}")
-    log(f"{db.path}: the listings took {listed - began:.0f} seconds and the indexes {time.monotonic() - listed:.0f}; "
+    log(f"{db.path}: the listings took {listed - began:.0f} seconds, {titled:.0f} of them the title index, and the "
+        f"indexes {time.monotonic() - listed:.0f}; "
         f"the depot is at format 10, in {time.monotonic() - began:.0f} seconds")
 
 

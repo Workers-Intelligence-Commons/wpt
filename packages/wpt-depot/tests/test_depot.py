@@ -1904,14 +1904,18 @@ def test_rows_an_upstream_sends_with_a_column_the_table_lacks_are_refused_and_ne
     assert every_row(depot) == before and not planted.exists()
 
 
-def counted_again(depot) -> tuple[dict, dict]:
-    """The depot's counts and its listings of texts by tag and by license as every write left them, and as a recount
-    from its rows makes them: equal when each write kept them right."""
+def counted_again(depot, title_index) -> tuple[dict, dict]:
+    """The depot's counts, its listings of texts by tag and by license, the title index (title_index, the fixture)
+    and what its libraries hold by kind and by tag as every write left them, and as a recount from its rows makes
+    them: equal when each write kept them right."""
     def stored():
         split = {facet: {one["name"]: one["texts"] for one in depot.rows(
             "SELECT name, texts FROM counts WHERE facet = ? ORDER BY name", (facet,))} for facet in counts.SPLIT}
+        sized = depot.rows("SELECT facet, name, texts, characters, bytes FROM counts WHERE facet IN "
+                           f"{tuple(counts.SIZED)} ORDER BY 1, 2")
         return {**depot.counts(), **split, **{table: depot.rows(f"SELECT * FROM {table} ORDER BY 1, 2")
-                                              for table, _, _ in counts.LISTINGS.values()}}
+                                              for table, _, _ in counts.LISTINGS.values()},
+                "titles": title_index(depot), "sized": sized}
     kept = stored()
     depot.recount()
     return kept, stored()
@@ -1926,13 +1930,13 @@ def stored_and_ruled(depot) -> tuple[dict, dict]:
             {one["id"]: policy.status([decided[d] for d in one["decisions"]]) for one in found})
 
 
-def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(make_depot, me):
-    # the tags, licenses, libraries and overview pages read only the counts, and every filter by status reads the
-    # stored status, so each write must keep both right
+def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(make_depot, me, title_index):
+    # the tags, licenses, libraries and overview pages read only the counts, a plain search reads the title index,
+    # and every filter by status reads the stored status, so each write must keep them right
     depot = make_depot()
     depot.add_license("MIT", "MIT License", "text")
-    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("a",) if n % 2 else ("b",))
-                       for n in range(8)], me)
+    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("a",) if n % 2 else ("b",),
+                               title=f"Title {n}" if n % 3 else None) for n in range(8)], me)
     library = depot.new_library("open")
     forked = []
     writes = [
@@ -1946,6 +1950,7 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         lambda: depot.relicense(texts[3:5], ["MIT"], me),
         lambda: depot.change_content(texts[5], "text 5, changed", None, me),
         lambda: depot.edit_credits(texts[6], {"tags": ["a", "c"]}, me),
+        lambda: depot.edit_credits(texts[6], {"title": "Renamed"}, me),
         lambda: depot.edit_scores([{"id": texts[7], "scores": [score("rank", 1)]}], me),
         lambda: depot.score(Filter(ids=tuple(texts[5:8])), "length", 2.0, me),
         lambda: depot.fork(library, "second fork", [texts[6]]),
@@ -1953,17 +1958,155 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         lambda: depot.relicense([texts[4]], ["CC0-1.0", "MIT"], me),
         lambda: depot.change_content(texts[5], "text 5, changed again", None, me),
         lambda: depot.edit_scores([{"id": texts[5], "remove": ["length"]}], me),
+        # many texts' credits at once: the tags of texts of the open library and of the locked fork, titles alone
+        # (one given, one cleared), authors alone, and texts the locked fork pins
+        lambda: depot.edit_credits_many([{"id": texts[2], "tags": ["e"]}, {"id": texts[4], "tags": ["a", "e"]},
+                                         {"id": texts[5], "tags": []}], me),
+        lambda: depot.edit_credits_many([{"id": texts[0], "title": "First"}, {"id": texts[1], "title": None},
+                                         {"id": texts[3], "title": "Title 3, longer"}], me),
+        lambda: depot.edit_credits_many([{"id": texts[0], "authors": ["Ann Lee"]},
+                                         {"id": texts[2], "authors": ["Bo"]}], me),
         lambda: depot.decide_erasure(depot.ask_erasure("all of it", [(texts[7], None, None)], me), "admitted", me),
     ]
     for write in writes:
         write()
-        kept, made = counted_again(depot)
+        kept, made = counted_again(depot, title_index)
         assert kept == made
         stored, ruled = stored_and_ruled(depot)
         assert stored == ruled
-    assert made["texts"] == {"": 7} and made["tag"] == {"a": 3, "b": 3, "c": 1, "d": 1}
-    assert made["score"] == {"length": 1} and made["pinned newer"] == {forked[0]: 3}
+    assert made["texts"] == {"": 7} and made["tag"] == {"a": 3, "b": 1, "c": 1, "d": 1, "e": 2}
+    assert made["score"] == {"length": 1} and made["pinned newer"] == {forked[0]: 6}
     assert made["license"] == {"CC0-1.0": 6, "MIT": 2} and len(made["text_licenses"]) == 8
+    assert made["titles"]["terms"] and made["titles"]["unfound"] == []
+    assert [one["id"] for one in depot.search(Filter(search="title"))["rows"]] == texts[2:6]
+
+
+def test_a_credits_change_of_many_texts_moves_a_library_only_when_its_tags_move(make_depot, me, library_figures):
+    # a dataset revision reads its figures from the counts while its libraries have not moved since (library_moves)
+    depot = make_depot()
+    texts = depot.add([plain("one", "en"), plain("two", "en")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("open")
+    depot.put(library, "true")
+    moved = depot.rows("SELECT change FROM library_moves WHERE library = ?", (library,))
+
+    depot.edit_credits_many([{"id": one, "title": "A title", "authors": ["Ann Lee"]} for one in texts], me)
+
+    assert depot.rows("SELECT change FROM library_moves WHERE library = ?", (library,)) == moved
+    depot.edit_credits_many([{"id": texts[0], "tags": ["fr"]}], me)
+    assert depot.rows("SELECT change FROM library_moves WHERE library = ?", (library,)) == [{"change": depot.change()}]
+    stored, direct = library_figures(depot)
+    assert stored == direct
+
+
+def every_match(depot, where) -> list[str]:
+    """The ids a selection matches, page after page in the order of ids, each page read as a person's page is."""
+    found, after = [], None
+    while True:
+        page = depot.search(where, after=after, limit=7)
+        found += [one["id"] for one in page["rows"]]
+        if page["next"] is None:
+            return found
+        after = page["next"]
+
+
+TITLED = ["Hello World", "the DRIVERS of rivers", "Rivers and hello", "École normale", "ölmühle", "50% off_line",
+          "it's a \"quoted\" name", "ab", "a riverside walk", "Hello again, world", "hell", "x-12 notes"]
+
+
+@pytest.mark.parametrize("words, whole", [
+    ("hello", False), ("rivers", False), ("rivers", True), ("RIVER hello", False), ("école", False),
+    ("ÖLM", False), ("% off_", False), ('"quoted"', False), ("it's", False), ("ab", False), ("ab hello", False),
+    ("depot-3", False), ("depot-3 rivers", False), ("depot-30 depot-3", False), ("x-12", False), ("zzz", False),
+    ("hel wor", True)])
+def test_a_plain_search_finds_through_the_title_index_what_a_reading_of_every_text_finds(make_depot, me, words, whole):
+    # a search reads its candidates from the title index; reading every text with the same condition is the measure
+    depot = make_depot()
+    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",),
+                               title=TITLED[n % len(TITLED)] if n % 5 else None) for n in range(40)], me)
+    depot.edit_credits_many([{"id": texts[n], "title": f"renamed {TITLED[n % len(TITLED)]}"} for n in range(0, 40, 3)],
+                            me)
+    found = Filter(search=words, whole_words=whole)
+
+    assert every_match(depot, found) == every_match(depot, depot.condition(found))
+    counted = depot.count(found)
+    assert sum(counted["statuses"].values()) == len(every_match(depot, found))
+    assert counted["total"] == counted["texts"] and counted["next"] is None
+    backward = depot.search(found, before=["zzz"], limit=100)["rows"]
+    assert [one["id"] for one in reversed(backward)] == list(reversed(every_match(depot, found)))
+
+
+def test_a_plain_search_of_a_word_of_three_characters_reads_the_title_index_and_never_every_text(make_depot, me):
+    depot = make_depot()
+    depot.add([NewText(text="one", licenses=("CC0-1.0",), title="Hello World")] + [plain(f"{n}") for n in range(5)], me)
+    con = depot.db.reader()
+
+    plan = depot._plan(Filter(search="hello wo depot-1"))
+    assert plan.listing.parts and not plan.listing.scans
+    for compare, direction in ((None, ""), (">", ""), ("<=", " DESC")):
+        window, uses = depots._window(plan.listing, compare, direction, 10)
+        steps = [one[3] for one in con.execute(f"EXPLAIN QUERY PLAN {window}", ("x",) * uses)]
+        # the words matched and the place's bounds both read by the index (M, then < and >), at most 10 rows of it
+        # sorted afterwards; the text named by its id looked up by its key
+        assert any(re.fullmatch(r"SCAN text_titles VIRTUAL TABLE INDEX \d+:M\d*[<>]{2}", one) for one in steps), steps
+        assert "SEARCH texts_revisions USING INDEX texts_latest (id=?)" in steps
+        assert not any(one.startswith("SCAN texts_revisions") for one in steps), steps
+    assert depot._plan(Filter(search="he wo")).listing.scans  # no trigram: the bounded reading of every text
+    assert depot._plan(Filter(search="hello", in_text=True)).listing.scans
+
+
+def test_a_search_in_a_smaller_listing_counts_the_title_index_only_as_far_as_that_listing(make_depot, me):
+    # the index counted up to the library's size + 1: past it the library is read, below it the index
+    depot = make_depot()
+    texts = depot.add([NewText(text=f"{n}", licenses=("CC0-1.0",), title="River walk" if n < 8 else "Lake")
+                       for n in range(10)], me)
+    depot.decide("admitted", texts[5:], me)
+    library = depot.new_library("few")
+    depot.put(library, texts[5:])
+
+    for words, read_from in (("river", "memberships"), ("lake", "text_titles")):
+        found = Filter(search=words, libraries=(library,))
+        plan = depot._plan(found)
+        assert read_from in plan.listing.rows
+        assert every_match(depot, found) == every_match(depot, depot.condition(found))
+    assert depot._plan(Filter(search="lake", libraries=(library,))).listing.texts == 2
+    assert depot._titled(["river"], 5).texts == 6 and depot._titled(["river"], 50).texts == 8
+
+
+def test_a_count_of_a_search_names_no_total_when_the_title_index_gives_too_many_to_count_at_once(make_depot, me,
+                                                                                                 monkeypatch):
+    # counting every text a common word gives would take as long as the steps, past a reader's time limit
+    depot = make_depot()
+    depot.add([NewText(text=f"{n}", licenses=("CC0-1.0",), title=f"River {n}" if n < 5 else "Lake" if n == 5 else None)
+               for n in range(8)], me)
+    monkeypatch.setattr(depots, "COUNT_STEP", 3)
+
+    first = depot.count(Filter(search="river"), size=2)
+    second = depot.count(Filter(search="river"), start=first["next"], size=2)
+    last = depot.count(Filter(search="river"), start=second["next"], size=2)
+
+    assert first["total"] is None and (first["texts"], second["texts"], last["texts"]) == (2, 2, 1)
+    assert last["next"] is None and depot.count(Filter(search="lake"))["total"] == 1
+
+
+def test_a_clone_and_its_pulls_keep_the_title_index_of_the_upstream_s_texts_and_its_own(serve, make_depot, me,
+                                                                                         tmp_path, title_index):
+    upstream = make_depot("upstream")
+    theirs = upstream.add([NewText(text=f"u{n}", licenses=("CC0-1.0",), title=f"Book {n}") for n in range(3)], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
+                     About("follower", "Grace Hopper", "grace@example.org"))
+    mine = follower.add([NewText(text="mine", licenses=("CC0-1.0",), title="My book")], me)
+    upstream.edit_credits_many([{"id": theirs[0], "title": "Renamed"}, {"id": theirs[1], "title": None}], me)
+    [later] = upstream.add([NewText(text="later", licenses=("CC0-1.0",), title="A later book")], me)
+    upstream.decide_erasure(upstream.ask_erasure("gone", [(theirs[2], None, None)], me), "admitted", me)
+
+    pull(follower)
+
+    kept, made = counted_again(follower, title_index)
+    assert kept == made and made["titles"]["unfound"] == []
+    assert every_match(follower, Filter(search="book")) == ["follower-1", later]
+    assert every_match(follower, Filter(search="book")) == every_match(follower, "title LIKE '%book%'")
+    assert mine == ["follower-1"]
 
 
 def test_a_locked_library_shows_each_text_at_the_status_its_decisions_up_to_the_lock_make(make_depot, me):
@@ -1984,7 +2127,7 @@ def test_a_locked_library_shows_each_text_at_the_status_its_decisions_up_to_the_
 
 
 def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_statuses_and_counts(
-        serve, make_depot, me, tmp_path):
+        serve, make_depot, me, tmp_path, title_index):
     upstream, follower, (refused, kept), open_library, _ = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
     decision, _, _ = upstream.decide("refused", [refused], me)
 
@@ -1993,7 +2136,7 @@ def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_st
     assert follower.show(refused)["status"] == "refused" and follower.show(kept)["status"] == "admitted"
     assert follower.decision(decision)["texts"] == 1
     assert follower.search("status = 'refused'")["rows"][0]["id"] == refused
-    kept_counts, made = counted_again(follower)
+    kept_counts, made = counted_again(follower, title_index)
     assert kept_counts == made and made["status"] == {"admitted": 1, "refused": 1}
     assert made["library"] == {open_library: 1, **{key: value for key, value in made["library"].items()
                                                    if key != open_library}}
@@ -2005,7 +2148,7 @@ def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_st
     pull(follower)
     upstream.lock(theirs)
     pull(follower)
-    kept_counts, made = counted_again(follower)
+    kept_counts, made = counted_again(follower, title_index)
     assert kept_counts == made and follower.held_count(Filter(locked=True))["locked"] == 3
 
 

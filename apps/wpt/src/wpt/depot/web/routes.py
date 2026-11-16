@@ -607,9 +607,10 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                   "locked": {"type": ["boolean", "null"],
                                              "description": "whether a locked library holds the text"},
                                   "decision": {**nullable, "description": "the id of a decision the text is on"},
-                                  "search": {**nullable, "description": "words, split at spaces, that the text holds "
-                                             "each in its title or id (with in_text, in its text too), in any case; "
-                                             "% and _ are characters, not wildcards"},
+                                  "search": {**nullable, "description": "words, split at spaces, each in the text's "
+                                             "title (with in_text, in its text too), in any case, or its exact id; "
+                                             "% and _ are characters, not wildcards; without in_text, a word of 3 "
+                                             "characters or more reads the texts from the title index"},
                                   "in_text": {"type": "boolean", "description": "the search reads each text itself "
                                               "too, a plain text's text or an item's JSON content"},
                                   "whole_words": {"type": "boolean", "description": "each word of the search "
@@ -764,8 +765,10 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "place with fewer than limit rows before it is the first page; a page at a text's id (at) starts at "
               "that text's place in the order, with the text when the filter matches it (the first page for an id "
               "the depot does not hold); a page reads its candidates from the narrowest listing the filter names "
-              "(one tag, license, library or status, in the order of ids from its index; a decision, several "
-              f"licenses or libraries, or ids, sorted when at most {SORTED}; else every text), at most "
+              "(one tag, license, library or status, in the order of ids from its index; the texts whose title "
+              "the title index gives for the search's words of 3 characters or more, and those named by their id; "
+              f"a decision, several licenses or libraries, or ids, sorted when at most {SORTED}; else every text), "
+              "at most "
               f"{WINDOW} of them ({TEXT_WINDOW} with a search in the texts) in the order of ids or of statuses, so "
               "a page whose filter few texts match can hold fewer than limit rows: partial is then true and next "
               "names the last candidate read, where the next page reads on; an order other than "
@@ -804,7 +807,8 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "the listing a page reads (POST /api/texts/search), in the order of ids, or, for a filter that names "
               "its texts, exactly those, in one step; texts, how many rows the slice holds; total, how many rows "
               "every step goes over, in the first step only "
-              "(no start), null after it; the matches of the slice by status (the status the depot stores), how "
+              f"(no start), null after it, and null too for a search's texts past {COUNT_STEP} titles; the "
+              "matches of the slice by status (the status the depot stores), how "
               "many of them a locked library holds, how many an admission cannot cover by reason (as POST "
               "/api/texts/blocked), by tag and by license; next, the start of the next step, null after the last "
               "one; with change and unticked, the filter is counted as a selection (POST /api/decisions) takes it; "

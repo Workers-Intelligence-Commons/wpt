@@ -36,7 +36,8 @@ export type Counts = {
   statuses: Record<Status, number>; locked: number; blocked: Record<string, number>;
   tags: { tag: string; texts: number }[]; licenses: { license: string; texts: number }[];
 };
-// counted: texts gone over so far; total: how many there are to go over, known from the first step
+// counted: texts gone over so far; total: how many there are to go over, known from the first step (null for a
+// search through the title index that gives too many to count at once)
 // before: while not done, the last finished counts of the same selection at an earlier version, else null
 // settled: the statuses and locked are final already, read from the depot's counts, while the rest is counted
 // rest: once settled and while not done, what is still counted, in words ("by tag and license")
@@ -199,7 +200,7 @@ export function CountingNote({ counting }: { counting: Counting | null }) {
   if (counting.done) return null;
   return (
     <span className="aside" role="status">
-      {counting.before ? "counting again after the change" : counting.settled ? `counting ${counting.rest}` : "counting"}: {counting.total === null ? "starting" : `${counting.counted.toLocaleString("en")} of ${plural(counting.total, "text")}`}
+      {counting.before ? "counting again after the change" : counting.settled ? `counting ${counting.rest}` : "counting"}: {counting.total !== null ? `${counting.counted.toLocaleString("en")} of ${plural(counting.total, "text")}` : counting.counted ? `${plural(counting.counted, "text")} so far` : "starting"}
     </span>
   );
 }

@@ -23,7 +23,7 @@ export type TextFilter = {
   outside: string[]; // none of these libraries holds the text
   locked: boolean | null; // whether a locked library holds the text
   decision: string | null; // a decision the text is on; null: any
-  search: string; // words the title or the id (with inText, the text too) holds, each one; empty: any
+  search: string; // words the title (with inText, the text too) holds, each one, or the exact id; empty: any
   where: string; // an SQL condition over the texts table, typed by the person; empty: none
   inText: boolean; // the search's words are looked for in the text itself too
   wholeWords: boolean; // each word of the search matches only as a whole word ("rivers" never in "drivers")
@@ -196,10 +196,10 @@ export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, id
       <Button variant="quiet" className="filter-toggle" aria-expanded={shown} onClick={() => setShown(!shown)}>{shown ? "Hide the filters" : narrowed ? "Filters (on)" : "Filters"}</Button>
       <input className="wic-input wic-focus find" type="search" value={draft.search} aria-label={draft.inText ? "Search titles, ids and the texts themselves" : "Search titles and ids"}
         placeholder={draft.inText ? "Search titles and texts" : "Search titles"}
-        title={`Words ${draft.inText ? "the title, the id or the text itself" : "the title or the id of a text"} holds, each one, in any case. Enter or Escape goes back to the list, where J and K move.`}
+        title={`Words ${draft.inText ? "the title or the text itself" : "the title of a text"} holds, each one, in any case, or its exact id. Enter or Escape goes back to the list, where J and K move.`}
         onChange={(e) => change({ search: e.target.value })}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); leave(e.currentTarget); } }} />
-      <label className="tick small in-text" title="Look for the words inside each text as well as in its title and id. It reads every text the other filters leave, so it is slower on a big depot.">
+      <label className="tick small in-text" title="Look for the words inside each text as well as in its title. It reads every text the other filters leave, so it is slower on a big depot.">
         <input type="checkbox" className="wic-check-box wic-focus" checked={draft.inText} onChange={(e) => change({ inText: e.target.checked })} />
         <span>in the texts too</span>
       </label>

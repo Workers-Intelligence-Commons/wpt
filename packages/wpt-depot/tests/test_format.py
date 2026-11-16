@@ -6,6 +6,7 @@ from pathlib import Path
 import apsw
 import pytest
 
+from wpt_depot.filters import Filter
 from wpt_depot import About, Depot, NewText, clone, ids, upgrade
 from wpt_depot.errors import DepotExists, HalfUpgraded, OtherFormat, Refused
 from wpt_depot.filters import KEY_INDEXES
@@ -185,7 +186,8 @@ def schema_of(path) -> list[tuple]:
 
 
 def made_older(depot, format_: int):
-    """The depot as a depot of format_ (4 to 9) holds what it holds: no tables text_tags and text_licenses, no
+    """The depot as a depot of format_ (4 to 9) holds what it holds: no tables text_tags and text_licenses, no title
+    index text_titles nor its title_owners, no
     indexes of the format 10 upgrade (INDEXES_10) but the index text_decisions_decision, and no counts of scores, of
     pins with a newer revision and of the splits by status and by locked library; for 8
     and older also no columns characters and bytes of counts and
@@ -203,7 +205,7 @@ def made_older(depot, format_: int):
         for name, _ in upgrade.INDEXES_10:
             con.execute(f"DROP INDEX {name}")
         con.execute(upgrade.TEXT_DECISIONS_DECISION)
-        for table in ("text_tags", "text_licenses"):
+        for table in ("text_tags", "text_licenses", "text_titles", "title_owners"):
             con.execute(f"DROP TABLE {table}")
         con.execute("DELETE FROM counts WHERE facet IN ('score', 'pinned newer', "
                     + ", ".join(f"'{facet}'" for facet, _ in upgrade.SPLITS_10) + ")")
@@ -265,8 +267,8 @@ def made_older(depot, format_: int):
 def decided(depot, me):
     """A depot whose texts have decisions of every kind: admitted, refused, and started over by a license change."""
     depot.add_license("MIT", "MIT License", "text")
-    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("a",) if n % 2 else ())
-                       for n in range(12)], me)
+    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("a",) if n % 2 else (),
+                               title=f"Text number {n}" if n % 3 else None) for n in range(12)], me)
     depot.decide("admitted", texts[:8], me)
     depot.decide("refused", texts[6:8], me)
     depot.relicense(texts[:2], ["MIT"], me)
@@ -511,7 +513,7 @@ def test_an_upgrade_to_format_9_of_a_clone_gives_its_own_dataset_revisions_no_fi
 
 
 def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_on_after_a_stop(
-        make_depot, me, monkeypatch):
+        make_depot, me, monkeypatch, title_index):
     # the pages read these listings and counts instead of the texts, so the fill must give what every write keeps,
     # and on the public depot it runs for over an hour, so a stop must not start it over
     new = make_depot("new")
@@ -524,6 +526,8 @@ def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_
     pinned = depot.rows("SELECT text FROM pins")[0]["text"]
     depot.edit_credits(pinned, {"tags": ["poems"]}, me)  # a newer revision than the locked library's pin
     assert depot.counts()["score"] == {"rank": 5} and depot.counts()["pinned newer"] == {library: 1}
+    depot.edit_credits_many([{"id": texts[1], "title": "Renamed"}, {"id": texts[2], "title": None}], me)
+    indexed = title_index(depot)
     before = made_older(depot, 9)
     said = []
 
@@ -552,3 +556,5 @@ def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_
     assert [one[-1] for one in after["about_revisions"]] == [9, 10]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
+    assert title_index(upgraded) == indexed and indexed["terms"] and indexed["unfound"] == []
+    assert [one["id"] for one in upgraded.search(Filter(search="number 1"))["rows"]] == ["depot-2", "depot-12"]

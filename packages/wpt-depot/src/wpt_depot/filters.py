@@ -21,17 +21,20 @@ reaches, so a page or a count step stays bounded by its own rows for a
 decision on many texts, where reading every row of the decision at each
 page or step would grow with the decision (Depot.condition chooses).
 
-A plain search's words are split at spaces, and a text matches when it
-holds each one in its title or its id, or, with in_text, in its text itself
-too (a plain text's text, an item's JSON content). A word matches in any
-case: SQLite's LIKE ignores the case of ASCII letters, and a % or _ in a
+A plain search's words are split at spaces, and a text matches when each
+one is in its title, or is its id (a word in the form of an id, is_id), or,
+with in_text, is in its text itself too (a plain text's text, an item's
+JSON content). A word matches in a title or a text in any case: SQLite's
+LIKE ignores the case of ASCII letters, and a % or _ in a
 word is that character, not a wildcard. With whole_words, a word matches
 only where no letter, digit or underscore stands right before or after it
 (the SQL function has_word, wpt_depot.database), so "rivers" never matches
 "drivers"; it ignores the case of ASCII letters as LIKE does. On the
-title and the id, LIKE picks the candidates first; on the text, put
-together from its parts, the function reads it alone, so each text is put
-together once.
+title, LIKE picks the candidates first; on the text, put together from its
+parts, the function reads it alone, so each text is put together once. A
+page reads the texts a search may match without in_text from the title
+index and the ids named (wpt_depot.titles, Depot.search), never every
+text, when a word has 3 characters or more.
 
 With a change number C, a text matches only when nothing changed it after
 C (changed_since): its current revision was made at C or before, no
@@ -48,6 +51,7 @@ one JSON string, which SQLite reads as one value whatever its length.
 import json
 from dataclasses import dataclass
 
+from . import ids
 from .errors import Refused
 from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 
@@ -156,19 +160,29 @@ def words(search: str | None) -> list[str]:
     return (search or "").split()
 
 
+def is_id(word: str) -> bool:
+    """Whether a word of a plain search is in the form of an id: a depot's
+    name, a hyphen and a number written without leading zeros
+    (wpt_depot.ids)."""
+    number = ids.number(word)
+    return number is not None and ids.NAME.fullmatch(ids.owner(word)) is not None and word == ids.make(
+        ids.owner(word), number)
+
+
 def _word(word: str, in_text: bool, whole: bool) -> str:
-    """Whether a text holds the word of a plain search in its title or id,
-    or with in_text in its text too, as the module says: an SQL condition
-    over the texts view."""
+    """Whether a text holds the word of a plain search in its title, or
+    the word is its id, or with in_text the text holds it, as the module
+    says: an SQL condition over the texts view."""
     pattern = literal("%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
     def has(column):
         return f"has_word({column}, {literal(word)})"
 
-    found = []
-    for column in ("coalesce(title, '')", "id"):
-        test = f"{column} LIKE {pattern} ESCAPE '\\'"
-        # LIKE first, which picks the candidates the function then reads
-        found.append(f"({test} AND {has(column)})" if whole else test)
+    column = "coalesce(title, '')"
+    test = f"{column} LIKE {pattern} ESCAPE '\\'"
+    # LIKE first, which picks the candidates the function then reads
+    found = [f"({test} AND {has(column)})" if whole else test]
+    if is_id(word):
+        found.append(f"id = {literal(word)}")
     if in_text:
         # the text is put together from its parts each time it is read, so a whole word reads it once, through
         # the function alone, which finds the word wherever LIKE would

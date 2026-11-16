@@ -121,15 +121,23 @@ than their current one. It splits every text, and the texts of each tag,
 each license and each library, by status and by whether a locked library
 holds them. The tables `text_tags` and `text_licenses` list
 the current texts of each tag and of each license, in the numeric order of
-their ids. It also
+their ids.
+The title index `text_titles` is an SQLite FTS5 table of the trigrams of
+each current text's title, which stores no title. Its rows are numbered by
+the texts' ids, through the slot `title_owners` gives each depot name the
+ids carry, so one name's texts come in the numeric order of their ids. A
+text whose id is not a name, a hyphen and a number without leading zeros
+cannot be numbered, and a write that would index one is refused. `counts`
+also
 holds what each library holds, each text at its current revision, in
 texts, characters and UTF-8 bytes: by kind (plain texts, the conversations
 and tasks a corpus takes, and items of other kinds) and, for its plain
 texts, by tag, a text with several tags counting once for each. Every
-write keeps the stored statuses, the counts and the two listings right in
-its own transaction, so a page reads them at once whatever the depot's
+write keeps the stored statuses, the counts, the two listings and the title
+index right in its own transaction, so a page reads them at once whatever the depot's
 size; one module writes them (`wpt_depot/counts.py`), and `wpt depot
-recount` makes them again from the rows.
+recount` makes them again from the rows. The title index is written through
+`wpt_depot/titles.py`, which that module calls.
 
 **Reads that do not grow with the depot.** A page, a count step and a write
 of a few texts read only the rows they name, through an index: the
@@ -137,9 +145,11 @@ listings above, the index `memberships_order` of each library's current
 texts in the numeric order of their ids, `pins_order` of each locked
 library's pins in that order, `text_decisions_order` of each decision's
 texts in that order, and `memberships_held` of each text's open
-memberships. A page reads a bounded window of candidates, but a filter no
-listing narrows reads up to every text over its pages: the words of a
-search, texts outside some libraries, texts no locked library holds, and
+memberships. The words of a search are read from the title index when one
+has 3 characters or more and the search does not read the texts
+themselves. A page reads a bounded window of candidates, but a filter no
+listing narrows reads up to every text over its pages: a search whose
+words are all shorter, a search in the texts, texts outside some libraries, texts no locked library holds, and
 two parts of a filter whose texts meet in few. A pull reads each table's
 rows past a change number through an index of their change numbers, the
 rows of every depot numbered in that range. A query names the index or the join
@@ -243,7 +253,9 @@ A person's SQL (`wpt depot sql`, the condition of a filter) runs on a
 connection that opens the file read-only and whose authorizer lets a
 statement only read rows and call functions: a statement that writes,
 attaches another file, runs a pragma or loads an extension is refused, and
-a query is one statement.
+a query is one statement. The one pragma it may run is reading
+`data_version`, which the title index reads to know whether the file
+changed.
 
 **Format.** The depot's layout, its tables and their columns, has a
 number: its format. The code holds the format it reads and writes
@@ -327,8 +339,8 @@ gives the latest change its memberships joined or left at, which make
 of each library is unknown. Its last transaction gives each dataset
 revision the figures those prove exact.
 The step to format 10 makes the listings `text_tags` and `text_licenses`,
-the counts of score names and the splits by status and by locked library,
-from the current revisions read in rowid order, a batch at a time, marked
+the title index, the counts of score names and the splits by status and by
+locked library, from the current revisions read in rowid order, a batch at a time, marked
 half upgraded until the last, saying how many rows a second it reads; run
 again after a stop, it goes on after the last batch it wrote. It then
 builds `memberships_order`, `pins_order`, `text_decisions_order` and the
@@ -689,7 +701,9 @@ link or the blob opened. A page reads its candidates from the narrowest
 listing its filter names, chosen by the counts: the texts of a decision,
 of one tag, or of one or several licenses, libraries or statuses, from
 their indexes in the numeric order of ids, the windows of several values
-merged; the ids named, sorted, when they are at most `SORTED`
+merged; the texts the title index gives for every word of a search of 3
+characters or more, each depot name's from the index in that order, with
+the text whose id a word is; the ids named, sorted, when they are at most `SORTED`
 (`wpt_depot/depot.py`); else every current text, from `texts_order`. It
 tests each candidate against the rest of the filter. In the numeric order
 of ids it reads at most `WINDOW` candidates after its place (`TEXT_WINDOW`
@@ -772,7 +786,7 @@ failure's kind and message and ends with exit code 2.
 A person's SQL reaches only the depot's file. It runs on the read-only
 connection whose authorizer lets a statement only read ("SQL" in
 [The depot](#the-depot)), so no query writes, attaches another file, runs
-a pragma or loads an extension, and SQLite has no function that reads
+a pragma (but reading `data_version`) or loads an extension, and SQLite has no function that reads
 another file or an address on the network. A filter's condition is a query
 as well, under the same rule. `wpt depot sql` follows it too.
 

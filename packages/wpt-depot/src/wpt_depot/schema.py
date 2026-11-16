@@ -37,7 +37,11 @@ each library holds last moved (wpt_depot.counts). text_tags and
 text_licenses list the current texts of each tag and of each license, each
 row a name and the text's place in the numeric order of ids
 (ids.order_sql), so the texts of one tag or license are read in that order
-from their key alone. Which texts a library holds is
+from their key alone. text_titles is an SQLite FTS5 table of the trigrams of
+each current text's title, with title_owners, the slot of each depot name
+the ids carry, which numbers its rows (wpt_depot.titles), so a plain search
+of words of 3 characters or more reads only the texts whose title holds
+them. Which texts a library holds is
 memberships: the change a text joined at and the change it left at (null
 while it is in). A locked library also has pins: the exact revision of each
 text it locked, with the change that locked it. Each row of both also
@@ -128,7 +132,7 @@ FORMAT only (Depot.view). A depot of format 3 or older is a folder of Delta
 Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 """
 
-from . import ids
+from . import ids, titles
 
 FORMAT = 10  # the format of the layout below: what a depot this code reads and writes is written at
 
@@ -178,6 +182,7 @@ TABLES = {
     "library_moves": "library TEXT NOT NULL, change INTEGER",
     "text_tags": "tag TEXT NOT NULL, key TEXT NOT NULL",
     "text_licenses": "license TEXT NOT NULL, key TEXT NOT NULL",
+    titles.OWNERS: "owner TEXT NOT NULL, slot INTEGER NOT NULL",
 }
 KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name",), "licenses": ("id",),
         "notices": ("id",), "kinds": ("id",), "decisions": ("id",), "texts_revisions": ("id", "revision"),
@@ -187,7 +192,7 @@ KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name"
         "pulls": ("depot", "change"), "text_decisions": ("text", "decision"), "counts": ("facet", "name"),
         "tokenizers_revisions": ("id", "revision"), "vocabularies": ("recipe", "version"),
         "vocabulary_texts": ("recipe", "version", "position"), "library_moves": ("library",),
-        "text_tags": ("tag", "key"), "text_licenses": ("license", "key")}
+        "text_tags": ("tag", "key"), "text_licenses": ("license", "key"), titles.OWNERS: ("owner",)}
 # the tables stored in the order of their key alone (SQLite's WITHOUT ROWID): small rows read by their key
 WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts", "library_moves", "text_tags",
                            "text_licenses"})
@@ -223,9 +228,9 @@ JSON_COLUMNS = frozenset({"licenses", "authors", "tags", "decisions", "scores", 
 
 
 def ddl() -> list[str]:
-    """The statements that make every table, with its key, and every index."""
+    """The statements that make every table, with its key, every index and the title index."""
     return [f"CREATE TABLE {name} ({columns}, PRIMARY KEY ({', '.join(KEYS[name])})){table_options(name)}"
-            for name, columns in TABLES.items()] + list(INDEXES)
+            for name, columns in TABLES.items()] + list(INDEXES) + [titles.CREATE]
 
 
 def table_options(name: str) -> str:

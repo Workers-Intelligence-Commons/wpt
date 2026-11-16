@@ -167,7 +167,7 @@ import itertools
 import json
 import math
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -175,13 +175,13 @@ from urllib.parse import quote, unquote, urlparse
 
 import apsw
 
-from . import counts, crediting, erasure, ids, kinds, licenses, policy, scoring
+from . import counts, crediting, erasure, ids, kinds, licenses, policy, scoring, titles
 from .database import Database, person_columns
 from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
                      UnsupportedAddress)
-from .filters import (IN_LOCKED, MEMBERSHIPS_KEY, TEXTS_KEY, Filter, changed_since, condition, listed as listed_ids,
-                      literal, strings)
+from .filters import (IN_LOCKED, MEMBERSHIPS_KEY, TEXTS_KEY, Filter, changed_since, condition, is_id,
+                      listed as listed_ids, literal, strings, words)
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
 from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW,
                      decision_list)
@@ -244,16 +244,21 @@ class _Listing:
     (else they are sorted, so they are read only when at most SORTED);
     always, whether they are read whatever their number (ids given);
     parts, for the texts of several values, each value's rows, each in that
-    order through its index, whose union is rows (_window merges them);
-    scans, whether they are the rows of the texts themselves (every text,
-    or one status), which an operation over every match reads as they are
-    stored rather than through the listing."""
+    order through its index, whose union is rows (_window merges them): an
+    SQL query, or a part of the title index (titles.Part), which reads its
+    own window; scans, whether they are the rows of the texts themselves
+    (every text, or one status), which an operation over every match reads
+    as they are stored rather than through the listing; total, when texts
+    is only a lower bound (the title index, counted up to SORTED + 1 texts
+    for a plan), what gives how many rows it holds, None past COUNT_STEP
+    rows, whose counting would take as long as the steps."""
     rows: str
     texts: int
     ordered: bool
     always: bool = False
-    parts: tuple[str, ...] = ()
+    parts: tuple["str | titles.Part", ...] = ()
     scans: bool = False
+    total: Callable[[], int] | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,15 @@ def _listing(rows: str, values: Sequence[str], held: dict[str, int]) -> _Listing
     return _Listing(" UNION ".join(f"SELECT key FROM ({one})" for one in parts), total, True, parts=parts)
 
 
+def _credited(names) -> tuple[str, ...]:
+    """The facets of counts, the listings and the index a change of the
+    credits names keeps right (wpt_depot.counts): those of tags when the
+    tags change, the title index when the title does, and always the pins
+    older than their text's new revision."""
+    return (((counts.TAG, counts.LIBRARY_TAG, counts.SPLIT_TAG) if "tags" in names else ())
+            + ((counts.TITLE,) if "title" in names else ()) + (counts.NEWER,))
+
+
 def _window(listing: _Listing, compare: str | None, direction: str, size: int) -> tuple[str, int]:
     """(the SQL of at most size keys of the listing, the first in the order
     asked (direction: '' or ' DESC') whose key compares with one parameter
@@ -294,9 +308,15 @@ def _window(listing: _Listing, compare: str | None, direction: str, size: int) -
     order through its index, at most size rows of each, then merged, so the
     read is bounded by size for each part whatever the depot's size."""
     after = "" if compare is None else f"WHERE key {compare} ?"
-    reads = [f"SELECT key FROM ({one}) {after} ORDER BY key{direction} LIMIT {int(size)}"
-             for one in listing.parts or (listing.rows,)]
-    uses = 0 if compare is None else len(reads)
+    reads, uses = [], 0
+    for one in listing.parts or (listing.rows,):
+        if isinstance(one, titles.Part):  # its bound is a row number of the index, which it reads from
+            read, used = one.window(compare, direction, size)
+            reads.append(f"SELECT key FROM ({read})")
+            uses += used
+        else:
+            reads.append(f"SELECT key FROM ({one}) {after} ORDER BY key{direction} LIMIT {int(size)}")
+            uses += 0 if compare is None else 1
     if len(reads) == 1:
         return reads[0], uses
     merged = " UNION ".join(f"SELECT key FROM ({one})" for one in reads)
@@ -694,11 +714,46 @@ class Depot:
         if found.decision is not None:  # in key order through the index text_decisions_order
             options.append(_Listing(f"SELECT {ids.order_sql('text')} AS key FROM text_decisions WHERE decision = "
                                     f"{literal(found.decision)}", held[counts.DECISION].get(found.decision, 0), True))
-        listing = min((one for one in options if one is not None and (one.ordered or one.always
-                                                                      or one.texts <= SORTED)),
-                      key=lambda one: one.texts)
+        options = [one for one in options if one is not None and (one.ordered or one.always or one.texts <= SORTED)]
+        if found.search and not found.in_text:  # counted up to the smallest other listing it competes with
+            titled = self._titled(words(found.search), min((one.texts for one in options[1:]), default=SORTED))
+            options += [] if titled is None else [titled]
+        listing = min(options, key=lambda one: one.texts)
         status = (found.statuses[0] if len(set(found.statuses)) == 1 else None)
         return _Plan(self.condition(found, self.change()), listing, status, found.in_text)
+
+    def _titled(self, searched: list[str], rival: int) -> "_Listing | None":
+        """The listing of the texts a plain search's words may match in their
+        title or id (filters.condition): the texts the title index gives for
+        every word of titles.SHORTEST characters or more, each owner's in
+        the order of its index, and the text whose id is a word in the form
+        of an id, by its key; None when no word is that long. How many: up
+        to min(rival, SORTED) + 1 (rival: the texts of the smallest listing
+        it competes with, every text's aside, which holds them all), so a
+        page counts no further than the choice of a listing and whether
+        every order may sort them need, counted from the index, exactly
+        through total up to COUNT_STEP. Each count is a person's statement
+        (Database.person_rows), stopped at the deadline of the request."""
+        query = titles.match(searched)
+        if query is None:
+            return None
+        con = self.db.reader()
+        named = [one for one in dict.fromkeys(searched) if is_id(one)]
+        by_id = tuple(f"SELECT {ids.order_sql('id')} AS key FROM texts_revisions WHERE latest AND id = {literal(one)}"
+                      for one in named)
+        parts = (*titles.parts(con, query), *by_id)
+        if not parts:
+            return _Listing("SELECT NULL AS key WHERE 0", 0, True)
+        rows = " UNION ".join(f"SELECT key FROM ({getattr(one, 'rows', one)})" for one in parts)
+
+        def counted(sql: str, params: tuple) -> int:
+            return self.db.person_rows(sql, params)[0]["n"]
+
+        def total() -> int | None:  # with the texts named by id that the index does not give already
+            found = counted(*titles.count_sql(query, COUNT_STEP + 1))
+            return None if found > COUNT_STEP else found + counted(*titles.outside_sql(query, named))
+        return _Listing(rows, counted(*titles.count_sql(query, min(rival, SORTED) + 1)) + len(by_id), True,
+                        parts=parts, total=total)
 
     def _every(self, held: dict | None = None) -> "_Listing":
         """The listing of every current text, in the order of its index."""
@@ -780,7 +835,8 @@ class Depot:
         the depot holds, in one step. {texts: how many rows the slice holds;
         total: how many rows every step goes over (the listing's, or the
         texts named that the depot holds), with the first step only (start
-        None), None after it; statuses: how many of the matches are under
+        None), None after it, and None too for the texts of a search's
+        title index past COUNT_STEP; statuses: how many of the matches are under
         review, admitted, refused (the status the depot stores,
         wpt_depot.policy); locked: how many of them a locked library holds;
         tags and licenses: how many of them have each tag and name each
@@ -809,7 +865,8 @@ class Depot:
             slice_, uses = _window(listing, None if start is None else ">", "", size)
             params = (start,) * uses
             read = self.db.person_rows(f"SELECT count(*) AS n, max(key) AS last FROM ({slice_})", params)[0]
-            step = {"texts": read["n"], "total": listing.texts if start is None else None,
+            total = listing.total() if listing.total is not None else listing.texts
+            step = {"texts": read["n"], "total": total if start is None else None,
                     "next": read["last"] if read["n"] >= size else None}
         found = self.db.person_rows(
             f"WITH w AS MATERIALIZED ({slice_}), "
@@ -1220,7 +1277,7 @@ class Depot:
             counts.shift(con, counts.measure(con, "temp.chosen", (counts.TEXTS, counts.STATUS, counts.TAG,
                                                                   counts.LICENSE, counts.SPLIT_TEXTS,
                                                                   counts.SPLIT_TAG, counts.SPLIT_LICENSE)))
-            counts.enlist(con, "temp.chosen", counts.LISTINGS)
+            counts.enlist(con, "temp.chosen", counts.LISTED)
             return added
 
     def blocked(self, texts: Selection, status: str = ADMITTED, after: Sequence | None = None,
@@ -1517,9 +1574,7 @@ class Depot:
                                for name, value in values.items())
             decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
             self._choose(con, [text])
-            with counts.changing(con, "temp.chosen", ((counts.TAG, counts.LIBRARY_TAG, counts.SPLIT_TAG)
-                                                      if "tags" in values else ())
-                                 + (counts.NEWER,)):
+            with counts.changing(con, "temp.chosen", _credited(values)):
                 self._revise(con, "texts_revisions", [text], number, {name: f":{name}" for name in values},
                              {name: _json(value) if name in JSON_COLUMNS else value for name, value in values.items()})
             self._link(con, decision, number)
@@ -1564,8 +1619,7 @@ class Depot:
                 decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
                 con.execute("CREATE TEMP TABLE credited_ids (id TEXT PRIMARY KEY)")
                 con.execute("INSERT INTO temp.credited_ids SELECT id FROM temp.credited")
-                facets = (counts.TAG, counts.LIBRARY_TAG) if "tags" in names else ()
-                with counts.changing(con, "temp.credited_ids", facets):
+                with counts.changing(con, "temp.credited_ids", _credited(names)):
                     self._revise(con, "texts_revisions", "SELECT id FROM temp.credited_ids", number,
                                  {name: f"s.{name}" for name in CREDITS},
                                  joined="JOIN temp.credited s ON s.id = t.id")
@@ -2056,7 +2110,7 @@ class Depot:
                 self._choose(con, removed)
                 gone = counts.measure(con, "temp.chosen", counts.FACETS)
                 counts.shift(con, {key: -count for key, count in gone.items()})
-                counts.unlist(con, "temp.chosen", counts.LISTINGS)
+                counts.unlist(con, "temp.chosen", counts.LISTED)
             _remove_texts(con, removed)
         return named
 

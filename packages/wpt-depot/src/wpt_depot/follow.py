@@ -587,7 +587,7 @@ class _Tracked:
         con.execute(f"INSERT OR IGNORE INTO temp.fresh (id) SELECT x.id FROM ({query}) x "
                     "WHERE x.id NOT IN (SELECT id FROM temp.followed)", params)
         self.before.update(counts.measure(con, "temp.fresh", counts.FACETS))
-        counts.unlist(con, "temp.fresh", counts.LISTINGS)
+        counts.unlist(con, "temp.fresh", counts.LISTED)
         con.execute("INSERT INTO temp.followed SELECT id FROM temp.fresh")
 
     def settle(self, depot: Depot, number: int):
@@ -604,7 +604,7 @@ class _Tracked:
         after = counts.measure(con, "temp.followed", counts.FACETS)
         after.subtract(self.before)
         counts.shift(con, after)
-        counts.enlist(con, "temp.followed", counts.LISTINGS)
+        counts.enlist(con, "temp.followed", counts.LISTED)
 
 
 def _highest(con) -> int:

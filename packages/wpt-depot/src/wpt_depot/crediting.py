@@ -20,7 +20,9 @@ id), which the new revisions read.
 One change names at most MOST texts: one write holds the depot's lock for
 the time it takes, about three times a decision on that many texts (half
 of it writing the new revisions), so a larger change is sent as several,
-each its own decision.
+each its own decision. A change of titles takes about a third longer, as
+the title index takes the old titles out and puts the new ones in
+(wpt_depot.titles).
 """
 
 import json

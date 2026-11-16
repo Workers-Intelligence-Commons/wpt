@@ -8,7 +8,7 @@ import pyarrow as pa
 import pytest
 from deltalake import write_deltalake
 
-from wpt_depot import About, Declaration, Depot, follow, format3, kinds
+from wpt_depot import About, Declaration, Depot, follow, format3, kinds, titles
 from wpt_depot.legacy import STEPS, Legacy
 
 ME = Declaration("Ada Lovelace", "ada@example.org", True)
@@ -54,6 +54,27 @@ def library_figures():
                 direct[key] = (texts + 1, characters + length, held + size)
         return stored, direct
     return figures
+
+
+def read_title_index(depot: Depot) -> dict:
+    """What the depot's title index holds, as far as it can be read: {terms: each trigram it holds with how many
+    texts it gives for it, unfound: the current texts with a title the index does not give for every trigram of
+    their title}; a recount makes the terms again from the texts, so a write kept the index exact when they stay
+    equal and unfound stays empty."""
+    con = depot.db.reader()
+    con.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS temp.title_terms USING fts5vocab(main, {titles.TABLE}, row)")
+    terms = con.execute("SELECT term, doc FROM temp.title_terms ORDER BY term").fetchall()
+    unfound = [text for text, title in con.execute("SELECT id, title FROM texts_revisions WHERE latest AND title "
+                                                   "IS NOT NULL AND length(title) >= 3 ORDER BY id")
+               if not con.execute(f"SELECT 1 FROM (SELECT ? AS id) x, {titles.TABLE} WHERE {titles.TABLE} MATCH ? "
+                                  f"AND rowid = {titles.row_sql('x.id')}", (text, titles.match([title]))).fetchall()]
+    return {"terms": terms, "unfound": unfound}
+
+
+@pytest.fixture
+def title_index():
+    """title_index(depot): read_title_index."""
+    return read_title_index
 
 
 @pytest.fixture

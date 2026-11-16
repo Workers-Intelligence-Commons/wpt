@@ -18,8 +18,8 @@ right before or after it (a plain search's whole words,
 wpt_depot.filters), else 0. A person's SQL (the query of `wpt depot sql`, a condition
 selecting texts) runs on a connection of its own that opens the file
 read-only and whose authorizer lets a statement only read (READS): a
-statement that writes, attaches another database, runs a pragma or loads an
-extension is refused, and a query is one statement (one_statement). Its
+statement that writes, attaches another database, runs a pragma (but
+reading data_version, READ_PRAGMAS) or loads an extension is refused, and a query is one statement (one_statement). Its
 time is bounded when `deadline` is set (a time.monotonic() value): past it,
 the statement is interrupted.
 
@@ -98,6 +98,9 @@ STEPS = 10_000  # SQLite steps between two checks of a person's statement's time
 # what a person's statement may do: read rows, call functions, recurse in a common table expression
 READS = {apsw.SQLITE_SELECT, apsw.SQLITE_READ, apsw.SQLITE_FUNCTION, apsw.SQLITE_RECURSIVE}
 REFUSED_FUNCTIONS = {"load_extension"}
+# the pragmas a person's statement may read, with no value: data_version, which the title index (an FTS5 table,
+# wpt_depot.titles) reads to know whether the file changed since it last read it
+READ_PRAGMAS = {"data_version"}
 _NAME = re.compile(r"(\d+)-(\d+)-(\d{8}T\d{6}\.\d{6}Z)")
 
 
@@ -523,4 +526,6 @@ def _too_big(text, version, size):
 def _authorize(action, first, second, database, trigger):
     if action == apsw.SQLITE_FUNCTION and (second or "").lower() in REFUSED_FUNCTIONS:
         return apsw.SQLITE_DENY
+    if action == apsw.SQLITE_PRAGMA and (first or "").lower() in READ_PRAGMAS and second is None:
+        return apsw.SQLITE_OK
     return apsw.SQLITE_OK if action in READS else apsw.SQLITE_DENY

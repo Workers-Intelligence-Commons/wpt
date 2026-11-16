@@ -6,16 +6,18 @@ library holds by kind and by tag in characters and bytes, kept in the table
 counts (wpt_depot.schema) so that a page reads them at once whatever the
 depot's size; and the listings of the current texts of each tag and of each
 license (LISTINGS: the tables text_tags and text_licenses), from which a page
-reads the texts of one of them in the numeric order of ids.
+reads the texts of one of them in the numeric order of ids, and the index of
+their titles (TITLE, wpt_depot.titles), which a plain search reads.
 
-This module is the only code that writes those tables. Each write of the
-depot keeps them right in its own transaction: it measures what the texts it
-changes add to the counts before and after it changes them (changing), or
-what the memberships it adds or ends add (held), and shifts the counts by
-the difference (shift); changing also takes the texts out of the listings
-before the change (unlist) and puts them back as they are after it
-(enlist). recount makes the table again from the depot's
-rows, which `wpt depot recount` runs to repair it and a clone runs once it
+This module is the only code that writes those tables, and the index through
+wpt_depot.titles. Each write of the depot keeps them right in its own
+transaction: it measures what the texts it changes add to the counts before
+and after it changes them (changing), or what the memberships it adds or
+ends add (held), and shifts the counts by the difference (shift); changing
+also takes the texts out of the listings before the change (unlist) and
+puts them back as they are after it (enlist), the title index too when
+TITLE is named among the facets. recount makes the table again from the
+depot's rows, which `wpt depot recount` runs to repair it and a clone runs once it
 has copied its upstream.
 
 A row is (facet, name, texts, characters, bytes): facet TEXTS with the name
@@ -64,6 +66,7 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 
+from . import titles
 from .filters import in_locked
 from .ids import order_sql
 from .order import TRAINING_KINDS
@@ -147,6 +150,10 @@ _WHOLE = {
 # the stored listings (LISTINGS): for each facet listed, its table, the column of the name and the column of the
 # current revision that lists the names (a JSON array)
 LISTINGS = {TAG: ("text_tags", "tag", "tags"), LICENSE: ("text_licenses", "license", "licenses")}
+# the index of the current texts' titles (wpt_depot.titles), named among the facets of changing, enlist and unlist like
+# a listing, with no count; LISTED: every listing and the index, what a write that adds or removes texts names
+TITLE = "title"
+LISTED = (*LISTINGS, TITLE)
 # the rows of a listing of the texts of a table of ids `{chosen}`, at their current revisions
 _LISTED = ("SELECT DISTINCT j.value, " + order_sql("t.id") + " FROM {chosen} c CROSS JOIN texts_revisions t "
            "ON t.id = c.id AND t.latest, json_each(t.{column}) j")
@@ -170,7 +177,7 @@ def measure(con, chosen: str, facets: Iterable[str]) -> Counter:
                 found[SPLIT_LIBRARY, split_name(status, locked, library)] += count
     locked = _locked(con, "t.id")
     for facet in facets:
-        if facet not in ROWS:
+        if facet in _MEASURES:
             _add(found, facet, con.execute(_MEASURES[facet].format(chosen=chosen, locked=locked)))
     return found
 
@@ -273,9 +280,11 @@ def changing(con, chosen: str, facets: Iterable[str]) -> Iterator[None]:
 def enlist(con, chosen: str, facets: Iterable[str]):
     """Add to the listings of the facets named among LISTINGS the rows of
     the texts whose ids the table chosen holds, at their current
-    revisions."""
+    revisions, and to the title index their titles when TITLE is named."""
     for facet in facets:
-        if facet in LISTINGS:
+        if facet == TITLE:
+            titles.enlist(con, chosen)
+        elif facet in LISTINGS:
             table, name, column = LISTINGS[facet]
             con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) "
                         + _LISTED.format(chosen=chosen, column=column))
@@ -284,9 +293,12 @@ def enlist(con, chosen: str, facets: Iterable[str]):
 def unlist(con, chosen: str, facets: Iterable[str]):
     """Take out of the listings of the facets named among LISTINGS the rows
     of the texts whose ids the table chosen holds, as their current
-    revisions list them: each row read by its key."""
+    revisions list them: each row read by its key; and out of the title
+    index their titles when TITLE is named."""
     for facet in facets:
-        if facet in LISTINGS:
+        if facet == TITLE:
+            titles.unlist(con, chosen)
+        elif facet in LISTINGS:
             table, name, column = LISTINGS[facet]
             con.execute(f"DELETE FROM {table} WHERE ({name}, key) IN ("
                         + _LISTED.format(chosen=chosen, column=column) + ")")
@@ -296,7 +308,7 @@ def recount(con, known: bool):
     """The counts made again from the depot's rows, every one of them (fill
     makes those of SIZED and library_moves; known: whether the depot's rows
     carry its own numbering alone, False in a depot that follows an
-    upstream)."""
+    upstream), with the listings and the title index."""
     con.execute("DELETE FROM counts")
     locked = _locked(con, "t.id")
     for facet in (*COUNTED, *SPLIT):
@@ -307,6 +319,7 @@ def recount(con, known: bool):
         con.execute(f"DELETE FROM {table}")
         con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) SELECT j.value, {order_sql('t.id')} "
                     f"FROM texts_revisions t, json_each(t.{column}) j WHERE t.latest")
+    titles.refill(con)
     fill(con, known)
 
 

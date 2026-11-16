@@ -117,12 +117,9 @@ function Erasures({ query }: { query: URLSearchParams }) {
   );
 }
 
-// SQL text of a string, for a condition over the texts table.
-const quoted = (value: string) => `'${value.replace(/'/g, "''")}'`;
-
-// The first step of a request asked from this page: the text, found by a
-// part of its title or id, or named by its exact id; then the form that
-// asks, on that text.
+// The first step of a request asked from this page: the text, found by
+// words of its title or by its exact id, as the workspace's search finds
+// it; then the form that asks, on that text.
 function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
   const [words, setWords] = useState("");
   const [found, setFound] = useState<Answer<{ rows: Row[]; next: unknown }> | null>(null);
@@ -132,8 +129,7 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
     if (!typed) { setFound(null); return; }
     let live = true;
     const wait = window.setTimeout(() => {
-      const where = `contains(lower(coalesce(title, '')), lower(${quoted(typed)})) OR contains(id, ${quoted(typed)})`;
-      search({ ...EVERY, where }, {}, 8).then((a) => live && setFound(a));
+      search({ ...EVERY, search: typed }, {}, 8).then((a) => live && setFound(a));
     }, 250);
     return () => { live = false; window.clearTimeout(wait); };
   }, [words]);
@@ -157,7 +153,7 @@ function AskErasure({ onDone }: { onDone: (words: ReactNode) => void }) {
     <div className="action-form form-narrow">
       <RequiredNote />
       <div className="entry-row">
-        <TextInput label={required("Text: a part of its title or id")} hint={<>Matching texts are listed as you type; Enter, or "Open this id", opens the text with exactly this id.</>} required value={words} onChange={(e) => setWords(e.target.value)}
+        <TextInput label={required("Text: words of its title, or its id")} hint={<>Matching texts are listed as you type; Enter, or "Open this id", opens the text with exactly this id.</>} required value={words} onChange={(e) => setWords(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && typed) open(typed); }} />
         <Button variant="quiet" disabled={!typed} onClick={() => open(typed)}>Open this id</Button>
       </div>
