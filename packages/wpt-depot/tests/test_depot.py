@@ -1958,6 +1958,13 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         lambda: depot.relicense([texts[4]], ["CC0-1.0", "MIT"], me),
         lambda: depot.change_content(texts[5], "text 5, changed again", None, me),
         lambda: depot.edit_scores([{"id": texts[5], "remove": ["length"]}], me),
+        # many texts' content at once: a text of the open library, one the locked fork pins, one at another content
+        # version, and one whose content is that already
+        lambda: depot.put(library, [texts[6]]),
+        lambda: depot.change_content_many([{"id": texts[6], "text": "text 6, from its source"},
+                                           {"id": texts[0], "text": "text 0, from its source", "was": 1},
+                                           {"id": texts[5], "text": "text 5, from its source"},
+                                           {"id": texts[1], "text": "text 1"}], me),
         # many texts' credits at once: the tags of texts of the open library and of the locked fork, titles alone
         # (one given, one cleared), authors alone, and texts the locked fork pins
         lambda: depot.edit_credits_many([{"id": texts[2], "tags": ["e"]}, {"id": texts[4], "tags": ["a", "e"]},

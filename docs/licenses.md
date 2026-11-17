@@ -753,6 +753,10 @@ public, and is not verified; the form says so before anyone confirms.
   declaration and a reason the depot writes itself, `content changed from
   version OLD to version NEW`. A content that changes nothing writes
   nothing.
+- `wpt depot content-file FILE` changes the plain texts of many texts the
+  same way, as one decision under review for each pair of old and new
+  content versions, with that same reason, on the texts it moves. It
+  starts each one's decisions over, as a change of one text's content does.
 - `wpt depot credits ID` (or "Edit credits" beside a text in the workspace) changes a
   text's credits as a new revision of it: its title, authors, tags,
   address or notice. A locked library goes on reading the revision it

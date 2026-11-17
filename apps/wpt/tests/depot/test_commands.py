@@ -457,6 +457,81 @@ def test_the_credits_file_command_reads_one_text_per_line_and_records_one_decisi
     assert depot_command("credits-file", str(tmp_path / "missing.jsonl"), *ME) == 2
 
 
+def test_the_content_file_command_changes_only_the_content_of_the_texts_it_names_and_starts_each_over(
+        depot, tmp_path, capsys):
+    opened = Depot.open(depot)
+    changed, same, stale, guarded, untouched = opened.add(
+        [NewText(text=f"text {n}", licenses=("CC0-1.0",), title=f"Title {n}", authors=("Ann Lee",), tags=("en",),
+                 notice="(c) Ann") for n in range(5)], _declaration())
+    opened.decide("admitted", "true", _declaration())
+    library = opened.new_library("open")
+    opened.put(library, "true")
+    before = {one: opened.show(one) for one in (changed, same, stale, guarded, untouched)}
+    lines = [{"id": changed, "text": "text 0, as its source publishes it"},
+             {"id": same, "text": "text 1"},
+             {"id": stale, "text": "text 2, from an older reading", "was": 2},
+             {"id": guarded, "text": "text 3, as its source publishes it", "was": 1}]
+    (tmp_path / "content.jsonl").write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+    capsys.readouterr()
+
+    assert depot_command("content-file", str(tmp_path / "content.jsonl"), *ME) == 0
+
+    decision = "test-depot-3"
+    assert [bare(line) for line in capsys.readouterr().out.splitlines()] == [
+        f"decision {decision}: under review, content changed from version 1 to version 2, on 2 texts",
+        f"2 texts changed, under review again and out of every open library; 1 left out, their content this "
+        f"already; 1 left out, their content version no longer the one their line's was names (the first: {stale})"]
+    now = Depot.open(depot)
+    for text, words in ((changed, "text 0, as its source publishes it"), (guarded, "text 3, as its source publishes it")):
+        shown = now.show(text)
+        assert (shown["text"]["text"], shown["content_versions"], shown["status"], shown["text"]["libraries"]) == (
+            words, 2, "under review", [])
+        assert (shown["decisions"][-1]["id"], shown["decisions"][-1]["reason"]) == (
+            decision, "content changed from version 1 to version 2")
+        kept = ("title", "authors", "tags", "licenses", "address", "scores")
+        assert {name: shown["text"][name] for name in kept} == {name: before[text]["text"][name] for name in kept}
+        assert shown["notice"] == before[text]["notice"]
+    for text in (same, stale, untouched):
+        assert now.show(text) == before[text]
+    counted = now.counts()
+    now.recount()
+    assert now.counts() == counted
+    assert counted["status"] == {"admitted": 3, "under review": 2} and counted["library"] == {library: 3}
+    assert depot_command("content-file", str(tmp_path / "content.jsonl"), *ME) == 2  # nothing changes now
+
+
+def test_the_content_file_command_refuses_a_change_too_large_an_item_and_an_erased_passage_brought_back(
+        depot, tmp_path, monkeypatch):
+    opened = Depot.open(depot)
+    secret = "TOKEN = 'abc123'"
+    first, second = opened.add([NewText(text=f"a = 1\n{secret}\n", licenses=("CC0-1.0",)),
+                                NewText(text="b = 2\n", licenses=("CC0-1.0",))], _declaration())
+    (tmp_path / "probe.json").write_text(json.dumps(PROBE), encoding="utf-8")
+    assert depot_command("add", str(tmp_path / "probe.json"), "--kind", "probe", "--license", "CC0-1.0", *ME) == 0
+    item = "test-depot-4"
+    request = opened.ask_erasure("a secret", [(first, 6, 6 + len(secret))], _declaration())
+    opened.decide_erasure(request, "admitted", _declaration())
+    change = Depot.open(depot).change()
+    path = tmp_path / "content.jsonl"
+
+    def refused(lines) -> bool:
+        path.write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+        return depot_command("content-file", str(path), *ME) == 2
+
+    monkeypatch.setattr("wpt_depot.rewriting.MOST", 2)
+    assert refused([{"id": first, "text": "x"}, {"id": second, "text": "y"}, {"id": item, "text": "z"}])
+    assert refused([{"id": second, "text": "y"}, {"id": item, "text": "z"}])
+    assert refused([{"id": second, "text": "y"}, {"id": first, "text": f"a = 2\n{secret}\n"}])
+    assert refused([{"id": second, "text": "y"}, {"id": second, "text": "z"}])
+    assert refused([{"id": second, "text": "y", "licenses": ["MIT"]}])
+    assert refused([{"id": second, "text": "y"}, {"id": "test-depot-99", "text": "z"}])
+    assert depot_command("content-file", str(tmp_path / "missing.jsonl"), *ME) == 2
+    with pytest.raises(SystemExit):  # the decider's declaration is required
+        depot_command("content-file", str(path))
+    assert Depot.open(depot).change() == change
+    assert refused([]) and not refused([{"id": second, "text": "y"}, {"id": first, "text": "a = 2\n"}])
+
+
 def test_the_scores_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path, capsys):
     opened = Depot.open(depot)
     first, second = opened.add([NewText(text="one", licenses=("CC0-1.0",)), NewText(text="two", licenses=("CC0-1.0",))],

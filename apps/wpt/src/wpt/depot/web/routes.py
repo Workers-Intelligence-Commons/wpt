@@ -26,7 +26,7 @@ import itertools
 import json
 from functools import wraps
 
-from wpt_depot import Declaration, Depot, NewText, counts as facets, crediting, errors, follow
+from wpt_depot import Declaration, Depot, NewText, counts as facets, crediting, errors, follow, rewriting
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED,
                              NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW)
@@ -321,6 +321,14 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                        declared(body))
         decision, version = changed if changed is not None else (None, None)
         return 200, {"decision": decision, "version": version}
+
+    @refusals
+    def content_many(values, body):
+        done = depot.change_content_many(body["texts"], declared(body))
+        return 200, {"decisions": [{"decision": decision, "reason": reason, "texts": texts}
+                                   for decision, reason, texts in done.decisions],
+                     "changed": done.changed, "unchanged": done.unchanged, "stale": done.stale,
+                     "stale_ids": done.stale_ids}
 
     @refusals
     def search(values, body):
@@ -755,6 +763,29 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                     "oneOf": [{"required": ["text"]}, {"required": ["content"]}],
                     "properties": {"text": {"type": "string"}, "content": {}, "declaration": DECLARATION}},
               answer={"type": "object", "required": ["decision", "version"]}),
+        Route("POST", "/api/texts/content", content_many, "change the content of many plain texts at once, each "
+              "as POST /api/texts/{id}/content changes one (wpt depot content-file): for each text named once, its "
+              "new plain text, and under was the content version its writer read, the text changing only while "
+              "that is still its current one; the depot records one decision under review for each pair of old and "
+              "new content versions, on the texts it moves, whose reason names them, the decisions before it no "
+              "longer count, and the texts leave every open library; a locked library keeps the content of the "
+              "revision it pinned; a text whose content is that already, or whose was no longer holds, is left "
+              "out, and the change is refused when every text is, when it names an item or more than "
+              f"{rewriting.MOST:,} texts, or when a new text holds a passage an erasure removed from it: each "
+              "decision with its reason and how many texts it is on, how many texts changed, how many were left "
+              "out unchanged, how many because their was no longer holds, and the first of those",
+              body={"type": "object", "required": ["texts", "declaration"],
+                    "properties": {"texts": {"type": "array", "minItems": 1, "maxItems": rewriting.MOST, "items": {
+                        "type": "object", "required": ["id", "text"], "additionalProperties": False,
+                        "properties": {"id": TEXT, "text": {"type": "string"},
+                                       "was": {"type": "integer", "minimum": 1}}}},
+                                   "declaration": DECLARATION}},
+              answer={"type": "object", "required": ["decisions", "changed", "unchanged", "stale", "stale_ids"],
+                      "properties": {"decisions": {"type": "array", "items": {
+                          "type": "object", "required": ["decision", "reason", "texts"],
+                          "properties": {"decision": TEXT, "reason": TEXT, "texts": {"type": "integer"}}}},
+                          "changed": {"type": "integer"}, "unchanged": {"type": "integer"},
+                          "stale": {"type": "integer"}, "stale_ids": {"type": "array", "items": TEXT}}}),
         Route("POST", "/api/texts/search", search, "the texts a filter matches, a page at a time, with no count "
               "(POST /api/texts/counts counts them): the SQL condition over the texts table the filter stands for, "
               "the page of at most limit rows in the order asked (then by id, in the numeric order of ids; "

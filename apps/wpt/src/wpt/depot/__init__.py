@@ -77,6 +77,21 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           under review again and leaves every open library, to be put back
                                           after its admission; a locked library keeps the content of the
                                           revision it pinned; a content that changes nothing writes nothing
+    wpt depot content-file FILE DECLARATION
+                                          change the content of many plain texts at once, each as wpt
+                                          depot content changes one: FILE (UTF-8) holds one JSON object per
+                                          line, one line per text, {"id": ID, "text": T, "was": V}: T its
+                                          new plain text, V (optional) the content version the line was
+                                          written from, the text changing only while that is still its
+                                          current one; at most 350,000 lines; the depot records one decision
+                                          under review with the reason 'content changed from version OLD to
+                                          version NEW' for each pair of versions, on the texts it moves; the
+                                          decisions before it no longer count, so each text is under review
+                                          again and leaves every open library; a locked library keeps the
+                                          content of the revision it pinned; a text whose content is that
+                                          already, or whose was no longer holds, is left out; an item is
+                                          refused; prints each decision and how many texts changed and were
+                                          left out
     wpt depot credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE]
                 [--clear CREDIT ...] DECLARATION
                                           change the credits of the text ID as a new revision, its id kept:
@@ -351,6 +366,19 @@ def cmd_content(args):
     decision, version = changed
     say(f"decision {decision}: under review, content version {version}; the text left every open library, to be put "
         "back once it is admitted")
+    return 0
+
+
+def cmd_content_file(args):
+    if not Path(args.file).is_file():
+        raise FileNotFoundError(f"no file {args.file}")
+    done = opened().change_content_many(Path(args.file), _declaration(args))
+    for decision, reason, texts in done.decisions:
+        say(f"decision {decision}: under review, {reason}, on {texts:,} texts")
+    say(f"{done.changed:,} texts changed, under review again and out of every open library"
+        + (f"; {done.unchanged:,} left out, their content this already" if done.unchanged else "")
+        + (f"; {done.stale:,} left out, their content version no longer the one their line's was names (the "
+           f"first: {', '.join(done.stale_ids)})" if done.stale else ""))
     return 0
 
 
@@ -717,6 +745,14 @@ def parser() -> argparse.ArgumentParser:
     contenting.add_argument("file", help="the new plain text (UTF-8), or for an item its new JSON")
     _declares(contenting)
     contenting.set_defaults(run=cmd_content)
+
+    contenting_file = commands.add_parser("content-file", help="change the content of many plain texts as new "
+                                                               "content versions; their decisions start over")
+    contenting_file.add_argument("file", help="one JSON object per line: {\"id\": ID, \"text\": T, \"was\": V}, T "
+                                              "the new plain text, V (optional) the content version the line was "
+                                              "written from; at most 350,000 lines")
+    _declares(contenting_file)
+    contenting_file.set_defaults(run=cmd_content_file)
 
     crediting = commands.add_parser("credits", help="change a text's credits as a new revision, recorded as a "
                                                     "decision under review")

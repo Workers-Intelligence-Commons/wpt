@@ -584,6 +584,44 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_libr
     assert request("POST", "/api/libraries/test-depot-1/pins", {}) == (200, {"total": 1, "newer": 1, "next": None, "rows": [
         {"id": "test-depot-3", "title": None, "revision": 1, "current": 2, "status": "admitted"}]})
 
+def test_the_content_of_many_texts_changes_from_the_route_as_from_the_command(web, tmp_path, monkeypatch):
+    request, depot = web
+    other = Depot.new(str(tmp_path / "other.sqlite"), About("test-depot", "Ada Lovelace", "ada@example.org"))
+    other.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
+    me = Declaration(ME["name"], ME["email"], True)
+    for one in (depot, other):
+        one.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), title=f"Title {n}", tags=("en",)) for n in range(4)]
+                + [NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",))], me)
+        one.decide("admitted", "true", me)
+        one.put(one.new_library("open"), "true")
+    lines = [{"id": "test-depot-1", "text": "text 0, as its source publishes it"},
+             {"id": "test-depot-2", "text": "text 1"},
+             {"id": "test-depot-3", "text": "text 2, as its source publishes it", "was": 3}]
+
+    assert request("POST", "/api/texts/content", {"texts": lines + [{"id": "test-depot-5", "text": "x"}],
+                                                  "declaration": ME})[0] == 422  # an item
+    assert request("POST", "/api/texts/content", {"texts": [{"id": "test-depot-9", "text": "x"}],
+                                                  "declaration": ME})[0] == 404
+    assert request("POST", "/api/texts/content", {"texts": [{"id": "test-depot-1", "text": "x", "was": 0}],
+                                                  "declaration": ME})[0] == 400
+    assert request("POST", "/api/texts/content", {"texts": [{"id": "test-depot-1", "text": "x"}]})[0] == 400
+    assert request("POST", "/api/texts/content", {"texts": lines, "declaration": ME}) == (200, {
+        "decisions": [{"decision": "test-depot-3", "reason": "content changed from version 1 to version 2",
+                       "texts": 1}],
+        "changed": 1, "unchanged": 1, "stale": 1, "stale_ids": ["test-depot-3"]})
+    (tmp_path / "content.jsonl").write_text("".join(json.dumps(one) + "\n" for one in lines), encoding="utf-8")
+    monkeypatch.setenv("WPT_DEPOT", other.address)
+    assert main(["content-file", str(tmp_path / "content.jsonl"), "--name", ME["name"], "--email", ME["email"],
+                 "--accept"]) == 0
+
+    def state(one):
+        return (one.sql("SELECT id, revision, content_version, status, title, tags, licenses, libraries, text "
+                        "FROM texts ORDER BY id"),
+                one.sql("SELECT id, status, reason FROM decisions ORDER BY id"),
+                one.sql("SELECT text, decision FROM text_decisions ORDER BY text, decision"), one.counts())
+    assert state(other) == state(depot)
+
+
 def test_a_content_change_from_the_page_of_a_text_takes_a_plain_text_or_an_item_s_content(web):
     request, depot = web
     request("POST", "/api/texts", {"text": "old words", "licenses": ["CC0-1.0"], "declaration": ME})

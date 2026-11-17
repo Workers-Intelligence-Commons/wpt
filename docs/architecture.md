@@ -630,6 +630,7 @@ refused change writes nothing.
 | a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A, R and U |
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
 | a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
+| a change of the plain texts of many texts | `content-file FILE` | `POST /api/texts/content` |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
 | a change of the credits of many texts | `credits-file FILE` | `POST /api/texts/credits` |
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores`; the "Scores" tab of the current text of the "Workspace" page |

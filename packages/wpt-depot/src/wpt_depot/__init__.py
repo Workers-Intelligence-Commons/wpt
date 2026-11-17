@@ -11,6 +11,7 @@ a dataset builds into the store (wpt_depot.corpus).
     filters.py   a filter of the texts, and the SQL condition it stands for
     scoring.py   a change of the scores of many texts, checked and made in SQL
     crediting.py a change of the credits of many texts, checked in SQL over a temporary table
+    rewriting.py a change of the plain texts of many texts, checked in SQL over a temporary table
     erasure.py   cutting erased passages, naming them by public hashes, and showing a request's places
     ids.py       the ids of rows: the depot's name, a hyphen and a number
     licenses.py  the allowed licenses, which admitting a text checks

@@ -62,7 +62,11 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   new versions; the decisions before it no longer count (wpt_depot.policy),
   so the text leaves every open library. A content that changes nothing
   writes nothing. A locked library keeps reading the content version of
-  the revision it pinned.
+  the revision it pinned. The plain texts of many texts change at once the
+  same way, each text as if changed alone, under one decision for each
+  pair of old and new versions; the change reads its lines a few at a time
+  into a temporary table and is checked by queries over it
+  (wpt_depot.rewriting).
 - A text's credits (title, authors, tags, address, notice) change as a new
   revision, its id kept: the change is recorded as a decision 'under
   review' made by the person's declaration, whose reason the depot writes,
@@ -175,7 +179,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import apsw
 
-from . import counts, crediting, erasure, ids, kinds, licenses, policy, scoring, titles
+from . import counts, crediting, erasure, ids, kinds, licenses, policy, rewriting, scoring, titles
 from .database import Database, person_columns
 from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
@@ -1499,12 +1503,12 @@ class Depot:
                 raise NotFound(f"no text {text}")
             self._refuse_upstream("texts", [text])
             row = found[0]
+            erased = self._erased_by_text().get(text, [])
             if row["kind"] is None:
                 if not isinstance(plain, (str, FileText)) or content is not None:
                     raise Refused("a plain text's new content is its text, with no item content")
-                if listed(plain).parts == [(one["hash"], one["length"]) for one in row["parts"]]:
+                if not _new_plain(text, plain, [(one["hash"], one["length"]) for one in row["parts"]], erased):
                     raise _Nothing(None)
-                strings = [plain if isinstance(plain, str) else plain.blocks()]
             else:
                 if not isinstance(content, str) or plain is not None:
                     raise Refused("an item's new content is its content as JSON text, with no plain text")
@@ -1512,9 +1516,7 @@ class Depot:
                 kinds.check_content(row["kind"], schema, content)
                 if _same_json(content, self.content(text, row["content_version"])):
                     raise _Nothing(None)
-                strings = erasure.strings_of(json.loads(content))
-            if erasure.holds_erased(strings, self._erased_from(text)):
-                raise Refused(f"the new content of {text} holds a passage an erasure removed from it")
+                _refuse_erased(text, erasure.strings_of(json.loads(content)), erased)
             version = self._one("SELECT max(version) FROM content_lists WHERE id = ?", (text,)) + 1
             decision = self._decision(con, number, UNDER_REVIEW, declaration,
                                       policy.content_change(row["content_version"], version), checked=False)
@@ -1527,6 +1529,80 @@ class Depot:
             self._leave(con, self._open_libraries(), number)
             self._link(con, decision, number)
             return decision, version
+
+    def change_content_many(self, changes: str | Path | list[dict], declaration: Declaration) -> rewriting.Rewritten:
+        """Change the content of many plain texts at once, each as
+        change_content changes one: a new content version and a new
+        revision, its id kept; the decisions before it no longer count, so
+        each text is under review again and leaves every open library (a
+        locked library keeps reading the content version of the revision it
+        pinned). changes is a JSON-lines file, or the lines as objects (a
+        web request's): one {id, text, was} per text, text its new plain
+        text, was (optional) the content version its writer read: the text
+        changes only while that is still its current one. The change is
+        recorded as one decision 'under review' made by declaration for
+        each pair of old and new content versions, on the texts that pair
+        moves, whose reason the depot writes as for one text
+        (policy.content_change). A text whose content is that already, or
+        whose was no longer holds, is left out. The lines go into a
+        temporary table a few at a time, every check is a query over it,
+        and the texts are read back and stored one at a time
+        (wpt_depot.rewriting), so the memory it takes is that of one text
+        whatever the number of texts. NotFound for a text the depot does
+        not hold; BelongsToUpstream for a text its upstream owns; Refused
+        for changes that are not JSON lines of that shape, more than
+        rewriting.MOST lines, a text named twice, an item, a new content
+        that holds a passage an erasure removed from its text, or when no
+        text would change."""
+        with self._write("content") as (con, number):
+            try:
+                rewriting.open_changes(con, changes)
+                total, theirs = rewriting.check(con, self.upstream_sql(), NAMED)
+                if total:
+                    self._refuse_upstream("texts", theirs, total=total)
+                erased = self._erased_by_text()
+                con.execute("CREATE TEMP TABLE rewritten (id TEXT PRIMARY KEY, old INTEGER NOT NULL, "
+                            "new INTEGER NOT NULL)")
+                unchanged = stale = 0
+                for text, plain, was, version, parts, last in rewriting.current(con):
+                    if was is not None and was != version:
+                        stale += 1
+                    elif not _new_plain(text, plain, parts, erased.get(text, [])):
+                        unchanged += 1
+                    else:
+                        self._store(con, number, [{"id": text, "version": last + 1, "kind": None, "source": plain}])
+                        con.execute("INSERT INTO temp.rewritten VALUES (?, ?, ?)", (text, version, last + 1))
+                stale_ids = [one for (one,) in con.execute(
+                    "SELECT c.id FROM temp.content_changes c JOIN temp.content_now n ON n.id = c.id "
+                    f"WHERE c.was IS NOT NULL AND c.was != n.version ORDER BY {ids.order_sql('c.id')} LIMIT {NAMED}")]
+                pairs = con.execute(f"SELECT old, new FROM temp.rewritten GROUP BY old, new "
+                                    f"ORDER BY min({ids.order_sql('id')})").fetchall()
+                if not pairs:
+                    raise Refused(f"no text named changes: {unchanged:,} have that content already, and {stale:,} "
+                                  "a content version other than the one their line's was names")
+                con.execute("CREATE TEMP TABLE rewritten_ids (id TEXT PRIMARY KEY)")
+                con.execute("INSERT INTO temp.rewritten_ids SELECT id FROM temp.rewritten")
+                con.execute("CREATE TEMP TABLE rewritten_group (id TEXT PRIMARY KEY)")
+                decisions = []
+                with counts.changing(con, "temp.rewritten_ids",
+                                     (counts.STATUS, *counts.SIZED, counts.NEWER, *counts.SPLIT)):
+                    for old, new in pairs:
+                        reason = policy.content_change(old, new)
+                        decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
+                        con.execute("DELETE FROM temp.rewritten_group")
+                        con.execute("INSERT INTO temp.rewritten_group SELECT id FROM temp.rewritten "
+                                    "WHERE old = ? AND new = ?", (old, new))
+                        self._revise(con, "texts_revisions", "SELECT id FROM temp.rewritten_group", number,
+                                     {"content_version": ":version", "status": f"'{UNDER_REVIEW}'"},
+                                     {"version": new})
+                        self._link(con, decision, number, "rewritten_group")
+                        decisions.append((decision, reason, con.execute(
+                            "SELECT count(*) FROM temp.rewritten_group").fetchall()[0][0]))
+                self._leave(con, self._open_libraries(), number, "rewritten_ids")
+                changed = sum(count for _, _, count in decisions)
+            finally:
+                rewriting.close(con)
+            return rewriting.Rewritten(decisions, changed, unchanged, stale, stale_ids)
 
     def edit_credits(self, text: str, changes: dict, declaration: Declaration) -> tuple[str, str]:
         """Change credits of a text as a new revision, its id kept: changes
@@ -2695,10 +2771,13 @@ class Depot:
     def _open_libraries(self) -> list[str]:
         return [one for (one,) in self.db.reader().execute("SELECT id FROM libraries WHERE locked_at IS NULL")]
 
-    def _erased_from(self, text: str) -> list[dict]:
-        """The erased entries of every carried-out request whose passage was in text."""
-        found = self._rows("SELECT needles, erased FROM erasures WHERE erased IS NOT NULL")
-        return [entry for row in found for entry in row["erased"] if row["needles"][entry["needle"]]["text"] == text]
+    def _erased_by_text(self) -> dict[str, list[dict]]:
+        """The erased entries of every carried-out request, by the text whose passage each was in."""
+        found = {}
+        for row in self._rows("SELECT needles, erased FROM erasures WHERE erased IS NOT NULL"):
+            for entry in row["erased"]:
+                found.setdefault(row["needles"][entry["needle"]]["text"], []).append(entry)
+        return found
 
     def condition(self, found: Filter, latest: int | None = None) -> str:
         """The SQL condition of a filter (filters.condition) for a page or a
@@ -3142,6 +3221,24 @@ def _before(reader: Reader, text: str, document: Parted, first: int) -> tuple[by
 def _needles(request: dict) -> list[Needle]:
     """The needles of a row of erasures."""
     return [Needle(one["text"], one["start"], one["end"], one["field"], one["version"]) for one in request["needles"]]
+
+
+def _new_plain(text: str, plain: Source, parts: list[tuple[bytes, int]], erased: list[dict]) -> bool:
+    """Whether plain is a new content for the plain text text, whose current
+    content version is made of parts ((hash, length) in order): False when
+    it is that content already. Refused when it holds a passage an erasure
+    removed from the text (erased: those erased entries, matched by their
+    public hash)."""
+    if listed(plain).parts == parts:
+        return False
+    _refuse_erased(text, [plain if isinstance(plain, str) else plain.blocks()], erased)
+    return True
+
+
+def _refuse_erased(text: str, strings: list, erased: list[dict]):
+    """Refused when one of the strings of a new content of text holds a passage an erasure removed from it."""
+    if erasure.holds_erased(strings, erased):
+        raise Refused(f"the new content of {text} holds a passage an erasure removed from it")
 
 
 def _same_json(one: str, other: str) -> bool:

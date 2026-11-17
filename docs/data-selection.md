@@ -74,6 +74,36 @@ again and leaves every open library, to be put back once it is admitted. A
 locked library keeps reading the content version of the revision it
 pinned. A content that changes nothing writes nothing.
 
+The plain texts of many texts change at once through `wpt depot
+content-file FILE`, or `POST /api/texts/content`
+([architecture.md](architecture.md), "Two interfaces"). FILE holds one
+JSON object per line, one line per text,
+
+    {"id": "my-depot-17", "text": "The text as its source publishes it.", "was": 1}
+
+with `text` the text's new plain text and `was`, optional, the content
+version the line was written from: the depot changes the text only while
+that is still its current content version, and otherwise leaves it out, so
+a file written from an earlier reading never undoes a change made since.
+Each text the change changes gets what a change of its content alone gives
+it: a new content version, a new revision that reads it, its decisions
+started over, so it is under review again and leaves every open library,
+and a locked library keeps reading the content version of the revision it
+pinned. Its credits, licenses, tags and scores stay as they are. The
+change is one decision under review for each pair of old and new content
+versions, on the texts it moves, with the person's declaration and the
+reason `content changed from version OLD to version NEW`. A text whose
+content is that already is left out, and the command and the route report
+each decision, how many texts changed, how many were left out because
+their content is that already, and how many because their `was` no longer
+holds, with the first of those. An item's content changes one item at a
+time, so a change that names an item is refused. One change names at most
+350,000 texts, and is refused whole, writing nothing, for the same reasons
+as a change of the credits of many texts below, and when a new text holds a
+passage an erasure removed from that text. The depot reads the lines a few
+at a time and stores each text in turn, so the program's memory is that of
+one text whatever the number of texts.
+
 Its credits, tags and notice change through `wpt depot credits ID` or
 "Edit credits" beside the text in the workspace. The change is a decision under
 review, with the person's declaration, whose reason the depot writes,
