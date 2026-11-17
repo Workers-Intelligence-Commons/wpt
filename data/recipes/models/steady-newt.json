@@ -1,0 +1,66 @@
+{
+  "data": {
+    "depot": "https://depot.workers-intelligence-commons.org",
+    "dataset": "wic-1",
+    "total_tokens": 1179648000
+  },
+  "model": {
+    "window_layers": 2,
+    "sparse_groups": 1,
+    "sparse_layers": 5,
+    "d_model": 128,
+    "attention_heads": 2,
+    "attention_head_dim": 128,
+    "n_experts": 32,
+    "top_k": 4,
+    "expert_width": 64,
+    "latent_width": 64,
+    "shared_width": 128,
+    "engram_layers": [
+      2
+    ],
+    "engram_order": 3,
+    "engram_heads": 8,
+    "engram_dim": 16,
+    "engram_table_size": 787,
+    "residual_groups": 22,
+    "loops": 0
+  },
+  "seed": 1337,
+  "steps": [
+    {
+      "step": "read-text",
+      "optimizer": {
+        "name": "by-part",
+        "settings": {
+          "lr": 0.001671,
+          "warmup": 40
+        }
+      },
+      "settings": {
+        "stages": [
+          {
+            "block_size": 32768,
+            "steps": 1000,
+            "batch_size": 8
+          }
+        ],
+        "prefix_tokens": 262144000,
+        "mtp_switch": 0.8
+      },
+      "locked": []
+    }
+  ],
+  "drafter": {
+    "prompts": 256,
+    "prompt_tokens": 64,
+    "answer_tokens": 256,
+    "epochs": 10,
+    "learning_rate": 0.0006,
+    "held_out": 0.1,
+    "anchors": 512,
+    "batch": 8,
+    "seed": 0
+  },
+  "note": "A laptop size of issue #114: it trains on one RTX 5080 Laptop GPU in about 60 minutes and shows whether a setting makes sense. 7.4M parameters without the vocabulary's two tables, 15.8M with them (width 128, 11 layers: two window layers on each side of an exact layer, then one exact layer and five sparse layers), the admitted mixture's 32,768-token vocabulary and 32K-token windows. It reads the first 262,144,000 tokens of a corpus of 1,179,648,000, the size patient-tortoise reads, so one corpus serves the three laptop sizes: 1,000 updates of 8 windows, a warm-up of 40. The time assumes 80,000 tokens/s (estimated from the 45,550 tokens/s measured for 21 layers of width 128, not measured); `wpt train --stop-after-minutes` measures it. Its shape, learning rate and batch follow eldest-titmouse's laws at this width, but its tokens are set by the time, far below what the laws ask. Its 11 layers are outside the series: a setting found on it is checked again at 21 layers before it is kept. Untested in a full run."
+}
