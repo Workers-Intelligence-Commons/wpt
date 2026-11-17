@@ -141,8 +141,14 @@ def train_drafter(model, documents, config: DrafterConfig, settings: Settings, *
 
 def _train(model, prompts, held, config, settings, stops, device, telemetry):
     sampling = torch.Generator(device=device).manual_seed(settings.seed)
+    telemetry.log(f"drafter: the model writes its answers to {len(prompts)} document beginnings, at most "
+                  f"{settings.answer_tokens} tokens each, for its drafter to learn from")
     with telemetry.span("drafter.answers", prompts=len(prompts)):
-        answers = [_answer(model, prompt, settings, stops, sampling) for prompt in prompts]
+        answers = []
+        for prompt in prompts:
+            answers.append(_answer(model, prompt, settings, stops, sampling))
+            if len(answers) % max(1, len(prompts) // 4) == 0 and len(answers) < len(prompts):
+                telemetry.log(f"drafter: {len(answers)} of {len(prompts)} answers written")
     training, held_out = answers[held:], answers[:held]
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(settings.seed)
@@ -158,6 +164,8 @@ def _train(model, prompts, held, config, settings, stops, device, telemetry):
     anchors = torch.Generator().manual_seed(settings.seed)
     order = random.Random(settings.seed)
     losses = []
+    telemetry.log(f"drafter: training, {settings.epochs} epochs of {updates // settings.epochs} updates on "
+                  f"{len(training)} answers")
     drafter.train()
     for epoch in range(1, settings.epochs + 1):
         chosen = list(range(len(training)))
@@ -183,6 +191,7 @@ def _train(model, prompts, held, config, settings, stops, device, telemetry):
                       "answers")
     drafter.eval()
 
+    telemetry.log(f"drafter: calibrating its confidence on {len(held_out)} held-out prompts")
     with telemetry.span("drafter.calibration"):
         outcomes, measure = _outcomes(model, drafter, [ids[:start] for ids, start in held_out], settings, stops,
                                       sampling)
