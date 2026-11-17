@@ -54,9 +54,10 @@ def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(
     data = recipes.model_recipe("tiny:small", vocabulary)["data"]
     assert data == recipes.model_recipe("tiny:large", vocabulary)["data"]
     assert data["total_tokens"] == 13 * 4 * 17  # the large size's prefix
-    train(["tiny:small", "--out", "model"])  # the corpus last built for the series' dataset
+    corpus = built.sized("d", data["total_tokens"])["id"]  # the dataset publishes its vocabulary, built at that size
+    train(["tiny:small", "--out", "model"])  # the corpus of the series' dataset, vocabulary and largest prefix
     provenance = json.loads((Path("model") / "provenance.json").read_text())
-    assert provenance["recipe_name"] == "tiny:small" and provenance["corpus"]["id"] == built.corpus_id
+    assert provenance["recipe_name"] == "tiny:small" and provenance["corpus"]["id"] == corpus
     assert provenance["recipe"] == recipes.model_recipe("tiny:small", vocabulary)
     [step] = provenance["recipe"]["steps"]
     assert step["settings"]["stages"] == [{"block_size": 16, "steps": 4, "batch_size": 4}]

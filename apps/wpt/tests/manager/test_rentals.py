@@ -84,7 +84,15 @@ Fake.cluster_of = {}
 
 
 @pytest.fixture
-def fake(built, on_the_cpu, tmp_path, monkeypatch, worker_port):
+def published(built, tmp_path) -> str:
+    """The id of the corpus wpt train finds for the recipe d: its dataset's, at the vocabulary the dataset now
+    publishes and the recipe's total_tokens."""
+    size = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())["data"]["total_tokens"]
+    return built.sized("d", size)["id"]
+
+
+@pytest.fixture
+def fake(built, published, on_the_cpu, tmp_path, monkeypatch, worker_port):
     Fake.calls, Fake.processes, Fake.lose, Fake.failures, Fake.cluster_of = [], {}, False, 0, {}
     Fake.port = worker_port
     monkeypatch.setattr(rental, "providers", lambda: {"fake": Fake})
@@ -598,7 +606,7 @@ def test_the_evaluation_on_rented_workers_names_the_triton_kernels_unless_the_se
     assert named == ["triton", "pytorch"]
 
 
-def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_txt_holds(built, tmp_path,
+def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_txt_holds(built, published, tmp_path,
                                                                                          monkeypatch, capsys):
     real = wpt.manager.run_command
     fail = [True]
@@ -632,8 +640,8 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     assert wpt.manager.previous_run(tmp_path, "not-d", built.store, None) == "other-20260101T000000Z"
 
 
-def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says_why(built, tmp_path, monkeypatch,
-                                                                                    capsys):
+def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says_why(built, published, tmp_path,
+                                                                                    monkeypatch, capsys):
     # restart: on-failure then restarts only a crash or a Docker restart
     monkeypatch.setenv("WPT_MANAGER_CONTAINER", "1")
     monkeypatch.delenv("WPT_RECIPE", raising=False)
@@ -701,8 +709,11 @@ def test_a_stop_saves_the_checkpoint_gives_the_machines_back_and_the_same_comman
     monkeypatch.setenv("WPT_GPU_WORKERS", "1")
     monkeypatch.setenv("WPT_RUN", "wanted")
 
-    def person():
+    def person():  # a run that never reaches update 3 fails the test below instead of keeping it waiting
+        deadline = time.monotonic() + 300
         while not update_3.exists():
+            if time.monotonic() > deadline:
+                return
             time.sleep(0.05)
         ask()
 
