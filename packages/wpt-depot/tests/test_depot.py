@@ -2659,3 +2659,33 @@ def test_change_times_gives_the_time_of_each_change_named_the_depot_holds(make_d
     times = depot.change_times([now, now + 100])
 
     assert list(times) == [now] and times[now] == depot.sql(f"SELECT made_at FROM changes WHERE id = {now}")[0]["made_at"]
+
+
+def test_a_content_change_of_many_texts_reads_only_the_texts_it_names(make_depot, me, monkeypatch):
+    # every read of the depot's tables goes from the change's own lines: no step scans the texts, their content
+    # lists or the memberships of the whole depot, as one that SQLite turned around would; on a depot of
+    # millions of texts each such scan reads the whole file for a change of a few
+    depot = make_depot()
+    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(40)], me)
+    depot.decide("admitted", "true", me)
+    depot.put(depot.new_library("all"), "true")
+    monkeypatch.setattr(depots.rewriting, "close", lambda con: None)  # its temporary tables kept to plan on
+    writer = depot.db._write_connection()
+    traced = []
+    writer.exec_trace = lambda cursor, sql, bindings: traced.append((sql, bindings)) or True
+
+    depot.change_content_many([{"id": texts[3], "text": "text 3, from its source"},
+                               {"id": texts[7], "text": "text 7, from its source"}], me)
+
+    writer.exec_trace = None
+    # the libraries and the erasures are few, whatever the number of texts: read whole, they cost nothing
+    tables = {row[0] for row in writer.execute("SELECT name FROM main.sqlite_master WHERE type IN ('table', 'index') "
+                                               "AND tbl_name NOT LIKE 'libraries%' AND tbl_name NOT LIKE 'erasures%'")}
+    scans = []
+    for sql, bindings in traced:
+        if not re.match(r"\s*(SELECT|INSERT|UPDATE|DELETE|WITH)", sql, re.I):
+            continue
+        for row in writer.execute(f"EXPLAIN QUERY PLAN {sql}", bindings or ()):
+            if row[3].startswith("SCAN") and set(re.findall(r"\w+", row[3])) & tables:
+                scans.append((row[3], sql))
+    assert not scans, "\n".join(f"{plan}   <- {sql[:150]}" for plan, sql in scans)

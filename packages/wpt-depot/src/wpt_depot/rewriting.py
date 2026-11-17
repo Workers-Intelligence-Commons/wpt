@@ -134,8 +134,10 @@ def check(con, upstream_sql: str, named: int) -> tuple[int, list[str]]:
                           "(SELECT 1 FROM texts_revisions t WHERE t.id = c.id AND t.latest)").fetchall()
     if missing[0][0]:
         raise NotFound(f"{missing[0][0]} of the texts named are no text of the depot (the first: {missing[0][1]})")
-    items = con.execute("SELECT count(*), min(c.id) FROM temp.content_changes c JOIN texts_revisions t "
-                        "ON t.id = c.id AND t.latest JOIN content_lists l ON l.id = t.id "
+    # every join here and in current() goes from the lines' side: a CROSS JOIN fixes that order, which
+    # SQLite would otherwise turn around and read the whole depot's texts for a few lines
+    items = con.execute("SELECT count(*), min(c.id) FROM temp.content_changes c CROSS JOIN texts_revisions t "
+                        "ON t.id = c.id AND t.latest CROSS JOIN content_lists l ON l.id = t.id "
                         "AND l.version = t.content_version WHERE l.kind IS NOT NULL").fetchall()
     if items[0][0]:
         raise Refused(f"a change of the content of many texts takes plain texts only, and {items[0][0]} of the "
@@ -158,8 +160,8 @@ def current(con) -> Iterator[tuple[str, str, int | None, int, list[tuple[bytes, 
                 "last INTEGER NOT NULL)")
     con.execute("INSERT INTO temp.content_now SELECT c.id, t.content_version, l.parts, "
                 "(SELECT max(v.version) FROM content_lists v WHERE v.id = c.id) FROM temp.content_changes c "
-                "JOIN texts_revisions t ON t.id = c.id AND t.latest "
-                "JOIN content_lists l ON l.id = t.id AND l.version = t.content_version")
+                "CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest "
+                "CROSS JOIN content_lists l ON l.id = t.id AND l.version = t.content_version")
     for text, new, was, version, parts, last in con.cursor().execute(
             "SELECT c.id, c.text, c.was, n.version, n.parts, n.last FROM temp.content_changes c "
             "JOIN temp.content_now n ON n.id = c.id"):
