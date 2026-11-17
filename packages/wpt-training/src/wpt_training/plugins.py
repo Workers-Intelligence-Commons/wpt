@@ -242,8 +242,12 @@ class TextMethod(Method):
         return next_sum / (B * window) + self.mtp_weight * ahead_sum / (B * (window - 1))
 
     def validation_loss(self, model, x, y):
-        """The next-token loss alone, which evaluations compare."""
-        return _cross_entropy(model(x), y)
+        """The next-token loss alone, which evaluations compare: the mean
+        cross-entropy of the next-token scores, summed by the model a chunk
+        of tokens at a time as in training, so that the scores of every
+        token of the windows are never held at once."""
+        next_sum, _ = model(x, next_tokens=y, targets=(y, y[:, 1:]))
+        return next_sum / y.numel()
 
 
 class Optimizer:

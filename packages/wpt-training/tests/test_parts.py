@@ -253,6 +253,16 @@ def test_a_window_in_segments_trains_as_the_whole_window(recompute, routing):
                               TextMethod().validation_loss(model, x, y), rtol=1e-5)
 
 
+def test_the_validation_loss_is_the_mean_cross_entropy_of_every_next_token_score():
+    # summed chunk by chunk, as training sums its loss, it is what the whole windows' scores give
+    model, x, y = model_and_window(256)
+    model.eval()
+    with torch.no_grad():
+        scores = model(x)
+        expected = F.cross_entropy(scores.reshape(-1, scores.size(-1)), y.reshape(-1))
+        assert torch.allclose(TextMethod().validation_loss(model, x, y), expected, rtol=1e-5)
+
+
 WORKER = '''
 import json, os, sys, torch
 sys.path.insert(0, sys.argv[2])
