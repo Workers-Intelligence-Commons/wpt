@@ -152,7 +152,6 @@ import hashlib
 import json
 import tempfile
 import urllib.error
-import urllib.request
 from collections.abc import Iterator
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -168,6 +167,7 @@ from wpt_store.shards import write_shard
 from wpt_tokenizer import END, Tokenizer, chat
 from wpt_utils.lines import say
 from wpt_utils.parallel import Sizing, in_order, process_pool
+from wpt_utils import web
 
 from . import corpora, counts
 from .depot import Depot, location
@@ -295,7 +295,7 @@ def remote_sample(url: str, dataset: str, sample_bytes: int) -> Iterator[tuple[s
     base = Upstream(url).url
     route = f"{base}/api/datasets/{quote(dataset, safe='')}/sample?{urlencode({'bytes': sample_bytes})}"
     try:
-        answer = urllib.request.urlopen(route, timeout=SAMPLE_TIMEOUT)
+        answer = web.urlopen(route, timeout=SAMPLE_TIMEOUT)
     except urllib.error.HTTPError as error:
         try:
             problems = "; ".join(json.loads(error.read())["problems"])

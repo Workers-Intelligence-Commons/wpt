@@ -20,7 +20,6 @@ record from the store.
 
 import json
 import urllib.error
-import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
@@ -28,6 +27,7 @@ from wpt_depot import Depot, corpora
 from wpt_depot.corpus import depot_name
 from wpt_depot.errors import DepotError, NotFound
 from wpt_depot.settings import depot_address, depot_url
+from wpt_utils import web
 from wpt_tokenizer import Tokenizer
 
 TIMEOUT = 100  # seconds a request to a depot's web app may take
@@ -120,7 +120,7 @@ class WebDepot:
 
     def _get(self, route: str) -> bytes:
         try:
-            with urllib.request.urlopen(f"{self.url}{route}", timeout=TIMEOUT) as answer:
+            with web.urlopen(f"{self.url}{route}", timeout=TIMEOUT) as answer:
                 return answer.read()
         except urllib.error.HTTPError as error:
             if error.code == 404:

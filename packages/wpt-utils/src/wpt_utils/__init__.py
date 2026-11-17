@@ -12,6 +12,7 @@
                          with their results in the items' order
     wpt_utils.lines      the form of every printed line: its time, its level,
                          its text
+    wpt_utils.web        every web request, under the program name wpt
 
 Import the submodule you need: this package itself imports nothing, so
 wpt_utils.programs works where PyTorch is not installed (wpt depot, wpt agent).

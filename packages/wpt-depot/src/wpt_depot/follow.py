@@ -66,9 +66,10 @@ earlier change still hold the text. Its locked libraries keep their pins.
 
 import json
 import urllib.error
-import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
+
+from wpt_utils import web
 
 from . import counts, ids, policy
 from .database import Database, now
@@ -278,10 +279,9 @@ class Upstream:
         self.url = url.rstrip("/")
 
     def _post(self, route: str, body: dict):
-        request = urllib.request.Request(f"{self.url}/api/follow/{route}", json.dumps(body).encode(),
-                                         {"Content-Type": "application/json"}, method="POST")
         try:
-            return urllib.request.urlopen(request, timeout=TIMEOUT)
+            return web.urlopen(f"{self.url}/api/follow/{route}", json.dumps(body).encode(),
+                              {"Content-Type": "application/json"}, method="POST", timeout=TIMEOUT)
         except urllib.error.HTTPError as error:
             try:
                 problems = "; ".join(json.loads(error.read())["problems"])
