@@ -110,6 +110,25 @@ def test_written_answers_never_reach_the_drafter_s_training(monkeypatch):
     assert drafter.provenance["acceptance"]["verified"] > 0
 
 
+def test_the_drafter_s_update_is_the_same_one_block_at_a_time(monkeypatch):
+    # chunks bound the memory of an update: they change neither its loss nor its gradients
+    target = model()
+    answers = [(ids[:20], 8) for ids in documents(3, 20)]
+
+    def update(chunk_scores):
+        monkeypatch.setattr(drafting, "CHUNK_SCORES", chunk_scores)
+        torch.manual_seed(1)
+        drafter = drafting.Drafter(CONFIG, DrafterConfig.for_model(CONFIG))
+        loss, parts = drafting._learn(target, drafter, answers, 5, torch.Generator().manual_seed(2), "cpu")
+        return loss, parts, [p.grad.clone() for p in drafter.parameters() if p.grad is not None]
+
+    whole, one = update(2 ** 40), update(1)
+    assert whole[0] == pytest.approx(one[0], rel=1e-5) and whole[1] == pytest.approx(one[1], rel=1e-5)
+    assert len(whole[2]) == len(one[2]) > 0
+    for a, b in zip(whole[2], one[2]):
+        assert torch.allclose(a, b, rtol=1e-4, atol=1e-6)
+
+
 def test_too_few_prompts_fail_the_drafter():
     # one document with text cannot be learned from and calibrated on apart
     with pytest.raises(DrafterFailed, match="at least 2 documents"):

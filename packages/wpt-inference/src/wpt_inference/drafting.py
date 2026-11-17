@@ -50,6 +50,8 @@ from wpt_model.drafter import Drafter, DrafterConfig, calibrate, temperature_gri
 
 from . import Writer
 
+CHUNK_SCORES = 2 ** 26  # the most scores (blocks x places x vocabulary) one pass of the drafter's loss holds
+
 
 class DrafterFailed(Exception):
     """The drafter could not be trained; the reason says why."""
@@ -172,20 +174,18 @@ def _train(model, prompts, held, config, settings, stops, device, telemetry):
         order.shuffle(chosen)
         totals = []
         for first in range(0, len(chosen), settings.batch):
-            blocks = [_blocks(model, drafter, *training[i], settings.anchors, anchors, device)
-                      for i in chosen[first:first + settings.batch]]
-            loss, parts = drafter.losses(model, *[torch.cat(part) for part in zip(*blocks)])
-            if not math.isfinite(loss.item()):
-                raise DrafterFailed(f"epoch {epoch}: the loss is {loss.item()}; lower the drafter's learning_rate")
+            batch = [training[i] for i in chosen[first:first + settings.batch]]
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            loss, parts = _learn(model, drafter, batch, settings.anchors, anchors, device)
+            if not math.isfinite(loss):
+                raise DrafterFailed(f"epoch {epoch}: the loss is {loss}; lower the drafter's learning_rate")
             torch.nn.utils.clip_grad_norm_(drafter.parameters(), settings.clip)
             optimizer.step()
             rate.step()
             drafter.after_update(lambda tensor, op: tensor)  # one process
-            totals.append(loss.item())
-            telemetry.event("drafter.update", values={"loss": loss.item(), **{k: v.item() for k, v in parts.items()}},
-                            epoch=epoch, update=len(totals), answers=len(blocks))
+            totals.append(loss)
+            telemetry.event("drafter.update", values={"loss": loss, **parts}, epoch=epoch, update=len(totals),
+                            answers=len(batch))
         losses.append(sum(totals) / len(totals))
         telemetry.log(f"drafter epoch {epoch}/{settings.epochs}: mean loss {losses[-1]:.4f} over {len(training)} "
                       "answers")
@@ -234,6 +234,27 @@ def _answer(model, prompt, settings, stops, generator):
 def _model_reads(model, drafter, ids, device):
     scores, features = model(torch.tensor([ids], device=device), features=drafter.features)
     return scores[0], features[0]
+
+
+def _learn(model, drafter, answers, most, generator, device):
+    """The backward pass of Drafter.losses over every block of the answers
+    ((ids, start) each), as one pass over all of them would give it, made an
+    answer at a time and, within one, CHUNK_SCORES scores at a time: each
+    chunk's loss weighs its share of the blocks, since the loss averages
+    over blocks. Returns (the loss, {its parts}), as floats."""
+    total = sum(min(most, len(ids) - start) for ids, start in answers)
+    chunk = max(1, CHUNK_SCORES // (drafter.block * model.config.vocab_size))
+    loss, parts = 0.0, {}
+    for ids, start in answers:
+        blocks = _blocks(model, drafter, ids, start, most, generator, device)
+        for first in range(0, len(blocks[0]), chunk):
+            part_loss, part_parts = drafter.losses(model, *[t[first:first + chunk] for t in blocks])
+            share = len(blocks[0][first:first + chunk]) / total
+            (part_loss * share).backward()
+            loss += part_loss.item() * share
+            for name, value in part_parts.items():
+                parts[name] = parts.get(name, 0.0) + value.item() * share
+    return loss, parts
 
 
 def _blocks(model, drafter, ids, start, most, generator, device):
