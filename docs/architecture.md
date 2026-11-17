@@ -643,7 +643,7 @@ refused change writes nothing.
 | tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
 | a tokenizer's vocabulary | `tokenizer train NAME` | `GET /api/tokenizers/{name}/estimate`, then `POST /api/tokenizers/{name}/train`, confirmed, a job; `GET /api/vocabularies`; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
 | a corpus | `build DATASET [--vocabulary SHA256] (--max-tokens N \| --all)`, run in the command | `GET /api/datasets/{id}/estimate`, then `POST /api/datasets/{id}/build` with a trained vocabulary and a size, confirmed, a job; the dataset's page "Corpora" |
-| a corpus downloaded | none | `GET /api/datasets/{id}/download` (the dataset's corpora), `GET /api/datasets/{id}/download/{vocabulary}/{size}` and its `files/{name}`; the dataset's page "Corpora" and the page of each corpus |
+| a corpus downloaded | none | `GET /api/datasets/{id}/download` (the dataset's corpora), `GET /api/datasets/{id}/download/{vocabulary}/{size}`, its `files/{name}` and its `everything.tar`; the dataset's page "Corpora" and the page of each corpus |
 | a dataset's texts exported | none | `GET /api/datasets/{id}/export` and its parts `{name}`; the dataset's page "Export" |
 | a dataset's sample, for another depot's vocabulary | none | `GET /api/datasets/{dataset}/sample?bytes=N` |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |

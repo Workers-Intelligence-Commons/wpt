@@ -28,9 +28,12 @@ corpora's records, wpt.depot.downloads; no corpus is sent meanwhile),
 text of the latest corpus of the dataset's current revision; nothing builds
 it again by itself), "not built" or "no store". Reading it starts nothing.
 A built corpus gives each of its files, streamed from the store with Range
-support. A browser saves each file under a name made of the dataset's name,
-the vocabulary, the size and what the file is, so a folder of downloads
-tells the files apart. GET /api/datasets/{id}/download lists the triples the store holds
+support, and all of them in one tar archive (wpt.depot.web.archive), made
+as it is sent, of a length known beforehand, with the same Range support. A
+browser saves each file under a name made of the dataset's name, the
+vocabulary, the size and what the file is, so a folder of downloads tells
+the files apart, and the archive under the first three, holding the files
+under those names. GET /api/datasets/{id}/download lists the triples the store holds
 corpora of, each with its address and state, and with the latest fresh
 corpus of the triple built from any revision of the dataset (latest_fresh,
 its revision named), the corpus training takes (wpt.train.recipe_depot).
@@ -54,7 +57,9 @@ import re
 import shutil
 import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime
 from functools import wraps
 
 from wpt_depot import Depot, corpora, errors
@@ -69,9 +74,13 @@ from wpt_utils.parallel import Sizing
 from .. import shared
 from ..downloads import EXPORTS, VISITOR_EXPORTS, Downloads
 from ..jobs import Job, Jobs
+from . import archive
 from .server import Request, Route, Stream
 
 CHUNK = 8 << 20  # bytes of a stored file read at a time to send it
+ARCHIVE = "everything.tar"  # the last part of the address of a corpus's archive of every file
+ARCHIVE_FORMAT = "wpt-tar-1"  # mixed into the archive's ETag: raise it when archive.py changes the bytes it writes
+SIZING = 16  # store calls at once to learn the sizes of a corpus's files: each waits on the store, not the machine
 PROGRESS_SECONDS = 5  # seconds between two lines of progress of a sample being ordered
 RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 TEXT_PART = re.compile(r"part-(\d{5})\.(jsonl\.zst|parquet)")
@@ -374,15 +383,19 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     def file_name(record: dict, one: dict) -> str:
         return one["key"].removeprefix(corpora.folder_of(record) + "/")
 
+    def download_start(row: dict, vocabulary: str, size: int | None) -> str:
+        """What every download name of the corpus starts with: the dataset, the vocabulary and the size."""
+        named = vocabulary_shown(vocabulary)
+        words = f"{named['recipe']}-v{named['version']}" if named["recipe"] else vocabulary[:12]
+        return f"{slug(row['name'])}_{slug(words)}_{size_name(size)}"
+
     def download_names(row: dict, record: dict, vocabulary: str, size: int | None) -> dict:
         """{file name: the name a browser saves it under} of each file of the
         corpus: the dataset, the vocabulary, the size and what the file is
         (numbered when several files are the same thing), so a folder of
         downloads tells them apart; its own extension kept, and the
         vocabulary, stored with none, saved as the JSON it is."""
-        named = vocabulary_shown(vocabulary)
-        words = f"{named['recipe']}-v{named['version']}" if named["recipe"] else vocabulary[:12]
-        start = f"{slug(row['name'])}_{slug(words)}_{size_name(size)}"
+        start = download_start(row, vocabulary, size)
         role = roles(record)
         files = corpora.files(record)
         alike = Counter(role.get(one["key"], "file") for one in files)
@@ -396,6 +409,41 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
             extension = name[name.index("."):] if "." in name else ".json" if what == "vocabulary" else ""
             found[name] = f"{start}_{slug(what.replace(' ', '-'))}{number}{extension}"
         return found
+
+    sizes = {}  # {corpus id: the sizes of its files}: a corpus never changes once built
+    sizing = threading.Lock()
+
+    def sizes_of(record: dict, files: list[dict], references: list[File]) -> list[int]:
+        """The length of each file of the corpus: the record's own when it names
+        one, else the store's, asked SIZING at a time once per corpus and kept."""
+        with sizing:
+            known = sizes.get(record["id"])
+        if known is None:
+            asked = [i for i, one in enumerate(files) if "bytes" not in one]
+            with ThreadPoolExecutor(min(SIZING, len(asked) or 1)) as pool:
+                found = dict(zip(asked, pool.map(lambda i: store().size(references[i]), asked)))
+            known = [found[i] if i in found else one["bytes"] for i, one in enumerate(files)]
+            with sizing:
+                sizes[record["id"]] = known
+        return known
+
+    def archive_of(row: dict, record: dict, vocabulary: str, size: int | None) -> dict:
+        """The tar archive of every file of the corpus, in the order
+        corpora.files gives them (the token files first), each under its
+        download name, dated when the corpus was built: its files'
+        references, its pieces (wpt.depot.web.archive.layout), its length,
+        its ETag and its download name. It reads the record and the store's
+        sizes of the files, never their bytes."""
+        files = corpora.files(record)
+        saved = download_names(row, record, vocabulary, size)
+        references = [File.of(one) for one in files]
+        entries = list(zip((saved[file_name(record, one)] for one in files), sizes_of(record, files, references)))
+        built = int(datetime.fromisoformat(record["built_at"]).timestamp()) if record.get("built_at") else 0
+        pieces, length = archive.layout(entries, built)
+        tag = hashlib.sha256("\n".join([ARCHIVE_FORMAT, str(built), *(f"{name} {one['sha256']}" for (name, _), one
+                                                                       in zip(entries, files))]).encode()).hexdigest()
+        return {"references": references, "pieces": pieces, "bytes": length, "etag": f'"{tag}"',
+                "download": f"{download_start(row, vocabulary, size)}.tar"}
 
     def target_of(vocabulary: str, size: int | None) -> dict:
         return {"vocabulary": vocabulary, "max_tokens": size}
@@ -511,8 +559,14 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         files = [{"name": file_name(fresh, one), "download": saved[file_name(fresh, one)], "bytes": one.get("bytes"),
                   "sha256": one["sha256"], "role": role.get(one["key"], "other"), "tokens": one.get("tokens")}
                  for one in corpora.files(fresh)]
+        try:
+            whole = archive_of(row, fresh, vocabulary, size)
+            together = {"name": ARCHIVE, "download": whole["download"], "bytes": whole["bytes"]}
+        except (StoreError, OSError):
+            together = None  # a file the store cannot size: the files are still listed, each failing on its own
         return 200, {**shown, "state": "built",
-                     "corpus": {**summary(fresh), "tokenizer": fresh["tokenizer"]}, "files": files}
+                     "corpus": {**summary(fresh), "tokenizer": fresh["tokenizer"]}, "files": files,
+                     "archive": together}
 
     def fresh_corpus(values) -> tuple[dict, dict]:
         """(the dataset's row, the fresh corpus its download address names). Refused or NotFound without one."""
@@ -529,11 +583,14 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                                   f"the size {size_name(size)} to download now: see its download page")
         return row, found
 
-    def ranged(request: Request, size: int):
-        """(start, end, status) of the bytes to send of size bytes: one Range of them (206), else all (200);
+    def ranged(request: Request, size: int, etag: str | None = None):
+        """(start, end, status) of the bytes to send of size bytes: one Range of them (206), else all (200),
+        all as well when If-Range names another ETag than etag, or any with no etag (the bytes kept may be of
+        something else);
         an answer of 416 for a Range that cannot be met."""
         asked = request.headers.get("Range")
-        if not asked:
+        condition = request.headers.get("If-Range")
+        if not asked or (condition is not None and condition.strip() != etag):
             return 0, size, 200
         match = RANGE.fullmatch(asked.strip())
         if match is None or (not match[1] and not match[2]):
@@ -554,7 +611,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
             raise errors.NotFound(f"corpus {record['id']} has no file {values['name']}")
         reference = File.of(chosen)
         size = store().size(reference)
-        start, end, status = ranged(request, size)
+        start, end, status = ranged(request, size, f'"{chosen["sha256"]}"')
         if status is None:
             return start, end
 
@@ -574,6 +631,27 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
             headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
         kind = JSON_TYPE if roles(record).get(chosen["key"]) == "vocabulary" else "application/octet-stream"
         return status, Stream(kind, Guarded(chunks(), guard), end - start, headers)
+
+    @wrapped
+    def download_archive(values, body, request: Request):
+        row, record = fresh_corpus(values)
+        whole = archive_of(row, record, vocabulary_given(values["vocabulary"]), size_of(values["size"]))
+        start, end, status = ranged(request, whole["bytes"], whole["etag"])
+        if status is None:
+            return start, end
+
+        guard = downloads.streaming(record["id"], request.visitor, "file")
+        guard.__enter__()
+        references = whole["references"]
+
+        def read(index: int, at: int, length: int) -> bytes:
+            return store().read_range(references[index], at, length)
+        headers = {"Accept-Ranges": "bytes", "ETag": whole["etag"],
+                   "Content-Disposition": f'attachment; filename="{whole["download"]}"'}
+        if status == 206:
+            headers["Content-Range"] = f"bytes {start}-{end - 1}/{whole['bytes']}"
+        chunks = archive.span(whole["pieces"], start, end, read, CHUNK)
+        return status, Stream("application/x-tar", Guarded(chunks, guard), end - start, headers)
 
     # Exports of texts
 
@@ -778,11 +856,19 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               "state built (the latest fresh corpus built from the dataset's current revision, its max_tokens and "
               "published vocabulary aside, its files with their sizes, sha256, role (text tokens, conversation "
               "tokens, table NAME, vocabulary or tasks) and download, the name a browser saves it under: the "
-              "dataset, the vocabulary, the size and the role), checking an erasure (nothing is sent meanwhile), being "
-              "built (the job and its progress), stale, not built or no store; it starts nothing",
+              "dataset, the vocabulary, the size and the role, and archive: the address's last part, download "
+              "name and bytes of the tar archive of every file, null when the store cannot size one), checking an erasure (nothing is sent meanwhile), "
+              "being built (the job and its progress), stale, not built or no store; it starts nothing",
               answer={"type": "object", "required": ["state"]}),
         Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}/files/{name}", download_file, "one file of that "
-              "corpus, streamed from the store and saved under its download name; one Range of bytes gives 206", request=True),
+              "corpus, streamed from the store and saved under its download name; one Range of bytes gives 206, the whole file when If-Range names another "
+              "ETag", request=True),
+        Route("GET", f"/api/datasets/{{id}}/download/{{vocabulary}}/{{size}}/{ARCHIVE}", download_archive, "every "
+              "file of that corpus in one tar archive, made as it is sent and never stored, each file under its "
+              "download name, the token files first: the same bytes each time for the same corpus, its length "
+              "known before it is sent, so one Range of bytes gives 206 and a download resumes (an If-Range naming "
+              "another ETag gives the whole archive); a name past 100 "
+              "bytes or a file past 8 GiB takes a POSIX pax header", request=True),
         Route("GET", "/api/datasets/{id}/export", export_listed, "the export of the texts of the dataset's current "
               "revision, with no tokenizer and no build: how many texts its libraries hold, and its parts, each in "
               "jsonl.zst and parquet, with its download name (the dataset's name, then the part's) and its size and "

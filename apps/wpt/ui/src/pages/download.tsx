@@ -34,7 +34,8 @@
 // shares asked with those it got, and when they are off asks the estimate
 // of its own vocabulary and size for the size where they come even, the
 // same number the build form offers, and each file downloads under the name
-// the server gives it (dataset, vocabulary, size and role). The texts are on
+// the server gives it (dataset, vocabulary, size and role), or all of them
+// in one tar archive under those names. The texts are on
 // the Export page.
 
 import { Button, ButtonLink, Select, Skeleton, TextInput } from "@workers-intelligence-commons/components";
@@ -49,6 +50,7 @@ import { JobLine } from "./jobs";
 import type { Page } from "./index";
 
 type File = { name: string; download: string; bytes: number | null; sha256: string; role: string; tokens: number | null };
+type Archive = { name: string; download: string; bytes: number };
 type Vocabulary = { sha256: string; recipe: string | null; version: number | null };
 type Corpus = {
   id: string; built_at: string; texts?: number; conversations?: number; tasks?: number; total_tokens?: number; items_tokens?: number | null;
@@ -59,7 +61,7 @@ type Row = { vocabulary: Vocabulary; max_tokens: number | null; size: string; li
 type Listed = { state: "listed" | "checking an erasure" | "no store"; dataset: Dataset; job: Job<unknown> | null; corpora: Row[]; erasures?: string[]; problem?: string };
 type Shown = {
   state: State; dataset: Dataset; vocabulary: Vocabulary; max_tokens: number | null; size: string; job: Job<unknown> | null;
-  corpus: Corpus | null; files?: File[]; erasures?: string[]; problem?: string;
+  corpus: Corpus | null; files?: File[]; archive?: Archive | null; erasures?: string[]; problem?: string;
 };
 type ShareForecast = { tag: string; tokens: number; part: number };
 type Estimate = {
@@ -414,27 +416,40 @@ function OneCorpus({ id, vocabulary, size }: { id: string; vocabulary: string; s
       {state === "being built" && job && <JobLine key={job.id} job={job} onEnded={load} />}
       {state === "stale" && <p className="not-allowed">Stale{corpus?.stale ? <> ({corpus.stale.erasures.join(", ")})</> : null}: <a href={href(["download", dataset.id])}>build it again</a> to download.<Help label="a stale corpus">An admitted erasure reached a text of its latest corpus. Nothing starts a new build by itself.</Help></p>}
       {state === "not built" && <p>Not built{corpus?.deleted ? <> (deleted: {corpus.deleted.why})</> : null}. <a href={href(["download", dataset.id])}>Build one</a>.</p>}
-      {state === "built" && corpus && <Built corpus={corpus} files={shown.data.files!} base={base} dataset={dataset} asked={shown.data.max_tokens} vocabulary={vocabulary} />}
+      {state === "built" && corpus && <Built corpus={corpus} files={shown.data.files!} archive={shown.data.archive ?? null} base={base} dataset={dataset} asked={shown.data.max_tokens} vocabulary={vocabulary} />}
     </>
   );
 }
 
-// A button that copies, for a terminal, one curl command per file of the
-// corpus, each saving under the name the page gives it; its "?" names the
-// training command that reads the corpus.
-function CopyCommands({ files, base, corpus }: { files: File[]; base: string; corpus: string }) {
-  const [copied, setCopied] = useState<boolean | null>(null);
+// Two buttons that copy, for a terminal, curl commands: one per file of
+// the corpus, each saving under the name the page gives it, or the one of
+// the archive of every file, which resumes where it stopped (-C -); the
+// "?" names the training command that reads the corpus.
+function CopyCommands({ files, archive, base, corpus }: { files: File[]; archive: Archive | null; base: string; corpus: string }) {
   const quote = (t: string) => `'${t.replace(/'/g, "'\\''")}'`;
-  const lines = files.map((f) => `curl -fL -o ${quote(f.download)} ${quote(new URL(`${base}/files/${part(f.name)}`, window.location.href).href)}`);
+  const at = (path: string) => quote(new URL(`${base}/${path}`, window.location.href).href);
+  const each = files.map((f) => `curl -fL -o ${quote(f.download)} ${at(`files/${part(f.name)}`)}`);
+  const one = archive && [`curl -fL -C - -o ${quote(archive.download)} ${at(part(archive.name))}`];
+  return (
+    <span className="row tight">
+      {one && <CopyLines lines={one} label="Copy the .tar command" />}
+      <CopyLines lines={each} label="Copy the commands per file" />
+      <Help label="training on it">Training reads it from the store: <span className="ledger">uv run wpt train RECIPE {corpus.slice(0, 12)}</span>.</Help>
+    </span>
+  );
+}
+
+// A button that copies lines, with what it did; refused, it shows them to select.
+function CopyLines({ lines, label }: { lines: string[]; label: string }) {
+  const [copied, setCopied] = useState<boolean | null>(null);
   const copy = async () => {
     try { await navigator.clipboard.writeText(`${lines.join("\n")}\n`); setCopied(true); } catch { setCopied(false); }
   };
   return (
-    <span className="row tight">
-      <Button variant="quiet" onClick={copy}>{copied === null ? "Copy the download commands" : copied ? "Commands copied" : "Copying refused: select them below"}</Button>
-      <Help label="training on it">Training reads it from the store: <span className="ledger">uv run wpt train RECIPE {corpus.slice(0, 12)}</span>.</Help>
+    <>
+      <Button variant="quiet" onClick={copy}>{copied === null ? label : copied ? "Copied" : "Copying refused: select below"}</Button>
       {copied === false && <pre className="remote ledger small copy-by-hand" tabIndex={0}>{lines.join("\n")}</pre>}
-    </span>
+    </>
   );
 }
 
@@ -510,7 +525,7 @@ function role(f: File, dataset: Dataset): { what: string; tokens: boolean } {
 }
 
 // A built corpus: what it holds, then its files, the token files first, each named by what it is.
-function Built({ corpus, files, base, dataset, asked, vocabulary }: { corpus: Corpus; files: File[]; base: string; dataset: Dataset; asked: number | null; vocabulary: string }) {
+function Built({ corpus, files, archive, base, dataset, asked, vocabulary }: { corpus: Corpus; files: File[]; archive: Archive | null; base: string; dataset: Dataset; asked: number | null; vocabulary: string }) {
   const sorted = [...files].sort((a, b) => Number(role(b, dataset).tokens) - Number(role(a, dataset).tokens));
   const total = files.reduce((t, f) => t + (f.bytes ?? 0), 0);
   const plain = corpus.total_tokens ?? 0;
@@ -525,7 +540,12 @@ function Built({ corpus, files, base, dataset, asked, vocabulary }: { corpus: Co
         <MixStat corpus={corpus} dataset={dataset} vocabulary={vocabulary} size={asked} />
       </div>
       <Section title="Files" help="The token files are what training reads; the tables say what the tokens came from. The token files and the tables are Parquet, the vocabulary is JSON, and the tasks are JSON lines."
-        tools={<CopyCommands files={sorted} base={base} corpus={corpus.id} />}>
+        tools={<CopyCommands files={sorted} archive={archive} base={base} corpus={corpus.id} />}>
+        {archive && <p className="row tight">
+          <ButtonLink variant="primary" href={`${base}/${part(archive.name)}`} download={archive.download}>Download everything</ButtonLink>
+          <span className="aside">{bytes(archive.bytes)}, .tar</span>
+          <Help label="the archive">One .tar of every file, under the names below. A stopped download resumes. Windows 10 opens it with 7-Zip.</Help>
+        </p>}
         <div className="table-scroll cards">
           <table className="ledger-table files-table" aria-label="The corpus's files">
             <thead><tr><th scope="col">what it is</th><th scope="col" className="number">size</th><th scope="col"><span className="visually-hidden">download</span></th><th scope="col">saved as</th></tr></thead>
@@ -536,7 +556,7 @@ function Built({ corpus, files, base, dataset, asked, vocabulary }: { corpus: Co
                   <tr key={f.name}>
                     <td className="wrap-cell" data-label="">{r.tokens ? <strong>{r.what}</strong> : r.what}{f.tokens !== null && r.tokens ? <span className="aside">, {plural(f.tokens, "token")}</span> : null}</td>
                     <td className="number ledger" data-label="size">{fileSize(f.bytes)}</td>
-                    <td data-label=""><ButtonLink variant={r.tokens ? "ink" : "quiet"} href={`${base}/files/${part(f.name)}`} download={f.download}>Download</ButtonLink></td>
+                    <td data-label=""><ButtonLink variant="quiet" href={`${base}/files/${part(f.name)}`} download={f.download}>Download</ButtonLink></td>
                     <td className="ledger small aside file-name" data-label="saved as" title={`${f.download}, stored as ${f.name}, sha256 ${f.sha256}`}>{f.download}</td>
                   </tr>
                 );

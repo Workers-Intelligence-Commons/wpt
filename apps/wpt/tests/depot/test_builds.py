@@ -4,8 +4,11 @@ import io
 import json
 import re
 import socket
+import subprocess
+import tarfile
 import threading
 import time
+from collections import Counter
 from compression import zstd
 from pathlib import Path
 
@@ -14,7 +17,8 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, NewText
 from wpt_depot.corpus import build
-from wpt_store import store_from_settings
+from wpt_store import Store, store_from_settings
+from wpt_utils.programs import program
 from wpt.depot import shared
 from wpt.depot.downloads import Downloads
 from wpt.depot.jobs import Jobs
@@ -205,6 +209,65 @@ def test_a_built_corpus_page_gives_each_share_s_tokens_and_each_file_its_role_to
     numbers = [re.fullmatch(r"first_.+_all_text-tokens-(\d+)\..+", one["download"]) for one in texts]
     assert [int(found[1]) for found in numbers] == list(range(1, len(texts) + 1))
     assert len({one["download"] for one in shown["files"]}) == len(shown["files"])
+
+
+def test_the_archive_of_a_corpus_holds_every_file_under_its_download_name_and_any_range_of_it(served, tmp_path,
+                                                                                            monkeypatch):
+    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
+    call = served(depot)
+    row = depot.dataset("first")
+    vocabulary = trained(call, depot)
+    recipe, version, tokenizer = shared.vocabulary_by_sha256(depot, vocabulary)
+    build(depot, "first", store_from_settings(), tokenizer, version, url=shared.public_url(), max_tokens=None,
+          recipe=recipe["name"], shard_tokens=8, log=lambda *args: None)  # several token files
+    sized = Counter()
+    size = Store.size
+    monkeypatch.setattr(Store, "size", lambda self, what: sized.update([what.key]) or size(self, what))
+    link = f"/api/datasets/{row['id']}/download/{vocabulary}/all"
+    shown = call("GET", link)[2]
+    assert shown["archive"]["name"] == "everything.tar"
+    call("GET", link)
+    call("GET", f"{link}/everything.tar", headers={"Range": "bytes=0-0"})
+    assert not sized  # the record names every file's size: the store is asked none, whatever the corpus's size
+
+    status, headers, whole = call("GET", f"{link}/everything.tar")
+    assert status == 200 and int(headers["Content-Length"]) == len(whole) == shown["archive"]["bytes"]
+    assert headers["Content-Disposition"] == f'attachment; filename="{shown["archive"]["download"]}"'
+    assert shown["archive"]["download"] == shown["files"][0]["download"].split("_text-tokens")[0] + ".tar"
+    assert call("GET", f"{link}/everything.tar")[2] == whole  # the same bytes each time
+    # every file of the corpus, the token files first as the page lists them, under its download name
+    with tarfile.open(fileobj=io.BytesIO(whole)) as tar:
+        members = tar.getmembers()
+        found = {one.name: hashlib.sha256(tar.extractfile(one).read()).hexdigest() for one in members}
+    assert [one.name for one in members] == [one["download"] for one in shown["files"]]
+    assert found == {one["download"]: one["sha256"] for one in shown["files"]}
+    assert all((one.mode, one.uid, one.gid, one.uname, one.gname) == (0o644, 0, 0, "", "") for one in members)
+
+    # one range in a header, in a file and in the padding after a file: the bytes of the whole archive there
+    padded = next(one for one in members if one.size % 512)
+    ends = padded.offset_data + padded.size
+    for start, end in ((padded.offset + 100, padded.offset + 300), (padded.offset_data + 1, ends - 1),
+                       (ends + 1, ends + 3), (padded.offset + 10, ends + 5)):
+        status, headers, piece = call("GET", f"{link}/everything.tar", headers={"Range": f"bytes={start}-{end}"})
+        assert (status, piece, headers["Content-Range"]) == (206, whole[start:end + 1],
+                                                            f"bytes {start}-{end}/{len(whole)}")
+    status, _, tail = call("GET", f"{link}/everything.tar", headers={"Range": "bytes=-1500"})
+    assert (status, tail) == (206, whole[-1500:])
+    assert call("GET", f"{link}/everything.tar", headers={"Range": f"bytes={len(whole)}-"})[0] == 416
+    # a resume whose If-Range names the archive's ETag gets the range, another ETag the whole archive
+    etag = call("GET", f"{link}/everything.tar", headers={"Range": "bytes=0-0"})[1]["ETag"]
+    asked = {"Range": "bytes=10-20", "If-Range": etag}
+    assert call("GET", f"{link}/everything.tar", headers=asked)[:3:2] == (206, whole[10:21])
+    assert call("GET", f"{link}/everything.tar", headers={**asked, "If-Range": '"another"'})[:3:2] == (200, whole)
+
+    # the system's tar lists and extracts it to the same files
+    (tmp_path / "archive.tar").write_bytes(whole)
+    tar = program("tar")
+    listing = subprocess.run([tar, "-tvf", str(tmp_path / "archive.tar")], capture_output=True, text=True, check=True)
+    assert len(listing.stdout.splitlines()) == len(members)
+    (tmp_path / "out").mkdir()
+    subprocess.run([tar, "-xf", str(tmp_path / "archive.tar"), "-C", str(tmp_path / "out")], check=True)
+    assert {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (tmp_path / "out").iterdir()} == found
 
 
 def test_an_estimate_names_tokens_bytes_time_and_room_and_writes_and_queues_nothing(served, tmp_path, monkeypatch):

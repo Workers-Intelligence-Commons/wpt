@@ -139,6 +139,12 @@ erasure (an erasure decided here is being carried into the corpora's
 records; no corpus is sent meanwhile). Opening it starts nothing, and
 nothing builds a stale corpus again by itself. The corpus's files stream
 from the store, each with its size and sha256, and take a `Range` of bytes.
+All of them also come as one tar archive (`everything.tar` under the same
+link), made as it is sent and never stored. Its bytes depend only on the
+corpus's record, so its length is known before it is sent and it takes a
+`Range` of bytes too, which lets a download resume. A file and the
+archive each send an `ETag`, and a `Range` whose `If-Range` names another
+one gets the whole thing, never bytes of something else.
 
 The listing of a dataset's corpora (`GET /api/datasets/{id}/download`)
 names, for each vocabulary and size, the latest fresh corpus built from
