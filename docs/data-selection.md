@@ -26,9 +26,13 @@ or a repository with all its files, with its metadata. Each text is a row of a d
 - its scores ("Scores", below);
 - its decisions, in order, and the libraries that hold it.
 
-A text holds final text only. Plain text stays as written, with no
-Markdown escaping and no backslash line breaks. A structured page keeps
-its headings, paragraphs and lists, and code keeps its exact file. Where a
+A text holds final text only. A text its source publishes as text, such
+as a code file, a record's text field or a plain-text edition, is kept
+exactly as the source gives it. When a source publishes a work both as
+text and as a page, the text edition is taken. Only a page a source gives
+as HTML or wikitext alone is converted, to Markdown that marks its
+headings, paragraphs, lists, emphasis, quotes and tables. That Markdown
+escapes no character and breaks no line with a backslash. Where a
 text came from survives in its address, so changing how a text was made
 means making it again from its origin.
 
