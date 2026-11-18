@@ -1,27 +1,26 @@
-// The workspace's right column: one text or item as it is now, in two tabs,
-// under a header naming the libraries that hold it.
-// "Text" is its editor: a plain text in CodeMirror (code-editor.tsx), with
-// find and replace inside this text, an item through the form of its
-// kind's schema; saving is save only, a new content version through POST
-// /api/texts/ID/content, which the depot records as a public decision under
-// review, so the text goes back under review and leaves every open library
-// until it is admitted again, and the confirm says so before the click.
-// "Scores" lists its scores and changes them (scores.tsx).
-// "Record" is its record: credits, its revision and content version and how
-// many it has of each, every decision with its reason (those before its
-// latest license or content change, or before it was put back under review,
-// marked as no longer counting; a put back shown as a correction), its
-// libraries, each locked one with the revision it pinned, its reported
-// problems and erasure requests. Above both stand its actions, each opening
-// its form in a dialog: decide on it (admit, refuse, or put an admitted or
-// refused text back under review), change its licenses, edit its credits
-// (a new revision; a locked library keeps the revision it pinned), take it
-// out of an open library that holds it (it stays admitted), report a
-// problem to a library that holds it, and ask to erase a passage
-// (erase-form.tsx). A text that belongs to the upstream this depot follows
-// says so, is shown read only, and keeps only the report to a library of
-// this depot's own and the take-out from one. Every decision, tag, license
-// and problem it names links to its own view.
+// The open text of the Texts page: its content, always in view and always
+// editable, under one line of facts: a plain text in CodeMirror
+// (code-editor.tsx), with find and replace inside this text, or an item
+// through the form of its kind's schema, a conversation read first as a
+// transcript. Saving is save only, with Save or Ctrl+S, a new content
+// version through POST /api/texts/ID/content, which the depot records as a
+// public decision under review, so the text goes back under review and
+// leaves every open library until it is admitted again; an admitted text
+// asks once more. Beside it, the review panel (panel.tsx): its scores, its
+// tags, the moves and decisions, the presets, its facts and the menu of its
+// other actions, each opening its form in a dialog: its record (credits,
+// revision and content version and how many it has of each, every decision
+// with its reason, those that no longer count marked, a put back shown as a
+// correction, its libraries, each locked one with the revision it pinned,
+// its reported problems and erasure requests), a decision with a reason,
+// its licenses, its credits (a new revision; a locked library keeps the
+// revision it pinned), taking it out of an open library that holds it (it
+// stays admitted), a problem reported to a library that holds it, and a
+// request to erase a passage (erase-form.tsx). A text that belongs to the
+// upstream this depot follows says so, is shown read only, and keeps only
+// the report to a library of this depot's own and the take-out from one.
+// The texts read are kept a little, and the Texts page asks for the next
+// ones ahead (prefetch), so moving on shows the next one at once.
 
 import { Badge, Button, Dialog, Select, Skeleton, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import type { Text } from "@codemirror/state";
@@ -32,7 +31,7 @@ import type { Deciding } from "../blocked";
 import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../decide-forms";
 import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
-import { Confirm, Cut, Facts, Help, Joined, LibraryLink, MoreMenu, optional, Outcome, plural, Problems, required, RequiredNote, Section, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
+import { Confirm, Cut, Facts, Help, Joined, LibraryLink, MoreMenu, optional, Outcome, plural, Problems, required, RequiredNote, Section, settingsHref, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
 import { codePoints, TextViewer } from "../reader";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
@@ -40,7 +39,8 @@ import { Correction } from "../pages/decisions";
 import { href } from "../route";
 import { KIND_WORDS } from "../kind-words";
 import { SchemaForm, type Schema } from "../schema-form";
-import { TextScores, type Score } from "../scores";
+import { type Score } from "../scores";
+import { ReviewPanel } from "./panel";
 import { isConversation, Transcript } from "../transcript";
 
 // counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
@@ -57,34 +57,60 @@ export type Shown = { text: Row; status: Status; notice: string | null; decision
 
 export const showText = (id: string) => get<Shown>(`/api/texts/${encodeURIComponent(id)}`);
 
-// id: the text; bar: what shows under its head (the workspace's bar of moves and decisions, on a phone); version: raised by the workspace whenever the text may have changed elsewhere (a key decided on it);
-// onChanged: after any change made here; onDirty: whether its editor holds unsaved changes; handle: the editor's;
-// onShown: the id of the text it shows now, or null while it shows none (the keys act only on the text shown);
-// find: the words the search looked for inside the texts, marked in it, the first one scrolled to.
-// Only the answer for the id asked last is kept, so a text read slowly never replaces the one asked after it.
-export function TextPanel({ id, bar, version, onChanged, onDirty, handle, onShown, find }: {
-  id: string; bar?: ReactNode; version: number; onChanged: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void;
-  onShown: (id: string | null) => void; find?: string;
+// Texts already read, or asked for ahead (prefetch), by id and the version of the page they were read at, so
+// moving to the next text shows it at once; a few at most.
+const read = new Map<string, Promise<Answer<Shown>>>();
+const readAt = (id: string, version: number) => {
+  const key = `${version} ${id}`;
+  if (!read.has(key)) {
+    read.set(key, showText(id));
+    while (read.size > 8) read.delete(read.keys().next().value!);
+  }
+  return read.get(key)!;
+};
+// A text read again when next opened: its panel saved scores or tags, which the version does not follow.
+const forgetText = (id: string) => [...read.keys()].filter((key) => key.endsWith(` ${id}`)).forEach((key) => read.delete(key));
+// Ask for texts before they are opened (the Texts page asks for the next ones).
+export const prefetch = (ids: string[], version: number) => ids.forEach((id) => readAt(id, version));
+
+// id: the text; actions: the moves and decisions of the Texts page, which the panel shows under the tags; version:
+// raised by the Texts page whenever the text may have changed elsewhere (a key decided on it); onChanged: after any
+// change made here but scores and tags; onSaved: after scores or tags were saved, or failed to be, with what happened; onDirty:
+// whether its editor holds unsaved changes; handle: the editor's; onShown: the id of the text it shows now, or null
+// while it shows none (the keys act only on the text shown); find: the words the search looked for inside the
+// texts, marked in it, the first one scrolled to. Only the answer for the id asked last is kept, so a text read
+// slowly never replaces the one asked after it.
+export function TextPanel({ id, actions, version, onChanged, onSaved, onDirty, handle, onShown, find }: {
+  id: string; actions: ReactNode; version: number; onChanged: () => void; onSaved: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
+  handle: (h: EditorHandle | null) => void; onShown: (id: string | null) => void; find?: string;
 }) {
   const [shown, setShown] = useState<{ id: string; answer: Answer<Shown> } | null>(null);
   const asked = useRef(id);
   asked.current = id;
-  const load = useCallback(() => { showText(id).then((answer) => { if (asked.current === id) setShown({ id, answer }); }); }, [id]);
-  useEffect(load, [load, version]);
+  const load = useCallback((again = false) => {
+    if (again) read.clear();
+    readAt(id, version).then((answer) => { if (asked.current === id) setShown({ id, answer }); });
+  }, [id, version]);
+  useEffect(() => load(), [load]);
+  useEffect(() => () => forgetText(id), [id]); // a text left may have been saved on leaving: read it again on return
   const here = shown !== null && shown.id === id && shown.answer.ok;
   useEffect(() => { onShown(here ? id : null); }, [here, id, onShown]);
   useEffect(() => () => onShown(null), [onShown]);
-  if (!shown || shown.id !== id) return <Skeleton lines={6} label="Reading the text" />;
-  if (!shown.answer.ok) return <Problems problems={shown.answer.problems} />;
-  return <Loaded key={id} bar={bar} shown={shown.answer.data} reload={() => { load(); onChanged(); }} onDirty={onDirty} handle={handle} find={find} />;
+  if (!shown || shown.id !== id) return <div className="text-column"><Skeleton lines={6} label="Reading the text" /></div>;
+  if (!shown.answer.ok) return <div className="text-column"><Problems problems={shown.answer.problems} /></div>;
+  return <Loaded key={id} actions={actions} shown={shown.answer.data} reload={() => { load(true); onChanged(); }} onSaved={(words) => { forgetText(id); onSaved(words); }} onDirty={onDirty} handle={handle} find={find} />;
 }
 
-type Dialogs = "decide" | "relicense" | "credits" | "take-out" | "report" | "erase";
+type Dialogs = "decide" | "relicense" | "credits" | "take-out" | "report" | "erase" | "record";
 
-function Loaded({ shown, bar, reload, onDirty, handle, find }: { shown: Shown; bar?: ReactNode; reload: () => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string }) {
+// The open text in two parts: its content, always in view, under one line of facts, and the review panel beside
+// it (panel.tsx), whose menu opens the other actions, each in a dialog.
+function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
+  shown: Shown; actions: ReactNode; reload: () => void; onSaved: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
+  handle: (h: EditorHandle | null) => void; find?: string;
+}) {
   const row = shown.text;
   const item = row.kind !== null;
-  const [tab, setTab] = useState<"text" | "scores" | "record">("text");
   const [open, setOpen] = useState<Dialogs | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const done = (words: ReactNode) => { setOpen(null); setSaid(words); reload(); };
@@ -93,52 +119,37 @@ function Loaded({ shown, bar, reload, onDirty, handle, find }: { shown: Shown; b
   const theirs = shown.upstream;
   const reportable = shown.libraries.filter((l) => !l.upstream); // only the depot's own libraries take a problem
   const leavable = reportable.filter((l) => !l.locked_at); // and only its own open ones let a text out
+  const facts = (
+    <>
+      <strong className="content-title" title={title}>{title}</strong>
+      <StatusBadge status={shown.status} />
+      <span className="ledger aside">v{row.content_version}{item ? <> · {row.kind}</> : <> · {codePoints(row.text ?? "").toLocaleString("en")} chars</>}</span>
+      {theirs && <span className="aside" title="Only the upstream this depot follows decides on it, changes its licenses, content or credits, or erases it">the upstream's, read only</span>}
+    </>
+  );
+  const more = (
+    <MoreMenu label="More on this text">
+      <Button variant="quiet" onClick={() => setOpen("record")}>Its record</Button>
+      {!theirs && <Button variant="quiet" onClick={() => setOpen("decide")}>Decide, with a reason</Button>}
+      {!theirs && <Button variant="quiet" onClick={() => setOpen("relicense")}>Change licenses</Button>}
+      {!theirs && <Button variant="quiet" onClick={() => setOpen("credits")}>Edit credits</Button>}
+      {leavable.length > 0 && <Button variant="quiet" onClick={() => setOpen("take-out")}>Take out of a library</Button>}
+      {reportable.length > 0 && <Button variant="quiet" onClick={() => setOpen("report")}>Report a problem</Button>}
+      {!theirs && <Button variant="quiet" onClick={() => setOpen("erase")}>Ask to erase</Button>}
+    </MoreMenu>
+  );
   return (
-    <div className="text-panel">
-      <header className="text-head">
-        <div className="text-title-row">
-          <h2 className="title text-title">{title}</h2>
-          <span className="aside ledger small" title="Its id, which the command line names it by">{row.id}</span>
-        </div>
-        <div className="page-meta small">
-          <StatusBadge status={shown.status} />
-          {row.licenses.map((l) => <a key={l} href={href(["licenses", l])} className="ledger" title={`The license ${l}`}>{l}</a>)}
-          {row.authors?.length ? <span className="aside">by {row.authors.join(", ")}</span> : null}
-          {row.tags.length > 0 && <span className="aside">tags {row.tags.map((t, i) => <span key={t}>{i > 0 && ", "}<a href={href(["texts"], { tag: t })}>{t}</a></span>)}</span>}
-          <span className="aside">{shown.libraries.length ? <>in {shown.libraries.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>)}</> : "in no library"}</span>
-          {theirs && <span className="aside">the upstream's</span>}
-          {item && <span>kind <span className="ledger">{row.kind}</span></span>}
-        </div>
-        <div className="head-buttons text-actions">
-          {!theirs && <Button variant="ink" onClick={() => setOpen("decide")}>Decide</Button>}
-          {!theirs && <Button variant="quiet" onClick={() => setOpen("relicense")}>Change licenses</Button>}
-          {!theirs && <Button variant="quiet" onClick={() => setOpen("credits")}>Edit credits</Button>}
-          {(leavable.length > 0 || reportable.length > 0 || !theirs) && (
-            <MoreMenu label="More on this text">
-              {leavable.length > 0 && <Button variant="quiet" onClick={() => setOpen("take-out")}>Take out of a library</Button>}
-              {reportable.length > 0 && <Button variant="quiet" onClick={() => setOpen("report")}>Report a problem</Button>}
-              {!theirs && <Button variant="quiet" onClick={() => setOpen("erase")}>Ask to erase</Button>}
-            </MoreMenu>
-          )}
-        </div>
-        {theirs && <p className="head-note-left small">It belongs to the upstream this depot follows: only the upstream decides on it, changes its licenses, content or credits, or erases it, and a pull brings what it did here.</p>}
-      </header>
-      {bar}
-      {said && <p className="done cue" role="status">{said}</p>}
-      <div className="tabs" role="tablist" aria-label="The text and its record">
-        <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "text"} onClick={() => setTab("text")}>{item ? "Content" : "Text"}</button>
-        <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "scores"} onClick={() => setTab("scores")}>Scores <span className="aside">{(row.scores ?? []).length}</span></button>
-        <button type="button" role="tab" className="tab wic-focus" aria-selected={tab === "record"} onClick={() => setTab("record")}>Record <span className="aside">{plural(shown.decisions.length, "decision")}</span></button>
+    <>
+      <div className="text-column">
+        {said && <p className="done cue content-said" role="status">{said}</p>}
+        {theirs ? <><div className="content-line small">{facts}</div><ReadOnly row={row} find={find} /></>
+          : <EditContent key={`${row.id}:${row.content_version}`} row={row} status={shown.status} facts={facts} libraries={shown.libraries} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
       </div>
-      <div role="tabpanel" hidden={tab !== "text"}>
-        {theirs ? <ReadOnly row={row} find={find} /> : <EditContent key={`${row.id}:${row.content_version}`} row={row} libraries={shown.libraries} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
-      </div>
-      <div role="tabpanel" hidden={tab !== "scores"}>
-        {tab === "scores" && <TextScores key={`${row.id}:${row.revision}`} id={row.id} scores={row.scores ?? []} contentVersion={row.content_version} readOnly={theirs} onDone={done} />}
-      </div>
-      <div role="tabpanel" hidden={tab !== "record"}>
-        <Record shown={shown} />
-      </div>
+      <ReviewPanel key={`${row.id}:${row.revision}`} text={row} status={shown.status} decisions={shown.decisions.length} libraries={shown.libraries} readOnly={theirs}
+        actions={actions} more={more} onSaved={onSaved} onRecord={() => setOpen("record")} />
+      <Dialog open={open === "record"} onClose={() => setOpen(null)} title={`The record of ${title}`}>
+        {open === "record" && <div className="wide"><Record shown={shown} /></div>}
+      </Dialog>
       <Dialog open={open === "decide"} onClose={() => setOpen(null)} title="Decide on this text">
         {open === "decide" && <DecideOn id={row.id} status={shown.status} onDone={done} />}
       </Dialog>
@@ -157,7 +168,7 @@ function Loaded({ shown, bar, reload, onDirty, handle, find }: { shown: Shown; b
       <Dialog open={open === "erase"} onClose={() => setOpen(null)} title="Ask to erase a passage">
         {open === "erase" && <div className="wide"><EraseForm row={row} onDone={done} /></div>}
       </Dialog>
-    </div>
+    </>
   );
 }
 
@@ -272,83 +283,100 @@ function Relicense({ row, onDone }: { row: Row; onDone: (words: ReactNode) => vo
   );
 }
 
-// The text in the editor, or an item's content through the form of its
-// kind's schema, prefilled; saved only once it differs, as a new content
-// version. A conversation is read as a transcript first, and its form opens
-// on "Edit" or the E key (the handle's focus).
-function EditContent({ row, libraries, onDone, onDirty, handle, find }: {
-  row: Row; libraries: Library[]; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void; handle: (h: EditorHandle | null) => void; find?: string;
+// The text in the editor, always editable, or an item's content through the form of its kind's schema,
+// prefilled; a conversation is read as a transcript first, and its form opens on "Edit" or the E key (the
+// handle's focus). Above it, the facts line with "Find" and its count of lines. Once it differs, a bar under it
+// saves (Save, or Ctrl+S) or reverts: saving makes a new content version, a public decision under review, so
+// the text goes back under review and leaves every open library; an admitted text asks once more before that.
+function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, find }: {
+  row: Row; status: Status; facts: ReactNode; libraries: Library[]; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
+  handle: (h: EditorHandle | null) => void; find?: string;
 }) {
   const item = row.kind !== null;
   const original = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
   const conversation = isConversation(original);
   const [editing, setEditing] = useState(!conversation);
   useEffect(() => {
-    if (!conversation) return;
+    if (!conversation || editing) return;
     handle({ focus: () => setEditing(true), openFind: () => {} });
     return () => handle(null);
-  }, [conversation, handle]);
+  }, [conversation, editing, handle]);
   const [doc, setDoc] = useState<{ text: Text; changed: boolean } | null>(null); // the editor's, once edited
   const [content, setContent] = useState<unknown>(original);
   const [schema, setSchema] = useState<Schema | null>(null);
   const [answer, setAnswer] = useState<Answer<{ decision: string | null; version: number | null }> | null>(null);
   const [editor, setEditor] = useState<EditorHandle | null>(null);
+  const [fresh, setFresh] = useState(0); // raised by Revert: the editor starts again from the text as saved
+  const [asking, setAsking] = useState(false); // an admitted text's save, asked once more
   useEffect(() => {
     if (item) get<{ id: string; schema: Schema }[]>("/api/kinds").then((a) => a.ok && setSchema(a.data.find((k) => k.id === row.kind)?.schema ?? null));
   }, [item, row.kind]);
   const changed = item ? JSON.stringify(content) !== JSON.stringify(original) : Boolean(doc?.changed);
-  useEffect(() => { onDirty(changed); }, [changed, onDirty]);
+  useEffect(() => { onDirty(changed); if (!changed) setAsking(false); }, [changed, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
   const handed = useCallback((h: EditorHandle | null) => { setEditor(h); handle(h); }, [handle]);
   const open = libraries.filter((l) => !l.locked_at && !l.upstream);
   const locked = libraries.filter((l) => l.locked_at);
   const who = useDeclarant();
   const { about } = useAbout();
-  // Ctrl+S (Cmd+S) saves as the button does, once something changed and a name and email are set
+  const ready = declared(who) && about !== null;
+  const save = () => {
+    if (!changed || !ready) return;
+    if (status === "admitted" && !asking) { setAsking(true); return; }
+    send({ name: who.name.trim(), email: who.email.trim(), accepted: true });
+  };
+  const revert = () => { setDoc(null); setContent(original); setFresh((n) => n + 1); setAsking(false); };
+  // Ctrl+S (Cmd+S) saves as the button does
   useEffect(() => {
     const press = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "s") return;
       e.preventDefault();
-      if (changed && about && declared(who)) send({ name: who.name.trim(), email: who.email.trim(), accepted: true });
+      save();
     };
     window.addEventListener("keydown", press);
     return () => window.removeEventListener("keydown", press);
   });
   const send = async (declaration: Declaration) => {
+    setAsking(false);
     const a = await post<{ decision: string | null; version: number | null }>(`/api/texts/${encodeURIComponent(row.id)}/content`, { ...(item ? { content } : { text: doc!.text.toString() }), declaration });
     setAnswer(a);
     if (!a.ok) return;
     onDirty(false);
     if (a.data.decision === null) onDone("Nothing changed: its content is this already.");
-    else onDone(<>Saved as content version {a.data.version}, recorded by decision <a href={href(["decisions", a.data.decision])}>{a.data.decision}</a>: the text is under review again{open.length > 0 && <> and left {open.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>)}</>}. Admit it again, then put it back, to have it read.</>);
+    else onDone(<>Saved as content version {a.data.version} (<a href={href(["decisions", a.data.decision])}>{a.data.decision}</a>): under review again{open.length > 0 && <>, out of {open.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>)}</>}.</>);
   };
   return (
     <div className="edit-content">
-      {conversation && !editing ? (
-        <>
-          <div className="editor-tools small">
-            <Button variant="quiet" onClick={() => setEditing(true)} aria-keyshortcuts="E" title="Opens the form of its messages, roles and blocks (E)">Edit</Button>
-            <span className="aside editor-count">{plural(original.messages.length, "message")}</span>
-          </div>
-          <Transcript content={original} find={find} />
-        </>
-      ) : item ? (
-        schema ? <SchemaForm value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />
-      ) : (
-        <>
-          <div className="editor-tools small">
-            <Button variant="quiet" disabled={!editor} onClick={() => editor?.openFind()} title='Ctrl+F inside the text too; tick "regexp" for a regular expression. Only this text is searched.'>Find and replace</Button>
-            <span className="aside editor-count">{plural(doc ? doc.text.lines : lineCount(row.text ?? ""), "line")}{changed && ", changed"}</span>
-          </div>
+      <div className="content-line small">
+        {facts}
+        {!item && <span className="content-tools">
+          <span className="aside">{plural(doc ? doc.text.lines : lineCount(row.text ?? ""), "line")}</span>
+          <Button variant="quiet" disabled={!editor} onClick={() => editor?.openFind()} title='Find and replace in this text (Ctrl+F); tick "regexp" for a regular expression'>Find</Button>
+        </span>}
+        {conversation && !editing && <span className="content-tools"><span className="aside">{plural(original.messages.length, "message")}</span>
+          <Button variant="quiet" onClick={() => setEditing(true)} aria-keyshortcuts="E" title="Opens the form of its messages, roles and blocks (E)">Edit</Button></span>}
+        {conversation && editing && !changed && <span className="content-tools"><Button variant="quiet" onClick={() => setEditing(false)}>Read it</Button></span>}
+      </div>
+      {conversation && !editing ? <div className="viewer content-scroll"><Transcript content={original} find={find} /></div>
+        : item ? (
+          <div className="content-scroll">{schema ? <SchemaForm key={fresh} value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />}</div>
+        ) : (
           <Suspense fallback={<Skeleton lines={8} label="Opening the editor" />}>
-            <CodeEditor initial={row.text ?? ""} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
+            <CodeEditor key={fresh} initial={row.text ?? ""} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
           </Suspense>
-        </>
+        )}
+      {changed && (
+        <div className={`save-bar small${asking ? " asking" : ""}`} role="group" aria-label="Unsaved changes">
+          {asking ? <span className="act">It is admitted: saving puts it back under review{open.length > 0 && <> and out of {open.map((l) => l.name).join(", ")}</>}.</span>
+            : <span>Edited, not saved.</span>}
+          <Button variant="primary" disabled={!ready} onClick={save}>{asking ? "Save anyway" : "Save"}<span className="key-hint">(Ctrl S)</span></Button>
+          <Button variant="quiet" onClick={asking ? () => setAsking(false) : revert}>{asking ? "Keep editing" : "Revert"}</Button>
+          <span className="aside save-words">{ready
+            ? <>A public decision as {who.name}: content version {row.content_version + 1}, the text back under review{locked.length > 0 && <>; {locked.map((l) => l.name).join(", ")} keeps the version it pinned</>}. It confirms: <q>{about!.confirmation}</q> <a href={about!.requirements} target="_blank" rel="noreferrer">The requirements</a>.</>
+            : declared(who) ? <>Reading the depot's requirements before it can save…</>
+            : <>Set a name and email in <a href={settingsHref()}>Settings</a> to save.</>}</span>
+        </div>
       )}
-      {changed ? (
-        <Confirm label="Save, under review" onConfirm={send}
-          note={<>Saving (or Ctrl+S) is a public decision under review and nothing else: it makes content version {row.content_version + 1}, the decisions before it no longer count, so the text goes back under review and leaves {open.length ? <>its open {open.length === 1 ? "library" : "libraries"} ({open.map((l) => l.name).join(", ")})</> : "every open library"}. It is read again only once it is admitted again, separately, and put back.{locked.length > 0 && <> A locked library ({locked.map((l) => l.name).join(", ")}) keeps reading the content of the revision it pinned.</>}</>} />
-      ) : editing ? <p className="save-idle small aside">Saving puts the text back under review.{conversation && <> <Button variant="quiet" onClick={() => setEditing(false)}>Back to reading it</Button></>}</p> : null}
       <Outcome answer={answer} done={() => ""} />
     </div>
   );

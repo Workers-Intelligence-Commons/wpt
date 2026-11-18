@@ -2,9 +2,9 @@
 // each with how many texts it holds (the depot's counts, GET /api/counts) and
 // the characters of its plain texts and of its items (POST /api/libraries/measure),
 // whether it is locked and the datasets that read it, and makes a new one;
-// the workspace (workspace/workspace.tsx) opens each one, so
+// the Texts page (texts/texts.tsx) opens each one, so
 // #/libraries/ID opens that library in it. This file keeps
-// what the workspace's head of a library uses: the forms that make a
+// what the Texts page's head of a library uses: the forms that make a
 // library (wpt depot library new), empty or with the admitted texts of the
 // whole depot or of a filter saved in this browser, put in as one write over
 // that filter, rename it (rename) and fork it (fork),
@@ -54,10 +54,10 @@ export function NewLibrary({ onMade }: { onMade: (a: Answer<{ id: string }>) => 
     <form onSubmit={(e) => { e.preventDefault(); if (!making) make(); }}>
       <RequiredNote />
       <TextInput label={required("Name")} required value={name} placeholder="first model, October 2026" onChange={(e) => setName(e.target.value)} />
-      <Select label={required("It starts with")} hint="Only admitted texts join a library. Texts can be put in or taken out later in the workspace." value={start} onChange={(e) => setStart(e.target.value)}>
+      <Select label={required("It starts with")} hint="Only admitted texts join a library. Texts can be put in or taken out later on the Texts page." value={start} onChange={(e) => setStart(e.target.value)}>
         <option value="admitted">every admitted text of the depot{admitted !== null ? ` (${admitted.toLocaleString("en")})` : ""}</option>
         {saved.map((f) => <option key={f.name} value={`saved:${f.name}`}>the admitted texts of the saved filter {f.name}</option>)}
-        <option value="empty">nothing: choose its texts in the workspace</option>
+        <option value="empty">nothing: choose its texts on the Texts page</option>
       </Select>
       {answer && !answer.ok && <Problems problems={answer.problems} />}
       {problems && <Problems problems={problems} />}
@@ -207,7 +207,7 @@ function Libraries({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Libraries"
-        chain={<>Named collections of admitted texts, which <a href={href(["datasets"])}>datasets</a> read. A library opens in the <a href={href(["texts"])}>workspace</a>, where texts are put in it.</>}
+        chain={<>Named collections of admitted texts, which <a href={href(["datasets"])}>datasets</a> read. A library opens on the <a href={href(["texts"])}>Texts page</a>, where texts are put in it.</>}
         actions={<Button variant="quiet" onClick={() => setMaking(true)}>New library</Button>} />
       {!loaded && <Skeleton lines={4} label="Reading the libraries" />}
       <Problems problems={problems} />
@@ -228,10 +228,10 @@ function Libraries({ query }: { query: URLSearchParams }) {
   );
 }
 
-// An address of a library that the workspace now shows: replaced by the workspace's own, so the back button skips it.
+// An address of a library that the Texts page now shows: replaced by its own, so the back button skips it.
 function Moved({ to }: { to: string }) {
   useEffect(() => { window.location.replace(to); }, [to]);
-  return <Skeleton lines={2} label="Opening the workspace" />;
+  return <Skeleton lines={2} label="Opening the Texts page" />;
 }
 
 export const libraries: Page = {

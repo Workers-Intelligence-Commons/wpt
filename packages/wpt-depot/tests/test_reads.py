@@ -109,6 +109,7 @@ def routes(depot, me, held) -> dict:
         "count step of texts outside a library": lambda: depot.count(Filter(outside=(few,)), size=BOUND),
         "texts a license blocks": lambda: depot.blocked(Filter()),
         "score names": depot.score_names,
+        "score values": lambda: depot.score_values("rank"),
         "count of a library": lambda: depot.library_count(every, depot.change()),
         "page of a locked library's pins": lambda: depot.pinned(pinned),
         "rows a pull reads": pull_rows,
@@ -130,7 +131,7 @@ def routes(depot, me, held) -> dict:
 
 def test_each_page_count_and_write_of_one_text_reads_as_much_on_a_depot_twice_as_large(make_depot, me, monkeypatch):
     # the public depot holds 166 million texts: a route whose reads grow with the depot times out there
-    for constant in ("WINDOW", "TEXT_WINDOW", "SORTED"):
+    for constant in ("WINDOW", "TEXT_WINDOW", "SORTED", "SCORE_READ"):
         monkeypatch.setattr(depots, constant, BOUND)
     small, held_small = holding(make_depot, me, 400, "small")
     large, held_large = holding(make_depot, me, 800, "large")

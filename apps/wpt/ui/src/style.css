@@ -291,8 +291,8 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 .filter-bar > .sql.pending { border-color: var(--ochre); box-shadow: inset 0 -3px 0 var(--ochre); }
 .filter-bar > .find { flex: 1.5 1 180px; min-width: 0; width: auto; }
 .filter-bar > .sql-note { flex: none; align-self: center; }
-/* texts in the workspace: a monospace type unless the person chose the serif of prose */
-.workspace-frame.mono { --text-font: var(--font-typewriter); }
+/* texts on the Texts page: a monospace type unless the person chose the serif of prose */
+.texts-frame.mono { --text-font: var(--font-typewriter); }
 .filter-bar > .wic-btn { flex: none; align-self: center; }
 .filter-bar > .filter-toggle { display: none; }
 .tick-menu { position: relative; }
@@ -321,8 +321,6 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 /* an SQL condition the page made, shown by its name */
 .chip { display: inline-flex; align-items: center; gap: var(--gap-hair); justify-self: start; padding: 2px var(--gap-tight); border: 1px solid var(--line-strong); background: var(--paper-raised); }
 
-/* on a phone, the moves and decisions of the workspace's keys, stuck to the bottom of the screen */
-.phone-bar { display: none; }
 
 /* the bar of the ticked rows, stuck to the bottom of the screen */
 .selection-bar { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group);
@@ -385,7 +383,7 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 /* a text: the text beside its record, and the passage to erase */
 .text-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 360px); gap: var(--gap-block); align-items: start; }
 .record > .section:first-child { margin-top: 0; }
-/* in the workspace's record, a block is a rule and its title, not a card: the column is narrow */
+/* in a text's record, a block is a rule and its title, not a card: the column is narrow */
 .record .section { margin-top: var(--gap-block); padding: var(--gap-tight) 0 0; background: none; border: 0; border-top: 2px solid var(--ink); }
 .viewer { background: var(--paper-raised); padding: var(--gap-group); max-height: 75vh; overflow: auto; }
 .text-page { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-serif); font-size: 15px; line-height: 23px; }
@@ -469,39 +467,64 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .holds { margin: var(--gap-group) 0; }
 .vocabulary { margin-bottom: var(--gap-group); }
 
-/* the workspace: what can be opened, the playlist of what is open, and the
-   current text in its editor, three columns that fill the screen under the
-   filter bar and the head of what is open, each scrolling on its own, and
-   the keys in one line under them; in the blob mode, the blob takes the two
-   last columns */
+/* the Texts page: the quick filters, the filter bar and the view under the
+   top bar, one line naming what is open, then the open text and its review
+   panel, which fill the screen, each scrolling on its own; the list of the
+   open texts hides at the left edge and slides over the text */
 .wrap.full { height: 100dvh; display: flex; flex-direction: column; padding-bottom: 0; }
-.wrap.full > .top { margin-bottom: var(--gap-tight); }
+.wrap.full > .top { margin-bottom: var(--gap-hair); }
 .wrap.full > main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.workspace-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.workspace-frame > .filter-bar { margin-bottom: var(--gap-tight); }
-.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(180px, 240px) minmax(260px, 340px) minmax(0, 1fr); gap: var(--gap-block); }
-.workspace.blob-mode { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); }
-.workspace > * { min-width: 0; min-height: 0; overflow-y: auto; }
-.open-bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--gap-hair) var(--gap-block); margin-bottom: var(--gap-tight); padding-bottom: var(--gap-hair); border-bottom: 2px solid var(--ink); }
+.texts-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.texts-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); padding-bottom: var(--gap-hair); border-bottom: 1px solid var(--line-strong); }
+.texts-top > .filter-bar { flex: 1 1 520px; min-width: 0; margin: 0; gap: var(--gap-hair) var(--gap-tight); }
+.texts-top > .filter-bar > .tick-menu { flex: 0 0 auto; }
+.texts-top > .filter-bar > .find { flex: 1 1 140px; }
+.texts-top > .filter-bar > :is(.find, .sql), .texts-top .tick-menu > summary { min-height: 32px; height: 32px; }
+.quick-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair); }
+.quick-filters .wic-btn { height: 32px; padding: 0 var(--gap-tight); }
+.quick-filters .quick.on { background: var(--ink); color: var(--paper); }
+.list-button { display: none; }
+.open-menu { position: relative; }
+.open-pop { position: absolute; z-index: 40; top: calc(100% + var(--gap-hair)); left: 0; width: 300px; max-height: 70vh; overflow-y: auto; padding: 0 var(--gap-tight) var(--gap-tight);
+  background: var(--paper-raised); border: 1px solid var(--line-strong); box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 20%, transparent); }
+.open-bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 var(--gap-group); padding: var(--gap-hair) 0; }
 .open-bar > .library-head, .open-head { flex: 1 1 420px; min-width: 0; }
-.open-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-group); }
-.open-head-main { flex: 1 1 420px; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-group); }
+.open-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--gap-group); }
+.open-head-main { flex: 1 1 420px; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--gap-group); }
 .open-head-main > .chain { flex-basis: 100%; margin: 0; }
-.open-title { margin: 0; font-size: 22px; line-height: 28px; }
+.open-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 700; }
 .open-head .problems { flex-basis: 100%; }
-.view-switch { display: flex; flex-wrap: wrap; gap: var(--gap-group); }
+.position { white-space: nowrap; }
+.view-switch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight); }
 .view-switch a { text-decoration: none; padding: var(--gap-hair) 0; }
 .view-switch a[aria-current="true"] { text-decoration: underline var(--ochre); text-decoration-thickness: var(--space-1); text-underline-offset: 6px; text-decoration-skip-ink: none; }
-.said-line { flex: none; margin: var(--gap-tight) 0 0; }
-.workspace-frame > .selection-bar { position: static; flex: none; margin-top: var(--gap-tight); }
+.texts-body { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr) minmax(320px, 360px); gap: 0 var(--gap-tight); }
+.texts-body.blob-mode { grid-template-columns: minmax(0, 1fr); }
+.texts-body.blob-mode > .blob { overflow-y: auto; min-height: 0; }
+/* the edge the list slides out of, and the list over the text, the width of a column */
+.list-rail { cursor: e-resize; background: var(--paper-raised); border-right: 1px solid var(--line-strong); }
+.list-rail:hover { background: color-mix(in srgb, var(--ochre) 30%, var(--paper-raised)); }
+/* the window's left edge counts as the rail, so a mouse flung against it opens the list */
+.list-rail::before { content: ""; position: fixed; z-index: 34; top: 0; bottom: 0; left: 0; width: 16px; }
+.list-drawer { position: absolute; z-index: 35; top: 0; bottom: 0; left: 0; width: min(360px, 85vw); overflow-y: auto; padding: 0 var(--gap-tight); background: var(--paper); border-right: 2px solid var(--ink);
+  box-shadow: 6px 0 18px color-mix(in srgb, var(--ink) 20%, transparent); transform: translateX(-105%); transition: transform 0.12s ease-out; }
+.texts-body.list-out > .list-drawer { transform: none; }
+.said-line { flex: none; margin: var(--gap-hair) 0 0; }
+.texts-frame > .selection-bar { position: static; flex: none; margin-top: var(--gap-hair); }
 .said-line .refusal { margin: 0; }
-/* under the columns: the question before a decision, the line of what was done, and on a phone the bar of the keys */
+/* under the text: the question before a decision and the line of what was done */
 .dock { flex: none; }
 .decide-ask { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group); padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--ink); background: var(--paper-raised); }
 .decide-ask.refusing { border-left-color: var(--red); }
 .decide-reason { flex: 1 1 220px; width: auto; min-width: 0; }
+/* scroll bars wide enough to grab with a flick of the mouse */
+.list-drawer, .content-scroll, .code-editor .cm-scroller, .review-panel, .open-pop, .blob-mode > .blob { scrollbar-width: auto; scrollbar-color: var(--line-strong) var(--paper); }
+.list-drawer::-webkit-scrollbar, .content-scroll::-webkit-scrollbar, .code-editor .cm-scroller::-webkit-scrollbar, .review-panel::-webkit-scrollbar, .blob-mode > .blob::-webkit-scrollbar { width: 16px; height: 16px; }
+.list-drawer::-webkit-scrollbar-thumb, .content-scroll::-webkit-scrollbar-thumb, .code-editor .cm-scroller::-webkit-scrollbar-thumb, .review-panel::-webkit-scrollbar-thumb, .blob-mode > .blob::-webkit-scrollbar-thumb {
+  background: var(--line-strong); border: 3px solid var(--paper); border-radius: 8px; min-height: 48px; }
+.list-drawer::-webkit-scrollbar-thumb:hover, .content-scroll::-webkit-scrollbar-thumb:hover, .code-editor .cm-scroller::-webkit-scrollbar-thumb:hover, .review-panel::-webkit-scrollbar-thumb:hover { background: var(--ink-muted); }
 
-/* the left column: groups of links, each a filter, the open one marked */
+/* the Open menu: groups of links, each a filter, the open one marked */
 .sources { padding-right: var(--gap-hair); }
 .source-group { margin-top: var(--gap-group); }
 .source-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--gap-tight); border-bottom: 1px solid var(--line-strong); margin-bottom: var(--gap-hair); }
@@ -543,34 +566,81 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .playlist-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .playlist-row.current .playlist-title { font-weight: 700; }
 .playlist-length { flex: none; font-size: 13px; font-variant-numeric: tabular-nums; }
+.playlist-scores { flex: none; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
 .status-mark { flex: none; width: 1.1em; text-align: center; font-family: var(--font-gothic); font-weight: 700; }
 .status-mark.under-review { color: var(--ochre); }
 .status-mark.admitted { color: var(--ink); }
 .status-mark.refused { color: var(--red-ink); }
-.key-legend { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--gap-hair) var(--gap-block); margin-top: var(--gap-tight); padding: var(--gap-hair) 0 var(--gap-tight); border-top: 2px solid var(--ink); }
-.keys { display: flex; flex-wrap: wrap; gap: var(--gap-hair) var(--gap-group); }
-.key { white-space: nowrap; }
 kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap-hair); border: 1px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; }
-.key-legend .act { color: var(--ink); }
 
-/* the right column: the current text's head and actions, its tabs, its editor */
-.editor-column { padding-right: var(--gap-hair); display: flex; flex-direction: column; }
-.text-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.text-panel > [role="tabpanel"]:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* the open text: one line of facts, then its content, which fills the column, then the bar of unsaved changes */
+.text-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.content-said { margin: 0 0 var(--gap-hair); }
 .edit-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.save-idle { margin: var(--gap-tight) 0 0; }
-.text-head { display: grid; gap: var(--gap-hair); margin-bottom: var(--gap-tight); }
-.text-title { margin: 0; overflow-wrap: anywhere; font-size: 22px; line-height: 28px; }
-.text-actions { justify-content: flex-start; }
-.head-note-left { margin: 0; color: var(--ink-muted); }
-.tabs { display: flex; gap: var(--gap-group); border-bottom: 1px solid var(--line-strong); margin-bottom: var(--gap-tight); }
-.tab { all: unset; cursor: pointer; padding: var(--gap-hair) 0; font-size: 15px; }
-.tab[aria-selected="true"] { box-shadow: inset 0 calc(-1 * var(--space-1)) 0 var(--ochre); }
-.tab:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
-.editor-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-bottom: var(--gap-tight); }
-.editor-count { margin-left: auto; }
+.content-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--gap-tight); min-height: 32px; padding: 0 0 var(--gap-hair); }
+.content-title { min-width: 0; max-width: 32em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.content-tools { margin-left: auto; display: flex; align-items: center; gap: var(--gap-tight); }
+.content-tools .wic-btn { height: 28px; }
+.content-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.text-column > .viewer, .text-column > .text-viewer { flex: 1; min-height: 0; overflow-y: auto; }
 .code-editor { flex: 1; min-height: 240px; border: 1px solid var(--line-strong); }
-.edit-content .confirm-area { margin-top: var(--gap-group); }
+.code-editor .cm-editor { height: 100%; }
+.save-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-top: var(--gap-hair); padding: var(--gap-hair) var(--gap-tight); border-left: 4px solid var(--ochre); background: var(--paper-raised); }
+.save-bar.asking { border-left-color: var(--red); }
+.save-bar .save-words { flex-basis: 100%; }
+
+/* the review panel: scores, tags, the moves and decisions, the presets, the facts; its buttons stay in place from text to text */
+.review-panel { min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; border-left: 1px solid var(--line-strong); padding-left: var(--gap-tight); }
+.review-panel > section { padding: var(--gap-hair) 0; border-bottom: 1px solid var(--line); }
+.review-panel > .panel-facts { margin-top: auto; border-bottom: 0; }
+.choice { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 0 var(--gap-hair);
+  border: 1px solid var(--line-strong); background: var(--paper); font-family: var(--font-typewriter); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.choice:hover { background: var(--paper-raised); }
+.choice:focus-visible { outline: 3px solid var(--ink); outline-offset: -3px; }
+.choice.recent { box-shadow: inset 0 -3px 0 var(--ochre); }
+.choice.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.choice.waiting { outline: 2px dashed var(--ochre); outline-offset: -4px; }
+.choice:disabled { cursor: default; opacity: 0.5; }
+.score-row { display: grid; grid-template-columns: 4em minmax(0, 1fr) auto; align-items: center; gap: var(--gap-hair); margin: 2px 0; }
+.score-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.score-choices { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; }
+.score-nudge { display: flex; gap: 2px; }
+.score-nudge .choice { width: 24px; }
+.score-nudge .choice.value { width: 42px; }
+.tag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; }
+.tag-grid .choice { font-family: inherit; }
+.panel-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-top: var(--gap-hair); }
+.also { display: inline-flex; align-items: center; margin-right: var(--gap-hair); font-weight: 700; }
+.also.waiting { outline: 2px dashed var(--ochre); }
+.link-button { all: unset; cursor: pointer; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.link-button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.typed { width: 10em; height: 28px; min-height: 28px; }
+.panel-buttons { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 3px; }
+.panel-buttons .wic-btn { justify-content: center; height: 40px; padding: 0 var(--gap-hair); }
+.panel-buttons .review-button { grid-column: 1 / -1; height: 32px; }
+.panel-buttons .refuse-button { color: var(--red-ink); box-shadow: inset 0 0 0 1px var(--red); }
+.panel-note { margin: var(--gap-hair) 0 0; color: var(--ink-muted); }
+.panel-note.waiting-note { color: var(--ink); }
+.panel-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.preset { display: flex; min-width: 0; }
+.preset > .choice { flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; padding: 2px var(--gap-hair); font-family: inherit; }
+.preset-name { font-weight: 700; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.preset-words { font-family: var(--font-typewriter); font-size: 11px; color: var(--ink-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.preset > .choice.on .preset-words { color: inherit; }
+.add-preset { border-style: dashed; font-family: inherit; white-space: normal; text-align: center; }
+.mini-facts { display: grid; grid-template-columns: 5.5em minmax(0, 1fr); gap: 0 var(--gap-hair); margin: 0 0 var(--gap-hair); }
+.mini-facts dt { color: var(--ink-muted); font-style: italic; }
+.mini-facts dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-facts .more-menu > summary { height: 28px; }
+/* the number pad, beside the panel at the height of the value it types, over the text */
+.number-pad { position: fixed; z-index: 50; width: 208px; padding: var(--gap-tight); background: var(--paper-raised); border: 2px solid var(--ink); box-shadow: -6px 6px 18px color-mix(in srgb, var(--ink) 25%, transparent); }
+.number-pad:focus { outline: none; }
+.pad-head { display: flex; justify-content: space-between; margin-bottom: var(--gap-hair); font-weight: 700; }
+.pad-keys { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; }
+.pad-keys .choice { min-height: 38px; font-size: 16px; }
+.pad-keys .choice.ok { background: var(--ink); color: var(--paper); }
+.pad-range { margin: var(--gap-hair) 0 0; color: var(--ink-muted); }
+.pad-range.act { color: var(--red-ink); font-weight: 700; }
 
 /* the blob: every open text one after another, a thin rule naming each */
 .blob { max-width: 60em; }
@@ -583,17 +653,20 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .blob-passage:hover { background: var(--paper-raised); }
 .blob-end { padding: var(--gap-group) 0; }
 
-@media (max-width: 1100px) {
-  .wrap.full { height: auto; display: block; }
-  .workspace > * { overflow-y: visible; }
-  .workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
-  .workspace > .sources { grid-column: 1 / -1; max-height: 40vh; overflow-y: auto; }
-  .workspace.blob-mode { grid-template-columns: minmax(0, 1fr); }
-}
-
 @media (max-width: 760px) {
-  .workspace { grid-template-columns: minmax(0, 1fr); }
-  .editor-column { position: static; }
+  /* the Texts page on a phone: the page scrolls as a whole, the text first, then its panel; the Texts button opens the list */
+  .wrap.full { height: auto; display: block; }
+  .texts-body { display: flex; flex-direction: column; gap: var(--gap-group); }
+  .list-rail { display: none; }
+  .list-button { display: inline-flex; }
+  .list-drawer { position: fixed; top: 0; bottom: 0; }
+  .texts-body > * { flex: none; }
+  .review-panel { border-left: 0; padding-left: 0; overflow: visible; }
+  .code-editor { flex: none; height: 65vh; }
+  /* the moves and decisions stay at the bottom of the screen, under the text as it scrolls */
+  .panel-buttons { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; margin: 0; padding: var(--gap-hair) var(--gap-group); background: var(--paper); border-top: 1px solid var(--line-strong); }
+  .texts-frame { padding-bottom: 140px; }
+  .texts-top > .filter-bar { flex-basis: 100%; }
   .board { grid-template-columns: minmax(0, 1fr); }
   .board > .section:nth-child(2) { margin-top: var(--gap-group); }
   .board > .tall { grid-row: auto; }
@@ -629,36 +702,14 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .stats > .stat:has(.mix) { grid-column: 1 / -1; }
   .cards .files-table td.file-name { display: none; }
   .filter-bar > .find { grid-column: 1 / -1; }
-  /* the workspace on a phone: the search and the filters' button, then the open text, then the playlist, then what to open */
   .filter-bar:not(.shown) > :not(.find):not(.filter-toggle) { display: none; }
   .filter-bar > .filter-toggle { display: inline-flex; grid-column: 1 / -1; justify-self: start; }
-  /* the list first, then the open text, its bar of moves and decisions under its head (text-panel.tsx); a decision's confirm at the bottom of the screen */
-  .workspace > .editor-column { order: 2; }
   /* stuck to the bottom of the screen at the end of the page's flow, so it covers nothing at the page's end */
   .dock { position: sticky; z-index: 30; bottom: 0; margin: 0 calc(-1 * var(--gap-group)); padding: 0 var(--gap-group); background: var(--paper); }
   /* no line numbers on a phone: its narrow lines wrap, and the gutter would be measured only once in view */
-  .workspace .code-editor .cm-gutters { display: none; }
+  .texts-body .code-editor .cm-gutters { display: none; }
   /* a wrapped line hangs under its own start, so a wrap never reads as a line of its own */
-  .workspace .code-editor .cm-content .cm-line { padding-left: calc(6px + 2ch); text-indent: -2ch; }
-  /* the tag and license lists stay in the filters' menus: the column keeps the statuses, the libraries and the saved filters */
-  .workspace > .sources { max-height: none; overflow: visible; }
-  .sources .source-long { display: none; }
-  .phone-bar > .wic-btn { white-space: nowrap; }
-  /* the keys mean nothing without a keyboard; the confirm of each decision names who signs */
-  .key-legend { display: none; }
-  /* under the open text's head, so it covers none of it; stuck to the top of the screen while the text scrolls under it */
-  .phone-bar { position: sticky; top: 0; z-index: 30; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--gap-hair);
-    margin: 0 calc(-1 * var(--gap-group)) var(--gap-tight); padding: var(--gap-tight) var(--gap-group); background: var(--paper); border-bottom: 2px solid var(--ink); }
-  .phone-bar > .wic-btn { justify-content: center; padding-inline: var(--gap-hair); }
-  /* a short list, so the open text's head and start show above the bar on the first screen */
-  .workspace > .playlist-column { order: 1; max-height: 20vh; overflow-y: auto; }
-  /* the moves of the bar: plain arrows in a thin frame, no underline, since they decide nothing */
-  .phone-bar > .move-button::after { display: none; }
-  .phone-bar > .move-button { box-shadow: inset 0 0 0 1px var(--line-strong); font-size: 20px; }
-  /* the text's actions on their own lines, clear of each other and of the bar */
-  .text-actions { row-gap: var(--gap-tight); margin-top: var(--gap-hair); }
-  .workspace > .sources { order: 3; }
-  .workspace .code-editor { max-height: 65vh; }
+  .texts-body .code-editor .cm-content .cm-line { padding-left: calc(6px + 2ch); text-indent: -2ch; }
   .blocked .why { max-width: none; white-space: nowrap; } /* one line high: the table scrolls sideways */
   .filter-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-bar > .tick-menu:last-of-type:nth-of-type(odd), .filter-bar > .sql { grid-column: 1 / -1; }
@@ -751,8 +802,6 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 /* a figure in a table that is a quantity in words ("about 5.4 million"): the body face with even digits, never the typewriter */
 .ledger-table td.figure { font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* a text's title with its id beside it, so the line of facts under it keeps to its facts */
-.text-title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-tight); min-width: 0; }
-.text-title-row .text-title { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .pipeline-list > .pipeline-row, .chain-row { grid-template-columns: minmax(0, 1fr); }
   .chain-row > .wic-btn { justify-self: start; }

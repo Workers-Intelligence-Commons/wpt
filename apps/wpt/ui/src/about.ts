@@ -1,5 +1,5 @@
-// The depot's about route, read once per page load (and again after a
-// failure): its name and address, and the words of the confirmation and the
+// The depot's about route, read once per page load (and, after a failure,
+// again 3 seconds later while a page waits on it): its name and address, and the words of the confirmation and the
 // address of the requirements that every decision form shows. A page that needs the depot's change
 // number now reads /api/about itself.
 
@@ -26,17 +26,22 @@ export function useAbout(): { about: About | null; problems: string[] } {
   useEffect(() => {
     if (known) return;
     let live = true;
-    asking ??= get<About>("/api/about").then((a) => {
-      asking = null;
-      if (a.ok) known = a.data;
-      return a;
-    });
-    asking.then((a) => {
-      if (!live) return;
-      if (a.ok) setAbout(a.data);
-      else setProblems(a.problems);
-    });
-    return () => { live = false; };
+    let again = 0;
+    const ask = () => {
+      asking ??= get<About>("/api/about").then((a) => {
+        asking = null;
+        if (a.ok) known = a.data;
+        return a;
+      });
+      asking.then((a) => {
+        if (!live) return;
+        if (a.ok) { setAbout(a.data); setProblems([]); return; }
+        setProblems(a.problems);
+        again = window.setTimeout(ask, 3000); // a page left open asks again, so a passing failure does not stop its forms
+      });
+    };
+    ask();
+    return () => { live = false; window.clearTimeout(again); };
   }, []);
   return { about, problems };
 }

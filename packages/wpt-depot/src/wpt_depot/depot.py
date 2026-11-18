@@ -237,6 +237,8 @@ COUNT_STEP = 1_000_000
 # how many candidates a page reads at most (Depot.search), and with a search in the texts themselves, which reads
 # each candidate's text
 WINDOW, TEXT_WINDOW = 10_000, 200
+# how many revisions, the latest changes first, Depot.score_values goes over at most, and how many values it gives
+SCORE_READ, SCORE_VALUES = 200_000, 12
 # the columns of the texts view but those that hold a text: what a query reads that never reads a text's parts
 FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
           "decisions, scores, status, libraries")
@@ -623,7 +625,7 @@ class Depot:
         then that page's first place, and an id the depot does not hold
         gives the first page. A row holds a text's credits, never its text
         or content: its id, kind, title, authors, tags, licenses, libraries,
-        status, whether a locked library holds it, and its length in
+        scores, status, whether a locked library holds it, and its length in
         characters. BadQuery for a condition that is not one; Refused for an
         order that is none of ORDERS, an order the listing cannot give
         within SORTED texts, more than one of after, before and at, or a
@@ -638,7 +640,7 @@ class Depot:
             if not held:
                 return self.search(where, limit=limit, order=order, descending=descending)
             after = json.loads(held[0]["place"])
-        columns = "id, kind, title, authors, tags, licenses, libraries, status, locked, length"
+        columns = "id, kind, title, authors, tags, licenses, libraries, scores, status, locked, length"
         found, edge = self._page(plan, columns, order, descending, before if before is not None else after,
                                  before is not None, limit, at is not None)
         if before is not None and len(found) <= limit and edge is None:
@@ -1841,6 +1843,29 @@ class Depot:
         it, by name: [{name, texts}], read from the depot's counts
         (wpt_depot.counts) at once whatever the depot's size."""
         return self._rows(f"SELECT name, texts FROM counts WHERE facet = '{counts.SCORE}' ORDER BY name")
+
+    def score_values(self, name: str) -> dict:
+        """The values the score name has on the texts changed last, which
+        a review offers as its choices: {name, read, texts, low, high,
+        common}. It goes over the SCORE_READ revisions of the latest
+        changes at most, newest first (a score set makes a revision, so
+        the texts scored last come first), whatever the depot's size; read
+        is how many it went over, texts how many of them are current and
+        have the score, low and high its smallest and largest value there
+        (null without one), common its SCORE_VALUES most frequent values,
+        [{value, texts}], by value."""
+        _filled(name=name)
+        found = self.db.query(
+            "WITH walked AS (SELECT latest, scores FROM texts_revisions ORDER BY change DESC LIMIT ?), "
+            "seen AS (SELECT CAST(s.value ->> 'value' AS REAL) AS value FROM walked, json_each(walked.scores) s "
+            "WHERE walked.latest AND walked.scores IS NOT NULL AND s.value ->> 'name' = ?) "
+            "SELECT (SELECT count(*) FROM walked) AS read, (SELECT count(*) FROM seen) AS texts, "
+            "(SELECT min(value) FROM seen) AS low, (SELECT max(value) FROM seen) AS high, "
+            "(SELECT json_group_array(json_object('value', value, 'texts', n)) FROM (SELECT value, n FROM "
+            "(SELECT value, count(*) AS n FROM seen GROUP BY value ORDER BY n DESC, value LIMIT ?) ORDER BY value)) "
+            "AS common", (SCORE_READ, name.strip(), SCORE_VALUES))[0]
+        return {"name": name.strip(), "read": found["read"], "texts": found["texts"], "low": found["low"],
+                "high": found["high"], "common": json.loads(found["common"])}
 
     # Libraries
 

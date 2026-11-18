@@ -1,4 +1,4 @@
-// The head of the workspace when one library is open: its name, whether it
+// The head of the Texts page when one library is open: its name, whether it
 // is open or locked, how many texts it holds and how many characters, those of
 // plain text and those of conversations and tasks apart (read again after each change), the library it was forked
 // from and the datasets that read it, its reported problems, and its
@@ -7,7 +7,7 @@
 // lock it for good, rename it, and, locked, the revisions it pinned, the
 // actions after the first two folded under "More". Taking
 // texts out of it, and a report or a fork without some of its texts, act on
-// the texts ticked in the playlist (workspace.tsx). A library that belongs
+// the texts ticked in the playlist (texts.tsx). A library that belongs
 // to the upstream this depot follows says so, and keeps only the fork,
 // which makes a library of this depot's own.
 

@@ -1,6 +1,6 @@
 // Saved filters: named filters of the texts (filter.tsx's TextFilter, the
 // SQL condition included) that this browser keeps in its localStorage, so
-// the workspace can open them again. They never reach the depot. A browser
+// the Texts page can open them again. They never reach the depot. A browser
 // that refuses storage keeps none, and saving says so.
 
 import { useEffect, useState } from "react";

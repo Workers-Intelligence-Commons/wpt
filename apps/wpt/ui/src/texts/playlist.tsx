@@ -1,7 +1,8 @@
-// The workspace's middle column: the texts of what is open, in order, a
+// The list of the open texts, at the left edge of the Texts page: in order, a
 // page at a time (the depot can hold a hundred million, so only one page is
 // ever read): each a link that opens it in the editor, with its status, its
-// length and a tick for the actions on ticked texts. The current text is
+// scores (a letter of each name and its value, q5 e1), its length and a tick
+// for the actions on ticked texts. The current text is
 // marked. Above it, one box in the column of the rows' boxes ticks the page
 // shown (every open text when there is one page), half ticked while only some
 // rows are; once the page is ticked, a button beside it ticks every open text
@@ -10,14 +11,15 @@
 // the others when the page says its listing is small enough to sort); its
 // foot is the pager, which moves a page after another and shows the count
 // as it grows. A page cut at the server's reading bound (partial) can hold
-// few rows or none, and the next page reads on. The keys that move and decide are the workspace's
-// (workspace.tsx), and so is their legend.
+// few rows or none, and the next page reads on. The keys that move and decide are the Texts page's
+// (texts.tsx).
 
 import { Button } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, type ReactNode } from "react";
 import { MatchedCount, type Counting } from "../counts";
 import { type Found, type Order } from "../filter";
 import { PlacePager, plural, textName, type Status } from "../parts";
+import { shortValue } from "./choices";
 
 const ORDERS: { by: Order["by"]; label: string }[] = [
   { by: "id", label: "id" }, { by: "title", label: "title" }, { by: "status", label: "status" }, { by: "length", label: "length" },
@@ -92,9 +94,11 @@ export function Playlist({ found, busy, current, link, isTicked, everyTicked, on
           {found.rows.map((r) => (
             <li key={r.id} className={`playlist-row${r.id === current ? " current" : ""}${isTicked(r.id) ? " ticked" : ""}`} aria-current={r.id === current ? "true" : undefined}>
               <input type="checkbox" className="wic-check-box wic-focus" aria-label={`Tick ${textName(r)}`} checked={isTicked(r.id)} onChange={(e) => onTick([r.id], e.target.checked)} />
-              <a href={link(r.id)} className="playlist-link" title={`${r.title ?? r.id} (${r.id}), ${r.status}, ${plural(r.length, "character")}`}>
+              <a href={link(r.id)} className="playlist-link" title={`${r.title ?? r.id} (${r.id}), ${r.status}, ${plural(r.length, "character")}${r.scores?.length ? `; ${r.scores.map((one) => `${one.name} ${shortValue(one.value)}`).join(", ")}` : ""}`}>
                 <span className={`status-mark ${r.status.replace(" ", "-")}`} aria-label={r.status}>{MARKS[r.status]}</span>
                 <span className="playlist-title">{textName(r)}</span>
+                {r.scores && r.scores.length > 0 && <span className="playlist-scores aside" aria-label={r.scores.map((one) => `${one.name} ${shortValue(one.value)}`).join(", ")}>
+                  {r.scores.map((one) => `${one.name.slice(0, 1)}${shortValue(one.value)}`).join(" ")}</span>}
                 <span className="playlist-length aside" aria-label={plural(r.length, "character")}>{short(r.length)}</span>
               </a>
             </li>

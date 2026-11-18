@@ -121,6 +121,9 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           are is left out
     wpt depot score-names                 every name of a score a text has now, with how many texts have it;
                                           one JSON row per line, from the depot's counts
+    wpt depot score-values NAME           the values the score NAME has on the texts changed last (at most the
+                                          200,000 latest revisions, whatever the depot's size): how many have
+                                          it, its smallest and largest, its 12 most frequent; one JSON row
     wpt depot credits-file FILE DECLARATION
                                           change the credits of many texts at once, each as a new
                                           revision: FILE (UTF-8) holds one JSON object per line, one line
@@ -415,6 +418,11 @@ def cmd_score(args):
 
 def cmd_score_names(args):
     _rows(opened().score_names())
+    return 0
+
+
+def cmd_score_values(args):
+    _rows([opened().score_values(args.name)])
     return 0
 
 
@@ -796,6 +804,10 @@ def parser() -> argparse.ArgumentParser:
     naming_scores = commands.add_parser("score-names", help="every name of a score a text has, with how many texts "
                                                             "have it")
     naming_scores.set_defaults(run=cmd_score_names)
+    valuing = commands.add_parser("score-values", help="the values a score has on the texts changed last: how many "
+                                                       "have it, its smallest and largest, its most frequent")
+    valuing.add_argument("name", help="the score's name")
+    valuing.set_defaults(run=cmd_score_values)
 
     licensing = commands.add_parser("license", help="the licenses the depot holds")
     licenses = licensing.add_subparsers(dest="action", required=True)

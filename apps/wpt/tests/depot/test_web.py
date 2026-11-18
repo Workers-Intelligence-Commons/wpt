@@ -682,6 +682,8 @@ def test_one_score_set_on_a_selection_from_the_pages_is_one_decision_and_its_nam
     assert request("GET", "/api/texts/test-depot-2")[1]["text"]["scores"] == [
         {"name": "rank", "value": 3.0, "content_version": 1}]
     assert request("GET", "/api/scores") == (200, [{"name": "rank", "texts": 3}])
+    assert request("GET", "/api/scores/rank/values") == (200, {
+        "name": "rank", "read": 6, "texts": 3, "low": 3.0, "high": 3.0, "common": [{"value": 3.0, "texts": 3}]})
     assert wrote(request, "/api/texts/score", {"selection": named(["test-depot-1"]), "name": "rank", "remove": True,
                                                "declaration": ME})[1]["changed"] == 1
     assert request("GET", "/api/scores") == (200, [{"name": "rank", "texts": 2}])

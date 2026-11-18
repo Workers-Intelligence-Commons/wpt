@@ -113,12 +113,12 @@ function Export({ id }: { id: string }) {
         <p className="small">One text per JSON line, or per Parquet row, with five fields, the same in both forms:</p>
         <dl className="facts small">
           <dt className="aside ledger">depot</dt><dd>the depot that holds the text, by the name a corpus records for it</dd>
-          <dt className="aside ledger">id</dt><dd>the text's id in that depot, the one its page in the workspace shows</dd>
+          <dt className="aside ledger">id</dt><dd>the text's id in that depot, the one its page on the Texts page shows</dd>
           <dt className="aside ledger">revision</dt><dd>the revision of the text the dataset reads</dd>
           <dt className="aside ledger">kind</dt><dd><span className="ledger">null</span> for a plain text, else the item's kind, such as <span className="ledger">conversation</span> or <span className="ledger">task</span></dd>
           <dt className="aside ledger">text</dt><dd>the plain text itself, or an item's content as JSON text</dd>
         </dl>
-        <p className="small">Titles, authors, tags, licenses and notices are left out. Each text's page in the <a href={href(["texts"])}>workspace</a> shows them, and a corpus built from this dataset on <a href={href(["download", dataset.id])}>its corpora page</a> holds them as tables: its texts with their credits and licenses, the licenses' texts, and the notices.</p>
+        <p className="small">Titles, authors, tags, licenses and notices are left out. Each text's page in the <a href={href(["texts"])}>Texts page</a> shows them, and a corpus built from this dataset on <a href={href(["download", dataset.id])}>its corpora page</a> holds them as tables: its texts with their credits and licenses, the licenses' texts, and the notices.</p>
         <details className="small aside">
           <summary>More about the parts</summary>
           The texts are in a fixed shuffled order, and a part is made as it is sent, the same bytes every time, so its size is known after its first download. A text two libraries hold is counted twice above, so a part may hold a few fewer. At most two parts are sent at once, one to each visitor.

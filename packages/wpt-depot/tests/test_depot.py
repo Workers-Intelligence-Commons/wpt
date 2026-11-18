@@ -1173,6 +1173,27 @@ def test_one_scores_change_is_one_decision_on_many_texts_which_keep_their_status
         {"id": first, "names": '["machine-made"]'}, {"id": second, "names": '["machine-made","source-rank"]'}]
 
 
+def test_the_values_of_a_score_are_those_of_the_current_texts_changed_last_most_frequent_first_kept(
+        make_depot, me, monkeypatch):
+    depot = make_depot()
+    ids = depot.add([plain(f"text {n}") for n in range(6)], me)
+    assert depot.score_values("quality") == {"name": "quality", "read": 6, "texts": 0, "low": None, "high": None,
+                                             "common": []}
+    scores_of(depot, [{"id": one, "scores": [score("quality", value)]}
+                      for one, value in zip(ids, (4, 4, 2, 4, 2, 5))], me)
+    scores_of(depot, [{"id": ids[5], "scores": [score("quality", 1)]}], me)  # its earlier 5 no longer counts
+
+    found = depot.score_values(" quality ")
+
+    assert (found["name"], found["texts"], found["low"], found["high"]) == ("quality", 6, 1.0, 4.0)
+    assert found["common"] == [{"value": 1.0, "texts": 1}, {"value": 2.0, "texts": 2}, {"value": 4.0, "texts": 3}]
+    # only the most frequent are given, by value, and only the revisions of the latest changes are read
+    monkeypatch.setattr(depots, "SCORE_VALUES", 2)
+    assert depot.score_values("quality")["common"] == [{"value": 2.0, "texts": 2}, {"value": 4.0, "texts": 3}]
+    monkeypatch.setattr(depots, "SCORE_READ", 1)
+    assert (depot.score_values("quality")["read"], depot.score_values("quality")["texts"]) == (1, 1)
+
+
 def test_a_score_set_again_replaces_it_one_is_removed_by_name_and_an_unchanged_text_is_left_out(make_depot, me):
     depot = make_depot()
     first, second = depot.add([plain("one"), plain("two")], me)
@@ -1185,6 +1206,9 @@ def test_a_score_set_again_replaces_it_one_is_removed_by_name_and_an_unchanged_t
 
     assert (reason, changed, left_out) == ("scores changed: set a; removed b", 1, 1)
     assert depot.show(first)["text"]["scores"] == [{"name": "a", "value": 5.0, "content_version": 1}]
+    # a search gives each row its scores, so a list shows them
+    assert [one["scores"] for one in depot.search("true")["rows"]] == [
+        [{"name": "a", "value": 5.0, "content_version": 1}], [{"name": "a", "value": 1.0, "content_version": 1}]]
     scores_of(depot, [{"id": first, "remove": ["a"]}], me)
     assert depot.show(first)["text"]["scores"] is None
     assert depot.show(second)["revisions"] == 2

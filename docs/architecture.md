@@ -432,7 +432,7 @@ open libraries at the pull's change number, as that decision made in the
 clone would; its locked libraries keep their pins. A dataset reads one of
 the upstream's libraries in the clone once a pull has brought it, whether
 it names it with no address or by the upstream's web address, so the head
-of the library in the workspace lists both. A library of the upstream that
+of the library on the Texts page lists both. A library of the upstream that
 no pull brought yet is asked of the upstream's web app when a dataset
 names it. The pages show quietly
 that a text, library, dataset or erasure request belongs to the upstream,
@@ -632,23 +632,24 @@ refused change writes nothing.
 | the depot's counts made again from its rows | `recount` | none |
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on, the erasure requests it decides or the problem it records; the view of a decision, and of a reported problem |
 | a tag, shown | `sql QUERY` | `POST /api/texts/search` and `POST /api/texts/counts` with the tag; the view of a tag |
-| texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the playlist of the "Workspace" page |
-| the texts a filter matches, counted one slice of the depot at a time, or at once from the depot's counts when they hold the answer | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Workspace" page, its playlist and its review, of the "Overview" and of the views of a tag, a license, a decision and a problem |
-| texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Workspace" page |
+| texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the list of the "Texts" page |
+| the texts a filter matches, counted one slice of the depot at a time, or at once from the depot's counts when they hold the answer | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Texts" page, its list and its review, of the "Overview" and of the views of a tag, a license, a decision and a problem |
+| texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Texts" page |
 | a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
-| a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the editor of the "Workspace" page, with the text's record |
+| a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the content and review panel of the "Texts" page, with the text's record |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
-| a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Workspace" page, on ticked texts, on the current text, and by the keys A, R and U |
-| a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Workspace" page |
-| a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving in the editor of the "Workspace" page |
+| a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Texts" page, on ticked texts, on the current text, and by the keys A, R and U |
+| a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Texts" page |
+| a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving the content on the "Texts" page |
 | a change of the plain texts of many texts | `content-file FILE` | `POST /api/texts/content` |
-| a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Workspace" page |
+| a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Texts" page, whose tags its review panel toggles |
 | a change of the credits of many texts | `credits-file FILE` | `POST /api/texts/credits` |
-| a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores`; the "Scores" tab of the current text of the "Workspace" page |
-| one score set on, or removed from, texts | `score NAME (--value V \| --remove) WHERE` | `POST /api/texts/score`, on a selection; the "Workspace" page, on ticked texts |
+| a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores`; the score rows of the review panel of the "Texts" page |
+| one score set on, or removed from, texts | `score NAME (--value V \| --remove) WHERE` | `POST /api/texts/score`, on a selection; the "Texts" page, on ticked texts |
 | the names of the scores | `score-names` | `GET /api/scores` |
-| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Workspace" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
-| a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library in the "Workspace" page |
+| the values a score has on the texts changed last | `score-values NAME` | `GET /api/scores/{name}/values`: how many have it, its smallest and largest, its most frequent, over at most `SCORE_READ` revisions (`wpt_depot/depot.py`); the choices of the score rows of the review panel of the "Texts" page |
+| libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Texts" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
+| a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library on the "Texts" page |
 | what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, read from the counts, and the part of each share the mix keeps; the dataset form, the list of datasets, the page "Libraries" and the head of a library |
 | the times of changes | `sql QUERY` | `POST /api/changes/times`; the moment each library of a dataset is read at |
 | datasets and remotes | `dataset new`, `edit`, `read-again`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it and the figures its revision stores), `POST /api/datasets/{id}` (its edit, refused when made from a revision older than the current one), `POST /api/datasets/{id}/read-again` (its libraries of this depot read at the change number now, refused the same way), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
@@ -659,12 +660,12 @@ refused change writes nothing.
 | a dataset's texts exported | none | `GET /api/datasets/{id}/export` and its parts `{name}`; the dataset's page "Export" |
 | a dataset's sample, for another depot's vocabulary | none | `GET /api/datasets/{dataset}/sample?bytes=N` |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
-| erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Workspace" page asks |
+| erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Texts" page asks |
 
 Each row of a list on the pages opens a view of that thing, with its own
 address in the page's hash so it can be linked: a text (`#/texts/ID`, the
-workspace with that text in its editor), a library (`#/libraries/ID`, the
-workspace with that library open), a reported problem
+Texts page with that text open), a library (`#/libraries/ID`, the
+Texts page with that library open), a reported problem
 (`#/libraries/ID/problems/DECISION`), a dataset (`#/datasets/ID`), a
 license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
 decision (`#/decisions/ID`) and a tag (`#/tags/TAG`).
@@ -676,39 +677,51 @@ that they read the requirements, accept them, and that what they submit
 meets them. The commands take it as `--name`, `--email` and `--accept`.
 The "Settings" page keeps the name and email in the browser and says that
 both are public. Each decision is sent only by a click on its own confirming
-button, or by a deciding key of the workspace. Beside the button stand the
+button, or by a deciding key of the Texts page. Beside the button stand the
 confirmation that `GET /api/about` gives, a link to the requirements, and
 the name and email the decision records. A form without a name or an email
 says so and links to the settings.
 
-The "Workspace" page replaces separate pages of texts and libraries. Its
-left column lists what can be opened: every text, each status, the
-libraries, the tags, the licenses, and the filters saved in the browser.
-What is open is a filter, kept in the address, which the filter bar
-refines. The middle column is the playlist of what is open, a page at a
-time; the right column is the current text in a text editor, with its
-record and its actions beside it. Saving an edit is a content change only:
-the text goes back under review and leaves every open library, and is
-admitted again apart. In the playlist, keys move from text to text, A
-and R admit or refuse the current text and open the next one, and U puts
-an admitted or refused text back under review. A legend
-beside the playlist lists the keys and shows the confirmation they make
-with the name and email they record. A line names the text and the
-decision after each press. Without a name or an email, the key asks for
-them and decides nothing. The keys do nothing while the cursor is in a
-field or the editor. On a phone, a bar under the open text's head, which
-stays at the top of the screen while the text scrolls, moves and decides
-as the keys do. Its Admit and Refuse ask first, in a line at the bottom of
-the screen that holds the confirmation and the name the decision records. The blob
-mode shows the open texts as one continuous text, read a page at a time as
-it scrolls; a click on a passage opens that text in the editor.
+The "Texts" page is where texts are read, scored, tagged, edited and
+decided one after the other. What is open is a filter, kept in the
+address: quick filters and the filter bar set it, and a menu lists what
+can be opened, every text, each status, the libraries, the tags, the
+licenses and the filters saved in the browser. The list of the open
+texts, a page at a time, hides at the left edge and comes out while the
+pointer rests there, or after a button on a phone.
+
+The content of the current text fills the middle and is always editable.
+An edit is saved only by its button or Ctrl+S, as a content change: the
+text goes back under review and leaves every open library, and an
+admitted text asks once more first.
+
+The review panel at the right holds a row for each score name, its
+choices read from `GET /api/scores/{name}/values` with a number pad for
+any other value, the most used tags as toggles, the moves and decisions,
+presets of scores and tags kept in the browser, and the text's facts and
+other actions. Clicks on scores and tags are gathered and saved as one
+change of scores and one of credits a moment after the last, or when
+another text opens. Admit & next decides at once; a refusal, a return to
+review and the admission of a refused text ask first, in a line at the
+bottom that holds the confirmation and the name the decision records. A
+line names the text and the decision after each one.
+
+Keys outside the editor do the same: J and K move, A and R admit or
+refuse and open the next text, U puts the text back under review, T takes
+it out of the open library and X ticks it. Escape leaves the editor.
+Without a name or an email, a decision asks for them and decides nothing.
+The blob mode shows the open texts as one continuous text, read a page at
+a time as it scrolls; a click on a passage opens that text.
+
+The "Help" page, last in the top bar, says how the depot works and what
+each page does.
 
 A list of texts comes a page at a time with no count, since a count reads
 every text it matches. A page starts after the last row of the page
 before it, in its order, or ends before the first row of the page after
 it, so a far page is read as fast as the first and the pages are read one
 after another, never by number. A page can also start at a text's place in
-its order, which the server finds, so the playlist opens on a text that a
+its order, which the server finds, so the list opens on a text that a
 link or the blob opened. A page reads its candidates from the narrowest
 listing its filter names, chosen by the counts: the texts of a decision,
 of one tag, or of one or several licenses, libraries or statuses, from
@@ -723,11 +736,11 @@ with a search in the texts themselves), and in the order of statuses at
 most that many from `texts_status`, so a page is bounded whatever the
 depot's size and however few texts match. A page cut at that bound is
 partial: it can hold fewer rows than asked, or none, and the next page
-reads on from its last candidate. The playlist and the blob say so and
+reads on from its last candidate. The list and the blob say so and
 read on when asked. No index serves the other orders, which sort every
 candidate, so the server gives them only when the listing holds at most
 `SORTED` texts and refuses them past it; a page says whether its listing
-allows them, and the playlist offers them only then. The counts of a filter
+allows them, and the list offers them only then. The counts of a filter
 come apart, in steps: each step counts the matches in one slice of at most
 a million texts of the page's listing, in its order, so each one stays well
 under the time limit of a reader. A filter that names its texts is counted

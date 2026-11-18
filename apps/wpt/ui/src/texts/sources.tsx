@@ -1,4 +1,4 @@
-// The workspace's left column: everything that can be opened, each a
+// The Open menu of the Texts page: everything that can be opened, each a
 // filter of the texts (filter.tsx) that a link puts into the address: every
 // text, each status, the libraries (open, then locked), the tags, the
 // licenses, and the filters saved in this browser (saved-filters.ts), with

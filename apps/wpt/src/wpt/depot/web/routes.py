@@ -314,6 +314,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     def score_names(values, body):
         return 200, depot.score_names()
 
+    def score_values(values, body):
+        return 200, depot.score_values(values["name"])
+
     @refusals
     def content(values, body):
         changed = depot.change_content(values["id"], body.get("text"),
@@ -789,7 +792,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         Route("POST", "/api/texts/search", search, "the texts a filter matches, a page at a time, with no count "
               "(POST /api/texts/counts counts them): the SQL condition over the texts table the filter stands for, "
               "the page of at most limit rows in the order asked (then by id, in the numeric order of ids; "
-              "descending turns the whole order around), each a text's credits, status and length in characters, "
+              "descending turns the whole order around), each a text's credits, scores, status and length in characters, "
               "without its text; next, the place where the next page starts when rows may follow, and previous, the "
               "place of its first row when rows come before it, each null otherwise; a page starts after a place "
               "(after) or ends before one (before), so a far page is read as fast as the first, and a page before a "
@@ -921,6 +924,11 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               answer=written({"type": "object", "required": ["decision", "changed", "left_out", "left"]})),
         Route("GET", "/api/scores", score_names, "every name of a score a text has now, with how many texts have "
               "it, by name (wpt depot score-names), read at once from the depot's counts", answer=ROWS),
+        Route("GET", "/api/scores/{name}/values", score_values, "the values the score has on the texts changed "
+              "last (wpt depot score-values), going over at most the 200,000 latest revisions whatever the depot's "
+              "size: how many texts have it there, its smallest and largest value, and its 12 most frequent values "
+              "with how many texts have each, by value; what a review offers as its choices",
+              answer={"type": "object", "required": ["name", "read", "texts", "low", "high", "common"]}),
         Route("GET", "/api/decisions/latest", latest, "the ten latest decisions, the newest first, each with how "
               "many texts and erasure requests it decides and the library whose reported problem it records",
               answer=ROWS),

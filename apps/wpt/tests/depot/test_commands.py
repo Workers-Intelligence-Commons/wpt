@@ -435,6 +435,9 @@ def test_the_score_command_sets_one_score_on_the_texts_a_condition_matches_and_s
         "decision test-depot-3: under review, removed rank, on 1 texts")
     assert depot_command("score-names") == 0
     assert printed_rows(capsys) == [{"name": "rank", "texts": 1}]
+    assert depot_command("score-values", "rank") == 0
+    assert printed_rows(capsys) == [{"name": "rank", "read": 5, "texts": 1, "low": 4.0, "high": 4.0,
+                                     "common": [{"value": 4.0, "texts": 1}]}]
 
 
 def test_the_credits_file_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path,

@@ -33,7 +33,7 @@ export const EVERY: TextFilter = { ids: null, tags: [], licenses: [], statuses: 
 
 export type Row = {
   id: string; kind: string | null; title: string | null; authors: string[] | null; tags: string[]; licenses: string[];
-  libraries: string[]; status: Status; locked: boolean; length: number;
+  libraries: string[]; scores: { name: string; value: number }[] | null; status: Status; locked: boolean; length: number;
 };
 // where a page starts or ends: a row's values of the order, as the server gives them
 export type Place = (string | number)[];
@@ -143,8 +143,9 @@ const PAUSE = 400; // milliseconds after the last change before a filter applies
 // Licenses menus count the texts of the depot, or, given within, the open
 // texts. The parts a link sets and no menu edits (the texts named, the
 // libraries that hold none of them, the decision they are on) show as
-// chips, each removed by its cross. The locked choice and the SQL condition
-// show after "More filters", or at once while one of them is set. On a
+// chips, each removed by its cross. The locked choice, the SQL condition and
+// the two ways of searching (in the texts too, whole words) show after "More
+// filters", or at once while one of them is set. On a
 // phone, only the search shows, and a button opens the rest.
 export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, idsLabel, within }: {
   value: TextFilter; onApply: (f: TextFilter) => void; libraries: Library[]; fixedLibrary?: string; onLeave?: () => void;
@@ -199,14 +200,14 @@ export function FilterBar({ value, onApply, libraries, fixedLibrary, onLeave, id
         title={`Words ${draft.inText ? "the title or the text itself" : "the title of a text"} holds, each one, in any case, or its exact id. Enter or Escape goes back to the list, where J and K move.`}
         onChange={(e) => change({ search: e.target.value })}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); leave(e.currentTarget); } }} />
-      <label className="tick small in-text" title="Look for the words inside each text as well as in its title. It reads every text the other filters leave, so it is slower on a big depot.">
+      {(extra || draft.inText || draft.wholeWords) && <label className="tick small in-text" title="Look for the words inside each text as well as in its title. It reads every text the other filters leave, so it is slower on a big depot.">
         <input type="checkbox" className="wic-check-box wic-focus" checked={draft.inText} onChange={(e) => change({ inText: e.target.checked })} />
         <span>in the texts too</span>
-      </label>
-      <label className="tick small in-text" title="Each word matches only as a whole word: no letter, digit or underscore right before or after it, so “rivers” finds “rivers” but not “drivers”.">
+      </label>}
+      {(extra || draft.inText || draft.wholeWords) && <label className="tick small in-text" title="Each word matches only as a whole word: no letter, digit or underscore right before or after it, so “rivers” finds “rivers” but not “drivers”.">
         <input type="checkbox" className="wic-check-box wic-focus" checked={draft.wholeWords} onChange={(e) => change({ wholeWords: e.target.checked })} />
         <span>whole words</span>
-      </label>
+      </label>}
       <TickMenu label="Status" options={STATUSES.map((s) => ({ value: s, label: s }))} chosen={draft.statuses}
         onChange={(statuses) => change({ statuses: statuses as Status[] })} />
       <TickMenu label="Tags" search options={tags.map((t) => ({ value: t.tag, label: t.tag, count: tagCount(t) })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))} chosen={draft.tags}

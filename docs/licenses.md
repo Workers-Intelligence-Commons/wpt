@@ -725,8 +725,8 @@ public, and is not verified; the form says so before anyone confirms.
 - `wpt depot decide admit|refuse WHERE` makes one decision, admitted or
   refused, and appends it to every text the SQL condition `WHERE`
   matches.
-- `wpt depot decide back-to-review WHERE` (or "Back to review" in the
-  workspace, and its key U) puts admitted or refused texts back under
+- `wpt depot decide back-to-review WHERE` (or "Back to review" on the
+  Texts page, and its key U) puts admitted or refused texts back under
   review, to undo an admission or a refusal. It is a decision under review
   that carries the decider's declaration and a reason the depot writes
   itself, `put back under review`, followed by the person's reason when
@@ -735,7 +735,7 @@ public, and is not verified; the form says so before anyone confirms.
   that does not know the decision refuses it
   ([architecture.md](architecture.md), "Format").
 - `wpt depot relicense ID ... --license L ...` (or "Change licenses" beside
-  a text in the workspace, and "Change their licenses" in the review of an
+  a text on the Texts page, and "Change their licenses" in the review of an
   admission) changes the licenses of texts as a new revision of each, their
   ids kept ([data-selection.md](data-selection.md), "Texts"). Every new
   license is one the depot holds. A locked library goes on reading the
@@ -745,7 +745,7 @@ public, and is not verified; the form says so before anyone confirms.
   licenses. Texts whose old lists differ get one decision each. A text
   that names the new licenses already is left out and reported, so a
   change never only wipes its decisions.
-- `wpt depot content ID FILE` (or saving a text in the workspace's editor) changes
+- `wpt depot content ID FILE` (or saving a text's content on the Texts page) changes
   a text's content as a new content version and a new revision of it, its
   id kept ([data-selection.md](data-selection.md), "Texts"). A locked
   library goes on reading the revision it pinned, with its content. The
@@ -757,7 +757,7 @@ public, and is not verified; the form says so before anyone confirms.
   same way, as one decision under review for each pair of old and new
   content versions, with that same reason, on the texts it moves. It
   starts each one's decisions over, as a change of one text's content does.
-- `wpt depot credits ID` (or "Edit credits" beside a text in the workspace) changes a
+- `wpt depot credits ID` (or "Edit credits" beside a text on the Texts page) changes a
   text's credits as a new revision of it: its title, authors, tags,
   address or notice. A locked library goes on reading the revision it
   pinned. The change is a decision

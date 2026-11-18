@@ -1,41 +1,46 @@
-// The workspace: the depot's texts and libraries in three columns. On the
-// left, everything that can be opened (sources.tsx); in the middle, the
-// playlist of what is open (playlist.tsx), or, in the blob mode, the whole
-// of it as one continuous text (blob.tsx) in place of the playlist and the
-// editor; on the right, the current text in its editor with its record and
-// actions (text-panel.tsx). What is open is a filter of the texts
-// (filter.tsx), kept in the address with the current text and the mode:
-// #/texts/ID?library=L&view=blob. The filter bar refines it. When it is one
-// library, its head stands above the columns (library-head.tsx); ticked
-// texts are acted on through the bar at the bottom (bulk.tsx). The ticked
-// texts are those ticked one by one, or, once the box of every text is ticked, every
-// text the filter matches less those unticked since, at the change number
-// the playlist's page was read at; either way the bar sends them as a
-// selection (filter.tsx), never as the list of every id. Opened from a
-// library's "Put texts in it" (into=L), a banner says which library the
-// texts are chosen for (the admitted texts it does not hold); a link that
-// names texts by id may say what they are in words (what=...), which the
-// filter bar shows in place of their number. Clearing the filter opens the
-// first page and its first text, so the list reads from its start.
+// The Texts page: the depot's texts one after another, to read, score,
+// tag, edit and decide on with as few moves of the pointer as can be. On
+// top, the quick filters (under review, not scored, the newest first,
+// every text), the filter bar (filter.tsx) and the "Open" menu, which
+// holds everything that can be opened with its count (sources.tsx); then
+// the open text, its content always in view and always editable
+// (text-panel.tsx), and beside it the review panel (panel.tsx), whose
+// buttons stay in place from one text to the next. The list of the open
+// texts (playlist.tsx) hides at the left edge and slides out while the
+// pointer rests on that edge, or while the keyboard is in it; on a touch
+// screen, the "Texts" button opens it. In the blob mode, the whole of what
+// is open reads as one continuous text (blob.tsx) in place of the open
+// text. What is open is a filter of the texts (filter.tsx), kept in the
+// address with the current text and the mode:
+// #/texts/ID?library=L&view=blob. When it is one library, its head stands
+// above the text (library-head.tsx); ticked texts are acted on through the
+// bar at the bottom (bulk.tsx). The ticked texts are those ticked one by
+// one, or, once the box of every text is ticked, every text the filter
+// matches less those unticked since, at the change number the list's page
+// was read at; either way the bar sends them as a selection (filter.tsx),
+// never as the list of every id. Opened from a library's "Put texts in
+// it" (into=L), a banner says which library the texts are chosen for (the
+// admitted texts it does not hold); a link that names texts by id may say
+// what they are in words (what=...), which the filter bar shows in place of
+// their number. Clearing the filter opens the first page and its first
+// text, so the list reads from its start. The next two texts are read
+// ahead, so Next shows them at once.
 //
-// The keys of the playlist work anywhere but in a field, the editor or a
-// dialog: J or the down arrow (in the playlist) opens the next text, K or
-// the up arrow the previous one, X ticks the current text, E puts the
-// cursor in the editor (on a conversation, it opens its form), A admits the
-// current text and opens the next one (asking first when the text was
-// refused, since that reverses a decision), R asks first, in one line with an
-// optional reason, then refuses it on Enter and opens the next one (Escape
-// refuses nothing), and U puts an admitted or refused text back under
-// review the same way, undoing its admission or refusal. Each sends a public decision under the declaration this
-// browser keeps (declarant.ts), so the legend beside the playlist shows the
-// confirmation they make and the name they record, and the line under the
-// columns says what each press did; without a name and email, the key asks
-// for them and decides nothing. Leaving a text whose editor holds unsaved
-// changes, by a key or a link, asks first. On a phone, a bar at the bottom
-// of the screen does what J, K, A, R and U do, with that line just above it.
-// Its Admit, Refuse and Back to review all ask first, in a line above the bar that holds
-// the confirmation and the name the decision records, since a tap beside
-// another button can land on them and the legend is out of view there.
+// The keys work anywhere but in a field, the editor or a dialog (Escape
+// leaves the editor): J or the down arrow (in the list) opens the next
+// text, K or the up arrow the previous one, X ticks the current text, E
+// puts the cursor in the editor (on a conversation, it opens its form), A
+// admits the current text and opens the next one (asking first when the
+// text was refused, since that reverses a decision), R asks first, in one
+// line with an optional reason, then refuses it on Enter and opens the next
+// one (Escape refuses nothing), U puts an admitted or refused text back
+// under review the same way, and T takes it out of the open library. The
+// panel's buttons do the same: Admit & next, Refuse, ‹ and Next. Each
+// decision is public, under the declaration this browser keeps
+// (declarant.ts), which the panel names; the line under the text says what
+// each press did; without a name and email, a decision asks for them and
+// decides nothing. Leaving a text whose editor holds unsaved changes, by a
+// key or a link, asks first.
 
 import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
@@ -47,7 +52,7 @@ import { declared, readDeclarant, saveDeclarant, useDeclarant } from "../declara
 import { CountingNote, matched, settledCounts, useCounts } from "../counts";
 import { type Decided } from "../decide-forms";
 import { EVERY, FilterBar, fromQuery, named as namedIds, sent, toQuery, useSearch, type Selection, type TextFilter } from "../filter";
-import { Help, plural, Problems, required, RequiredNote, settingsHref, textName, useLibraries, type Library } from "../parts";
+import { Help, plural, Problems, required, RequiredNote, textName, useLibraries, type Library } from "../parts";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
 import { Blob } from "./blob";
@@ -56,10 +61,11 @@ import { LibraryFrom } from "./library-from";
 import { LibraryHead, outsideOf } from "./library-head";
 import { Playlist } from "./playlist";
 import { Sources } from "./sources";
-import { TextPanel } from "./text-panel";
+import { prefetch, TextPanel } from "./text-panel";
 
 const LIMIT = 100; // texts of a playlist page
 const SAID_SECONDS = 8; // seconds a line of what was done stays
+const NOT_SCORED = "scores IS NULL"; // the quick filter of the texts with no score
 
 // Whether texts show in a monospace type (the default) or in the serif of
 // prose, kept in this browser.
@@ -81,7 +87,7 @@ type Said = { status: Deciding; id: string; title: string; answer: Answer<{ deci
 type Ticked = { all: boolean; ids: Set<string>; change: number | null };
 const NONE: Ticked = { all: false, ids: new Set(), change: null };
 
-export function Workspace({ current, query }: { current: string | null; query: URLSearchParams }) {
+export function Texts({ current, query }: { current: string | null; query: URLSearchParams }) {
   const queryText = query.toString();
   const filter = useMemo(() => fromQuery(new URLSearchParams(queryText)), [queryText]);
   const blob = query.get("view") === "blob";
@@ -205,10 +211,10 @@ export function Workspace({ current, query }: { current: string | null; query: U
   if (saidFor !== filterKey) { setSaidFor(filterKey); if (said) setSaid(null); }
   if (confirming && confirming.id !== current) setConfirming(null); // the question is about the text shown only
 
-  // the keys go back to the playlist, on its current text
+  // the keys go back to the page: the field that held them lets go, and the list stays where it was
   const toList = useCallback(() => {
-    const row = document.querySelector<HTMLElement>(".playlist-row.current .playlist-link") ?? document.querySelector<HTMLElement>(".playlist-link");
-    row?.focus({ preventScroll: true });
+    const at = document.activeElement;
+    if (at instanceof HTMLElement && at !== document.body) at.blur();
   }, []);
   const [mono, setMono] = useState(readMono);
 
@@ -239,12 +245,13 @@ export function Workspace({ current, query }: { current: string | null; query: U
     if (!current || rows.find((r) => r.id === current)?.status !== status) return false;
     setSaid({ words: status === "under review"
       ? <>Under review already: {titleOf(current)}. There is no admission or refusal to undo.</>
-      : <>{status === "admitted" ? "Admitted" : "Refused"} already: {titleOf(current)}. Nothing is recorded, since another decision would change nothing.</> });
+      : status === "admitted" ? <>Admitted already: {titleOf(current)}. Nothing is recorded; on to the next text.</>
+      : <>Refused already: {titleOf(current)}. Nothing is recorded, since another decision would change nothing.</> });
     return true;
   };
   const decide = async (status: Deciding, reason?: string) => {
     if (!current || deciding || shownId.current !== current) return;
-    if (same(status)) return;
+    if (same(status)) { if (status === "admitted") move(1); return; } // Admit & next on an admitted text only moves on
     if (!declared(who)) { setAsking(status); return; }
     if (!about) { setSaid({ words: <Problems problems={["The server's confirmation is not read yet, so no decision can be sent."]} /> }); return; }
     if (!leave()) return;
@@ -294,7 +301,9 @@ export function Workspace({ current, query }: { current: string | null; query: U
     const press = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target instanceof Element ? e.target : null;
-      if (target?.closest("input, textarea, select, [contenteditable], .cm-editor") || document.querySelector("dialog[open]")) return;
+      // Escape leaves the editor (but its find panel, which Escape closes), so the keys work again
+      if (e.key === "Escape" && target?.closest(".cm-editor") && !target.closest(".cm-panel")) { (target as HTMLElement).blur(); e.preventDefault(); return; }
+      if (target?.closest("input, textarea, select, [contenteditable], .cm-editor, .number-pad") || document.querySelector("dialog[open]")) return;
       const inList = Boolean(target?.closest(".playlist"));
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
       if (key === "j" || (key === "ArrowDown" && inList)) move(1);
@@ -334,20 +343,84 @@ export function Workspace({ current, query }: { current: string | null; query: U
     : ticked.ids.size ? { ...namedIds([...ticked.ids]), change: ticked.change ?? undefined } : null;
   const tickedCount = ticked.all ? (total === null ? null : Math.max(0, total - ticked.ids.size)) : ticked.ids.size;
 
-  // the bar of moves and decisions a phone shows under the open text's head, stuck to the top of the screen as the text scrolls
-  const phoneBar = (
-    <div className="phone-bar" role="group" aria-label="Move and decide">
-      <Button variant="quiet" className="move-button" onClick={() => move(-1)} aria-keyshortcuts="K" aria-label="Previous text" title="Previous text">‹</Button>
-      <Button variant={currentStatus === "under review" ? "primary" : "quiet"} onClick={() => ask("admitted")} disabled={deciding} aria-label="Admit…">Admit</Button>
-      <Button variant="quiet" onClick={() => ask("refused")} disabled={deciding} aria-keyshortcuts="R" aria-label="Refuse…">Refuse</Button>
-      {currentStatus && currentStatus !== "under review" && <Button variant="quiet" onClick={() => ask("under review")} disabled={deciding} aria-keyshortcuts="U" aria-label="Back to review…" title="Back to review: undo its admission or refusal">Review</Button>}
-      <Button variant="quiet" className="move-button" onClick={() => move(1)} aria-keyshortcuts="J" aria-label="Next text" title="Next text">›</Button>
+  // the moves and decisions, in the panel under the tags (panel.tsx): ‹, Next, Refuse and Admit & next, then back to review
+  const actions = (
+    <div className="panel-buttons" role="group" aria-label="Move and decide">
+      <Button variant="quiet" className="move-button" onClick={() => move(-1)} aria-keyshortcuts="K" title="The previous text (K)">‹<span className="key-hint">K</span></Button>
+      <Button variant="primary" className="next-button" onClick={() => move(1)} aria-keyshortcuts="J" title="The next text (J)">Next ›<span className="key-hint">J</span></Button>
+      <Button variant="quiet" className="refuse-button" onClick={() => ask("refused")} disabled={deciding} aria-keyshortcuts="R" title="Refuse it, with an optional reason, then the next text (R)">Refuse<span className="key-hint">R</span></Button>
+      <Button variant="ink" className="admit-button" onClick={() => { if (currentStatus === "refused") ask("admitted"); else decide("admitted"); }} disabled={deciding} aria-keyshortcuts="A"
+        title="Admit it, then the next text (A)">Admit &amp; next<span className="key-hint">A</span></Button>
+      {currentStatus && currentStatus !== "under review" && <Button variant="quiet" className="review-button" onClick={() => ask("under review")} disabled={deciding} aria-keyshortcuts="U"
+        title="Back to review: undo its admission or refusal (U)">Back to review<span className="key-hint">U</span></Button>}
+      {library && !library.locked_at && !library.upstream && <Button variant="quiet" className="review-button" onClick={takeOut} disabled={deciding} aria-keyshortcuts="T"
+        title={`Take it out of ${library.name}, then the next text (T)`}>Take out<span className="key-hint">T</span></Button>}
     </div>
   );
+  // the quick filters: each replaces what it is about and keeps the rest
+  const quick: { label: string; on: boolean; title: string; go: () => void }[] = [
+    { label: "Under review", on: filter.statuses.length === 1 && filter.statuses[0] === "under review", title: "Only the texts under review",
+      go: () => apply({ ...filter, statuses: filter.statuses.length === 1 && filter.statuses[0] === "under review" ? [] : ["under review"] }) },
+    { label: "Not scored", on: filter.where.trim() === NOT_SCORED, title: "Only the texts with no score yet (an SQL condition, slower on a large depot)",
+      go: () => apply({ ...filter, where: filter.where.trim() === NOT_SCORED ? "" : NOT_SCORED }) },
+    { label: "Newest first", on: playlist.order.by === "id" && playlist.order.descending, title: "The texts added last first",
+      go: () => playlist.setOrder(playlist.order.by === "id" && playlist.order.descending ? { by: "id", descending: false } : { by: "id", descending: true }) },
+    { label: "All", on: JSON.stringify(filter) === JSON.stringify(EVERY), title: "Every text of the depot", go: () => apply(EVERY) },
+  ];
+  // the list of the open texts: at the left edge, out while the pointer rests there or the keyboard is in it, or after the Texts button
+  const [listOut, setListOut] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  const later = (out: boolean, ms: number) => { window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setListOut(out), ms); };
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  // out after the Texts button (a phone, no pointer to rest): choosing a text, or a tap outside it, puts it back
+  const byButton = useRef(false);
+  useEffect(() => { if (byButton.current) { byButton.current = false; setListOut(false); } }, [current]);
+  useEffect(() => {
+    if (!listOut || !byButton.current) return;
+    const tap = (e: Event) => {
+      if (e.target instanceof Element && e.target.closest(".list-drawer, .list-button")) return;
+      byButton.current = false; setListOut(false);
+    };
+    window.addEventListener("pointerdown", tap);
+    return () => window.removeEventListener("pointerdown", tap);
+  }, [listOut]);
+  // the next two texts, read ahead so Next shows them at once
+  useEffect(() => {
+    const at = rows.findIndex((r) => r.id === current);
+    if (at >= 0) prefetch(rows.slice(at + 1, at + 3).map((r) => r.id), version);
+  }, [current, rows, version]);
+  const [opening, setOpening] = useState(false); // the Open menu, closed by Escape or a click outside it
+  useEffect(() => {
+    if (!opening) return;
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setOpening(false); };
+    const click = (e: Event) => { if (!(e.target instanceof Element && e.target.closest(".open-menu"))) setOpening(false); };
+    window.addEventListener("keydown", key);
+    window.addEventListener("mousedown", click);
+    return () => { window.removeEventListener("keydown", key); window.removeEventListener("mousedown", click); };
+  }, [opening]);
   return (
-    <div className={`workspace-frame${mono ? " mono" : ""}`} onClickCapture={guard}>
-      <FilterBar value={filter} onApply={apply} libraries={libraries} onLeave={toList}
-        idsLabel={idsLabel} within={counts?.done && !counts.problems ? counts : null} />
+    <div className={`texts-frame${mono ? " mono" : ""}`} onClickCapture={guard}>
+      <div className="texts-top">
+        <div className="quick-filters" role="group" aria-label="Quick filters">
+          <Button variant="quiet" className="list-button" aria-expanded={listOut} onClick={() => { byButton.current = !listOut; setListOut(!listOut); }} title="The list of the open texts">Texts</Button>
+          {quick.map((q) => <Button key={q.label} variant="quiet" className={`quick${q.on ? " on" : ""}`} aria-pressed={q.on} title={q.title} onClick={q.go}>{q.label}</Button>)}
+          <div className="open-menu">
+            <Button variant="quiet" aria-expanded={opening} onClick={() => setOpening(!opening)} title="Every text, each status, library, tag and license with its count, and the saved filters">Open ▾</Button>
+            {opening && (
+              <div className="open-pop" onClick={(e) => { if (e.target instanceof Element && e.target.closest("a")) setOpening(false); }}>
+                <Sources open={filter} libraries={libraries} version={version} onLibraryMade={changed} into={choosing?.id ?? null} />
+              </div>
+            )}
+          </div>
+        </div>
+        <FilterBar value={filter} onApply={apply} libraries={libraries} onLeave={toList}
+          idsLabel={idsLabel} within={counts?.done && !counts.problems ? counts : null} />
+        <div className="view-switch small" role="group" aria-label="How the open texts are shown">
+          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: null })} aria-current={!blob ? "true" : undefined} title="One text at a time, with the review panel">Text</a>
+          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: "blob" })} aria-current={blob ? "true" : undefined} title="Every open text one after another">Blob</a>
+          <label className="tick" title="Show texts in a monospace type"><input type="checkbox" className="wic-check-box wic-focus" checked={mono} onChange={(e) => { setMono(e.target.checked); keepMono(e.target.checked); }} /> <span>Mono</span></label>
+        </div>
+      </div>
       {choosing && (
         <p className="next-step into-banner row tight" role="note">
           <span>{total === 0
@@ -357,34 +430,32 @@ export function Workspace({ current, query }: { current: string | null; query: U
           {total === 0 && <a href={href(["datasets"], { new: "1", library: choosing.id })}>Make a dataset from it</a>}
         </p>
       )}
-      <div className="open-bar">
+      <div className="open-bar small">
         {library ? <LibraryHead library={library} libraries={libraries} onChanged={changed} version={version} /> : (
           <section className="open-head" aria-label="What is open">
-            <h1 className="title open-title">{(choosing ? null : savedName) ?? describe(filter, libraries, idsLabel ?? null)}</h1>
+            <h1 className="open-title">{(choosing ? null : savedName) ?? describe(filter, libraries, idsLabel ?? null)}</h1>
             {(() => {
               const final = counts && (counts.done || counts.settled);
               const c = counts && !final && counts.before ? counts.before : counts && (final || counts.counted > 0) ? counts : null;
-              return c && <span className={`small aside${c === counts ? "" : " recounting"}`}>
+              return c && <span className={`aside${c === counts ? "" : " recounting"}`}>
                 {final || c !== counts ? "" : "so far "}{plural(matched(c), "text")}: {c.statuses["under review"].toLocaleString("en")} under review, {c.statuses.admitted.toLocaleString("en")} admitted, {c.statuses.refused.toLocaleString("en")} refused{c.locked > 0 && <>; {c.locked.toLocaleString("en")} in a locked library</>}
               </span>;
             })()}
-            <span className="small"><CountingNote counting={counts} /></span>
+            <span><CountingNote counting={counts} /></span>
             {!choosing && (
               <LibraryFrom filter={filter} change={answer?.ok ? answer.data.change : null} admitted={shown ? shown.statuses.admitted : null}
                 onDone={(words) => { setSaid({ words }); changed(); }} />
             )}
           </section>
         )}
-        <div className="view-switch small" role="group" aria-label="How the open texts are shown">
-          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: null })} aria-current={!blob ? "true" : undefined} title="The playlist and the current text in its editor">Playlist</a>
-          <a className="wic-focus" href={address(current, { ...toQuery(filter), view: "blob" })} aria-current={blob ? "true" : undefined} title="Every open text one after another">Blob</a>
-          <label className="tick"><input type="checkbox" className="wic-check-box wic-focus" checked={mono} onChange={(e) => { setMono(e.target.checked); keepMono(e.target.checked); }} /> <span>Monospace</span></label>
-        </div>
+        {!blob && current && <span className="aside ledger position">{(() => { const at = rows.findIndex((r) => r.id === current); return at >= 0 ? `${at + 1} of ${rows.length} on this page` : ""; })()}</span>}
       </div>
-      <div className={`workspace${blob ? " blob-mode" : ""}`}>
-        <Sources open={filter} libraries={libraries} version={version} onLibraryMade={changed} into={choosing?.id ?? null} />
-        {blob ? <Blob filter={filter} order={playlist.order} onOpen={openFromBlob} /> : <>
-          <div className="playlist-column">
+      <div className={`texts-body${blob ? " blob-mode" : ""}${listOut ? " list-out" : ""}`}>
+        {!blob && <div className="list-rail" aria-hidden="true" onMouseEnter={() => later(true, 250)} onMouseLeave={() => { if (listOut) later(false, 300); else window.clearTimeout(timer.current); }} />}
+        {!blob && (
+          <div className="list-drawer" onMouseEnter={() => window.clearTimeout(timer.current)} onMouseLeave={() => later(false, 300)}
+            onFocus={() => { window.clearTimeout(timer.current); setListOut(true); }}
+            onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) later(false, 300); }}>
             {!answer && <p className="aside">Reading the texts</p>}
             {answer && !answer.ok && <Problems problems={answer.problems} />}
             {answer?.ok && (
@@ -396,11 +467,11 @@ export function Workspace({ current, query }: { current: string | null; query: U
                   : choosing ? <>None left.</> : undefined} />
             )}
           </div>
-          <div className="editor-column">
-            {current ? <TextPanel id={current} bar={phoneBar} version={version} onChanged={changed} onDirty={onDirty} handle={handle} onShown={onShown} find={filter.inText ? filter.search : undefined} />
-              : <p className="aside">No text is open: choose one in the playlist, or press J for the first.</p>}
-          </div>
-        </>}
+        )}
+        {blob ? <Blob filter={filter} order={playlist.order} onOpen={openFromBlob} />
+          : current ? <TextPanel id={current} actions={actions} version={version} onChanged={changed} onSaved={(words) => { setSaid({ words }); playlist.reload(); }}
+              onDirty={onDirty} handle={handle} onShown={onShown} find={filter.inText ? filter.search : undefined} />
+            : <p className="aside text-column">No text is open: choose one in the list at the left edge, or press J for the first.</p>}
       </div>
       <Bulk selection={selection} count={tickedCount} libraries={libraries} library={library} into={choosing?.id ?? into} admittedHere={admittedHere} onUntick={() => setTicked(NONE)}
         onDone={(words) => { setSaid({ words }); setTicked(NONE); recheck(); changed(); }} />
@@ -410,7 +481,6 @@ export function Workspace({ current, query }: { current: string | null; query: U
           onCancel={() => { setConfirming(null); toList(); }} />}
         {said && <SaidLine said={said} />}
       </div>
-      {!blob && <Legend takes={Boolean(library && !library.locked_at && !library.upstream)} who={declared(who) ? who : null} confirmation={about?.confirmation ?? null} requirements={about?.requirements ?? null} />}
       <Dialog open={asking !== null} onClose={() => setAsking(null)} title="Who decides from this browser?">
         {asking && <AskDeclarant status={asking} onSaved={() => { setAsking(null); setSaid({ words: <>Saved. Press {KEYS[asking]} again to {VERBS[asking]} the current text.</> }); }} />}
       </Dialog>
@@ -486,27 +556,6 @@ function SaidLine({ said }: { said: Said }) {
     <p className="said-line done cue" role="status" title={`${id}, decision ${answer.data.decision}`}>
       {DONE[status]}: {title}. <a href={href(["decisions", answer.data.decision])}>See the decision</a>
     </p>
-  );
-}
-
-// The keys of the playlist, in one line under the columns, and what A, R and U confirm and record.
-function Legend({ takes, who, confirmation, requirements }: { takes: boolean; who: { name: string; email: string } | null; confirmation: string | null; requirements: string | null }) {
-  const keys: [string, string][] = [
-    ["J K", "move"], ["A", "admit"], ["R", "refuse"], ["U", "to review"], ["X", "tick"], ["E", "edit"], ["Ctrl F", "find"], ["Ctrl S", "save"],
-    ...(takes ? [["T", "take out"] as [string, string]] : []),
-  ];
-  return (
-    <section className="key-legend small" aria-label="Keys">
-      <span className="keys key-hint">
-        {keys.map(([key, what]) => <span key={key} className="key"><kbd>{key}</kbd> {what}</span>)}
-        <Help label="the keys">J and K move to the next and previous text. A admits, R refuses and U puts back under review, then each moves to the next; R and U ask a reason. X ticks the text, E edits it, Ctrl F finds and replaces in it, Ctrl S saves it.{takes && " T takes it out of this library, then moves to the next."}</Help>
-      </span>
-      {who ? (
-        <span className="aside" title={confirmation ? `Each press of A, R or U is a public decision and confirms: “${confirmation}”` : undefined}>
-          A, R and U decide in public as {who.name}, <span className="ledger">{who.email}</span> (<a href={settingsHref()}>change</a>){requirements && <>; each press confirms the <a href={requirements} target="_blank" rel="noreferrer">requirements</a></>}.
-        </span>
-      ) : <span className="act"><strong>No name and email set:</strong> A, R and U ask for them first. <a href={settingsHref()}>Set them</a></span>}
-    </section>
   );
 }
 

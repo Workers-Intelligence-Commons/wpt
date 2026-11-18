@@ -15,7 +15,7 @@
 // toggles shows shows as a chip, removed by a click. An item's content can
 // also be read from a JSON file, chosen with its own button. The
 // texts added since the page opened are linked as one filter of the
-// workspace.
+// Texts page.
 
 import { Button, Select, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
@@ -97,7 +97,7 @@ function Add() {
     window.scrollTo({ top: 0 });
     window.setTimeout(() => (top.current?.querySelector<HTMLElement>("textarea") ?? top.current?.querySelector<HTMLElement>("input, select"))?.focus(), 0);
   };
-  // the texts added on this page, opened in the workspace by their ids, named in words
+  // the texts added on this page, opened on the Texts page by their ids, named in words
   const addedHere = href(["texts", addedIds.at(-1) ?? ""], { id: addedIds, what: `the ${plural(addedIds.length, "text")} added just now` });
   const fragment = typing.trim().toLowerCase();
   const matching = known.filter((t) => !fragment || t.tag.toLowerCase().includes(fragment));

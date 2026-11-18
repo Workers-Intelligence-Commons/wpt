@@ -1,4 +1,4 @@
-// What the workspace does with the texts ticked in its playlist: a bar at
+// What the Texts page does with the texts ticked in its list: a bar at
 // the bottom of the screen whose actions (admit, refuse, put back under
 // review, which undoes an admission or a refusal, put in a library, set or
 // remove one score (scores.tsx),
@@ -38,7 +38,7 @@ const TITLES: Record<Action, (library: string) => string> = {
 };
 
 // selection: the ticked texts, null when none is; count: how many, when
-// known; library: the one library open in the workspace, if any; onDone:
+// known; library: the one library open on the Texts page, if any; onDone:
 // after a change, with what it did in words.
 // into: the library the ticked texts are being chosen for, which "Put in" names
 // and takes first; admittedHere: the address of the open filter's admitted texts.

@@ -5,6 +5,7 @@ import { decisions } from "./decisions";
 import { depot } from "./depot";
 import { download } from "./download";
 import { erasures } from "./erasures";
+import { help } from "./help";
 import { exported } from "./export";
 import { jobs } from "./jobs";
 import { libraries } from "./libraries";
@@ -13,21 +14,22 @@ import { overview } from "./overview";
 import { settings } from "./settings";
 import { tags } from "./tags";
 import { tokenizers } from "./tokenizers";
-import { workspace } from "./workspace";
+import { texts } from "./texts";
 
 // One entry per page; each calls the routes of apps/wpt/src/wpt/depot/web/routes.py.
-// group: where the navigation lists it, the data apart from the setup (null:
+// group: where the navigation lists it, the data apart from the setup, and
+// the help last (null:
 // not listed: "Add a text" is a button, the views of one decision or one
 // tag are reached from the lists that name them, a dataset's download and
 // export pages from the dataset; the address of one library leads into the
-// workspace). under: for a page not listed, the path of the listed page the
+// Texts page). under: for a page not listed, the path of the listed page the
 // navigation marks while it shows (a dataset's corpora and export pages mark
 // Datasets). rest: the parts of the address after the page's own; query: the
 // address's query.
 export type Page = {
-  path: string; title: string; group: "data" | "setup" | null; under?: string;
+  path: string; title: string; group: "data" | "setup" | "help" | null; under?: string;
   Component: ComponentType<{ rest: string[]; query: URLSearchParams }>;
 };
 
-export const pages: Page[] = [overview, workspace, libraries, datasets, tokenizers, jobs, erasures, licenses, depot, settings, add, decisions, tags,
-  download, exported];
+export const pages: Page[] = [overview, texts, libraries, datasets, tokenizers, jobs, erasures, licenses, depot, settings, add, decisions, tags,
+  download, exported, help];

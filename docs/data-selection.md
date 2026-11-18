@@ -60,8 +60,8 @@ list of its parts, so a text of any size is one text
 Its licenses change only through `wpt depot relicense`, which starts its
 decisions over ([licenses.md](licenses.md), "Who decides").
 
-Its content changes through `wpt depot content ID FILE` or the editor of
-the workspace of `wpt depot web`: a plain text in a text editor whose find
+Its content changes through `wpt depot content ID FILE` or the content of
+the Texts page of `wpt depot web`: a plain text in a text editor whose find
 and replace, by words or a regular expression, works inside that text
 only, an item through the form of its kind's schema, which its new content
 must still match. Saving is the content change alone, and says so before
@@ -105,7 +105,8 @@ at a time and stores each text in turn, so the program's memory is that of
 one text whatever the number of texts.
 
 Its credits, tags and notice change through `wpt depot credits ID` or
-"Edit credits" beside the text in the workspace. The change is a decision under
+"Edit credits" on the Texts page, whose review panel also toggles
+tags. The change is a decision under
 review, with the person's declaration, whose reason the depot writes,
 naming each credit's old and new value. The decisions before it keep
 counting, so the text keeps its status and its libraries
@@ -243,6 +244,11 @@ current content version. It is recorded as a change of scores is, one
 decision under review on every text it changes. `wpt depot score-names`,
 or `GET /api/scores`, lists every name of a score a text has, with how
 many texts have it, read from the depot's counts at once.
+`wpt depot score-values NAME`, or `GET /api/scores/{name}/values`, gives
+the values the score has on the current texts among the latest revisions,
+at most `SCORE_READ` of them (`wpt_depot/depot.py`): how many have it,
+its smallest and largest value, and its most frequent values. The review
+panel of the Texts page offers them as its choices.
 
 A score's value comes from a person or from a program a person chose,
 never from the judgment of another company's AI assistant ("Models in

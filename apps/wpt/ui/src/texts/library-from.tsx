@@ -4,7 +4,7 @@
 // (POST /api/libraries/ID/texts), at the change number the playlist's page
 // was read at. Only admitted texts join, so the button names how many of
 // the open texts are admitted; it stands there while they are counted, and
-// when none is, unable to act, so the workspace under it never moves.
+// when none is, unable to act, so the page under it never moves.
 
 import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
 import { useState, type ReactNode } from "react";

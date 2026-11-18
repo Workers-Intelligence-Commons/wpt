@@ -5,7 +5,7 @@ import { pages, type Page } from "./pages";
 import { RunningJobs } from "./pages/jobs";
 import { href, usePlace } from "./route";
 
-const GROUPS: { group: Page["group"]; label: string }[] = [{ group: "data", label: "Data" }, { group: "setup", label: "Setup" }];
+const GROUPS: { group: Page["group"]; label: string }[] = [{ group: "data", label: "Data" }, { group: "setup", label: "Setup" }, { group: "help", label: "Help" }];
 
 export function App() {
   const place = usePlace();
