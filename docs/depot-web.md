@@ -112,8 +112,8 @@ nothing), and
 only after it a start that restates the estimate and asks for a
 confirmation.
 At a size, the estimate's tokens are a forecast that walks the dataset's
-order as the build does, where a share stops at its first text that does
-not fit. Its headline, above the start, says how many tokens will come
+order as the build does, where a text that does not fit what is left of
+its share is left out. Its headline, above the start, says how many tokens will come
 out and which share will come out short. It also names the smallest size
 at which every share comes within 10 percentage points of its proportion; a built
 corpus whose shares came out uneven offers the same size. The forecast

@@ -71,8 +71,11 @@ it is confirmed ([depot-web.md](depot-web.md)).
 
 The sample is the plain texts of the recipe's dataset in the order its
 corpus takes them (the dataset's libraries at the states it names, then
-its shares), each share stopping at its first text that would pass its
-part of `sample_bytes`. Items are no sample. The training reads the sample
+its shares, a long text as its pieces), each share filling its part of
+`sample_bytes` as a corpus fills a part ([data-selection.md](data-selection.md),
+"Filling a part" and "Long texts"). Items are no sample. The list of the
+texts a vocabulary trained on, and its count, name each text once, a long text
+whose pieces the sample took included. The training reads the sample
 once, as a stream: the texts of the depot's own dataset from the depot, and
 the texts of another depot's dataset through that depot's sample route
 (`GET /api/datasets/{dataset}/sample?bytes=N`). A dataset with no plain

@@ -12,13 +12,14 @@ from wpt_store import open_store
 from wpt_store.shards import read_verified
 from wpt_tokenizer import END, Tokenizer, chat
 from wpt_depot import About, Depot, NewText, clone
-from wpt_depot import corpora, order
+from wpt_depot import corpora, order, pieces
 from wpt_depot.corpora import Room, TooBig, latest, mark_stale, read_table, records
 from wpt_depot.corpus import build, sample, task_text
 from wpt_depot.errors import Refused
 from wpt_depot.exports import Export
 from wpt_depot.ids import export_key
 from wpt_depot.notice import model_notice
+from wpt_depot.parts import Parted
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
 CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
@@ -278,10 +279,11 @@ def test_an_erasure_carried_out_while_a_corpus_is_built_makes_it_stale_once_writ
     assert corpora.fresh(kept[older["id"]])  # a stale corpus supersedes nothing
 
 
-def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_a_smaller_size_its_start(
+def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_a_smaller_size_takes_that_order(
         make_depot, me, tmp_path, monkeypatch):
     # the build reads each library a page at a time by key and merges them: with pages of 3 rows, the 20 texts
-    # of two libraries that share 5 of them come in the export's order, each once, and a size cuts that order short
+    # of two libraries that share 5 of them come in the export's order, each once, and a size takes that order,
+    # leaving out only what does not fit
     monkeypatch.setattr(order, "PAGE", 3)
     depot = make_depot()
     ids = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("en",)) for n in range(20)], me)
@@ -300,7 +302,7 @@ def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_
     smaller = build(depot, "all", store, TOKENIZER, max_tokens=record["total_tokens"] // 2, url=HERE,
                     log=lambda *_: None)
     cut = [document for shard in smaller["shards"] for _, _, document, _, _ in read_verified(store, shard)]
-    assert 0 < len(cut) < len(taken) and cut == taken[:len(cut)]
+    assert 0 < len(cut) < len(taken) and cut == [text for text in taken if text in set(cut)]
 
 
 def test_a_build_counted_from_the_texts_takes_what_a_build_from_stored_figures_takes(make_depot, me, tmp_path):
@@ -336,25 +338,29 @@ def test_a_build_counted_from_the_texts_takes_what_a_build_from_stored_figures_t
         assert any("not known" in line for line in said["counted"])
 
 
-def test_max_tokens_stops_each_share_at_its_first_text_that_would_pass_its_part(make_depot, me, tmp_path):
+def test_a_text_that_would_pass_the_size_is_left_out_and_the_texts_after_it_fill_the_corpus(make_depot, me,
+                                                                                            tmp_path):
     depot = make_depot()
-    depot.add([NewText(text=text, licenses=("CC0-1.0",), tags=("en",)) for text in
-               ("the dog", "the quick brown fox jumps over the lazy dog", "the fox", "dog")], me)
+    [long] = depot.add([NewText(text="the quick brown fox jumps over the lazy dog " * 8, licenses=("CC0-1.0",),
+                                tags=("en",))], me)
+    short = depot.add([NewText(text=f"the dog {n}", licenses=("CC0-1.0",), tags=("en",)) for n in range(10)], me)
     depot.decide("admitted", "true", me)
     library = depot.new_library("mine")
     depot.put(library, "true")
-    dataset = depot.new_dataset("all", "classics", [(None, library)])
+    depot.new_dataset("all", "classics", [(None, library)])
     store = open_store((tmp_path / "store").as_uri())
     whole = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
-    lengths = [len(tokens) for shard in whole["shards"] for tokens, *_ in read_verified(store, shard)]
-    limit = lengths[0] + lengths[1] + lengths[2] - 1  # the third text in the corpus's order would pass it
+    rows = [(document, len(tokens)) for shard in whole["shards"] for tokens, _, document, _, _ in
+            read_verified(store, shard)]
+    order = [document for document, _ in rows]
+    assert order.index(long) < len(order) - 1  # some short texts come after the long one
+    limit = whole["total_tokens"] - dict(rows)[long]  # every short text fits, the long one does not
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
 
-    taken = [len(tokens) for shard in record["shards"] for tokens, *_ in read_verified(store, shard)]
-    assert taken == lengths[:2]  # the same order, cut short at its first text that would pass the limit
-    assert record["total_tokens"] <= limit
-    assert record["left_out"]["trimmed"] == 2
+    taken = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    assert taken == [one for one in order if one != long] and sorted(taken) == sorted(short)
+    assert record["total_tokens"] == limit and record["left_out"]["trimmed"] == 1
 
 
 def items_depot(make_depot, me, plain: int):
@@ -448,8 +454,8 @@ def test_the_item_share_stops_at_its_first_item_that_would_pass_its_part(make_de
     assert record["items_tokens"] <= part and corpus_tokens(store, record) <= limit
 
 
-def test_conversations_and_tasks_are_one_share_that_stops_at_its_first_item_that_would_pass(make_depot, me,
-                                                                                            tmp_path):
+def test_conversations_and_tasks_are_one_share_where_an_item_that_does_not_fit_leaves_room_for_the_next(
+        make_depot, me, tmp_path):
     depot = make_depot()
     depot.add([NewText(text="the dog", licenses=("CC0-1.0",), tags=("en",)) for _ in range(20)]
               + [item("conversation", CONVERSATION, "en") for _ in range(5)] + [item("task", TASK, "en"), item("task", TASK, "en")], me)
@@ -466,14 +472,16 @@ def test_conversations_and_tasks_are_one_share_that_stops_at_its_first_item_that
     assert task > conversation and "conversation" in kinds[before + 1:]  # a smaller conversation follows it
     # the smallest size whose item part fits every conversation before the first task and one more, not the task
     limit = next(size for size in range(1, 100_000) if items_part(depot, size) >= (before + 1) * conversation)
-    assert items_part(depot, limit) < before * conversation + task
+    part = items_part(depot, limit)
+    assert part < before * conversation + task
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
 
-    # the first task stops the share: no conversation after it is taken, though one would fit
-    assert (record["conversations"], record.get("tasks", {}).get("count", 0)) == (before, 0)
-    assert record["items_tokens"] == before * conversation
-    assert record["left_out"]["trimmed items"] == len(kinds) - before
+    # the first task does not fit and is left out; the conversations after it fill what is left of the part
+    assert record.get("tasks", {}).get("count", 0) == 0
+    assert record["conversations"] == min(kinds.count("conversation"), part // conversation) > before
+    assert record["items_tokens"] == record["conversations"] * conversation
+    assert record["left_out"]["trimmed items"] == len(kinds) - record["conversations"]
 
 
 def test_a_dataset_of_items_alone_fills_its_size_with_them(make_depot, me, tmp_path):
@@ -818,3 +826,188 @@ def test_a_stale_corpus_built_before_another_depot_moved_is_rebuilt_from_the_mov
     again = build(depot, "all", store, TOKENIZER, max_tokens=None, dataset=record["dataset"], log=lambda *_: None)
 
     assert again["id"] != record["id"] and corpora.fresh(again) and again["erasures"]["other"] == [request]
+
+
+def repository(files: int, file_characters: int) -> str:
+    """A repository as the depot holds one, as one text: each file a line `=== <path>` and its lines."""
+    line = "the quick brown fox jumps over the lazy dog\n"
+    return "".join(f"=== src/file{n}.c\n" + line * (file_characters // len(line)) for n in range(files))
+
+
+def long_depot(make_depot, me):
+    """A depot of 200 short texts and a repository about 3.4 times pieces.LENGTH long, cut into 4 pieces, all
+    admitted in one library read by the dataset "all": (the depot, the short texts' ids, the repository's)."""
+    depot = make_depot()
+    [repo] = depot.add([NewText(text=repository(12, 300_000), licenses=("CC0-1.0",), title="A repository",
+                                tags=("code",))], me)
+    short = depot.add([NewText(text=f"the dog {n}", licenses=("CC0-1.0",), tags=("en",)) for n in range(200)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    depot.new_dataset("all", "classics", [(None, library)])
+    return depot, short, repo
+
+
+def test_a_long_text_comes_as_pieces_cut_between_files_each_at_its_own_place_of_the_order(make_depot, me, tmp_path):
+    depot, short, repo = long_depot(make_depot, me)
+    text = depot.content(repo)
+    assert pieces.count(len(text)) == 4
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "all", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
+
+    rows = [(document, list(tokens)) for shard in record["shards"] for tokens, _, document, _, _ in
+            read_verified(store, shard)]
+    names = [pieces.name(repo, n) for n in range(4)]
+    order = [document for document, _ in rows]
+    # each piece at the export key of its name, among the other texts, never one after the other
+    assert order == sorted([*short, *names], key=export_key)
+    places = sorted(order.index(name) for name in names)
+    assert all(later - earlier > 1 for earlier, later in zip(places, places[1:]))
+    # the pieces are the whole text cut at the start of a file's line, each encoded as a text of its own
+    held = Parted(depot.reader(), repo, depot.listed_text(repo, 1)["parts"])
+    cut = [pieces.read(held, n) for n in range(4)]
+    assert "".join(cut) == text and all(one.startswith("=== src/") for one in cut)
+    assert all(abs(len(one) - pieces.LENGTH) < 300_100 for one in cut[:3])
+    assert all(dict(rows)[name] == [*TOKENIZER.encode(one.encode()), END] for name, one in zip(names, cut))
+    # each piece has its row, with its number and its text's credits; the text counts once
+    table = [one for one in read_table(store, record, "texts").to_pylist() if one["id"] == repo]
+    assert sorted(one["piece"] for one in table) == [0, 1, 2, 3]
+    assert {one["title"] for one in table} == {"A repository"}
+    assert all(one["piece"] is None for one in read_table(store, record, "texts").to_pylist() if one["id"] != repo)
+    assert (record["texts"], record["pieces"]) == (201, 4)
+    assert [line for line in model_notice(store, record).split("\n\n")[0].splitlines()
+            if line.startswith(f"{HERE} {repo}:")] == [
+        f"{HERE} {repo}: A repository; CC0-1.0"]
+    # the same depot builds the same bytes
+    again = build(depot, "all", open_store((tmp_path / "again").as_uri()), TOKENIZER, max_tokens=None, url=HERE,
+                  log=lambda *_: None)
+    assert again["id"] == record["id"] and again["shards"] == record["shards"]
+
+
+def test_a_long_text_no_longer_ends_a_corpus_smaller_than_it_which_takes_the_pieces_that_fit(make_depot, me,
+                                                                                               tmp_path):
+    # the whole repository would pass the size: the corpus still takes every short text and the pieces that fit
+    depot, short, repo = long_depot(make_depot, me)
+    store = open_store((tmp_path / "store").as_uri())
+    whole = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
+    tokens = {document: len(row) for shard in whole["shards"] for row, _, document, _, _ in
+              read_verified(store, shard)}
+    short_tokens = sum(tokens[one] for one in short)
+    smallest = min(range(4), key=lambda n: tokens[pieces.name(repo, n)])
+    others = [tokens[pieces.name(repo, n)] for n in range(4) if n != smallest]
+    limit = short_tokens + tokens[pieces.name(repo, smallest)] + 10_000  # a thousandth of it is under 10,000
+    assert min(others) > limit  # room for the smallest piece alone
+
+    record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
+
+    taken = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    assert sorted(taken) == sorted([*short, pieces.name(repo, smallest)])
+    assert record["total_tokens"] <= limit and record["left_out"]["trimmed"] == 0
+    # the sample of a vocabulary cuts and fills the same way, a piece under its text's id
+    sample_bytes = sum(len(f"the dog {n}") for n in range(200)) + 2 * pieces.LENGTH
+    found = list(sample(depot, "all", sample_bytes))
+    assert {text for _, text, _ in found} >= set(short)
+    assert [len(data) for _, text, data in found if text == repo] and all(
+        len(data) < 1.5 * pieces.LENGTH for _, text, data in found if text == repo)
+
+
+def test_a_piece_is_cut_at_a_line_start_without_a_file_in_reach_and_at_its_place_without_a_line(make_depot, me):
+    depot = make_depot()
+    one_file = "=== big.txt\n" + "a line of a very long file\n" * 100_000  # longer than a piece: no file in reach
+    no_line = "x" * (3 * pieces.LENGTH)
+    texts = depot.add([NewText(text=one, licenses=("CC0-1.0",)) for one in (one_file, no_line)], me)
+
+    for text, content in zip(texts, (one_file, no_line)):
+        held = Parted(depot.reader(), text, depot.listed_text(text, 1)["parts"])
+        cut = [pieces.read(held, n) for n in range(pieces.count(len(content)))]
+        assert "".join(cut) == content
+        starts = [sum(map(len, cut[:n])) for n in range(1, len(cut))]
+        if content is one_file:  # the first line start from each multiple on
+            assert all(content[at - 1] == "\n" and 0 <= at - n * pieces.LENGTH < 28 for n, at in enumerate(starts, 1))
+        else:
+            assert starts == [pieces.LENGTH, 2 * pieces.LENGTH]
+
+
+def test_a_text_two_libraries_hold_comes_as_pieces_only_when_its_revision_in_the_first_is_long(make_depot, me,
+                                                                                                tmp_path):
+    # a locked library keeps a long revision of a text that an open library holds short now: the dataset takes
+    # the revision of the first library that holds it, whole or as pieces, never both
+    depot = make_depot()
+    [text] = depot.add([NewText(text=repository(4, 300_000), licenses=("CC0-1.0",))], me)
+    depot.decide("admitted", "true", me)
+    locked, open_ = depot.new_library("locked"), depot.new_library("open")
+    depot.put(locked, [text])
+    depot.lock(locked)
+    depot.change_content(text, "a short text now", None, me)
+    depot.decide("admitted", [text], me)
+    depot.put(open_, [text])
+    depot.new_dataset("open first", "classics", [(None, open_), (None, locked)])
+    depot.new_dataset("locked first", "classics", [(None, locked), (None, open_)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    found = {}
+    for name in ("open first", "locked first"):
+        record = build(depot, name, store, TOKENIZER, max_tokens=None, log=lambda *_: None)
+        found[name] = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+
+    assert found["open first"] == [text]
+    assert sorted(found["locked first"]) == sorted(pieces.name(text, n) for n in range(2))
+
+
+def test_a_library_s_long_texts_are_read_from_the_long_contents_never_from_the_library_s_rows(make_depot, me):
+    # the real depot holds 166 million texts: the build finds the long ones before it walks, through the index of
+    # long content versions, each looked up by its key in the library and in the revisions
+    depot, _, repo = long_depot(make_depot, me)
+    library = depot.rows("SELECT id FROM libraries")[0]["id"]
+    locked = depot.new_library("locked")
+    depot.put(locked, [repo])
+    depot.lock(locked)
+    reader = depot.db.reader()
+    traced = []
+    reader.exec_trace = lambda cursor, sql, bindings: traced.append((sql, bindings)) or True
+
+    found = {name: depot.library_long(name, depot.change()) for name in (library, locked)}
+
+    reader.exec_trace = None
+    assert [row[1] for row in found[library]] == [repo] and [row[1] for row in found[locked]] == [repo]
+    reads = [one for one in traced if "content_lists_long" in one[0]]
+    assert len(reads) == 2
+    for sql, bindings in reads:
+        plan = [row[3] for row in reader.execute(f"EXPLAIN QUERY PLAN {sql}", bindings)]
+        assert plan[0].startswith("SCAN c USING INDEX content_lists_long"), plan
+        held = "sqlite_autoindex_pins_1" if bindings["library"] == locked else "sqlite_autoindex_memberships_1"
+        assert any(one.startswith(f"SEARCH h USING INDEX {held} (library=? AND text=?") for one in plan), plan
+        # past the long contents, only the bounds' few values (json_each) are scanned
+        assert not any(one.startswith("SCAN") and "VIRTUAL TABLE" not in one for one in plan[1:]), plan
+
+
+def test_a_build_cut_short_right_after_a_piece_goes_on_and_writes_the_same_corpus(make_depot, me, tmp_path):
+    # a token file closes after each piece here, so the state that resumes names a piece's place, and the size
+    # leaves one piece out, so what each part took and left out is part of that state
+    depot, short, repo = long_depot(make_depot, me)
+    whole = build(depot, "all", open_store((tmp_path / "whole").as_uri()), TOKENIZER, max_tokens=None,
+                  log=lambda *_: None)
+    store = open_store((tmp_path / "whole").as_uri())
+    tokens = {document: len(row) for shard in whole["shards"] for row, _, document, _, _ in
+              read_verified(store, shard)}
+    limit = whole["total_tokens"] - max(tokens[pieces.name(repo, n)] for n in range(4))
+    straight = build(depot, "all", open_store((tmp_path / "straight").as_uri()), TOKENIZER, max_tokens=limit,
+                     shard_tokens=5_000, log=lambda *_: None)
+    saved = []
+
+    def stop_after_a_piece(state):
+        saved.append(state)
+        if state["after"][3] >= 0:
+            raise KeyboardInterrupt
+
+    store = open_store((tmp_path / "store").as_uri())
+    with pytest.raises(KeyboardInterrupt):
+        build(depot, "all", store, TOKENIZER, max_tokens=limit, work=tmp_path / "work", save=stop_after_a_piece,
+              shard_tokens=5_000, log=lambda *_: None)
+
+    resumed = build(depot, "all", store, TOKENIZER, max_tokens=limit, work=tmp_path / "work", checkpoint=saved[-1],
+                    shard_tokens=5_000, log=lambda *_: None)
+
+    assert resumed["id"] == straight["id"] and resumed["pieces"] == 3
+    assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in straight["shards"]]

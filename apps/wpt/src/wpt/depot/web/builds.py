@@ -879,8 +879,9 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               f"Range of bytes gives 206 once its size is known; at most {EXPORTS} at once in all and "
               f"{VISITOR_EXPORTS} per visitor (429)", request=True),
         Route("GET", "/api/datasets/{dataset}/sample", sample_route, "the sample of the dataset (its id or name) that "
-              "trains a vocabulary, in its corpus's order (the texts' export keys), each share stopping at its first "
-              "text that would pass its part of the bytes: lines {depot ('' for this depot), text, bytes} each "
+              "trains a vocabulary, in its corpus's order (the texts' export keys, a long text as its pieces), each "
+              "share filling its part of the bytes as a corpus does, a text that would pass it left out: lines "
+              "{depot ('' for this depot), text (a piece under its text's id), bytes} each "
               "followed by the text's bytes, a line {waiting: true} while the next text is slow to come, and a last "
               "line {end, texts, bytes}",
               request=True, query={"bytes": "the sample's size in bytes"}),

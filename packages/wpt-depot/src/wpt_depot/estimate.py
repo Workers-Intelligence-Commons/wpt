@@ -25,15 +25,17 @@ proportion of what they leave; without it, each share trimmed to its
 proportion of the scarcest.
 
 With max_tokens, the tokens a share and the items get are a forecast that
-follows the build's rule: the build takes the texts in the order of their
-export keys (wpt_depot.order) and a share stops at its first text that
-does not fit in what is left of its part, so at a small size one long text
-can leave a share far below its part, or empty. The forecast walks the
-first FOLLOWED texts of that order, as the build reads them, keeps the kind,
-pool and bytes of those the corpus may take, and applies the build's rule
-to them, each text's tokens its bytes at the sample's tokens per byte. A
-part the walk does not close within those texts is left at its proportion
-of the size. The items' part of the size and the items the dataset holds
+follows the build's rule: the build takes the texts and pieces in the
+order of their export keys (wpt_depot.order) and each part fills as
+wpt_depot.corpus.Fill says, a text that does not fit what is left of its
+part left out, so a share whose texts are each longer than its part at a
+small size stays empty. The forecast walks the first FOLLOWED texts of that
+order, as the build reads them, keeps the kind, pool and bytes of those the
+corpus may take, and fills each part with them, each text's tokens its
+bytes at the sample's tokens per byte. A part is known once it closes or
+leaves a text out: past that, the build adds only texts smaller than what
+is left of it. A part the walk does not know within those texts is left at
+its proportion of the size. The items' part of the size and the items the dataset holds
 come from the build's census (wpt_depot.corpus.census), as the build counts
 them, rather than from the sample: the figures the dataset's revision
 stores, read at once; when they are not known, they come from the sample's
@@ -69,7 +71,7 @@ import pyarrow.parquet as pq
 from wpt_store.shards import SCHEMA as SHARD_SCHEMA
 from wpt_tokenizer import END, Tokenizer, chat
 
-from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, _depots, _proportions, _walked, census,
+from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, Fill, _depots, _proportions, _walked, census,
                      depot_name, revision_figures, scarcest_trim, task_text)
 from .depot import Depot
 from .order import TRAINING_KINDS, walk
@@ -243,43 +245,44 @@ def _walk(followed: dict, max_tokens: int, item_share: float, shares: list[dict]
           item_rate: float) -> dict:
     """The build's rule at max_tokens over the texts followed (_followed),
     each text's tokens its bytes at the rates (a plain text one more, for
-    the END after it): the items take theirs in order until the first that
-    passes their part, then each share (pool 0 without shares) in order
-    until its first text that passes its proportion of what is left.
-    {items: their tokens, plain: {pool: its tokens}, item_texts and
-    plain_texts: how many items and plain texts it takes, complete}: a value
-    is None where the walk ran out of texts before that part closed, unless
-    the texts followed are every text, or, for the items, the dataset
-    holds none (item_share 0)."""
+    the END after it): the items fill their part as one pool, then each
+    share (pool 0 without shares) fills its proportion of what is left
+    (wpt_depot.corpus.Fill). {items: their tokens, plain: {pool: its
+    tokens}, item_texts and plain_texts: how many items and plain texts it
+    takes, complete}: a value is None where the walk ran out of texts before
+    that part was known (closed, or a text left out), unless the texts
+    followed are every text, or, for the items, the dataset holds none
+    (item_share 0)."""
     texts, whole = followed["texts"], followed["whole"]
-    part = int(max_tokens * item_share)
-    items, items_closed, item_texts = 0, False, 0
+    items = Fill({0: int(max_tokens * item_share)})
+    item_texts, items_left = 0, False
     for kind, _, size in texts:
         if kind is None:
             continue
-        tokens = round(size * item_rate)
-        if items + tokens > part:
-            items_closed = True
+        if items.done():
             break
-        items += tokens
-        item_texts += 1
-    budget = _proportions(shares, max_tokens - items)
-    used, closed, plain_texts = dict.fromkeys(budget, 0), set(), 0
+        if items.take(0, round(size * item_rate)):
+            item_texts += 1
+        else:
+            items_left = True
+    plain = Fill(_proportions(shares, max_tokens - items.used[0]))
+    left, plain_texts = set(), 0
     for kind, pool, size in texts:
-        if kind is not None or pool in closed:
+        if kind is not None:
             continue
-        tokens = round(size * plain_rate) + 1
-        if used[pool] + tokens > budget[pool]:
-            closed.add(pool)
-            if len(closed) == len(budget):
-                break
+        if plain.done():
+            break
+        if pool in plain.closed:
             continue
-        used[pool] += tokens
-        plain_texts += 1
-    plain = {pool: (used[pool] if whole or pool in closed else None) for pool in budget}
-    items_known = whole or items_closed or item_share == 0  # a dataset without items gives them nothing
-    plain_known = all(value is not None for value in plain.values())
-    return {"items": items if items_known else None, "plain": plain,
+        if plain.take(pool, round(size * plain_rate) + 1):
+            plain_texts += 1
+        else:
+            left.add(pool)
+    found = {pool: (plain.used[pool] if whole or pool in plain.closed or pool in left else None)
+             for pool in plain.budget}
+    items_known = whole or items.done() or items_left or item_share == 0  # a dataset without items gives them nothing
+    plain_known = all(value is not None for value in found.values())
+    return {"items": items.used[0] if items_known else None, "plain": found,
             "item_texts": item_texts if items_known else None, "plain_texts": plain_texts if plain_known else None,
             "complete": items_known and plain_known}
 
@@ -346,7 +349,7 @@ def _tokenize(opened: dict[str, Depot], sampled: list[tuple], tokenizer: Tokeniz
         if kind != "task":
             shard_rows.append((tokens, name, text, "", 0))
         credit_rows.append({"depot": name, "id": text, "revision": revision, **{key: row[key] for key in CREDITS},
-                            "tokens": 0})
+                            "tokens": 0, "piece": None})
     found["seconds"] = time.perf_counter() - started
     found["bytes_per_token"] = _written(_shard_table(shard_rows)) / max(sum(len(one[0]) for one in shard_rows), 1)
     found["bytes_per_row"] = (_written(pa.Table.from_pylist(credit_rows, schema=CORPUS_SCHEMAS["texts"]))

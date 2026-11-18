@@ -105,7 +105,11 @@ texts of one decision are read from the index alone, a page of them in
 that order (filters.Filter.decision). The indexes of change numbers
 (memberships_joined, memberships_left, content_lists_change,
 text_decisions_change, pins_change, and texts_change) let a pull read the
-rows past a change without reading a whole table (wpt_depot.follow).
+rows past a change without reading a whole table (wpt_depot.follow). The
+partial index content_lists_long holds the plain content versions longer
+than LONG characters, those a corpus build cuts into pieces
+(wpt_depot.pieces), so a build finds a library's long texts from them
+without reading every text (Depot.library_long).
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -134,10 +138,11 @@ Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
 
 from . import ids, titles
 
-FORMAT = 10  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 11  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
+LONG = 1 << 20  # characters: a plain content version longer than this is in the index content_lists_long
 
 TABLES = {
     "about_revisions": """revision INTEGER NOT NULL, change INTEGER NOT NULL, name TEXT NOT NULL,
@@ -218,6 +223,7 @@ INDEXES = (
     "CREATE INDEX content_lists_change ON content_lists (change)",
     "CREATE INDEX text_decisions_change ON text_decisions (change)",
     "CREATE INDEX pins_change ON pins (change)",
+    f"CREATE INDEX content_lists_long ON content_lists (id, version) WHERE kind IS NULL AND length > {LONG}",
 )
 # the tables whose rows are revisions of an id, with the flag latest; <name> is the view of their current rows
 REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "datasets_revisions",

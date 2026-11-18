@@ -297,11 +297,14 @@ def train_vocabulary(depot: Depot, name: str, log, *, work: Path | None = None, 
     with tempfile.TemporaryDirectory(prefix="wpt-vocabulary-", dir=work) as folder:
         listed = Path(folder) / "texts.jsonl"
         counted = {"texts": 0, "bytes": 0}
+        listed_once = set()  # a long text's pieces come apart in the sample: the list names the text once
         with open(listed, "w", encoding="utf-8") as held:
             def texts():
                 for address, text, data in sample_of(depot, recipe):
-                    held.write(json.dumps([address, text]) + "\n")
-                    counted["texts"] += 1
+                    if (address, text) not in listed_once:
+                        listed_once.add((address, text))
+                        held.write(json.dumps([address, text]) + "\n")
+                        counted["texts"] += 1
                     counted["bytes"] += len(data)
                     if counted["texts"] % 10_000 == 0:
                         progress({"stage": "reading the sample", "texts": counted["texts"],

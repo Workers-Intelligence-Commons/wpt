@@ -97,6 +97,12 @@ transaction drops the index text_decisions_decision, which
 text_decisions_order serves in its place (DROPPED_10), counts the pins
 older than their text's current revision (NEWER_COUNTS_10) and drops the
 mark.
+The step to format 11 builds the partial index content_lists_long
+(LONG_11: the plain content versions a corpus build cuts into pieces) in
+one statement, which reads every row of content_lists once and rewrites no
+table, between a first transaction that marks the depot half upgraded and
+a last one that drops the mark, as the step to format 8 does; it says what
+it does before it starts and how long it took.
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -282,6 +288,9 @@ INDEXES_10 = (
                              f"{ORDER_TEXT_10})"))
 # the index of format 9 that text_decisions_order serves in its place, dropped once that one is built
 DROPPED_10 = "DROP INDEX IF EXISTS text_decisions_decision"
+# format 11: the partial index of the plain content versions longer than 1,048,576 characters
+LONG_11 = ("CREATE INDEX IF NOT EXISTS content_lists_long ON content_lists (id, version) "
+           "WHERE kind IS NULL AND length > 1048576")
 UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
 BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions), 7 (memberships, pins) and 9
                  # (memberships) goes over
@@ -761,8 +770,27 @@ def _to_10(db: Database, log):
         f"the depot is at format 10, in {time.monotonic() - began:.0f} seconds")
 
 
+def _to_11(db: Database, log):
+    """Format 10 to 11, as the module says: the index content_lists_long,
+    built while the depot is marked half upgraded."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            _new_format(con, 11)
+    log(f"{db.path}: building the index content_lists_long of the plain content versions longer than 1,048,576 "
+        "characters, in one statement that reads each row of content_lists once and writes no row of a table; run "
+        "again after a stop, it builds it again")
+    began = time.monotonic()
+    with db.bulk() as con:
+        con.execute(LONG_11)
+        con.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the index content_lists_long is built, in {time.monotonic() - began:.0f} seconds; the depot is "
+        "at format 11")
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):

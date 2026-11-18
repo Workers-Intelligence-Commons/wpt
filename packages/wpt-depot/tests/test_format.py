@@ -67,7 +67,7 @@ def test_an_upgrade_of_a_format_3_folder_writes_a_new_file_holding_what_the_fold
     assert [one["revision"] for one in depot.library_texts("old-2", depot.change())] == [2]  # the revision it pinned
     assert depot.sql("SELECT id, revision FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = "
                      "'book')") == [{"id": "old-1", "revision": 2}]
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     assert depot.erasures()[0]["needles"][0]["text"] == "old-2"
     # the ids go on from the highest number of each kind the folder held
     assert depot.add([NewText(text="new", licenses=("CC0-1.0",))], me) == ["old-3"]
@@ -125,8 +125,8 @@ def test_an_upgrade_stopped_once_its_file_is_whole_only_renames_it_when_run_agai
 
     depot, _ = Depot.upgrade(str(folder))
 
-    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 7
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 8
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
 
 def test_the_upgrade_of_a_clone_takes_its_upstream_s_web_address(make_legacy):
@@ -186,7 +186,8 @@ def schema_of(path) -> list[tuple]:
 
 
 def made_older(depot, format_: int):
-    """The depot as a depot of format_ (4 to 9) holds what it holds: no tables text_tags and text_licenses, no title
+    """The depot as a depot of format_ (4 to 10) holds what it holds: no index content_lists_long; for 9 and older
+    also no tables text_tags and text_licenses, no title
     index text_titles nor its title_owners, no
     indexes of the format 10 upgrade (INDEXES_10) but the index text_decisions_decision, and no counts of scores, of
     pins with a newer revision and of the splits by status and by locked library; for 8
@@ -201,6 +202,13 @@ def made_older(depot, format_: int):
     with depot.db.bulk() as con:
         con.execute("UPDATE texts_revisions SET status = NULL WHERE NOT latest")
     before = table_rows(depot.address)
+    with depot.db.bulk() as con:
+        con.execute("DROP INDEX content_lists_long")
+        con.execute("UPDATE about_revisions SET format = ?", (format_,))
+    if format_ == 10:
+        depot.db.close()
+        (depot.db.waiting / FULL_COPY_NEXT).unlink()
+        return before
     with depot.db.bulk() as con:
         for name, _ in upgrade.INDEXES_10:
             con.execute(f"DROP INDEX {name}")
@@ -290,7 +298,7 @@ def test_an_upgrade_of_a_format_4_file_builds_its_indexes_tables_and_statuses_in
     assert start == 4 and upgraded.format() == FORMAT and upgraded.address == depot.address
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9, 10] and after["changes"][-1][1] == "upgrade"
+    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9, 10, 11] and after["changes"][-1][1] == "upgrade"
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert (depot.db.waiting / FULL_COPY_NEXT).exists()  # the change files hold no change of layout
@@ -326,7 +334,7 @@ def test_an_upgrade_to_format_6_cut_short_marks_the_depot_and_goes_on_when_run_a
 
     assert start == 5 and upgraded.format() == FORMAT
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9, 10]
+    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9, 10, 11]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert any("at format 6" in line for line in said)
@@ -369,7 +377,7 @@ def test_an_upgrade_to_format_7_writes_every_export_key_goes_on_from_its_last_ba
     assert len(made) == 6 + 3 + 4  # the 3 memberships left, then the 4 pins
     assert any("rows a second" in line for line in said)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9, 10]
+    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9, 10, 11]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     for table, count in (("memberships", 8), ("pins", 4)):
@@ -403,7 +411,7 @@ def test_an_upgrade_to_format_8_stopped_while_it_builds_the_decision_index_build
     assert start == 7 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9, 10]
+    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9, 10, 11]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert "text_decisions_decision" in said[0] and any("at format 8" in line for line in said)
@@ -452,7 +460,7 @@ def test_an_upgrade_to_format_9_fills_what_libraries_hold_exactly_and_goes_on_af
     assert start == 8 and upgraded.format() == FORMAT
     assert f"going on after the text {given[0][1]}" in said[0] and any("rows a second" in line for line in said)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [8, 9, 10]
+    assert [one[-1] for one in after["about_revisions"]] == [8, 9, 10, 11]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert library_figures(upgraded)[0] == stored
@@ -553,8 +561,38 @@ def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_
     assert "rows 3 to" in said[0] and "going on after the last transaction" in said[0]
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [9, 10]
+    assert [one[-1] for one in after["about_revisions"]] == [9, 10, 11]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert title_index(upgraded) == indexed and indexed["terms"] and indexed["unfound"] == []
     assert [one["id"] for one in upgraded.search(Filter(search="number 1"))["rows"]] == ["depot-2", "depot-12"]
+
+
+def test_an_upgrade_to_format_11_stopped_while_it_builds_the_long_content_index_builds_it_when_run_again(
+        make_depot, me, monkeypatch):
+    # a corpus build finds a library's long texts through this index, so an upgraded depot must hold it as a new
+    # one does, and a stop during its build, which reads every content version, must leave a depot only the upgrade
+    # opens
+    new = make_depot("new")
+    depot = decided(make_depot(), me)
+    before = made_older(depot, 10)
+    with pytest.raises(OtherFormat):
+        Depot.open(depot.address)
+    with monkeypatch.context() as patch:  # the build fails as a stop in its statement leaves it
+        patch.setattr(upgrade, "LONG_11", "CREATE INDEX content_lists_long ON no_table (x)")
+        with pytest.raises(apsw.SQLError):
+            upgrade.upgrade(depot.address, log=lambda line: None)
+    for way_in in (Depot.view, Depot.open):
+        with pytest.raises((HalfUpgraded, OtherFormat), match="wpt depot upgrade"):
+            way_in(depot.address)
+    said = []
+
+    upgraded, start = upgrade.upgrade(depot.address, log=said.append)
+
+    assert start == 10 and upgraded.format() == FORMAT
+    assert schema_of(depot.address) == schema_of(new.address)
+    after = table_rows(depot.address)
+    assert [one[-1] for one in after["about_revisions"]] == [10, 11]
+    assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
+        table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
+    assert "content_lists_long" in said[0] and any("at format 11" in line for line in said)

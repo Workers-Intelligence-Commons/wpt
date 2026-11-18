@@ -15,7 +15,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from wpt_depot import About, Declaration, Depot, NewText
+from wpt_depot import About, Declaration, Depot, NewText, pieces
 from wpt_depot.corpus import build
 from wpt_store import Store, store_from_settings
 from wpt_utils.programs import program
@@ -533,3 +533,25 @@ def test_a_sample_whose_reader_went_away_leaves_the_sample_route_to_the_next_req
     assert answered and answered[0][0] == 200
     body = answered[0][2]
     assert json.loads(body[body.rindex(b'{"end"'):])["texts"] == 400  # the whole sample, to its last line
+
+
+def test_a_vocabulary_lists_a_long_text_once_whatever_pieces_of_it_its_sample_took(tmp_path):
+    # the sample takes a long text as pieces, each at its own place; the list of the texts the vocabulary trained
+    # on, and its count, name the text once
+    long_text = "".join(f"=== src/file{n}.txt\n" + "words of a file\n" * 2000 for n in range(110))
+    assert len(long_text) > 3 * pieces.LENGTH
+    depot = Depot.new(str(tmp_path / "depot.sqlite"), About("here", "Ada Lovelace", "ada@example.org"))
+    depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
+    depot.add([NewText(text=text, licenses=("CC0-1.0",)) for text in (*TEXTS, long_text)], ME)
+    depot.decide("admitted", "true", ME)
+    library = depot.new_library("all")
+    depot.put(library, "true")
+    depot.new_dataset("first", "tiny", [(None, library)])
+    depot.new_tokenizer("tiny", None, "first", 10 * pieces.LENGTH, 560)
+
+    shared.train_vocabulary(depot, "tiny", lambda *_: None, work=tmp_path)
+
+    recipe = depot.tokenizer("tiny")
+    listed = [one["text"] for one in depot.vocabulary_texts(recipe["id"], 1)]
+    assert sorted(listed) == sorted(set(listed)) and len(listed) == len(TEXTS) + 1  # each text once, the long one too
+    assert depot.vocabulary(recipe["id"], 1)["texts"] == len(TEXTS) + 1

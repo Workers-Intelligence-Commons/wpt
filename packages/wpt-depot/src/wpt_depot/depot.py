@@ -184,12 +184,17 @@ from .database import Database, person_columns
 from .erasure import Needle
 from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
                      UnsupportedAddress)
-from .filters import (IN_LOCKED, MEMBERSHIPS_KEY, TEXTS_KEY, Filter, changed_since, condition, is_id,
+from .filters import (IN_LOCKED, MEMBERSHIPS_KEY, PINS_KEY, TEXTS_KEY, Filter, changed_since, condition, is_id,
                       listed as listed_ids, literal, strings, words)
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
-from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, REFUSED, UNDER_REVIEW,
+from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, LONG, REFUSED, UNDER_REVIEW,
                      decision_list)
 
+# the revision of the text h.text a library held at the change :change, the change numbers of each depot's rows it
+# held then given by :bounds (Depot.bounds), and whether the membership h was open then
+REVISION_THEN = (f"(SELECT max(r.revision) FROM texts_revisions r INDEXED BY {TEXTS_KEY} WHERE r.id = h.text "
+                 f"AND r.change <= (SELECT b.value FROM json_each(:bounds) b WHERE b.key = {ids.owner_sql('r.id')}))")
+MEMBER_THEN = "AND h.joined_change <= :change AND (h.left_change IS NULL OR h.left_change > :change) "
 # texts an operation works on: an SQL condition over the texts view, matched when the operation runs, a filter
 # (wpt_depot.filters) matched then, less the texts changed since its change number, or the exact ids of chosen texts
 Selection = str | Filter | Sequence[str]
@@ -1046,11 +1051,7 @@ class Depot:
             when = ""
             change = self._lock_change(library)
         else:
-            held = "memberships h INDEXED BY memberships_key"
-            revision = (f"(SELECT max(r.revision) FROM texts_revisions r INDEXED BY {TEXTS_KEY} WHERE r.id = h.text "
-                        "AND r.change <= (SELECT b.value FROM json_each(:bounds) b "
-                        f"WHERE b.key = {ids.owner_sql('r.id')}))")
-            when = "AND h.joined_change <= :change AND (h.left_change IS NULL OR h.left_change > :change) "
+            held, revision, when = "memberships h INDEXED BY memberships_key", REVISION_THEN, MEMBER_THEN
         cursor = self.db.reader().cursor().execute(
             f"SELECT h.export_key, t.id, t.revision, c.kind, t.tags, c.bytes FROM {held} "
             f"CROSS JOIN texts_revisions t ON t.id = h.text AND t.revision = {revision} {CONTENT_JOIN} "
@@ -1059,6 +1060,30 @@ class Depot:
             {"library": library, "change": change, "low": low, "high": high,
              "bounds": _json(self.bounds(ids.owner(library), change))})
         yield from cursor
+
+    def library_long(self, library: str, change: int) -> list[tuple]:
+        """The plain texts library_texts gives whose content version is
+        longer than schema.LONG characters, those a corpus build cuts into
+        pieces (wpt_depot.pieces), in no set order: (export key, id,
+        revision, tags as JSON text, length, bytes) of each. They are read
+        from the side of those content versions, the partial index
+        content_lists_long, each version's text looked up in the library by
+        its key of memberships (of pins for a library locked then) and kept
+        when the revision the library holds reads that version (CROSS JOIN
+        fixes that order), so the read grows with the depot's long content
+        versions, never with the library's texts."""
+        if self._locked_then(library, change):
+            held, revision, when = f"pins h INDEXED BY {PINS_KEY}", "h.revision", ""
+            change = self._lock_change(library)
+        else:
+            held, revision, when = f"memberships h INDEXED BY {MEMBERSHIPS_KEY}", REVISION_THEN, MEMBER_THEN
+        return self.db.reader().execute(
+            "SELECT h.export_key, t.id, t.revision, t.tags, c.length, c.bytes FROM content_lists c INDEXED BY "
+            f"content_lists_long CROSS JOIN {held} ON h.library = :library AND h.text = c.id {when}"
+            f"CROSS JOIN texts_revisions t ON t.id = h.text AND t.revision = {revision} "
+            f"WHERE c.kind IS NULL AND c.length > {LONG} AND t.content_version = c.version",
+            {"library": library, "change": change, "bounds": _json(self.bounds(ids.owner(library), change))}
+        ).fetchall()
 
     def library_spread(self, library: str, change: int, points: int) -> list[tuple]:
         """At most points of the texts library_texts gives, as (id,

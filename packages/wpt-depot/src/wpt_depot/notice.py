@@ -1,5 +1,6 @@
 """The notice of a model trained on a corpus, written from the corpus's
 tables alone: one line per text it learned from, in the corpus's order,
+a text taken as pieces once, where the first piece it learned from comes,
 
     <depot> <id>: <title> by <authors>, <address>; <licenses, joined by OR>; notice <n>
 
@@ -9,9 +10,9 @@ notice the lines name, under its number, and the text of each license
 they name. A text's licenses are a choice: any one of them allows it.
 
 What a model learned from is what its training steps read (`learned`, each
-step's, added up: wpt_training.Environment.learned): the plain texts whose
-first token lies in the first `text` tokens of the plain texts' token
-files, every conversation when a step read conversations, every task when a
+step's, added up: wpt_training.Environment.learned): the plain texts and
+pieces whose first token lies in the first `text` tokens of the plain
+texts' token files, every conversation when a step read conversations, every task when a
 step read tasks. Without `learned`, every text of the corpus.
 """
 
@@ -22,7 +23,11 @@ def model_notice(store, record: dict, learned: dict | None = None) -> str:
     """The notice of a model trained on the corpus whose record is given,
     learning what `learned` says ({"text": tokens, "conversations": count,
     "tasks": count}, each part optional)."""
-    texts = [one for one in read_table(store, record, "texts").to_pylist() if _learned(one, learned)]
+    texts, seen = [], set()
+    for one in read_table(store, record, "texts").to_pylist():
+        if _learned(one, learned) and (one["depot"], one["id"]) not in seen:
+            seen.add((one["depot"], one["id"]))
+            texts.append(one)
     lines = [_line(one) for one in texts]
     named = {one["notice"] for one in texts}
     notices = [one for one in read_table(store, record, "notices").to_pylist() if one["id"] in named]

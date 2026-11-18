@@ -68,11 +68,13 @@ def in_locked(text: str) -> str:
 
 
 IN_LOCKED = in_locked("texts.id")  # over a row of the texts view named texts
-# the indexes of the keys of memberships (library, text, joined_change) and of texts_revisions (id, revision), which
-# SQLite names, for the queries that name the index they read (KEY_INDEXES: each with its table)
+# the indexes of the keys of memberships (library, text, joined_change), of pins (library, text) and of
+# texts_revisions (id, revision), which SQLite names, for the queries that name the index they read (KEY_INDEXES:
+# each with its table)
 MEMBERSHIPS_KEY = "sqlite_autoindex_memberships_1"
+PINS_KEY = "sqlite_autoindex_pins_1"
 TEXTS_KEY = "sqlite_autoindex_texts_revisions_1"
-KEY_INDEXES = {MEMBERSHIPS_KEY: "memberships", TEXTS_KEY: "texts_revisions"}
+KEY_INDEXES = {MEMBERSHIPS_KEY: "memberships", PINS_KEY: "pins", TEXTS_KEY: "texts_revisions"}
 
 
 @dataclass(frozen=True)

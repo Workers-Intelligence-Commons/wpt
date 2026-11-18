@@ -432,17 +432,15 @@ plain text with several of the shares' tags once for each tag. When a
 revision's figures are not known, the build counts the same figures from
 every text of its libraries, which takes long on a big dataset, so the same
 depot state builds the same corpus either way. The
-items are taken in the corpus's order until the first item whose tokens
-would pass that share, never scanning on for a smaller one. A conversation
-counts the tokens of its chat template. A task is kept as a JSON line and
+items fill that share in the corpus's order (see "Filling a part" below).
+A conversation counts the tokens of its chat template. A task is kept as a JSON line and
 never tokenized, so it counts the tokens of its content written as the JSON
 text of that line.
 
-Each share then takes its proportion of what the items left, or, without
-shares, the plain texts take all of it, and stops at its first text that
-would pass that part, in the corpus's order. Without a size, every
-conversation and task is taken. The corpus's record keeps the tokens its
-conversations and tasks hold (`items_tokens`).
+Each share then fills its proportion of what the items left, or, without
+shares, the plain texts fill all of it, in the corpus's order. Without a
+size, every conversation and task is taken. The corpus's record keeps the
+tokens its conversations and tasks hold (`items_tokens`).
 
 `wpt depot dataset edit NAME`, or "Edit it" on the view of the dataset,
 changes its name, its libraries, its shares and its `max_tokens` as a new
@@ -476,23 +474,51 @@ taken.
 
 The build brings the shares to their proportions without repeating a text.
 Without `max_tokens`, it finds the share with the fewest bytes relative to
-its proportion and keeps every text of that share; each other share stops,
-in the corpus's order, at its first text whose bytes would pass its
-proportion of the scarcest share's bytes. The bytes of each share come from
+its proportion and keeps every text of that share; each other share fills
+its proportion of the scarcest share's bytes, in the corpus's order (see
+"Filling a part"), a piece of a long text counting for its share of the
+text's bytes, split evenly among its pieces. The bytes of each share come from
 the figures, as the items' share does. A text the figures count twice
 makes its shares hold more bytes there than the build can take of them, so
-the shares and the items' share then come out off their proportions. With a size, each share stops at
-its part of it. A text enters a corpus once at most. The order depends on
+the shares and the items' share then come out off their proportions. With a size, each share fills
+its part of it. A text enters a corpus once at most, whole or as some of
+its pieces. The order depends on
 the texts' ids alone, so the same dataset builds the same corpus, and a
 change of its name, of its `max_tokens` or of the build's size keeps its
 order. The
 corpus's record keeps how many tokens each share holds (`shares_tokens`) and
 how many texts the build left out (`left_out`: texts no share took, texts
-trimmed from a share, items `max_tokens` left out, items of the kinds that
+of which a share took nothing, items `max_tokens` left out, items of the kinds that
 are no training data).
 
 A share with no text refuses the build. Shares apply to plain texts only:
 only a size trims conversations and tasks, to their natural share of it.
+
+### Filling a part
+
+Every part of a corpus fills the same way: the items' share, each share
+of the plain texts, and each share of a vocabulary's sample. The texts
+come in the corpus's order. A text that fits what is left of its part is
+taken. A text that would pass it is left out, and the next text is tried.
+A part closes once what is left of it is at most a thousandth of it, or
+once a thousand of its texts in a row did not fit. The build stops reading
+once every part is closed, so a nearly full corpus never reads the rest of
+the dataset for its last tokens. A smaller size takes the same texts as a
+larger one up to the first text it leaves out; past it, it takes only what
+fits what is left of it.
+
+### Long texts
+
+A plain text longer than 1,048,576 characters, such as a repository the
+depot holds as one text, comes into a corpus as pieces of about that
+length (`wpt_depot/pieces.py`). The depot keeps the text whole. A piece
+ends right before a line that begins with `=== `, the line that begins
+each file of a repository, when one comes within the next piece's length;
+otherwise before the first line start there, or at the length itself when
+the text has no line break there. Each piece has its own place in the
+corpus's order and counts as a text of its own for every part, so a long
+text spreads through the corpus, and a corpus of any size takes about its
+share of it. An item is never cut.
 
 ### Remotes
 
@@ -539,7 +565,8 @@ the change number the dataset names; a text two libraries hold is taken
 once. It chooses nothing by score. It then keeps:
 
 - every plain text, as its tokens followed by the end-of-document token,
-  in token files;
+  in token files; a long text as its pieces, each a row of its own, named
+  by its text's id, `#` and its number (`depot-12#3`);
 - every conversation, as the tokens of the chat template
   ([chat-format.md](chat-format.md), "The template"), in token files of
   their own;
@@ -549,7 +576,9 @@ Items of other kinds are not training data: the build leaves them out and
 counts them in the record. The texts go in the order of their export keys,
 a hash of each text's id that its depot stores, the order the dataset's
 export uses too, so that any first part of the corpus is drawn from all of
-it. The order depends on no dataset and not on where a depot's file is.
+it. A piece's key is the same hash of its name. The build finds the long
+texts before it reads, through an index of the depot's long content
+versions, so it never reads every text to find them. The order depends on no dataset and not on where a depot's file is.
 Texts of one key go by the place of their depot among the depots the
 dataset reads, then by their id. Every size of a model series reads the same corpus, the smaller sizes
 its first part ([model.md](model.md), "Model series").
@@ -581,7 +610,8 @@ these tables:
   its kind, its credits, licenses and tags copied, its scores copied with
   the content version each was made from, its notice, and where its
   tokens start (the steps that read conversations and tasks pick them by
-  tag from this table);
+  tag from this table); a piece taken has a row of its own with its
+  text's credits and its number (`piece`, empty for a whole text);
 - `licenses` and `notices`: the license texts and notices those texts
   name, copied from their depots (ids carry their depot's name, so they never
   repeat across depots).

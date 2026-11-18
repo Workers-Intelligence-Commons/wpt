@@ -280,7 +280,7 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
       <Facts rows={[["version", `v${recipe.version}`], ["dataset", dataset ? null : trainsOn(recipe)],
         ["sample", `at most ${bytes(recipe.sample_bytes)}`], ["vocabulary", plural(recipe.vocab_size, "token")]]} />
       {recipe.note && <p className="small aside">{recipe.note}</p>}
-      <Section title="Vocabularies" help={short ? <>Less than the {bytes(recipe.sample_bytes)} asked, and nothing went wrong: {(dataset?.shares?.length ?? 0) > 1 ? "each share takes whole texts, in the dataset's order, up to its part of the sample" : "the sample takes whole texts, in the dataset's order"}, and stops at its first text that does not fit, so a few long texts end it early; a dataset smaller than the sample gives all it has.</> : undefined}>
+      <Section title="Vocabularies" help={short ? <>Less than the {bytes(recipe.sample_bytes)} asked, and nothing went wrong: {(dataset?.shares?.length ?? 0) > 1 ? "each share takes the texts that fit its part of the sample, in the dataset's order" : "the sample takes the texts that fit it, in the dataset's order"}, a text longer than about a million characters as pieces of that length, and closes once nearly full or after a thousand texts in a row that do not fit; a dataset smaller than the sample gives all it has.</> : undefined}>
         {vocabularies.length === 0 ? <p className="small aside">None yet.</p> : vocabularies.map((v) => (
           <div key={v.version} className="vocabulary">
             <p className="page-meta"><span className="cue">v{v.version}{v.version === recipe.version ? "" : " (older)"}</span><span>{plural(v.texts, "plain text")}</span>

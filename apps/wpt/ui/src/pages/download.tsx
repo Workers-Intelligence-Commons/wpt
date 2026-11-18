@@ -16,7 +16,8 @@
 // /api/datasets/ID/build, confirmed).
 // Changing the vocabulary or the size clears the estimate. At a size, the
 // estimate's tokens are a forecast that follows the build's order, where a
-// share stops at its first text that does not fit (wpt_depot.estimate), so
+// text that does not fit what is left of its share is left out
+// (wpt_depot.estimate), so
 // its headline, above "Confirm and build", says what will come out: the
 // tokens in all, and each share that comes out more than UNEVEN off its
 // proportion, with the smallest size where every share comes within it
@@ -122,7 +123,7 @@ function Forecast({ e, dataset, asked, onSize }: { e: Estimate; dataset: Dataset
       </p>
       {off.length > 0 && (
         <p className="row tight small">
-          <Help label="uneven shares">Texts are never cut: a share stops at its first text that does not fit in what is left of its part, in the dataset's fixed order. Here {empty.length ? `an early ${empty.map((s) => s.tag).join(" or ")} text is` : "a long text comes"} too long for {off.length === 1 ? "its part" : "their parts"}, so the corpus holds fewer tokens than asked{e.item_tokens ? ", and the conversations take a bigger part of it" : ""}. The even size is the smallest where every share's part of the plain text comes within {Math.round(UNEVEN * 100)} percentage points of the part it asks (a share of 60 % gets between 50 and 70 %), by the same forecast. Changing the shares makes a new revision of the dataset. Keeping this size builds this mix as forecast.</Help>
+          <Help label="uneven shares">A share takes the texts that fit what is left of its part, in the dataset's fixed order, and leaves out the others; a text longer than about a million characters comes as pieces of that length. Here {empty.length ? `every ${empty.map((s) => s.tag).join(" or ")} text is` : "many texts are"} too long for {off.length === 1 ? "its part" : "their parts"}, so the corpus holds fewer tokens than asked{e.item_tokens ? ", and the conversations take a bigger part of it" : ""}. The even size is the smallest where every share's part of the plain text comes within {Math.round(UNEVEN * 100)} percentage points of the part it asks (a share of 60 % gets between 50 and 70 %), by the same forecast. Changing the shares makes a new revision of the dataset. Keeping this size builds this mix as forecast.</Help>
           {e.even_size !== null && asked !== null && e.even_size > asked && <Button variant="quiet" onClick={() => onSize(e.even_size!)}>Use {e.even_size.toLocaleString("en")} tokens</Button>}
           {!dataset.upstream && <a href={href(["datasets", dataset.id], { edit: "1" })}>Change the shares</a>}
         </p>
@@ -495,7 +496,7 @@ function MixStat({ corpus, dataset, vocabulary, size }: { corpus: Corpus; datase
     <div className={`stat stat-mix${uneven ? " stat-off" : ""}`}>
       <MixBar m={m} />
       <span className="stat-label small">mix got
-        {uneven && <Help label="uneven shares">Texts are never cut, and a share stops at its first text that does not fit in what is left of its part, so at a small size one long text can end a share early. A bigger size keeps closer to the shares.{even !== null && ` ${plural(even, "token")} is the smallest size where every share comes within ${Math.round(UNEVEN * 100)} percentage points of the part it asks, by the build estimate's forecast.`}</Help>}
+        {uneven && <Help label="uneven shares">A share takes the texts that fit what is left of its part and leaves out the others, so at a small size a share whose texts are long can come out short. A bigger size keeps closer to the shares.{even !== null && ` ${plural(even, "token")} is the smallest size where every share comes within ${Math.round(UNEVEN * 100)} percentage points of the part it asks, by the build estimate's forecast.`}</Help>}
       </span>
       {uneven && (
         <span className="row tight small">
