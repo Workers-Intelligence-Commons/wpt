@@ -185,7 +185,7 @@ export function HelpPage() {
         <p><strong>The review panel</strong>, from top to bottom:</p>
         <ul>
           <li>One row per score the depot knows. Its buttons are the values the depot uses most for that score, or round values spread over its range; the value set last from this browser is underlined. − and + step by a twentieth of the range. The box beside them opens a number pad: click the digits, then ✓; "none" removes the score, ✕ or Escape closes it. The keyboard's digits and Enter work too.</li>
-          <li>The depot's nine most used tags as toggles; the text's other tags on the "also" line, each with ✕. "+ tag" and "+ score" take a typed name.</li>
+          <li>The depot's nine most used tags as toggles; the text's other tags on the "also" line, each with ✕. "+ tag" opens every tag of the depot, most used first, each added with a click; the box above them narrows them, and Enter in it adds what it holds, a new tag included; Done or Escape closes it. "+ score" takes the name of a new score.</li>
           <li>The buttons: ‹ (previous), Next ›, Refuse, Admit &amp; next; "Back to review" on a text already decided, and "Take out" when an open library is open.</li>
           <li>The presets: a click sets their scores and adds and removes their tags. "+ preset from this text" keeps this text's scores and tags under a name, in this browser only; ✕ forgets one.</li>
           <li>The text's facts: license, address, decisions, libraries and id; then "More on this text": its record, a decision with a reason, its licenses, its credits, taking it out of a library, reporting a problem and asking for an erasure.</li>

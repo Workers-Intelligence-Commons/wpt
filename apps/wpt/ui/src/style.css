@@ -607,6 +607,10 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .score-nudge { display: flex; gap: 2px; }
 .score-nudge .choice { width: 24px; }
 .score-nudge .choice.value { width: 42px; }
+.tag-picker { margin-top: var(--gap-hair); border: 1px solid var(--line-strong); padding: var(--gap-hair); }
+.tag-picker-head { display: flex; gap: var(--gap-hair); margin-bottom: var(--gap-hair); }
+.tag-picker-head .typed { flex: 1; min-width: 0; }
+.tag-picker-list { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
 .tag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; }
 .tag-grid .choice { font-family: inherit; }
 .panel-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-top: var(--gap-hair); }

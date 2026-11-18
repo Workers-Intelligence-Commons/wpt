@@ -178,12 +178,13 @@ export function ReviewPanel({ text, status, decisions, libraries, readOnly, acti
             <span key={t} className={`also${waiting.tags && !held.tags.includes(t) ? " waiting" : ""}`}>{t}{!readOnly && <button type="button" className="forget wic-focus" aria-label={`Take the tag ${t} away`} onClick={() => toggleTag(t)}>✕</button>}</span>
           ))}</span>}
           {!readOnly && <>
-            {typing === "tag" ? <Typed label="A new tag" onDone={(t) => { setTyping(null); if (t && !tagsNow.includes(t)) setTags([...tagsNow, t]); }} />
-              : <button type="button" className="link-button wic-focus" onClick={() => setTyping("tag")}>+ tag</button>}
+            <button type="button" className={`link-button wic-focus${typing === "tag" ? " on" : ""}`} aria-expanded={typing === "tag"}
+              onClick={() => setTyping(typing === "tag" ? null : "tag")}>+ tag</button>
             {typing === "score" ? <Typed label="A new score's name" onDone={(n) => { setTyping(null); if (n) { addedNames.add(n); setExtraNames([...extraNames, n]); } }} />
               : <button type="button" className="link-button wic-focus" onClick={() => setTyping("score")}>+ score</button>}
           </>}
         </div>
+        {typing === "tag" && <TagPicker all={tags} has={tagsNow} onAdd={(t) => { if (!tagsNow.includes(t)) setTags([...tagsNow, t]); }} onDone={() => setTyping(null)} />}
       </section>
       <section className="panel-actions" aria-label="Move and decide">
         {actions}
@@ -288,6 +289,37 @@ function NumberPad({ name, at, scale, value, onDone }: { name: string; at: { top
         {KEYS.map((k) => <button key={k} type="button" className={`choice wic-focus${k === "✓" ? " ok" : ""}`} onClick={() => press(k)}>{k}</button>)}
       </div>
       {scale && <p className={`pad-range${outside ? " act" : ""}`}>{outside ? "Outside " : "From "}{shortValue(scale.low)} to {shortValue(scale.high)}; − and + step {shortValue(scale.step)}</p>}
+    </div>
+  );
+}
+
+// The depot's tags to pick from with a click, most used first, those the text has left out; the box narrows them
+// to the tags holding what is typed, and Enter adds what is typed, a tag the depot has or a new one. It stays open
+// for several tags; Done or Escape closes it.
+function TagPicker({ all, has, onAdd, onDone }: { all: { tag: string; texts: number }[]; has: string[]; onAdd: (tag: string) => void; onDone: () => void }) {
+  const [typed, setTyped] = useState("");
+  const words = typed.trim().toLowerCase();
+  const shown = useMemo(() => [...all].sort((a, b) => b.texts - a.texts || a.tag.localeCompare(b.tag))
+    .filter((t) => !has.includes(t.tag) && (!words || t.tag.toLowerCase().includes(words))), [all, has, words]);
+  const add = (tag: string) => { onAdd(tag); setTyped(""); };
+  return (
+    <div className="tag-picker" role="group" aria-label="Add a tag">
+      <div className="tag-picker-head">
+        <input className="wic-input wic-focus typed" aria-label="Narrow the tags, or type a new one" placeholder="Narrow, or a new tag" value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); if (typed.trim()) add(typed.trim()); }
+            else if (e.key === "Escape") { e.preventDefault(); onDone(); }
+          }} />
+        <button type="button" className="choice wic-focus" onClick={onDone}>Done</button>
+      </div>
+      <div className="tag-picker-list">
+        {shown.map((t) => (
+          <button key={t.tag} type="button" className="choice wic-focus" title={`Tag it ${t.tag}: ${t.texts.toLocaleString("en")} texts have it`} onClick={() => add(t.tag)}>{t.tag}</button>
+        ))}
+        {words && !all.some((t) => t.tag.toLowerCase() === words) && <button type="button" className="choice add-preset wic-focus" onClick={() => add(typed.trim())}>+ new tag “{typed.trim()}”</button>}
+        {!shown.length && !words && <span className="aside">The text has every tag of the depot.</span>}
+      </div>
     </div>
   );
 }
