@@ -62,6 +62,7 @@ from .order import walk
 
 LOOKAHEAD = 16  # texts of each group whose tokens are asked for at first, ahead of the group's head
 LOOKAHEAD_MOST = 512  # and at most, the number doubling each time
+ASKED_BYTES = 64 << 20  # bytes of texts one request for tokens names at most, beyond the text it is for
 TAKEN, LEFT_OUT = 1, 2  # what is decided of an entry (0: nothing yet)
 MEASURED = 100_000  # entries walked, or decided, between two reports of the progress
 INTERNED = 10_000  # different (share, tags) kept with their groups' ids, at most
@@ -284,18 +285,31 @@ def _choose(entries: _Entries, budget: dict, addresses, count, progress) -> Plan
         return addresses[source], text, int(entries.revision[entry]), None if number < 0 else number
 
     def ask(entry: int, active: set, head: dict):
-        """The tokens of entry, and of the next texts of every group active, worked out by count."""
-        wanted, seen = [entry], {entry}
-        for group in sorted(active):
-            place, end, more = max(head[group], asked.get(group, 0)), ends[group], look[0]
-            while place < end and more:
-                one = queue[place]
-                place += 1
-                if not done[one] and sizes[one] < 0 and one not in seen:
+        """The tokens of entry, and of the next texts of the groups active, worked out by count: the
+        groups name one text each in turn, at most look of them each and ASKED_BYTES of texts in all,
+        so a request never holds more texts than the workers can tokenize at once, whatever the
+        number of groups and the length of their texts."""
+        wanted, seen, room = [entry], {entry}, ASKED_BYTES
+        places = {group: max(head[group], asked.get(group, 0)) for group in sorted(active)}
+        left = dict.fromkeys(places, look[0])
+        while room > 0 and left:
+            for group in list(left):
+                place, end = places[group], ends[group]
+                while place < end and (done[queue[place]] or sizes[queue[place]] >= 0 or queue[place] in seen):
+                    place += 1
+                if place == end or room <= 0:
+                    del left[group]
+                else:
+                    one = queue[place]
                     wanted.append(one)
                     seen.add(one)
-                    more -= 1
-            asked[group] = place
+                    room -= int(entries.bytes[one])
+                    place += 1
+                    left[group] -= 1
+                    if not left[group]:
+                        del left[group]
+                places[group] = place
+        asked.update(places)
         for one, found in zip(wanted, count([describe(one) for one in wanted]), strict=True):
             sizes[one] = found
         look[0] = min(look[0] * 2, LOOKAHEAD_MOST)

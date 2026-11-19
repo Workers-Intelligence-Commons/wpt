@@ -1055,6 +1055,35 @@ def test_a_share_splits_its_part_evenly_over_its_texts_tags_and_a_small_group_s_
     assert record["shares_tokens"][0]["tokens"] == record["total_tokens"] == 30
 
 
+def test_a_request_for_tokens_names_texts_of_at_most_its_bytes_and_chooses_the_same_texts(make_depot, me, tmp_path,
+                                                                                         monkeypatch):
+    # many groups ask for tokens ahead; with a byte allowance of 3 texts, every request names the text it is for
+    # and at most 3 texts' bytes beyond it, and the corpus is the one a build with no allowance makes
+    from wpt_depot import groups
+    depot, library, _ = tagged_depot(make_depot, me, *((("en", tag), 30, SMALL) for tag in "abcdefgh"))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+    monkeypatch.setattr("wpt_depot.corpus.IN_PROCESS", 0)  # count in worker processes, as a big build does
+    wide = build(depot, "mix", open_store((tmp_path / "wide").as_uri()), TOKENIZER, max_tokens=90,
+                 log=lambda *_: None)
+    asked = []
+    choose = groups._choose
+
+    def watched(entries, budget, addresses, count, progress):
+        def counted(items):
+            asked.append(len(items))
+            return count(items)
+        return choose(entries, budget, addresses, counted, progress)
+
+    monkeypatch.setattr(groups, "ASKED_BYTES", 3 * len(SMALL))
+    monkeypatch.setattr(groups, "_choose", watched)
+    narrow = build(depot, "mix", open_store((tmp_path / "narrow").as_uri()), TOKENIZER, max_tokens=90,
+                   log=lambda *_: None)
+
+    assert asked and max(asked) <= 1 + 3
+    assert [one["sha256"] for one in narrow["shards"]] == [one["sha256"] for one in wide["shards"]]
+    assert groups_taken(narrow) == groups_taken(wide)
+
+
 def test_a_text_of_two_groups_counts_for_both_and_is_taken_once(make_depot, me, tmp_path):
     # 24 tokens are 8 texts: each text tagged a and b gives both groups its tokens, so 4 of them balance 4 texts of c
     depot, library, ids = tagged_depot(make_depot, me, (("en", "a", "b"), 10, SMALL), (("en", "c"), 10, SMALL))
