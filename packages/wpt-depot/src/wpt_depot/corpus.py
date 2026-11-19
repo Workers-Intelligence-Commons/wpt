@@ -7,7 +7,11 @@ export keys (wpt_depot.order: every text of its libraries, each library as
 it stood at the change number of its depot the dataset names, a text two
 libraries hold once, a long plain text as its pieces, choosing nothing by
 score), reading only the texts it reaches, tokenizes them in worker processes (wpt_utils.parallel), and takes
-their results in that order. A token file (wpt_store.shards) is uploaded to
+their results in that order. With shares, a first pass walks the whole
+order before it (wpt_depot.groups) to choose the texts of each share that
+splits its budget over the tags of its texts (below), reading the rows of
+the texts but never their contents, but for the texts whose tokens the
+choice needs. A token file (wpt_store.shards) is uploaded to
 the store as soon as it is full, with the part of the texts table that
 lists its texts, and its local copies deleted, so the memory and the local
 disk the build takes stay bounded whatever the dataset's size: one token
@@ -34,7 +38,11 @@ always names. The dataset's own max_tokens is never read here: it is only
 the size the web app's build form starts at.
 
 What it takes: a plain text counts for the first share whose tag it has,
-and a plain text that has none of their tags is left out; items of a kind
+and a plain text that has none of their tags is left out. Inside a share,
+the budget splits evenly over every tag its texts carry but the share's
+own (wpt_depot.groups): a share whose texts carry two such tags or more,
+with a limit, takes the texts the groups choose, and every other share fills
+as below. Items of a kind
 other than conversation and task are no training data and are left out. A
 plain text longer than wpt_depot.pieces.LENGTH characters is taken as its
 pieces (wpt_depot.pieces), each at its own place of the order and counted
@@ -42,13 +50,21 @@ as a text of its own by every rule below, so a long text, such as a
 repository the depot holds as one text, spreads over the corpus, and a
 corpus of any size takes about its share of it. An item is never cut.
 
-Every limit below is filled the same way (Fill): the texts come in order,
-a text that fits what is left of its pool is taken, and one that would pass
-it is left out while the walk goes on with the next. A pool closes once
-what is left of it is at most a FULL-th of its budget, or once SKIPS of its
-texts in a row did not fit, and the walk ends once every pool is closed
-and no item taken comes later, so a nearly full corpus never reads the rest
-of the dataset for its last tokens.
+Every limit below is filled the same way (wpt_depot.fill.Fill), but for a
+share that splits its budget by group: the texts come in order, a text that
+fits what is left of its pool is taken, and one that would pass it is left
+out while the walk goes on with the next. A pool closes once what is left
+of it is at most a FULL-th of its budget, or once SKIPS of its texts in a
+row did not fit, and the walk ends once every pool is closed, every share
+that splits by group is past the last text it chose, and no item taken
+comes later, so a nearly full corpus never reads the rest of the dataset
+for its last tokens. A share that splits by group chooses its texts on
+their exact tokens with max_tokens, which worker processes count ahead of
+the choice, and on their bytes without; the stream then takes the texts it
+chose, checking each against the share's budget again. The texts chosen
+wait in the work folder (chosen.bin), their sha256 in the state that
+resumes the build, so a build resumed takes the same texts; a file lost is
+chosen again, the same.
 
 With max_tokens, the corpus's tokens, of plain texts, conversations and
 tasks together, never pass it, and a corpus of any size keeps the
@@ -70,7 +86,8 @@ dataset's mix of items and plain text:
 
 So a smaller size takes the same texts as a larger one up to the first
 text it leaves out, the start of what the larger one takes; past it, it
-takes only what fits what is left of it.
+takes only what fits what is left of it. A share that splits by group takes
+about the same part of each group at every size instead.
 
 Without max_tokens, every conversation and task is taken, and the plain
 texts go in order, a share at a time:
@@ -111,7 +128,9 @@ token file, in the corpus's order; a piece taken has a row of its own,
 notices (ids carry their depot's name, so they are copied as they are).
 Every text taken is in the corpus once, whole or as some of its pieces,
 each piece once (shares_tokens in the record says how many tokens each
-share holds).
+share holds, and for each group of the share, its tag, null for the texts
+that carry no other tag, how many texts it holds and their tokens, a text
+counting for each of its groups).
 
 A corpus names a depot by what no place of its file changes, and never
 by a file's path: the depot that holds the dataset by its public address
@@ -165,7 +184,6 @@ upload, the build hands the cap its estimated size (Room.expect).
     build(depot, name, store, tokenizer, ...)   the corpus of a dataset, its record
     depot_name(depot, dataset, url)             the name a corpus of the dataset records for its depot
     sources(depot, record)                      every depot a corpus read, by the name it records, opened
-    Fill(budget)                                how pools fill their budgets, a text at a time
     sample(depot, name, sample_bytes)           the plain texts that train a vocabulary, as a stream
     census(depot, dataset, libraries)           what a corpus of the dataset may take, whatever its size
     sample_lines(texts, here)                   that stream as a depot's web app sends it
@@ -194,9 +212,10 @@ from wpt_utils.lines import say
 from wpt_utils.parallel import Sizing, in_order, process_pool
 from wpt_utils import web
 
-from . import corpora, counts, pieces
+from . import corpora, counts, groups, pieces
 from .depot import Depot, location
 from .errors import NotADepot, NotFound, Refused, UpstreamUnreachable
+from .fill import Fill
 from .follow import Upstream
 from .order import HIGHEST, LOWEST, TRAINING_KINDS, long_texts, walk
 from .parts import Parted, scan
@@ -210,8 +229,6 @@ BATCH_TEXTS = 4096  # texts one worker's item holds at most
 SAMPLE_TIMEOUT = 600  # seconds a read of a remote sample may wait for its next bytes
 MEASURED = 100_000  # rows a census that counts libraries reads between two reports of its progress
 IN_PROCESS = 16 << 20  # bytes of texts the corpus may take below which the build tokenizes in its own process
-FULL = 1000  # a pool closes once what is left of its budget is at most this fraction of it (1 / FULL)
-SKIPS = 1000  # or once this many of its texts in a row did not fit
 TIME = pa.timestamp("us", tz="UTC")
 NAMES = pa.list_(pa.string())
 LIBRARY_REF = pa.struct([("depot", pa.string()), ("library", pa.string()), ("change", pa.int64())])
@@ -233,7 +250,7 @@ CORPUS_SCHEMAS = {
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
 }
-RULES = 4  # the version of the rules of what a build takes, in the build's key: raised whenever they change
+RULES = 5  # the version of the rules of what a build takes, in the build's key: raised whenever they change
 CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", "scores")  # what a text's row copies
 
 
@@ -273,18 +290,29 @@ def sample(depot: Depot, name: str, sample_bytes: int) -> Iterator[tuple[str, st
     corpus records it; its id; its text as UTF-8 bytes) of plain texts and
     pieces the corpus may take, a piece under its text's id, each share
     (without shares, every plain text) filling its proportion of
-    sample_bytes as a corpus fills a budget (Fill, a piece counting for its
-    share of its text's bytes). Items are no sample. The walk ends once
-    every share has closed."""
+    sample_bytes as a corpus fills a budget (Fill, or the choice by group
+    of wpt_depot.groups on bytes, a piece counting for its share of its
+    text's bytes). Items are no sample. With shares, the first pass of that
+    choice walks the whole order before the first text comes. The walk
+    ends once every share has closed."""
     dataset = depot.dataset(name)
     names, opened = _depots(depot, dataset, "")
     sources, libraries = _walked(dataset, names, opened)
     shares = dataset["shares"]
-    fill = Fill(_proportions(shares, sample_bytes))
-    for entry in walk(libraries, _tags(shares)):
-        if fill.done():
+    budget = _proportions(shares, sample_bytes)
+    long = long_texts(libraries)
+    chosen = _no_plan() if shares is None else groups.plan(libraries, _tags(shares), budget, long)
+    picker = chosen.picker()
+    fill = Fill({pool: limit for pool, limit in budget.items() if not picker.covers(pool)})
+    for entry in walk(libraries, _tags(shares), long=long):
+        if fill.done() and picker.done():
             break
-        if not entry.taken or entry.kind is not None or not fill.take(entry.pool, entry.bytes):
+        if not entry.taken or entry.kind is not None:
+            continue
+        if picker.covers(entry.pool):
+            if not picker.pick(entry.pool)[1]:
+                continue
+        elif not fill.take(entry.pool, entry.bytes):
             continue
         source_name = sources[entry.source]
         source = opened[source_name]
@@ -292,58 +320,16 @@ def sample(depot: Depot, name: str, sample_bytes: int) -> Iterator[tuple[str, st
         yield source_name, entry.id, _plain(source, entry.id, row["parts"], entry.piece).encode("utf-8")
 
 
+def _no_plan() -> groups.Plan:
+    """The plan of a dataset whose shares choose nothing by group (wpt_depot.groups)."""
+    return groups.Plan({}, np.zeros(0, np.int64))
+
+
 def _plain(source: Depot, text: str, parts: list, piece: int | None) -> str:
     """A plain text of source whose content version lists parts, whole, or its piece of that number."""
     if piece is not None:
         return pieces.read(Parted(source.reader(), text, parts), piece)
     return "".join(value for _, value in scan(source.reader(), {text: parts}) if value is not None)
-
-
-class Fill:
-    """What each pool takes of its budget ({pool: the most it takes, None
-    for no limit}), a text at a time in the corpus's order: a text that
-    fits what is left of its pool is taken, one that would pass it is left
-    out, and the next is tried. A pool closes, taking nothing more, once
-    what is left of it is at most a FULL-th of its budget (at once for a
-    budget of 0), or once SKIPS of its texts in a row did not fit; a pool
-    of no limit never closes. state() is what a Fill is made again from."""
-
-    def __init__(self, budget: dict, state: dict | None = None):
-        state = state or {}
-        self.budget = budget
-        self.used = {pool: state.get("used", {}).get(str(pool), 0) for pool in budget}
-        self.run = {pool: state.get("run", {}).get(str(pool), 0) for pool in budget}
-        self.closed = set(state.get("closed", [])) | {pool for pool in budget if self._full(pool)}
-
-    def _full(self, pool) -> bool:
-        limit = self.budget[pool]
-        return limit is not None and limit - self.used[pool] <= limit // FULL
-
-    def take(self, pool, size: int) -> bool:
-        """Whether the pool takes a text of that size, which counts it in."""
-        if pool in self.closed:
-            return False
-        if self.budget[pool] is not None and self.used[pool] + size > self.budget[pool]:
-            self.run[pool] += 1
-            if self.run[pool] >= SKIPS:
-                self.closed.add(pool)
-            return False
-        self.used[pool] += size
-        self.run[pool] = 0
-        if self._full(pool):
-            self.closed.add(pool)
-        return True
-
-    def done(self) -> bool:
-        """Whether every pool is closed."""
-        return len(self.closed) == len(self.budget)
-
-    def state(self) -> dict:
-        return {"used": {str(pool): value for pool, value in self.used.items()},
-                "run": {str(pool): value for pool, value in self.run.items()}, "closed": sorted(self.closed)}
-
-    def copy(self) -> "Fill":
-        return Fill(self.budget, self.state())
 
 
 def sample_lines(texts: Iterator[tuple[str, str, bytes]]) -> Iterator[bytes]:
@@ -628,6 +614,14 @@ def _tokenized(batch: list[tuple]) -> list[tuple]:
     return found
 
 
+def _plain_counted(batch: list[tuple]) -> list[int]:
+    """For each (its depot's file, id, revision, piece) of a plain text or
+    a piece of batch: the tokens it takes in the corpus, END included, as
+    _tokenized gives them, in order."""
+    return [len(data) for _, data in _tokenized([(address, text, revision, None, True, piece)
+                                                 for address, text, revision, piece in batch])]
+
+
 def _counted(batch: list[tuple]) -> list[int]:
     """For each (its depot's file, id, revision, kind) of an item of batch: the
     tokens it takes in the corpus, in order: a conversation's tokens of the
@@ -792,7 +786,8 @@ class _Build:
             state = {"key": self.key, "after": None, "walked": 0, "items": None, "shards": [],
                      "conversation_shards": [], "texts": [], "tasks": 0, "tasks_count": 0, "pools": {}, "fill": None,
                      "taken": 0, "whole": 0, "pieces": 0, "conversations": 0, "text_position": 0,
-                     "conversation_position": 0, "items_tokens": 0}
+                     "conversation_position": 0, "items_tokens": 0, "plan": None, "seen": 0, "covered": {},
+                     "groups": {}}
             named_file.execute("DELETE FROM named")
         shares = self.dataset["shares"]
         limit = self.limit
@@ -815,8 +810,14 @@ class _Build:
             budget, counted = self._byte_budget(shares), "bytes"
         else:
             budget, counted = None, None
-        fill = None if budget is None else Fill(budget, state["fill"])
+        chosen = self._plan(state, budget, counted, shares)
+        fill = None if budget is None else Fill({pool: limit for pool, limit in budget.items()
+                                                 if pool not in chosen.last}, state["fill"])
         tags = [""] if shares is None else [one["tag"] for one in shares]
+        # each share's groups (wpt_depot.groups.groups_of): {share's tag: {group's tag: [texts, tokens]}}
+        group_counts = {share: {tag: [texts, tokens] for tag, texts, tokens in found}
+                        for share, found in state["groups"].items()}
+        named_groups = {}  # (share's tag, a text's tags): its groups, a few kept
         tasks_path = self.work / "tasks.jsonl"
         with open(tasks_path, "ab") as tasks_file:
             tasks_file.truncate(state["tasks"])
@@ -827,25 +828,32 @@ class _Build:
         plain = self.census["plain"]
 
         def batches():
-            """The texts the corpus takes from the state's place on, in batches of (entry, read, walked): read
-            is whether it is read, which a closed pool, or a limit in bytes that leaves it out, saves; walked how
-            many texts the walk passed up to it. With a limit, an item _limit_items did not take is passed, and
-            the batches end once every pool is closed and no item taken follows."""
+            """The texts the corpus takes from the state's place on, in batches of (entry, read, walked, place):
+            read is whether it is read, which a closed pool, a limit in bytes that leaves it out, or a share's
+            choice by group (wpt_depot.groups) saves; walked how many texts the walk passed up to it; place the
+            entry's place among the plan's entries, None for an entry of a share the plan does not cover. With
+            a limit, an item _limit_items did not take is passed, and the batches end once every pool is closed,
+            every share the plan covers is past its last chosen text, and no item taken follows."""
             ahead = fill.copy() if counted == "bytes" else None  # the limit in bytes, worked out ahead of the results
+            picker = chosen.picker(state["seen"])
             batch, size, walked = [], 0, state["walked"]
             for entry in walk(self.libraries, _tags(shares), state["after"], self.long):
                 walked += 1
-                if counted == "tokens" and fill.done() and (last_item is None or tuple(entry.place()) > last_item):
+                if counted == "tokens" and fill.done() and picker.done() and (
+                        last_item is None or tuple(entry.place()) > last_item):
                     break
                 if not entry.taken or (entry.kind is not None and not item_taken(entry)):
                     continue
+                place = None
                 if entry.kind is not None or counted is None:
                     read = True
+                elif picker.covers(entry.pool):
+                    place, read = picker.pick(entry.pool)
                 elif counted == "bytes":
                     read = ahead.take(entry.pool, entry.bytes)
                 else:
                     read = entry.pool not in fill.closed
-                batch.append((entry, read, walked))
+                batch.append((entry, read, walked, place))
                 size += entry.bytes if read else 0
                 if size >= BATCH_BYTES or len(batch) >= BATCH_TEXTS:
                     yield batch
@@ -904,6 +912,8 @@ class _Build:
             with named_file:
                 named_file.executemany("INSERT OR IGNORE INTO named (kind, id) VALUES (?, ?)", sorted(named))
             named.clear()
+            state["groups"] = {share: [[tag, *counted_so] for tag, counted_so in found.items()]
+                               for share, found in group_counts.items()}
             state.update(after=after, walked=walked, fill=None if fill is None else fill.state(),
                          text_position=writers["text"].position,
                          conversation_position=writers["conversation"].position, tasks=tasks_path.stat().st_size)
@@ -925,8 +935,17 @@ class _Build:
                 _start_worker(self.vocabulary)
                 results = ((batch, _tokenized(self._items(batch))) for batch in batches())
             for batch, found in results:
-                for (entry, read, walked), (row, data) in zip(batch, found):
-                    if counted is not None and entry.kind is None and (read or counted == "bytes"):
+                for (entry, read, walked, place), (row, data) in zip(batch, found):
+                    if place is not None:  # a share that chose its texts by group: the chosen ones, within its budget
+                        state["seen"] = place + 1
+                        if read:
+                            used = state["covered"].get(str(entry.pool), 0) + (
+                                len(data) if counted == "tokens" else entry.bytes)
+                            if used > budget[entry.pool]:
+                                raise AssertionError(f"the share {tags[entry.pool]} chose {entry.id}, which passes "
+                                                     "its budget")
+                            state["covered"][str(entry.pool)] = used
+                    elif counted is not None and entry.kind is None and (read or counted == "bytes"):
                         took = fill.take(entry.pool, len(data) if counted == "tokens" else entry.bytes)
                         if counted == "bytes" and took != read:
                             raise AssertionError(f"the limit in bytes left {entry.id} out on one pass and not the "
@@ -950,6 +969,18 @@ class _Build:
                         start = writers[kind].add(data, source_name, document, pool_tag)
                         if entry.kind is None:
                             state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + len(data)
+                            if shares is not None:
+                                held = named_groups.get((pool_tag, entry.tags))
+                                if held is None:
+                                    if len(named_groups) >= groups.INTERNED:
+                                        named_groups.clear()
+                                    held = named_groups[pool_tag, entry.tags] = groups.groups_of(entry.tags,
+                                                                                                 pool_tag)
+                                into = group_counts.setdefault(pool_tag, {})
+                                for tag in held:
+                                    counted_so = into.setdefault(tag, [0, 0])
+                                    counted_so[0] += 1
+                                    counted_so[1] += len(data)
                             if entry.piece is None:
                                 state["whole"] += 1
                             else:
@@ -978,7 +1009,48 @@ class _Build:
 
     def _items(self, batch) -> list[tuple]:
         return [(self.opened[self.sources[entry.source]].address, entry.id, entry.revision, entry.kind, read,
-                 entry.piece) for entry, read, _ in batch]
+                 entry.piece) for entry, read, _, _ in batch]
+
+    def _plan(self, state: dict, budget: dict | None, counted: str | None, shares: list[dict] | None
+              ) -> groups.Plan:
+        """The texts the shares choose by group (wpt_depot.groups), sizes
+        counted as the budget counts them (tokens or bytes): read again
+        from the work folder when the state names them and the file still
+        holds them, else chosen again, the same for the same depot state,
+        and kept there, its sha256 in the state."""
+        if shares is None or budget is None:
+            return _no_plan()
+        path = self.work / "chosen.bin"
+        known = state.get("plan")
+        if known is not None:
+            found = groups.Plan.load(path, {int(pool): last for pool, last in known["last"].items()},
+                                     known["sha256"])
+            if found is not None:
+                return found
+        self.progress({"stage": "choosing"})
+        addresses = [self.opened[name].address for name in self.sources]
+        with ExitStack() as stack:
+            count = None
+            if counted == "tokens" and sum(self.census["pool_bytes"].values()) > IN_PROCESS:
+                sizing = Sizing("tokenizing workers")
+                pool = stack.enter_context(process_pool(sizing, sizing.limit, _start_worker, (self.vocabulary,)))
+
+                def count(items: list[tuple]) -> list[int]:
+                    step = max(1, min(BATCH_TEXTS, -(-len(items) // (2 * sizing.limit))))
+                    parts = (items[at:at + step] for at in range(0, len(items), step))
+                    return [one for found in in_order(_plain_counted, parts, pool, sizing) for one in found]
+            elif counted == "tokens":
+                _start_worker(self.vocabulary)
+                count = _plain_counted
+            chosen = groups.plan(self.libraries, _tags(shares), budget, self.long, addresses, count, self.progress)
+        sha256 = chosen.save(path)
+        if known is not None and known["sha256"] != sha256:
+            raise AssertionError("the shares chose other texts than this build chose before it stopped")
+        state["plan"] = {"sha256": sha256, "last": {str(pool): last for pool, last in chosen.last.items()}}
+        if chosen.last:
+            self.log(f"the shares {', '.join(shares[pool]['tag'] for pool in sorted(chosen.last))} split their "
+                     f"budgets evenly over the tags of their texts: {len(chosen.chosen):,} texts chosen")
+        return chosen
 
     def _limit_items(self, shares: list[dict] | None) -> dict:
         """The items (conversations and tasks) a build at max_tokens takes:
@@ -1118,7 +1190,9 @@ class _Build:
             "total_tokens": sum(s["tokens"] for s in state["shards"]),
             "items_tokens": state["items_tokens"] if self.limit is None else state["items"]["tokens"],
             "shares_tokens": None if self.dataset["shares"] is None else [
-                {"tag": share["tag"], "tokens": state["pools"].get(share["tag"], 0)}
+                {"tag": share["tag"], "tokens": state["pools"].get(share["tag"], 0),
+                 "groups": [{"tag": tag, "texts": texts, "tokens": tokens} for tag, texts, tokens in sorted(
+                     state["groups"].get(share["tag"], []), key=lambda one: (one[0] is not None, one[0] or ""))]}
                 for share in self.dataset["shares"]],
             "left_out": left_out,
             "fingerprints": {

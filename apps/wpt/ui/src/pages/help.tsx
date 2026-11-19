@@ -128,7 +128,7 @@ export function HelpPage() {
         <p>A dataset says what to train on: its libraries, its tokenizer recipe, optional shares and an optional size.</p>
         <ul>
           <li>Each library is read as it stood when it was ticked. A text put in or taken out later changes nothing until "Read again".</li>
-          <li><strong>Shares</strong> split the plain text by tag, in order, each with a proportion: a plain text counts for the first share whose tag it has, and a plain text no share takes is left out. Without shares, every plain text is in.</li>
+          <li><strong>Shares</strong> split the plain text by tag, in order, each with a proportion: a plain text counts for the first share whose tag it has, and a plain text no share takes is left out. Inside a share, its part splits evenly over the other tags its texts carry. Without shares, every plain text is in.</li>
           <li>Conversations and tasks are never a share: every one is in, and they take their own part, the part of the bytes they hold.</li>
           <li><strong>Most tokens</strong> is only the size the build form starts with.</li>
         </ul>

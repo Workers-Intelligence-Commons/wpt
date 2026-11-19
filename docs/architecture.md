@@ -198,7 +198,11 @@ texts before it starts, from the index `content_lists_long` of long content
 versions, each looked up in the library, so finding them grows with the
 depot's long contents, not with the library's texts. Only the texts the walk reaches are
 read, so a build at a small size and an estimate start at once whatever
-the dataset's size. What a build needs of the whole dataset (the bytes of
+the dataset's size. A dataset with shares is the exception for builds and
+vocabulary samples: each share splits its part over the tags of its texts
+([data-selection.md](data-selection.md), "Filling a part"), so a first walk
+reads every row of the dataset, keeping numpy arrays and no object per
+text (`wpt_depot/groups.py`), before the stream takes the texts it chose. What a build needs of the whole dataset (the bytes of
 each share and of the conversations and tasks, and how many texts it holds
 of each kind) comes from the figures its revision stores. When they are not
 known, the build and the estimate count the same figures from every text

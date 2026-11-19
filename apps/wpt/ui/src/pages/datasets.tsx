@@ -5,7 +5,7 @@
 // will take, filled in from the dataset's name, or another new name), its libraries of this depot ticked (the one the
 // address names, ?new=1&library=ID, ticked already), its shares (each tag
 // offered with how many texts hold it, and one no ticked library's text
-// holds marked) and its optional max_tokens; while it is filled in, it says
+// holds marked; a share left empty takes an even part of what the numbers leave) and its optional max_tokens; while it is filled in, it says
 // what the ticked libraries hold, read by the server from the depot's counts
 // (POST /api/libraries/measure): texts and characters, characters per share, the
 // characters the mix keeps and the share that limits it, the texts no share
@@ -46,6 +46,17 @@ import type { Page } from "./index";
 
 type Other = { depot: string; library: string };
 type Share = { tag: string; share: string };
+
+// The shares' numbers as the depot stores them (spread_shares): a share left
+// empty takes an even part of what the shares given as numbers leave of 1;
+// null when the numbers reach 1 already and an empty share has nothing left.
+function spread(shares: Share[]): number[] | null {
+  const blank = shares.filter((s) => s.share.trim() === "").length;
+  const given = shares.reduce((t, s) => t + (s.share.trim() === "" ? 0 : Number(s.share) || 0), 0);
+  if (blank && given >= 1) return null;
+  const part = blank ? Math.round(((1 - given) / blank) * 1e12) / 1e12 : 0;
+  return shares.map((s) => (s.share.trim() === "" ? part : Number(s.share)));
+}
 
 function Datasets({ query }: { query: URLSearchParams }) {
   const { libraries } = useLibraries();
@@ -161,7 +172,7 @@ function DatasetForm({ dataset, library, onDone }: { dataset?: Dataset; library?
     const body = {
       name,
       libraries: mine.map((library) => ({ library })),
-      shares: shares.length ? shares.map((s) => ({ tag: s.tag, share: Number(s.share) })) : null,
+      shares: shares.length ? shares.map((s) => ({ tag: s.tag, share: s.share.trim() === "" ? null : Number(s.share) })) : null,
       max_tokens: limit.trim() ? Number(limit) : null,
       vocabulary: dataset?.vocabulary ?? null,
     };
@@ -176,7 +187,8 @@ function DatasetForm({ dataset, library, onDone }: { dataset?: Dataset; library?
   };
   const count = mine.length + others.length;
   // the share tags Holds checks: as typed, once typing paused, so a tag half typed is never called missing
-  const typedTags = shares.filter((s) => s.tag.trim() && Number(s.share) >= 0 && s.share.trim() !== "").map((s) => ({ tag: s.tag.trim(), share: Number(s.share) }));
+  const parts = spread(shares);
+  const typedTags = parts ? shares.map((s, i) => ({ tag: s.tag.trim(), share: parts[i] })).filter((s) => s.tag && s.share >= 0) : [];
   const [settled, setSettled] = useState(typedTags);
   const typedKey = JSON.stringify(typedTags);
   useEffect(() => { const timer = window.setTimeout(() => setSettled(JSON.parse(typedKey)), 800); return () => window.clearTimeout(timer); }, [typedKey]);
@@ -190,8 +202,9 @@ function DatasetForm({ dataset, library, onDone }: { dataset?: Dataset; library?
   const empty = shares.map((s) => s.tag.trim()).filter((tag) => tag && figures(measured)?.shares.some((h) => h.tag === tag && h.texts === 0));
   // what the submit waits for, named beside it while it is off
   const missingWhat = !name.trim() ? "needs a name" : !dataset && !tokenizer.trim() ? "needs a recipe" : count === 0 ? "needs a library"
-    : shares.some((s) => !s.tag.trim() || s.share.trim() === "") ? "a share needs a tag and a number"
-    : shares.some((s) => !(Number(s.share) > 0 && Number(s.share) <= 1)) ? "a share is above 0, at most 1"
+    : shares.some((s) => !s.tag.trim()) ? "a share needs a tag"
+    : shares.some((s) => s.share.trim() !== "" && !(Number(s.share) > 0 && Number(s.share) <= 1)) ? "a share is above 0, at most 1"
+    : !parts ? "the numbers reach 1: nothing is left for an empty share"
     : typedTags.length && mine.length && (JSON.stringify(settled) !== typedKey || measured === null) ? "checking the shares' tags"
     : limit.trim() !== "" && !(Number(limit) >= 1) ? "most tokens: a whole number" : null;
   return (
@@ -224,14 +237,14 @@ function DatasetForm({ dataset, library, onDone }: { dataset?: Dataset; library?
       {others.length > 0 && <p className="form-note small">It reads libraries of another depot ({others.map((o) => `${o.depot} ${o.library}`).join(", ")}), so only the command line changes it.</p>}
       </fieldset>
       <fieldset className="form-part" aria-labelledby={`${id}-shares`}>
-        <div className="title-row"><span id={`${id}-shares`} className="wic-label">{optional("Shares of plain text, in order")}</span><Help label="shares">Conversations and tasks are no share: every one is in, and they take their own part of the corpus, the part of the bytes they hold in the corpus of every token. The shares split the rest, the plain text. A plain text counts for the first share whose tag it has; a plain text no share takes is left out. No share: every plain text.</Help></div>
+        <div className="title-row"><span id={`${id}-shares`} className="wic-label">{optional("Shares of plain text, in order")}</span><Help label="shares">Conversations and tasks are no share: every one is in, and they take their own part of the corpus, the part of the bytes they hold in the corpus of every token. The shares split the rest, the plain text. A plain text counts for the first share whose tag it has; a plain text no share takes is left out. Inside a share, its part splits evenly over the other tags its texts carry. A share left empty takes an even part of what the numbers leave of 1: 0.6 and two empty shares save 0.6, 0.2 and 0.2. No share: every plain text.</Help></div>
         <datalist id="share-tags">{(offered ?? []).map((t) => <option key={t.tag} value={t.tag}>{plural(t.texts, "plain text")}</option>)}</datalist>
         {shares.map((s, i) => (
           <div key={i} className="entry-row">
             <TextInput label={required("Tag")} required value={s.tag} list="share-tags" onChange={(e) => setShares(shares.map((o, j) => (j === i ? { ...o, tag: e.target.value } : o)))} />
-            <TextInput label={required("Share")} required type="number" step="any" min="0" max="1" value={s.share} placeholder="e.g. 0.6"
+            <TextInput label={optional("Share")} type="number" step="any" min="0" max="1" value={s.share} placeholder="even part of the rest"
               onChange={(e) => setShares(shares.map((o, j) => (j === i ? { ...o, share: e.target.value } : o)))} />
-            <ShareSaid share={s} shares={shares} found={measured} />
+            <ShareSaid share={s} part={parts?.[i] ?? null} parts={parts} found={measured} />
             <Button variant="quiet" disabled={i === 0} onClick={() => move(i, -1)}>Up</Button>
             <Button variant="quiet" disabled={i === shares.length - 1} onClick={() => move(i, 1)}>Down</Button>
             <Button variant="quiet" onClick={() => setShares(shares.filter((_, j) => j !== i))}>Remove</Button>
@@ -277,13 +290,14 @@ export const recipeName = (dataset: string) => {
 const chars = (n: number) => characters(n).replace(/ characters?$/, "");
 
 // Beside a share of the dataset form, as it is typed: its part of the plain
-// texts once the shares are summed (0.5 alone is 100 %), and, once measured,
-// how many plain texts it takes, marked when none.
-function ShareSaid({ share, shares, found: state }: { share: Share; shares: Share[]; found: MeasureState }) {
-  const sum = shares.reduce((t, o) => t + (Number(o.share) > 0 ? Number(o.share) : 0), 0);
-  const mine = Number(share.share);
+// texts once the shares are spread (an empty one takes an even part of what the
+// numbers leave) and summed (0.5 alone is 100 %), and, once measured, how many
+// plain texts it takes, marked when none.
+function ShareSaid({ share, part, parts, found: state }: { share: Share; part: number | null; parts: number[] | null; found: MeasureState }) {
+  const sum = (parts ?? []).reduce((t, p) => t + (p > 0 ? p : 0), 0);
+  const mine = part ?? NaN;
   const held = figures(state)?.shares.find((h) => h.tag === share.tag.trim());
-  if (!(mine >= 0) || share.share.trim() === "") return null;
+  if (!(mine >= 0)) return null;
   return (
     <span className="share-said small">
       <strong>{sum ? percent(mine / sum) : "0%"}</strong>

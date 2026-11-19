@@ -2286,16 +2286,17 @@ class Depot:
     # Datasets
 
     def new_dataset(self, name: str, tokenizer: str, libraries: list[tuple[str | None, str]],
-                    shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None) -> str:
+                    shares: list[tuple[str, float | None]] | None = None, max_tokens: int | None = None) -> str:
         """A dataset reading the libraries (depot address, None for this
         depot, and library id), each at its depot's change number now, with
-        optional ordered shares (tag, share of the tokens) and an optional
+        optional ordered shares (tag, share of the tokens, None for an even
+        part of what the others leave: spread_shares) and an optional
         max_tokens, the size a build form starts at, whose vocabulary is
         trained by the depot's tokenizer recipe named tokenizer: its id. It
         publishes no vocabulary until an edit sets one. The recipe need not exist
         yet, since a recipe trains on a dataset that exists."""
         return self._new_dataset({"name": name, "tokenizer": tokenizer, "libraries": self._refs(libraries),
-                                  "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares],
+                                  "shares": spread_shares(shares),
                                   "max_tokens": max_tokens})
 
     def import_dataset(self, remote: dict) -> str:
@@ -2323,12 +2324,12 @@ class Depot:
         return found[0]
 
     def edit_dataset(self, dataset: str, name: str, libraries: list[tuple[str | None, str]],
-                     shares: list[tuple[str, float]] | None = None, max_tokens: int | None = None,
+                     shares: list[tuple[str, float | None]] | None = None, max_tokens: int | None = None,
                      vocabulary: str | None = None, revision: int | None = None):
         """Change the dataset of that id as a new revision, its id and
         tokenizer kept: its name, the libraries it reads (depot address, None
         for this depot, and library id), its optional ordered shares (tag,
-        share of the tokens), its optional max_tokens and the vocabulary it
+        share of the tokens, None as in new_dataset), its optional max_tokens and the vocabulary it
         publishes (the sha256 of one of this depot's vocabularies, whatever
         depots its libraries are of; None for none), with the checks of
         new_dataset; Refused for a vocabulary the depot does not hold. A library it
@@ -2349,8 +2350,7 @@ class Depot:
         for address, library in libraries:
             stored = kept.get(self._read_from(address, library))
             refs.append(dict(stored) if stored is not None else self._refs([(address, library)])[0])
-        values = {"name": name, "libraries": refs,
-                  "shares": None if shares is None else [{"tag": t, "share": s} for t, s in shares],
+        values = {"name": name, "libraries": refs, "shares": spread_shares(shares),
                   "max_tokens": max_tokens}
         _checked_dataset({**old, **values})
         with self._write("edit dataset") as (con, number):
@@ -3328,6 +3328,28 @@ def _check_declaration(declaration: Declaration, reason: str | None):
     _filled(name=declaration.name, email=declaration.email)
     if reason is not None:
         _filled(reason=reason)
+
+
+def spread_shares(shares: list[tuple[str, float | None]] | None) -> list[dict] | None:
+    """A dataset's shares as it stores them, [{tag, share}, ...] in order
+    (None without shares): a share given as None takes an even part of what
+    the shares given as numbers leave of 1, so (a, 0.6), (b, None), (c, None)
+    store 0.6, 0.2 and 0.2, and shares all None split 1 evenly. The parts are
+    rounded to 12 decimals, so 0.4 split in 8 stores 0.05. Refused when a
+    share is None while the numbers reach 1 already, since nothing is left
+    for it. The stored shares are numbers only: what reads them (the build,
+    its estimate, the measure, a remote) never sees a None."""
+    if shares is None:
+        return None
+    blank = sum(share is None for _, share in shares)
+    if blank:
+        given = sum(share for _, share in shares if share is not None)
+        if given >= 1:
+            raise Refused(f"the shares given as numbers reach {given:g} already, so nothing is left for the "
+                          f"{blank} share{'s' if blank > 1 else ''} without a number")
+        part = round((1 - given) / blank, 12)
+        shares = [(tag, part if share is None else share) for tag, share in shares]
+    return [{"tag": tag, "share": share} for tag, share in shares]
 
 
 def _checked_dataset(row: dict):

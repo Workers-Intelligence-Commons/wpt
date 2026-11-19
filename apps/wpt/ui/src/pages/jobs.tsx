@@ -51,6 +51,7 @@ const STAGES: Record<string, string> = {
   measuring: "reading every text's size: the dataset's figures are not known",
   "finding long texts": "finding the texts longer than a million characters, which come as pieces",
   "counting items": "counting the tokens of the conversations and tasks",
+  choosing: "choosing each share's texts, its part split evenly over the tags of its texts",
   reading: "tokenizing the texts",
   finishing: "writing the corpus's tables",
   "reading the sample": "reading the sample of texts",

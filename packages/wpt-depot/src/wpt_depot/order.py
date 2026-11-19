@@ -40,9 +40,10 @@ text), revision, kind (None: a plain text), pool (with shares: the index of
 the first share whose tag a plain text has, None when it has none; without
 shares, 0 for every plain text; None for an item), bytes (its content's
 UTF-8 bytes; a piece's, its share of its text's bytes, split evenly among
-its pieces, since they are known only once it is read) and taken: whether a
+its pieces, since they are known only once it is read), taken: whether a
 corpus takes it at all, that is, a plain text with a pool or a conversation
-or a task (an item of another kind is no training data).
+or a task (an item of another kind is no training data), and tags (its
+tags as JSON text; a piece's, its text's).
 
     walk(libraries, tags, after, long)   the texts and pieces of the libraries, in order, as Entry
     long_texts(libraries)                the long texts whose pieces a walk gives
@@ -74,6 +75,7 @@ class Entry(NamedTuple):
     pool: int | None
     bytes: int
     taken: bool
+    tags: str
 
     def place(self) -> list:
         """The text's place in the order, [key, source, id, piece (WHOLE for a whole text)], what a walk's after
@@ -141,7 +143,8 @@ def walk(libraries: Sequence[tuple], shares: Sequence[str] | None, after: Sequen
             continue
         last = key, source, text, piece
         pool, taken = pool_of(kind, tags, shares)
-        yield Entry(key, source, text, None if piece == WHOLE else piece, revision, kind, pool, size, taken)
+        yield Entry(key, source, text, None if piece == WHOLE else piece, revision, kind, pool, size, taken,
+                    tags or "[]")
 
 
 def _pieces(long: list[Long], after: tuple | None) -> Iterator[tuple]:

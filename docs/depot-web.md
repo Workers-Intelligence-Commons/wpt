@@ -118,7 +118,14 @@ out and which share will come out short. It also names the smallest size
 at which every share comes within 10 percentage points of its proportion; a built
 corpus whose shares came out uneven offers the same size. The forecast
 counts the texts as the build does: the plain texts, and how many of the
-dataset's conversations and tasks the size takes. The estimate and the
+dataset's conversations and tasks the size takes. It is made by share: a
+share that splits its part over the tags of its texts
+([data-selection.md](data-selection.md), "Filling a part") takes other
+texts than the order alone gives, but the same part, so the forecast gives
+that share's tokens and says nothing of its groups, and its count of the
+share's texts is the order's. Its time leaves out the walk of the whole
+dataset that such a share needs first, and the second tokenizing of the
+texts it chooses. The estimate and the
 build read the bytes of each share and of the conversations and tasks from
 the figures the dataset's revision stores. When that revision's figures are
 not known, both count the same figures from every text instead, and the

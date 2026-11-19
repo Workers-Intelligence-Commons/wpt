@@ -415,7 +415,7 @@ A dataset never picks single texts: it takes every text of its libraries
 that its shares pick.
 
 `wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID ...
-[--share TAG=SHARE ...] [--max-tokens N]` makes one. The tokenizer recipe
+[--share TAG[=SHARE] ...] [--max-tokens N]` makes one. The tokenizer recipe
 is one of the depot's ([tokenizer.md](tokenizer.md)); it may be made after
 the dataset, and a build needs it.
 
@@ -473,12 +473,26 @@ below). A build never reads it.
 ### Shares
 
 Shares are optional and ordered, each a tag and a share of the tokens
-(`0.3` is 30%), each share above 0 and at most 1, each tag once. A text
-counts for the first share whose tag it has. A text that has none of the
+(`0.3` is 30%), each share above 0 and at most 1, each tag once. A share
+given without a number takes an even part of what the shares given as
+numbers leave of 1, and the dataset stores that number: `research-paper`
+0.35, `books` 0.15, `government` 0.05, `code` 0.05 and eight language tags
+without a number store 0.05 for each language. The parts are rounded to 12
+decimals. A share without a number is refused when the numbers reach 1
+already. A text counts for the first share whose tag it has. A text that has none of the
 shares' tags is left out. Without shares, every text of the libraries is
 taken.
 
-The build brings the shares to their proportions without repeating a text.
+Inside a share, its part splits evenly over every tag its texts carry,
+the share's own tag excepted: each such tag is a group, and the texts that
+carry no other tag are one group more. A text counts for every group of
+its tags. Every tag counts alike, length tags such as `long` or `huge`
+included: the rule reads the texts' tags and nothing else. A share whose
+texts make a single group fills in the corpus's order (see "Filling a
+part"), and so does the share the build keeps whole without a size.
+
+The build brings the shares to their proportions, and each share's groups
+to even parts of it, without repeating a text.
 Without `max_tokens`, it finds the share with the fewest bytes relative to
 its proportion and keeps every text of that share; each other share fills
 its proportion of the scarcest share's bytes, in the corpus's order (see
@@ -492,8 +506,8 @@ its pieces. The order depends on
 the texts' ids alone, so the same dataset builds the same corpus, and a
 change of its name, of its `max_tokens` or of the build's size keeps its
 order. The
-corpus's record keeps how many tokens each share holds (`shares_tokens`) and
-how many texts the build left out (`left_out`: texts no share took, texts
+corpus's record keeps how many tokens each share holds (`shares_tokens`),
+with each of its groups, and how many texts the build left out (`left_out`: texts no share took, texts
 of which a share took nothing, items `max_tokens` left out, items of the kinds that
 are no training data).
 
@@ -513,6 +527,29 @@ the dataset for its last tokens. A smaller size takes the same texts as a
 larger one up to the first text it leaves out; past it, it takes only what
 fits what is left of it.
 
+A share whose texts make two groups or more (see "Shares") fills by
+group instead. Each group's texts wait in the corpus's order. The share
+always takes the next text of the group that holds the fewest tokens so
+far; when several groups hold the fewest, the group whose next text comes
+first in the corpus's order goes first. A text taken counts for every one
+of its groups, and is taken once. A text that does not fit what is left of
+the share is left out for good. A group whose texts run out drops out, and
+so does a group that meets a thousand texts in a row that do not fit. The
+share closes once what is left of it is at most a thousandth of it, or
+once every group dropped out. So a group with few texts gives all it has,
+and the other groups share what it leaves.
+
+To choose so, the build first walks the whole order, reading each text's
+tags and size but not its content, and keeps what the choice needs in
+compact arrays. With a size, it chooses on the texts' exact tokens, which
+worker processes count a few texts ahead of each group; the texts it
+chooses are tokenized again as the build writes them. Without a size, and
+for a vocabulary's sample, it chooses on bytes. The build keeps the list of
+the texts chosen in its work folder, so a build cut short takes the same
+texts when it goes on, and chooses them again, the same, when the list is
+lost. A smaller size takes about the same share of each group as a larger
+one, but not the start of the larger one's texts.
+
 ### Long texts
 
 A plain text longer than 1,048,576 characters, such as a repository the
@@ -524,7 +561,8 @@ otherwise before the first line start there, or at the length itself when
 the text has no line break there. Each piece has its own place in the
 corpus's order and counts as a text of its own for every part, so a long
 text spreads through the corpus, and a corpus of any size takes about its
-share of it. An item is never cut.
+share of it. Each piece waits in the groups of its text's tags as a text of
+its own. An item is never cut.
 
 ### Remotes
 
@@ -558,7 +596,10 @@ or `--all`.
 
 The build is a stream. It reads each library in the corpus's order
 through an index, so it reads only the texts it reaches, and a build at a
-small size starts at once whatever the dataset's size. Worker processes
+small size starts at once whatever the dataset's size. A dataset with
+shares is walked once whole before the stream, to choose each share's
+texts by group (see "Filling a part"), which reads every text's row but
+only the contents of the texts whose tokens the choice needs. Worker processes
 tokenize the texts, and the build takes their results in that order. It
 uploads each token file to the store as soon as it is full, with the part of the `texts` table that
 lists its texts, and deletes its local copies, so the memory and the local
@@ -630,7 +671,11 @@ carried out on a text the dataset's libraries hold or held, so another
 vocabulary or size builds into another folder, building a deleted corpus
 again writes into its folder, and an erasure of a text the dataset never
 read changes neither. The record names the vocabulary's sha256 and the
-size. The corpus id covers the
+size. Each share of its `shares_tokens` lists its groups (see "Shares"),
+each with its tag, null for the texts that carry no other tag, how many
+texts it holds and their tokens; a text counts for each of its groups, so
+the groups' tokens add up to more than the share's when texts carry
+several tags. The corpus id covers the
 dataset's id and its row (without its revision and change), the
 vocabulary and every file's content (of each text: its depot, id, notice,
 where its tokens start and, when it has any, its scores), so building the

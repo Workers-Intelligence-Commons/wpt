@@ -335,6 +335,22 @@ def test_a_dataset_exported_as_a_remote_is_imported_as_the_same_dataset(make_dep
         other.import_dataset({**remote, "id": 3})
 
 
+def test_shares_without_a_number_store_an_even_part_of_what_the_numbers_leave(make_depot, me):
+    depot = make_depot()
+    depot.add([plain("one", "en")], me)
+    library = depot.new_library("first")
+    dataset = depot.new_dataset("mix", "classics", [(None, library)],
+                                [("research-paper", 0.35), ("books", 0.15), ("government", 0.05), ("code", 0.05),
+                                 *[(tag, None) for tag in ("en", "fr", "de", "es", "ru", "pl", "ja", "fi")]])
+    assert [one["share"] for one in depot.dataset_by_id(dataset)["shares"]] == [0.35, 0.15, 0.05, 0.05, *[0.05] * 8]
+
+    depot.edit_dataset(dataset, "mix", [(None, library)], [("en", None), ("fr", None), ("de", None)])
+    assert [one["share"] for one in depot.dataset_by_id(dataset)["shares"]] == [0.333333333333] * 3  # all even
+    with pytest.raises(Refused, match="nothing is left"):
+        depot.edit_dataset(dataset, "mix", [(None, library)], [("en", 0.7), ("fr", 0.3), ("de", None)])
+    assert depot.dataset_by_id(dataset)["revision"] == 2  # the refused edit wrote nothing
+
+
 def test_an_open_library_read_at_a_past_change_gives_its_members_and_revisions_then_after_an_erasure_too(make_depot, me):
     depot = make_depot()
     first, second, third = depot.add([plain("one 123", "a"), plain("two"), plain("three")], me)

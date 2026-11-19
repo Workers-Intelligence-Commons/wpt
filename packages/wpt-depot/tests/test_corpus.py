@@ -136,8 +136,10 @@ def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seede
         by_pool.setdefault(pool, []).append(document)
     assert sorted(map(len, by_pool.values())) == [3, 3]  # french is the scarcest: all 3, as many english
     assert len(set(by_pool["en"])) == 3  # no text repeated
-    assert record["shares_tokens"] == [{"tag": "en", "tokens": record["shares_tokens"][1]["tokens"]},
-                                       {"tag": "fr", "tokens": record["shares_tokens"][1]["tokens"]}]
+    tokens = record["shares_tokens"][1]["tokens"]
+    alone = [{"tag": None, "texts": 3, "tokens": tokens}]  # each share's texts carry no other tag: one group
+    assert record["shares_tokens"] == [{"tag": "en", "tokens": tokens, "groups": alone},
+                                       {"tag": "fr", "tokens": tokens, "groups": alone}]
     assert record["left_out"]["no share"] == 1 and record["left_out"]["trimmed"] == 9
     assert record["conversations"] == 1  # an item is no plain text: shares leave it whole
     again = build(depot, "mix", open_store((tmp_path / "other").as_uri()), TOKENIZER, max_tokens=None,
@@ -1011,3 +1013,130 @@ def test_a_build_cut_short_right_after_a_piece_goes_on_and_writes_the_same_corpu
 
     assert resumed["id"] == straight["id"] and resumed["pieces"] == 3
     assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in straight["shards"]]
+
+
+SMALL = "the dog"  # 2 tokens, 3 with END, 7 bytes
+
+
+def tagged_depot(make_depot, me, *kinds):
+    """A depot of one library holding, for each (tags, how many, text) of kinds, that many admitted plain texts
+    with those tags and that text: (the depot, the library, {tags: the ids of those texts})."""
+    depot = make_depot()
+    ids = {}
+    for tags, count, text in kinds:
+        ids[tags] = depot.add([NewText(text=text, licenses=("CC0-1.0",), tags=tags) for _ in range(count)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    return depot, library, ids
+
+
+def groups_taken(record) -> dict:
+    """{each group's tag of the first share: (texts, tokens)} of a corpus's record."""
+    return {one["tag"]: (one["texts"], one["tokens"]) for one in record["shares_tokens"][0]["groups"]}
+
+
+def documents(store, record) -> list[str]:
+    return [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+
+
+def test_a_share_splits_its_part_evenly_over_its_texts_tags_and_a_small_group_s_leftover_goes_to_the_others(
+        make_depot, me, tmp_path):
+    # 30 tokens are 10 texts of 3 tokens: the group c holds only 2, so it gives all it has, and a and b split the
+    # rest evenly, whatever the order of their texts
+    depot, library, _ = tagged_depot(make_depot, me, (("en", "a"), 20, SMALL), (("en", "b"), 20, SMALL),
+                                     (("en", "c"), 2, SMALL))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "mix", store, TOKENIZER, max_tokens=30, log=lambda *_: None)
+
+    assert groups_taken(record) == {"a": (4, 12), "b": (4, 12), "c": (2, 6)}
+    assert record["shares_tokens"][0]["tokens"] == record["total_tokens"] == 30
+
+
+def test_a_text_of_two_groups_counts_for_both_and_is_taken_once(make_depot, me, tmp_path):
+    # 24 tokens are 8 texts: each text tagged a and b gives both groups its tokens, so 4 of them balance 4 texts of c
+    depot, library, ids = tagged_depot(make_depot, me, (("en", "a", "b"), 10, SMALL), (("en", "c"), 10, SMALL))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "mix", store, TOKENIZER, max_tokens=24, log=lambda *_: None)
+
+    assert groups_taken(record) == {"a": (4, 12), "b": (4, 12), "c": (4, 12)}
+    taken = documents(store, record)
+    assert len(taken) == len(set(taken)) == 8 and record["total_tokens"] == 24
+
+
+def test_a_text_that_does_not_fit_what_its_share_has_left_is_left_out_and_its_group_goes_on(make_depot, me,
+                                                                                             tmp_path):
+    big = "the quick brown fox jumps over the lazy dog " * 4
+    depot, library, ids = tagged_depot(make_depot, me, (("en", "a"), 1, big), (("en", "a"), 16, SMALL),
+                                       (("en", "b"), 4, SMALL))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "mix", store, TOKENIZER, max_tokens=18, log=lambda *_: None)
+
+    assert ids[("en", "a")][0] not in documents(store, record)  # far more than 18 tokens
+    assert groups_taken(record) == {"a": (3, 9), "b": (3, 9)}
+
+
+def test_a_share_of_one_group_takes_its_texts_in_the_order_as_a_dataset_without_shares_does(make_depot, me,
+                                                                                            tmp_path):
+    depot, library, _ = tagged_depot(make_depot, me, (("en", "a"), 12, SMALL))
+    depot.new_dataset("one", "classics", [(None, library)], [("en", 1.0)])
+    depot.new_dataset("none", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    shared = build(depot, "one", store, TOKENIZER, max_tokens=15, log=lambda *_: None)
+    plain = build(depot, "none", store, TOKENIZER, max_tokens=15, log=lambda *_: None)
+
+    assert documents(store, shared) == documents(store, plain) == documents(
+        store, build(depot, "none", store, TOKENIZER, max_tokens=None, log=lambda *_: None))[:5]
+    assert groups_taken(shared) == {"a": (5, 15)}
+
+
+def test_a_build_of_shares_split_by_group_cut_short_goes_on_to_the_same_bytes_even_without_its_chosen_texts_file(
+        make_depot, me, tmp_path):
+    depot, library, _ = tagged_depot(make_depot, me, (("en", "a"), 40, SMALL), (("en", "b"), 40, SMALL),
+                                     (("en", "c"), 5, SMALL))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+    whole = build(depot, "mix", open_store((tmp_path / "whole").as_uri()), TOKENIZER, max_tokens=150,
+                  shard_tokens=20, log=lambda *_: None)
+    again = build(depot, "mix", open_store((tmp_path / "again").as_uri()), TOKENIZER, max_tokens=150,
+                  shard_tokens=20, log=lambda *_: None)
+    assert again["id"] == whole["id"] and groups_taken(whole)["c"] == (5, 15)
+    store, work, saved = open_store((tmp_path / "store").as_uri()), tmp_path / "work", []
+
+    def stop_after(count):
+        def save(state):
+            saved.append(state)
+            if len(saved) == count:
+                raise KeyboardInterrupt
+        return save
+
+    with pytest.raises(KeyboardInterrupt):
+        build(depot, "mix", store, TOKENIZER, max_tokens=150, work=work, save=stop_after(1), shard_tokens=20,
+              log=lambda *_: None)
+    (work / "chosen.bin").unlink()  # chosen again, the same
+    with pytest.raises(KeyboardInterrupt):
+        build(depot, "mix", store, TOKENIZER, max_tokens=150, work=work, checkpoint=saved[-1], save=stop_after(3),
+              shard_tokens=20, log=lambda *_: None)
+    resumed = build(depot, "mix", store, TOKENIZER, max_tokens=150, work=work, checkpoint=saved[-1],
+                    shard_tokens=20, log=lambda *_: None)
+
+    assert resumed["id"] == whole["id"]
+    assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in whole["shards"]]
+    assert resumed["shares_tokens"] == whole["shares_tokens"]
+
+
+def test_the_sample_splits_each_share_s_bytes_evenly_over_its_texts_tags(make_depot, me):
+    depot, library, ids = tagged_depot(make_depot, me, (("en", "a"), 20, SMALL), (("en", "b"), 20, SMALL),
+                                       (("en", "c"), 1, SMALL))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+
+    found = [text for _, text, _ in sample(depot, "mix", 7 * 9)]  # 9 texts of 7 bytes
+
+    held = {tags[1]: sum(text in set(ids[tags]) for text in found) for tags in ids}
+    assert held == {"a": 4, "b": 4, "c": 1}

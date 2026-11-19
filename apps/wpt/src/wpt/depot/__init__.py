@@ -158,12 +158,12 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           a problem with the library, locked or not: the texts of the
                                           library WHERE matches (none without WHERE) and the problem
                                           in words; no text and no membership changes
-    wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID [...] [--share TAG=SHARE ...]
+    wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID [...] [--share TAG[=SHARE] ...]
                 [--max-tokens N]
                                           a dataset reading those libraries (ADDRESS: another depot's),
                                           each at its depot's change number now; shares in order; N: the
                                           size the web app's build form starts at
-    wpt depot dataset edit NAME [--new-name N] [--library [ADDRESS:]ID ...] [--share TAG=SHARE ... | --no-shares]
+    wpt depot dataset edit NAME [--new-name N] [--library [ADDRESS:]ID ...] [--share TAG[=SHARE] ... | --no-shares]
                 [--max-tokens N | --no-max-tokens] [--vocabulary SHA256 | --no-vocabulary]
                                           change the dataset as a new revision, its id and tokenizer kept:
                                           an option given replaces that part (--library: every library); a
@@ -662,12 +662,15 @@ def _tokens(value: str) -> int:
     return found
 
 
-def _share(value: str) -> tuple[str, float]:
+def _share(value: str) -> tuple[str, float | None]:
+    if "=" not in value:
+        return value, None  # an even part of what the shares given as numbers leave (spread_shares)
     tag, _, share = value.rpartition("=")
     try:
         return tag, float(share)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"{value!r}: a share is TAG=SHARE, SHARE a number (0.3 = 30 %)") from None
+        raise argparse.ArgumentTypeError(f"{value!r}: a share is TAG=SHARE, SHARE a number (0.3 = 30 %), or TAG "
+                                         "alone") from None
 
 
 def parser() -> argparse.ArgumentParser:
@@ -861,7 +864,8 @@ def parser() -> argparse.ArgumentParser:
                         help="[ADDRESS:]ID: a library of this depot, or of the depot at ADDRESS")
     making.add_argument("--share", action="append", type=_share,
                         help="TAG=SHARE, in order: a plain text counts for the first share whose tag it has, and "
-                             "one no share takes is left out; the build trims the shares to their proportions")
+                             "one no share takes is left out; the build trims the shares to their proportions; TAG "
+                             "alone: an even part of what the shares given as numbers leave of 1")
     making.add_argument("--max-tokens", type=int, help="the size the web app's build form starts at")
     making.set_defaults(run=cmd_dataset_new)
     editing = datasets.add_parser("edit", help="change a dataset's name, libraries or shares as a new revision")
@@ -871,7 +875,7 @@ def parser() -> argparse.ArgumentParser:
                          help="[ADDRESS:]ID, every library it reads: a library it read already keeps its change "
                               "number")
     sharing = editing.add_mutually_exclusive_group()
-    sharing.add_argument("--share", action="append", type=_share, help="TAG=SHARE, in order: every share")
+    sharing.add_argument("--share", action="append", type=_share, help="TAG=SHARE or TAG alone, in order: every share")
     sharing.add_argument("--no-shares", action="store_true", help="no shares: every text")
     limiting = editing.add_mutually_exclusive_group()
     limiting.add_argument("--max-tokens", type=int, help="the size the web app's build form starts at")

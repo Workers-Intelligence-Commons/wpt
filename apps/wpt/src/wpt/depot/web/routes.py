@@ -29,7 +29,7 @@ from functools import wraps
 from wpt_depot import Declaration, Depot, NewText, counts as facets, crediting, errors, follow, rewriting
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED,
-                             NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW)
+                             NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW, spread_shares)
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter
 from wpt_depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
@@ -405,7 +405,8 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def measure(values, body):
-        return 200, jsonable(corpus_measure(depot, body["libraries"], body.get("shares") or []))
+        shares = spread_shares([(one["tag"], one.get("share")) for one in body.get("shares") or []])
+        return 200, jsonable(corpus_measure(depot, body["libraries"], shares))
 
     @refusals
     def change_times(values, body):
@@ -496,7 +497,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         shares = body.get("shares")
         return 200, {"id": depot.new_dataset(
             body["name"], body["tokenizer"], own(body["libraries"]),
-            None if shares is None else [(one["tag"], one["share"]) for one in shares], body.get("max_tokens"))}
+            None if shares is None else [(one["tag"], one.get("share")) for one in shares], body.get("max_tokens"))}
 
     @refusals
     def dataset(values, body):
@@ -525,7 +526,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         shares = body.get("shares")
         depot.edit_dataset(values["id"], body["name"],
                            own(body["libraries"], depot.dataset_by_id(values["id"])["libraries"]),
-                           None if shares is None else [(one["tag"], one["share"]) for one in shares],
+                           None if shares is None else [(one["tag"], one.get("share")) for one in shares],
                            body.get("max_tokens"), body.get("vocabulary"), body.get("revision"))
         return 200, {"id": values["id"]}
 
@@ -589,7 +590,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                             "any form; absent or null: this depot; another depot's address is "
                                             "refused (422), only the commands name one, but in an edit, a library "
                                             "of another depot the dataset reads already, as it stores it"}, "library": TEXT}}
-    share = {"type": "object", "required": ["tag", "share"], "properties": {"tag": TEXT, "share": {"type": "number"}}}
+    share = {"type": "object", "required": ["tag"], "properties": {"tag": TEXT, "share": {
+        "type": ["number", "null"], "description": "its share of the tokens (0.3 is 30%); absent or null: an even part "
+        "of what the shares given as numbers leave of 1, which the dataset stores as a number"}}}
     max_tokens = {"type": ["integer", "null"], "minimum": 1, "description": "the size the build form starts at "
                   "(nothing else reads it): the most tokens the corpus holds, conversations and tasks taking their "
                   "natural share; absent or null: no limit"}

@@ -29,7 +29,11 @@ follows the build's rule: the build takes the texts and pieces in the
 order of their export keys (wpt_depot.order) and each part fills as
 wpt_depot.corpus.Fill says, a text that does not fit what is left of its
 part left out, so a share whose texts are each longer than its part at a
-small size stays empty. The forecast walks the first FOLLOWED texts of that
+small size stays empty. A share whose texts carry several tags besides its
+own splits its part over them (wpt_depot.groups), which changes which of
+its texts the build takes but not the part itself: the forecast fills each
+share with its texts in order all the same, so its figures are the
+share's, never its groups'. The forecast walks the first FOLLOWED texts of that
 order, as the build reads them, keeps the kind, pool and bytes of those the
 corpus may take, and fills each part with them, each text's tokens its
 bytes at the sample's tokens per byte. A part is known once it closes or
@@ -54,7 +58,10 @@ sample's speed of reading and tokenizing, measured in one process, times
 the processes the build tokenizes in (workers). figures says whether the
 revision's figures are known: when they are not, the build first counts
 every text of the dataset for its census, which the time leaves out, and
-a warning says so.
+a warning says so. The time leaves out too the first pass of a share that
+splits by group, which walks every row of the dataset, and, with
+max_tokens, the tokens it counts of the texts it chooses, which the build
+tokenizes again as it writes them.
 
 So what the estimate reads does not grow with the dataset: POINTS texts of
 each library, FOLLOWED texts of the order and the counts of the figures.
