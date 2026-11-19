@@ -66,5 +66,17 @@ def test_texts_measured_in_worker_processes_give_the_lines_measured_here(make_de
     depot.add([NewText(text=text, licenses=("CC0-1.0",)) for text in [PROSE, TABLE, PROSE + "\n" + TABLE] * 3], me)
     here = list(score_lines(depot, "true"))
 
-    monkeypatch.setattr("wpt_depot.measures.IN_PROCESS", 4)  # past two batches, the rest goes to workers
+    monkeypatch.setattr("wpt_depot.measures.ITEM_TEXTS", 2)
+    monkeypatch.setattr("wpt_depot.measures.IN_PROCESS", 4)  # past two work items, the rest goes to workers
     assert list(score_lines(depot, "true")) == here
+
+
+def test_work_items_hold_at_most_their_texts_and_bytes_and_a_big_text_alone(monkeypatch):
+    from wpt_depot import measures
+    monkeypatch.setattr(measures, "ITEM_TEXTS", 3)
+    monkeypatch.setattr(measures, "ITEM_BYTES", 10)
+    batches = [[("a", 1, [], 2), ("b", 1, [], 2)], [("c", 1, [], 2), ("d", 1, [], 2), ("e", 1, [], 50)],
+               [("f", 1, [], 4), ("g", 1, [], 4)]]
+
+    assert [[text for text, _, _ in item] for item in measures._items(iter(batches))] == [
+        ["a", "b", "c"], ["d"], ["e"], ["f", "g"]]

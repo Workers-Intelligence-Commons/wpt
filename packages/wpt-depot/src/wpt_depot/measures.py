@@ -15,8 +15,11 @@ their values, which texts to review or refuse.
 
 An empty text has 0 for both. Each value is rounded to DIGITS decimals.
 
-A depot's texts are measured in worker processes, BATCH texts at a time,
-read in the order of their ids; an item is no plain text and is left out.
+A depot's texts are read in the order of their ids, BATCH ids at a time,
+and measured in worker processes, a work item holding ITEM_TEXTS texts or
+ITEM_BYTES of them at most (one text alone past that), so a worker spends
+its time measuring rather than waiting for its next item; an item of the
+depot is no plain text and is left out.
 
     Measure()                        fed a text part after part (feed), its values at the end (values)
     measured(text)                   {SYMBOLS: v, RUNNING: v} of a whole text
@@ -34,7 +37,9 @@ from .parts import scan
 
 SYMBOLS, RUNNING = "symbols", "running-text"
 DIGITS = 4  # decimals of a value
-BATCH = 1000  # texts read and measured at a time
+BATCH = 1000  # ids read at a time
+ITEM_TEXTS = 20_000  # texts of one work item at most
+ITEM_BYTES = 256 << 20  # bytes of the texts of one work item at most, one text alone past it
 IN_PROCESS = 20_000  # texts a walk measures in its own process before it starts worker processes
 _NOT_WRITING = re.compile(r"[^\w\s]|_")  # every symbol is one of these; a mark is too, and is told apart
 _PLACED = re.compile(r"\[image(?::[^\]\n]*)?\]|\]\(<[^>\n]*>\)|\]\([^)\s]*\)")  # placeholders and link targets
@@ -105,21 +110,23 @@ def score_lines(depot, where: str, walked: Walked | None = None,
     of a scores file ("Scores"): {"id", "scores": [SYMBOLS, RUNNING, each
     made from the text's current content version]}; an item is left out
     and counted in walked. progress gets {"stage": "measuring", "texts":
-    measured so far} after each batch."""
+    measured so far} after each work item."""
     walked = walked if walked is not None else Walked()
-    batches = _batches(depot, where, walked)
-    first = []
-    for batch in batches:  # a small selection is measured here, a large one in worker processes
-        first.append(batch)
-        if len(first) * BATCH >= IN_PROCESS:
+    items = _items(_batches(depot, where, walked))
+    first, held = [], 0
+    for item in items:  # a small selection is measured here, a large one in worker processes
+        first.append(item)
+        held += len(item)
+        if held >= IN_PROCESS:
             break
-    if len(first) * BATCH < IN_PROCESS:
+    pooled = held >= IN_PROCESS
+    if not pooled:
         _start_worker(depot.address)
-        found = (_measured_batch(batch) for batch in first)
+        found = (_measured_batch(item) for item in first)
     else:
         def every():
             yield from first
-            yield from batches
+            yield from items
         sizing = Sizing("measuring workers")
         pool = process_pool(sizing, sizing.limit, _start_worker, (depot.address,))
         found = in_order(_measured_batch, every(), pool, sizing)
@@ -129,12 +136,27 @@ def score_lines(depot, where: str, walked: Walked | None = None,
             walked.measured += len(lines)
             progress({"stage": "measuring", "texts": walked.measured})
     finally:
-        if len(first) * BATCH >= IN_PROCESS:
+        if pooled:
             pool.shutdown(cancel_futures=True)
 
 
+def _items(batches: Iterator[list[tuple]]) -> Iterator[list[tuple]]:
+    """The texts of batches as work items, in their order: ITEM_TEXTS texts or ITEM_BYTES at most, a text
+    past ITEM_BYTES alone; each text (id, content version, its parts)."""
+    item, size = [], 0
+    for batch in batches:
+        for text, version, parts, bytes_ in batch:
+            if item and (len(item) == ITEM_TEXTS or size + bytes_ > ITEM_BYTES):
+                yield item
+                item, size = [], 0
+            item.append((text, version, parts))
+            size += bytes_
+    if item:
+        yield item
+
+
 def _batches(depot, where: str, walked: Walked) -> Iterator[list[tuple]]:
-    """The plain texts where selects, BATCH at a time: (id, content version, its parts)."""
+    """The plain texts where selects among each BATCH ids: (id, content version, its parts, its bytes)."""
     after = ""
     while True:
         # the next ids on the index of the current texts, then the condition over those alone, each looked up
@@ -146,12 +168,12 @@ def _batches(depot, where: str, walked: Walked) -> Iterator[list[tuple]]:
             return
         after = ids[-1]
         rows = depot.rows(
-            "SELECT t.id AS id, t.content_version AS version, c.kind AS kind, c.parts AS parts FROM "
+            "SELECT t.id AS id, t.content_version AS version, c.kind AS kind, c.parts AS parts, c.bytes AS bytes FROM "
             f"(WITH wanted (wanted_id) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT texts.id, "
             f"texts.content_version FROM wanted CROSS JOIN texts ON texts.id = wanted_id WHERE ({where})) t "
             "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version ORDER BY t.id",
             (json.dumps(ids),))
-        plain = [(row["id"], row["version"], row["parts"]) for row in rows if row["kind"] is None]
+        plain = [(row["id"], row["version"], row["parts"], row["bytes"]) for row in rows if row["kind"] is None]
         walked.items += len(rows) - len(plain)
         if plain:
             yield plain
