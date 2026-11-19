@@ -622,7 +622,7 @@ when it is:
   people are those the library's catalog lists for the book and those the
   printed edition's opening pages credit. Each death year is Wikidata's;
   several death years for one person count when every one gives the same
-  verdict. The edition is a scan whose text holds passages of the
+  verdict, a value Wikidata marks as deprecated included. The edition is a scan whose text holds passages of the
   digitized text. When every person died in 1925 or earlier, the term has
   ended under every country's law, and the country of first publication
   is not needed. A person without a death year, or an edition without a
@@ -641,6 +641,12 @@ when it is:
   distributor writes on content it did not make does not count. The text's
   license is `LicenseRef-public-domain`, with the statement quoted in its
   notice.
+- **A community's public-domain statement** about the messages its
+  members post counts when it stands in the community's published rules
+  and taking part binds every member to those rules. It covers the
+  messages posted from the day the statement was published. Messages
+  posted before that day stay out: a statement made after publication
+  does not count.
 - **Every text names its own licenses.** A repository is one text: every
   file it lets in, joined with its git history. Each file still comes in
   under the license that covers it, and a file without an allowed one
@@ -654,6 +660,11 @@ when it is:
 - **A file is covered by the license its publication gives it**, such as
   a repository's license file for every file of the repository. A file no
   license covers is all rights reserved, and stays out.
+- **A dataset's license file names one of its makers.** A license file
+  in a dataset's own repository covers its data when the repository
+  states that the data is released under that license, even when the
+  copyright line names one person of the group that the data's own files
+  name as holder.
 - **Records.** In a dataset whose records each carry their own license
   value, each record is its own text, under the license its value names,
   and a record enters only when a person reviewed that value. A value is
@@ -672,6 +683,17 @@ when it is:
   to the later version. A value that joins several licenses with commas
   means they apply at once ("Several licenses on one text", above). A
   record whose value is known to be wrong stays out.
+- **Contributions licensed only by their collector.** Records that
+  volunteers wrote for a project are refused when only the project that
+  collected them states their license and the terms the volunteers
+  accepted grant none. They stay in the depot as a reference until legal
+  review answers ([LEGAL-QUESTIONS.html](../LEGAL-QUESTIONS.html), E7).
+- **A legislature's public-domain record of its debates** comes in as its
+  floor debates only. An item that holds a block the record marks as
+  taken from another publication stays out whole, since the record marks
+  where such a block starts but not where it ends. Its sections of
+  remarks inserted without being spoken stay out too. Such material may
+  keep its own copyright.
 - **Third-party code** inside a repository (a copied library, a dependency
   folder) is under its own license when that license is allowed: its
   license file, or else the license its package metadata declares, with
@@ -701,7 +723,9 @@ when it is:
   text-and-data-mining reservation (EU Directive 2019/790, article 4),
   leaves the content out, wherever it is hosted. Review looks for them on
   every text.
-- **No personal data**: texts made of personal data are not accepted.
+- **No personal data**: texts made of personal data are not accepted. A
+  nickname a person chose for a public channel does not make that
+  channel's messages personal data.
 - A machine can check that a license is written and allowed, not that it is
   true. If the source page lies, only human review catches it.
 
