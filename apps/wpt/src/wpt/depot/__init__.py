@@ -119,6 +119,16 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           from them, as wpt depot scores records a change: one decision under
                                           review on every text it changes; a text whose scores stay as they
                                           are is left out
+    wpt depot measure WHERE --out FOLDER [--lines N]
+                                          measure every plain text the SQL condition WHERE matches, from its
+                                          text alone (wpt_depot.measures): symbols, the share of its
+                                          characters that are neither letters, marks, digits nor white
+                                          space, and running-text, the share that stands in ordinary lines
+                                          (not a table row or a heading, image placeholders and link
+                                          targets left out); writes them as scores files of at most N lines
+                                          (1,000,000 by default) into the new folder FOLDER, each made from
+                                          the text's current content version, for wpt depot scores to
+                                          record; reads the depot only, and leaves items out
     wpt depot score-names                 every name of a score a text has now, with how many texts have it;
                                           one JSON row per line, from the depot's counts
     wpt depot score-values NAME           the values the score NAME has on the texts changed last (at most the
@@ -242,7 +252,7 @@ from wpt_depot.filters import literal
 from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from wpt_depot.settings import depot_address
-from wpt_depot import corpora
+from wpt_depot import corpora, measures
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_utils.lines import ERROR, say
 
@@ -250,7 +260,7 @@ from .downloads import Downloads
 from .jobs import Jobs, jobs_file
 from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_corpus, decide_erasures, env_file,
                      corpora_cap, import_tokenizer, jsonable, opened, pulled,
-                     train_vocabulary)
+                     train_vocabulary, viewed)
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED, "back-to-review": UNDER_REVIEW}
 BACK = "back-to-review"  # the status of decide that puts texts back under review, never an erasure request
@@ -413,6 +423,36 @@ def cmd_score(args):
     else:
         say(f"decision {decision}: under review, {done}, on {changed:,} texts"
             + (f"; {left_out:,} texts left out, their scores unchanged" if left_out else ""))
+    return 0
+
+
+def cmd_measure(args):
+    out = Path(args.out)
+    if out.exists():
+        raise FileExistsError(f"{out} exists already: the scores files go into a new folder")
+    if args.lines < 1:
+        raise ValueError("--lines is 1 at least")
+    out.mkdir(parents=True)
+    walked, files, written, held = measures.Walked(), 0, 0, None
+
+    def progress(state):
+        if state["texts"] % 100_000 < measures.BATCH:
+            say(f"{state['texts']:,} texts measured")
+    try:
+        for line in measures.score_lines(viewed(depot_address(env_file=env_file())), args.where, walked, progress):
+            if held is None or written == args.lines:
+                if held is not None:
+                    held.close()
+                files += 1
+                held, written = open(out / f"scores-{files:05d}.jsonl", "w", encoding="utf-8"), 0
+            held.write(json.dumps(line, ensure_ascii=False) + "\n")
+            written += 1
+    finally:
+        if held is not None:
+            held.close()
+    say(f"{walked.measured:,} texts measured into {files:,} files in {out}"
+        + (f"; {walked.items:,} items left out" if walked.items else "")
+        + ("" if files else ": no plain text matches"))
     return 0
 
 
@@ -804,6 +844,12 @@ def parser() -> argparse.ArgumentParser:
     scoring_one.add_argument("where", help="an SQL condition over the texts table, in SQLite's SQL")
     _declares(scoring_one)
     scoring_one.set_defaults(run=cmd_score)
+    measuring = commands.add_parser("measure", help="measure how much of each plain text a condition matches is "
+                                                    "writing, as scores files for wpt depot scores")
+    measuring.add_argument("where", help="an SQL condition over the texts table, in SQLite's SQL")
+    measuring.add_argument("--out", required=True, help="the new folder the scores files go into")
+    measuring.add_argument("--lines", type=int, default=1_000_000, help="the most lines of one file (1,000,000)")
+    measuring.set_defaults(run=cmd_measure)
     naming_scores = commands.add_parser("score-names", help="every name of a score a text has, with how many texts "
                                                             "have it")
     naming_scores.set_defaults(run=cmd_score_names)

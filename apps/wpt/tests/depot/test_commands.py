@@ -440,6 +440,29 @@ def test_the_score_command_sets_one_score_on_the_texts_a_condition_matches_and_s
                                      "common": [{"value": 4.0, "texts": 1}]}]
 
 
+def test_the_measure_command_writes_scores_files_the_scores_command_records(depot, tmp_path, capsys):
+    opened = Depot.open(depot)
+    texts = opened.add([NewText(text="The river runs north.", licenses=("CC0-1.0",)),
+                        NewText(text="| a | b |", licenses=("CC0-1.0",)),
+                        NewText(text="# Title", licenses=("CC0-1.0",))], _declaration())
+    out = tmp_path / "measured"
+    capsys.readouterr()
+
+    assert depot_command("measure", "true", "--out", str(out), "--lines", "2") == 0
+
+    assert bare(capsys.readouterr().out.splitlines()[-1]) == f"3 texts measured into 2 files in {out}"
+    files = sorted(out.iterdir())
+    assert [path.name for path in files] == ["scores-00001.jsonl", "scores-00002.jsonl"]
+    lines = [json.loads(line) for path in files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [line["id"] for line in lines] == sorted(texts)
+    for path in files:
+        assert depot_command("scores", str(path), *ME) == 0
+    assert Depot.open(depot).score_names() == [{"name": "running-text", "texts": 3}, {"name": "symbols", "texts": 3}]
+    capsys.readouterr()
+    assert depot_command("measure", "true", "--out", str(out)) != 0
+    assert "exists already" in capsys.readouterr().err
+
+
 def test_the_credits_file_command_reads_one_text_per_line_and_records_one_decision_for_them_all(depot, tmp_path,
                                                                                                     capsys):
     opened = Depot.open(depot)

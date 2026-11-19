@@ -258,6 +258,33 @@ Every other change of a text, a new content version included, keeps its
 scores as they are, each still naming the content version it was made
 from.
 
+### Measures
+
+`wpt depot measure WHERE --out FOLDER [--lines N]` measures how much of
+each plain text the SQL condition WHERE matches is writing, and writes
+the two values as scores files of at most N lines (1,000,000 by default)
+into the new folder FOLDER, each value made from the text's current
+content version; `wpt depot scores` records each file. It only reads the
+depot, and leaves items out. The measures read the text alone, never its
+tags, its kind or its language (`wpt_depot/measures.py`):
+
+- `symbols`: the share of the text's characters that are neither a
+  letter, a mark, a digit nor white space, in any script. An underscore is
+  a symbol.
+- `running-text`: the share of the text's characters that stand in
+  ordinary lines. A table row (a line whose first character other than a
+  space is `|`) and a heading (`#`) are not ordinary. In an ordinary line,
+  the image placeholders (`[image]`, `[image: words]`) and the targets of
+  links count for nothing, and a line left without a letter counts for
+  nothing.
+
+An empty text has 0 for both, and each value has 4 decimals. A page that
+is an infobox, a list of table rows or a skeleton of empty headings has
+little running text; prose has close to 1, and most of its characters
+are letters. Which values a text must reach is a person's choice, made
+by reviewing the texts by their scores; a decision then admits or
+refuses the texts a condition on the scores selects.
+
 ### Change numbers
 
 Every change of a depot has a number, one past the last: a text added, a
