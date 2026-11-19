@@ -52,6 +52,7 @@ def test_the_lines_of_a_depot_s_texts_are_a_scores_change_it_records_and_items_a
         measured(TABLE))
     assert [line["id"] for line in score_lines(depot, "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = "
                                                       "'encyclopedia')")] == sorted([prose, table])
+    assert [line["id"] for line in score_lines(depot, f"id = '{table}' AND status IS NOT NULL")] == [table]
     _, _, changed, _ = depot.edit_scores(lines, me)
     assert changed == 3
     assert depot.rows("SELECT scores FROM texts WHERE id = ?", (table,))[0]["scores"] == [{"name": RUNNING, "value": 0.0, "content_version": 1},

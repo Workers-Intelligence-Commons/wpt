@@ -433,10 +433,11 @@ def cmd_measure(args):
     if args.lines < 1:
         raise ValueError("--lines is 1 at least")
     out.mkdir(parents=True)
-    walked, files, written, held = measures.Walked(), 0, 0, None
+    walked, files, written, held, said = measures.Walked(), 0, 0, None, [0]
 
     def progress(state):
-        if state["texts"] % 100_000 < measures.BATCH:
+        if state["texts"] // 100_000 > said[0]:
+            said[0] = state["texts"] // 100_000
             say(f"{state['texts']:,} texts measured")
     try:
         for line in measures.score_lines(viewed(depot_address(env_file=env_file())), args.where, walked, progress):

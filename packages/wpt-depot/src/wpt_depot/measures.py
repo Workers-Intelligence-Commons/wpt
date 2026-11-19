@@ -23,6 +23,7 @@ read in the order of their ids; an item is no plain text and is left out.
     score_lines(depot, where, ...)   the scores-file lines of the texts where selects, with what was left out
 """
 
+import json
 import re
 import unicodedata
 from collections.abc import Callable, Iterator
@@ -46,21 +47,28 @@ class Measure:
 
     def __init__(self):
         self.characters = self.symbols = self.running = 0
-        self.line = ""
+        self.line = []  # the pieces of the line a part ended inside, joined once its end comes
 
     def feed(self, part: str):
         self.characters += len(part)
-        self.symbols += sum(1 for found in _NOT_WRITING.finditer(part)
-                            if not unicodedata.category(found.group())[0] == "M")
-        lines = (self.line + part).split("\n")
-        self.line = lines.pop()
-        for line in lines:
+        if part.isascii():  # no mark: every match is a symbol
+            self.symbols += _NOT_WRITING.subn("", part)[1]
+        else:
+            self.symbols += sum(1 for found in _NOT_WRITING.findall(part)
+                                if found < "\x80" or unicodedata.category(found)[0] != "M")
+        lines = part.split("\n")
+        if len(lines) == 1:
+            self.line.append(part)
+            return
+        self.running += _running("".join([*self.line, lines[0]]))
+        for line in lines[1:-1]:
             self.running += _running(line)
+        self.line = [lines[-1]]
 
     def values(self) -> dict[str, float]:
         if self.line:
-            self.running += _running(self.line)
-            self.line = ""
+            self.running += _running("".join(self.line))
+            self.line = []
         if not self.characters:
             return {SYMBOLS: 0.0, RUNNING: 0.0}
         return {SYMBOLS: round(self.symbols / self.characters, DIGITS),
@@ -129,13 +137,20 @@ def _batches(depot, where: str, walked: Walked) -> Iterator[list[tuple]]:
     """The plain texts where selects, BATCH at a time: (id, content version, its parts)."""
     after = ""
     while True:
+        # the next ids on the index of the current texts, then the condition over those alone, each looked up
+        # by its id (CROSS JOIN keeps that order), so a batch costs the same wherever it stands and whichever
+        # index the condition alone would make SQLite walk
+        ids = [row["id"] for row in depot.rows("SELECT id FROM texts_revisions INDEXED BY texts_latest WHERE latest "
+                                                "AND id > ? ORDER BY id LIMIT ?", (after, BATCH))]
+        if not ids:
+            return
+        after = ids[-1]
         rows = depot.rows(
             "SELECT t.id AS id, t.content_version AS version, c.kind AS kind, c.parts AS parts FROM "
-            f"(SELECT id, content_version FROM texts WHERE id > ? AND ({where}) ORDER BY id LIMIT ?) t "
-            "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version ORDER BY t.id", (after, BATCH))
-        if not rows:
-            return
-        after = rows[-1]["id"]
+            f"(WITH wanted (wanted_id) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT texts.id, "
+            f"texts.content_version FROM wanted CROSS JOIN texts ON texts.id = wanted_id WHERE ({where})) t "
+            "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version ORDER BY t.id",
+            (json.dumps(ids),))
         plain = [(row["id"], row["version"], row["parts"]) for row in rows if row["kind"] is None]
         walked.items += len(rows) - len(plain)
         if plain:
