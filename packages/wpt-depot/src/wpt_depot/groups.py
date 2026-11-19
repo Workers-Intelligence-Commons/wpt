@@ -1,6 +1,6 @@
-"""How each share of a dataset splits its budget evenly over the tags its
-texts carry (docs/data-selection.md, "Shares"): a first pass over the
-dataset's order, the choice of texts it makes, and the chosen set a corpus
+"""How each share of a dataset splits its budget over the tags its texts
+carry, each tag's part following the square root of what it holds
+(docs/data-selection.md, "Shares"): a first pass over the dataset's order, the choice of texts it makes, and the chosen set a corpus
 build or a vocabulary's sample follows as it walks the order again.
 
 A plain text belongs to the first share whose tag it has (wpt_depot.order).
@@ -23,11 +23,13 @@ decided of each entry, and its tokens when sizes are tokens).
 
 A share with one group, or with no limit (a budget of None), is no part of
 the plan: it fills as wpt_depot.fill.Fill says. Every other share chooses
-its texts so (choose): it takes the next text, in the order, of the group
-that holds the fewest tokens (or bytes) so far, ties going to the group
-whose next text comes first in the order, then to the group seen first in
-the order; a text taken counts for every one of its groups and is taken
-once; a text that does not fit what is left of the share's budget is left
+its texts so (choose): each group weighs the square root of the bytes its
+texts hold in the share (at least 1), and the share takes the next text,
+in the order, of the group that holds the fewest tokens (or bytes) so far
+for its weight, ties going to the group whose next text comes first in
+the order, then to the group seen first in the order (a group that holds
+a hundred times the bytes of another aims at ten times its tokens); a
+text taken counts for every one of its groups and is taken once; a text that does not fit what is left of the share's budget is left
 out for good; a group drops out once its queue is empty, or once SKIPS of
 the texts it met in a row did not fit; the share closes once what is left
 of its budget is at most a FULL-th of it, or once every group dropped out.
@@ -319,7 +321,10 @@ def _choose(entries: _Entries, budget: dict, addresses, count, progress) -> Plan
         limit = budget[pool]
         floor = limit // FULL
         members = [group for group, owner in enumerate(entries.pool) if owner == pool]
+        weight = {group: max(1.0, float(np.sqrt(entries.bytes[entries.queue[starts[group]:ends[group]]].sum(
+            dtype=np.float64)))) for group in members}
         used = dict.fromkeys(members, 0)
+        key = dict.fromkeys(members, 0.0)  # each group's tokens (or bytes) so far for its weight
         run = dict.fromkeys(members, 0)
         head = {group: starts[group] for group in members}
         active = set(members)
@@ -328,7 +333,7 @@ def _choose(entries: _Entries, budget: dict, addresses, count, progress) -> Plan
         total, chosen = 0, -1
         while heap and limit - total > floor:
             had, first, group = heapq.heappop(heap)
-            if group not in active or had != used[group]:
+            if group not in active or had != key[group]:
                 continue
             place, end = head[group], ends[group]
             while place < end and done[queue[place]]:
@@ -354,8 +359,9 @@ def _choose(entries: _Entries, budget: dict, addresses, count, progress) -> Plan
                 run[group] = 0
                 for other in groups[offsets[entry]:offsets[entry + 1]]:
                     used[other] += size
+                    key[other] = used[other] / weight[other]
                     if size and other in active:
-                        heapq.heappush(heap, (used[other], queue[head[other]], other))
+                        heapq.heappush(heap, (key[other], queue[head[other]], other))
                 if not size:
                     heapq.heappush(heap, (had, entry, group))
             else:

@@ -1040,10 +1040,20 @@ def documents(store, record) -> list[str]:
     return [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
 
 
-def test_a_share_splits_its_part_evenly_over_its_texts_tags_and_a_small_group_s_leftover_goes_to_the_others(
-        make_depot, me, tmp_path):
-    # 30 tokens are 10 texts of 3 tokens: the group c holds only 2, so it gives all it has, and a and b split the
-    # rest evenly, whatever the order of their texts
+def test_a_share_splits_its_part_over_its_texts_tags_by_the_square_root_of_what_each_holds(make_depot, me, tmp_path):
+    # a holds four times the bytes of b, so it aims at twice its tokens: 36 tokens are 12 texts, 8 of a and 4 of b
+    depot, library, _ = tagged_depot(make_depot, me, (("en", "a"), 80, SMALL), (("en", "b"), 20, SMALL))
+    depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "mix", store, TOKENIZER, max_tokens=36, log=lambda *_: None)
+
+    assert groups_taken(record) == {"a": (8, 24), "b": (4, 12)}
+
+
+def test_a_small_group_gives_all_it_has_and_its_leftover_goes_to_the_others(make_depot, me, tmp_path):
+    # 30 tokens are 10 texts of 3 tokens: the group c holds only 2, so it gives all it has, and a and b, which hold
+    # alike, split the rest evenly, whatever the order of their texts
     depot, library, _ = tagged_depot(make_depot, me, (("en", "a"), 20, SMALL), (("en", "b"), 20, SMALL),
                                      (("en", "c"), 2, SMALL))
     depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])
@@ -1108,7 +1118,7 @@ def test_a_text_that_does_not_fit_what_its_share_has_left_is_left_out_and_its_gr
     record = build(depot, "mix", store, TOKENIZER, max_tokens=18, log=lambda *_: None)
 
     assert ids[("en", "a")][0] not in documents(store, record)  # far more than 18 tokens
-    assert groups_taken(record) == {"a": (3, 9), "b": (3, 9)}
+    assert groups_taken(record) == {"a": (4, 12), "b": (2, 6)}  # a holds about ten times the bytes of b
 
 
 def test_a_share_of_one_group_takes_its_texts_in_the_order_as_a_dataset_without_shares_does(make_depot, me,
@@ -1160,7 +1170,7 @@ def test_a_build_of_shares_split_by_group_cut_short_goes_on_to_the_same_bytes_ev
     assert resumed["shares_tokens"] == whole["shares_tokens"]
 
 
-def test_the_sample_splits_each_share_s_bytes_evenly_over_its_texts_tags(make_depot, me):
+def test_the_sample_splits_each_share_s_bytes_over_its_texts_tags(make_depot, me):
     depot, library, ids = tagged_depot(make_depot, me, (("en", "a"), 20, SMALL), (("en", "b"), 20, SMALL),
                                        (("en", "c"), 1, SMALL))
     depot.new_dataset("mix", "classics", [(None, library)], [("en", 1.0)])

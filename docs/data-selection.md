@@ -483,16 +483,19 @@ already. A text counts for the first share whose tag it has. A text that has non
 shares' tags is left out. Without shares, every text of the libraries is
 taken.
 
-Inside a share, its part splits evenly over every tag its texts carry,
-the share's own tag excepted: each such tag is a group, and the texts that
+Inside a share, its part splits over every tag its texts carry, the
+share's own tag excepted: each such tag is a group, and the texts that
 carry no other tag are one group more. A text counts for every group of
-its tags. Every tag counts alike, length tags such as `long` or `huge`
+its tags. Each group's part follows the square root of the bytes its texts
+hold in the share, so a big group stays the biggest and a small one still
+gets a real part: a group that holds a hundred times the bytes of another
+aims at ten times its tokens. Every tag counts alike, length tags such as `long` or `huge`
 included: the rule reads the texts' tags and nothing else. A share whose
 texts make a single group fills in the corpus's order (see "Filling a
 part"), and so does the share the build keeps whole without a size.
 
 The build brings the shares to their proportions, and each share's groups
-to even parts of it, without repeating a text.
+to their parts of it, without repeating a text.
 Without `max_tokens`, it finds the share with the fewest bytes relative to
 its proportion and keeps every text of that share; each other share fills
 its proportion of the scarcest share's bytes, in the corpus's order (see
@@ -528,10 +531,11 @@ larger one up to the first text it leaves out; past it, it takes only what
 fits what is left of it.
 
 A share whose texts make two groups or more (see "Shares") fills by
-group instead. Each group's texts wait in the corpus's order. The share
-always takes the next text of the group that holds the fewest tokens so
-far; when several groups hold the fewest, the group whose next text comes
-first in the corpus's order goes first. A text taken counts for every one
+group instead. Each group's texts wait in the corpus's order, and each
+group weighs the square root of the bytes its texts hold in the share. The
+share always takes the next text of the group that holds the fewest tokens
+so far for its weight; when several groups are level, the group whose next
+text comes first in the corpus's order goes first. A text taken counts for every one
 of its groups, and is taken once. A text that does not fit what is left of
 the share is left out for good. A group whose texts run out drops out, and
 so does a group that meets a thousand texts in a row that do not fit. The

@@ -39,8 +39,8 @@ the size the web app's build form starts at.
 
 What it takes: a plain text counts for the first share whose tag it has,
 and a plain text that has none of their tags is left out. Inside a share,
-the budget splits evenly over every tag its texts carry but the share's
-own (wpt_depot.groups): a share whose texts carry two such tags or more,
+the budget splits over every tag its texts carry but the share's own,
+each tag's part following the square root of what it holds (wpt_depot.groups): a share whose texts carry two such tags or more,
 with a limit, takes the texts the groups choose, and every other share fills
 as below. Items of a kind
 other than conversation and task are no training data and are left out. A
@@ -250,7 +250,7 @@ CORPUS_SCHEMAS = {
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
 }
-RULES = 5  # the version of the rules of what a build takes, in the build's key: raised whenever they change
+RULES = 6  # the version of the rules of what a build takes, in the build's key: raised whenever they change
 CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", "scores")  # what a text's row copies
 
 
@@ -1049,7 +1049,7 @@ class _Build:
         state["plan"] = {"sha256": sha256, "last": {str(pool): last for pool, last in chosen.last.items()}}
         if chosen.last:
             self.log(f"the shares {', '.join(shares[pool]['tag'] for pool in sorted(chosen.last))} split their "
-                     f"budgets evenly over the tags of their texts: {len(chosen.chosen):,} texts chosen")
+                     f"budgets over the tags of their texts, by the square root of what each holds: {len(chosen.chosen):,} texts chosen")
         return chosen
 
     def _limit_items(self, shares: list[dict] | None) -> dict:
