@@ -830,3 +830,24 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 }
 .estimate-ask { align-items: center; }
 .estimate-head { margin: 0 0 var(--gap-hair); }
+
+/* a library read whole: the strip's text in the middle, its own scrollbar at the right standing for the whole strip */
+.strip-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.strip-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-group); padding-bottom: var(--gap-hair); border-bottom: 1px solid var(--line-strong); }
+.strip-title { margin: 0; font-size: 1.4rem; }
+.strip-where { flex: 1 1 260px; min-width: 0; }
+.strip-go { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-tight); }
+.strip-go input { font: inherit; padding: 2px 6px; border: 1px solid var(--line-strong); background: var(--paper-raised); color: var(--ink); }
+.strip-note { margin: var(--gap-hair) 0 0; }
+.strip-body { flex: 1; min-height: 0; display: flex; gap: var(--gap-tight); padding-top: var(--gap-hair); }
+.strip-view { position: relative; flex: 1; min-width: 0; overflow-y: auto; overflow-anchor: none; scrollbar-width: none; padding-right: var(--gap-tight); }
+.strip-view::-webkit-scrollbar { display: none; }
+.strip-view:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.strip-block { max-width: 60em; }
+.strip-block > .blob-rule { margin-top: var(--gap-group); }
+.strip-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--text-font, var(--font-serif)); font-size: 15px; line-height: 23px; }
+.strip-edge { padding: var(--gap-group) 0; text-align: center; }
+.strip-bar { position: relative; flex: 0 0 18px; background: var(--paper-raised); border-left: 1px solid var(--line); cursor: pointer; touch-action: none; }
+.strip-bar.waiting { cursor: not-allowed; opacity: 0.6; }
+.strip-thumb { position: absolute; left: 2px; right: 2px; height: 28px; background: var(--line-strong); border-radius: 3px; pointer-events: none; }
+.strip-bar:hover .strip-thumb { background: var(--ink-muted); }

@@ -6,6 +6,6 @@ import { Texts } from "../texts/texts";
 import type { Page } from "./index";
 
 export const texts: Page = {
-  path: "texts", title: "Texts", group: "data",
+  path: "texts", title: "Texts", group: "data", full: true,
   Component: ({ rest, query }) => <Texts current={rest[0] ?? null} query={query} />,
 };

@@ -12,6 +12,7 @@ import { libraries } from "./libraries";
 import { licenses } from "./licenses";
 import { overview } from "./overview";
 import { settings } from "./settings";
+import { strip } from "./strip";
 import { tags } from "./tags";
 import { tokenizers } from "./tokenizers";
 import { texts } from "./texts";
@@ -25,11 +26,11 @@ import { texts } from "./texts";
 // Texts page). under: for a page not listed, the path of the listed page the
 // navigation marks while it shows (a dataset's corpora and export pages mark
 // Datasets). rest: the parts of the address after the page's own; query: the
-// address's query.
+// address's query. full: the page fills the screen, scrolling inside itself (the Texts page, a library read whole).
 export type Page = {
-  path: string; title: string; group: "data" | "setup" | "help" | null; under?: string;
+  path: string; title: string; group: "data" | "setup" | "help" | null; under?: string; full?: boolean;
   Component: ComponentType<{ rest: string[]; query: URLSearchParams }>;
 };
 
 export const pages: Page[] = [overview, texts, libraries, datasets, tokenizers, jobs, erasures, licenses, depot, settings, add, decisions, tags,
-  download, exported, help];
+  download, exported, strip, help];

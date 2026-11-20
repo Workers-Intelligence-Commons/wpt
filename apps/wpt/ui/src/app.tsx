@@ -18,7 +18,7 @@ export function App() {
     if (at && nav.current && nav.current.scrollWidth > nav.current.clientWidth) nav.current.scrollLeft = at.offsetLeft - nav.current.offsetLeft - 16;
   }, [page]);
   return (
-    <div className={`wrap${page.path === "texts" ? " full" : ""}`}>
+    <div className={`wrap${page.full ? " full" : ""}`}>
       <header className="top">
         <a className="home wic-focus" href={href([])} aria-label="Overview of the depot" aria-current={page.path === "" ? "page" : undefined}>
           <Mark name="wpt" height={24} />

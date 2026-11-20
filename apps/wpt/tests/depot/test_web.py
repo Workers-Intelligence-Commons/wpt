@@ -996,3 +996,69 @@ def test_change_times_gives_the_time_of_each_change_the_depot_holds(web):
     status, times = request("POST", "/api/changes/times", {"changes": [now, now, now + 50]})
 
     assert status == 200 and [one["change"] for one in times] == [now] and times[0]["made_at"]
+
+
+def test_a_library_reads_as_one_strip_from_its_start_its_end_and_once_mapped_any_position(web):
+    request, depot = web
+    me = Declaration(ME["name"], ME["email"], True)
+    texts = ["first text\n", "", "second, longer text\n" * 5, "last"]
+    depot.add([NewText(text=text, licenses=("CC0-1.0",), title=f"T{n}") for n, text in enumerate(texts)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("all")
+    depot.put(library, "true")
+    strip = "".join(texts)
+
+    first = request("POST", f"/api/libraries/{library}/strip", {"at": 0, "characters": 15})[1]
+    assert ([one["id"] for one in first["pieces"]], first["position"], first["edge"]) == (
+        ["test-depot-1", "test-depot-2", "test-depot-3"], 0, False)
+    assert "".join(one["text"] for one in first["pieces"]) == strip[:31]  # read on to the end of its line
+    last = first["pieces"][-1]
+    after = request("POST", f"/api/libraries/{library}/strip",
+                    {"text": last["id"], "offset": last["start"] + len(last["text"])})[1]
+    assert "".join(one["text"] for one in after["pieces"]) == strip[31:] and after["edge"]
+    end = request("POST", f"/api/libraries/{library}/strip", {"end": True, "characters": 6})[1]
+    assert ("".join(one["text"] for one in end["pieces"]), end["position"]) == (strip[-24:], len(strip) - 24)
+
+    for _ in range(200):  # the map is made in the background
+        status, shown = request("GET", f"/api/libraries/{library}/strip")
+        if shown["ready"]:
+            break
+        assert request("POST", f"/api/libraries/{library}/strip", {"at": 20})[0] == 422
+        time.sleep(0.05)
+    assert shown == {"texts": 4, "characters": len(strip), "ready": True, "fresh": True, "walked": 4, "failed": None}
+    middle = request("POST", f"/api/libraries/{library}/strip", {"at": 20, "characters": 10})[1]
+    assert ("".join(one["text"] for one in middle["pieces"]), middle["position"]) == (strip[11:31], 11)  # its line
+    depot.take_out(library, ["test-depot-1"])  # its map is of another state: the last one answers while a new one is made
+    status, moved = request("POST", f"/api/libraries/{library}/strip", {"at": 0, "characters": 1})
+    assert status == 200 and moved["pieces"][0]["id"] == "test-depot-2"
+    for _ in range(200):
+        status, shown = request("GET", f"/api/libraries/{library}/strip")
+        if shown["fresh"]:
+            break
+        assert shown["ready"] and request("POST", f"/api/libraries/{library}/strip", {"at": 5})[0] == 200
+        time.sleep(0.05)
+    assert (shown["texts"], shown["characters"]) == (3, len(strip) - len(texts[0]))
+    assert request("POST", f"/api/libraries/{library}/strip", {"text": "test-depot-1", "at": 3})[0] == 400
+    assert request("GET", "/api/libraries/test-depot-99/strip")[0] == 404
+
+
+def test_a_failed_walk_of_a_library_is_answered_and_not_tried_again_on_every_request(web, tmp_path, monkeypatch):
+    from wpt.depot.web import strips as maps_module
+    _, depot = web
+    library = depot.new_library("one")
+    walks = []
+
+    def failing(*args):
+        walks.append(1)
+        raise OSError("the disk went away")
+    monkeypatch.setattr(maps_module.strips, "build", failing)
+    maps = maps_module.Maps(depot, tmp_path / "strips")
+    for _ in range(200):
+        found, walking = maps.get(library)
+        if walking["failed"]:
+            break
+        time.sleep(0.01)
+    assert (found, walking) == (None, {"fresh": False, "walked": 0, "failed": "OSError: the disk went away"})
+    for _ in range(5):
+        assert maps.get(library)[1]["failed"]
+    assert len(walks) == 1

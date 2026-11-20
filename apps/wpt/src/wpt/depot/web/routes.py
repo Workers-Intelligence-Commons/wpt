@@ -26,7 +26,7 @@ import itertools
 import json
 from functools import wraps
 
-from wpt_depot import Declaration, Depot, NewText, counts as facets, crediting, errors, follow, rewriting
+from wpt_depot import Declaration, Depot, NewText, counts as facets, crediting, errors, follow, rewriting, strips
 from wpt_depot.filters import STATUSES as TEXT_STATUSES
 from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM, CHANGED_SINCE, COUNT_STEP, CREDITS, INDEXED,
                              NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW, spread_shares)
@@ -44,9 +44,10 @@ from .. import shared
 from ..shared import CONFIRMATION, REQUIREMENTS, jsonable
 from . import readers as limits
 from ..downloads import Downloads, TooMany
-from ..jobs import Busy, Jobs
+from ..jobs import Busy, Jobs, work_folder
 from .builds import builds
 from .readers import Readers
+from .strips import Maps
 from .server import Route, Stream
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
@@ -71,6 +72,8 @@ PLACE = {"type": "array", "items": {"type": ["string", "integer", "number"]}, "m
 NULLABLE_PLACE = {"oneOf": [PLACE, {"type": "null"}]}
 # how many characters of text a page of passages holds at most, by default and at the most a request may ask
 PASSAGE_CHARACTERS, MAX_PASSAGE_CHARACTERS = 200_000, 2_000_000
+# how many characters of a library's strip a read gives, by default and at the most a request may ask
+STRIP_CHARACTERS, MAX_STRIP_CHARACTERS = 65_536, 1_048_576
 
 
 def refusals(handler):
@@ -164,6 +167,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     (wpt.depot.web.readers), and a write over many texts in a job of jobs,
     whose runner the caller starts."""
     readers = Readers(depot.address)
+    maps = Maps(depot, work_folder(depot.address) / "strips")
 
     def job(title: str, few: bool, operation, *args) -> tuple[int, dict]:
         """Run operation over the depot with args, titled by what it does (the
@@ -417,6 +421,42 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     @refusals
     def pinned(values, body):
         return 200, jsonable(depot.pinned(values["id"], body.get("offset", 0), body.get("limit", 50), body.get("after")))
+
+    def strip_size(library: str, found, walking) -> dict:
+        """{texts, characters} of the library's strip: those of its map when
+        it is of the library's state now, else the depot's counts."""
+        if found is not None and walking["fresh"]:
+            return {"texts": found.texts, "characters": found.characters}
+        return strips.total(depot, library)
+
+    @refusals
+    def strip(values, body):
+        found, walking = maps.get(values["id"])
+        return 200, {**strip_size(values["id"], found, walking), "ready": found is not None, **walking}
+
+    @refusals
+    def strip_read(values, body):
+        library, characters = values["id"], body.get("characters", STRIP_CHARACTERS)
+        if body.get("end"):
+            found, walking = maps.get(library)
+            read = strips.read(depot, library, None, 0, characters, forward=False)
+            size = strip_size(library, found, walking)["characters"]
+            return 200, {**read, "position": max(0, size - sum(len(one["text"]) for one in read["pieces"]))}
+        if "at" in body:
+            found, walking = maps.get(library) if body["at"] > 0 else (None, None)
+            if body["at"] > 0 and found is None:
+                raise errors.DepotError(f"the map of the library is being made ({walking['walked']:,} texts walked"
+                                        + (f"; the walk failed: {walking['failed']}" if walking["failed"] else "")
+                                        + "): it reads from its start or its end until then")
+            anchor = strips.locate(depot, library, found, body["at"]) if found else None
+            read = strips.read(depot, library, *(anchor or (None, 0)), characters, inclusive=True)
+            position = min(body["at"], found.characters) if found else 0
+            if anchor and read["pieces"] and read["pieces"][0]["id"] == anchor[0]:  # back to the start of its line
+                position -= anchor[1] - read["pieces"][0]["start"]
+            return 200, {**read, "position": max(0, position)}
+        read = strips.read(depot, library, body["text"], body.get("offset", 0), characters,
+                           forward=not body.get("backward", False))
+        return 200, {**read, "position": None}
 
     @refusals
     def new_library(values, body):
@@ -978,6 +1018,33 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                                      "after": TEXT,
                                                      "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
               answer={"type": "object", "required": ["total", "newer", "rows", "next"]}),
+        Route("GET", "/api/libraries/{id}/strip", strip, "the library read as one strip of text, its texts one "
+              "after another in the numeric order of ids (wpt_depot.strips): how many texts and characters it holds "
+              "(those of its map when it is of what the library holds now, else the depot's counts), whether it has "
+              "a map, which a read at a position needs (ready), whether that map is of what the library holds now "
+              "(fresh; else asking starts the walk that makes one, in the background, one walk at a time, kept in the "
+              "jobs' folder, the last map answering meanwhile), how many texts that walk read so far (walked), and "
+              "why it failed (failed, null otherwise; tried again after some minutes)",
+              answer={"type": "object", "required": ["texts", "characters", "ready", "fresh", "walked", "failed"]}),
+        Route("POST", "/api/libraries/{id}/strip", strip_read, "at most characters characters of the library's "
+              f"strip (default {STRIP_CHARACTERS:,}; more to end with a line, at most {strips.LINE:,} more) and at most "
+              f"{strips.MOST_TEXTS} texts: after the place (text, "
+              "offset: the character in it) or before it with backward, starting with the next text after a place at "
+              "the end of its text, and the one before a place at its start; from the position at (characters of "
+              "the strip before it, as its map counts them, its last map while a new one is made: 422 while it has none, but for 0), the text "
+              "there shown from the start of that character's line; or the strip's last characters (end); pieces, each a text's id, "
+              "title, kind, length, the character it starts at (start) and its characters from there (text), in the "
+              "strip's order; edge, whether the read reached the strip's end (its start, backward); position, the "
+              "characters of the strip before the first piece for a read at a position or at the end, null otherwise; "
+              "a text the library no longer holds reads on from its place",
+              body={"type": "object",
+                    "oneOf": [{"required": ["text"]}, {"required": ["at"]}, {"required": ["end"]}],
+                    "properties": {"text": TEXT, "offset": {"type": "integer", "minimum": 0},
+                                   "backward": {"type": "boolean"}, "at": {"type": "integer", "minimum": 0},
+                                   "end": {"const": True},
+                                   "characters": {"type": "integer", "minimum": 1,
+                                                  "maximum": MAX_STRIP_CHARACTERS}}},
+              answer={"type": "object", "required": ["pieces", "edge", "position"]}),
         Route("POST", "/api/libraries", new_library, "a new open library (wpt depot library new)",
               body={"type": "object", "required": ["name"], "properties": {"name": TEXT}}, answer=ID),
         Route("POST", "/api/libraries/{id}/name", rename_library, "a new name for the library, open or locked (wpt "

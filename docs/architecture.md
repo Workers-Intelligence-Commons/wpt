@@ -654,6 +654,7 @@ refused change writes nothing.
 | the values a score has on the texts changed last | `score-values NAME` | `GET /api/scores/{name}/values`: how many have it, its smallest and largest, its most frequent, over at most `SCORE_READ` revisions (`wpt_depot/depot.py`); the choices of the score rows of the review panel of the "Texts" page |
 | libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Texts" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
 | a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library on the "Texts" page |
+| a library read whole, as one strip of text | none | `GET /api/libraries/{id}/strip`, its size and whether its map is made, and `POST /api/libraries/{id}/strip`, its characters after or before a place, or at a position; page "Read whole", from the head of a library |
 | what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, read from the counts, and the part of each share the mix keeps; the dataset form, the list of datasets, the page "Libraries" and the head of a library |
 | the times of changes | `sql QUERY` | `POST /api/changes/times`; the moment each library of a dataset is read at |
 | datasets and remotes | `dataset new`, `edit`, `read-again`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it and the figures its revision stores), `POST /api/datasets/{id}` (its edit, refused when made from a revision older than the current one), `POST /api/datasets/{id}/read-again` (its libraries of this depot read at the change number now, refused the same way), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
@@ -716,6 +717,27 @@ it out of the open library and X ticks it. Escape leaves the editor.
 Without a name or an email, a decision asks for them and decides nothing.
 The blob mode shows the open texts as one continuous text, read a page at
 a time as it scrolls; a click on a passage opens that text.
+
+"Read it whole", in the head of a library, opens the page "Read whole":
+the library as one strip of text, its texts one after another in the
+numeric order of their ids (wpt_depot.strips). A library can hold more
+characters than a browser can lay out, so the page holds only what is
+near the screen: the server gives the strip in reads of about 64 KB of
+characters after or before a place (a text and a character in it), each
+ending with a line, cut from the parts of the texts it reaches, never a
+whole text; the page keeps about 1 MB of characters, and lays out only
+the blocks of lines that cover the screen and two screens on each side,
+taking off those that scroll away and putting on those that scroll in,
+the view held where it was. Its own scrollbar stands for the whole strip
+in characters. A jump to a position needs the library's map: the
+characters before every 4096th text, made by `wpt depot web` in a thread
+of its own, one library at a time, in one walk of the library's index
+that reads no text, kept in `<depot file>.work/strips/` and made again
+once the library holds other texts, the last map answering meanwhile; a
+jump then reads at most 4096 rows to find its text (twice that with a map
+of an earlier state, then landing near), and lands at the start of that
+line. The server keeps the last 256 MB of characters of parts it
+unpacked, so reads on through one part unpack it once.
 
 The "Help" page, last in the top bar, says how the depot works and what
 each page does.
