@@ -23,7 +23,7 @@ import { get, type Answer } from "../api";
 import { settledCounts, shownCounts, useCounts, type Counting, type Counts } from "../counts";
 import { EVERY, toQuery, type TextFilter } from "../filter";
 import { NewLibrary } from "../pages/libraries";
-import { Problems, required, STATUSES, StatusBadge, type Library, type Status } from "../parts";
+import { Problems, ReadWhole, required, STATUSES, StatusBadge, type Library, type Status } from "../parts";
 import { href } from "../route";
 import { forgetFilter, saveFilter, useSavedFilters } from "../saved-filters";
 
@@ -122,7 +122,7 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
       <SourceGroup title="Libraries" tools={<Button variant="quiet" onClick={() => setMaking(true)}>New library</Button>}>
         {libraries.length === 0 && <li className="aside">No library yet.</li>}
         {[...own, ...locked].map((l) => (
-          <li key={l.id}>{entry({ ...EVERY, libraries: [l.id] }, <>{l.name}{l.locked_at && <span className="aside"> locked</span>}{l.upstream ? <span className="aside"> upstream</span> : null}</>, counts ? counts.libraries[l.id] ?? 0 : undefined, `${l.name} (${l.id})`)}</li>
+          <li key={l.id}>{entry({ ...EVERY, libraries: [l.id] }, <>{l.name}{l.locked_at && <span className="aside"> locked</span>}{l.upstream ? <span className="aside"> upstream</span> : null}</>, counts ? counts.libraries[l.id] ?? 0 : undefined, `${l.name} (${l.id})`)}<ReadWhole library={l.id} /></li>
         ))}
       </SourceGroup>
       <Findable key={`tags ${openKey}`} title="Tags" loaded={Boolean(counts)} rows={rankedFor("tags")} recounting={staleFor("tags")}

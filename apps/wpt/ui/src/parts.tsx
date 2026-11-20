@@ -362,12 +362,18 @@ export function useLibraries(): { libraries: Library[]; loaded: boolean; problem
   return { libraries, loaded, problems, reload };
 }
 
-// A library's name, linked to its page, and the word "locked" when it is.
+// The link that reads a library whole, its texts one after another (pages/strip.tsx).
+export function ReadWhole({ library }: { library: string }) {
+  return <a className="read-whole small" href={href(["strip", library])} title="Read it whole: its texts one after another, from start to end">read whole</a>;
+}
+
+// A library's name, linked to its page, the word "locked" when it is, and the link that reads it whole.
 export function LibraryLink({ library }: { library: Library | { id: string; name?: string; locked_at?: string | null } }) {
   return (
     <span>
       <a href={href(["libraries", library.id])}>{library.name ?? library.id}</a>
       {library.locked_at ? <span className="aside"> locked</span> : null}
+      {" "}<ReadWhole library={library.id} />
     </span>
   );
 }

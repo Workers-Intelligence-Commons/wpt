@@ -3,7 +3,7 @@
 // plain text and those of conversations and tasks apart (read again after each change), the library it was forked
 // from and the datasets that read it, its reported problems, and its
 // actions: make a dataset from it while none reads it, put texts in it (the admitted texts it does not hold, opened as
-// the filter to tick from), read it whole (pages/strip.tsx), report a problem with it as a whole, fork it,
+// the filter to tick from), read it whole (pages/strip.tsx; there, back to its texts), report a problem with it as a whole, fork it,
 // lock it for good, rename it, and, locked, the revisions it pinned, the
 // actions after the first two folded under "More". Taking
 // texts out of it, and a report or a fork without some of its texts, act on
@@ -26,7 +26,8 @@ type Act = "report" | "fork" | "lock" | "rename" | "pins";
 // The admitted texts a library does not hold, as the filter "Put texts in it" opens.
 export const outsideOf = (library: string): TextFilter => ({ ...EVERY, statuses: ["admitted"], outside: [library] });
 
-export function LibraryHead({ library, libraries, onChanged, version }: { library: Library; libraries: Library[]; onChanged: () => void; version: number }) {
+// whole: the head shows on the page that reads the library whole, which it links back from to its texts.
+export function LibraryHead({ library, libraries, onChanged, version, whole = false }: { library: Library; libraries: Library[]; onChanged: () => void; version: number; whole?: boolean }) {
   const { datasets } = useDatasets();
   const [acting, setActing] = useState<Act | null>(null);
   const [done, setDone] = useState<Answer<unknown> | null>(null);
@@ -77,7 +78,8 @@ export function LibraryHead({ library, libraries, onChanged, version }: { librar
       <div className="head-buttons">
         {open && !theirs && <ButtonLink variant={empty ? "ink" : "quiet"} href={href(["texts"], { ...toQuery(outside), into: library.id })}>Put texts in it</ButtonLink>}
         {reading.length === 0 && <ButtonLink variant={empty ? "quiet" : "ink"} href={href(["datasets"], { new: "1", library: library.id })}>Make a dataset</ButtonLink>}
-        {!empty && <ButtonLink variant="quiet" href={href(["strip", library.id])}>Read it whole</ButtonLink>}
+        {whole ? <ButtonLink variant="quiet" href={href(["texts"], { library: library.id })}>Its texts</ButtonLink>
+          : !empty && <ButtonLink variant="quiet" href={href(["strip", library.id])}>Read it whole</ButtonLink>}
         <MoreMenu label="More" side="right">
           {!theirs && <Button variant="quiet" onClick={act("report")}>Report a problem</Button>}
           <Button variant="quiet" onClick={act("fork")}>Fork it</Button>

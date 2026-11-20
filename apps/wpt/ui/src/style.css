@@ -835,6 +835,9 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .strip-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .strip-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-group); padding-bottom: var(--gap-hair); border-bottom: 1px solid var(--line-strong); }
 .strip-title { margin: 0; font-size: 1.4rem; }
+.strip-frame > .open-head { flex: 0 0 auto; padding-bottom: var(--gap-hair); }
+.read-whole { color: var(--ink-muted); white-space: nowrap; }
+.read-whole:hover { color: var(--ink); }
 .strip-where { flex: 1 1 260px; min-width: 0; }
 .strip-go { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-tight); }
 .strip-go input { font: inherit; padding: 2px 6px; border: 1px solid var(--line-strong); background: var(--paper-raised); color: var(--ink); }

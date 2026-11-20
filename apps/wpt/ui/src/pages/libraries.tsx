@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import { get, part, post, type Answer } from "../api";
 import { WriteProgress, leftOut, useWrite, type Left } from "../decide-forms";
 import { EVERY, sent, type Selection, type TextFilter } from "../filter";
-import { characters, Facts, figures, Help, LibraryLink, PageHead, PlacePager, plural, Problems, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
+import { characters, Facts, figures, Help, LibraryLink, PageHead, PlacePager, plural, Problems, ReadWhole, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
 import { ITEMS } from "../mix";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
@@ -186,7 +186,7 @@ function LibraryRow({ library: l, texts, reading }: { library: Library; texts: n
   const found = figures(useMeasure([l.id]));
   return (
     <tr>
-      <td className="wrap-cell" data-label=""><a href={href(["texts"], { library: l.id })}>{l.name}</a></td>
+      <td className="wrap-cell" data-label=""><a href={href(["texts"], { library: l.id })}>{l.name}</a> <ReadWhole library={l.id} /></td>
       <td className="number figure" data-label="texts">{texts !== null ? texts.toLocaleString("en") : ""}</td>
       <td className="number figure" data-label="plain chars" title={found ? plural(found.plain.characters, "character") : undefined}>{found ? short(found.plain.characters) : ""}</td>
       <td className="number figure" data-label={`${ITEMS} chars`} title={found ? plural(found.items.characters, "character") : undefined}>{found ? short(found.items.characters) : ""}</td>

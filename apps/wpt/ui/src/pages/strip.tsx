@@ -11,12 +11,14 @@
 // track, a position typed (a number of characters, or a percentage), Home
 // and End jump there, the server finding the text at that position from the
 // library's map (made in the background the first time, until then only the
-// start and the end are reached). A click on a text's name opens it.
+// start and the end are reached). A click on a text's name opens it. The
+// library's head stands above, with its actions (texts/library-head.tsx).
 
 import { Button, Skeleton } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { get, post, type Answer } from "../api";
-import { plural, Problems, textName, type Library } from "../parts";
+import { plural, Problems, textName, useLibraries } from "../parts";
+import { LibraryHead } from "../texts/library-head";
 import { codePoints } from "../reader";
 import { href } from "../route";
 import type { Page } from "./index";
@@ -78,7 +80,10 @@ function typed(words: string, total: number): number | null {
 
 function Strip({ library }: { library: string }) {
   const [shape, setShape] = useState<Answer<Shape> | null>(null);
-  const [name, setName] = useState<string | null>(null);
+  const { libraries, reload } = useLibraries();
+  const [version, setVersion] = useState(0); // a change made from the library's head reads its shape again
+  const shownLibrary = libraries.find((l) => l.id === library);
+  const name = shownLibrary?.name ?? null;
   const [buffer, setBuffer] = useState<Buffer>(EMPTY);
   const [shown, setShown] = useState<[number, number]>([0, -1]); // the seqs of the first and last blocks on the page
   const [failed, setFailed] = useState<string[] | null>(null);
@@ -96,7 +101,6 @@ function Strip({ library }: { library: string }) {
   const ready = shape?.ok === true && shape.data.ready;
 
   // the library's name, and its shape until its map is made
-  useEffect(() => { get<Library[]>("/api/libraries").then((a) => a.ok && setName(a.data.find((l) => l.id === library)?.name ?? library)); }, [library]);
   useEffect(() => {
     let stop = false, timer = 0;
     const ask = async () => {
@@ -107,7 +111,7 @@ function Strip({ library }: { library: string }) {
     };
     ask();
     return () => { stop = true; window.clearTimeout(timer); };
-  }, [library]);
+  }, [library, version]);
 
   // look and settle once the browser has laid the page out, at most once a frame
   const frame = useRef(0);
@@ -298,10 +302,9 @@ function Strip({ library }: { library: string }) {
   const onPage = buffer.blocks.filter((b) => b.seq >= shown[0] && b.seq <= shown[1]);
   return (
     <div className="strip-frame">
+      {shownLibrary && <LibraryHead library={shownLibrary} libraries={libraries} onChanged={() => { reload(); setVersion((v) => v + 1); }} version={version} whole />}
       <div className="strip-top">
-        <h1 className="title strip-title">{name ?? library}</h1>
-        <span className="small aside">read whole</span>
-        <a className="small" href={href(["texts"], { library })}>back to its texts</a>
+        {!shownLibrary && <h1 className="title strip-title">{library}</h1>}
         <span className="strip-where small ledger" role="status">
           {total > 0 ? <>{pos.toLocaleString("en")} of {plural(total, "character")} · {(share * 100).toFixed(share < 0.001 && share > 0 ? 4 : 2)}%</> : shape?.ok ? "an empty library" : ""}
           {at.block && dragging === null && <> · in <a href={href(["texts", at.block.id], { library })}>{textName(at.block)}</a></>}

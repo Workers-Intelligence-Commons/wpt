@@ -654,7 +654,7 @@ refused change writes nothing.
 | the values a score has on the texts changed last | `score-values NAME` | `GET /api/scores/{name}/values`: how many have it, its smallest and largest, its most frequent, over at most `SCORE_READ` revisions (`wpt_depot/depot.py`); the choices of the score rows of the review panel of the "Texts" page |
 | libraries | `library new`, `put`, `take-out`, `lock`, `fork [--without WHERE]`, `report`, `rename` | `/api/libraries[/{id}/texts\|taken-out\|pins\|lock\|forks\|problems\|name]`, the put, take-out, fork and report on a selection; page "Libraries" lists them and makes one, the "Texts" page lists them too and opens each, with its head (a locked one's with its pinned revisions), and the view of each reported problem |
 | a library's size | `sql QUERY` | `GET /api/libraries/{id}/size`; the head of an open library on the "Texts" page |
-| a library read whole, as one strip of text | none | `GET /api/libraries/{id}/strip`, its size and whether its map is made, and `POST /api/libraries/{id}/strip`, its characters after or before a place, or at a position; page "Read whole", from the head of a library |
+| a library read whole, as one strip of text | none | `GET /api/libraries/{id}/strip`, its size and whether its map is made, and `POST /api/libraries/{id}/strip`, its characters after or before a place, or at a position; page "Read whole", under the head of the library with its actions, linked as "read whole" wherever a library is named |
 | what libraries hold, and the mix of a dataset's shares over them | `sql QUERY` | `POST /api/libraries/measure`: texts, characters and bytes, by share and by kind, read from the counts, and the part of each share the mix keeps; the dataset form, the list of datasets, the page "Libraries" and the head of a library |
 | the times of changes | `sql QUERY` | `POST /api/changes/times`; the moment each library of a dataset is read at |
 | datasets and remotes | `dataset new`, `edit`, `read-again`, `export`, `import` | `/api/datasets`, `GET /api/datasets/{id}` (with the corpora the store holds built from it and the figures its revision stores), `POST /api/datasets/{id}` (its edit, refused when made from a revision older than the current one), `POST /api/datasets/{id}/read-again` (its libraries of this depot read at the change number now, refused the same way), `GET /api/datasets/{name}/remote`; page "Datasets" with the view of each dataset; through the server a dataset reads only this depot's libraries, and a remote's import is a command only |
@@ -718,7 +718,10 @@ Without a name or an email, a decision asks for them and decides nothing.
 The blob mode shows the open texts as one continuous text, read a page at
 a time as it scrolls; a click on a passage opens that text.
 
-"Read it whole", in the head of a library, opens the page "Read whole":
+"Read it whole", in the head of a library, and "read whole" wherever a
+library is named (the Libraries page, Open ▾, a text's panel, the
+Overview), open the page "Read whole", under the library's head and its
+actions:
 the library as one strip of text, its texts one after another in the
 numeric order of their ids (wpt_depot.strips). A library can hold more
 characters than a browser can lay out, so the page holds only what is

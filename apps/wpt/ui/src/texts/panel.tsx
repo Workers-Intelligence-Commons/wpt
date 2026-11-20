@@ -21,7 +21,7 @@ import { get, post } from "../api";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
 import { href } from "../route";
-import { plural, settingsHref, type Library, type Status } from "../parts";
+import { LibraryLink, plural, settingsHref, type Library, type Status } from "../parts";
 import type { Score } from "../scores";
 import { forgetPreset, forgetScale, keepRecent, presetWords, readRecent, round, savePreset, shortValue, usePresets, useScales, type Preset, type Scale } from "./choices";
 
@@ -213,7 +213,7 @@ export function ReviewPanel({ text, status, decisions, libraries, readOnly, acti
           {text.authors?.length ? <><dt>authors</dt><dd>{text.authors.join(", ")}</dd></> : null}
           {text.address && <><dt>address</dt><dd className="ledger cut" title={text.address}>{/^https?:\/\//.test(text.address) ? <a href={text.address} target="_blank" rel="noreferrer">{text.address}</a> : text.address}</dd></>}
           <dt>decisions</dt><dd><button type="button" className="link-button wic-focus" onClick={onRecord} title="Its whole record">{status}, {plural(decisions, "decision")}</button></dd>
-          <dt>libraries</dt><dd>{libraries.length ? libraries.map((l) => l.name).join(", ") : "none"}</dd>
+          <dt>libraries</dt><dd>{libraries.length ? libraries.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>) : "none"}</dd>
           <dt>id</dt><dd className="ledger">{text.id} · revision {text.revision}</dd>
         </dl>
         {more}
