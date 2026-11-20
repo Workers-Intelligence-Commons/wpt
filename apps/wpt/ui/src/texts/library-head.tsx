@@ -13,8 +13,8 @@
 
 import { Button, ButtonLink, Dialog } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
-import { get, post, type Answer } from "../api";
-import { ReportForm } from "../decide-forms";
+import { get, type Answer } from "../api";
+import { ReportForm, useWrite, WriteProgress } from "../decide-forms";
 import { EVERY, toQuery, type TextFilter } from "../filter";
 import { ForkForm, Pinned, RenameForm } from "../pages/libraries";
 import { characters, figures, Help, LibraryLink, MoreMenu, Outcome, plural, Problems, readers, useDatasets, useMeasure, type Library } from "../parts";
@@ -42,8 +42,9 @@ export function LibraryHead({ library, libraries, onChanged, version, whole = fa
     if (a.ok) { setActing(null); onChanged(); }
   };
   const act = (a: Act) => () => { setDone(null); setActing(a); };
+  const locking = useWrite(); // a lock pins every text: a job for a big library, its progress shown
   const lock = async () => {
-    const a = await post(`/api/libraries/${encodeURIComponent(library.id)}/lock`, {});
+    const a = await locking.send(`/api/libraries/${encodeURIComponent(library.id)}/lock`, {});
     finished(a, `Locked ${library.name} for good: it reads the revision it pinned of each of its texts.`);
   };
   const outside = outsideOf(library.id);
@@ -117,7 +118,8 @@ export function LibraryHead({ library, libraries, onChanged, version, whole = fa
       <Dialog open={acting === "lock"} onClose={() => setActing(null)} title={`Lock ${library.name} for good`}>
         <p>Locking {library.name} cannot be undone: it pins the current revision of each of its texts, reads those for good, and no text joins or leaves it again. A later decision or edit of one of its texts makes a new revision it does not read.</p>
         <p className="small aside">Not needed to build a corpus.<Help label="locking">Lock a library to keep a fixed set of texts that a model's training can be traced back to. A dataset reads an open library too, as it stood when the dataset was made or last edited.</Help></p>
-        <Button variant="primary" onClick={lock}>Lock it for good</Button>
+        <Button variant="primary" disabled={locking.busy} onClick={lock}>Lock it for good</Button>
+        <WriteProgress job={locking.job} />
         {acting === "lock" && done && !done.ok && <Problems problems={done.problems} />}
       </Dialog>
       <Dialog open={acting === "pins"} onClose={() => setActing(null)} title={`The revisions ${library.name} pinned`}>

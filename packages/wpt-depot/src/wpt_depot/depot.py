@@ -1951,10 +1951,11 @@ class Depot:
             stage("committing")
             return left, chosen - left
 
-    def lock(self, library: str):
+    def lock(self, library: str, progress=None):
         """Lock an open library for good, as a new revision: it pins the
-        current revision of each text it holds. Refused when it is locked
-        already."""
+        current revision of each text it holds. progress, when given, gets
+        the name of each stage. Refused when it is locked already."""
+        stage = progress or _quiet
         with self._write("lock") as (con, number):
             found = self._library(library)
             self._refuse_upstream("libraries", [library], FORK)
@@ -1963,8 +1964,10 @@ class Depot:
             # its texts come to be held by a locked library, which the counts of SPLIT tell apart
             con.execute("CREATE TEMP TABLE IF NOT EXISTS chosen (id TEXT PRIMARY KEY)")
             con.execute("DELETE FROM temp.chosen")
+            stage("choosing the texts it holds")
             con.execute("INSERT OR IGNORE INTO temp.chosen (id) SELECT m.text FROM memberships m INDEXED BY "
                         "memberships_order WHERE m.library = ? AND m.left_change IS NULL", (library,))
+            stage("pinning the revision of each text")
             with counts.changing(con, "temp.chosen", counts.SPLIT):
                 con.execute("INSERT INTO pins (library, text, revision, change, export_key) "
                             "SELECT m.library, t.id, t.revision, ?, m.export_key "

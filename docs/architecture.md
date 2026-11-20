@@ -802,14 +802,15 @@ shows comes from a route of its own, so no page sends SQL but the page
 where a person types it. The commands and the web reach the same SQL in `wpt_depot`.
 
 The server runs its long work as jobs (`wpt/depot/jobs.py`): a write over
-a selection, the training of a vocabulary and the build of a corpus. The
+a selection, a fork or a lock of a library, the training of a vocabulary
+and the build of a corpus. The
 queue is a SQLite file beside the depot, `<depot file>.jobs`, which nothing
 backs up. One job runs at a time, in a process of its own, which runs the
 same `wpt_depot` operation as one change and sends the name of each stage
 it starts and its progress. A write over at most `INLINE` texts runs in
 the request instead, while no job is queued or running: a selection whose
-filter names at most `INLINE` ids, or a fork of a library that holds at
-most `INLINE` texts. Otherwise every write over a selection is a job, since
+filter names at most `INLINE` ids, or a fork or a lock of a library that
+holds at most `INLINE` texts. Otherwise every such write is a job, since
 it waits for the running job's write lock and only a job shows that it
 waits. Either way the answer is the job's state, and `GET /api/jobs/{id}`
 reads it again while it runs, so the page shows the stage of a long write

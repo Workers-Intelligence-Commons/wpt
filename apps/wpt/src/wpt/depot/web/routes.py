@@ -17,7 +17,7 @@ filter when it writes and leaves out every text changed after that change
 number, and the answer says how many it left out (wpt_depot.filters). Such
 an operation runs as a job (wpt.depot.jobs), in a process of its own, unless it
 writes at most INLINE texts (its filter names at most INLINE ids; for a
-fork, the library holds at most INLINE texts) and no job is queued or
+fork or a lock, the library holds at most INLINE texts) and no job is queued or
 running; either way
 its answer is the job's state, which GET /api/jobs/{id} reads again while it runs. A recount of the
 depot's counts is a command only."""
@@ -153,6 +153,11 @@ def take_out_texts(depot: Depot, library: str, selection: Filter, progress) -> d
 def fork_library(depot: Depot, library: str, name: str, without: Filter | None, progress) -> dict:
     left = {}
     return {"id": depot.fork(library, name, without, progress, left), "left": left}
+
+
+def lock_library(depot: Depot, library: str, progress) -> dict:
+    depot.lock(library, progress)
+    return {}
 
 
 def report_problem(depot: Depot, library: str, problem: str, selection: Filter | None, declaration: Declaration,
@@ -479,8 +484,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def lock(values, body):
-        depot.lock(values["id"])
-        return 200, {}
+        # a lock writes a pin for every text the library holds
+        held = depot.counts()[facets.LIBRARY].get(values["id"], 0)
+        return job(f"lock the library {library_named(values['id'])}", held <= INLINE, lock_library, values["id"])
 
     @refusals
     def fork(values, body):

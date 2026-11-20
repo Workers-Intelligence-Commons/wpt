@@ -108,7 +108,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     assert wrote(request, "/api/libraries/test-depot-1/texts", {"selection": named(both)}) == (
         200, {"library": "test-depot-1", "joined": 2, "left_out": 0, "left": {}})
     assert wrote(request, "/api/libraries/test-depot-1/forks", {"name": "next"}) == (200, {"id": "test-depot-2", "left": {}})
-    assert request("POST", "/api/libraries/test-depot-1/lock", {}) == (200, {})
+    assert wrote(request, "/api/libraries/test-depot-1/lock", {}) == (200, {})
     status, held = request("GET", "/api/libraries")
     assert [(one["name"], one["locked_at"] is not None) for one in held] == [("first model", True), ("next", False)]
     assert "texts" not in held[0]  # the size comes on demand
@@ -481,6 +481,26 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     status, latest = request("GET", "/api/decisions/latest")
     assert [(one["id"], one["status"], one["texts"]) for one in latest[:2]] == [
         ("test-depot-9", "admitted", 2), ("test-depot-8", "under review", 1)]
+
+
+def test_a_lock_of_a_library_past_inline_texts_runs_as_a_job_showing_its_stages(web, monkeypatch):
+    request, depot = web
+    monkeypatch.setattr(sys.modules["wpt.depot.web.routes"], "INLINE", 1)  # the package names its routes function routes
+    me = Declaration(ME["name"], ME["email"], True)
+    added = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(2)], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("big")
+    depot.put(library, list(added))
+    status, started = request("POST", f"/api/libraries/{library}/lock", {})
+    assert status in (200, 202) and (started["kind"], started["title"]) == ("write", "lock the library big")
+    job = started
+    while job["state"] in ("queued", "running"):
+        time.sleep(0.05)
+        job = request("GET", f"/api/jobs/{started['id']}")[1]
+    assert (job["state"], job["answer"]) == ("done", {})
+    assert "pinning the revision of each text" in [one["stage"] for one in job["stages"]]
+    assert depot.rows("SELECT locked_at FROM libraries WHERE id = ?", (library,))[0]["locked_at"] is not None
+    assert wrote(request, f"/api/libraries/{library}/lock", {})[0] == 422  # locked already
 
 
 def test_texts_taken_out_of_an_open_library_stay_admitted_and_a_locked_library_refuses_it(web):
