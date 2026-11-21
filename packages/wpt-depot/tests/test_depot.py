@@ -9,7 +9,7 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, Needle, NewText, clone, pull
 from wpt_depot import depot as depots
-from wpt_depot import counts, crediting, erasure, follow, ids, policy, scoring
+from wpt_depot import counts, crediting, erasure, follow, ids, policy, quotes, scoring
 from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, Locked, NoDepotSetting, NotFound,
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
@@ -181,7 +181,24 @@ def test_an_item_is_kept_only_when_its_content_matches_its_kind(make_depot, me):
     with pytest.raises(Refused):
         depot.add([NewText(text="no license")], me)
     assert column(depot.sql("SELECT count(*) AS n FROM texts"), "n") == [1]
-    assert sorted(column(depot.sql("SELECT id FROM kinds"), "id")) == ["conversation", "probe", "rating", "task"]
+    assert sorted(column(depot.sql("SELECT id FROM kinds"), "id")) == ["conversation", "plain", "probe", "rating", "task"]
+
+
+def test_a_text_s_kind_is_fixed_when_it_is_made_and_a_change_of_kind_is_refused(make_depot, me):
+    # each training step reads the kinds it names, so a text that changed kind would move between steps unseen
+    depot = make_depot()
+    probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
+    text, item = depot.add([NewText(kind="plain", text="words", licenses=("CC0-1.0",)),
+                            NewText(kind="probe", content=probe, licenses=("CC0-1.0",))], me)
+    assert [depot.show(one)["text"]["kind"] for one in (text, item)] == ["plain", "probe"]
+
+    for one, plain_, content, kind in ((text, None, probe, "probe"), (item, "words", None, "plain")):
+        with pytest.raises(Refused, match="a text's kind is fixed when it is made"):
+            depot.change_content(one, plain_, content, me, kind=kind)
+
+    assert depot.change_content(text, "other words", None, me, kind="plain") is not None  # its own kind passes
+    assert [depot.show(one)["text"]["kind"] for one in (text, item)] == ["plain", "probe"]
+    assert depot.show(item)["text"]["content"] == probe
 
 
 def test_a_decision_without_the_confirmation_writes_nothing(make_depot):
@@ -2477,26 +2494,34 @@ def test_a_filter_finds_texts_outside_libraries_on_a_decision_and_by_whole_words
     assert found(search="RIVER BANK", in_text=True) == [river]
 
 
-def test_measure_sums_what_each_library_holds_by_kind_and_by_each_share_tag(make_depot, me):
+def test_measure_sums_what_each_library_holds_of_each_kind_on_its_own_and_by_each_share_tag(make_depot, me):
     # a dataset's form and page show these figures at once, from the counts, for libraries of any size; each library
-    # counts apart, and a text with several share tags counts for each
+    # counts apart, a text with several share tags counts for each, and every kind of the depot counts on its own,
+    # one it holds no text of at 0, since kinds are a closed list
     depot = make_depot()
     talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
-    first, both, untagged, chat = depot.add([plain("abc", "prose"), plain("défg", "code", "prose"), plain("hi"),
-                                             NewText(kind="conversation", content=talk, licenses=("CC0-1.0",))], me)
+    probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
+    first, both, untagged, chat, asked = depot.add(
+        [plain("abc", "prose"), plain("défg", "code", "prose"), plain("hi"),
+         NewText(kind="conversation", content=talk, licenses=("CC0-1.0",)),
+         NewText(kind="probe", content=probe, licenses=("CC0-1.0",))], me)
     depot.decide("admitted", "true", me)
     one, two = depot.new_library("one"), depot.new_library("two")
-    depot.put(one, [first, both, chat])
+    depot.put(one, [first, both, chat, asked])
     depot.put(two, [both, untagged])
-    size = depot.rows("SELECT length, bytes FROM content_lists WHERE id = ?", (chat,))[0]
+    size = {kind: depot.rows("SELECT length AS characters, bytes FROM content_lists WHERE id = ?", (text,))[0]
+            for kind, text in (("conversation", chat), ("probe", asked))}
 
     held = depot.measure([one, two], ["prose", "code"])
 
-    assert held["plain"] == {"texts": 4, "characters": 3 + 4 + 4 + 2, "bytes": 3 + 5 + 5 + 2}  # both, in each library
-    assert held["items"] == {"texts": 1, "characters": size["length"], "bytes": size["bytes"]}
-    assert held["other"] == {"texts": 0, "characters": 0, "bytes": 0}
+    assert list(held["kinds"]) == ["plain", "conversation", "probe", "rating", "task"]
+    assert held["kinds"]["plain"] == {"texts": 4, "characters": 3 + 4 + 4 + 2, "bytes": 3 + 5 + 5 + 2}  # both, twice
+    assert held["kinds"]["conversation"] == {"texts": 1, **size["conversation"]}
+    assert held["kinds"]["probe"] == {"texts": 1, **size["probe"]}
+    assert held["kinds"]["rating"] == held["kinds"]["task"] == {"texts": 0, "characters": 0, "bytes": 0}
     assert {key: held[key] for key in ("texts", "characters", "bytes")} == {
-        "texts": 5, "characters": 13 + size["length"], "bytes": 15 + size["bytes"]}
+        "texts": 6, "characters": 13 + sum(one["characters"] for one in size.values()),
+        "bytes": 15 + sum(one["bytes"] for one in size.values())}
     assert held["shares"] == [{"tag": "prose", "texts": 3, "characters": 11, "bytes": 13},
                               {"tag": "code", "texts": 2, "characters": 8, "bytes": 10}]
     assert held["unshared"] == {"texts": 0, "characters": 0, "bytes": 0}  # both counted twice over: floored at none
@@ -2528,7 +2553,7 @@ def test_a_dataset_revision_stores_what_its_libraries_held_at_its_change_or_says
         return revision_figures(depot, depot.dataset_by_id(dataset))
 
     made = figures_at(depot, dataset)
-    assert stored() == made and made[0]["items"]["texts"] == 1 and made[0]["tags"][1]["texts"] == 2
+    assert stored() == made and made[0]["kinds"]["conversation"]["texts"] == 1 and made[0]["tags"][1]["texts"] == 2
     assert shown()["measure"] == corpus_measure(depot, [one, two], [{"tag": t, "share": s} for t, s in shares])
     assert shown()["since"] == 0
 
@@ -2596,7 +2621,7 @@ def test_reading_a_dataset_again_moves_only_this_depot_s_libraries_to_now_with_e
     assert [ref["change"] for ref in row["libraries"][:2]] == [depot.change() - 1] * 2  # the change it was read at
     assert row["libraries"][2] == first["libraries"][2]
     stored = [entry["stored"] for entry in depot.dataset_figures(dataset)["libraries"]]
-    assert stored == figures_at(depot, dataset) and stored[0]["plain"]["texts"] == 3 and stored[2] is None
+    assert stored == figures_at(depot, dataset) and stored[0]["kinds"]["plain"]["texts"] == 3 and stored[2] is None
     with pytest.raises(Refused):  # made from the revision before: never undoes the read
         depot.read_again(dataset, revision=first["revision"])
     # the other depot's library stays unknown, which reading again cannot change: the page offers nothing, and a
@@ -2627,7 +2652,7 @@ def test_a_clone_s_own_dataset_keeps_its_figures_through_an_upstream_erasure_pul
         return [one["stored"] for one in follower.dataset_figures(of)["libraries"]]
 
     made = figures_at(follower, dataset)
-    assert stored() == made and made[0]["plain"]["texts"] == 2
+    assert stored() == made and made[0]["kinds"]["plain"]["texts"] == 2
 
     late = upstream.ask_erasure("a word", [(texts[1], 0, 7)], me)
     upstream.decide_erasure(late, "admitted", me)
@@ -2643,8 +2668,10 @@ def test_the_counts_of_what_libraries_hold_stay_exact_through_every_kind_of_writ
     # the tags, content or kind of a text it holds, must leave them equal to a full computation
     depot = make_depot()
     talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
+    probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
     texts = depot.add([plain(f"text {n} " + "é" * n, *[("prose", "code", "en")[k] for k in range(n % 4)])
-                       for n in range(10)] + [NewText(kind="conversation", content=talk, licenses=("CC0-1.0",))], me)
+                       for n in range(10)] + [NewText(kind="conversation", content=talk, licenses=("CC0-1.0",)),
+                                              NewText(kind="probe", content=probe, licenses=("CC0-1.0",))], me)
 
     def exact(write: str):
         stored, direct = library_figures(depot)
@@ -2683,12 +2710,14 @@ def test_the_counts_of_what_libraries_hold_stay_exact_through_every_kind_of_writ
     depot.decide_erasure(depot.ask_erasure("the whole text", [(texts[9], None, None)], me), "admitted", me)
     exact("erasure of a whole text")
     stored, _ = library_figures(depot)
+    assert {name.split(" ", 1)[1] for facet, name in stored if facet == "library kind"} == {
+        "plain", "probe"}  # each kind on its own (the conversation left its open library with its new content)
     with depot.db.bulk() as con:
         con.execute("UPDATE counts SET characters = 0 WHERE facet = 'library kind'")
+        con.execute("DELETE FROM counts WHERE facet = 'library kind' AND name LIKE '% probe'")
     depot.recount()
     assert library_figures(depot)[0] == stored
     exact("recount")
-    assert stored
 
 
 def test_change_times_gives_the_time_of_each_change_named_the_depot_holds(make_depot, me):
@@ -2729,3 +2758,175 @@ def test_a_content_change_of_many_texts_reads_only_the_texts_it_names(make_depot
             if row[3].startswith("SCAN") and set(re.findall(r"\w+", row[3])) & tables:
                 scans.append((row[3], sql))
     assert not scans, "\n".join(f"{plan}   <- {sql[:150]}" for plan, sql in scans)
+
+
+def excerpt(source, exact, prefix=None, suffix=None):
+    """An excerpt block of the chat format quoting source (docs/chat-format.md, "Excerpts")."""
+    selector = {"type": "TextQuoteSelector", "exact": exact}
+    selector.update({key: value for key, value in (("prefix", prefix), ("suffix", suffix)) if value is not None})
+    return {"type": "excerpt", "source": source, "selector": selector}
+
+
+def quoting(*blocks, role="user"):
+    """A conversation whose first message, of that role, holds the blocks, and an assistant's answer."""
+    return NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps({"messages": [
+        {"role": role, "content": [{"type": "text", "text": "Read this."}, *blocks]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Read."}]}]}))
+
+
+def test_an_excerpt_is_refused_unless_it_quotes_one_place_of_a_plain_text_the_depot_holds_now(make_depot, me):
+    # a conversation depends on what it quotes, so the depot takes only a quote the text holds once: a quote of
+    # nothing, of an item or of two places would leave the build nothing it can put in its place
+    depot = make_depot()
+    text, other = depot.add([plain("the dog sat; the dog ran"), plain("a cat")], me)
+    [talk] = depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(
+        {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}))], me)
+
+    for wrong, problem in ((excerpt(f"{text}9", "dog"), "no text of the depot"),
+                           (excerpt(talk, "hi"), "an item of kind conversation"),
+                           (excerpt(text, ""), "quotes no character"),
+                           (excerpt(text, "horse"), "matches no place"),
+                           (excerpt(text, "the dog"), "more than one place"),
+                           (excerpt(text, "dog", prefix="the "), "more than one place")):
+        with pytest.raises(BadContent, match=problem):
+            depot.add([quoting(wrong)], me)
+    with pytest.raises(BadContent, match="does not match its schema"):  # an assistant never quotes
+        depot.add([quoting(excerpt(text, "dog", suffix=" ran"), role="assistant")], me)
+    in_result = {"type": "tool_result", "call": "c1", "content": [excerpt(other, "cat")]}
+    assert depot.add([quoting(excerpt(text, "dog", suffix=" ran")),
+                      quoting(excerpt(text, "dog sat", prefix="the "), excerpt(other, "a cat"))], me)
+    [quotes_in_a_result] = depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(
+        {"messages": [{"role": "tool", "content": [in_result]}]}))], me)
+
+    # a change of the conversation's content is checked against the quoted text as it is then
+    depot.change_content(other, "a cat and a cat", None, me)
+    with pytest.raises(BadContent, match="more than one place"):
+        depot.change_content(quotes_in_a_result, None, json.dumps({"messages": [{"role": "tool", "content": [
+            {**in_result, "content": [excerpt(other, "cat"), {"type": "text", "text": "seen"}]}]}]}), me)
+
+
+def test_the_selectors_on_one_text_read_it_once_and_find_what_each_finds_alone():
+    # a build matches every excerpt of a text in one reading, so each must find the places it finds alone, however
+    # the text's parts cut it, and whatever the longer or overlapping selectors beside it find
+    text = "abab cab abab dog ab cat ab"
+    selectors = [{"exact": "ab"}, {"exact": "abab", "prefix": " "}, {"exact": "dog", "prefix": "abab ", "suffix": " ab"},
+                 {"exact": "cat"}, {"exact": ""}, {"exact": "bab"}, {"exact": "zebra"}, {"exact": "b", "suffix": " "}]
+    for size in (1, 2, 3, 5, len(text)):
+        blocks = [text[at:at + size] for at in range(0, len(text), size)]
+        for most in (1, 2, 5):
+            assert quotes.find_each(blocks, selectors, most) == [quotes.find(blocks, one, most) for one in selectors]
+
+
+def test_an_erasure_of_a_quoted_text_cuts_the_conversations_that_quote_it(make_depot, me):
+    # an excerpt holds the passage it quotes, so an erasure of the quoted text reaches it as it reaches the text:
+    # an erased passage leaves every string of the conversation, a text removed whole leaves its excerpts empty
+    depot = make_depot()
+    secret = "555-0199"
+    text, gone, apart = depot.add([plain(f"call {secret} today"), plain("a whole text"), plain(f"{secret} again")],
+                                  me)
+    talk, untouched = depot.add([quoting(excerpt(text, secret, prefix="call "), excerpt(gone, "whole"),
+                                         {"type": "text", "text": f"so {secret} it is"}),
+                                 quoting(excerpt(apart, secret))], me)
+
+    depot.decide_erasure(depot.ask_erasure("a number", [(text, 5, 5 + len(secret))], me), "admitted", me)
+    depot.decide_erasure(depot.ask_erasure("asked by its author", [(gone, None, None)], me), "admitted", me)
+
+    blocks = json.loads(depot.show(talk)["text"]["content"])["messages"][0]["content"]
+    assert blocks[1:] == [excerpt(text, "", prefix="call "), excerpt(gone, "", prefix=None),
+                          {"type": "text", "text": "so  it is"}]
+    assert secret in depot.content(untouched)  # it quotes another text, which the erasure never named
+    assert depot.content(text) == "call  today"
+
+
+def test_an_erased_passage_leaves_no_character_in_an_excerpt_it_only_overlaps(make_depot, me):
+    # an excerpt stands over its place in the quoted text, so a passage that starts in its prefix and ends in its
+    # exact leaves each of them the characters it covers, and the quote still finds its place in the cut text
+    depot = make_depot()
+    text = depot.add([plain("Please call Jane at 555-1234 now or later.")], me)[0]
+    [talk] = depot.add([quoting(excerpt(text, "555-1234 now", prefix="call Jane at "))], me)
+    start = "Please call ".__len__()
+
+    depot.decide_erasure(depot.ask_erasure("a person", [(text, start, start + len("Jane at 555-1234"))], me),
+                         "admitted", me)
+
+    assert depot.content(text) == "Please call  now or later."
+    block = json.loads(depot.content(talk))["messages"][0]["content"][1]
+    assert block == excerpt(text, " now", prefix="call ")
+    assert quotes.find(depot.content(text), block["selector"]) == [len("Please call ")]
+
+
+def test_an_erasure_cuts_only_the_strings_of_text_of_a_conversation_it_reaches_through_a_quote(make_depot, me):
+    # a quoted passage may also be part of a name, an id or a role: cutting those would break the conversation's
+    # schema or what it names, so the erasure leaves them as they are and cuts its text
+    depot = make_depot()
+    [text] = depot.add([plain("user 12345 wrote")], me)
+    source_like = depot.add([plain("12345")], me)[0]
+    talk_content = {"messages": [
+        {"role": "user", "content": [excerpt(text, "user 12345 wrote"), {"type": "text", "text": "id 12345?"}]},
+        {"role": "assistant", "content": [{"type": "tool_call", "id": "call-12345", "name": "look12345",
+                                           "arguments": {"q": "12345"}}]},
+        {"role": "tool", "content": [{"type": "tool_result", "call": "call-12345",
+                                      "content": [{"type": "text", "text": "found 12345"}]}]}],
+        "metadata": {"run": "12345"}}
+    [talk] = depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(talk_content))], me)
+
+    depot.decide_erasure(depot.ask_erasure("a number", [(text, 5, 10)], me), "admitted", me)
+
+    cut = json.loads(depot.content(talk))
+    assert cut["messages"][0]["content"] == [excerpt(text, "user  wrote"), {"type": "text", "text": "id ?"}]
+    assert cut["messages"][1]["content"][0] == {"type": "tool_call", "id": "call-12345", "name": "look12345",
+                                                "arguments": {"q": ""}}
+    assert cut["messages"][2]["content"][0]["call"] == "call-12345"
+    assert cut["messages"][2]["content"][0]["content"] == [{"type": "text", "text": "found "}]
+    assert cut["metadata"] == {"run": "12345"}
+    assert depot.content(source_like) == "12345"  # a text the erasure never named
+
+
+def test_an_erasure_naming_a_conversation_and_the_text_it_quotes_cuts_both_ways(make_depot, me):
+    # the erasure's own cut of the conversation's field must not stand in for the cut of its quote
+    depot = make_depot()
+    [text] = depot.add([plain("call 555-0199 today")], me)
+    [talk] = depot.add([quoting(excerpt(text, "555-0199", prefix="call "))], me)
+
+    depot.decide_erasure(depot.ask_erasure("a number", [(text, 5, 13), (talk, 0, 4, "/messages/0/content/0/text")],
+                                           me), "admitted", me)
+
+    blocks = json.loads(depot.content(talk))["messages"][0]["content"]
+    assert blocks == [{"type": "text", "text": " this."}, excerpt(text, "", prefix="call ")]
+
+
+def test_the_table_quotes_follows_every_write_of_a_conversation(make_depot, me):
+    # an erasure finds the conversations quoting a text through it, so it must hold what each version quotes
+    depot = make_depot()
+    first, second = depot.add([plain("one text"), plain("another text")], me)
+    [talk] = depot.add([quoting(excerpt(first, "one"))], me)
+
+    def held():
+        return [tuple(row.values()) for row in depot.sql("SELECT conversation, version, text FROM quotes "
+                                                          "ORDER BY version, text")]
+    assert held() == [(talk, 1, first)]
+    depot.change_content(talk, None, json.dumps(json.loads(quoting(excerpt(second, "another"),
+                                                                   excerpt(first, "one")).content)), me)
+    assert held() == [(talk, 1, first), (talk, 2, first), (talk, 2, second)]
+    depot.decide_erasure(depot.ask_erasure("asked", [(talk, None, None)], me), "admitted", me)
+    assert held() == []
+
+
+def test_a_pull_cuts_the_conversations_that_quote_a_text_the_upstream_erased(serve, make_depot, me, tmp_path):
+    # the upstream cut its own conversations, which the pull reads again; the clone cuts its own, finding the
+    # passage by its length and public hash, since the clone never holds the request's passage once pulled
+    upstream = make_depot("upstream")
+    secret = "555-0199"
+    [text] = upstream.add([plain(f"call {secret} today")], me)
+    [theirs] = upstream.add([quoting(excerpt(text, secret))], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
+                     About("follower", "Grace Hopper", "grace@example.org"))
+    [own] = follower.add([quoting(excerpt(text, secret, suffix=" today"))], me)
+    upstream.decide_erasure(upstream.ask_erasure("a number", [(text, 5, 5 + len(secret))], me), "admitted", me)
+
+    pull(follower)
+
+    for talk in (theirs, own):
+        assert secret not in follower.content(talk)
+    assert json.loads(follower.content(own))["messages"][0]["content"][1] == excerpt(text, "", suffix=" today")
+    assert files_holding(follower.address, secret) == []

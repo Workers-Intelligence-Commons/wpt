@@ -25,7 +25,7 @@ import { bytes } from "./download";
 import { DatasetStages } from "../stages";
 import type { Page } from "./index";
 
-type Form = { name: string; download: string; bytes: number | null; sha256: string | null };
+type Form = { name: string; download: string; bytes: number | null; sha256: string | null; left_out: Record<string, number> | null };
 type Shown = { dataset: Dataset; export: string; texts: number; texts_per_part: number; parts: { part: number; forms: Record<string, Form> }[]; figures: RevisionFigures };
 
 // each form, its name, what it is in plain words, to choose one, and its button's words
@@ -58,11 +58,15 @@ function Export({ id }: { id: string }) {
   const ceiling = typeof size === "number" && parts.length ? `${parts.length > 1 ? "each " : ""}at most ${bytes(Math.ceil(size / parts.length))} before compression` : "size after a first download";
   const clicked = (f: Form) => { setMeasuring(new Set([...measuring, f.name])); setReadings(0); };
   const known = (form: string) => parts.map((p) => p.forms[form].bytes).filter((b): b is number => b !== null);
+  // conversations left out, by why, from the parts sent whole once in either form
+  const counted = parts.map((p) => FORMS.map(([form]) => p.forms[form].left_out).find((l) => l !== null) ?? null);
+  const leftOut = (why: string) => counted.reduce((t, l) => t + (l?.[why] ?? 0), 0);
+  const quotesLeft = leftOut("quoted text left out") + leftOut("quote unmatched");
   return (
     <>
       <PageHead title={`Export ${dataset.name}`}
         meta={<>{parts.length > 1 && <span>{plural(parts.length, "part")}</span>}<span>{dataset.libraries.length === 1 ? "" : "about "}{plural(texts, "text")}</span>{mine.length > 0 && (size === null ? <span className="aside" title="This revision cannot say what its libraries held at the change it reads them at">characters unknown</span> : <CharactersNote found={size} />)}<Since since={shown.data.figures.since} />{(dataset.shares?.length || dataset.max_tokens) ? <span title="The shares' proportions and the token limit apply to corpora, not here">no shares, no size limit</span> : null}</>}
-        chain={<>The texts of the dataset as it is now, with no tokenizer and no size limit: every plain text a share takes, and every conversation and task. No build and no job is needed. The token files for training are on <a href={href(["download", dataset.id])}>its corpora page</a>.</>}
+        chain={<>The texts of the dataset as it is now, with no tokenizer and no size limit: every plain text a share takes, and every conversation and task, except a conversation quoting a text the export does not hold or whose quote matches no single place. No build and no job is needed. The token files for training are on <a href={href(["download", dataset.id])}>its corpora page</a>.</>}
         actions={<ButtonLink variant="quiet" href={href(["datasets", dataset.id])}>Back to {dataset.name}</ButtonLink>} />
       <DatasetStages id={dataset.id} here="dataset" action="none" />
       <Section title="Download" help={parts.length === 1 ? "One part holds the whole dataset, in two forms holding the same texts: take one." : `The texts are split into ${plural(parts.length, "part")} of about ${plural(Math.round(shown.data.texts_per_part), "text")} each: download every part, in one of the two forms, to get the whole dataset.`}>
@@ -104,6 +108,9 @@ function Export({ id }: { id: string }) {
         {parts.length > 1 && FORMS.some(([form]) => known(form).length === parts.length) && (
           <p className="small">In all: {FORMS.filter(([form]) => known(form).length === parts.length).map(([form, words]) => `${bytes(known(form).reduce((t, b) => t + b, 0))} as ${words}`).join(", ")}.</p>
         )}
+        {quotesLeft > 0 && (
+          <p className="small">{counted.every((l) => l !== null) ? "Left out" : "Left out in the parts downloaded so far"}: {plural(leftOut("quoted text left out"), "conversation")} quoting a text the export does not hold, {plural(leftOut("quote unmatched"), "conversation")} whose quote matches no single place of the text.</p>
+        )}
       </Section>
       <details className="fold small">
         <summary className="cue">What the files hold</summary>
@@ -115,7 +122,7 @@ function Export({ id }: { id: string }) {
           <dt className="aside ledger">depot</dt><dd>the depot that holds the text, by the name a corpus records for it</dd>
           <dt className="aside ledger">id</dt><dd>the text's id in that depot, the one its page on the Texts page shows</dd>
           <dt className="aside ledger">revision</dt><dd>the revision of the text the dataset reads</dd>
-          <dt className="aside ledger">kind</dt><dd><span className="ledger">null</span> for a plain text, else the item's kind, such as <span className="ledger">conversation</span> or <span className="ledger">task</span></dd>
+          <dt className="aside ledger">kind</dt><dd>the text's kind: <span className="ledger">plain</span>, <span className="ledger">conversation</span> or <span className="ledger">task</span></dd>
           <dt className="aside ledger">text</dt><dd>the plain text itself, or an item's content as JSON text</dd>
         </dl>
         <p className="small">Titles, authors, tags, licenses and notices are left out. Each text's page in the <a href={href(["texts"])}>Texts page</a> shows them, and a corpus built from this dataset on <a href={href(["download", dataset.id])}>its corpora page</a> holds them as tables: its texts with their credits and licenses, the licenses' texts, and the notices.</p>

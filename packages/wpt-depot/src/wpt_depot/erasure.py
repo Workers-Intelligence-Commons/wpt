@@ -21,6 +21,23 @@ erasure's cuts. The removed text leaves no marker, and every cut version of
 an item is checked against its kind's JSON Schema again, before anything is
 written.
 
+A conversation whose excerpts quote a plain text the erasure reaches holds
+copies of that text's passages, so it is cut too, every version of it
+(cut_quotes), a conversation the erasure names included, on top of its own
+cut. Only its strings of text are cut (the text of its text and thinking
+blocks, the values of its tool calls' arguments and json blocks, its tools'
+descriptions, its excerpts' selectors), never a string that names or
+structures it (a role, a type, an excerpt's source, an id, a name, a call,
+metadata), so it still matches its kind and names what it named: each
+passage leaves those strings, and each excerpt, placed where its selector
+matches the quoted text before the cut, loses every character that stands
+over one the erasure removes there, so a passage that only overlaps it or
+spans its prefix, exact and suffix leaves nothing of itself either. An
+excerpt of a text removed whole, or one that matches no version of its
+text at exactly one place, keeps none of its characters. A clone cuts its
+own such conversations from the public hashes of the passages its upstream
+erased, before it carries the erasure out (cut_hashed).
+
 What is kept of each passage is where it stood in its string once cut, in
 the content version its needle named (its place: how many characters stand
 before it), its length in characters and
@@ -45,12 +62,15 @@ the passage (only its two ends when it is long), or once the request is
 carried out, the passage's length at the place it left (shown).
 """
 
+import copy
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Iterator
 from typing import NamedTuple
 
+from . import quotes
 from .errors import Refused
+from .kinds import PLAIN
 
 MODULUS = (1 << 61) - 1  # a Mersenne prime
 DOMAIN = b"wpt-depot erasure hash 1\0"  # the fixed parameter every number of hash_b is made from
@@ -74,7 +94,7 @@ def check_needle(row: dict, needle: Needle):
         if needle.field is not None:
             raise Refused(f"a needle with a field also has a start and an end: {needle.text}")
         return
-    if row["kind"] is None:
+    if row["kind"] == PLAIN:
         if needle.field is not None:
             raise Refused(f"{needle.text} is a plain text: its needle has no field")
         value = row["text"]
@@ -194,6 +214,205 @@ def carried_out(documents: dict[str, dict[int, object]], needles: list[Needle], 
                 if pieces != [(0, len(document))]:
                     cut.setdefault(text, {})[version] = pieces
     return cut, removed, [(one, texts[at], places.get(at)) for at, one in enumerate(passages)]
+
+
+def cut_quotes(documents: dict[str, dict[int, str]], versions: dict[str, dict[int, object]],
+               erased: dict[str, dict[int, list[tuple[int, int]]]], gone: set[str], removing: list[str]
+               ) -> dict[str, dict[int, str]]:
+    """What an erasure leaves of the conversations that quote the plain
+    texts it reaches (documents: {id: {version: its content as JSON text}},
+    every content version of each): {id: {version: its cut content as JSON
+    text}} for each version it changes, as _cut_quoting cuts it. versions:
+    every content version, before the cut, of each plain text it reaches
+    and keeps ({id: {version: a str or a wpt_depot.parts.Parted}}); erased:
+    the places [(start, end)] of the characters it removes from each
+    version it cuts, in that version before the cut; gone: the texts it
+    removes whole; removing: the text of every passage it erases."""
+    def erased_in(text: str, version: int, start: int, end: int) -> list[tuple[int, int]]:
+        return [(a, b) for a, b in erased.get(text, {}).get(version, []) if a < end and b > start]
+    return _cut_quoting(documents, versions, erased_in, gone, lambda value: _cut_string(value, [], removing)[0])
+
+
+def erased_places(pieces: list[tuple[int, int]], length: int) -> list[tuple[int, int]]:
+    """The places [(start, end)] of a string of length characters that the
+    pieces it keeps (carried_out) leave out, in order."""
+    found, at = [], 0
+    for a, b in pieces:
+        if a > at:
+            found.append((at, a))
+        at = b
+    if at < length:
+        found.append((at, length))
+    return found
+
+
+def cut_hashed(documents: dict[str, dict[int, str]], versions: dict[str, dict[int, object]], erased: list[dict],
+               gone: set[str]) -> dict[str, dict[int, str]]:
+    """What erasures leave of the conversations that quote the texts they
+    reached ({id: {version: its content as JSON text}}), as cut_quotes
+    gives it, where each passage is known only by an entry of an erasure's
+    erased ({length, hash_a in hexadecimal}). In a string of text, every
+    window whose length and hash_a are an entry's goes, leftmost first and
+    not overlapping, the longest first where several start at one place. In
+    the versions of a quoted text, as the depot held them before the
+    erasures (versions), every window whose length and hash_a are an
+    entry's counts as erased, overlapping ones included, so an excerpt
+    loses every character such a window covers. gone: the texts removed
+    whole."""
+    wanted: dict[int, set[bytes]] = {}
+    for one in erased:
+        wanted.setdefault(one["length"], set()).add(bytes.fromhex(one["hash_a"]))
+    lengths = sorted(wanted, reverse=True)
+    longest = lengths[0] if lengths else 0
+
+    def hit(value: str, at: int) -> int | None:
+        return next((length for length in lengths if at + length <= len(value) and hashlib.sha256(
+            value[at:at + length].encode("utf-8", "surrogatepass")).digest() in wanted[length]), None)
+
+    def without(value: str) -> str:
+        kept, start, at = [], 0, 0
+        while at < len(value):
+            length = hit(value, at)
+            if length is None:
+                at += 1
+                continue
+            kept.append(value[start:at])
+            at = start = at + length
+        return "".join(kept) + value[start:]
+
+    def erased_in(text: str, version: int, start: int, end: int) -> list[tuple[int, int]]:
+        low = max(0, start - longest + 1)
+        window = versions[text][version][low:end + longest - 1]
+        found = []
+        for at in range(len(window)):
+            for length in lengths:
+                if at + length <= len(window) and hashlib.sha256(window[at:at + length].encode(
+                        "utf-8", "surrogatepass")).digest() in wanted[length]:
+                    found.append((low + at, low + at + length))
+        return [(a, b) for a, b in found if a < end and b > start]
+    return _cut_quoting(documents, versions, erased_in, gone, without)
+
+
+def _cut_quoting(documents: dict[str, dict[int, str]], versions: dict[str, dict[int, object]],
+                 erased_in: Callable[[str, int, int, int], list[tuple[int, int]]], gone: set[str],
+                 cut_string: Callable[[str], str]) -> dict[str, dict[int, str]]:
+    """{id: {version: its cut content as JSON text}} of each version of the
+    conversations documents gives that the cut changes. Only the strings
+    that carry text are cut (_texts_mapped): never a block's type, a role,
+    an excerpt's source, a tool call's id or name, a tool result's call, a
+    file's sha256 or media type, or any metadata, so a cut version still
+    matches its kind and still names what it named. Each such string loses
+    what cut_string removes of it. An excerpt of a text removed whole (gone)
+    keeps none of its characters: its exact, prefix and suffix become
+    empty. An excerpt of a text of versions is first found in each of that
+    text's versions (wpt_depot.quotes.find): where its selector matches
+    exactly one place, its prefix, exact and suffix stand over the
+    characters of that place, and each of them loses the characters that
+    stand over a character the erasure removes from that version
+    (erased_in(text, version, start, end): the erased places that meet
+    [start, end)), so an erased passage that only overlaps an excerpt, or
+    spans its prefix, exact and suffix, leaves nothing of itself either;
+    an excerpt whose selector matches no version at exactly one place
+    cannot be placed and becomes empty, as for a text removed whole. Then
+    cut_string cuts its three strings too."""
+    cut, placed = {}, {}  # placed: the erased places of the selector of each (text, selector), by version found
+    for text, conversation_versions in documents.items():
+        for version, document in conversation_versions.items():
+            content = json.loads(document)
+            value = _texts_mapped(content, cut_string)
+            for block in quotes.excerpts(value):
+                selector, source = block["selector"], block["source"]
+                if source in gone:
+                    _set_selector(selector, "", "", "")
+                elif source in versions:
+                    prefix, exact, suffix = (selector.get(key, "") for key in ("prefix", "exact", "suffix"))
+                    key = (source, prefix, exact, suffix)
+                    if key not in placed:
+                        placed[key] = _erased_offsets(versions[source], source, selector, erased_in)
+                    offsets = placed[key]
+                    if offsets is None:
+                        _set_selector(selector, "", "", "")
+                    else:
+                        joined = prefix + exact + suffix
+                        bounds = (len(prefix), len(prefix) + len(exact))
+                        kept = [at for at in range(len(joined)) if at not in offsets]
+                        _set_selector(selector, *(
+                            "".join(joined[at] for at in kept if low <= at < high)
+                            for low, high in ((0, bounds[0]), bounds, (bounds[1], len(joined)))))
+                _set_selector(selector, *(cut_string(selector.get(key, "")) for key in ("prefix", "exact", "suffix")))
+            written = json.dumps(value, ensure_ascii=False)
+            if written != json.dumps(content, ensure_ascii=False):
+                cut.setdefault(text, {})[version] = written
+    return cut
+
+
+def _erased_offsets(versions: dict[int, object], source: str, selector: dict,
+                    erased_in: Callable[[str, int, int, int], list[tuple[int, int]]]) -> set[int] | None:
+    """The places, in prefix + exact + suffix, of the characters an excerpt's
+    selector loses (_cut_quoting): those over an erased character of a
+    version of its text where it matches exactly one place; None when it
+    matches no version at exactly one place."""
+    prefix, joined = selector.get("prefix", ""), "".join(selector.get(key, "") for key in ("prefix", "exact", "suffix"))
+    offsets, located = set(), False
+    for version, document in versions.items():
+        places = quotes.find(document, selector)
+        if len(places) != 1:
+            continue
+        located = True
+        start = places[0] - len(prefix)
+        end = start + len(joined)
+        for a, b in erased_in(source, version, start, end):
+            offsets.update(range(max(a, start) - start, min(b, end) - start))
+    return offsets if located else None
+
+
+def _set_selector(selector: dict, prefix: str, exact: str, suffix: str):
+    """Write the selector's prefix, exact and suffix: exact always, prefix and suffix where it had them or not empty."""
+    selector["exact"] = exact
+    for key, value in (("prefix", prefix), ("suffix", suffix)):
+        if key in selector or value:
+            selector[key] = value
+
+
+def _texts_mapped(conversation: dict, mapped: Callable[[str], str]) -> dict:
+    """A copy of the conversation (the chat format, docs/chat-format.md)
+    whose strings that carry text are replaced by what mapped gives of
+    them: each tool's description, the text of a text or thinking block,
+    the values (never the keys) of a tool call's arguments and of a json
+    block, and the same within a tool result's blocks. Everything else is
+    copied as it is, the excerpts' selectors included."""
+    value = copy.deepcopy(conversation)
+    for tool in value.get("tools", []):
+        if isinstance(tool, dict) and isinstance(tool.get("description"), str):
+            tool["description"] = mapped(tool["description"])
+    for message in value.get("messages", []):
+        for block in message.get("content", []):
+            _block_mapped(block, mapped)
+    return value
+
+
+def _block_mapped(block: dict, mapped: Callable[[str], str]):
+    kind = block.get("type")
+    if kind in ("text", "thinking") and isinstance(block.get("text"), str):
+        block["text"] = mapped(block["text"])
+    elif kind == "tool_call" and isinstance(block.get("arguments"), dict):
+        block["arguments"] = _strings_mapped(block["arguments"], mapped)
+    elif kind == "json" and "value" in block:
+        block["value"] = _strings_mapped(block["value"], mapped)
+    elif kind == "tool_result":
+        for inner in block.get("content", []):
+            _block_mapped(inner, mapped)
+
+
+def _strings_mapped(value, mapped: Callable[[str], str]):
+    """A new JSON value: value with each of its strings (not its keys) replaced by what mapped gives of it."""
+    if isinstance(value, str):
+        return mapped(value)
+    if isinstance(value, list):
+        return [_strings_mapped(one, mapped) for one in value]
+    if isinstance(value, dict):
+        return {key: _strings_mapped(one, mapped) for key, one in value.items()}
+    return value
 
 
 def _path(content, pointer: str) -> tuple:

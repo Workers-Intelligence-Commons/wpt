@@ -67,7 +67,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
     assert depot_command("show", "test-depot-1") == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["text"] | {"decisions": None} == {
-        "id": "test-depot-1", "revision": 1, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": None, "content": None, "content_version": 1, "length": 21, "licenses": ["CC0-1.0"],
+        "id": "test-depot-1", "revision": 1, "change": shown["text"]["change"], "text": "The quick brown fox.\n", "kind": "plain", "content": None, "content_version": 1, "length": 21, "licenses": ["CC0-1.0"],
         "notice": "test-depot-1", "title": "Fox", "authors": ["Ann"], "tags": ["en"], "address": "https://example.org/fox", "scores": None,
         "decisions": None, "libraries": ["test-depot-1", "test-depot-2"]}
     assert [(one["status"], one["name"], one["email"]) for one in shown["decisions"]] == [
@@ -76,7 +76,7 @@ def test_texts_go_from_a_file_through_a_decision_into_libraries_and_a_dataset_th
         ("first model", True), ("next model", False)]
 
     assert depot_command("sql", "SELECT id, kind, libraries FROM texts ORDER BY id") == 0
-    assert printed_rows(capsys) == [{"id": "test-depot-1", "kind": None, "libraries": '["test-depot-1","test-depot-2"]'},
+    assert printed_rows(capsys) == [{"id": "test-depot-1", "kind": "plain", "libraries": '["test-depot-1","test-depot-2"]'},
                                     {"id": "test-depot-2", "kind": "probe", "libraries": "[]"}]  # the probe is still under review
 
     assert depot_command("dataset", "export", "first") == 0

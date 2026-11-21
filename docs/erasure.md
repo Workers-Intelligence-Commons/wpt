@@ -98,6 +98,29 @@ The depot carries out an admitted request at once:
 - A later content change of that text is refused when its new content
   holds a passage erased from it, matched by the passage's public hash.
   The check covers only the text the passage was erased from.
+- A conversation that quotes a plain text the request reaches
+  ([chat-format.md](chat-format.md), "Excerpts") holds copies of its
+  passages, so every content version of it is cut too, one the request
+  also names included, on top of that request's own cut of it. The depot
+  finds these conversations through its table `quotes`, which records the
+  texts each conversation's versions quote. Only the strings that carry
+  text are cut: the text of text and thinking blocks, the values of tool
+  calls' arguments and of json blocks, the tools' descriptions and the
+  excerpts' selectors. A string that names or structures the conversation
+  (a role, a block's type, an excerpt's `source`, a tool call's `id` or
+  `name`, a tool result's `call`, metadata) stays as it is, so the cut
+  conversation still matches its kind's schema and still names what it
+  named. Each passage leaves those strings. Each excerpt is first placed
+  where its selector matches the quoted text before the cut, and its
+  `prefix`, `exact` and `suffix` lose every character that stands over one
+  the request removes there: a passage that only overlaps the excerpt, or
+  spans its prefix, exact and suffix, leaves nothing of itself either, and
+  the excerpt still matches the cut text. An excerpt of a text removed
+  whole, or one that matches no version of its text at exactly one place,
+  keeps none of its characters. The conversation itself stays. A corpus
+  built again leaves out a conversation whose quote no longer matches
+  ([data-selection.md](data-selection.md), "Conversations that quote
+  texts").
 - A cut text keeps its id, its libraries and its decisions, in a locked
   library too: the admitted erasure is its admission again.
 - The request's `erased` gets one entry per passage: its place once cut
@@ -123,6 +146,12 @@ The depot carries out an admitted request at once:
 
 A depot that follows an upstream carries out the upstream's admitted
 erasures when it pulls, with their recorded places ([architecture.md](architecture.md), "The depot").
+It reads again the upstream's conversations that quote a text an erasure
+reached, which the upstream cut, and cuts its own such conversations the
+same way before it carries the erasure out, finding each erased passage by
+its length and its first public hash in their strings of text and in the
+quoted text as it held it, so each excerpt loses every character over one
+the erasure removed.
 It takes no erasure request that names an upstream text and decides no
 upstream request: those are asked for and decided at the upstream, and
 the pull brings the result.

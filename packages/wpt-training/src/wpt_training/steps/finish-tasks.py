@@ -1,4 +1,4 @@
-"""Finish tasks: learn to finish the agentic tasks tagged `finish-tasks` by
+"""Finish tasks: learn to finish the agentic tasks (texts of kind task) tagged `finish-tasks` by
 group relative policy optimization on the model's own scored attempts
 (docs/training.md, "The finish-tasks step"), under by-part at a constant
 learning rate of 1e-6, without weight decay, with its early stop and no
@@ -8,6 +8,7 @@ balancing biases stay as they are."""
 
 METHOD = "grpo"
 ENVIRONMENT = "agent-tasks"
+KINDS = ("task",)
 OPTIMIZER = {"name": "by-part", "settings": {"lr": 1e-6, "weight_decay": 0.0, "schedule": "constant", "patience": 10,
                                          "average_states": 0}}
 LOCKED = ("routers", "balancing")

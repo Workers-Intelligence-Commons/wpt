@@ -20,9 +20,10 @@ so a text of any size is never read whole. Its name, `<id>#<n>`, is what
 its export key is made from (wpt_depot.order) and the document its row of
 a token file names (wpt_depot.corpus); no id holds '#' (wpt_depot.ids).
 
-    count(length)       how many pieces a plain text of that length is cut into
-    name(text, n)       the name of the piece n of the text
-    read(content, n)    the text of piece n of a content version (Parted)
+    count(length)                  how many pieces a plain text of that length is cut into
+    name(text, n)                  the name of the piece n of the text
+    read(content, n)               the text of piece n of a content version (Parted)
+    holding(content, start, end)   the pieces that hold some of a span of its characters
 """
 
 from .parts import Parted
@@ -50,6 +51,28 @@ def read(content: Parted, n: int) -> str:
     start = _cut(held, low, n, length)
     end = length if n + 1 == count(length) else _cut(held, low, n + 1, length)
     return held[start - low:end - low]
+
+
+def holding(content: Parted, start: int, end: int) -> list[int]:
+    """The numbers of the pieces of a long plain content version that hold
+    at least one of its characters from start to end (excluded), in order,
+    each cut read from the characters around it alone. The cut of n lies
+    from n × LENGTH on and before (n + 1) × LENGTH, so a character at place
+    p lies in piece p // LENGTH or the one before it."""
+    length = len(content)
+    last = count(length) - 1
+
+    def cut(n: int) -> int:
+        if n == 0:
+            return 0
+        if n > last:
+            return length
+        low = n * LENGTH - 1
+        return _cut(content[low:min((n + 1) * LENGTH, length)], low, n, length)
+
+    first = max(0, start // LENGTH - 1)
+    return [n for n in range(first, min(last, max(start, end - 1) // LENGTH) + 1)
+            if cut(n) < end and cut(n + 1) > start]
 
 
 def _cut(held: str, low: int, n: int, length: int) -> int:

@@ -21,12 +21,17 @@ changes and the counts (wpt_depot.counts) right, in its own transaction.
 The rules (the app's policy, wpt_depot.policy, says how decisions combine):
 
 - Every id is the depot's name, a hyphen and a number (wpt_depot.ids).
-- A new text or item comes with one decision 'under review' and joins no
-  library. Its text, or an item's kind and content, is its content version
-  1, stored as its parts (wpt_depot.parts): a plain text may come from a
-  file read as a stream (FileText), so no text is ever too big to add. An
-  item's content matches its kind's schema, as the kinds table
-  stores it. Every license a text names is a
+- A new text comes with one decision 'under review' and joins no
+  library. It has a kind (wpt_depot.kinds), plain unless it names another,
+  fixed for good: its content (a plain text's text, or the JSON content of
+  a text of another kind) is its content version 1, stored as its parts
+  (wpt_depot.parts): a plain text may come from a file read as a stream
+  (FileText), so no text is ever too big to add. The content of a text of
+  a kind other than plain matches its kind's schema, as the kinds table
+  stores it, and each excerpt of a conversation quotes a plain text of the
+  depot whose current content version its selector matches at exactly one
+  place (wpt_depot.quotes), checked again on a change of its content.
+  Every license a text names is a
   row of licenses (one of them is enough to allow it), and its notice is
   stored once.
 - An operation on texts (a decision, a license change, a put, a take-out,
@@ -55,7 +60,8 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   no longer count (wpt_depot.policy). Every new license is a row of licenses.
 - A text's content (its plain text, or an item's content, which still
   matches its kind's schema) changes as a new content version stored next
-  to the old ones, and a new revision of the text that reads it, its id
+  to the old ones, of the text's own kind: a change of kind is refused (a
+  text of another kind is a new text), and a new revision of the text that reads it, its id
   kept. The new version stores only the parts its text holds that no
   version of the text held before. The change is recorded as a decision 'under review' made by the
   person's declaration, whose reason the depot writes naming the old and
@@ -107,7 +113,12 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   cut text, a new part, and each version lists the new parts instead (an
   item is cut at a field of its JSON, every cut version is validated
   against its kind's schema again and its parts cut again); a part no
-  version lists any longer goes. A text named whole is removed with every
+  version lists any longer goes. Every conversation that quotes a plain
+  text it reaches, found through the table quotes, is cut too, those it
+  names included, on top of their own cut (wpt_depot.erasure.cut_quotes):
+  only its strings of text, never one that names or structures it, each
+  excerpt losing every character over one the erasure removes from the
+  quoted text. A text named whole is removed with every
   revision, content version, part, membership and pin; its
   `erased` gets each passage's length and hashes, and the file keeps no
   copy of what it removed (wpt_depot.database). The hashes are public and
@@ -179,13 +190,14 @@ from urllib.parse import quote, unquote, urlparse
 
 import apsw
 
-from . import counts, crediting, erasure, ids, kinds, licenses, policy, rewriting, scoring, titles
+from . import counts, crediting, erasure, ids, kinds, licenses, policy, quotes, rewriting, scoring, titles
 from .database import Database, person_columns
 from .erasure import Needle
-from .errors import (BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat, Refused,
-                     UnsupportedAddress)
+from .errors import (BadContent, BelongsToUpstream, DepotExists, HalfUpgraded, Locked, NotADepot, NotFound, OtherFormat,
+                     Refused, UnsupportedAddress)
 from .filters import (IN_LOCKED, MEMBERSHIPS_KEY, PINS_KEY, TEXTS_KEY, Filter, changed_since, condition, is_id,
                       listed as listed_ids, literal, strings, words)
+from .kinds import PLAIN
 from .parts import WINDOW, FileText, Parted, Reader, Source, listed, made, pack, parted, split
 from .schema import (ADMITTED, CONTENT_JOIN, FORMAT, JSON_COLUMNS, LISTED_COLUMNS, LONG, REFUSED, UNDER_REVIEW,
                      decision_list)
@@ -221,7 +233,7 @@ CREDITS = crediting.CREDITS
 # what the rows of a search can be ordered by: each the SQL expressions over the searched rows it orders by, in turn,
 # before the numeric order of ids (_ordered); none of them is ever null, so a row's values of them compare as a whole
 ORDERS = {"id": [], "title": ["title IS NOT NULL", "coalesce(title, '')"],
-          "kind": ["kind IS NOT NULL", "coalesce(kind, '')"], "status": ["status"], "tags": ["tags"], "licenses": ["licenses"], "libraries": ["libraries"],
+          "kind": ["kind"], "status": ["status"], "tags": ["tags"], "licenses": ["licenses"], "libraries": ["libraries"],
           "length": ["length"]}
 # the orders an index of the depot serves (schema.INDEXES), so a page in them reads only its own rows; a page in any
 # other order sorts every match, so it is given only when a search matches at most SORTED texts
@@ -374,11 +386,11 @@ class About:
 
 @dataclass(frozen=True)
 class NewText:
-    """A plain text (text: a string, or a FileText read as a stream) or a
-    structured item (kind and its JSON content), with its credits. notice
-    is the notice's text, stored once."""
+    """A text with its credits: of kind plain (the default), its text (a
+    string, or a FileText read as a stream); of any other kind (an item),
+    its JSON content. notice is the notice's text, stored once."""
     text: Source | None = None
-    kind: str | None = None
+    kind: str = PLAIN
     content: str | None = None
     licenses: tuple[str, ...] = ()
     notice: str | None = None
@@ -564,7 +576,8 @@ class Depot:
             raise NotFound(f"no text {text}")
         row = found[0]
         whole = self.content(text, row["content_version"])
-        row = {**row, "text": whole if row["kind"] is None else None, "content": None if row["kind"] is None else whole}
+        plain = row["kind"] == PLAIN
+        row = {**row, "text": whole if plain else None, "content": None if plain else whole}
         held = [{**one, "upstream": bool(one["upstream"])} for one in self._rows(
             f"SELECT *, {self.upstream_sql()} AS upstream FROM libraries "
             "WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id", (_json(row["libraries"]),))]
@@ -1083,7 +1096,7 @@ class Depot:
             "SELECT h.export_key, t.id, t.revision, t.tags, c.length, c.bytes FROM content_lists c INDEXED BY "
             f"content_lists_long CROSS JOIN {held} ON h.library = :library AND h.text = c.id {when}"
             f"CROSS JOIN texts_revisions t ON t.id = h.text AND t.revision = {revision} "
-            f"WHERE c.kind IS NULL AND c.length > {LONG} AND t.content_version = c.version",
+            f"WHERE c.kind = '{PLAIN}' AND c.length > {LONG} AND t.content_version = c.version",
             {"library": library, "change": change, "bounds": _json(self.bounds(ids.owner(library), change))}
         ).fetchall()
 
@@ -1140,9 +1153,9 @@ class Depot:
         """What the libraries hold now, read from the depot's counts
         (wpt_depot.counts, its rows of each library alone, so at once
         whatever their size), each text at its current revision: {texts,
-        characters, bytes (UTF-8) of them all; plain, items (conversations
-        and tasks, the items a corpus takes) and other (items of the other
-        kinds): each {texts, characters, bytes}; shares: for each tag of
+        characters, bytes (UTF-8) of them all; kinds: {kind: {texts,
+        characters, bytes}} of every kind of the depot, each on its own,
+        plain first (wpt_depot.counts.figures); shares: for each tag of
         tags, in order, the plain texts that have it, each {tag, texts,
         characters, bytes}; unshared: the plain texts left once the shares
         are taken away, when tags are given (None otherwise)}. Each library
@@ -1288,6 +1301,8 @@ class Depot:
             held_kinds = dict(con.execute("SELECT id, schema FROM kinds").fetchall())
             for one in texts:
                 _check_text(one, held_licenses, held_kinds)
+                if one.kind == "conversation":
+                    self._check_quotes(one.content)
             decision = self._decision(con, number, UNDER_REVIEW, declaration)
             first = self._take(con, "texts", len(texts))
             notices, new_texts = {}, []
@@ -1295,7 +1310,7 @@ class Depot:
                 text_id = self._id(first + at)
                 notice = None if one.notice is None else self._notice(con, number, one.notice, notices)
                 self._store(con, number, [{"id": text_id, "version": 1, "kind": one.kind,
-                                           "source": one.text if one.kind is None else one.content}])
+                                           "source": one.text if one.kind == PLAIN else one.content}])
                 new_texts.append({"id": text_id, "revision": 1, "change": number, "latest": 1,
                                   "licenses": _json(list(one.licenses)), "notice": notice, "title": one.title,
                                   "authors": None if one.authors is None else _json(list(one.authors)),
@@ -1310,6 +1325,27 @@ class Depot:
                                                                   counts.SPLIT_TAG, counts.SPLIT_LICENSE)))
             counts.enlist(con, "temp.chosen", counts.LISTED)
             return added
+
+    def _check_quotes(self, content: str):
+        """BadContent unless each excerpt of the conversation whose content
+        is given (JSON text that matches its kind) quotes a plain text of the
+        depot whose current content version matches its selector at exactly
+        one place (wpt_depot.quotes), read as its parts."""
+        for block in quotes.excerpts(json.loads(content)):
+            source, selector = block["source"], block["selector"]
+            found = self._rows(f"SELECT c.kind, c.parts FROM texts_revisions t {CONTENT_JOIN} "
+                               "WHERE t.latest AND t.id = ?", (source,))
+            if not found:
+                raise BadContent(f"an excerpt quotes {source}, which is no text of the depot")
+            if found[0]["kind"] != PLAIN:
+                raise BadContent(f"an excerpt quotes {source}, an item of kind {found[0]['kind']}: an excerpt "
+                                 "quotes a plain text")
+            if not selector["exact"]:
+                raise BadContent(f"an excerpt of {source} quotes no character: its exact is the passage")
+            places = quotes.find(Parted(self.reader(), source, found[0]["parts"]), selector)
+            if len(places) != 1:
+                raise BadContent(f"an excerpt of {source} matches {'no place' if not places else 'more than one place'}"
+                                 " of its current content: its exact, with its prefix and suffix, picks one passage")
 
     def blocked(self, texts: Selection, status: str = ADMITTED, after: Sequence | None = None,
                 limit: int = 50) -> dict:
@@ -1503,11 +1539,12 @@ class Depot:
 
     @_answers
     def change_content(self, text: str, plain: Source | None, content: str | None,
-                       declaration: Declaration) -> tuple[str, int] | None:
+                       declaration: Declaration, kind: str | None = None) -> tuple[str, int] | None:
         """Change the content of a text: a plain text takes its new text as
         plain (a string, or a FileText read as a stream) and no content; an item takes its new content as JSON text as
-        content and no plain, which must still match its kind's schema (its
-        kind never changes). It is stored as a new content version next to
+        content and no plain, which must still match its kind's schema. A
+        text's kind is fixed when it is made: kind, when given, must be the
+        text's own, and the new content is of that kind. It is stored as a new content version next to
         the old ones, and a new revision of the text, its id kept, reads it.
         The change is recorded as a decision 'under review' made by
         declaration, whose reason the depot writes
@@ -1520,7 +1557,8 @@ class Depot:
         NotFound without such a text; BadContent for an item's content that
         does not match its kind; Refused when the field given does not
         match the text (a plain text with content or without plain, an item
-        with plain or without content) or is not text, and when the new
+        with plain or without content) or is not text, for a kind other
+        than the text's (to change kind, add a new text), and when the new
         content holds a passage an erasure removed from this text (matched
         by its public hash)."""
         with self._write("content") as (con, number):
@@ -1530,8 +1568,11 @@ class Depot:
                 raise NotFound(f"no text {text}")
             self._refuse_upstream("texts", [text])
             row = found[0]
+            if kind is not None and kind != row["kind"]:
+                raise Refused(f"{text} is a text of kind {row['kind']}, and a text's kind is fixed when it is made: "
+                              f"to have it as a text of kind {kind}, add a new text")
             erased = self._erased_by_text().get(text, [])
-            if row["kind"] is None:
+            if row["kind"] == PLAIN:
                 if not isinstance(plain, (str, FileText)) or content is not None:
                     raise Refused("a plain text's new content is its text, with no item content")
                 if not _new_plain(text, plain, [(one["hash"], one["length"]) for one in row["parts"]], erased):
@@ -1543,12 +1584,14 @@ class Depot:
                 kinds.check_content(row["kind"], schema, content)
                 if _same_json(content, self.content(text, row["content_version"])):
                     raise _Nothing(None)
+                if row["kind"] == "conversation":
+                    self._check_quotes(content)
                 _refuse_erased(text, erasure.strings_of(json.loads(content)), erased)
             version = self._one("SELECT max(version) FROM content_lists WHERE id = ?", (text,)) + 1
             decision = self._decision(con, number, UNDER_REVIEW, declaration,
                                       policy.content_change(row["content_version"], version), checked=False)
             self._store(con, number, [{"id": text, "version": version, "kind": row["kind"],
-                                       "source": plain if row["kind"] is None else content}])
+                                       "source": plain if row["kind"] == PLAIN else content}])
             self._choose(con, [text])
             with counts.changing(con, "temp.chosen", (counts.STATUS, *counts.SIZED, counts.NEWER, *counts.SPLIT)):
                 self._revise(con, "texts_revisions", [text], number,
@@ -1597,7 +1640,8 @@ class Depot:
                     elif not _new_plain(text, plain, parts, erased.get(text, [])):
                         unchanged += 1
                     else:
-                        self._store(con, number, [{"id": text, "version": last + 1, "kind": None, "source": plain}])
+                        self._store(con, number, [{"id": text, "version": last + 1, "kind": PLAIN,
+                                                   "source": plain}])
                         con.execute("INSERT INTO temp.rewritten VALUES (?, ?, ?)", (text, version, last + 1))
                 stale_ids = [one for (one,) in con.execute(
                     "SELECT c.id FROM temp.content_changes c JOIN temp.content_now n ON n.id = c.id "
@@ -2081,7 +2125,7 @@ class Depot:
             for one in needles:
                 if one.version not in documents.get(one.text, {}):
                     raise Refused(f"the text {one.text} has no content version {one.version}")
-                document, item = documents[one.text][one.version], kinds_of[one.text] is not None
+                document, item = documents[one.text][one.version], kinds_of[one.text] != PLAIN
                 erasure.check_needle({"kind": kinds_of[one.text], "text": None if item else document,
                                       "content": str(document) if item else None}, one)
             self._erased(_request(reason, needles, "dry run"))  # a cut that breaks an item is refused now
@@ -2164,7 +2208,7 @@ class Depot:
             "SELECT id, title, kind FROM texts WHERE id IN (SELECT value FROM json_each(?))", (_json(named),))}
         erased = row["erased"]
         places = erasure.shown(needles, self._versions(named),
-                               {text for text, one in held.items() if one["kind"] is not None}, erased)
+                               {text for text, one in held.items() if one["kind"] != PLAIN}, erased)
         return {"id": row["id"], "reason": row["reason"], "status": row["status"], "carried_out": erased is not None,
                 "needles": [{"text": one.text, "field": one.field, "start": one.start, "end": one.end,
                              "version": one.version, "title": held[one.text]["title"] if one.text in held else None,
@@ -2181,12 +2225,13 @@ class Depot:
         before the first one that loses a character, and the rest of it is
         cut again by the rule of wpt_depot.parts from there; its parts are
         read a few at a time. BadContent when a cut item no longer matches
-        its kind's schema."""
+        its kind's schema. The conversations that quote a plain text it
+        reaches are cut too (quote_cuts), as items it names are."""
         needles = _needles(request)
         found = self._kinds(sorted({one.text for one in needles}))
         kept = [at for at, one in enumerate(needles) if one.text in found]  # a text removed before has nothing left
         held = [needles[at] for at in kept]
-        items = {text for text, kind in found.items() if kind is not None}
+        items = {text for text, kind in found.items() if kind != PLAIN}
         schemas = dict(self.db.reader().execute("SELECT id, schema FROM kinds").fetchall())
         reader = self.reader()
         documents = self._versions(sorted(found))
@@ -2194,6 +2239,11 @@ class Depot:
             "SELECT id, version, bytes FROM content_lists WHERE id IN (SELECT value FROM json_each(?))",
             (_json(sorted(found)),))}
         cut, removed, passages = erasure.carried_out(documents, held, items)
+        for text, versions in self.quote_cuts(documents, cut, [(one, value) for one, value, _ in passages], items,
+                                              set(removed)).items():
+            cut.setdefault(text, {}).update(versions)
+            found[text] = "conversation"
+            items.add(text)
         if write:  # a cut version may be the one a text reads now, which changes what its libraries hold
             self._choose(write[0], sorted(cut), "cut")
             sized = counts.measure(write[0], "temp.cut", counts.SIZED)
@@ -2224,6 +2274,8 @@ class Depot:
                                         (text, one.hash, number, pack(one.value)))
                     con.execute("UPDATE content_lists SET parts = ?, length = ?, bytes = ? WHERE id = ? AND version = ?",
                                 (_parts_json(listed_parts), length, size, text, version))
+                    if found[text] == "conversation":
+                        _write_quotes(con, text, version, value)
         # needle: the place among the request's needles of the first needle the passage covers; named before the
         # parts go, since a passage of a text removed whole is read from them
         named = [{**{name: value.hex() if isinstance(value, bytes) else value
@@ -2243,8 +2295,70 @@ class Depot:
             _remove_texts(con, removed)
         return named
 
-    def _kinds(self, texts: list[str]) -> dict[str, str | None]:
-        """{id: its kind, None for a plain text} of the texts named that the depot holds content of."""
+    def quote_cuts(self, documents: dict, cut: dict, passages: list[tuple], items: set[str], removed: set[str]
+                   ) -> dict[str, dict[int, str]]:
+        """What an erasure leaves of the conversations that quote a plain
+        text it reaches (wpt_depot.erasure.cut_quotes): {id: {version: its
+        cut content as JSON text}} for each version it changes. documents:
+        every content version of the texts it names, before the cut, as
+        carried_out read them; cut: what carried_out left of those it cut,
+        a conversation it names being cut again from that; passages:
+        (wpt_depot.erasure.Passage, its text) of each passage; items: the
+        ids among its texts that are items, which no excerpt quotes;
+        removed: the texts it removes whole, whose own conversations go."""
+        reached = sorted({passage.text for passage, _ in passages if passage.text not in items})
+        quoting = self.quoting(reached, removed)
+        for text, versions in quoting.items():
+            for version in versions:
+                if version in cut.get(text, {}):
+                    versions[version] = cut[text][version]
+        kept = {text for text in reached if text not in removed}
+        erased = {text: {version: erasure.erased_places(pieces, len(documents[text][version]))
+                         for version, pieces in cut.get(text, {}).items()} for text in kept}
+        removing = [value for passage, value in passages if passage.text in kept]
+        return erasure.cut_quotes(quoting, {text: documents[text] for text in kept}, erased, removed & set(reached),
+                                  removing)
+
+    def put_cut_items(self, con, number: int, cut: dict[str, dict[int, str]]):
+        """Write in the change number (con, its writer connection) the cut
+        content versions of items ({id: {version: its content as JSON
+        text}}), each checked against its kind's schema (BadContent): its
+        parts the depot lacks, and the version listing its parts; then the
+        parts of those items no version lists any longer go."""
+        kinds_of = self._kinds(sorted(cut))
+        schemas = dict(con.execute("SELECT id, schema FROM kinds").fetchall())
+        for text, versions in cut.items():
+            for version, value in sorted(versions.items()):
+                kinds.check_content(kinds_of[text], schemas[kinds_of[text]], value)
+                new = list(parted(value))
+                con.executemany("INSERT OR IGNORE INTO parts (id, hash, change, value) VALUES (?, ?, ?, ?)",
+                                [(text, one.hash, number, pack(one.value)) for one in new])
+                con.execute("UPDATE content_lists SET parts = ?, length = ?, bytes = ? WHERE id = ? AND version = ?",
+                            (_parts_json([(one.hash, one.length) for one in new]), sum(one.length for one in new),
+                             sum(one.bytes for one in new), text, version))
+                if kinds_of[text] == "conversation":
+                    _write_quotes(con, text, version, value)
+        _drop_unlisted(con, sorted(cut))
+
+    def quoting(self, texts: list[str], skip: set[str]) -> dict[str, dict[int, str]]:
+        """{id: {version: its content as JSON text}}, every content version,
+        of each conversation of the depot, but those of skip, one of whose
+        versions quotes one of the texts (wpt_depot.quotes), found through
+        the table quotes and its index quotes_text, a conversation at a
+        time."""
+        found, reader = {}, self.reader()
+        if not texts:
+            return found
+        held = [one for (one,) in self.db.reader().execute(
+            "SELECT DISTINCT conversation FROM quotes WHERE text IN (SELECT value FROM json_each(?)) "
+            "ORDER BY conversation", (_json(sorted(set(texts))),)).fetchall() if one not in skip]
+        for one in self._rows("SELECT id, version, parts FROM content_lists WHERE id IN (SELECT value FROM json_each(?)) "
+                              "ORDER BY id, version", (_json(held),)):
+            found.setdefault(one["id"], {})[one["version"]] = str(Parted(reader, one["id"], one["parts"]))
+        return found
+
+    def _kinds(self, texts: list[str]) -> dict[str, str]:
+        """{id: its kind} of the texts named that the depot holds content of."""
         return dict(self.db.reader().execute(
             "SELECT DISTINCT id, kind FROM content_lists WHERE id IN (SELECT value FROM json_each(?))",
             (_json(texts),)).fetchall())
@@ -2261,7 +2375,7 @@ class Depot:
         for one in self._rows("SELECT id, version, kind, parts FROM content_lists "
                               "WHERE id IN (SELECT value FROM json_each(?)) ORDER BY version", (_json(texts),)):
             document = Parted(reader, one["id"], one["parts"])
-            found.setdefault(one["id"], {})[one["version"]] = document if one["kind"] is None else str(document)
+            found.setdefault(one["id"], {})[one["version"]] = document if one["kind"] == PLAIN else str(document)
         return found
 
     def reader(self) -> Reader:
@@ -3025,6 +3139,8 @@ class Depot:
                                             "parts": _parts_json([(hash_, length) for hash_, length, _ in found]),
                                             "length": sum(length for _, length, _ in found),
                                             "bytes": sum(size for _, _, size in found)}])
+            if one["kind"] == "conversation":
+                _write_quotes(con, one["id"], one["version"], one["source"])
 
 
 # how many texts the decision d is on (wpt_depot.counts)
@@ -3166,12 +3282,37 @@ def _remove_texts(con, texts: list[str]):
     pins (an erasure's part)."""
     if texts:
         for table, column in (("texts_revisions", "id"), ("content_lists", "id"), ("parts", "id"),
-                              ("text_decisions", "text"), ("pins", "text")):
+                              ("text_decisions", "text"), ("pins", "text"), ("quotes", "conversation")):
             con.execute(f"DELETE FROM {table} WHERE {column} IN (SELECT value FROM json_each(?))", (_json(texts),))
         # a text's memberships, ended or not, by their key: each library named, never a library's rows
         con.execute(f"DELETE FROM memberships WHERE rowid IN (SELECT m.rowid FROM json_each(?) x CROSS JOIN "
                     f"libraries_revisions r CROSS JOIN memberships m INDEXED BY {MEMBERSHIPS_KEY} "
                     "ON m.library = r.id AND m.text = x.value WHERE r.latest)", (_json(texts),))
+
+
+def _write_quotes(con, conversation: str, version: int, content: str):
+    """Write the rows of quotes of a content version of a conversation (its
+    content as JSON text): the ids of the texts its excerpts quote, in place
+    of those it had."""
+    con.execute("DELETE FROM quotes WHERE conversation = ? AND version = ?", (conversation, version))
+    con.executemany("INSERT INTO quotes (conversation, version, text) VALUES (?, ?, ?)",
+                    [(conversation, version, text) for text in quotes.quoted(json.loads(content))])
+
+
+def index_quotes(con, rows: list[dict]):
+    """Write the rows of quotes of the content versions of conversations
+    among rows (rows of content_lists: {id, version, kind, parts}), each
+    read from the parts con's depot holds; one whose parts it lacks yet (a
+    clone's first copy, which the pull that ends it puts right) is left out."""
+    reader = Reader(lambda: con)
+    for one in rows:
+        if one["kind"] != "conversation":
+            continue
+        try:
+            content = str(Parted(reader, one["id"], json.loads(one["parts"])))
+        except LookupError:
+            continue
+        _write_quotes(con, one["id"], one["version"], content)
 
 
 def _json(value) -> str | None:
@@ -3300,14 +3441,14 @@ def _same_json(one: str, other: str) -> bool:
 
 
 def _check_text(one: NewText, held_licenses: set, held_kinds: dict):
-    if one.kind is None:
+    if one.kind not in held_kinds:
+        raise Refused(f"the depot holds no kind {one.kind}")
+    if one.kind == PLAIN:
         if one.text is None or one.content is not None:
             raise Refused("a plain text has a text and no content")
     else:
         if one.text is not None or one.content is None:
-            raise Refused("an item has a kind and its content, and no text")
-        if one.kind not in held_kinds:
-            raise Refused(f"the depot holds no kind {one.kind}")
+            raise Refused(f"a text of kind {one.kind} has its JSON content, and no plain text")
         kinds.check_content(one.kind, held_kinds[one.kind], one.content)
     if not one.licenses:
         raise Refused("a text names at least one license")

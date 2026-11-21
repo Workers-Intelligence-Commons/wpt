@@ -52,7 +52,11 @@ upstream carried out since the last pull is carried out here: the texts it
 removed whole are removed with every revision, membership and pin, the
 clone's own libraries' included, and the content versions of the texts it
 cut are read again from the upstream with the parts they list, each part
-no version lists any longer dropped. An erasure the upstream carries out
+no version lists any longer dropped. So are the conversations of the
+upstream that quote a text it reached, which the upstream cut
+(wpt_depot.erasure.cut_quotes); the depot's own conversations that quote
+one are cut here, every passage the erasure erased found by its length
+and its public hash. An erasure the upstream carries out
 while the pull reads it (a part asked for is gone, or the head has moved
 past an erasure the pull did not bring) makes the pull start over, up to
 TRIES times, writing nothing until it ends whole.
@@ -73,8 +77,10 @@ from wpt_utils import web
 
 from . import counts, ids, policy
 from .database import Database, now
-from .depot import About, Depot, _drop_unlisted, _json, _remove_texts, location
+from .depot import About, Depot, _drop_unlisted, _json, _remove_texts, index_quotes, location
 from .errors import BadQuery, DepotExists, NoUpstream, NotFound, OtherFormat, Refused, UpstreamUnreachable
+from .erasure import cut_hashed
+from .kinds import PLAIN
 from .parts import Parted
 from .schema import ADMITTED, FORMAT, KEYS, REVISED, WITHOUT_ROWID
 
@@ -367,6 +373,7 @@ def clone(address: str, to: str, about: About) -> Depot:
                 _put(con, table, found)
                 if table == "content_lists":
                     _bring_parts(con, upstream, found, tolerate=True)
+                    index_quotes(con, found)
             after = "done" if following is None else following
             progress["after"][table] = after
             _write_progress(progress_file, progress)
@@ -442,9 +449,12 @@ def _pull(depot: Depot, upstream: Upstream) -> list[str]:
                 _put(con, table, found)
                 if table == "content_lists":
                     _bring_parts(con, upstream, found)
+                    index_quotes(con, found)
                 if after is None:
                     break
         brought = sorted(_carried_out(depot) - before)
+        if brought:  # before the erasures are carried out here, while the depot holds the texts they reached uncut
+            _cut_own_quotes(con, depot, brought, tracked, number)
         for erasure in brought:
             _carry_out(con, depot, upstream, erasure, tracked)
         tracked.settle(depot, number)
@@ -533,21 +543,51 @@ def _carried_out(depot: Depot) -> set[str]:
     return {one for (one,) in depot.db.reader().execute("SELECT id FROM erasures WHERE erased IS NOT NULL")}
 
 
+def _cut_own_quotes(con, depot: Depot, brought: list[str], tracked: "_Tracked", number: int):
+    """Cut, in the pull's change number, the depot's own conversations
+    that quote a text one of the erasures brought reached, read before the
+    erasures are carried out here, so the depot still holds those texts as
+    they were before them (wpt_depot.erasure.cut_hashed):
+    every passage the erasures erased from a plain text, found by its
+    length and its hash_a, leaves their strings of text and each excerpt
+    loses every character over one in the quoted text, and every excerpt of
+    a text they removed whole keeps no character of it."""
+    rows = [(json.loads(needles), json.loads(erased)) for needles, erased in con.execute(
+        "SELECT needles, erased FROM erasures WHERE id IN (SELECT value FROM json_each(?))", (_json(brought),))]
+    reached = sorted({one["text"] for needles, _ in rows for one in needles})
+    gone = {one["text"] for needles, _ in rows for one in needles if one["start"] is None and one["field"] is None}
+    erased = [entry for needles, entries in rows for entry in entries
+              if needles[entry["needle"]]["start"] is not None and needles[entry["needle"]]["field"] is None]
+    quoting = depot.quoting(reached, gone)
+    theirs = set(depot.upstream_owned(sorted(quoting)))
+    plain = sorted(text for text, kind in depot._kinds(sorted(set(reached) - gone)).items() if kind == PLAIN)
+    cut = cut_hashed({text: versions for text, versions in quoting.items() if text not in theirs},
+                     depot._versions(plain), erased, gone)
+    tracked.add(sorted(cut))
+    depot.put_cut_items(con, number, cut)
+
+
 def _carry_out(con, depot: Depot, upstream: Upstream, erasure: str, tracked: "_Tracked"):
     """Carry out here an erasure the upstream carried out: the texts it
-    removed whole go, and the texts it cut are read again."""
+    removed whole go, and the texts it cut are read again, with the
+    upstream's conversations that quote one of the texts it reached
+    (Depot.quoting, through the table quotes), whose rows of quotes are
+    written again from what is read."""
     needles = json.loads(con.execute("SELECT needles FROM erasures WHERE id = ?", (erasure,)).fetchall()[0][0])
+    reached = sorted({one["text"] for one in needles})
     removed = sorted({one["text"] for one in needles if one["start"] is None and one["field"] is None})
-    cut = sorted({one["text"] for one in needles} - set(removed))
+    cut = sorted({*reached, *depot.upstream_owned(sorted(depot.quoting(reached, set(removed))))} - set(removed))
     tracked.add([*removed, *cut])  # a cut changes the characters and bytes of a version a text may read
     _remove_texts(con, removed)
     if cut:
-        con.execute("DELETE FROM content_lists WHERE id IN (SELECT value FROM json_each(?))", (_json(cut),))
+        for table, column in (("content_lists", "id"), ("quotes", "conversation")):
+            con.execute(f"DELETE FROM {table} WHERE {column} IN (SELECT value FROM json_each(?))", (_json(cut),))
         after = None
         while True:
             found, after = upstream.page("content_lists", None, after, texts=cut)
             _put(con, "content_lists", found)
             _bring_parts(con, upstream, found)
+            index_quotes(con, found)
             if after is None:
                 break
         _drop_unlisted(con, cut)

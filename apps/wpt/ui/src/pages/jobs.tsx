@@ -13,7 +13,7 @@
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, waiting, type Answer, type Job } from "../api";
-import { PageHead, plainProblem, plural, Problems, Section, takenWords, useDatasets, useLibraries } from "../parts";
+import { leftOutWords, PageHead, plainProblem, plural, Problems, Section, takenWords, useDatasets, useLibraries, type LeftOut } from "../parts";
 import { href } from "../route";
 import { pipelineChanged, StageMark, standing, StepButton, useCorpora, useRecipesAndVocabularies, vocabularyNames } from "../pipeline";
 import type { Page } from "./index";
@@ -121,7 +121,7 @@ function answered(job: Job<unknown>, known: Known = {}): ReactNode {
   const a = (job.answer ?? {}) as Record<string, unknown>;
   const n = (key: string) => (typeof a[key] === "number" ? (a[key] as number) : 0);
   const link = resultLink(job, known.vocabularies);
-  if (job.kind === "corpus") return <>{takenWords(n("texts"), n("conversations"), n("tasks"))}, {plural(n("tokens") + n("item_tokens"), "token")} in all{n("item_tokens") ? ` (${n("tokens").toLocaleString("en")} of plain text, ${n("item_tokens").toLocaleString("en")} of conversations and tasks)` : ""}{link && <>: <a href={link}>download it</a></>}</>;
+  if (job.kind === "corpus") return <>{takenWords(n("texts"), n("conversations"), n("tasks"))}, {plural(n("tokens") + n("item_tokens"), "token")} in all{n("item_tokens") ? ` (${n("tokens").toLocaleString("en")} of plain text, ${n("item_tokens").toLocaleString("en")} of conversations and tasks)` : ""}{leftOutWords(a.left_out as LeftOut | undefined) ? `; left out: ${leftOutWords(a.left_out as LeftOut | undefined)}` : ""}{link && <>: <a href={link}>download it</a></>}</>;
   if (job.kind === "vocabulary") {
     const on = typeof a.vocabulary === "string" ? known.published?.get(a.vocabulary) : undefined;
     if (on) return <>the vocabulary is trained and {on.name} publishes it: <a href={href(["download", on.id])}>build a corpus</a></>;

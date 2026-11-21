@@ -36,10 +36,10 @@
 import { Button, ButtonLink, Dialog, Select, Skeleton, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { get, part, post, type Answer } from "../api";
-import { characters, Cut, Help, local, MoreMenu, optional, ownLibraries, Outcome, PageHead, plural, Problems, required, RequiredNote, requiredGroup, Section, figures, SHARES_NOTE, Since, SUMMED_NOTE, useLibraries, useMeasure, type Dataset, type MeasureState } from "../parts";
+import { characters, Cut, heldOf, Help, itemKinds, kindHeld, local, MoreMenu, optional, ownLibraries, Outcome, PageHead, PLAIN, plural, Problems, required, RequiredNote, requiredGroup, Section, figures, SHARES_NOTE, Since, SUMMED_NOTE, TAKEN, takenNames, takenShare, useLibraries, useMeasure, type Dataset, type MeasureState } from "../parts";
 import { href } from "../route";
 import { TickList } from "../ticks";
-import { asked, ITEMS, mixLine, whole } from "../mix";
+import { asked, mixLine, whole } from "../mix";
 import { publishVocabulary, StageMark, StepButton, standing, trainedWords, useCorpora, usePipelineChange, useRecipesAndVocabularies, type Trained } from "../pipeline";
 import { Stages, type Shown } from "../stages";
 import type { Page } from "./index";
@@ -316,7 +316,7 @@ function HoldsLine({ libraries, found: state }: { libraries: string[]; found: Me
   return (
     <span className="small" role="status">
       {plural(found.texts, "text")} · {characters(found.characters)}
-      {found.mix && <> · keeps {chars(found.mix.kept_characters + found.items.characters)}{limiting && <>, limited by {limiting.tag}</>}</>}
+      {found.mix && <> · keeps {chars(found.mix.kept_characters + heldOf(found, TAKEN).characters)}{limiting && <>, limited by {limiting.tag}</>}</>}
     </span>
   );
 }
@@ -336,7 +336,9 @@ function HoldsView({ libraries, shares, found: state }: { libraries: string[]; s
         <table className="ledger-table" aria-label="What its libraries hold">
           <thead><tr><th scope="col">part</th><th scope="col" className="number">its part</th><th scope="col" className="number">texts</th><th scope="col" className="number">characters</th>{found.mix && <th scope="col" className="number" title="What a corpus of every token keeps; a size limit keeps less">kept, no size limit</th>}</tr></thead>
           <tbody>
-            <tr><td>{ITEMS}</td><td className="number ledger">~{whole(found.mix ? found.mix.items_share : found.items.bytes / ((found.items.bytes + found.plain.bytes) || 1))} of all</td><td className="number ledger">{found.items.texts.toLocaleString("en")}</td><td className="number">{chars(found.items.characters)}</td>{found.mix && <td className="number">all</td>}</tr>
+            {itemKinds(found, true).map(([k, h]) => (
+              <tr key={k}><td>{k}s</td><td className="number ledger">~{whole(takenShare(found, k))} of all</td><td className="number ledger">{h.texts.toLocaleString("en")}</td><td className="number">{chars(h.characters)}</td>{found.mix && <td className="number">all</td>}</tr>
+            ))}
             {found.shares.length ? found.shares.map((s) => (
               <tr key={s.tag}>
                 <td className={s.texts === 0 ? "not-allowed" : undefined}>{s.limits ? <strong title="It keeps all its texts and holds the other shares down">{s.tag}, scarcest</strong> : s.tag}</td>
@@ -345,9 +347,9 @@ function HoldsView({ libraries, shares, found: state }: { libraries: string[]; s
                 <td className="number">{chars(s.characters)}</td>
                 {found.mix && <td className="number">{s.texts > 0 ? kept(s.characters, s.kept_characters) : ""}</td>}
               </tr>
-            )) : <tr><td>plain texts</td><td className="number ledger">the rest</td><td className="number ledger">{found.plain.texts.toLocaleString("en")}</td><td className="number">{chars(found.plain.characters)}</td></tr>}
+            )) : <tr><td>plain texts</td><td className="number ledger">the rest</td><td className="number ledger">{kindHeld(found, PLAIN).texts.toLocaleString("en")}</td><td className="number">{chars(kindHeld(found, PLAIN).characters)}</td></tr>}
             {found.unshared && found.unshared.texts > 0 && <tr className="aside"><td>no share: left out</td><td></td><td className="number ledger">{found.unshared.texts.toLocaleString("en")}</td><td className="number">{chars(found.unshared.characters)}</td>{found.mix && <td></td>}</tr>}
-            {found.other.texts > 0 && <tr className="aside"><td>other kinds: left out</td><td></td><td className="number ledger">{found.other.texts.toLocaleString("en")}</td><td className="number">{chars(found.other.characters)}</td>{found.mix && <td></td>}</tr>}
+            {itemKinds(found, false).map(([k, h]) => <tr key={k} className="aside"><td>kind {k}: left out</td><td></td><td className="number ledger">{h.texts.toLocaleString("en")}</td><td className="number">{chars(h.characters)}</td>{found.mix && <td></td>}</tr>)}
           </tbody>
         </table>
       </div>
@@ -373,11 +375,11 @@ function sizeSplit(limit: string, shares: { tag: string; share: number }[], stat
   if (!limit.trim() || !(size >= 1)) return undefined;
   const found = figures(state);
   if (!found) return undefined;
-  const itemShare = found.mix ? found.mix.items_share : found.items.bytes / ((found.items.bytes + found.plain.bytes) || 1);
+  const itemShare = takenShare(found);
   const items = Math.floor(size * itemShare);
   const whole = shares.reduce((t, s) => t + s.share, 0) || 1;
   const about = (n: number) => `~${Math.round(n).toLocaleString("en")}`;
-  const parts = [...(items > 0 ? [`${ITEMS} ${about(items)}`] : []),
+  const parts = [...(items > 0 ? [`${takenNames(found)} ${about(items)}`] : []),
     ...(shares.length ? shares.map((s) => `${s.tag} ${about((size - items) * s.share / whole)}`) : [`plain ${about(size - items)}`])];
   return parts.join(" · ");
 }

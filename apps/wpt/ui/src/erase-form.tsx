@@ -7,15 +7,15 @@
 import { Checkbox, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useMemo, useState, type ReactNode } from "react";
 import { post, type Answer } from "./api";
-import { Confirm, only, Outcome, required, RequiredNote, type Declaration } from "./parts";
+import { Confirm, only, Outcome, PLAIN, required, RequiredNote, type Declaration } from "./parts";
 import { codePoints, resolve, slice, TextViewer, type Mark } from "./reader";
 import { href } from "./route";
 
 // What the form needs of a text: its id, and its text, or its kind and content as JSON text.
-export type Erasable = { id: string; kind: string | null; text: string | null; content: string | null };
+export type Erasable = { id: string; kind: string; text: string | null; content: string | null };
 
 export function EraseForm({ row, onDone }: { row: Erasable; onDone: (words: ReactNode) => void }) {
-  const item = row.kind !== null;
+  const item = row.kind !== PLAIN;
   const content = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
   const text = row.text ?? "";
   const length = item ? 0 : codePoints(text);

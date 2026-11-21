@@ -90,6 +90,7 @@ from wpt_training import Environment, Stage, StepFailed, agentic, tagged
 from wpt_utils.lines import WARNING
 
 GIVES = "attempts"
+KINDS = ("task",)  # the kinds of texts it reads (wpt_depot.kinds)
 REWARDS = ("weighed", "shorter")
 SETTINGS = {
     "tag": "finish-tasks",  # the tasks it plays
@@ -132,7 +133,7 @@ def lines(record, store, tag) -> list[str]:
     return [line for line, task in found if (task["depot"], task["id"]) in wanted]
 
 
-def check_corpus(settings, record, store):
+def check_corpus(settings, record, store, kinds):
     if not lines(record, store, settings["tag"]):
         raise ValueError(f"no tasks: the corpus holds none tagged {settings['tag']}")
 
@@ -154,7 +155,7 @@ class AgentTasks:
             self.built, self.pools = wpt_agent.ready(sorted({task.image for task in self.tasks}))
         except (InvalidTask, wpt_agent.Unready) as error:
             raise StepFailed(str(error)) from None
-        self.learned = {"tasks": len(self.tasks)}
+        self.learned = dict.fromkeys(context.kinds, len(self.tasks))
         self.references = None  # {task id: (best start score, reference length)}, with reward "shorter"
         self.lines = {"folder": context.telemetry.folder and str(context.telemetry.folder), "count": 0}
         self.round = _Round()

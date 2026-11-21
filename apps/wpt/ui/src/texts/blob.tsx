@@ -15,20 +15,20 @@ import { Button, Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { post, type Answer } from "../api";
 import { body, type Order, type Place, type TextFilter } from "../filter";
-import { plural, Problems, textName } from "../parts";
+import { plural, PLAIN, Problems, textName } from "../parts";
 import { codePoints } from "../reader";
 import { isConversation, Transcript } from "../transcript";
 
 // A passage's content as a conversation, when it is one read whole, else null.
 function conversationOf(r: Passage): unknown {
-  if (r.kind === null || codePoints(r.passage) < r.length) return null;
+  if (r.kind === PLAIN || codePoints(r.passage) < r.length) return null;
   try {
     const content = JSON.parse(r.passage);
     return isConversation(content) ? content : null;
   } catch { return null; }
 }
 
-type Passage = { id: string; kind: string | null; title: string | null; length: number; passage: string };
+type Passage = { id: string; kind: string; title: string | null; length: number; passage: string };
 type Page = { rows: Passage[]; next: Place | null };
 
 const TEXTS = 50; // texts a page holds at most

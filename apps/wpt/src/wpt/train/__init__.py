@@ -35,8 +35,8 @@ refuses the run, naming the triple and the dataset's download page; when that co
 from an older revision of the dataset than the current one, training uses
 it and warns, naming both revisions. A corpus of another depot or dataset
 than the recipe's is refused. It holds everything the
-steps read: the token files of plain texts and of conversations, and the
-tasks. Training never builds anything and writes nothing to the depot: it
+steps read, by kind of texts, each step reading the kinds it names: the
+token files of plain texts and of conversations, and the tasks. Training never builds anything and writes nothing to the depot: it
 reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
 locked parts, and that the corpus holds something for each step to learn
 from are checked before any step runs. The data part's total_tokens is the
@@ -204,6 +204,7 @@ from pathlib import Path
 
 from wpt_depot import corpora
 from wpt_depot.errors import DepotError
+from wpt_depot.kinds import PLAIN
 from wpt_depot.notice import model_notice
 from wpt_inference import COSTS_FILE
 from wpt_inference.drafting import settings as drafter_settings
@@ -386,7 +387,9 @@ def find_corpus(store, given, data, log=say) -> dict:
     the current one. InputError when the store holds no such corpus, the
     dataset publishes no vocabulary, or that triple is not built: the
     message names the triple and the dataset's download page, and nothing
-    is built or queued."""
+    is built or queued; when the triple's latest corpus is one that does
+    not list its token files by kind, the message gives the build that
+    makes it again, as check_record does."""
     dataset = None
     try:
         if given is not None:
@@ -410,6 +413,12 @@ def find_corpus(store, given, data, log=say) -> dict:
                 raise InputError(f"the corpus of the dataset {dataset['name']!r} cannot be found "
                                  f"({type(error).__name__}: {error})") from None
             if found is None:
+                older = corpora.latest(store, data["depot"], dataset["id"], vocabulary, size)
+                if older is not None and not corpora.by_kind(older) and not {"stale", "deleted"} & older.keys():
+                    raise InputError(f"corpus {older['id']} does not list its token files by kind, which each "
+                                     f"training step reads: build the dataset {dataset['name']!r} again with "
+                                     f"`wpt depot build {dataset['name']} --max-tokens {size}`, or on its download "
+                                     f"page {page}")
                 raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
                                  f"{data['depot']!r} with its published vocabulary {vocabulary} at the size "
                                  f"{size:,} (the recipe's total_tokens) in {store}: build it on its download page "
@@ -452,7 +461,13 @@ def check_record(record, recipe):
     admitted erasure reached a text it was built from), or it holds fewer
     tokens of plain text than the data part's total_tokens and was not
     built at that size (built_for: such a corpus gives its conversations
-    and tasks their share of the size, and training reads what it holds)."""
+    and tasks their share of the size, and training reads what it holds),
+    or it does not list its token files by kind, which each step reads
+    (corpora.by_kind)."""
+    if not corpora.by_kind(record):
+        raise InputError(f"corpus {record['id']} does not list its token files by kind, which each training step "
+                         f"reads: build the dataset {record['dataset']['name']!r} again with `wpt depot build "
+                         f"{record['dataset']['name']} --max-tokens {recipe['data']['total_tokens']}`")
     if "stale" in record:
         page = recipe_depot.download_page(recipe["data"]["depot"], record["dataset"]["id"])
         raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
@@ -521,26 +536,31 @@ def check_corpus(steps, record, store):
             raise InputError(f"step {number} {step.name}: {error}") from None
 
 
-# the part of the corpus record's `fingerprints` that a step reads, by the kind of examples it learns from
-PART_READ = {WINDOWS: "text", "conversations": "conversations", "attempts": "tasks"}
-
-
 def fingerprints(steps, model_config, record, seed, code) -> list[str]:
     """Each step's fingerprint, in order: the previous step's (for the first,
     the initial weights': the model's shape and vocabulary size, without
     block_size, which no weight depends on and a later step may change),
     the step (wpt_training.Step.record: its files, method, environment,
-    optimizer, settings and locked parts), the fingerprint of the part of
-    the corpus it reads (the record's `fingerprints`), the recipe's seed
+    optimizer, settings, locked parts and kinds of texts), the fingerprints
+    of what the corpus holds of each kind of texts it reads, in the order
+    it names them (the record's `fingerprints`; InputError for a kind it
+    does not record), the recipe's seed
     and the code (code, wpt_utils.programs.code()). The step's position in the list, which its draws
     mix into the seed, is the length of the chain before it. No option is
     part of it."""
     shape = {key: value for key, value in asdict(model_config).items() if key != "block_size"}
     previous = fingerprint({"initial": shape})
     found = []
-    for step in steps:
+    held = record.get("fingerprints", {})
+    for number, step in enumerate(steps, 1):
+        missing = [kind for kind in step.kinds if kind not in held]
+        if missing:
+            raise InputError(f"step {number} {step.name} reads texts of the kind {', '.join(missing)}, of which corpus "
+                             f"{record.get('id', '')} records no fingerprint: no corpus build keeps that kind as one "
+                             f"a step reads (kinds of a corpus: {', '.join(sorted(held)) or 'none'})")
         previous = fingerprint({"previous": previous, "step": step.record(),
-                                "data": record["fingerprints"][PART_READ[step.reads]], "seed": seed, "code": code})
+                                "data": [held[kind] for kind in step.kinds], "seed": seed,
+                                "code": code})
         found.append(previous)
     return found
 
@@ -578,9 +598,9 @@ class StepResults:
 
 
 def learned(done) -> dict:
-    """What of the corpus the steps learned from, together: the most plain
-    text tokens one read from the start, and the conversations and tasks
-    (wpt_training.Environment.learned)."""
+    """What of the corpus the steps learned from, together, by kind of
+    texts: the most tokens of plain text one read from the start, and the
+    most conversations and tasks one read (wpt_training.Environment.learned)."""
     found = {}
     for step in done:
         for part, count in step["learned"].items():
@@ -601,7 +621,7 @@ def provenance(args, recipe, record, model_config, n_params, worker, strategy_fi
         "learned": learned(done),  # what of the corpus the steps learned from
         "texts": texts,
         "vocabulary": record["tokenizer"]["vocabulary"],
-        "shards": [{name: s[name] for name in SHARD_FIELDS} for s in record["shards"]],
+        "shards": [{name: s[name] for name in SHARD_FIELDS} for s in record["shards"][PLAIN]],
         "options": {k: v for k, v in vars(args).items() if k not in ("recipe", "corpus")},  # how the hardware ran it
         "strategy": {"name": strategy_file.name, "file": strategy_file.file, "file_sha256": strategy_file.sha256,
                      "processes": processes},
@@ -928,7 +948,7 @@ def _train(args, record, recipe, strategy_file, steps, context, store, telemetry
                 raise Refused(f"{checkpoint} holds an unfinished step: add --resume to continue it, or delete it")
             tokenizer = load_corpus(store, record, recipe)
             check_corpus(steps, record, store)  # what every step reads is there before the first one trains
-            span.set(shards=len(record["shards"]), conversations=record["conversations"],
+            span.set(shards=len(record["shards"][PLAIN]), conversations=record["conversations"],
                      tasks=record.get("tasks", {}).get("count", 0))
         telemetry.input(recipe=args.recipe, corpus=record["id"], vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
     except (StoreError, InputError) as error:

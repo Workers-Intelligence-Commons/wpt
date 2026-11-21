@@ -16,8 +16,9 @@ the store as soon as it is full, with the part of the texts table that
 lists its texts, and its local copies deleted, so the memory and the local
 disk the build takes stay bounded whatever the dataset's size: one token
 file of each kind and one part of the texts table at a time, the
-tasks.jsonl it writes and the ids of the licenses and notices its texts
-name (named.sqlite). After each upload it hands its caller the state that
+tasks.jsonl it writes, the ids of the licenses and notices its texts
+name, the conversations it passed and the plain texts it took
+(named.sqlite). After each upload it hands its caller the state that
 resumes it (checkpoint): a build started again with that state and the
 same work folder goes on from the first text after the last token file
 uploaded, and writes the same bytes as a build that never stopped.
@@ -49,6 +50,20 @@ pieces (wpt_depot.pieces), each at its own place of the order and counted
 as a text of its own by every rule below, so a long text, such as a
 repository the depot holds as one text, spreads over the corpus, and a
 corpus of any size takes about its share of it. An item is never cut.
+
+A conversation depends on every text its excerpts quote
+(wpt_depot.quotes), which nobody declares: the corpus takes it only when
+it takes each quoted text, a plain text of the conversation's own depot,
+and, of a text taken as pieces, every piece the passage lies in, and only
+when each excerpt's selector matches exactly one place of the content
+version it took. Otherwise the conversation is left out, as `quoted text
+left out` or `quote unmatched` in left_out. So the walk passes the
+conversations by, keeping their places in the work folder (held) with the
+plain texts it takes (taken), and once it ends takes them in its order
+(_resolve), HELD_PAGE at a time: the workers read and tokenize them, then
+read each quoted content version once for all the excerpts of the page
+that quote it, as its parts, never whole. Every
+rule reads the depot alone, so the same depot builds the same corpus.
 
 Every limit below is filled the same way (wpt_depot.fill.Fill), but for a
 share that splits its budget by group: the texts come in order, a text that
@@ -107,13 +122,16 @@ own characters alone (wpt_depot.pieces.read) and encoded as a text of its
 own. A plain text or a piece becomes tokens followed by END; a
 conversation becomes the tokens of the chat template (wpt_tokenizer.chat),
 which start with END and mark nothing: what the assistant wrote is told by
-the template's special tokens. Both go into token files in the store's
-shard format, the plain texts' and the conversations' apart, each row one
-text or one piece, its `source` its depot's name (below), its `document`
+the template's special tokens, and each excerpt is written as the passage
+it quotes. Both go into token files in the store's shard format, kept by
+kind (TOKEN_KINDS: plain and conversation), each token file holding texts
+of one kind, each row one text or one piece, its `source` its depot's
+name (below), its `document`
 the text's id there or the piece's name (wpt_depot.pieces.name), its
 `pool` the share's tag (empty without shares) and its `pass` 0. A
 token file closes once it holds SHARD_TOKENS tokens, and closes the other
-kind's with it. A task is kept as one JSON line of tasks.jsonl.
+kind's with it. A task, of kind task, is kept as one JSON line of
+tasks.jsonl, never tokenized.
 
 The corpus's tables are Parquet files (CORPUS_SCHEMAS): the dataset's row
 (its id and revision included, its max_tokens the build's size) copied with
@@ -124,7 +142,9 @@ whole text) and `tokens`, the
 position of its first token over the token files of its own kind in order
 (a task's: its line in tasks.jsonl), in parts, one uploaded with each
 token file, in the corpus's order; a piece taken has a row of its own,
-`piece` its number, with its text's credits; the licenses its texts name; the
+`piece` its number, with its text's credits; a conversation's row names the
+texts it quotes (`quotes`), each in the corpus with its own row, credits,
+licenses and notice; the licenses its texts name; the
 notices (ids carry their depot's name, so they are copied as they are).
 Every text taken is in the corpus once, whole or as some of its pieces,
 each piece once (shares_tokens in the record says how many tokens each
@@ -162,15 +182,19 @@ gives the same id. The record names the depot that holds the dataset (its
 name), the dataset's row (its id and the revision built from included),
 the vocabulary (its recipe, version, file and sha256), the size
 (max_tokens, null for none), the number of texts (a text taken as pieces
-counting once), of pieces and of conversations it holds, what it left out
+counting once), of pieces and of conversations it holds, its token files
+by kind (shards: {kind: [token file]}, each kind of TOKEN_KINDS), what it left out
 (left_out: plain texts no share takes, plain texts of which it took
-nothing, items it left out, items of other kinds), the
+nothing, items max_tokens left out, conversations whose quoted text it
+left out, conversations whose quote is unmatched, and the items of each
+kind no step reads by kind: "kinds not taken", {kind: texts}), the
 tokens of its items (items_tokens: its conversations' and its tasks'), the
-size of every file, and a fingerprint of each part a training step reads,
-`fingerprints`: "text" (the vocabulary and the plain texts' token files),
-"conversations" (the vocabulary and the conversations' token files) and
-"tasks" (the vocabulary and tasks.jsonl), so a step's result is found again
-only for the same part. A corpus whose record exists and is fresh is not
+size of every file, and a fingerprint of what it holds of each kind a
+training step may read, `fingerprints`: "plain" (the vocabulary and the
+plain texts' token files), "conversation" (the vocabulary and the
+conversations' token files) and "task" (the vocabulary and tasks.jsonl),
+so a step's result is found again only for the same kinds it reads
+(docs/training.md, "Steps"). A corpus whose record exists and is fresh is not
 built again (wpt_depot.corpora says what the store keeps of corpora).
 
 An erasure carried out while the build ran is checked before the record is
@@ -212,11 +236,12 @@ from wpt_utils.lines import say
 from wpt_utils.parallel import Sizing, in_order, process_pool
 from wpt_utils import web
 
-from . import corpora, counts, groups, pieces
+from . import corpora, counts, groups, pieces, quotes
 from .depot import Depot, location
 from .errors import NotADepot, NotFound, Refused, UpstreamUnreachable
 from .fill import Fill
 from .follow import Upstream
+from .kinds import PLAIN
 from .order import HIGHEST, LOWEST, TRAINING_KINDS, long_texts, walk
 from .parts import Parted, scan
 
@@ -224,6 +249,8 @@ SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
 WHITESPACE = b" \t\n\r\x0b\x0c"  # the bytes the tokenizer's chunks treat as whitespace (wpt_tokenizer)
 WHITESPACE_BYTES = np.frombuffer(WHITESPACE, np.uint8)
 FOLDER, RECORD = corpora.FOLDER, corpora.RECORD
+HELD_PAGE = 1000  # conversations the build reads from its work folder at a time once the walk ends
+LEFT_OUT, UNMATCHED = "quoted text left out", "quote unmatched"  # why a conversation is left out (_resolve)
 BATCH_BYTES = 8 << 20  # bytes of texts one worker's item reads and tokenizes
 BATCH_TEXTS = 4096  # texts one worker's item holds at most
 SAMPLE_TIMEOUT = 600  # seconds a read of a remote sample may wait for its next bytes
@@ -240,17 +267,19 @@ CORPUS_SCHEMAS = {
                           pa.field("libraries", pa.list_(LIBRARY_REF), False), pa.field("shares", pa.list_(SHARE)),
                           pa.field("max_tokens", pa.int64()), pa.field("built_at", TIME, False)]),
     "texts": pa.schema([pa.field("depot", pa.string(), False), pa.field("id", pa.string(), False),
-                        pa.field("revision", pa.int64(), False), pa.field("kind", pa.string()),
+                        pa.field("revision", pa.int64(), False), pa.field("kind", pa.string(), False),
                         pa.field("title", pa.string()), pa.field("authors", NAMES),
                         pa.field("address", pa.string()), pa.field("licenses", NAMES, False),
                         pa.field("tags", NAMES, False), pa.field("notice", pa.string()),
                         pa.field("tokens", pa.int64(), False), pa.field("scores", SCORES),
-                        pa.field("piece", pa.int64())]),
+                        pa.field("piece", pa.int64()), pa.field("quotes", NAMES)]),
     "licenses": pa.schema([pa.field("id", pa.string(), False), pa.field("name", pa.string(), False),
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
 }
-RULES = 6  # the version of the rules of what a build takes, in the build's key: raised whenever they change
+RULES = 7  # the version of the rules of what a build takes, in the build's key: raised whenever they change
+# the kinds a corpus holds as token files, each kind's apart (a task is a line of tasks.jsonl, never tokenized)
+TOKEN_KINDS = (PLAIN, "conversation")
 CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", "scores")  # what a text's row copies
 
 
@@ -307,7 +336,7 @@ def sample(depot: Depot, name: str, sample_bytes: int) -> Iterator[tuple[str, st
     for entry in walk(libraries, _tags(shares), long=long):
         if fill.done() and picker.done():
             break
-        if not entry.taken or entry.kind is not None:
+        if not entry.taken or entry.kind != PLAIN:
             continue
         if picker.covers(entry.pool):
             if not picker.pick(entry.pool)[1]:
@@ -510,9 +539,11 @@ def census(depot: Depot, dataset: dict, libraries: list[tuple], progress=lambda 
     """What a corpus of depot's dataset (its row) may take whatever its
     size: {pool_bytes: {pool: the bytes of the plain texts of that pool
     (wpt_depot.order)}, plain: how many such texts, item_bytes and items:
-    the bytes and number of the conversations and tasks, no_share: the
-    plain texts no share takes, other: the items of the other kinds,
-    texts: every text, known: whether they come from stored figures}, all
+    the bytes and number of the conversations and tasks (TRAINING_KINDS),
+    no_share: the plain texts no share takes, other: the items of the
+    kinds a corpus does not take, kinds: {kind: {texts, bytes}} of each
+    kind on its own, texts: every text, known: whether they come from
+    stored figures}, all
     from the figures of the dataset's libraries summed (counts.summed),
     which count a text two libraries hold once for each, and a plain text
     with several tags of the shares once for each of them (in each of
@@ -531,14 +562,18 @@ def census(depot: Depot, dataset: dict, libraries: list[tuple], progress=lambda 
     if not known:
         read = [0]
         measure = counts.summed([_library_figures(one, tags, read, progress) for one in libraries], tags)
+    kinds = measure["kinds"]
     if shares is None:
-        pool_bytes, plain, no_share = {0: measure["plain"]["bytes"]}, measure["plain"]["texts"], 0
+        pool_bytes, plain, no_share = {0: kinds[PLAIN]["bytes"]}, kinds[PLAIN]["texts"], 0
     else:
         pool_bytes = {at: one["bytes"] for at, one in enumerate(measure["shares"])}
         plain = sum(one["texts"] for one in measure["shares"])
         no_share = measure["unshared"]["texts"]
-    return {"pool_bytes": pool_bytes, "plain": plain, "item_bytes": measure["items"]["bytes"],
-            "items": measure["items"]["texts"], "no_share": no_share, "other": measure["other"]["texts"],
+    items = counts.among(kinds, TRAINING_KINDS)
+    other = counts.among(kinds, set(kinds) - {PLAIN, *TRAINING_KINDS})
+    return {"pool_bytes": pool_bytes, "plain": plain, "item_bytes": items["bytes"], "items": items["texts"],
+            "no_share": no_share, "other": other["texts"],
+            "kinds": {kind: {"texts": one["texts"], "bytes": one["bytes"]} for kind, one in kinds.items()},
             "texts": measure["texts"], "known": known}
 
 
@@ -550,12 +585,11 @@ def _library_figures(library: tuple, tags: list[str], read: list[int], progress)
     calls, progress getting {stage: "measuring", texts read} every
     MEASURED of them."""
     _, held, name, change = library
-    kinds = {kind: dict.fromkeys(counts.COLUMNS, 0) for kind in counts.KINDS}
+    kinds = {PLAIN: dict.fromkeys(counts.COLUMNS, 0)}
     tagged = [dict.fromkeys(counts.COLUMNS, 0) for _ in tags]
     for _, _, _, kind, text_tags, size in held.library_range(name, change, LOWEST, HIGHEST):
-        what = "plain" if kind is None else "items" if kind in TRAINING_KINDS else "other"
-        into = [kinds[what]]
-        if kind is None:
+        into = [kinds.setdefault(kind, dict.fromkeys(counts.COLUMNS, 0))]
+        if kind == PLAIN:
             held_tags = json.loads(text_tags or "[]")
             into += [tagged[at] for at, tag in enumerate(tags) if tag in held_tags]
         for one in into:
@@ -564,7 +598,7 @@ def _library_figures(library: tuple, tags: list[str], read: list[int], progress)
         read[0] += 1
         if read[0] % MEASURED == 0:
             progress({"stage": "measuring", "texts read": read[0]})
-    return kinds | {"tags": tagged}
+    return {"kinds": kinds, "tags": tagged}
 
 
 # What one worker of the build holds: the vocabulary and the depots it read, opened once in each process
@@ -593,7 +627,7 @@ def _tokenized(batch: list[tuple]) -> list[tuple]:
         if source is None:
             source = depots[address] = Depot.view(address)
         row = source.listed_text(text, revision)
-        encoder, held = (_Encoder(tokenizer), None) if kind is None else (None, [])
+        encoder, held = (_Encoder(tokenizer), None) if kind == PLAIN else (None, [])
         if piece is not None:
             encoder.feed(pieces.read(Parted(source.reader(), text, row["parts"]), piece))
         else:
@@ -604,7 +638,7 @@ def _tokenized(batch: list[tuple]) -> list[tuple]:
                     encoder.feed(value)
                 else:
                     held.append(value)
-        if kind is None:
+        if kind == PLAIN:
             data = np.concatenate([encoder.finish(), np.array([END], np.uint32)])
         elif kind == "conversation":
             data = np.asarray(chat.encode(tokenizer, json.loads("".join(held)))[0], np.uint32)
@@ -614,11 +648,52 @@ def _tokenized(batch: list[tuple]) -> list[tuple]:
     return found
 
 
+def _opened(address: str) -> Depot:
+    """The depot of that file as this worker read it, opened once."""
+    depots = _HELD["depots"]
+    if address not in depots:
+        depots[address] = Depot.view(address)
+    return depots[address]
+
+
+def _conversations(batch: list[tuple]) -> list[tuple]:
+    """For each (its depot's file, id, revision) of a conversation of batch:
+    (its credits row, its tokens of the chat template, its excerpts as
+    (the quoted text's id, the selector), in order), in order."""
+    found = []
+    for address, text, revision in batch:
+        source = _opened(address)
+        row = source.listed_text(text, revision)
+        conversation = json.loads("".join(value for _, value in scan(source.reader(), {text: row["parts"]})
+                                          if value is not None))
+        data = np.asarray(chat.encode(_HELD["tokenizer"], conversation)[0], np.uint32)
+        found.append(({key: row[key] for key in CREDITS}, data,
+                      [(block["source"], block["selector"]) for block in quotes.excerpts(conversation)]))
+    return found
+
+
+def _matched(batch: list[tuple]) -> list[list]:
+    """For each (its depot's file, id, revision, whether the corpus took it
+    as pieces, selectors) of a quoted plain text of batch: for each
+    selector, in order, None when it matches no place or several of that
+    content version (wpt_depot.quotes), else the pieces its passage lies in
+    (wpt_depot.pieces.holding; none for a text taken whole); the text read
+    once for all its selectors."""
+    found = []
+    for address, text, revision, pieced, selectors in batch:
+        source = _opened(address)
+        document = Parted(source.reader(), text, source.listed_text(text, revision)["parts"])
+        found.append([None if len(places) != 1 else
+                      pieces.holding(document, places[0], places[0] + len(selector["exact"])) if pieced else []
+                      for selector, places in zip(selectors, quotes.find_each(document, selectors))])
+    return found
+
+
 def _plain_counted(batch: list[tuple]) -> list[int]:
     """For each (its depot's file, id, revision, piece) of a plain text or
     a piece of batch: the tokens it takes in the corpus, END included, as
     _tokenized gives them, in order."""
-    return [len(data) for _, data in _tokenized([(address, text, revision, None, True, piece)
+    return [len(data) for _, data in _tokenized([(address, text, revision, PLAIN, True, piece)
                                                  for address, text, revision, piece in batch])]
 
 
@@ -684,7 +759,10 @@ def mixed(found: dict, shares: list[dict]) -> dict:
     takes nothing, and the others are measured among themselves) and
     limits (true on the share that keeps all it holds while another keeps
     less); mix: {kept_bytes, kept_characters of plain text, items_share:
-    the share of the bytes the conversations and tasks hold then}."""
+    the share of the bytes the conversations and tasks hold then, the part
+    of a size the build gives them together, kind_shares: {kind: its own
+    share of those bytes} for each kind beside plain a corpus takes
+    (TRAINING_KINDS)}."""
     if not shares:
         return {**found, "mix": None}
     held = {at: one["bytes"] for at, one in enumerate(found["shares"]) if shares[at]["share"] > 0}
@@ -695,10 +773,13 @@ def mixed(found: dict, shares: list[dict]) -> dict:
              "kept_characters": round(one["characters"] * kept[at] / one["bytes"]) if one["bytes"] else 0,
              "limits": at in scarcest} for at, one in enumerate(found["shares"])]
     plain = sum(one["kept_bytes"] for one in rows)
-    items = found["items"]["bytes"]
+    items = counts.among(found["kinds"], TRAINING_KINDS)["bytes"]
+    whole = items + plain
     return {**found, "shares": rows, "mix": {
         "kept_bytes": plain, "kept_characters": sum(one["kept_characters"] for one in rows),
-        "items_share": items / (items + plain) if items + plain else 0}}
+        "items_share": items / whole if whole else 0,
+        "kind_shares": {kind: counts.among(found["kinds"], [kind])["bytes"] / whole if whole else 0
+                        for kind in TRAINING_KINDS}}}
 
 
 def revision_figures(depot: Depot, dataset: dict) -> dict:
@@ -773,6 +854,12 @@ class _Build:
         try:
             named.execute("CREATE TABLE IF NOT EXISTS named (kind TEXT NOT NULL, id TEXT NOT NULL, "
                           "PRIMARY KEY (kind, id)) WITHOUT ROWID")
+            # the conversations the walk passed, by their place in it, and the plain texts it took (piece -1: whole)
+            named.execute("CREATE TABLE IF NOT EXISTS held (walked INTEGER NOT NULL PRIMARY KEY, source TEXT NOT NULL, "
+                          "id TEXT NOT NULL, revision INTEGER NOT NULL, bytes INTEGER NOT NULL)")
+            named.execute("CREATE TABLE IF NOT EXISTS taken (source TEXT NOT NULL, id TEXT NOT NULL, "
+                          "piece INTEGER NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY (source, id, piece)) "
+                          "WITHOUT ROWID")
             return self._stream(named)
         finally:
             named.close()
@@ -783,12 +870,13 @@ class _Build:
             self.log(f"{len(gone)} files this build uploaded are no longer in the store: it starts over")
             state = {}
         if state.get("key") != self.key:  # a state of another build starts nothing
-            state = {"key": self.key, "after": None, "walked": 0, "items": None, "shards": [],
-                     "conversation_shards": [], "texts": [], "tasks": 0, "tasks_count": 0, "pools": {}, "fill": None,
-                     "taken": 0, "whole": 0, "pieces": 0, "conversations": 0, "text_position": 0,
-                     "conversation_position": 0, "items_tokens": 0, "plan": None, "seen": 0, "covered": {},
-                     "groups": {}}
-            named_file.execute("DELETE FROM named")
+            state = {"key": self.key, "after": None, "walked": 0, "items": None,
+                     "shards": {kind: [] for kind in TOKEN_KINDS}, "positions": dict.fromkeys(TOKEN_KINDS, 0),
+                     "texts": [], "tasks": 0, "tasks_count": 0, "pools": {}, "fill": None, "taken": 0, "whole": 0,
+                     "pieces": 0, "conversations": 0, "items_tokens": 0, "plan": None, "seen": 0, "covered": {},
+                     "groups": {}, "resolved": 0, "unquoted": {LEFT_OUT: 0, UNMATCHED: 0}, "dropped_tokens": 0}
+            for table in ("named", "held", "taken"):
+                named_file.execute(f"DELETE FROM {table}")
         shares = self.dataset["shares"]
         limit = self.limit
         if state["items"] is None:  # with a limit, the items take their share of it first (_limit_items)
@@ -821,9 +909,10 @@ class _Build:
         tasks_path = self.work / "tasks.jsonl"
         with open(tasks_path, "ab") as tasks_file:
             tasks_file.truncate(state["tasks"])
-        writers = {"text": _Shards(self.work, "text", state["text_position"]),
-                   "conversation": _Shards(self.work, "conversation", state["conversation_position"])}
+        writers = {kind: _Shards(self.work, kind, state["positions"][kind]) for kind in TOKEN_KINDS}
         credits, named, credit_bytes = [], set(), [0]
+        held_rows, taken_rows = [], []  # the conversations passed and the plain texts taken, since the last flush
+        keep_taken = self.census["items"] > 0  # only a conversation reads which plain texts the corpus took
         read_bytes = {"plain": 0, "items": 0}  # the bytes of the texts this run took: the size estimate's base
         plain = self.census["plain"]
 
@@ -842,10 +931,10 @@ class _Build:
                 if counted == "tokens" and fill.done() and picker.done() and (
                         last_item is None or tuple(entry.place()) > last_item):
                     break
-                if not entry.taken or (entry.kind is not None and not item_taken(entry)):
+                if not entry.taken or (entry.kind != PLAIN and not item_taken(entry)):
                     continue
                 place = None
-                if entry.kind is not None or counted is None:
+                if entry.kind != PLAIN or counted is None:
                     read = True
                 elif picker.covers(entry.pool):
                     place, read = picker.pick(entry.pool)
@@ -886,15 +975,29 @@ class _Build:
                 plain_bytes = plain_all
             return int(local * (plain_bytes + items["bytes"]) / max(read_bytes["plain"] + read_bytes["items"], 1))
 
+        def flush():
+            """Keep in the work folder the ids named, the conversations passed and the plain texts taken so far:
+            the walk gives them again, the same, after a stop."""
+            with named_file:
+                named_file.executemany("INSERT OR IGNORE INTO named (kind, id) VALUES (?, ?)", sorted(named))
+                named_file.executemany("INSERT OR IGNORE INTO held (walked, source, id, revision, bytes) "
+                                       "VALUES (?, ?, ?, ?, ?)", held_rows)
+                named_file.executemany("INSERT OR IGNORE INTO taken (source, id, piece, revision) VALUES (?, ?, ?, ?)",
+                                       taken_rows)
+            named.clear()
+            held_rows.clear()
+            taken_rows.clear()
+
         def checkpoint(after: list, walked: int, final: bool = False):
             """Upload the token files and the texts' part begun, and hand the state that resumes after them;
             before a build's first upload, the cap's check of its estimated size (Room.expect)."""
             tasks_file.flush()
             ready = []  # (local path, key in the store, the list its reference joins, what the reference adds)
-            for kind, kept in (("text", state["shards"]), ("conversation", state["conversation_shards"])):
+            for kind in TOKEN_KINDS:
                 done = writers[kind].close()
                 if done is not None:
-                    ready.append((done.pop("path"), f"{self.folder}/{done['token_sha256']}.parquet", kept, done))
+                    ready.append((done.pop("path"), f"{self.folder}/{done['token_sha256']}.parquet",
+                                  state["shards"][kind], done))
             if credits:
                 number = len(state["texts"])
                 path = self.work / f"texts-{number:05d}.parquet"
@@ -905,22 +1008,29 @@ class _Build:
                                "fingerprint": _fingerprint(credits)}))
                 credits.clear()
                 credit_bytes[0] = 0
-            if ready and not (state["shards"] or state["conversation_shards"] or state["texts"]):
+            if ready and not (any(state["shards"].values()) or state["texts"]):
                 self.room.expect(estimate(sum(path.stat().st_size for path, *_ in ready), final))
             for path, key, kept, added in ready:
                 kept.append({**upload(path, key), **added})
-            with named_file:
-                named_file.executemany("INSERT OR IGNORE INTO named (kind, id) VALUES (?, ?)", sorted(named))
-            named.clear()
+            flush()
             state["groups"] = {share: [[tag, *counted_so] for tag, counted_so in found.items()]
                                for share, found in group_counts.items()}
             state.update(after=after, walked=walked, fill=None if fill is None else fill.state(),
-                         text_position=writers["text"].position,
-                         conversation_position=writers["conversation"].position, tasks=tasks_path.stat().st_size)
+                         positions={kind: writers[kind].position for kind in TOKEN_KINDS},
+                         tasks=tasks_path.stat().st_size)
             self.save(json.loads(json.dumps(state)))
 
         with ExitStack() as stack:
             tasks_file = stack.enter_context(open(tasks_path, "ab"))
+            pool = None
+
+            def spread(work, items: list) -> list:
+                """work's results for items, in order: on the workers, in parts, when the build started them."""
+                if pool is None:
+                    return work(items)
+                step = max(1, min(BATCH_TEXTS, -(-len(items) // (2 * sizing.limit))))
+                parts = (items[at:at + step] for at in range(0, len(items), step))
+                return [one for found in in_order(work, parts, pool, sizing) for one in found]
             if sum(self.census["pool_bytes"].values()) > IN_PROCESS:
                 sizing = Sizing("tokenizing workers")
                 pool = stack.enter_context(process_pool(sizing, sizing.limit, _start_worker, (self.vocabulary,)))
@@ -936,6 +1046,9 @@ class _Build:
                 results = ((batch, _tokenized(self._items(batch))) for batch in batches())
             for batch, found in results:
                 for (entry, read, walked, place), (row, data) in zip(batch, found):
+                    if entry.kind == "conversation":  # taken once the walk knows every plain text taken (_resolve)
+                        held_rows.append((walked, self.sources[entry.source], entry.id, entry.revision, entry.bytes))
+                        continue
                     if place is not None:  # a share that chose its texts by group: the chosen ones, within its budget
                         state["seen"] = place + 1
                         if read:
@@ -945,7 +1058,7 @@ class _Build:
                                 raise AssertionError(f"the share {tags[entry.pool]} chose {entry.id}, which passes "
                                                      "its budget")
                             state["covered"][str(entry.pool)] = used
-                    elif counted is not None and entry.kind is None and (read or counted == "bytes"):
+                    elif counted is not None and entry.kind == PLAIN and (read or counted == "bytes"):
                         took = fill.take(entry.pool, len(data) if counted == "tokens" else entry.bytes)
                         if counted == "bytes" and took != read:
                             raise AssertionError(f"the limit in bytes left {entry.id} out on one pass and not the "
@@ -954,7 +1067,7 @@ class _Build:
                     if not read:
                         continue
                     source_name = self.sources[entry.source]
-                    pool_tag = tags[entry.pool] if entry.kind is None else ""
+                    pool_tag = tags[entry.pool] if entry.kind == PLAIN else ""
                     if entry.kind == "task":
                         start = state["tasks_count"]
                         content = json.loads(data.decode("utf-8"))
@@ -964,36 +1077,34 @@ class _Build:
                         if limit is None:  # with a limit, the items' tokens were counted already (_limit_items)
                             state["items_tokens"] += task_tokens(self.tokenizer, content)
                     else:
-                        kind = "text" if entry.kind is None else "conversation"
                         document = entry.id if entry.piece is None else pieces.name(entry.id, entry.piece)
-                        start = writers[kind].add(data, source_name, document, pool_tag)
-                        if entry.kind is None:
-                            state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + len(data)
-                            if shares is not None:
-                                held = named_groups.get((pool_tag, entry.tags))
-                                if held is None:
-                                    if len(named_groups) >= groups.INTERNED:
-                                        named_groups.clear()
-                                    held = named_groups[pool_tag, entry.tags] = groups.groups_of(entry.tags,
-                                                                                                 pool_tag)
-                                into = group_counts.setdefault(pool_tag, {})
-                                for tag in held:
-                                    counted_so = into.setdefault(tag, [0, 0])
-                                    counted_so[0] += 1
-                                    counted_so[1] += len(data)
-                            if entry.piece is None:
-                                state["whole"] += 1
-                            else:
-                                state["pieces"] += 1
-                                named.add(("long text", json.dumps([source_name, entry.id])))
+                        start = writers[PLAIN].add(data, source_name, document, pool_tag)
+                        state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + len(data)
+                        if shares is not None:
+                            held = named_groups.get((pool_tag, entry.tags))
+                            if held is None:
+                                if len(named_groups) >= groups.INTERNED:
+                                    named_groups.clear()
+                                held = named_groups[pool_tag, entry.tags] = groups.groups_of(entry.tags,
+                                                                                             pool_tag)
+                            into = group_counts.setdefault(pool_tag, {})
+                            for tag in held:
+                                counted_so = into.setdefault(tag, [0, 0])
+                                counted_so[0] += 1
+                                counted_so[1] += len(data)
+                        if entry.piece is None:
+                            state["whole"] += 1
                         else:
-                            state["conversations"] += 1
-                            state["items_tokens"] += len(data)
+                            state["pieces"] += 1
+                            named.add(("long text", json.dumps([source_name, entry.id])))
+                        if keep_taken:
+                            taken_rows.append((source_name, entry.id, -1 if entry.piece is None else entry.piece,
+                                               entry.revision))
                     state["taken"] += 1
                     credits.append({"depot": source_name, "id": entry.id, "revision": entry.revision, **row,
                                     "tokens": start, "piece": entry.piece})
                     credit_bytes[0] += entry.bytes
-                    read_bytes["plain" if entry.kind is None else "items"] += entry.bytes
+                    read_bytes["plain" if entry.kind == PLAIN else "items"] += entry.bytes
                     named.update(("license", one) for one in row["licenses"])
                     if row["notice"] is not None:
                         named.add(("notice", row["notice"]))
@@ -1002,14 +1113,95 @@ class _Build:
                 state["after"], state["walked"] = batch[-1][0].place(), batch[-1][2]
                 self.progress({"stage": "reading", "position": state["walked"], "of": self.walked,
                                "texts": state["taken"], "tokens": sum(state["pools"].values()),
-                               "token files": len(state["shards"]) + len(state["conversation_shards"])})
+                               "token files": sum(len(kept) for kept in state["shards"].values())})
+            flush()
+            last = state["resolved"]
+            while page := list(named_file.execute("SELECT walked, source, id, revision, bytes FROM held "
+                                                  "WHERE walked > ? ORDER BY walked LIMIT ?", (last, HELD_PAGE))):
+                resolved = self._resolve([(source_name, text, revision) for _, source_name, text, revision, _ in page],
+                                         named_file, spread)
+                for (walked_at, source_name, text, revision, size), (row, data, quoted, why) in zip(page, resolved):
+                    state["resolved"] = last = walked_at
+                    if why is not None:
+                        state["unquoted"][why] += 1
+                        state["dropped_tokens"] += len(data)
+                        continue
+                    start = writers["conversation"].add(data, source_name, text, "")
+                    state["conversations"] += 1
+                    state["items_tokens"] += len(data)
+                    state["taken"] += 1
+                    credits.append({"depot": source_name, "id": text, "revision": revision, **row, "tokens": start,
+                                    "piece": None, "quotes": quoted})
+                    credit_bytes[0] += size
+                    read_bytes["items"] += size
+                    named.update(("license", one) for one in row["licenses"])
+                    if row["notice"] is not None:
+                        named.add(("notice", row["notice"]))
+                    if writers["conversation"].full(self.shard_tokens):
+                        checkpoint(state["after"], state["walked"])
+                self.progress({"stage": "taking conversations", "conversations": state["conversations"],
+                               "left out": sum(state["unquoted"].values())})
             checkpoint(state["after"], state["walked"], final=True)
         self.progress({"stage": "finishing", "texts": state["taken"]})
         return self._finish(state, tasks_path, plain, named_file)
 
     def _items(self, batch) -> list[tuple]:
-        return [(self.opened[self.sources[entry.source]].address, entry.id, entry.revision, entry.kind, read,
-                 entry.piece) for entry, read, _, _ in batch]
+        """What the workers read of a batch (_tokenized): a conversation is read once the walk ends (_resolve)."""
+        return [(self.opened[self.sources[entry.source]].address, entry.id, entry.revision, entry.kind,
+                 read and entry.kind != "conversation", entry.piece) for entry, read, _, _ in batch]
+
+    def _resolve(self, conversations: list[tuple], named_file, spread) -> list[tuple]:
+        """For each (the name of its depot, id, revision) of a conversation of
+        conversations, in order: (its credits row, its tokens of the chat
+        template, the ids of the texts it quotes, why the corpus leaves it
+        out or None), once the walk took every plain text it takes (the
+        work folder's table taken). Each excerpt's text must be a plain text
+        the corpus took from the same depot, and its selector must match
+        exactly one place of the content version the corpus took
+        (wpt_depot.quotes); of a text taken as pieces, the corpus must hold
+        each piece the passage lies in. Otherwise it is left out, for its
+        first excerpt that fails: LEFT_OUT, or UNMATCHED for a selector that
+        matches no place or several. spread runs the reading on the
+        workers: the conversations read and tokenized (_conversations), then
+        each quoted content version read once for all the selectors on it
+        (_matched)."""
+        read = spread(_conversations, [(self.opened[name].address, text, revision)
+                                       for name, text, revision in conversations])
+        taken = {}  # (depot name, id): its rows of taken, (piece, revision)
+        asked = {}  # (depot name, id, revision, whether taken as pieces): {the selector as JSON: its place in asked}
+        for (name, _, _), (_, _, excerpts) in zip(conversations, read):
+            for source, selector in excerpts:
+                if (name, source) not in taken:
+                    taken[name, source] = list(named_file.execute(
+                        "SELECT piece, revision FROM taken WHERE source = ? AND id = ?", (name, source)))
+                rows = taken[name, source]
+                if rows:
+                    on = asked.setdefault((name, source, rows[0][1], rows[0][0] != -1), {})
+                    on.setdefault(json.dumps(selector, sort_keys=True), len(on))
+        jobs = list(asked.items())
+        matched = spread(_matched, [(self.opened[name].address, source, revision, pieced,
+                                     [json.loads(one) for one in selectors])
+                                    for (name, source, revision, pieced), selectors in jobs])
+        lying = {(key, selector): found[at] for (key, selectors), found in zip(jobs, matched)
+                 for selector, at in selectors.items()}
+        resolved = []
+        for (name, _, _), (row, data, excerpts) in zip(conversations, read):
+            why = None
+            for source, selector in excerpts:
+                rows = taken[name, source]
+                if not rows:
+                    why = LEFT_OUT
+                    break
+                pieced = rows[0][0] != -1
+                held = lying[(name, source, rows[0][1], pieced), json.dumps(selector, sort_keys=True)]
+                if held is None:
+                    why = UNMATCHED
+                    break
+                if pieced and not set(held) <= {piece for piece, _ in rows}:
+                    why = LEFT_OUT
+                    break
+            resolved.append((row, data, list(dict.fromkeys(source for source, _ in excerpts)), why))
+        return resolved
 
     def _plan(self, state: dict, budget: dict | None, counted: str | None, shares: list[dict] | None
               ) -> groups.Plan:
@@ -1071,7 +1263,7 @@ class _Build:
         def batches():
             batch, size = [], 0
             for entry in walk(self.libraries, _tags(shares), long=self.long):
-                if not entry.taken or entry.kind is None:
+                if not entry.taken or entry.kind == PLAIN:
                     continue
                 batch.append(entry)
                 size += entry.bytes
@@ -1157,8 +1349,8 @@ class _Build:
         corpus_id = _fingerprint({"dataset": _content(self.named), "dataset_id": self.dataset["id"],
                                   "vocabulary": self.vocabulary_sha256,
                                   "texts": [part["fingerprint"] for part in state["texts"]],
-                                  "text_shards": [s["token_sha256"] for s in state["shards"]],
-                                  "conversation_shards": [s["token_sha256"] for s in state["conversation_shards"]],
+                                  "shards": {kind: [s["token_sha256"] for s in kept]
+                                             for kind, kept in state["shards"].items()},
                                   "tasks": tasks_sha256, "licenses": license_rows, "notices": notice_rows})
 
         def put(table: str, rows: list[dict]) -> dict:
@@ -1174,8 +1366,12 @@ class _Build:
         vocabulary = {**self.store.put_named(f"{self.folder}/vocabulary", self.vocabulary).reference(),
                       "bytes": len(self.vocabulary)}
         items_taken = state["conversations"] + state["tasks_count"]
-        left_out = {"no share": self.census["no_share"], "other kinds": self.census["other"],
-                    "trimmed": max(0, plain - plain_taken), "trimmed items": max(0, self.census["items"] - items_taken)}
+        unquoted = sum(state["unquoted"].values())
+        left_out = {"no share": self.census["no_share"],
+                    "kinds not taken": {kind: one["texts"] for kind, one in self.census["kinds"].items()
+                                        if kind != PLAIN and kind not in TRAINING_KINDS and one["texts"]},
+                    "trimmed": max(0, plain - plain_taken),
+                    "trimmed items": max(0, self.census["items"] - items_taken - unquoted), **state["unquoted"]}
         record = {
             "id": corpus_id, "depot": self.holder, "dataset": dataset, "folder": self.folder,
             "build": self.key, "erasures": self.erasures, "built_at": built_at.isoformat(),
@@ -1184,11 +1380,12 @@ class _Build:
             "tokenizer": {"recipe": self.recipe, "recipe_version": self.version, "sha256": self.vocabulary_sha256,
                           "vocab_size": self.tokenizer.vocab_size, "vocabulary": vocabulary},
             "max_tokens": self.limit,
-            "shards": state["shards"], "conversation_shards": state["conversation_shards"],
+            "shards": state["shards"],
             "tables": {"dataset": put("dataset", [{**dataset, "built_at": built_at}]), "texts": state["texts"],
                        "licenses": put("licenses", license_rows), "notices": put("notices", notice_rows)},
-            "total_tokens": sum(s["tokens"] for s in state["shards"]),
-            "items_tokens": state["items_tokens"] if self.limit is None else state["items"]["tokens"],
+            "total_tokens": sum(s["tokens"] for s in state["shards"][PLAIN]),
+            "items_tokens": (state["items_tokens"] if self.limit is None
+                             else state["items"]["tokens"] - state["dropped_tokens"]),
             "shares_tokens": None if self.dataset["shares"] is None else [
                 {"tag": share["tag"], "tokens": state["pools"].get(share["tag"], 0),
                  "groups": [{"tag": tag, "texts": texts, "tokens": tokens} for tag, texts, tokens in sorted(
@@ -1196,10 +1393,9 @@ class _Build:
                 for share in self.dataset["shares"]],
             "left_out": left_out,
             "fingerprints": {
-                "text": _fingerprint([self.vocabulary_sha256, [s["token_sha256"] for s in state["shards"]]]),
-                "conversations": _fingerprint([self.vocabulary_sha256,
-                                               [s["token_sha256"] for s in state["conversation_shards"]]]),
-                "tasks": _fingerprint([self.vocabulary_sha256, tasks_sha256]),
+                **{kind: _fingerprint([self.vocabulary_sha256, [s["token_sha256"] for s in kept]])
+                   for kind, kept in state["shards"].items()},
+                "task": _fingerprint([self.vocabulary_sha256, tasks_sha256]),
             },
         }
         if state["tasks_count"]:
@@ -1225,8 +1421,8 @@ class _Build:
             record = corpora.marked_stale(self.store, record, hit)
         self.log(f"corpus {corpus_id} of {self.dataset['name']}: {record['texts']:,} texts"
                  + (f" ({state['pieces']:,} pieces of {long_taken:,} of them)" if state["pieces"] else "") + ", "
-                 f"{record['total_tokens']:,} tokens of plain text in {len(record['shards'])} token files, "
-                 f"{len(record['conversation_shards'])} of conversations, {state['tasks_count']:,} tasks")
+                 f"{record['total_tokens']:,} tokens of plain text in {len(record['shards'][PLAIN])} token files, "
+                 f"{len(record['shards']['conversation'])} of conversations, {state['tasks_count']:,} tasks")
         if not corpora.fresh(record):
             self.log(f"corpus {corpus_id} is stale already: the erasures {', '.join(record['stale']['erasures'])}, "
                      "carried out while it was built, reached a text it holds; build it again")
@@ -1251,7 +1447,7 @@ class _Build:
 
 def _uploaded(state: dict) -> list[dict]:
     """The references of the files a build's state says it uploaded."""
-    return [*state["shards"], *state["conversation_shards"], *state["texts"]]
+    return [*(one for kept in state["shards"].values() for one in kept), *state["texts"]]
 
 
 class _Shards:

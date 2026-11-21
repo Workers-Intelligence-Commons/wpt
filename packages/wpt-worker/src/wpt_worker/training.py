@@ -496,12 +496,13 @@ def _reached(trained) -> dict:
 
 
 def drafter_shards(spec, steps) -> list:
-    """The training shards the drafter draws its prompts from: those the
-    run's text steps read, never one past the longest prefix they read
+    """The training shards the drafter draws its prompts from: the token
+    files of the corpus's plain texts (kind plain) the run's text steps
+    read, never one past the longest prefix they read
     (wpt_store.shards.prefix_shards). A step that reads every training
     token, or a run with no text step, leaves every shard."""
     prefixes = [step.settings["prefix_tokens"] for step in steps if step.reads == WINDOWS]
-    return prefix_shards(spec["record"]["shards"], max(prefixes) if prefixes and all(prefixes) else None)
+    return prefix_shards(spec["record"]["shards"]["plain"], max(prefixes) if prefixes and all(prefixes) else None)
 
 
 def _finish(spec, link, store, work, model, model_config, drafter_config, drafting, setup, plan, steps, strategy,

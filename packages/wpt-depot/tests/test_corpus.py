@@ -65,16 +65,17 @@ def test_a_corpus_holds_its_libraries_texts_tokenized_with_their_credits_and_a_n
     record = build(depot, "first model", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
 
     assert record["depot"] == HERE  # its public address names the depot that holds the dataset, never its file
-    rows = [row for shard in record["shards"] for row in read_verified(store, shard)]
+    rows = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard)]
     documents = {(source, document): (list(tokens), pool) for tokens, source, document, pool, _ in rows}
     assert set(documents) == {(HERE, first), (HERE, twin), (HERE, french),
                               ("other", theirs)}  # duplicates kept; another depot by its own name
     assert documents[(HERE, french)] == ([*TOKENIZER.encode("le renard".encode()), END], "")
-    [conversation] = [row for shard in record["conversation_shards"] for row in read_verified(store, shard)]
+    [conversation] = [row for shard in record["shards"]["conversation"] for row in read_verified(store, shard)]
     assert list(conversation[0]) == chat.encode(TOKENIZER, CONVERSATION)[0]
     [kept_task] = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines()
     assert json.loads(kept_task) == {"depot": HERE, "id": task, "content": TASK}
-    assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0, "other kinds": 1}
+    assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0,
+                                  "kinds not taken": {"probe": 1}, "quoted text left out": 0, "quote unmatched": 0}
 
     texts = {(one["depot"], one["id"]): one for one in read_table(store, record, "texts").to_pylist()}
     assert probe not in {id_ for _, id_ in texts}
@@ -99,13 +100,159 @@ def test_a_corpus_holds_its_libraries_texts_tokenized_with_their_credits_and_a_n
     # a model that learned less is credited with what it learned: the plain texts that start in the tokens it
     # read from the start, and the conversations or tasks when it learned from them
     _, source, document, _, _ = rows[0]
-    assert model_notice(store, record, {"text": 1}).split("\n\n")[0].splitlines() == [
+    assert model_notice(store, record, {"plain": 1}).split("\n\n")[0].splitlines() == [
         line for line in lines if line.startswith(f"{source} {document}:")]
-    assert model_notice(store, record, {"conversations": 1}).split("\n\n")[0].splitlines() == [
+    assert model_notice(store, record, {"conversation": 1}).split("\n\n")[0].splitlines() == [
         line for line in lines if line.startswith(f"{HERE} {talk}:")]
 
     assert build(depot, "first model", store, TOKENIZER, max_tokens=None, url=HERE,
                  log=lambda *_: None)["id"] == record["id"]
+
+
+def quoting(source, exact, prefix=None):
+    """A conversation item whose question quotes exact of the text source (docs/chat-format.md, "Excerpts")."""
+    selector = {"type": "TextQuoteSelector", "exact": exact, **({} if prefix is None else {"prefix": prefix})}
+    return item("conversation", {"messages": [
+        {"role": "user", "content": [{"type": "text", "text": "What is it?"},
+                                     {"type": "excerpt", "source": source, "selector": selector}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "A fox."}]}]}, "en")
+
+
+def test_a_conversation_comes_with_the_passages_it_quotes_and_only_when_the_corpus_holds_them(make_depot, me,
+                                                                                               tmp_path):
+    # a conversation brings out what the corpus taught, so one whose quoted text the corpus leaves out, or whose
+    # quote no longer finds one place in the version it took, is left out with it, and counted
+    depot = make_depot()
+    fox, outside, twice = depot.add([NewText(text=words, licenses=("CC0-1.0",), title=title, tags=("en",))
+                                     for words, title in (("the quick brown fox jumps", "Fox"),
+                                                          ("the lazy dog sleeps", "Dog"), ("a fox and a dog", "Two"))],
+                                    me)
+    kept, left_out, unmatched = depot.add([quoting(fox, "brown fox", "quick "), quoting(outside, "lazy dog"),
+                                           quoting(twice, "dog")], me)
+    depot.change_content(twice, "a dog and a dog", None, me)  # its quote now finds two places
+    depot.decide("admitted", f"id <> '{outside}'", me)
+    library = depot.new_library("mine")
+    depot.put(library, f"id <> '{outside}'")  # the quoted text left out of the dataset
+    depot.new_dataset("all", "classics", [(None, library)])
+    store = open_store((tmp_path / "store").as_uri())
+
+    record = build(depot, "all", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
+
+    [row] = [row for shard in record["shards"]["conversation"] for row in read_verified(store, shard)]
+    typed = json.loads(depot.content(kept))
+    typed["messages"][0]["content"][1] = {"type": "text", "text": "brown fox"}
+    assert (row[2], list(row[0])) == (kept, chat.encode(TOKENIZER, typed)[0])  # the passage in the block's place
+    assert record["conversations"] == 1
+    assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0, "kinds not taken": {},
+                                  "quoted text left out": 1, "quote unmatched": 1}
+    texts = {one["id"]: one for one in read_table(store, record, "texts").to_pylist()}
+    assert left_out not in texts and unmatched not in texts
+    assert texts[kept]["quotes"] == [fox] and texts[fox]["quotes"] is None
+    # a model that learned the conversations alone is credited with the text it quotes too
+    assert model_notice(store, record, {"conversation": 1}).split("\n\n")[0].splitlines() == [
+        line for line in model_notice(store, record).split("\n\n")[0].splitlines()
+        if line.startswith((f"{HERE} {kept}:", f"{HERE} {fox}:"))]
+    # an erasure of the passage reaches the corpus through the quoted text it holds, and the depot's conversation
+    erased = depot.ask_erasure("a word", [(fox, 10, 15)], me)
+    depot.decide_erasure(erased, "admitted", me)
+    assert mark_stale(store, [fox], [erased]) == [record["id"]]
+    assert "brown" not in depot.content(kept)
+    again = build(depot, "all", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
+    [row] = [row for shard in again["shards"]["conversation"] for row in read_verified(store, shard)]
+    assert "brown" not in chat.show(TOKENIZER, list(row[0])) and " fox" in chat.show(TOKENIZER, list(row[0]))
+
+
+def test_a_build_of_quoting_conversations_cut_short_anywhere_goes_on_to_the_same_corpus(make_depot, me, tmp_path):
+    # the conversations are taken once the walk ends, from what the work folder kept of it: a stop in the walk or
+    # among the conversations goes on to the same bytes
+    depot = make_depot()
+    texts = depot.add([NewText(text=f"the dog number {n} runs", licenses=("CC0-1.0",), tags=("en",))
+                       for n in range(6)], me)
+    depot.add([quoting(text, f"number {n}") for n, text in enumerate(texts)], me)
+    depot.decide("admitted", f"id <> '{texts[0]}'", me)
+    library = depot.new_library("mine")
+    depot.put(library, f"id <> '{texts[0]}'")
+    depot.new_dataset("all", "classics", [(None, library)])
+    whole = build(depot, "all", open_store((tmp_path / "whole").as_uri()), TOKENIZER, max_tokens=None,
+                  shard_tokens=20, log=lambda *_: None)
+    saved = []
+    build(depot, "all", open_store((tmp_path / "count").as_uri()), TOKENIZER, max_tokens=None, shard_tokens=20,
+          save=saved.append, log=lambda *_: None)
+    assert (whole["conversations"], whole["left_out"]["quoted text left out"]) == (5, 1) and len(saved) > 4
+
+    for stop in range(1, len(saved)):
+        kept = []
+
+        def stopping(state):
+            kept.append(state)
+            if len(kept) == stop:
+                raise KeyboardInterrupt
+        store, work = open_store((tmp_path / f"store{stop}").as_uri()), tmp_path / f"work{stop}"
+        with pytest.raises(KeyboardInterrupt):
+            build(depot, "all", store, TOKENIZER, max_tokens=None, work=work, save=stopping, shard_tokens=20,
+                  log=lambda *_: None)
+
+        resumed = build(depot, "all", store, TOKENIZER, max_tokens=None, work=work, checkpoint=kept[-1],
+                        shard_tokens=20, log=lambda *_: None)
+
+        assert resumed["id"] == whole["id"] and resumed["left_out"] == whole["left_out"], stop
+
+
+def test_quoting_conversations_read_on_workers_page_by_page_make_the_corpus_one_process_makes(make_depot, me,
+                                                                                               tmp_path, monkeypatch):
+    # a big build reads the conversations on its workers and each quoted text once for a page of them: several
+    # quoting one text, some of whose quotes find no place or two, across pages, must give the same bytes
+    depot = make_depot()
+    dog, cat = depot.add([NewText(text=words, licenses=("CC0-1.0",), tags=("en",))
+                          for words in ("the dog runs and the dog sleeps", "the cat sits")], me)
+    depot.add([quoting(dog, "runs"), quoting(cat, "cat"), quoting(dog, "sleeps", "dog "), quoting(cat, "sits"),
+               quoting(dog, "runs")], me)
+    depot.change_content(dog, "the dog sleeps and the dog sleeps", None, me)  # "runs" gone, "dog sleeps" twice
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, "true")
+    depot.new_dataset("all", "classics", [(None, library)])
+    alone = build(depot, "all", open_store((tmp_path / "alone").as_uri()), TOKENIZER, max_tokens=None,
+                  log=lambda *_: None)
+    monkeypatch.setattr("wpt_depot.corpus.IN_PROCESS", 0)
+    monkeypatch.setattr("wpt_depot.corpus.HELD_PAGE", 2)
+    from wpt_depot import corpus
+    ran, run = [], corpus.in_order
+
+    def watched(work, *rest, **options):
+        ran.append(work.__name__)
+        return run(work, *rest, **options)
+    monkeypatch.setattr(corpus, "in_order", watched)
+
+    spread = build(depot, "all", open_store((tmp_path / "spread").as_uri()), TOKENIZER, max_tokens=None,
+                   log=lambda *_: None)
+
+    assert {"_conversations", "_matched"} <= set(ran)
+    assert (alone["conversations"], alone["left_out"]["quote unmatched"]) == (2, 3)
+    assert spread["id"] == alone["id"] and spread["left_out"] == alone["left_out"]
+    assert [one["sha256"] for one in spread["shards"]["conversation"]] == [
+        one["sha256"] for one in alone["shards"]["conversation"]]
+
+
+def test_a_quote_of_a_long_text_needs_the_pieces_its_passage_lies_in(make_depot, me, tmp_path):
+    depot, _, repo = long_depot(make_depot, me)
+    text = depot.content(repo)
+    held = Parted(depot.reader(), repo, depot.listed_text(repo, 1)["parts"])
+    starts = [0]
+    for n in range(pieces.count(len(text))):
+        starts.append(starts[-1] + len(pieces.read(held, n)))
+    for start, end in ((0, 1), (starts[1] - 1, starts[1] + 1), (starts[2], starts[3] + 5), (len(text) - 1, len(text))):
+        assert pieces.holding(held, start, end) == [n for n in range(len(starts) - 1)
+                                                    if starts[n] < end and starts[n + 1] > start]
+    [talk] = depot.add([quoting(repo, "=== src/file7.c")], me)
+    depot.decide("admitted", [talk], me)
+    depot.put(depot.sql("SELECT id FROM libraries")[0]["id"], [talk])
+    depot.read_again(depot.dataset("all")["id"])
+
+    record = build(depot, "all", open_store((tmp_path / "store").as_uri()), TOKENIZER, max_tokens=None,
+                   log=lambda *_: None)
+
+    assert record["conversations"] == 1 and record["pieces"] == 4
 
 
 def shared_depot(make_depot, me, english, french):
@@ -130,7 +277,7 @@ def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seede
 
     record = build(depot, "mix", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
 
-    rows = [row for shard in record["shards"] for row in read_verified(store, shard)]
+    rows = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard)]
     by_pool = {}
     for tokens, _, document, pool, _ in rows:
         by_pool.setdefault(pool, []).append(document)
@@ -298,12 +445,12 @@ def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
 
-    taken = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    taken = [document for shard in record["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)]
     export = Export(depot, depot.dataset_by_id(dataset), HERE)
     assert taken == [text for _, text, _, _ in export.members(0, 1)] == sorted(ids, key=export_key)
     smaller = build(depot, "all", store, TOKENIZER, max_tokens=record["total_tokens"] // 2, url=HERE,
                     log=lambda *_: None)
-    cut = [document for shard in smaller["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    cut = [document for shard in smaller["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)]
     assert 0 < len(cut) < len(taken) and cut == [text for text in taken if text in set(cut)]
 
 
@@ -325,7 +472,7 @@ def test_a_build_counted_from_the_texts_takes_what_a_build_from_stored_figures_t
     depot.new_dataset("mix", "classics", [(other.address, first), (other.address, second)], shares)
 
     def taken(record, store):
-        return ([document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)],
+        return ([document for shard in record["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)],
                 record["shares_tokens"], record["items_tokens"], record["left_out"])
 
     for size in (None, 60):
@@ -352,7 +499,7 @@ def test_a_text_that_would_pass_the_size_is_left_out_and_the_texts_after_it_fill
     depot.new_dataset("all", "classics", [(None, library)])
     store = open_store((tmp_path / "store").as_uri())
     whole = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
-    rows = [(document, len(tokens)) for shard in whole["shards"] for tokens, _, document, _, _ in
+    rows = [(document, len(tokens)) for shard in whole["shards"]["plain"] for tokens, _, document, _, _ in
             read_verified(store, shard)]
     order = [document for document, _ in rows]
     assert order.index(long) < len(order) - 1  # some short texts come after the long one
@@ -360,7 +507,7 @@ def test_a_text_that_would_pass_the_size_is_left_out_and_the_texts_after_it_fill
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
 
-    taken = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    taken = [document for shard in record["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)]
     assert taken == [one for one in order if one != long] and sorted(taken) == sorted(short)
     assert record["total_tokens"] == limit and record["left_out"]["trimmed"] == 1
 
@@ -384,7 +531,7 @@ def items_depot(make_depot, me, plain: int):
 def corpus_tokens(store, record) -> int:
     """Every token the corpus holds: its plain texts', its conversations' and its tasks' (task_text)."""
     tasks = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines() if "tasks" in record else []
-    return (record["total_tokens"] + sum(one["tokens"] for one in record["conversation_shards"])
+    return (record["total_tokens"] + sum(one["tokens"] for one in record["shards"]["conversation"])
             + sum(len(TOKENIZER.encode(task_text(json.loads(line)["content"]).encode("utf-8"))) for line in tasks))
 
 
@@ -392,7 +539,7 @@ def items_part(depot, limit: int) -> int:
     """The items' share of a size: their part of the UTF-8 bytes of every text of the depot, of limit."""
     rows = depot.rows("SELECT c.kind, c.bytes AS size FROM texts t JOIN content_lists c "
                       "ON c.id = t.id AND c.version = t.content_version")
-    items = sum(row["size"] for row in rows if row["kind"] is not None)
+    items = sum(row["size"] for row in rows if row["kind"] != "plain")
     return limit * items // sum(row["size"] for row in rows)
 
 
@@ -469,7 +616,7 @@ def test_conversations_and_tasks_are_one_share_where_an_item_that_does_not_fit_l
     task = len(TOKENIZER.encode(task_text(TASK).encode("utf-8")))
     store = open_store((tmp_path / "store").as_uri())
     every = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
-    kinds = [one["kind"] for one in read_table(store, every, "texts").to_pylist() if one["kind"] is not None]
+    kinds = [one["kind"] for one in read_table(store, every, "texts").to_pylist() if one["kind"] != "plain"]
     before = kinds.index("task")  # the conversations the corpus's order puts before the first task
     assert task > conversation and "conversation" in kinds[before + 1:]  # a smaller conversation follows it
     # the smallest size whose item part fits every conversation before the first task and one more, not the task
@@ -512,8 +659,8 @@ def test_a_depot_moved_to_another_file_builds_the_same_corpus(make_depot, me, tm
     second = build(Depot.view(str(moved)), "all", second_store, TOKENIZER, max_tokens=None, log=lambda *_: None)
 
     assert second["id"] == first["id"] and second["depot"] == first["depot"] == depot.name()
-    for kind in ("shards", "conversation_shards"):
-        assert [one["sha256"] for one in second[kind]] == [one["sha256"] for one in first[kind]]
+    for kind in ("plain", "conversation"):
+        assert [one["sha256"] for one in second["shards"][kind]] == [one["sha256"] for one in first["shards"][kind]]
     assert second["tasks"]["file"]["sha256"] == first["tasks"]["file"]["sha256"]
     assert [one["sha256"] for one in second["tables"]["texts"]] == [one["sha256"] for one in first["tables"]["texts"]]
 
@@ -556,7 +703,7 @@ def test_a_build_cut_short_goes_on_from_its_last_token_file_and_writes_the_same_
                     log=lambda *_: None)
 
     assert resumed["id"] == whole["id"]
-    assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in whole["shards"]]
+    assert [one["sha256"] for one in resumed["shards"]["plain"]] == [one["sha256"] for one in whole["shards"]["plain"]]
 
 
 def test_a_new_corpus_deletes_only_the_older_one_of_its_dataset_vocabulary_and_size_which_builds_again_the_same(
@@ -650,9 +797,11 @@ def test_a_cap_weighs_only_the_items_max_tokens_keeps(make_depot, me, tmp_path):
     size = sum(one["bytes"] for one in corpora.files(alone))
     store = open_store((tmp_path / "store").as_uri())
 
-    # the 198 conversations the limit leaves out take no room in the estimate a cap of three times the size checks
+    # the 198 conversations the limit leaves out take no room in the estimate a cap of ten times the size checks
+    # (the first upload holds plain texts alone, the conversations coming once the walk ends, and its files' fixed
+    # size weighs much against so few bytes of text; counting the 198 would make the estimate a thousand times it)
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, shard_tokens=6, log=lambda *_: None,
-                   room=lambda folder: Room(store, 3 * size, folder))
+                   room=lambda folder: Room(store, 10 * size, folder))
 
     assert record["id"] == alone["id"] and record["conversations"] == 2
 
@@ -761,12 +910,12 @@ def test_another_depot_moved_to_another_file_builds_the_same_corpus_which_record
     assert second["id"] == first["id"] and second["build"] == first["build"]
     assert second["dataset"]["libraries"][1]["depot"] == "other" and "other" in second["erasures"]
     # every file but the dataset table, which holds the build's time and the dataset's revision
-    files = [*second["shards"], *second["conversation_shards"], *second["tables"]["texts"],
+    files = [*second["shards"]["plain"], *second["shards"]["conversation"], *second["tables"]["texts"],
              second["tables"]["licenses"], second["tables"]["notices"]]
     assert [one["sha256"] for one in files] == [one["sha256"] for one in [
-        *first["shards"], *first["conversation_shards"], *first["tables"]["texts"], first["tables"]["licenses"],
+        *first["shards"]["plain"], *first["shards"]["conversation"], *first["tables"]["texts"], first["tables"]["licenses"],
         first["tables"]["notices"]]]
-    sources = {source for shard in second["shards"] for _, source, _, _, _ in read_verified(second_store, shard)}
+    sources = {source for shard in second["shards"]["plain"] for _, source, _, _, _ in read_verified(second_store, shard)}
     assert sources == {depot.name(), "other"}
     assert {one["depot"] for one in read_table(second_store, second, "texts").to_pylist()} == {depot.name(), "other"}
     [copied] = read_table(second_store, second, "dataset").to_pylist()
@@ -858,7 +1007,7 @@ def test_a_long_text_comes_as_pieces_cut_between_files_each_at_its_own_place_of_
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=None, url=HERE, log=lambda *_: None)
 
-    rows = [(document, list(tokens)) for shard in record["shards"] for tokens, _, document, _, _ in
+    rows = [(document, list(tokens)) for shard in record["shards"]["plain"] for tokens, _, document, _, _ in
             read_verified(store, shard)]
     names = [pieces.name(repo, n) for n in range(4)]
     order = [document for document, _ in rows]
@@ -884,7 +1033,7 @@ def test_a_long_text_comes_as_pieces_cut_between_files_each_at_its_own_place_of_
     # the same depot builds the same bytes
     again = build(depot, "all", open_store((tmp_path / "again").as_uri()), TOKENIZER, max_tokens=None, url=HERE,
                   log=lambda *_: None)
-    assert again["id"] == record["id"] and again["shards"] == record["shards"]
+    assert again["id"] == record["id"] and again["shards"]["plain"] == record["shards"]["plain"]
 
 
 def test_a_long_text_no_longer_ends_a_corpus_smaller_than_it_which_takes_the_pieces_that_fit(make_depot, me,
@@ -893,7 +1042,7 @@ def test_a_long_text_no_longer_ends_a_corpus_smaller_than_it_which_takes_the_pie
     depot, short, repo = long_depot(make_depot, me)
     store = open_store((tmp_path / "store").as_uri())
     whole = build(depot, "all", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
-    tokens = {document: len(row) for shard in whole["shards"] for row, _, document, _, _ in
+    tokens = {document: len(row) for shard in whole["shards"]["plain"] for row, _, document, _, _ in
               read_verified(store, shard)}
     short_tokens = sum(tokens[one] for one in short)
     smallest = min(range(4), key=lambda n: tokens[pieces.name(repo, n)])
@@ -903,7 +1052,7 @@ def test_a_long_text_no_longer_ends_a_corpus_smaller_than_it_which_takes_the_pie
 
     record = build(depot, "all", store, TOKENIZER, max_tokens=limit, log=lambda *_: None)
 
-    taken = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    taken = [document for shard in record["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)]
     assert sorted(taken) == sorted([*short, pieces.name(repo, smallest)])
     assert record["total_tokens"] <= limit and record["left_out"]["trimmed"] == 0
     # the sample of a vocabulary cuts and fills the same way, a piece under its text's id
@@ -951,7 +1100,7 @@ def test_a_text_two_libraries_hold_comes_as_pieces_only_when_its_revision_in_the
     found = {}
     for name in ("open first", "locked first"):
         record = build(depot, name, store, TOKENIZER, max_tokens=None, log=lambda *_: None)
-        found[name] = [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+        found[name] = [document for shard in record["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)]
 
     assert found["open first"] == [text]
     assert sorted(found["locked first"]) == sorted(pieces.name(text, n) for n in range(2))
@@ -991,7 +1140,7 @@ def test_a_build_cut_short_right_after_a_piece_goes_on_and_writes_the_same_corpu
     whole = build(depot, "all", open_store((tmp_path / "whole").as_uri()), TOKENIZER, max_tokens=None,
                   log=lambda *_: None)
     store = open_store((tmp_path / "whole").as_uri())
-    tokens = {document: len(row) for shard in whole["shards"] for row, _, document, _, _ in
+    tokens = {document: len(row) for shard in whole["shards"]["plain"] for row, _, document, _, _ in
               read_verified(store, shard)}
     limit = whole["total_tokens"] - max(tokens[pieces.name(repo, n)] for n in range(4))
     straight = build(depot, "all", open_store((tmp_path / "straight").as_uri()), TOKENIZER, max_tokens=limit,
@@ -1012,7 +1161,7 @@ def test_a_build_cut_short_right_after_a_piece_goes_on_and_writes_the_same_corpu
                     shard_tokens=5_000, log=lambda *_: None)
 
     assert resumed["id"] == straight["id"] and resumed["pieces"] == 3
-    assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in straight["shards"]]
+    assert [one["sha256"] for one in resumed["shards"]["plain"]] == [one["sha256"] for one in straight["shards"]["plain"]]
 
 
 SMALL = "the dog"  # 2 tokens, 3 with END, 7 bytes
@@ -1037,7 +1186,7 @@ def groups_taken(record) -> dict:
 
 
 def documents(store, record) -> list[str]:
-    return [document for shard in record["shards"] for _, _, document, _, _ in read_verified(store, shard)]
+    return [document for shard in record["shards"]["plain"] for _, _, document, _, _ in read_verified(store, shard)]
 
 
 def test_a_share_splits_its_part_over_its_texts_tags_by_the_square_root_of_what_each_holds(make_depot, me, tmp_path):
@@ -1090,7 +1239,7 @@ def test_a_request_for_tokens_names_texts_of_at_most_its_bytes_and_chooses_the_s
                    log=lambda *_: None)
 
     assert asked and max(asked) <= 1 + 3
-    assert [one["sha256"] for one in narrow["shards"]] == [one["sha256"] for one in wide["shards"]]
+    assert [one["sha256"] for one in narrow["shards"]["plain"]] == [one["sha256"] for one in wide["shards"]["plain"]]
     assert groups_taken(narrow) == groups_taken(wide)
 
 
@@ -1166,7 +1315,7 @@ def test_a_build_of_shares_split_by_group_cut_short_goes_on_to_the_same_bytes_ev
                     shard_tokens=20, log=lambda *_: None)
 
     assert resumed["id"] == whole["id"]
-    assert [one["sha256"] for one in resumed["shards"]] == [one["sha256"] for one in whole["shards"]]
+    assert [one["sha256"] for one in resumed["shards"]["plain"]] == [one["sha256"] for one in whole["shards"]["plain"]]
     assert resumed["shares_tokens"] == whole["shares_tokens"]
 
 

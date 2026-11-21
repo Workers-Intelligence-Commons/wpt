@@ -98,9 +98,45 @@ with no `draft` was written by the person from the start.
 | `tool_result` | `call`, `content`, `error` (optional, `true` when the call failed) | the answer to the `tool_call` whose `id` is `call`; `content` is a list of blocks |
 | `json` | `value` | a structured value: any JSON value; a harness builds it, the model never writes one ([The answer](#the-answer)) |
 | `file` | `sha256`, `media_type` | a media file such as a screenshot, stored next to the record and named by its sha256 |
+| `excerpt` | `source`, `selector` | a passage of a plain text of the depot, quoted by its content ([Excerpts](#excerpts)) |
 
 A new kind of element gets a new block type, and existing blocks keep
 their meaning.
+
+## Excerpts
+
+An `excerpt` block quotes a passage of a plain text of the depot that
+holds the conversation instead of copying it in a text block. `source` is
+the id of the quoted text. `selector` is a W3C Web Annotation
+TextQuoteSelector (https://www.w3.org/TR/annotation-model/#text-quote-selector):
+
+```json
+{"type": "excerpt", "source": "my-depot-17",
+ "selector": {"type": "TextQuoteSelector", "exact": "the passage itself",
+              "prefix": "words right before ", "suffix": " words right after"}}
+```
+
+- `exact`: the passage, character for character.
+- `prefix` and `suffix`, optional: the characters right before and right
+  after it, which tell apart two places of the text that hold the same
+  passage.
+
+A place of the text matches the selector when the text holds `prefix`,
+`exact` and `suffix` there, one after the other; matches may overlap. A
+quote finds its passage by its content, so it still finds it after a
+change of the text moves it. An excerpt counts only when its selector
+matches exactly one place.
+
+An excerpt stands in a `user` message, or in the content of a
+`tool_result`. A system or assistant message holds none, so no
+conversation teaches the model to quote.
+
+A conversation depends on every text it quotes, which it never declares:
+a corpus holds it only when it holds the passages it quotes
+([data-selection.md](data-selection.md), "Conversations that quote
+texts"). The licenses, credits and erasures of a quoted text reach the
+conversation ([erasure.md](erasure.md), "What happens once it is
+admitted").
 
 ## The answer
 
@@ -152,7 +188,14 @@ object above ([data-selection.md](data-selection.md), "Items"). The depot
 checks it against the kind's JSON Schema when it is added
 (`packages/wpt-depot/src/wpt_depot/kinds/conversation.schema.json`): only
 an `assistant` message holds `thinking` or `tool_call` blocks or a
-`draft`, and only a `tool` message holds `tool_result` blocks.
+`draft`, only a `tool` message holds `tool_result` blocks, and only a
+`user` message or a tool result holds `excerpt` blocks.
+
+On an add, and on a change of a conversation's content, the depot also
+refuses an excerpt whose `source` is no text of the depot, is an item, or
+has a current content version its selector does not match at exactly one
+place, or whose `exact` is empty. The quoted text is read as its parts,
+so a text of any size is never read whole.
 
 A conversation is never a plain text that the `read-text` step reads. A
 corpus keeps every conversation of its dataset as the tokens of the
@@ -183,6 +226,9 @@ END
 - A `json` block of a system or user message, or of a tool result, is
   written as its JSON text between `<json>` and `</json>`, so the model
   sees a structured value and tells it apart from text.
+- An `excerpt` block is written as the passage it quotes, its `exact`, as
+  a text block is: a corpus holds the conversation only where that passage
+  is in the quoted text.
 - The model never writes JSON but its tool calls ([The answer](#the-answer)):
   a `json` block in an assistant message, which only a harness builds, is
   never written as tokens, so no conversation teaches the model to write

@@ -42,6 +42,7 @@ from wpt_training import WINDOWS, Environment, Stage
 from wpt_training import parts as windows_in_parts
 
 GIVES = WINDOWS
+KINDS = ("plain",)  # the kinds of texts it reads (wpt_depot.kinds)
 SETTINGS = {"stages": [], "eval_every": 200, "eval_batches": 20, "prefix_tokens": 0}
 STAGE = ("block_size", "steps", "batch_size")
 
@@ -63,11 +64,17 @@ def check(settings):
         raise ValueError("prefix_tokens: 0 (every training token) or more")
 
 
-def check_corpus(settings, record, store):
-    """ValueError when the corpus holds fewer tokens of plain text than the prefix the step reads."""
-    if settings["prefix_tokens"] > record["total_tokens"]:
-        raise ValueError(f"the step reads the first {settings['prefix_tokens']:,} tokens; the corpus has "
-                         f"{record['total_tokens']:,}")
+def shards(record, kinds) -> list[dict]:
+    """The corpus's token files of the kinds the step reads, in order (wpt_depot.corpus)."""
+    return [one for kind in kinds for one in record["shards"].get(kind, [])]
+
+
+def check_corpus(settings, record, store, kinds):
+    """ValueError when the corpus holds fewer tokens of the kinds the step reads than the prefix it reads."""
+    held = sum(one["tokens"] for one in shards(record, kinds))
+    if settings["prefix_tokens"] > held:
+        raise ValueError(f"the step reads the first {settings['prefix_tokens']:,} tokens; the corpus has {held:,} "
+                         f"of {', '.join(kinds)}")
 
 
 def context(settings) -> int:
@@ -111,19 +118,20 @@ class TextWindows(Environment):
                                 for stage in settings["stages"])
         self.batches = batching(self.stage_list, data.micro_batch, 1 if strategy.splits_windows else strategy.world_size)
         self.prefix = settings["prefix_tokens"] or None
-        self.train_tokens = _token_array(data.store, data.record, strategy, data.stream_shards, self.prefix)
+        self.train_tokens = _token_array(data.store, shards(data.record, data.kinds), strategy, data.stream_shards,
+                                         self.prefix)
         longest = max(stage.block_size for stage in self.stage_list)
         if len(self.train_tokens) <= longest + 1:
             self.close()
-            raise ValueError(f"the corpus has {len(self.train_tokens):,} tokens of plain text, fewer than one window "
-                             f"of {longest}")
+            raise ValueError(f"the corpus has {len(self.train_tokens):,} tokens of {', '.join(data.kinds)}, fewer "
+                             f"than one window of {longest}")
         self.tokens = len(self.train_tokens)
         self.index = 0
 
     @property
     def learned(self):
-        """The tokens of the plain texts' token files it reads, from their start."""
-        return {"text": len(self.train_tokens)}
+        """The tokens of the token files of its kinds it reads, from their start."""
+        return {kind: len(self.train_tokens) for kind in self.data.kinds}
 
     def stage(self, index):
         self.index = index
@@ -173,19 +181,19 @@ class TextWindows(Environment):
             self.train_tokens.close()
 
 
-def _token_array(store, record, strategy, stream_shards=None, prefix=None):
-    """The training tokens as an array read from disk on demand. One process
-    per machine builds the file, checking every token file. With
-    stream_shards, a ShardStream that keeps only that many token files on
-    disk at once. With a prefix, the first prefix tokens, from the token
-    files that hold them alone."""
-    shards = prefix_shards(record["shards"], prefix)
+def _token_array(store, files, strategy, stream_shards=None, prefix=None):
+    """The training tokens of the token files files as an array read from
+    disk on demand. One process per machine builds the file, checking every
+    token file. With stream_shards, a ShardStream that keeps only that many
+    token files on disk at once. With a prefix, the first prefix tokens,
+    from the token files that hold them alone."""
+    held = prefix_shards(files, prefix)
     if stream_shards:
-        return ShardStream(store, record["shards"], stream_shards, prefix)
+        return ShardStream(store, files, stream_shards, prefix)
     if strategy.is_local_main:
-        token_file(store, shards)
+        token_file(store, held)
     strategy.barrier()
-    training = (np.memmap(token_file(store, shards), dtype="<u4", mode="r") if shards else np.zeros(0, dtype="<u4"))
+    training = (np.memmap(token_file(store, held), dtype="<u4", mode="r") if held else np.zeros(0, dtype="<u4"))
     return training[:prefix]
 
 

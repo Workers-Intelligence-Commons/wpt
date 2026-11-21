@@ -52,10 +52,21 @@ def test_a_step_entry_that_cannot_be_is_refused_saying_why(tmp_path):
         ({"step": "answer-as-assistant", "optimizer": {"name": "sgd"}}, r"sgd: not a built-in optimizer"),
     ]
     mismatched = tmp_path / "talk-text.py"  # a method that reads text windows, given conversations
-    mismatched.write_text('METHOD = "next-token"\nENVIRONMENT = "conversations"\nOPTIMIZER = {"name": "by-part"}\n')
+    mismatched.write_text('METHOD = "next-token"\nENVIRONMENT = "conversations"\nKINDS = ("conversation",)\n'
+                          'OPTIMIZER = {"name": "by-part"}\n')
     cases.append(({"step": str(mismatched)},
                   r"talk-text.py: its method next-token reads windows, and its environment conversations gives "
                   r"conversations"))
+    # each step names the kinds of texts it reads, and its environment reads only the kinds it knows
+    for name, kinds, why in (("kindless", None, r"kindless.py: defines no KINDS"),
+                             ("none", "()", r"none.py: KINDS names the kinds of texts the step reads, at least one"),
+                             ("chatty", '("plain", "conversation")',
+                              r"chatty.py: its environment text-windows reads texts of kind plain, not conversation")):
+        step = tmp_path / f"{name}.py"
+        step.write_text('METHOD = "next-token"\nENVIRONMENT = "text-windows"\nOPTIMIZER = {"name": "by-part"}\n'
+                        + ("" if kinds is None else f"KINDS = {kinds}\n"))
+        cases.append(({"step": str(step), "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}]}},
+                      why))
     for entry, why in cases:
         with pytest.raises(PluginError, match=why):
             load_step(entry, PARTS)

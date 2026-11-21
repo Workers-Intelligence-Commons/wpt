@@ -63,3 +63,25 @@ def test_the_model_never_writes_a_json_block_and_reads_one_only_from_others():
         {"type": "text", "text": "found"}, {"type": "json", "value": [1]}, {"type": "text", "text": "end"}]}]}
     assert chat.show(TOKENIZER, chat.encode(TOKENIZER, {"messages": [result]})[0]) == (
         "<|im_start|>user\n<tool_response>\nfound\n<json>\n[1]\n</json>\nend\n</tool_response><|im_end|>\n")
+
+
+def test_an_excerpt_is_written_as_the_passage_it_quotes_in_a_message_and_in_a_tool_result():
+    # a corpus holds a conversation only where its quoted passage is, so the
+    # tokens hold the passage, as the same conversation with the passage typed
+    # in a text block would (docs/chat-format.md, "Excerpts")
+    def quoting(passage):
+        return {"type": "excerpt", "source": "depot-7",
+                "selector": {"type": "TextQuoteSelector", "exact": passage, "prefix": "so ", "suffix": "."}}
+
+    def typed(passage):
+        return {"type": "text", "text": passage}
+
+    def conversation(block):
+        return {"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "What does it say?"}, block("the tool reads")]},
+            {"role": "tool", "content": [{"type": "tool_result", "call": "c1", "content": [block("the file")]}]}]}
+
+    assert chat.encode(TOKENIZER, conversation(quoting)) == chat.encode(TOKENIZER, conversation(typed))
+    assert chat.show(TOKENIZER, chat.encode(TOKENIZER, conversation(quoting))[0]) == (
+        "<|im_start|>user\nWhat does it say?\nthe tool reads<|im_end|>\n"
+        "<|im_start|>user\n<tool_response>\nthe file\n</tool_response><|im_end|>\n")

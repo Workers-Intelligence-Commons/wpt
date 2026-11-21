@@ -17,8 +17,7 @@ import { get, type Answer } from "../api";
 import { ReportForm, useWrite, WriteProgress } from "../decide-forms";
 import { EVERY, toQuery, type TextFilter } from "../filter";
 import { ForkForm, Pinned, RenameForm } from "../pages/libraries";
-import { characters, figures, Help, LibraryLink, MoreMenu, Outcome, plural, Problems, readers, useDatasets, useMeasure, type Library } from "../parts";
-import { ITEMS } from "../mix";
+import { characters, figures, Help, kindHeld, LibraryLink, MoreMenu, Outcome, PLAIN, plural, Problems, readers, useDatasets, useMeasure, type Library } from "../parts";
 import { href } from "../route";
 
 type Act = "report" | "fork" | "lock" | "rename" | "pins";
@@ -67,9 +66,9 @@ export function LibraryHead({ library, libraries, onChanged, version, whole = fa
             </details>
           )}
           {!size ? <span className="aside">counting its texts</span> : size.ok ? <span>{plural(size.data.texts, "text")}</span> : <span className="not-allowed">{size.problems.join(" ")}</span>}
-          {found ? <span title={`${plural(found.plain.characters, "character")} of plain text, ${plural(found.items.characters, "character")} of ${ITEMS}`}>{characters(found.characters)}</span>
+          {found ? <span title={Object.entries(found.kinds).filter(([, h]) => h.texts > 0).map(([k, h]) => `${plural(h.characters, "character")} of ${k === PLAIN ? "plain text" : `kind ${k}`}`).join(", ")}>{characters(found.characters)}</span>
             : typeof measured === "string" ? <span title={measured}>size not read</span> : null}
-          {found && found.items.characters > 0 && found.plain.characters > 0 && <span>{characters(found.items.characters).replace(/ characters?$/, "")} in {ITEMS}</span>}
+          {found && kindHeld(found, PLAIN).characters > 0 && Object.entries(found.kinds).filter(([k, h]) => k !== PLAIN && h.characters > 0).map(([k, h]) => <span key={k}>{characters(h.characters).replace(/ characters?$/, "")} in {k}</span>)}
           {theirs && <span className="aside">the upstream's</span>}
           {parent && <span>forked from <LibraryLink library={parent} /></span>}
           {reading.length > 0 && <span>read by {reading.map((d, i) => <span key={d.id}>{i > 0 && ", "}<a href={href(["datasets", d.id])}>{d.name}</a></span>)}</span>}

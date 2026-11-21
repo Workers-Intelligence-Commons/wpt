@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .errors import NotFound, Refused
+from .kinds import PLAIN
 
 SHAPE = ('a change is {"id": ID, "text": T, "was": V}: T the new plain text, V the content version the line was '
          'written from, optional')
@@ -138,11 +139,11 @@ def check(con, upstream_sql: str, named: int) -> tuple[int, list[str]]:
     # SQLite would otherwise turn around and read the whole depot's texts for a few lines
     items = con.execute("SELECT count(*), min(c.id) FROM temp.content_changes c CROSS JOIN texts_revisions t "
                         "ON t.id = c.id AND t.latest CROSS JOIN content_lists l ON l.id = t.id "
-                        "AND l.version = t.content_version WHERE l.kind IS NOT NULL").fetchall()
+                        f"AND l.version = t.content_version WHERE l.kind <> '{PLAIN}'").fetchall()
     if items[0][0]:
-        raise Refused(f"a change of the content of many texts takes plain texts only, and {items[0][0]} of the "
-                      f"texts named are items (the first: {items[0][1]}): an item's content changes one item at "
-                      "a time")
+        raise Refused(f"a change of the content of many texts takes texts of kind plain only, and {items[0][0]} of "
+                      f"the texts named are items, of another kind (the first: {items[0][1]}): an item's content "
+                      "changes one item at a time")
     total = con.execute(f"SELECT count(*) FROM temp.content_changes WHERE {upstream_sql}").fetchall()[0][0]
     if total:
         return total, [one for (one,) in con.execute(

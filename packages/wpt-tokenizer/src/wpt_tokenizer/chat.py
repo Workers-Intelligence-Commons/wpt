@@ -19,9 +19,12 @@ is written as its JSON text between <json> and </json>, so a structured
 output is told apart from text. The model never writes JSON but its tool
 calls (docs/chat-format.md, "The answer"): an assistant message's `json`
 blocks, which only a harness builds, are never written as tokens, and
-reply() reads <json> tags the model writes as text. Left out, while
-recorded: `file` blocks (no model reads media yet) and a tool_result's
-`error` flag.
+reply() reads <json> tags the model writes as text. An `excerpt` block,
+a passage of a depot text quoted by its content, is written as the
+passage, its selector's `exact`, as a text block is: a corpus holds a
+conversation only when the passage is there, so its tokens are the
+passage's (docs/chat-format.md, "Excerpts"). Left out, while recorded:
+`file` blocks (no model reads media yet) and a tool_result's `error` flag.
 """
 
 import json
@@ -146,6 +149,11 @@ def _call(text):
     return {"name": call["name"], "arguments": call["arguments"]}
 
 
+def _words_of(block) -> str:
+    """The text a text block or an excerpt block writes: its text, or the passage it quotes."""
+    return block["selector"]["exact"] if block["type"] == "excerpt" else block["text"]
+
+
 def _turns(tokenizer, conversation):
     """(role written in the header, [token runs of the body]) per turn."""
     def text(words):
@@ -163,8 +171,8 @@ def _turns(tokenizer, conversation):
             if parts and not after_thinking:
                 parts.append(text("\n"))
             after_thinking = kind == "thinking"
-            if kind == "text":
-                parts.append(text(block["text"]))
+            if kind in ("text", "excerpt"):
+                parts.append(text(_words_of(block)))
             elif kind == "json":
                 parts.append(wrapped(JSON, JSON_END, json.dumps(block["value"], ensure_ascii=False)))
             elif kind == "thinking":
@@ -184,7 +192,7 @@ def _turns(tokenizer, conversation):
                 ids += [*text("".join(words)), *wrapped(JSON, JSON_END, json.dumps(block["value"], ensure_ascii=False))]
                 words = []
             else:
-                words.append(block["text"])
+                words.append(_words_of(block))
         return ids + text("".join(words) + "\n")
 
     tools = conversation.get("tools") or []

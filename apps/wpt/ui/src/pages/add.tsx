@@ -21,7 +21,7 @@ import { Button, Select, TextArea, TextInput } from "@workers-intelligence-commo
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { get, post, type Answer } from "../api";
 import { LicensePicker } from "../license-picker";
-import { Confirm, Help, only, optional, Outcome, PageHead, plural, Problems, required, RequiredNote, Section, type Declaration } from "../parts";
+import { Confirm, Help, only, optional, Outcome, PageHead, PLAIN, plural, Problems, required, RequiredNote, Section, type Declaration } from "../parts";
 import { href } from "../route";
 import { KIND_WORDS, kindStart } from "../kind-words";
 import { SchemaForm, initial, type Schema } from "../schema-form";
@@ -154,7 +154,7 @@ function Add() {
         <Section title="The text">
           <Select label={required("What it is")} required value={kind} onChange={(e) => pick(e.target.value)}>
             <option value="">A plain text: prose, code or any other text file</option>
-            {kinds.map((k) => <option key={k.id} value={k.id}>An item: {k.id}</option>)}
+            {kinds.filter((k) => k.id !== PLAIN).map((k) => <option key={k.id} value={k.id}>An item: {k.id}</option>)}
           </Select>
           {kind && <p className="wic-field-hint">{(kinds.find((k) => k.id === kind)?.meaning ?? "").replace(/^./, (c) => c.toUpperCase())}.</p>}
           {cleared.length > 0 && (

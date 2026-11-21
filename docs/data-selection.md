@@ -302,24 +302,38 @@ the depot's tables. `wpt depot web` does the same as pages
 Duplicate texts are kept. Nothing judges a text's content: people decide
 on it ([licenses.md](licenses.md), "Who decides").
 
-### Items
+### Kinds and items
 
-A structured item is a text whose content is JSON instead of plain text:
-its row holds a `kind` and its `content`, and no `text`. A binary file
-inside the content is written in base64. The depot's `kinds` table holds
-each kind's meaning and the JSON Schema its content must match, and the
-depot checks every item against it when it is added. A new depot starts
-with four kinds:
+Every text has a kind, and a kind is a format: how its content is written
+and which training step reads it. What a text is or where it comes from
+(a book, code, a forum) is a tag, never a kind ("Tags", below). A text's
+kind is set when it is added and never changes: a change of content keeps
+it, and a change that names another kind is refused; to have the same
+work in another kind, add a new text.
+
+A plain text, of kind `plain`, is a text read as it is: its row holds its
+`text`, and its content is stored as it is, never as JSON. A structured
+item is a text of any other kind: its content is JSON, its row holds its
+`content` and no `text`, and a binary file inside the content is written
+in base64. The depot's `kinds` table holds each kind's meaning and the
+JSON Schema its content must match (for `plain`, a JSON string, which
+every text is), and the depot checks every item against it when it is
+added. A new depot starts with five kinds:
 
 | Kind | What it is | Who reads it |
 | --- | --- | --- |
+| `plain` | a text read as it is | the `read-text` step, as text windows |
 | `conversation` | a conversation in the chat format ([chat-format.md](chat-format.md)) | the `answer-as-assistant` step |
 | `task` | a task for agentic training: what it asks, its starting files and its check ([training.md](training.md), "Tasks") | the `finish-tasks` and `finish-tasks-with-less-writing` steps |
 | `rating` | a person's pass or fail on one attempt of a `wpt eval` run | no step: a measure only |
 | `probe` | a question to ask a model and the patterns that flag a reply as alarming | no step: a measure only |
 
 An item gets the same licenses, notice, credits, tags and decisions as a
-plain text.
+plain text. Kinds are a closed list, the rows of `kinds`: the depot's
+counts, a dataset revision's figures and the web app's pages count what a
+library holds of each kind on its own, a kind it holds no text of at 0. Each training step names the kinds it reads ([training.md](training.md),
+"Steps"), and a corpus keeps the tokens of each kind it tokenizes in
+token files of their own ("Corpora", below).
 
 ## Tags
 
@@ -538,8 +552,9 @@ change of its name, of its `max_tokens` or of the build's size keeps its
 order. The
 corpus's record keeps how many tokens each share holds (`shares_tokens`),
 with each of its groups, and how many texts the build left out (`left_out`: texts no share took, texts
-of which a share took nothing, items `max_tokens` left out, items of the kinds that
-are no training data).
+of which a share took nothing, items `max_tokens` left out, conversations
+whose quoted texts it left out or whose quotes are unmatched, and the items
+of each kind that is no training data, by kind: `kinds not taken`).
 
 A share with no text refuses the build. Shares apply to plain texts only:
 only a size trims conversations and tasks, to their natural share of it.
@@ -642,13 +657,19 @@ The build takes every text of the dataset's libraries, each library at
 the change number the dataset names; a text two libraries hold is taken
 once. It chooses nothing by score. It then keeps:
 
-- every plain text, as its tokens followed by the end-of-document token,
-  in token files; a long text as its pieces, each a row of its own, named
-  by its text's id, `#` and its number (`depot-12#3`);
-- every conversation, as the tokens of the chat template
-  ([chat-format.md](chat-format.md), "The template"), in token files of
-  their own;
+- every plain text (kind `plain`), as its tokens followed by the
+  end-of-document token, in the token files of kind `plain`; a long text
+  as its pieces, each a row of its own, named by its text's id, `#` and
+  its number (`depot-12#3`);
+- every conversation whose quoted texts it holds (see "Conversations that
+  quote texts" below), as the tokens of the chat template
+  ([chat-format.md](chat-format.md), "The template"), in the token files
+  of kind `conversation`;
 - every task, as one line of `tasks.jsonl`.
+
+The record lists the token files by kind (`shards`, `{"plain": [...],
+"conversation": [...]}`), so a step finds the files of the kinds it
+reads and nothing else.
 
 Items of other kinds are not training data: the build leaves them out and
 counts them in the record. The texts go in the order of their export keys,
@@ -689,7 +710,10 @@ these tables:
   the content version each was made from, its notice, and where its
   tokens start (the steps that read conversations and tasks pick them by
   tag from this table); a piece taken has a row of its own with its
-  text's credits and its number (`piece`, empty for a whole text);
+  text's credits and its number (`piece`, empty for a whole text); a
+  conversation's row names the texts it quotes (`quotes`), each in the
+  corpus with its own row, credits, licenses and notice, so a model that
+  learned the conversation credits the texts it quotes;
 - `licenses` and `notices`: the license texts and notices those texts
   name, copied from their depots (ids carry their depot's name, so they never
   repeat across depots).
@@ -713,8 +737,11 @@ where its tokens start and, when it has any, its scores), so building the
 same corpus again finds it and writes nothing, and another dataset with
 the same content
 gets a corpus of its own. The record also gives a
-fingerprint of each part a training step reads, `text`, `conversations`
-and `tasks` ([training.md](training.md), "Step results and reuse").
+fingerprint of what it holds of each kind a training step reads, `plain`,
+`conversation` and `task` (`fingerprints`), so a step's result depends on
+the kinds it reads alone ([training.md](training.md), "Step results and
+reuse"). A record without its token files by kind is not fresh: training
+refuses it, and building it again writes a corpus of this form.
 
 The store keeps only the latest fresh corpus of each dataset, vocabulary
 and size: a new corpus deletes the one before of the same three once it is
@@ -746,6 +773,37 @@ or a triple not built, refuses the run with the triple and the dataset's
 download page in the depot's web app (`<depot address>/#/download/<dataset
 id>`); training never builds or queues anything. A text added to the depot
 after a build reaches training only once the corpus is built again.
+
+### Conversations that quote texts
+
+A conversation depends on every text its excerpts quote
+([chat-format.md](chat-format.md), "Excerpts"), which nobody declares: the
+build reads them from its excerpts. The corpus takes a conversation only
+when, for each excerpt:
+
+- it takes the quoted text, from the conversation's own depot; of a text
+  taken as pieces, every piece the passage lies in;
+- the selector matches exactly one place of the content version of the
+  quoted text it took.
+
+Otherwise the conversation is left out, whatever left the quoted text out:
+the size, the shares, the dataset's libraries or an erasure. The rule reads
+the depot alone, with no model, so the same depot builds the same corpus.
+The build takes the plain texts first, in the corpus's order, keeping in its
+work folder which ones it took, and then the conversations, in their own
+order. A conversation left out still counted for the items' part of the
+size, so a corpus with a size holds fewer tokens of items by as many. The
+record counts these conversations in `left_out`: `quoted text left out` and
+`quote unmatched`.
+
+The export of a dataset's texts (the page "Export" of the depot's web app,
+[depot-web.md](depot-web.md)) follows the same rule: it leaves out a
+conversation when a text it quotes is not a plain text the export holds
+from the conversation's depot, or when a selector does not match exactly
+one place of the revision of that text the export holds. It writes a
+conversation it keeps as its depot holds it, its excerpts naming their
+texts, which the same export holds. Each part counts the conversations it
+left out, under the same two names.
 
 ## Languages and translation
 

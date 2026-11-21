@@ -24,7 +24,7 @@ const CONVERSATION: Words = {
   entries: { messages: "message", content: "block", tools: "tool" },
   values: {
     system: "system", user: "user", assistant: "assistant", tool: "tool",
-    text: "text", thinking: "thinking", tool_call: "a tool call", tool_result: "a tool's result", json: "JSON", file: "a file",
+    text: "text", thinking: "thinking", tool_call: "a tool call", tool_result: "a tool's result", json: "JSON", file: "a file", excerpt: "an excerpt",
   },
   // a new message speaks after the last one and starts with one text block
   start: (field, entries) => (field === "messages" ? { role: nextRole(entries), content: [{ ...TEXT_BLOCK }] } : undefined),

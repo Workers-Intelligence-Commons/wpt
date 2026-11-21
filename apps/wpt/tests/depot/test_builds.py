@@ -204,9 +204,9 @@ def test_a_built_corpus_page_gives_each_share_s_tokens_and_each_file_its_role_to
     listed = call("GET", f"/api/datasets/{row['id']}")[2]["corpora"]
     assert [(one["id"], one["texts"], one["total_tokens"], one["items_tokens"]) for one in listed] == [
         (corpus["id"], corpus["texts"], corpus["total_tokens"], corpus["items_tokens"])]
-    texts = [one for one in shown["files"] if one["role"] == "text tokens"]
+    texts = [one for one in shown["files"] if one["role"] == "plain tokens"]
     assert len(texts) > 1 and sum(one["tokens"] for one in texts) == corpus["total_tokens"]
-    numbers = [re.fullmatch(r"first_.+_all_text-tokens-(\d+)\..+", one["download"]) for one in texts]
+    numbers = [re.fullmatch(r"first_.+_all_plain-tokens-(\d+)\..+", one["download"]) for one in texts]
     assert [int(found[1]) for found in numbers] == list(range(1, len(texts) + 1))
     assert len({one["download"] for one in shown["files"]}) == len(shown["files"])
 
@@ -233,7 +233,7 @@ def test_the_archive_of_a_corpus_holds_every_file_under_its_download_name_and_an
     status, headers, whole = call("GET", f"{link}/everything.tar")
     assert status == 200 and int(headers["Content-Length"]) == len(whole) == shown["archive"]["bytes"]
     assert headers["Content-Disposition"] == f'attachment; filename="{shown["archive"]["download"]}"'
-    assert shown["archive"]["download"] == shown["files"][0]["download"].split("_text-tokens")[0] + ".tar"
+    assert shown["archive"]["download"] == shown["files"][0]["download"].split("_plain-tokens")[0] + ".tar"
     assert call("GET", f"{link}/everything.tar")[2] == whole  # the same bytes each time
     # every file of the corpus, the token files first as the page lists them, under its download name
     with tarfile.open(fileobj=io.BytesIO(whole)) as tar:
@@ -301,7 +301,7 @@ def test_the_export_gives_every_text_in_parts_the_same_bytes_each_time_with_no_t
     assert status == 200 and shown["texts"] == len(TEXTS)
     [part] = shown["parts"]
     assert part["forms"]["jsonl.zst"] == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst",
-                                          "bytes": None, "sha256": None}
+                                          "bytes": None, "sha256": None, "left_out": None}
     status, headers, first = call("GET", f"{base}/part-00000.jsonl.zst")
     assert headers["Content-Disposition"] == 'attachment; filename="first_part-00000.jsonl.zst"'  # saved by its dataset's name
     assert call("GET", f"{base}/part-00000.jsonl.zst")[2] == first
@@ -311,7 +311,8 @@ def test_the_export_gives_every_text_in_parts_the_same_bytes_each_time_with_no_t
     table = call("GET", f"{base}/part-00000.parquet")[2]
     assert pq.read_table(io.BytesIO(table)).to_pylist() == rows
     known = call("GET", base)[2]["parts"][0]["forms"]["jsonl.zst"]
-    assert known == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst", "bytes": len(first), "sha256": hashlib.sha256(first).hexdigest()}
+    assert known == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst", "bytes": len(first), "sha256": hashlib.sha256(first).hexdigest(),
+                     "left_out": {"quote unmatched": 0, "quoted text left out": 0}}  # its conversations left out, by why
     status, headers, piece = call("GET", f"{base}/part-00000.jsonl.zst", headers={"Range": "bytes=3-10"})
     assert (status, piece, headers["Content-Range"]) == (206, first[3:11], f"bytes 3-10/{len(first)}")
     assert call("GET", f"{base}/part-00001.parquet")[0] == 404

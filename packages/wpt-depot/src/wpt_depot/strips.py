@@ -293,5 +293,5 @@ def total(depot, library: str) -> dict:
     """{texts, characters} the library holds now, from the depot's counts at
     once (wpt_depot.counts), every kind together."""
     held = counts.figures(depot.db.reader(), library, ())
-    return {"texts": sum(held[kind]["texts"] for kind in counts.KINDS),
-            "characters": sum(held[kind]["characters"] for kind in counts.KINDS)}
+    return {"texts": sum(one["texts"] for one in held["kinds"].values()),
+            "characters": sum(one["characters"] for one in held["kinds"].values())}

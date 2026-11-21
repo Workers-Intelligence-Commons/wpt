@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import shutil
 from pathlib import Path
@@ -13,6 +14,9 @@ from wpt_depot.filters import KEY_INDEXES
 from wpt_depot.legacy import Legacy
 from wpt_depot.database import FULL_COPY_NEXT
 from wpt_depot.schema import FORMAT, KEYS, VIEWS
+
+CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
+                             {"role": "assistant", "content": [{"type": "text", "text": "Hello."}]}]}
 
 
 def files_of(folder: Path) -> dict[str, str]:
@@ -67,7 +71,7 @@ def test_an_upgrade_of_a_format_3_folder_writes_a_new_file_holding_what_the_fold
     assert [one["revision"] for one in depot.library_texts("old-2", depot.change())] == [2]  # the revision it pinned
     assert depot.sql("SELECT id, revision FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = "
                      "'book')") == [{"id": "old-1", "revision": 2}]
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert depot.erasures()[0]["needles"][0]["text"] == "old-2"
     # the ids go on from the highest number of each kind the folder held
     assert depot.add([NewText(text="new", licenses=("CC0-1.0",))], me) == ["old-3"]
@@ -125,8 +129,8 @@ def test_an_upgrade_stopped_once_its_file_is_whole_only_renames_it_when_run_agai
 
     depot, _ = Depot.upgrade(str(folder))
 
-    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 8
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 9
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 
 def test_the_upgrade_of_a_clone_takes_its_upstream_s_web_address(make_legacy):
@@ -185,8 +189,16 @@ def schema_of(path) -> list[tuple]:
         con.close()
 
 
+OLD_CONVERSATION = json.dumps({"type": "object", "description": "a conversation kind of a format before excerpts"})
+
+
 def made_older(depot, format_: int):
-    """The depot as a depot of format_ (4 to 10) holds what it holds: no index content_lists_long; for 9 and older
+    """The depot as a depot of format_ (4 to 11) holds what it holds: no kind on its plain texts' content versions,
+    the column kind of content_lists nullable, no row plain in kinds, the index content_lists_long over the
+    content versions of no kind, a conversation kind whose schema takes no excerpt, no table quotes nor its
+    index, and what each library holds counted, and its dataset revisions' figures written,
+    by group of kinds (plain, items: conversations and tasks, other), not by kind; for 10 and older no index
+    content_lists_long; for 9 and older
     also no tables text_tags and text_licenses, no title
     index text_titles nor its title_owners, no
     indexes of the format 10 upgrade (INDEXES_10) but the index text_decisions_decision, and no counts of scores, of
@@ -203,8 +215,53 @@ def made_older(depot, format_: int):
         con.execute("UPDATE texts_revisions SET status = NULL WHERE NOT latest")
     before = table_rows(depot.address)
     with depot.db.bulk() as con:
+        statement = con.execute("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'content_lists'"
+                                ).fetchall()[0][0]
+        version = con.execute("PRAGMA schema_version").fetchall()[0][0]
+        con.execute("PRAGMA writable_schema = ON")
+        con.execute("UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = 'content_lists'",
+                    (statement.replace(upgrade.NOT_NULL_12, upgrade.NULLABLE_12),))
+        con.execute(f"PRAGMA schema_version = {int(version) + 1}")
+        con.execute("PRAGMA writable_schema = OFF")
+    with depot.db.bulk() as con:
+        con.execute("UPDATE kinds SET schema = ? WHERE id = 'conversation'", (OLD_CONVERSATION,))
+        con.execute("DROP TABLE quotes")
+        grouped = {}
+        for name, *sized in con.execute("SELECT name, texts, characters, bytes FROM counts "
+                                        "WHERE facet = 'library kind'").fetchall():
+            library, kind = name.split(" ", 1)
+            if kind != "plain":
+                into = grouped.setdefault(f"{library} {'items' if kind in ('conversation', 'task') else 'other'}",
+                                          [0, 0, 0])
+                into[:] = [a + b for a, b in zip(into, sized)]
+        con.execute("DELETE FROM counts WHERE facet = 'library kind' AND substr(name, instr(name, ' ') + 1) <> "
+                    "'plain'")
+        con.executemany("INSERT INTO counts (facet, name, texts, characters, bytes) VALUES ('library kind', ?, ?, ?, ?)",
+                        [(name, *sized) for name, sized in grouped.items()])
+        for dataset, revision, figures in con.execute("SELECT id, revision, figures FROM datasets_revisions "
+                                                      "WHERE figures IS NOT NULL").fetchall():
+            figures = json.loads(figures)
+
+            def group(kinds, chosen):
+                return {key: sum(one[key] for kind, one in kinds.items() if kind in chosen)
+                        for key in ("texts", "characters", "bytes")}
+
+            figures["libraries"] = [None if one is None else {
+                "plain": one["kinds"]["plain"], "items": group(one["kinds"], {"conversation", "task"}),
+                "other": group(one["kinds"], set(one["kinds"]) - {"plain", "conversation", "task"}),
+                "tags": one["tags"]} for one in figures["libraries"]]
+            con.execute("UPDATE datasets_revisions SET figures = ? WHERE id = ? AND revision = ?",
+                        (json.dumps(figures, ensure_ascii=False, separators=(",", ":")), dataset, revision))
         con.execute("DROP INDEX content_lists_long")
+        con.execute("UPDATE content_lists SET kind = NULL WHERE kind = 'plain'")
+        con.execute("DELETE FROM kinds WHERE id = 'plain'")
+        if format_ == 11:
+            con.execute(upgrade.LONG_11)
         con.execute("UPDATE about_revisions SET format = ?", (format_,))
+    if format_ == 11:
+        depot.db.close()
+        (depot.db.waiting / FULL_COPY_NEXT).unlink()
+        return before
     if format_ == 10:
         depot.db.close()
         (depot.db.waiting / FULL_COPY_NEXT).unlink()
@@ -298,7 +355,7 @@ def test_an_upgrade_of_a_format_4_file_builds_its_indexes_tables_and_statuses_in
     assert start == 4 and upgraded.format() == FORMAT and upgraded.address == depot.address
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9, 10, 11] and after["changes"][-1][1] == "upgrade"
+    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9, 10, 11, 12] and after["changes"][-1][1] == "upgrade"
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert (depot.db.waiting / FULL_COPY_NEXT).exists()  # the change files hold no change of layout
@@ -334,7 +391,7 @@ def test_an_upgrade_to_format_6_cut_short_marks_the_depot_and_goes_on_when_run_a
 
     assert start == 5 and upgraded.format() == FORMAT
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9, 10, 11]
+    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9, 10, 11, 12]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert any("at format 6" in line for line in said)
@@ -377,7 +434,7 @@ def test_an_upgrade_to_format_7_writes_every_export_key_goes_on_from_its_last_ba
     assert len(made) == 6 + 3 + 4  # the 3 memberships left, then the 4 pins
     assert any("rows a second" in line for line in said)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9, 10, 11]
+    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9, 10, 11, 12]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     for table, count in (("memberships", 8), ("pins", 4)):
@@ -411,7 +468,7 @@ def test_an_upgrade_to_format_8_stopped_while_it_builds_the_decision_index_build
     assert start == 7 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9, 10, 11]
+    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9, 10, 11, 12]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert "text_decisions_decision" in said[0] and any("at format 8" in line for line in said)
@@ -460,7 +517,7 @@ def test_an_upgrade_to_format_9_fills_what_libraries_hold_exactly_and_goes_on_af
     assert start == 8 and upgraded.format() == FORMAT
     assert f"going on after the text {given[0][1]}" in said[0] and any("rows a second" in line for line in said)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [8, 9, 10, 11]
+    assert [one[-1] for one in after["about_revisions"]] == [8, 9, 10, 11, 12]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert library_figures(upgraded)[0] == stored
@@ -561,7 +618,7 @@ def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_
     assert "rows 3 to" in said[0] and "going on after the last transaction" in said[0]
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [9, 10, 11]
+    assert [one[-1] for one in after["about_revisions"]] == [9, 10, 11, 12]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert title_index(upgraded) == indexed and indexed["terms"] and indexed["unfound"] == []
@@ -592,7 +649,94 @@ def test_an_upgrade_to_format_11_stopped_while_it_builds_the_long_content_index_
     assert start == 10 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [10, 11]
+    assert [one[-1] for one in after["about_revisions"]] == [10, 11, 12]
     assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
         table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
     assert "content_lists_long" in said[0] and any("at format 11" in line for line in said)
+
+
+def test_an_upgrade_to_format_12_gives_every_text_a_kind_goes_on_after_a_stop_and_declares_the_kind_not_null(
+        make_depot, me, monkeypatch):
+    # on the public depot it rewrites over a hundred million content versions, so a stop must not start it over,
+    # and a depot it leaves must refuse a content version of no kind as a new one does; what each library holds is
+    # counted by kind, each kind on its own, as a new depot counts it, and so are the figures of the datasets; and a
+    # depot keeps each kind's schema in its own table, so the conversation kind must take the schema with excerpts
+    # a new depot starts with, and the table quotes through which an erasure finds the conversations quoting a
+    # text must hold each conversation's quotes, as a new depot writes them
+    new = make_depot("new")
+    depot = decided(make_depot(), me)
+    [quoted] = depot.rows("SELECT id, text FROM texts WHERE kind = 'plain' ORDER BY id LIMIT 1")
+    quoting = {"messages": [
+        {"role": "user", "content": [{"type": "text", "text": "Read this."}, {
+            "type": "excerpt", "source": quoted["id"],
+            "selector": {"type": "TextQuoteSelector", "exact": quoted["text"]}}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Read."}]}]}
+    probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
+    items = depot.add([NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",)),
+                       NewText(kind="probe", content=probe, licenses=("CC0-1.0",)),
+                       NewText(kind="conversation", content=json.dumps(quoting), licenses=("CC0-1.0",))], me)
+    depot.decide("admitted", items, me)
+    mixed = depot.new_library("mixed")
+    depot.put(mixed, items)
+    first = depot.rows("SELECT id FROM libraries WHERE name = 'first'")[0]["id"]
+    dataset = depot.new_dataset("both", "classics", [(None, first), (None, mixed)])
+    before = made_older(depot, 11)
+    said = []
+
+    def stops_after_its_first_batch(line):
+        said.append(line)
+        if "content row" in line:
+            raise OSError("the machine stopped")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(upgrade, "BATCH", 3)
+        patch.setattr(upgrade, "SAY_EVERY", 0)
+        with pytest.raises(OSError):
+            upgrade.upgrade(depot.address, log=stops_after_its_first_batch)
+    for way_in in (Depot.view, Depot.open):
+        with pytest.raises((HalfUpgraded, OtherFormat), match="wpt depot upgrade"):
+            way_in(depot.address)
+    said.clear()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(upgrade, "BATCH", 3)
+        upgraded, start = upgrade.upgrade(depot.address, log=said.append)
+
+    assert start == 11 and upgraded.format() == FORMAT
+    assert "rows 3 to" in said[0] and "going on after the last transaction" in said[0]
+    # the column kind NOT NULL, the index over plain, the table quotes and its index
+    assert schema_of(depot.address) == schema_of(new.address)
+    after = table_rows(depot.address)
+    assert after["kinds"] == table_rows(new.address)["kinds"]
+    assert [row[-1] for row in after["quotes"]] == [quoted["id"]]
+    # the step writes the schema it holds itself, never the kinds folder's, and it is a new depot's of format 12
+    [(written,)] = upgraded.db.reader().execute("SELECT schema FROM kinds WHERE id = 'conversation'").fetchall()
+    [(fresh,)] = new.db.reader().execute("SELECT schema FROM kinds WHERE id = 'conversation'").fetchall()
+    assert written == upgrade.CONVERSATION_12 == fresh
+    assert [one[-1] for one in after["about_revisions"]] == [11, 12]
+    assert {table: rows for table, rows in after.items() if table not in ("about_revisions", "changes")} == {
+        table: rows for table, rows in before.items() if table not in ("about_revisions", "changes")}
+    kinds = upgraded.sql("SELECT kind, count(*) AS n FROM content_lists GROUP BY kind ORDER BY kind")
+    assert [one["kind"] for one in kinds] == ["conversation", "plain", "probe"]
+    plain_only, both = (one["stored"]["kinds"] for one in upgraded.dataset_figures(dataset)["libraries"])
+    assert [(kind, one["texts"]) for kind, one in plain_only.items()] == [
+        ("plain", 4), ("conversation", 0), ("probe", 0), ("rating", 0), ("task", 0)]
+    assert {kind: one["texts"] for kind, one in both.items() if one["texts"]} == {"conversation": 2, "probe": 1}
+    assert upgraded.db.reader().execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    with pytest.raises(apsw.ConstraintError):
+        with upgraded.db.bulk() as con:
+            con.execute("UPDATE content_lists SET kind = NULL")
+
+
+def test_the_upgrade_to_format_12_never_takes_another_depot_s_library_as_proved_by_its_counts(make_depot, me):
+    # the counts hold only what this depot's own libraries hold, so they prove nothing about a library a dataset
+    # reads from another depot, nor about one whose id another depot owns
+    depot = decided(make_depot(), me)
+    first = depot.rows("SELECT id FROM libraries WHERE name = 'first'")[0]["id"]
+    change = depot.change()
+    con = depot.db.reader()
+
+    assert upgrade._proved_12(con, {"depot": None, "library": first, "change": change})
+    assert not upgrade._proved_12(con, {"depot": "https://elsewhere.example/", "library": first, "change": change})
+    assert not upgrade._proved_12(con, {"depot": None, "library": f"elsewhere-{ids.number(first)}",
+                                        "change": change})

@@ -11,7 +11,7 @@
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
 import { get, type Answer } from "./api";
-import { plural, Problems, StatusBadge, type Status } from "./parts";
+import { plural, PLAIN, Problems, StatusBadge, type Status } from "./parts";
 import { codePoints } from "./reader";
 import { href } from "./route";
 
@@ -75,7 +75,7 @@ function Diff({ pieces, cutBefore, cutAfter, label }: { pieces: Piece[]; cutBefo
 
 // One needle: its place, then the lines around it.
 function Hunk({ place }: { place: Place }) {
-  const where = place.start === null ? (place.kind ? "the whole item" : "the whole text")
+  const where = place.start === null ? (place.kind && place.kind !== PLAIN ? "the whole item" : "the whole text")
     : <>characters {place.start} to {place.end}{place.field !== null && <> of the field <span className="ledger">{place.field}</span></>}, the end excluded{place.version !== null && <>, in content version {place.version}</>}</>;
   let body;
   if (place.state === "gone") body = <p className="small aside">The depot no longer holds this text: an erasure removed it whole.</p>;
@@ -87,7 +87,7 @@ function Hunk({ place }: { place: Place }) {
     const sent = codePoints(place.passage ?? "");
     body = (
       <>
-        <p className="small">The whole {place.kind ? "item" : "text"} goes: {plural(place.length ?? 0, "character")}. Its head:</p>
+        <p className="small">The whole {place.kind && place.kind !== PLAIN ? "item" : "text"} goes: {plural(place.length ?? 0, "character")}. Its head:</p>
         <Diff label="What goes" cutBefore={false} cutAfter={more || (place.length ?? 0) > sent} pieces={[{ kind: "removed", text: head }]} />
       </>
     );
@@ -128,7 +128,7 @@ export function ErasureView({ id }: { id: string }) {
       {texts.map((text) => {
         const needles = request.needles.filter((n) => n.text === text);
         const first = needles[0];
-        const name = first.title ?? (first.kind ? `an item of kind ${first.kind}` : first.state === "gone" || (first.start === null && first.state === "erased") ? "a text no longer in the depot" : "an untitled text");
+        const name = first.title ?? (first.kind && first.kind !== PLAIN ? `an item of kind ${first.kind}` : first.state === "gone" || (first.start === null && first.state === "erased") ? "a text no longer in the depot" : "an untitled text");
         return (
           <section key={text} className="diff-file" aria-label={`${text}: ${plural(needles.length, "passage")}`}>
             <h3 className="diff-file-head cue">

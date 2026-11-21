@@ -7,7 +7,9 @@ Each corpus is a folder corpora/<dataset name>-<8 hex characters>/ of the
 store, its record corpus.json written last (folder_of). A corpus is fresh
 while its record says neither `stale` (an admitted erasure reached a text
 it holds: the ids of the erasures) nor `deleted` (its files are gone: when,
-and why). A deleted corpus keeps its record, so the same build can be run
+and why), and holds its token files by kind (by_kind; a record of another
+layout is never fresh: training cannot read it, and a build makes it
+again). A deleted corpus keeps its record, so the same build can be run
 again and its id compared with the one the record keeps.
 
 A corpus is built for a triple (triple): its dataset, its vocabulary (by
@@ -84,13 +86,25 @@ def folder_of(record: dict) -> str:
 
 
 def fresh(record: dict) -> bool:
-    return "stale" not in record and "deleted" not in record
+    return "stale" not in record and "deleted" not in record and by_kind(record)
+
+
+def by_kind(record: dict) -> bool:
+    """Whether the record holds its token files by kind ({kind: [token file]}, wpt_depot.corpus)."""
+    return isinstance(record.get("shards", {}), dict)
+
+
+def token_files(record: dict) -> list[dict]:
+    """Every token file of a corpus, of every kind, as its record names each; a list of a record of another layout
+    as it is."""
+    shards = record.get("shards", {})
+    return [one for kept in shards.values() for one in kept] if isinstance(shards, dict) else list(shards)
 
 
 def files(record: dict) -> list[dict]:
     """Every file of a corpus but its record, as the record names each ({key, sha256} and maybe bytes)."""
     tables = record.get("tables", {})
-    found = [*record.get("shards", []), *record.get("conversation_shards", [])]
+    found = [*token_files(record), *record.get("conversation_shards", [])]
     for table in tables.values():
         found += table if isinstance(table, list) else [table]
     if "vocabulary" in record.get("tokenizer", {}):

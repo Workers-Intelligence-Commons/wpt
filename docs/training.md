@@ -44,9 +44,10 @@ from an environment variable (`WPT_` + the option name in capitals,
 `WPT_RECIPE` and `WPT_CORPUS`). `uv run wpt train --help` lists them.
 
 The corpus holds everything the steps read: the token files of its plain
-texts, and its conversations and tasks. Its record gives a fingerprint (a
-sha256) for each of these parts, `text`, `conversations` and `tasks`,
-which the steps' fingerprints read ("Step results and reuse", below). A
+texts and of its conversations, each kind's apart, and its tasks. Its
+record gives a fingerprint (a sha256) of what it holds of each kind,
+`plain`, `conversation` and `task`, which the steps' fingerprints read
+("Step results and reuse", below). A
 text added to the depot after the build reaches training only once the
 corpus is built again.
 
@@ -98,8 +99,12 @@ A step is made of four roles, each a Python file of
 - the **optimizer** (`optimizers/`) moves the weights the loss reaches,
   with its schedule, and judges the evaluations;
 - the **step** file (`steps/`) names its method, environment and
-  optimizer with that optimizer's settings, the parts of the model it
-  locks, and its own defaults for its method's and environment's settings.
+  optimizer with that optimizer's settings, the kinds of texts it reads
+  (`read-text` reads `plain`, `answer-as-assistant` reads `conversation`,
+  `finish-tasks` and `finish-tasks-with-less-writing` read `task`;
+  [data-selection.md](data-selection.md), "Kinds and items"), the parts of
+  the model it locks, and its own defaults for its method's and
+  environment's settings.
 
 The **runner** (`wpt_training.train`) is the training loop every step
 shares: it freezes the locked parts, starts the optimizer, asks the
@@ -125,7 +130,8 @@ step runs, a step whose environment finds nothing to learn from in it
 (no conversation, no task, or fewer tokens than its prefix) refuses the run the same way,
 naming the step. `provenance.json` records each step: its files and their
 sha256, its method, environment, optimizer and their settings, the kind
-of examples it reads (`reads`), and its locked parts.
+of examples it reads (`reads`), the kinds of texts it reads (`kinds`),
+and its locked parts.
 
 The built-in steps:
 
@@ -164,9 +170,9 @@ of the step before it (for the first step, the model's shape and
 vocabulary size, without the context `block_size`, which no weight
 depends on: a recipe that adds a later step reading longer windows still
 reuses the first), the step as `provenance.json` records it, the
-fingerprint of the corpus part it reads (the record's `fingerprints`: `text`
-for `read-text`, `conversations` for `answer-as-assistant`, `tasks` for
-`finish-tasks` and `finish-tasks-with-less-writing`), the seed and the
+fingerprints of the kinds it reads (the record's `fingerprints`:
+`plain` for `read-text`, `conversation` for `answer-as-assistant`, `task`
+for `finish-tasks` and `finish-tasks-with-less-writing`), the seed and the
 code (the commit it runs from and a hash of its uncommitted changes;
 [architecture.md](architecture.md), "The store"), so any
 commit makes every kept result unknown. A change to the
@@ -257,13 +263,16 @@ anything else than text windows.
 ### Environments
 
 An environment file defines `GIVES`, the kind of examples it gives,
-`SETTINGS`, `start(settings, data)`, which returns a
+`KINDS`, the kinds of texts it can read (a step whose `KINDS` names
+another is refused when it loads), `SETTINGS`, `start(settings, data)`,
+which returns a
 `wpt_training.Environment`, and optionally `check(settings)`, which raises
 `ValueError` on settings that cannot go together, `context(settings)`,
 the window length the step leaves the model reading at, and
-`check_corpus(settings, record, store)`, which raises `ValueError` when
-the corpus holds nothing for the step, before any step runs. `data` gives
-the step's name, the store, the corpus's record, the tokenizer, the
+`check_corpus(settings, record, store, kinds)`, which raises `ValueError`
+when the corpus holds nothing of those kinds for the step, before any step
+runs. `data` gives the step's name, the kinds it reads, the store, the
+corpus's record, the tokenizer, the
 model's configuration, the strategy, the run's record, the log, the seed
 and the step's number in the recipe. The
 environment gives its stages (one for most environments; text windows
@@ -271,8 +280,9 @@ have one per window length), the tokens of its examples, each update's
 passes (or none, when the update has nothing to learn: it is then
 skipped), when to evaluate, what happens after each update and at the
 step's end, the state a resumed step needs, and what of the corpus it
-learned (`learned`: the tokens of plain text, the conversations or the
-tasks), from which the model's `CREDITS` is written.
+learned (`learned`, by kind: `{"plain": tokens}`, `{"conversation":
+conversations}` or `{"task": tasks}`), from which the model's `CREDITS`
+is written.
 
 - `text-windows` gives `windows` of the corpus's plain texts ("The read-text
   step", below).
@@ -365,8 +375,10 @@ Settings and defaults: `lr` 0.002, `weight_decay` 0.1, `momentum` 0.95,
 
 ### Writing a step
 
-A step file defines `METHOD`, `ENVIRONMENT` and `OPTIMIZER` (`{"name":
-..., "settings": {...}}`), and optionally `LOCKED` and `SETTINGS`, its
+A step file defines `METHOD`, `ENVIRONMENT`, `KINDS` (the kinds of texts
+it reads, at least one, each one its environment reads) and `OPTIMIZER`
+(`{"name": ..., "settings": {...}}`), and optionally `LOCKED` and
+`SETTINGS`, its
 defaults for its method's and environment's settings, and
 `check(settings)`. It names built-in roles or paths of Python files, so a
 new kind of training is a new method, environment or optimizer file and

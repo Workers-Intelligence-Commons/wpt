@@ -32,6 +32,7 @@ from wpt_depot.depot import (ALREADY, ALREADY_UNDER_REVIEW, BELONGS_TO_UPSTREAM,
                              NO_ALLOWED_LICENSE, ORDERS, SORTED, TEXT_WINDOW, WINDOW, spread_shares)
 from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter
+from wpt_depot.kinds import PLAIN
 from wpt_depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
 from wpt_depot.corpora import NoRoom, TooBig
 from wpt_depot.corpora import triple as corpora_triple
@@ -196,8 +197,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         return found[0]["name"] if found else library
 
     def text_names(ids: list[str]) -> dict[str, str]:
-        """Each text's name as the pages give it, by id: its title, else its
-        kind with an article ("a conversation"), else "an untitled text";
+        """Each text's name as the pages give it, by id: its title, else for
+        an item its kind with an article ("a conversation"), else "an
+        untitled text";
         its id when the depot holds no such text."""
         rows = {row["id"]: row for row in depot.rows(
             f"SELECT id, title, kind FROM texts WHERE id IN ({', '.join('?' * len(ids))})", tuple(ids))} if ids else {}
@@ -208,7 +210,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                 return one
             if row["title"]:
                 return row["title"]
-            if row["kind"]:
+            if row["kind"] != PLAIN:
                 return f"{'an' if row['kind'][0] in 'aeiou' else 'a'} {row['kind']}"
             return "an untitled text"
         return {one: name(one) for one in ids}
@@ -282,9 +284,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def add(values, body):
-        kind = body.get("kind")
+        kind = body.get("kind", PLAIN)
         one = NewText(text=body.get("text"), kind=kind,
-                      content=None if kind is None else json.dumps(body.get("content"), ensure_ascii=False),
+                      content=None if "content" not in body else json.dumps(body["content"], ensure_ascii=False),
                       licenses=tuple(body["licenses"]), notice=body.get("notice"), title=body.get("title"),
                       authors=None if body.get("authors") is None else tuple(body["authors"]),
                       tags=tuple(body.get("tags", [])), address=body.get("address"))
@@ -330,7 +332,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     def content(values, body):
         changed = depot.change_content(values["id"], body.get("text"),
                                        json.dumps(body["content"], ensure_ascii=False) if "content" in body else None,
-                                       declared(body))
+                                       declared(body), body.get("kind"))
         decision, version = changed if changed is not None else (None, None)
         return 200, {"decision": decision, "version": version}
 
@@ -728,7 +730,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               f"of more than {limits.ANSWER_ROWS} rows or {limits.ANSWER_BYTES} bytes of JSON is refused (422)",
               body={"type": "object", "required": ["query"], "properties": {"query": TEXT}},
               answer={"type": "object", "required": ["columns", "rows"]}),
-        Route("GET", "/api/kinds", kinds, "the kinds of items: each one's id, meaning and JSON Schema", answer=ROWS),
+        Route("GET", "/api/kinds", kinds, "the kinds of texts (plain and the kinds of items): each one's id, meaning and JSON Schema", answer=ROWS),
         Route("GET", "/api/licenses", licenses, "the licenses the depot holds, by id: each one's id and name, "
               "whether the allowed list accepts it (a combined row only if every part is), and how many texts name "
               "it", answer=ROWS),
@@ -739,8 +741,8 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "license add)",
               body={"type": "object", "required": ["id", "name", "text"],
                     "properties": {"id": TEXT, "name": TEXT, "text": TEXT}}, answer=OBJECT),
-        Route("POST", "/api/texts", add, "add a plain text (text) or an item (kind and its content), under review "
-              "(wpt depot add)",
+        Route("POST", "/api/texts", add, "add a text, under review, of its kind for good: a plain text (text, kind "
+              "plain or none) or an item (kind and its content) (wpt depot add)",
               body={"type": "object", "required": ["licenses", "declaration"],
                     "properties": {"text": {"type": "string"}, "kind": TEXT, "content": {},
                                    "licenses": {**NAMES, "minItems": 1}, "notice": nullable, "title": nullable,
@@ -810,10 +812,12 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "records it as a decision under review whose reason names the old and new content versions, the "
               "decisions before it no longer count, and the text leaves every open library; a locked library keeps "
               "the content of the revision it pinned: the decision's id and the new content version, both null "
-              "when the content is the one it has and nothing is written",
+              "when the content is the one it has and nothing is written; a text's kind is fixed when it is made, "
+              "so kind, when given, must be the text's own (to change kind, add a new text)",
               body={"type": "object", "required": ["declaration"],
                     "oneOf": [{"required": ["text"]}, {"required": ["content"]}],
-                    "properties": {"text": {"type": "string"}, "content": {}, "declaration": DECLARATION}},
+                    "properties": {"text": {"type": "string"}, "content": {}, "kind": TEXT,
+                                   "declaration": DECLARATION}},
               answer={"type": "object", "required": ["decision", "version"]}),
         Route("POST", "/api/texts/content", content_many, "change the content of many plain texts at once, each "
               "as POST /api/texts/{id}/content changes one (wpt depot content-file): for each text named once, its "
@@ -991,8 +995,8 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "depot's counts", answer={"type": "object", "required": ["id", "texts"]}),
         Route("POST", "/api/libraries/measure", measure, "what libraries hold now, each text at its current "
               "revision, read at once from the depot's counts of each library, whatever its size: texts, characters "
-              "and UTF-8 bytes of them all, and of the plain texts (plain), the conversations and tasks (items, the "
-              "items a corpus takes) and the items of other kinds (other); each library counts apart and the figures "
+              "and UTF-8 bytes of them all, and of each kind of text on its own (kinds: {kind: {texts, characters, "
+              "bytes}}, every kind of the depot, plain first); each library counts apart and the figures "
               "are their sum, so a text several of them hold counts once for each; with shares, the plain texts that "
               "have each share's tag (a text with several of the shares' tags counts once for each, where a dataset's "
               "share takes it only for the first: exact when each text has at most one of them), those left once the "
@@ -1000,13 +1004,13 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
               "kept_characters of each share (the share that holds the least for its proportion keeps all its texts, "
               "and limits the others, each its proportion of it, at most all it holds; a share with no text takes "
               "nothing), limits on the share that limits the others, and mix, the bytes and characters of plain text "
-              "kept and the share of the bytes the conversations and tasks hold then (items_share), the share they "
-              "take of any size; 404 for a library the depot does not hold",
+              "kept, the share of the bytes the conversations and tasks hold then (items_share), the share they "
+              "take of any size together, and each one's own (kind_shares); 404 for a library the depot does not hold",
               body={"type": "object", "required": ["libraries"],
                     "properties": {"libraries": {**NAMES, "minItems": 1},
                                    "shares": {"type": ["array", "null"], "items": share}}},
-              answer={"type": "object", "required": ["texts", "characters", "bytes", "plain", "items", "other",
-                                                     "shares", "unshared", "mix"]}),
+              answer={"type": "object", "required": ["texts", "characters", "bytes", "kinds", "shares", "unshared",
+                                                     "mix"]}),
         Route("POST", "/api/changes/times", change_times, "the UTC time each of the depot's changes named was made "
               "at, null for a change made before format 4, in the order named; a change the depot does not hold is "
               "left out",

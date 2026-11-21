@@ -30,7 +30,7 @@ def test_an_estimate_of_a_dataset_its_sample_covers_gives_the_tokens_its_build_h
 
     assert sorted((path.name, path.stat().st_mtime_ns) for path in Path(tmp_path).iterdir()) == before
     record = build(depot, "all", open_store((tmp_path / "store").as_uri()), TOKENIZER, max_tokens=None, log=lambda *_: None)
-    conversation_tokens = sum(one["tokens"] for one in record["conversation_shards"])
+    conversation_tokens = sum(one["tokens"] for one in record["shards"]["conversation"])
     # the sample holds every text, so the estimate of the tokens is what the build takes
     assert (found["plain_tokens"], found["item_tokens"]) == (record["total_tokens"], conversation_tokens)
     assert found["texts"] == record["texts"] and found["sample"]["tokenized"] == 31
@@ -40,7 +40,7 @@ def test_an_estimate_of_a_dataset_its_sample_covers_gives_the_tokens_its_build_h
     size = 4 * conversation_tokens
     rows = depot.rows("SELECT c.kind, c.bytes FROM texts t JOIN content_lists c ON c.id = t.id "
                       "AND c.version = t.content_version")
-    share = sum(r["bytes"] for r in rows if r["kind"]) / sum(r["bytes"] for r in rows)
+    share = sum(r["bytes"] for r in rows if r["kind"] != "plain") / sum(r["bytes"] for r in rows)
     cut = estimate(depot, dataset, TOKENIZER, size)
     built = build(depot, "all", open_store((tmp_path / "store").as_uri()), TOKENIZER, max_tokens=size,
                   log=lambda *_: None)
@@ -54,6 +54,34 @@ def test_an_estimate_of_a_dataset_its_sample_covers_gives_the_tokens_its_build_h
     assert (cut["item_texts"], cut["items_held"]) == (built["conversations"], record["conversations"])
     assert abs(cut["plain_texts"] - (built["texts"] - built["conversations"])) <= 1
     assert cut["texts"] == cut["plain_texts"] + cut["item_texts"]
+
+
+def test_an_estimate_counts_no_conversation_whose_quoted_text_the_dataset_does_not_hold(make_depot, me, tmp_path):
+    # the build leaves such a conversation out, so the estimate must not count it either
+    depot = make_depot()
+    inside, outside = depot.add([NewText(text=f"the quick brown fox {n} jumps", licenses=("CC0-1.0",))
+                                 for n in range(2)], me)
+
+    def quoting(source, exact):
+        return NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps({"messages": [
+            {"role": "user", "content": [{"type": "excerpt", "source": source,
+                                          "selector": {"type": "TextQuoteSelector", "exact": exact}}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "A fox."}]}]}))
+    kept, dropped = depot.add([quoting(inside, "fox 0"), quoting(outside, "fox 1")], me)
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("all")
+    depot.put(library, f"id <> '{outside}'")
+    dataset = depot.dataset_by_id(depot.new_dataset("all", "classics", [(None, library)]))
+
+    found = estimate(depot, dataset, TOKENIZER, None)
+    record = build(depot, "all", open_store((tmp_path / "store").as_uri()), TOKENIZER, max_tokens=None,
+                   log=lambda *_: None)
+
+    assert record["conversations"] == 1 and record["left_out"]["quoted text left out"] == 1
+    assert found["item_texts"] == 1
+    assert found["item_tokens"] == sum(one["tokens"] for one in record["shards"]["conversation"])
+    sized = estimate(depot, dataset, TOKENIZER, 1000)
+    assert any("quote texts the dataset holds" in line for line in sized["warnings"])
 
 
 def test_at_a_small_size_the_estimate_forecasts_the_share_a_long_text_leaves_short_and_the_size_where_shares_even_out(

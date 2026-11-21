@@ -36,9 +36,9 @@ the text, is counted from a few rows read by their key (split); and the
 facets of SIZED, which say what each library
 holds, each text at its current revision, its characters and UTF-8 bytes
 those of the content version it reads (content_lists): LIBRARY_KIND with
-the name `<library id> <kind>`, kind plain (a plain text), items (a
-conversation or a task, the items a corpus takes, TRAINING_KINDS) or other
-(an item of another kind), and LIBRARY_TAG with the name `<library id>
+the name `<library id> <kind>`, the texts of the library of that kind, each
+kind on its own (kinds are a closed list, the rows of the table kinds:
+depot_kinds), and LIBRARY_TAG with the name `<library id>
 <tag>`, the plain texts of the library that have the tag. A library id
 holds no space, so the name's first space ends it. A text with several tags
 counts once for each of them. A count that falls to 0 has no row.
@@ -69,7 +69,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from . import titles
 from .filters import in_locked
 from .ids import order_sql
-from .order import TRAINING_KINDS
+from .kinds import PLAIN
 from .schema import ADMITTED, REFUSED, UNDER_REVIEW
 
 TEXTS, STATUS, TAG, LICENSE, LIBRARY, DECISION = "texts", "status", "tag", "license", "library", "decision"
@@ -83,7 +83,6 @@ SIZED = (LIBRARY_KIND, LIBRARY_TAG)  # the facets with characters and bytes
 FACETS = (*COUNTED, *SPLIT, *SIZED)
 HELD = (LIBRARY, *SIZED)  # the facets of what libraries hold (library_moves), measured from rows of memberships
 ROWS = (*HELD, SPLIT_LIBRARY)  # the facets measured from rows of memberships
-KINDS = ("plain", "items", "other")  # the kinds of LIBRARY_KIND
 COLUMNS = ("texts", "characters", "bytes")
 
 # what each facet adds of the texts of a table of ids `{chosen}` (column id): (facet name, count) rows; each reads
@@ -111,13 +110,12 @@ _MEASURES = {
                    "texts_revisions t ON t.id = c.id AND t.latest, json_each(t.licenses) j GROUP BY 1",
 }
 # what the rows of memberships a query `{rows}` gives (columns library and text) hold, in one pass that looks up each
-# row's current revision and content version once: (library, its kind as LIBRARY_KIND names it, NULL for a text with
-# no current revision or no content version, the tags as JSON text of a plain text, NULL for another, the text's
+# row's current revision and content version once: (library, its kind, NULL for a text with no current revision or
+# no content version, the tags as JSON text of a plain text, NULL for another, the text's
 # status, NULL with no current revision, whether a locked library holds it ({locked}, _locked), count, sum of
 # characters, sum of bytes) rows, few since they group by library, kind, set of tags, status and locked
-_HELD = ("SELECT h.library, CASE WHEN c.id IS NULL THEN NULL WHEN c.kind IS NULL THEN 'plain' WHEN c.kind IN ("
-         + ", ".join(f"'{one}'" for one in TRAINING_KINDS) + ") THEN 'items' ELSE 'other' END, "
-         "CASE WHEN c.id IS NOT NULL AND c.kind IS NULL THEN t.tags END, t.status, {locked}, count(*), sum(c.length), "
+_HELD = ("SELECT h.library, c.kind, "
+         f"CASE WHEN c.id IS NOT NULL AND c.kind = '{PLAIN}' THEN t.tags END, t.status, {{locked}}, count(*), sum(c.length), "
          "sum(c.bytes) FROM ({rows}) h LEFT JOIN texts_revisions t ON t.id = h.text AND t.latest "
          "LEFT JOIN content_lists c ON c.id = t.id AND c.version = t.content_version GROUP BY 1, 2, 3, 4, 5")
 # LIBRARY and SPLIT_LIBRARY alone, with no lookup of a content version: (library, status, locked, count) rows
@@ -386,9 +384,8 @@ def merged(held: Iterator, current: Iterator, versions: Iterator,
                     version_row = next(versions, None)
                 if version_row is not None and (version_row[0], version_row[1]) == wanted:
                     kind = version_row[2]
-                    what = "plain" if kind is None else "items" if kind in TRAINING_KINDS else "other"
-                    size = (what, version_row[3] or 0, version_row[4] or 0,
-                            json.loads(text_row[2] or "[]") if kind is None else ())
+                    size = (kind, version_row[3] or 0, version_row[4] or 0,
+                            json.loads(text_row[2] or "[]") if kind == PLAIN else ())
         summed += 1
         if change is not None and revised.get(library, -1) < change:
             revised[library] = change
@@ -436,33 +433,54 @@ def unmoved(con, library: str, change: int) -> bool:
 
 def summed(found: Sequence[dict], tags: Sequence[str]) -> dict:
     """The figures of several libraries (each as figures gives it, for
-    tags) as one: {texts, characters, bytes of them all; plain, items,
-    other: each {texts, characters, bytes}; shares: for each tag of tags,
-    in order, {tag, texts, characters, bytes}; unshared: the plain texts
-    left once the shares are taken away, when tags are given (None
-    otherwise)}, each library counted apart."""
+    tags) as one: {texts, characters, bytes of them all; kinds: {kind:
+    {texts, characters, bytes}} of every kind any of them names, plain
+    first; shares: for each tag of tags, in order, {tag, texts, characters,
+    bytes}; unshared: the plain texts left once the shares are taken away,
+    when tags are given (None otherwise)}, each library counted apart."""
     empty = dict.fromkeys(COLUMNS, 0)
-    kinds = {kind: dict(empty) for kind in KINDS}
+    kinds = {PLAIN: dict(empty)}
     shares = [dict(empty) for _ in tags]
     for one in found:
-        for into, read in [*((kinds[kind], one[kind]) for kind in KINDS), *zip(shares, one["tags"], strict=True)]:
+        pairs = [*((kinds.setdefault(kind, dict(empty)), sized) for kind, sized in one["kinds"].items()),
+                 *zip(shares, one["tags"], strict=True)]
+        for into, read in pairs:
             for key in COLUMNS:
                 into[key] += read[key]
-    unshared = {key: max(0, kinds["plain"][key] - sum(one[key] for one in shares)) for key in COLUMNS}
-    return {key: sum(one[key] for one in kinds.values()) for key in COLUMNS} | kinds | {
-        "shares": [{"tag": tag, **shares[at]} for at, tag in enumerate(tags)],
+    unshared = {key: max(0, kinds[PLAIN][key] - sum(one[key] for one in shares)) for key in COLUMNS}
+    return {key: sum(one[key] for one in kinds.values()) for key in COLUMNS} | {
+        "kinds": kinds, "shares": [{"tag": tag, **shares[at]} for at, tag in enumerate(tags)],
         "unshared": unshared if tags else None}
 
 
+def among(kinds: dict, chosen: Iterable[str]) -> dict:
+    """{texts, characters, bytes} of the kinds chosen of kinds ({kind:
+    {texts, characters, bytes}}, as summed gives them) together, a kind
+    kinds does not name counting 0."""
+    chosen = set(chosen)
+    return {key: sum(sized[key] for kind, sized in kinds.items() if kind in chosen) for key in COLUMNS}
+
+
+def depot_kinds(con) -> list[str]:
+    """Every kind of text of the depot, the ids of its table kinds, a
+    closed list: plain first, then the others in the order of their ids."""
+    return [PLAIN] + [kind for (kind,) in con.execute("SELECT id FROM kinds WHERE id <> ? ORDER BY id", (PLAIN,))]
+
+
 def figures(con, library: str, tags: Sequence[str]) -> dict:
-    """What the library holds, from the counts of SIZED: {plain, items,
-    other: each {texts, characters, bytes}, tags: [the same for the plain
-    texts that have each tag of tags, in order]}. It reads only those rows,
-    by their key."""
-    names = [(LIBRARY_KIND, f"{library} {kind}") for kind in KINDS] + [(LIBRARY_TAG, f"{library} {tag}") for tag in tags]
-    found = []
-    for facet, name in names:
+    """What the library holds, from the counts of SIZED: {kinds: {kind:
+    {texts, characters, bytes}} of every kind of the depot (depot_kinds,
+    in that order, a kind it holds no text of at 0), tags: [the same for
+    the plain texts that have each tag of tags, in order]}. It reads only
+    those rows, by their key: its rows of LIBRARY_KIND as one range of
+    names (`<library id> `: the id holds no space)."""
+    kinds = {kind: dict.fromkeys(COLUMNS, 0) for kind in depot_kinds(con)}
+    for name, *row in con.execute("SELECT name, texts, characters, bytes FROM counts WHERE facet = ? AND name > ? "
+                                  "AND name < ? ORDER BY name", (LIBRARY_KIND, f"{library} ", f"{library}!")):
+        kinds[name.split(" ", 1)[1]] = dict(zip(COLUMNS, row))
+    tagged = []
+    for tag in tags:
         row = con.execute("SELECT texts, characters, bytes FROM counts WHERE facet = ? AND name = ?",
-                          (facet, name)).fetchall()
-        found.append(dict(zip(COLUMNS, row[0] if row else (0, 0, 0))))
-    return dict(zip(KINDS, found)) | {"tags": found[len(KINDS):]}
+                          (LIBRARY_TAG, f"{library} {tag}")).fetchall()
+        tagged.append(dict(zip(COLUMNS, row[0] if row else (0, 0, 0))))
+    return {"kinds": kinds, "tags": tagged}

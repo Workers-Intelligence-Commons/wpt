@@ -20,5 +20,5 @@ def dataset(tmp_path):
         return {**asdict(store.put_named(f"corpora/d/{digest}.parquet", path)), "token_sha256": digest, "rows": 1,
                 "tokens": 300}
 
-    record = {"shards": [shard("a", "p"), shard("b", "p")], "total_tokens": 600}
+    record = {"shards": {"plain": [shard("a", "p"), shard("b", "p")]}, "total_tokens": 600}
     return store, record

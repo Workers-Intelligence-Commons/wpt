@@ -31,7 +31,7 @@ import type { Deciding } from "../blocked";
 import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../decide-forms";
 import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
-import { Confirm, Cut, Facts, Help, Joined, LibraryLink, MoreMenu, optional, Outcome, plural, Problems, required, RequiredNote, Section, settingsHref, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
+import { Confirm, Cut, Facts, Help, Joined, LibraryLink, MoreMenu, optional, Outcome, PLAIN, plural, Problems, required, RequiredNote, Section, settingsHref, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
 import { codePoints, TextViewer } from "../reader";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
@@ -47,7 +47,7 @@ import { isConversation, Transcript } from "../transcript";
 // put_back: it put the text back under review, a correction of the decisions before it
 type Decision = { id: string; status: Status; name: string; email: string; made_at: string; reason: string | null; counts: boolean; put_back: boolean };
 type Row = {
-  id: string; text: string | null; kind: string | null; content: string | null; licenses: string[]; notice: string | null;
+  id: string; text: string | null; kind: string; content: string | null; licenses: string[]; notice: string | null;
   title: string | null; authors: string[] | null; tags: string[]; address: string | null; decisions: string[]; libraries: string[];
   revision: number; content_version: number; scores: Score[] | null;
 };
@@ -110,7 +110,7 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
   handle: (h: EditorHandle | null) => void; find?: string;
 }) {
   const row = shown.text;
-  const item = row.kind !== null;
+  const item = row.kind !== PLAIN;
   const [open, setOpen] = useState<Dialogs | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const done = (words: ReactNode) => { setOpen(null); setSaid(words); reload(); };
@@ -174,7 +174,7 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
 
 // An upstream text, read only: its text, a conversation as a transcript, or another item's content as JSON.
 function ReadOnly({ row, find }: { row: Row; find?: string }) {
-  const item = row.kind !== null;
+  const item = row.kind !== PLAIN;
   const content = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
   if (isConversation(content)) return <div className="viewer"><Transcript content={content} find={find} /></div>;
   return <TextViewer item={item} content={content} text={row.text ?? ""} mark={null} />;
@@ -182,7 +182,7 @@ function ReadOnly({ row, find }: { row: Row; find?: string }) {
 
 function Record({ shown }: { shown: Shown }) {
   const row = shown.text;
-  const item = row.kind !== null;
+  const item = row.kind !== PLAIN;
   const [allErasures, setAllErasures] = useState<{ id: string; status: Status; needles: { text: string }[] }[]>([]);
   useEffect(() => { get<typeof allErasures>("/api/erasures").then((a) => a.ok && setAllErasures(a.data)); }, [row.id]);
   const erasures = allErasures.filter((e) => e.needles.some((n) => n.text === row.id));
@@ -292,7 +292,7 @@ function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, f
   row: Row; status: Status; facts: ReactNode; libraries: Library[]; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
   handle: (h: EditorHandle | null) => void; find?: string;
 }) {
-  const item = row.kind !== null;
+  const item = row.kind !== PLAIN;
   const original = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
   const conversation = isConversation(original);
   const [editing, setEditing] = useState(!conversation);

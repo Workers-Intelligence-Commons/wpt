@@ -33,7 +33,7 @@ TINY = {
 
 def test_the_drafter_reads_the_shards_the_run_s_steps_read_and_none_past_their_prefix():
     shards = [{"object": str(number), "tokens": 100} for number in range(4)]
-    spec = {"record": {"shards": shards}}
+    spec = {"record": {"shards": {"plain": shards}}}
 
     def text(prefix):
         return SimpleNamespace(reads=WINDOWS, settings={"prefix_tokens": prefix})
@@ -61,7 +61,7 @@ def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(
     assert provenance["recipe"] == recipes.model_recipe("tiny:small", vocabulary)
     [step] = provenance["recipe"]["steps"]
     assert step["settings"]["stages"] == [{"block_size": 16, "steps": 4, "batch_size": 4}]
-    assert step["settings"]["prefix_tokens"] == 4 * 4 * 17 == provenance["learned"]["text"]  # the corpus's start
+    assert step["settings"]["prefix_tokens"] == 4 * 4 * 17 == provenance["learned"]["plain"]  # the corpus's start
     assert step["optimizer"]["settings"] == {"lr": 0.002, "warmup": 1}
     assert provenance["model"]["window_layers"] == 1 and provenance["model"]["d_model"] == 16
 

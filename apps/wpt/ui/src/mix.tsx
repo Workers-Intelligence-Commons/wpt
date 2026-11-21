@@ -8,9 +8,9 @@
 // corpus holds, with the share asked beside a share that came out more than
 // UNEVEN off it.
 
-import { figures, type MeasureState } from "./parts";
+import { figures, takenNames, takenShare, type MeasureState } from "./parts";
 
-// The items' name wherever a page cannot tell whether they hold tasks: the measure counts conversations and tasks as one.
+// The items' name wherever a page does not know which kinds they hold.
 export const ITEMS = "conversations and tasks";
 export const UNEVEN = 0.1; // how far, as a part of the plain text, a share may be from its part asked
 export const whole = (n: number) => `${Math.round(n * 100)}%`;
@@ -23,9 +23,9 @@ export type Mixed = { items: { part: string; value: number; expected: boolean } 
 export function asked(shares: { tag: string; share: number }[] | null, measured: MeasureState): Mixed {
   const found = figures(measured);
   const sum = (shares ?? []).reduce((t, s) => t + s.share, 0) || 1;
-  const items = found ? (found.mix ? found.mix.items_share : found.items.bytes / ((found.items.bytes + found.plain.bytes) || 1)) : 0;
+  const items = found ? takenShare(found) : 0;
   return {
-    items: items > 0 ? { part: ITEMS, value: items, expected: true } : null,
+    items: items > 0 && found ? { part: takenNames(found), value: items, expected: true } : null,
     shares: shares?.length ? shares.map((s) => ({ part: s.tag, value: s.share / sum })) : items > 0 ? [{ part: "plain texts", value: 1 }] : [],
   };
 }

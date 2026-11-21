@@ -59,7 +59,8 @@ Its tables are `about` (the depot's name, maintainer, takedown contact
 and upstream), `changes` (every change: its number, its kind and its
 time), `numbers` (the last number of each kind of the depot's own ids),
 `licenses`, `notices`, `kinds`, `decisions`, `texts`, `content_lists`
-(every content version of each text, as the list of its parts), `parts`
+(every content version of each text, as the list of its parts, with its
+kind, never null), `parts`
 (the parts of each text's content versions), `libraries`, `memberships`
 (when each text joined and left each library), `pins` (the revision of
 each text a locked library reads), `erasures`, `datasets` and `pulls`
@@ -103,7 +104,12 @@ the id and the revision number and recording its change number; the
 highest revision is the current one. A text's content versions are
 rows of `content_lists`, keyed by the text's id and the version number and
 recording their change number, and each revision of the text names the
-content version it reads. A revision of a text also holds its scores,
+content version it reads. The table `quotes` records, for each content
+version of a conversation, the texts its excerpts quote, so an erasure
+finds the conversations quoting a text it reaches without reading every
+conversation; every write of a conversation keeps it (an add, a change of
+content, an erasure's cut, a clone or a pull, which makes it from the
+content it receives and never receives it). A revision of a text also holds its scores,
 each with the content version it was made from. Memberships record the change
 numbers a text joined and left a library at. A decision on a text is a
 row of `text_decisions`, with the change number it was made at, so a
@@ -130,8 +136,9 @@ text whose id is not a name, a hyphen and a number without leading zeros
 cannot be numbered, and a write that would index one is refused. `counts`
 also
 holds what each library holds, each text at its current revision, in
-texts, characters and UTF-8 bytes: by kind (plain texts, the conversations
-and tasks a corpus takes, and items of other kinds) and, for its plain
+texts, characters and UTF-8 bytes: by kind, each kind on its own (kinds
+are a closed list, the rows of `kinds`, and every figure names each of
+them, one a library holds no text of at 0) and, for its plain
 texts, by tag, a text with several tags counting once for each. Every
 write keeps the stored statuses, the counts, the two listings and the title
 index right in its own transaction, so a page reads them at once whatever the depot's
@@ -183,7 +190,11 @@ text its library holds or held, or removed a text whole, which leaves no
 row naming its libraries. In a clone, an upstream's erasure counts from the
 pull that brought it. The upgrade to format 9 gives figures to a
 revision only when nothing touched its libraries after the change it reads
-them at, so a stored figure is never wrong.
+them at, so a stored figure is never wrong, and the upgrade to format 12,
+which counts each kind on its own where format 11 counted the
+conversations and tasks together and every other kind together, keeps a
+library's figures only when they hold no item or when the counts prove
+them exact the same way.
 
 **A dataset's order.** A corpus build, its estimate and the sample that
 trains a vocabulary read a dataset's texts in the order of their export
@@ -363,9 +374,44 @@ plain content versions longer than 1,048,576 characters that a corpus
 build cuts into pieces, in one `CREATE INDEX` that reads each row of
 `content_lists` once, marked half upgraded while it builds as the step to
 format 8 is.
+The step to format 12 gives every text a kind: a content version with no
+kind is a plain text, and becomes of kind `plain`; it counts what each
+library holds of each kind on its own; it gives the kind `conversation`
+the schema that takes the `excerpt` block (docs/chat-format.md,
+"Excerpts"); and it fills the table `quotes`, the texts each content
+version of a conversation quotes, through which an erasure finds the
+conversations that quote the text it reaches. Its first transaction marks
+the depot half upgraded, drops `content_lists_long`, whose condition names
+the kind, adds the row `plain` to `kinds`, writes the conversation schema,
+makes the empty table `quotes` and its index, and deletes the counts of
+what libraries hold by kind but those of their plain texts, which stay
+right. It then writes the kind `plain` on the content versions with none,
+in rowid order, a batch of 250,000 rowids a transaction, and in the same
+transaction counts, for each library that holds their text, the current
+content versions of the other kinds among those rowids, by kind (few rows,
+each looked up through an index, so the step needs no recount), and writes
+the rows of `quotes` of the conversations among those rowids, each read
+from its parts. Each transaction records the last rowid it reached and the
+step says how many rows a second it writes; run again after a stop, it
+goes on after the last batch it wrote. Its last transaction checks that no
+content version is left without a kind, declares the column `kind` of
+`content_lists` `NOT NULL` by changing the table's statement in
+`sqlite_schema` (with `PRAGMA writable_schema`, as SQLite's documentation
+allows for a constraint every row already meets, so no row is rewritten),
+builds `content_lists_long` again over the kind `plain` (built last, so no
+batch has an index to keep up as it writes a kind), gives the dataset
+revisions' figures a count of each kind (a library's figures that hold no
+item become its plain texts and every other kind at 0, those that hold
+items, of a library the depot owns, are read again from the counts when
+the counts prove them exact, and are unknown otherwise) and drops the
+mark. It reads `content_lists` three times and writes again each page that
+holds a content version of no kind; how long it takes on a large file has
+not been measured, and the step says its pace as it goes.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
-step from the format before, with its test. A step names the columns it
+step from the format before, with its test. So does a change of the schema
+of a kind a new depot starts with, since each depot keeps its own copy in
+`kinds`. A step names the columns it
 reads and writes itself, never through the current layout, which is a
 later format's, and run again on the layout it leaves it changes nothing
 more.
@@ -639,12 +685,12 @@ refused change writes nothing.
 | texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the list of the "Texts" page |
 | the texts a filter matches, counted one slice of the depot at a time, or at once from the depot's counts when they hold the answer | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Texts" page, its list and its review, of the "Overview" and of the views of a tag, a license, a decision and a problem |
 | texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Texts" page |
-| a text or an item, added | `add FILE [--kind KIND]` | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
+| a text or an item, added | `add FILE [--kind KIND]` (`plain` by default) | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the content and review panel of the "Texts" page, with the text's record |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
 | a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Texts" page, on ticked texts, on the current text, and by the keys A, R and U |
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Texts" page |
-| a change of a text's content | `content ID FILE` | `POST /api/texts/{id}/content`; saving the content on the "Texts" page |
+| a change of a text's content | `content ID FILE [--kind KIND]` (a kind other than the text's refused) | `POST /api/texts/{id}/content`; saving the content on the "Texts" page |
 | a change of the plain texts of many texts | `content-file FILE` | `POST /api/texts/content` |
 | a change of a text's credits | `credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE] [--clear CREDIT ...]` | `POST /api/texts/{id}/credits`; the current text of the "Texts" page, whose tags its review panel toggles |
 | a change of the credits of many texts | `credits-file FILE` | `POST /api/texts/credits` |
@@ -821,7 +867,7 @@ vocabulary job (409 otherwise). Only `wpt depot jobs cancel ID` cancels a
 job. The queue's file also holds what the downloads need
 (`wpt/depot/downloads.py`): when each corpus was last downloaded, the
 streams being sent, how many texts each export counts, and each export
-part's size and sha256 once it was sent whole.
+part's size, sha256 and conversations left out once it was sent whole.
 
 The review of an admission sets apart the texts the depot would refuse to
 admit because none of their licenses is allowed. The depot's own check
@@ -899,7 +945,7 @@ a recipe whose dataset is another depot's reads that depot's sample route.
 
 | Package | Role |
 | --- | --- |
-| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of items and their schemas (`kinds.py`, `kinds/`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store as a stream (`corpus.py`), in the order of its texts' export keys (`order.py`), a long text taken as pieces (`pieces.py`), estimated before it is built (`estimate.py`), what the store keeps of corpora (`corpora.py`), a corpus's texts made into parts to download (`exports.py`) and a model's notice from a corpus (`notice.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
+| `wpt-depot` | the depot: texts and structured items, the decisions on them, libraries, erasures and datasets, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `legacy.py`); erasures carried out (`erasure.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); a dataset as a remote (`remote.py`); a dataset's corpus built into the store as a stream (`corpus.py`), in the order of its texts' export keys (`order.py`), a long text taken as pieces (`pieces.py`), estimated before it is built (`estimate.py`), what the store keeps of corpora (`corpora.py`), a corpus's texts made into parts to download (`exports.py`) and a model's notice from a corpus (`notice.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
 | `wpt-recipes` | the model and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results, and the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot; a kept model folder copied out, checked against its sha256s (`models.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |

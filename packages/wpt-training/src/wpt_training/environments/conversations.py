@@ -33,6 +33,7 @@ from wpt_store.shards import read_verified, shard_file
 from wpt_training import Environment, Stage, StepFailed, tagged
 
 GIVES = "conversations"
+KINDS = ("conversation",)  # the kinds of texts it reads (wpt_depot.kinds)
 SETTINGS = {"tag": "answer-as-assistant", "epochs": 3, "batch": 8}
 IGNORED = -100  # the target of a token the model does not learn: PyTorch's cross_entropy leaves it out
 
@@ -43,12 +44,12 @@ def check(settings):
             raise ValueError(f"{key}: at least 1")
 
 
-def rows(record, store, tag):
-    """(depot, text id, tokens) of each of the corpus's conversations tagged tag, in
+def rows(record, store, tag, kinds):
+    """(depot, text id, tokens) of each of the corpus's texts of kinds tagged tag, in
     order, each token file checked (read_verified) and its local copy
     released once read."""
     wanted = tagged(record, store, tag)
-    for shard in record.get("conversation_shards", []):
+    for shard in (one for kind in kinds for one in record["shards"].get(kind, [])):
         found = read_verified(store, shard)
         store.release(shard_file(shard))
         for tokens, depot, text, _, _ in found:
@@ -56,8 +57,8 @@ def rows(record, store, tag):
                 yield depot, text, tokens
 
 
-def check_corpus(settings, record, store):
-    if not any(True for _ in rows(record, store, settings["tag"])):
+def check_corpus(settings, record, store, kinds):
+    if not any(True for _ in rows(record, store, settings["tag"], kinds)):
         raise ValueError(f"no conversations: the corpus holds none tagged {settings['tag']}")
 
 
@@ -71,7 +72,7 @@ class Encoded:
 
         limit = context.config.block_size + 1
         examples = []
-        for depot, text, tokens in rows(context.record, context.store, settings["tag"]):
+        for depot, text, tokens in rows(context.record, context.store, settings["tag"], context.kinds):
             ids = [int(token) for token in tokens]
             learn = chat.marks(context.tokenizer, ids)
             if len(ids) > limit:
@@ -80,12 +81,12 @@ class Encoded:
             if not any(learn[1:]):
                 raise StepFailed(f"{depot} {text}: no assistant message to learn from")
             examples.append((ids, learn))
-        self.found = {"examples": examples, "learned": {"conversations": len(examples)}}
+        self.found = {"examples": examples, "learned": dict.fromkeys(context.kinds, len(examples))}
         context.telemetry.event(f"{context.step}.conversations", conversations=len(examples),
                                 tokens=sum(len(ids) for ids, _ in examples))
 
     def examples(self) -> dict:
-        """{"examples": [(token ids, whether the assistant wrote each)], "learned": {"conversations": how many}}."""
+        """{"examples": [(token ids, whether the assistant wrote each)], "learned": {kind: how many}}."""
         return self.found
 
 

@@ -42,8 +42,8 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           text: EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')
     wpt depot add FILE [--kind KIND] --license L [...] [--notice FILE] [--tag T ...] [--title T]
                 [--author A ...] [--address A] DECLARATION
-                                          a plain text (FILE, UTF-8) or an item of KIND (FILE, its JSON),
-                                          under review
+                                          a text of KIND, fixed for good (default plain: FILE is its
+                                          text, UTF-8; any other kind: FILE is its JSON), under review
     wpt depot license add ID NAME FILE    a license the depot holds: its official text read from FILE (UTF-8);
                                           ID may be a license with an exception ('Apache-2.0 WITH
                                           LLVM-exception') or licenses that apply together ('MIT AND
@@ -68,9 +68,10 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           reason 'licenses changed from OLD to NEW'; the decisions before it
                                           no longer count, so each text is under review again and leaves
                                           every open library; a locked library keeps the revision it pinned
-    wpt depot content ID FILE DECLARATION
+    wpt depot content ID FILE [--kind KIND] DECLARATION
                                           change the content of the text ID to FILE (UTF-8: its plain text, or
-                                          an item's JSON, which must match its kind) as a new content version
+                                          an item's JSON, which must match its kind; a text's kind is fixed,
+                                          so --kind, when given, must be its own) as a new content version
                                           and a new revision, its id kept: the depot records it as a decision
                                           under review with the reason 'content changed from version OLD to
                                           version NEW'; the decisions before it no longer count, so the text is
@@ -249,6 +250,7 @@ from wpt_depot import About, Declaration, Depot, NewText, backup, clone, restore
 from wpt_depot import remote as remotes
 from wpt_depot.errors import DepotError
 from wpt_depot.filters import literal
+from wpt_depot.kinds import PLAIN
 from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from wpt_depot.settings import depot_address
@@ -324,13 +326,14 @@ def cmd_sql(args):
 
 def cmd_add(args):
     # a plain text is read as a stream, so a file of any size is added; an item's JSON is read whole
-    content = Path(args.file).read_text(encoding="utf-8") if args.kind else None
+    plain = args.kind == PLAIN
+    content = None if plain else Path(args.file).read_text(encoding="utf-8")
     notice = None if args.notice is None else Path(args.notice).read_text(encoding="utf-8")
-    one = NewText(text=None if args.kind else FileText(Path(args.file)), kind=args.kind, content=content,
+    one = NewText(text=FileText(Path(args.file)) if plain else None, kind=args.kind, content=content,
                   licenses=tuple(args.license), notice=notice, title=args.title,
                   authors=tuple(args.author) if args.author else None, tags=tuple(args.tag), address=args.address)
     [added] = opened().add([one], _declaration(args))
-    say(f"added {'an item of kind ' + args.kind if args.kind else 'a text'}: {added}, under review")
+    say(f"added {'a plain text' if plain else 'an item of kind ' + args.kind}: {added}, under review")
     return 0
 
 
@@ -370,9 +373,11 @@ def cmd_relicense(args):
 
 def cmd_content(args):
     depot = opened()
-    item = [one["kind"] for one in depot.sql(f"SELECT kind FROM texts WHERE id = {literal(args.id)}")] not in ([None], [])
+    item = [one["kind"] for one in depot.sql(f"SELECT kind FROM texts WHERE id = {literal(args.id)}")] not in (
+        [PLAIN], [])
     new = Path(args.file).read_text(encoding="utf-8") if item else FileText(Path(args.file))  # a plain text as a stream
-    changed = depot.change_content(args.id, None if item else new, new if item else None, _declaration(args))
+    changed = depot.change_content(args.id, None if item else new, new if item else None, _declaration(args),
+                                   args.kind)
     if changed is None:
         say(f"{args.id}: its content is this already, nothing written")
         return 0
@@ -757,8 +762,9 @@ def parser() -> argparse.ArgumentParser:
     query.set_defaults(run=cmd_sql)
 
     adding = commands.add_parser("add", help="a text or an item, under review")
-    adding.add_argument("file", help="the plain text (UTF-8), or with --kind the item's JSON")
-    adding.add_argument("--kind", help="the kind of the item (wpt depot sql \"SELECT id, meaning FROM kinds\")")
+    adding.add_argument("file", help="the plain text (UTF-8), or with --kind another than plain the item's JSON")
+    adding.add_argument("--kind", default=PLAIN, help="the text's kind, fixed for good (default plain; wpt depot sql "
+                                                      "\"SELECT id, meaning FROM kinds\")")
     adding.add_argument("--license", action="append", required=True,
                         help="a license the depot holds, by its id; several are a choice: one is enough")
     adding.add_argument("--notice", help="a file holding the copyright notice exactly as the source gives it, or "
@@ -795,6 +801,8 @@ def parser() -> argparse.ArgumentParser:
                                                      "decisions start over")
     contenting.add_argument("id", help="the text or item")
     contenting.add_argument("file", help="the new plain text (UTF-8), or for an item its new JSON")
+    contenting.add_argument("--kind", help="the kind the new content is of: refused unless it is the text's own, "
+                                           "fixed when the text was made")
     _declares(contenting)
     contenting.set_defaults(run=cmd_content)
 

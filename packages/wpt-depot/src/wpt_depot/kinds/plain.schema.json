@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/plain.schema.json",
+  "title": "WPT plain text (a text read as it is: its content is the text itself, any Unicode string, stored as it is and never as JSON; this schema is that string as a JSON value)",
+  "type": "string"
+}

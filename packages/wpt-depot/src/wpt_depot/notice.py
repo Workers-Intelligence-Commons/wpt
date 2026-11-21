@@ -10,22 +10,29 @@ notice the lines name, under its number, and the text of each license
 they name. A text's licenses are a choice: any one of them allows it.
 
 What a model learned from is what its training steps read (`learned`, each
-step's, added up: wpt_training.Environment.learned): the plain texts and
-pieces whose first token lies in the first `text` tokens of the plain
-texts' token files, every conversation when a step read conversations, every task when a
-step read tasks. Without `learned`, every text of the corpus.
+step's, added up, by kind of texts: wpt_training.Environment.learned): the
+plain texts and pieces whose first token lies in the first `plain` tokens
+of the plain texts' token files, and every text of another kind when a
+step read texts of that kind. Without `learned`, every text of the corpus.
+A conversation learned from also credits every text it quotes (its row's
+`quotes`: the texts of its depot whose passages its excerpts put in its
+tokens), each under its own credits, licenses and notice.
 """
 
 from .corpora import read_table
+from .kinds import PLAIN
 
 
 def model_notice(store, record: dict, learned: dict | None = None) -> str:
     """The notice of a model trained on the corpus whose record is given,
-    learning what `learned` says ({"text": tokens, "conversations": count,
-    "tasks": count}, each part optional)."""
+    learning what `learned` says ({"plain": tokens, "conversation": count,
+    "task": count}, each part optional)."""
+    rows = read_table(store, record, "texts").to_pylist()
+    quoted = {(one["depot"], text) for one in rows if one.get("quotes") and _learned(one, learned)
+              for text in one["quotes"]}
     texts, seen = [], set()
-    for one in read_table(store, record, "texts").to_pylist():
-        if _learned(one, learned) and (one["depot"], one["id"]) not in seen:
+    for one in rows:
+        if (_learned(one, learned) or (one["depot"], one["id"]) in quoted) and (one["depot"], one["id"]) not in seen:
             seen.add((one["depot"], one["id"]))
             texts.append(one)
     lines = [_line(one) for one in texts]
@@ -44,9 +51,9 @@ def model_notice(store, record: dict, learned: dict | None = None) -> str:
 def _learned(text: dict, learned: dict | None) -> bool:
     if learned is None:
         return True
-    if text["kind"] is None:
-        return text["tokens"] < learned.get("text", 0)
-    return bool(learned.get({"conversation": "conversations", "task": "tasks"}.get(text["kind"], ""), 0))
+    if text["kind"] == PLAIN:
+        return text["tokens"] < learned.get(PLAIN, 0)
+    return bool(learned.get(text["kind"], 0))
 
 
 def _line(text: dict) -> str:

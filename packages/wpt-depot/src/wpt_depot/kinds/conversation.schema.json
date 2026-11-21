@@ -43,7 +43,9 @@
            "else": {"properties": {"content": {"items": {"properties": {"type": {"not": {"const": "tool_result"}}}}}}}},
           {"if": {"properties": {"role": {"const": "assistant"}}},
            "else": {"properties": {"content": {"minItems": 1, "items": {"properties": {"type": {"not": {"enum": ["thinking", "tool_call"]}}}}},
-                                   "metadata": {"not": {"required": ["draft"]}}}}}
+                                   "metadata": {"not": {"required": ["draft"]}}}}},
+          {"if": {"properties": {"role": {"enum": ["assistant", "system"]}}},
+           "then": {"properties": {"content": {"items": {"properties": {"type": {"not": {"const": "excerpt"}}}}}}}}
         ]
       }
     }
@@ -58,14 +60,14 @@
         "model": {"type": "string", "minLength": 1, "description": "the name of the model folder that drafted it"},
         "weights": {"type": "object", "minProperties": 1, "description": "the sha256 of each of that folder's weight files, by file name",
                     "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "the sha256 of the drafted content, as wpt_dataset.conversations.content_sha256 computes it"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "the sha256 of the drafted content as the model wrote it, of its JSON text written as docs/chat-format.md, Model drafts, says"},
         "edited": {"type": "boolean", "description": "true when the person changed the draft before confirming it: the content no longer gives sha256"}
       }
     },
     "block": {
       "type": "object",
       "required": ["type"],
-      "properties": {"type": {"enum": ["text", "thinking", "tool_call", "tool_result", "json", "file"]}},
+      "properties": {"type": {"enum": ["text", "thinking", "tool_call", "tool_result", "json", "file", "excerpt"]}},
       "allOf": [
         {"if": {"properties": {"type": {"enum": ["text", "thinking"]}}},
          "then": {"additionalProperties": false, "required": ["type", "text"],
@@ -78,14 +80,24 @@
          "then": {"additionalProperties": false, "required": ["type", "call", "content"],
                   "properties": {"type": true, "call": {"type": "string", "minLength": 1}, "error": {"type": "boolean"},
                                  "content": {"type": "array", "items": {"$ref": "#/$defs/block",
-                                             "properties": {"type": {"enum": ["text", "json", "file"]}}}}}}},
+                                             "properties": {"type": {"enum": ["text", "json", "file", "excerpt"]}}}}}}},
         {"if": {"properties": {"type": {"const": "json"}}},
          "then": {"additionalProperties": false, "required": ["type", "value"],
                   "properties": {"type": true, "value": true}}},
         {"if": {"properties": {"type": {"const": "file"}}},
          "then": {"additionalProperties": false, "required": ["type", "sha256", "media_type"],
                   "properties": {"type": true, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                                 "media_type": {"type": "string", "pattern": "^[a-z]+/[A-Za-z0-9.+-]+$"}}}}
+                                 "media_type": {"type": "string", "pattern": "^[a-z]+/[A-Za-z0-9.+-]+$"}}}},
+        {"if": {"properties": {"type": {"const": "excerpt"}}},
+         "then": {"additionalProperties": false, "required": ["type", "source", "selector"],
+                  "description": "a passage of a plain text of the depot, quoted by its content (docs/chat-format.md, \"Excerpts\"): the corpus build writes the passage in its place",
+                  "properties": {"type": true, "source": {"type": "string", "minLength": 1, "description": "the id of the quoted text"},
+                                 "selector": {"type": "object", "additionalProperties": false, "required": ["type", "exact"],
+                                              "description": "a W3C Web Annotation TextQuoteSelector (https://www.w3.org/TR/annotation-model/#text-quote-selector)",
+                                              "properties": {"type": {"const": "TextQuoteSelector"},
+                                                             "exact": {"type": "string", "description": "the passage, character for character"},
+                                                             "prefix": {"type": "string", "description": "the characters right before it"},
+                                                             "suffix": {"type": "string", "description": "the characters right after it"}}}}}}
       ]
     }
   }

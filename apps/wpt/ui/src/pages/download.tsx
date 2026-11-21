@@ -42,7 +42,7 @@
 import { Button, ButtonLink, Select, Skeleton, TextInput } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { get, part, post, type Answer, type Job } from "../api";
-import { Cut, Help, PageHead, plural, Problems, required, Section, Stat, takenWords, type Dataset } from "../parts";
+import { Cut, Help, leftOutWords, PageHead, plural, Problems, required, Section, Stat, takenWords, type Dataset, type LeftOut } from "../parts";
 import { href } from "../route";
 import { built, mixLine, MixBar, off, UNEVEN, whole, type Mixed } from "../mix";
 import { trainedWords, useCorpora, usePipeline, useRecipesAndVocabularies, vocabularyName, type BuiltCorpus, type Trained } from "../pipeline";
@@ -56,6 +56,7 @@ type Vocabulary = { sha256: string; recipe: string | null; version: number | nul
 type Corpus = {
   id: string; built_at: string; texts?: number; conversations?: number; tasks?: number; total_tokens?: number; items_tokens?: number | null;
   shares_tokens?: { tag: string; tokens: number }[] | null; revision: number; stale?: { erasures: string[] } | null; deleted?: { why: string } | null;
+  left_out?: LeftOut | null;
 };
 type State = "built" | "checking an erasure" | "being built" | "stale" | "not built" | "no store";
 type Row = { vocabulary: Vocabulary; max_tokens: number | null; size: string; link: string; state: State; corpus: Corpus | null };
@@ -517,7 +518,7 @@ const TABLES: Record<string, string> = {
 };
 function role(f: File, dataset: Dataset): { what: string; tokens: boolean } {
   const tags = (dataset.shares ?? []).map((s) => s.tag);
-  if (f.role === "text tokens") return { what: `Tokens of the plain texts${tags.length ? ` (${tags.length > 1 ? `${tags.slice(0, -1).join(", ")} and ${tags[tags.length - 1]}` : tags[0]})` : ""}`, tokens: true };
+  if (f.role === "plain tokens") return { what: `Tokens of the plain texts${tags.length ? ` (${tags.length > 1 ? `${tags.slice(0, -1).join(", ")} and ${tags[tags.length - 1]}` : tags[0]})` : ""}`, tokens: true };
   if (f.role === "conversation tokens") return { what: "Tokens of the conversations", tokens: true };
   if (f.role === "vocabulary") return { what: "The vocabulary it was tokenized with, as JSON", tokens: false };
   if (f.role === "tasks") return { what: "The agentic tasks, one JSON line each", tokens: false };
@@ -540,6 +541,7 @@ function Built({ corpus, files, archive, base, dataset, asked, vocabulary }: { c
         <Stat value={bytes(total)} label="in all files" />
         <MixStat corpus={corpus} dataset={dataset} vocabulary={vocabulary} size={asked} />
       </div>
+      {leftOutWords(corpus.left_out) && <p className="small">Left out: {leftOutWords(corpus.left_out)}.</p>}
       <Section title="Files" help="The token files are what training reads; the tables say what the tokens came from. The token files and the tables are Parquet, the vocabulary is JSON, and the tasks are JSON lines."
         tools={<CopyCommands files={sorted} archive={archive} base={base} corpus={corpus.id} />}>
         {archive && <p className="row tight">

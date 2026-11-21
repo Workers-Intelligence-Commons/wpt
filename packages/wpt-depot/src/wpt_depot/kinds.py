@@ -1,11 +1,20 @@
-"""The kinds of structured items: the rows a new depot's kinds table starts
-with, and the check of an item's content against its kind's schema as the
-depot stores it.
+"""The kinds of texts: the rows a new depot's kinds table starts with, and
+the check of a text's content against its kind as the depot stores it.
+
+Every text has a kind, fixed when the text is made: the format of its
+content, which says how the content is read and so which tokens a training
+step takes from it (docs/training.md, "Steps"). A kind says nothing of what
+a text is about or where it comes from: tags say that. The kind plain
+(PLAIN) is a text read as it is, any Unicode string; every other kind is
+JSON that matches the JSON Schema its row holds, and a text of such a kind
+is called an item.
 
 Each starting kind's schema is a file of the folder kinds/ beside this
-module: a conversation in the chat format (docs/chat-format.md), a task
-with its starting files and its check, a person's rating of an attempt,
-and a probe of the probes test (docs/evaluation.md).
+module: a plain text (a JSON string, the text itself: its content is stored
+as the text, never as JSON, and never checked), a conversation in the chat
+format (docs/chat-format.md), a task with its starting files and its check,
+a person's rating of an attempt, and a probe of the probes test
+(docs/evaluation.md).
 """
 
 import json
@@ -15,7 +24,9 @@ from jsonschema import Draft202012Validator
 
 from .errors import BadContent
 
+PLAIN = "plain"  # the kind of a text read as it is
 MEANINGS = {
+    PLAIN: "a text read as it is, which the read-text step learns from as text windows",
     "conversation": "a conversation in the chat format, which the answer-as-assistant step learns from",
     "task": "a task for agentic training: what it asks, its starting files and its check, which the finish-tasks "
             "steps play",
@@ -33,7 +44,10 @@ def starting_rows() -> list[dict]:
 
 def check_content(kind: str, schema: str, content: str):
     """BadContent unless content is JSON that matches schema, the JSON
-    Schema the kind's row holds."""
+    Schema the kind's row holds; a plain text's content is its text, never
+    checked."""
+    if kind == PLAIN:
+        return
     try:
         value = json.loads(content)
     except ValueError as error:

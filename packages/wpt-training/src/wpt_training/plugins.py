@@ -5,8 +5,9 @@
     Optimizer    how the weights the loss reaches move, with its schedule (optimizers/)
     Environment  where the examples come from, batch by batch (environments/)
     a step       what is done to the model: a file (steps/) that chooses a method, an
-                 environment, an optimizer with its settings, the parts it locks, and
-                 its settings' defaults; load_step reads a recipe's entry into a Step
+                 environment, the kinds of texts it reads, an optimizer with its
+                 settings, the parts it locks, and its settings' defaults; load_step
+                 reads a recipe's entry into a Step
 
 Each is a Python file, a built-in by its name or any path:
 
@@ -15,20 +16,27 @@ Each is a Python file, a built-in by its name or any path:
                        def start(settings) -> Method
     optimizer file:    SETTINGS = {...}; def start(model, settings, run) -> Optimizer;
                        optional check(settings)
-    environment file:  GIVES = "<kind of examples>"; SETTINGS = {...}
+    environment file:  GIVES = "<kind of examples>"; KINDS = ("<kind of texts>", ...);
+                       SETTINGS = {...}
                        def start(settings, data) -> Environment, on the gpu worker; optional
                        check(settings), context(settings): the window length it trains at,
                        which a model's context comes from, check_corpus(settings, record,
-                       store): ValueError when the corpus holds nothing for it, before any
-                       step runs, and manager(settings, context) -> its part on the wpt
+                       store, kinds): ValueError when the corpus holds nothing for it, before
+                       any step runs, and manager(settings, context) -> its part on the wpt
                        manager (below)
-    step file:         METHOD, ENVIRONMENT, OPTIMIZER = {"name": ..., "settings": {...}},
-                       LOCKED = (...), SETTINGS = {...} (defaults of its method's and
-                       environment's settings); optional check(settings)
+    step file:         METHOD, ENVIRONMENT, KINDS = ("<kind of texts>", ...),
+                       OPTIMIZER = {"name": ..., "settings": {...}}, LOCKED = (...),
+                       SETTINGS = {...} (defaults of its method's and environment's
+                       settings); optional check(settings)
 
 A method reads one kind of examples and an environment gives one; a step
 whose method reads what its environment does not give is refused, and so
-is any optimizer whose start refuses the model. A setting belongs to the
+is any optimizer whose start refuses the model. A step names the kinds of
+texts it reads (wpt_depot.kinds: the format of a text, such as plain,
+conversation or task), each one its environment's KINDS can read, and
+its environment reads the corpus's texts of those kinds alone (data.kinds,
+context.kinds, check_corpus's kinds); a step that names none, or one its
+environment cannot read, is refused. A setting belongs to the
 method or to the environment by its name, never both.
 
 A step trains on a gpu worker (wpt_worker; docs/machines.md), which has no
@@ -50,7 +58,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch
@@ -321,9 +329,10 @@ class Data:
     read (stream_shards: with --stream, the shards in use at once;
     micro_batch: the examples per pass in one process, 0 for its whole
     share), call(name, *arguments), which calls a method of the
-    environment's part on the wpt manager and gives its result, and
+    environment's part on the wpt manager and gives its result,
     writing(model, generator), a context in which the manager's writers
-    write with that model (module docstring)."""
+    write with that model (module docstring), and the kinds of texts the
+    step reads (Step.kinds, which Step.start_environment sets)."""
     step: str
     store: object
     record: dict
@@ -337,6 +346,7 @@ class Data:
     micro_batch: int = 0
     call: callable = None
     writing: callable = None
+    kinds: tuple = ()
 
     @property
     def step_seed(self) -> int:
@@ -352,7 +362,8 @@ class Context:
     stops, routes), a writer (wpt_inference.Writer's write and routes) whose
     tokens the model writes on the gpu worker, drawn from the generator the
     worker's part gave data.writing; its routes are each row's handle,
-    which the worker's part turns back into the row's routes."""
+    which the worker's part turns back into the row's routes; and the kinds
+    of texts the step reads (Step.kinds, which Step.start_manager sets)."""
     step: str
     store: object
     record: dict
@@ -363,6 +374,7 @@ class Context:
     seed: int
     number: int
     writer: callable = None
+    kinds: tuple = ()
 
     @property
     def step_seed(self) -> int:
@@ -383,9 +395,9 @@ class Environment:
     """Where a step's examples come from. stage_list: the step's stages
     (one for most environments; text windows have one per window length).
     tokens: the tokens of its examples. learned: what of the corpus it
-    read, for the model's NOTICE: {"text": the tokens of the plain texts'
-    token files it read from their start}, {"conversations": how many},
-    {"tasks": how many}."""
+    read, for the model's NOTICE, by kind of texts: {"plain": the tokens of
+    the plain texts' token files it read from their start}, {"conversation":
+    how many}, {"task": how many}."""
 
     stage_list: tuple = ()
     tokens: int = 0
@@ -501,7 +513,8 @@ class Step:
     """A recipe's step, every file read and every setting typed: its file
     and name, its method, environment and optimizer (Plugins), its settings
     (all of them, then those of its method and of its environment), its
-    optimizer's settings, and the parts it locks. continues: the step goes
+    optimizer's settings, the parts it locks, and the kinds of texts it
+    reads (its file's KINDS). continues: the step goes
     on from the whole state the step before it left (its weights, the
     optimizer's, method's and environment's state, and its count of
     updates), as one step that stopped and was resumed, instead of from its
@@ -517,6 +530,7 @@ class Step:
     optimizer_settings: dict
     locked: tuple = field(default_factory=tuple)
     continues: bool = False
+    kinds: tuple = ()
 
     @property
     def reads(self) -> str:
@@ -527,7 +541,7 @@ class Step:
     def record(self) -> dict:
         """What the step is, as its fingerprint and provenance.json read it."""
         return {"step": self.plugin.record(), "method": self.method.record(),
-                "environment": self.environment.record(), "reads": self.reads,
+                "environment": self.environment.record(), "reads": self.reads, "kinds": list(self.kinds),
                 "optimizer": {**self.optimizer.record(), "settings": self.optimizer_settings},
                 "settings": self.settings, "locked": list(self.locked), "continues": self.continues}
 
@@ -539,10 +553,10 @@ class Step:
     def check_corpus(self, record: dict, store):
         """ValueError when the corpus (its record, and its files in the
         store) holds nothing the step can learn from, from its environment
-        file's check_corpus(settings, record, store); nothing when it has
-        none."""
-        getattr(self.environment.module, "check_corpus", lambda settings, record, store: None)(
-            self.environment_settings, record, store)
+        file's check_corpus(settings, record, store, kinds); nothing when it
+        has none."""
+        getattr(self.environment.module, "check_corpus", lambda settings, record, store, kinds: None)(
+            self.environment_settings, record, store, self.kinds)
 
     def start_method(self) -> Method:
         method = self.method.module.start(self.method_settings)
@@ -561,10 +575,10 @@ class Step:
         """The environment's part on the wpt manager (its file's
         manager(settings, context)), or None when it has none."""
         made = getattr(self.environment.module, "manager", None)
-        return None if made is None else made(self.environment_settings, context)
+        return None if made is None else made(self.environment_settings, replace(context, kinds=self.kinds))
 
     def start_environment(self, data: Data) -> Environment:
-        environment = self.environment.module.start(self.environment_settings, data)
+        environment = self.environment.module.start(self.environment_settings, replace(data, kinds=self.kinds))
         if not isinstance(environment, Environment):
             raise PluginError(f"{self.environment.file}: start() returned {type(environment).__name__}, not "
                               "wpt_training.Environment")
@@ -581,7 +595,9 @@ class Step:
 def load_step(entry: dict, parts) -> Step:
     """The Step of a recipe's `steps` entry: {"step": NAME} with, optionally,
     "optimizer" ({"name", "settings"}), "settings" and "locked", each left
-    out taking the step file's own (OPTIMIZER, SETTINGS, LOCKED). The
+    out taking the step file's own (OPTIMIZER, SETTINGS, LOCKED). The kinds
+    of texts it reads are its file's KINDS, each one its environment's
+    KINDS names. The
     settings are the defaults of the step's method and environment, those
     the step file sets, then the entry's, each of its default's type
     (wpt_utils.settings.typed); the step's and its environment's
@@ -591,13 +607,20 @@ def load_step(entry: dict, parts) -> Step:
     when it has one, then passes. parts: the names the model gives
     its parts (wpt_model.PARTS); a locked name not among them is refused.
     PluginError says what cannot be."""
-    plugin = _load("steps", entry["step"], needs=("METHOD", "ENVIRONMENT", "OPTIMIZER"))
+    plugin = _load("steps", entry["step"], needs=("METHOD", "ENVIRONMENT", "KINDS", "OPTIMIZER"))
     module = plugin.module
     method = _load("methods", module.METHOD, needs=("start", "READS"))
-    environment = _load("environments", module.ENVIRONMENT, needs=("start", "GIVES"))
+    environment = _load("environments", module.ENVIRONMENT, needs=("start", "GIVES", "KINDS"))
     if method.module.READS != environment.module.GIVES:
         raise PluginError(f"{plugin.file}: its method {method.name} reads {method.module.READS}, and its environment "
                           f"{environment.name} gives {environment.module.GIVES}")
+    kinds = tuple(module.KINDS)
+    if not kinds or len(set(kinds)) != len(kinds) or not all(isinstance(one, str) for one in kinds):
+        raise PluginError(f"{plugin.file}: KINDS names the kinds of texts the step reads, at least one, each once")
+    unread = [one for one in kinds if one not in environment.module.KINDS]
+    if unread:
+        raise PluginError(f"{plugin.file}: its environment {environment.name} reads texts of kind "
+                          f"{', '.join(environment.module.KINDS)}, not {', '.join(unread)}")
     method_defaults = getattr(method.module, "SETTINGS", {})
     environment_defaults = getattr(environment.module, "SETTINGS", {})
     shared = sorted(set(method_defaults) & set(environment_defaults))
@@ -629,7 +652,7 @@ def load_step(entry: dict, parts) -> Step:
         raise PluginError(f"{plugin.file}: continues {continues!r}: true or false")
     return Step(plugin.name, plugin, method, environment, optimizer, settings,
                 {key: settings[key] for key in method_defaults}, {key: settings[key] for key in environment_defaults},
-                optimizer_settings, locked, continues)
+                optimizer_settings, locked, continues, kinds)
 
 
 def _updates(step: Step) -> int | None:

@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterator
 
 from wpt_utils.parallel import Sizing, in_order, process_pool
 
+from .kinds import PLAIN
 from .parts import scan
 
 SYMBOLS, RUNNING = "symbols", "running-text"
@@ -173,7 +174,7 @@ def _batches(depot, where: str, walked: Walked) -> Iterator[list[tuple]]:
             f"texts.content_version FROM wanted CROSS JOIN texts ON texts.id = wanted_id WHERE ({where})) t "
             "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version ORDER BY t.id",
             (json.dumps(ids),))
-        plain = [(row["id"], row["version"], row["parts"], row["bytes"]) for row in rows if row["kind"] is None]
+        plain = [(row["id"], row["version"], row["parts"], row["bytes"]) for row in rows if row["kind"] == PLAIN]
         walked.items += len(rows) - len(plain)
         if plain:
             yield plain

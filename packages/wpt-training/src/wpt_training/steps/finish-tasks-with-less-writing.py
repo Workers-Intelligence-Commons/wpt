@@ -1,6 +1,6 @@
 """Finish tasks with less writing: reach the same result as the model the
 step starts from, writing fewer tokens, on the tasks finish-tasks learns
-(tagged `finish-tasks`; docs/training.md, "The
+(texts of kind task tagged `finish-tasks`; docs/training.md, "The
 finish-tasks-with-less-writing step"). It comes after finish-tasks in a
 recipe. The model first makes 8 reference attempts at each task; then
 finish-tasks's learning, each task in its full form only, a passing
@@ -8,6 +8,7 @@ attempt's reward growing as it gets shorter than the reference's."""
 
 METHOD = "grpo"
 ENVIRONMENT = "agent-tasks"
+KINDS = ("task",)
 OPTIMIZER = {"name": "by-part", "settings": {"lr": 1e-6, "weight_decay": 0.0, "schedule": "constant", "patience": 10,
                                          "average_states": 0}}
 LOCKED = ("routers", "balancing")

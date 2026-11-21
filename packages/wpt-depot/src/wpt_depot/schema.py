@@ -10,10 +10,15 @@ number: a row of changes, with its kind and the UTC time it was made at
 version as a row of its own table, `<name>_revisions`, keyed by its id and
 its revision (1, 2, 3...), and each row records the change number it was
 made at; the highest revision is the current one, the only row of its id
-whose `latest` is 1. A text's big part (its plain text, or an item's kind
-and JSON content) is stored as content versions (1, 2, 3...), each a row of
-content_lists with the change number it was made at: its kind, its length
-in characters and in UTF-8 bytes, and the ordered list of its parts. Each
+whose `latest` is 1. A text's big part, its content, is stored as content
+versions (1, 2, 3...), each a row of content_lists with the change number it
+was made at: its kind, its length in characters and in UTF-8 bytes, and the
+ordered list of its parts. Every content version has a kind, a row of the
+table kinds (wpt_depot.kinds): the format its content is read in, which says
+which tokens a training step takes from it. The kind plain is a text read as
+it is; every other kind is JSON that matches the kind's JSON Schema. A
+text's kind is the kind of its first content version, and every later
+version keeps it. Each
 part is a row of parts, its text stored once for its text, compressed with
 zstd, keyed by the text's id and the part's hash, with the change number
 that first stored it (wpt_depot.parts says where a content is cut). Each
@@ -75,9 +80,11 @@ hexadecimal), "at", "needle"}; a problem is {"texts", "problem",
 "decision"}; a needle is {"text", "field", "start", "end", "version"}; a
 dataset revision's figures are {"at": the change they were read at, in the
 numbering of the depot that owns the dataset, "libraries": one entry for
-each library it reads, in order, null when not known, else {"plain",
-"items", "other": each {"texts", "characters", "bytes"}, "tags": the same
-for the plain texts that have each tag of its shares, in order}}. A
+each library it reads, in order, null when not known, else {"kinds":
+{kind: {"texts", "characters", "bytes"}} of every kind of the depot, each
+on its own, plain first, then the others in the order of their ids,
+"tags": the same for the plain texts that have each tag of its shares, in
+order}}. A
 time is ISO 8601 text in UTC.
 
 Every table has a declared primary key (KEYS): the sessions that record
@@ -106,10 +113,16 @@ that order (filters.Filter.decision). The indexes of change numbers
 (memberships_joined, memberships_left, content_lists_change,
 text_decisions_change, pins_change, and texts_change) let a pull read the
 rows past a change without reading a whole table (wpt_depot.follow). The
-partial index content_lists_long holds the plain content versions longer
-than LONG characters, those a corpus build cuts into pieces
+partial index content_lists_long holds the content versions of kind
+plain longer than LONG characters, those a corpus build cuts into pieces
 (wpt_depot.pieces), so a build finds a library's long texts from them
-without reading every text (Depot.library_long).
+without reading every text (Depot.library_long). The table quotes holds,
+for each content version of a conversation, the ids of the texts its
+excerpts quote (wpt_depot.quotes), written with the version itself by
+every change that writes one (an add, a change of content, an erasure's
+cut, a clone or a pull, each made here from the content), and its index
+quotes_text gives the conversations that quote a text, so an erasure
+finds them (Depot.quoting) without reading every conversation.
 
 A depot that follows an upstream (wpt_depot.follow) keeps the change
 numbers of the rows it received, which are those of the depot that made
@@ -123,7 +136,7 @@ In SQL (wpt_depot.database), `<name>` is a view of the current state
 (VIEWS): the current revision of each id, and for texts the content of the
 version their current revision reads and the libraries holding them now
 (`libraries`, a JSON array). `contents` shows every content version with
-its whole text (`text`, or an item's `content`), its parts joined in order.
+its whole text (`text` for kind plain, `content` for every other kind), its parts joined in order.
 A value in SQLite holds at most SQL_STRING bytes, so a query that reads the
 text of a content version bigger than that fails, naming it; its text is
 read from its parts (wpt_depot.parts). A query that reads no text never
@@ -132,13 +145,17 @@ reads a part.
 The layout above has a number, its format (FORMAT), which each about row
 records: the depot's format when the row was written, so the current row
 holds the depot's format now. The code reads and writes a depot of its own
-FORMAT only (Depot.view). A depot of format 3 or older is a folder of Delta
-Lake tables; `wpt depot upgrade` brings it up (wpt_depot.upgrade).
+FORMAT only (Depot.view). The format also covers the schemas of the
+kinds a new depot starts with (wpt_depot.kinds), which the code that builds
+corpora and checks items reads: a change of one raises it. A depot of
+format 3 or older is a folder of Delta Lake tables; `wpt depot upgrade`
+brings it up (wpt_depot.upgrade).
 """
 
 from . import ids, titles
+from .kinds import PLAIN
 
-FORMAT = 11  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 12  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -160,7 +177,7 @@ TABLES = {
         latest INTEGER NOT NULL, licenses TEXT NOT NULL, notice TEXT, title TEXT, authors TEXT, tags TEXT NOT NULL,
         address TEXT, decisions TEXT NOT NULL, content_version INTEGER NOT NULL, scores TEXT, status TEXT""",
     "text_decisions": "text TEXT NOT NULL, decision TEXT NOT NULL, change INTEGER NOT NULL",
-    "content_lists": """id TEXT NOT NULL, version INTEGER NOT NULL, change INTEGER NOT NULL, kind TEXT,
+    "content_lists": """id TEXT NOT NULL, version INTEGER NOT NULL, change INTEGER NOT NULL, kind TEXT NOT NULL,
         parts TEXT NOT NULL, length INTEGER NOT NULL, bytes INTEGER NOT NULL""",
     "parts": "id TEXT NOT NULL, hash BLOB NOT NULL, change INTEGER NOT NULL, value BLOB NOT NULL",
     "libraries_revisions": """id TEXT NOT NULL, revision INTEGER NOT NULL, change INTEGER NOT NULL,
@@ -185,6 +202,7 @@ TABLES = {
     "counts": ("facet TEXT NOT NULL, name TEXT NOT NULL, texts INTEGER NOT NULL, characters INTEGER NOT NULL DEFAULT 0, "
                "bytes INTEGER NOT NULL DEFAULT 0"),
     "library_moves": "library TEXT NOT NULL, change INTEGER",
+    "quotes": "conversation TEXT NOT NULL, version INTEGER NOT NULL, text TEXT NOT NULL",
     "text_tags": "tag TEXT NOT NULL, key TEXT NOT NULL",
     "text_licenses": "license TEXT NOT NULL, key TEXT NOT NULL",
     titles.OWNERS: "owner TEXT NOT NULL, slot INTEGER NOT NULL",
@@ -197,10 +215,11 @@ KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name"
         "pulls": ("depot", "change"), "text_decisions": ("text", "decision"), "counts": ("facet", "name"),
         "tokenizers_revisions": ("id", "revision"), "vocabularies": ("recipe", "version"),
         "vocabulary_texts": ("recipe", "version", "position"), "library_moves": ("library",),
+        "quotes": ("conversation", "version", "text"),
         "text_tags": ("tag", "key"), "text_licenses": ("license", "key"), titles.OWNERS: ("owner",)}
 # the tables stored in the order of their key alone (SQLite's WITHOUT ROWID): small rows read by their key
 WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts", "library_moves", "text_tags",
-                           "text_licenses"})
+                           "text_licenses", "quotes"})
 INDEXES = (
     "CREATE UNIQUE INDEX texts_latest ON texts_revisions (id) WHERE latest",
     f"CREATE INDEX texts_order ON texts_revisions ({ids.order_sql()}) WHERE latest",
@@ -223,7 +242,8 @@ INDEXES = (
     "CREATE INDEX content_lists_change ON content_lists (change)",
     "CREATE INDEX text_decisions_change ON text_decisions (change)",
     "CREATE INDEX pins_change ON pins (change)",
-    f"CREATE INDEX content_lists_long ON content_lists (id, version) WHERE kind IS NULL AND length > {LONG}",
+    f"CREATE INDEX content_lists_long ON content_lists (id, version) WHERE kind = '{PLAIN}' AND length > {LONG}",
+    "CREATE INDEX quotes_text ON quotes (text)",
 )
 # the tables whose rows are revisions of an id, with the flag latest; <name> is the view of their current rows
 REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "datasets_revisions",
@@ -258,8 +278,8 @@ def decision_list(text: str, bound: str | None = None) -> str:
 JOINED = (f"(CASE WHEN c.bytes > {SQL_STRING} THEN content_too_big(c.id, c.version, c.bytes) "
           "ELSE coalesce((SELECT group_concat(part_text(p.value), '' ORDER BY j.key) FROM json_each(c.parts) j "
           "JOIN parts p ON p.id = c.id AND p.hash = unhex(j.value ->> 'hash')), '') END)")
-TEXT_COLUMNS = ("t.id, t.revision, t.change, CASE WHEN c.kind IS NULL THEN {joined} END AS text, c.kind, "
-                "CASE WHEN c.kind IS NOT NULL THEN {joined} END AS content, t.content_version, c.length, t.licenses, "
+TEXT_COLUMNS = (f"t.id, t.revision, t.change, CASE WHEN c.kind = '{PLAIN}' THEN {{joined}} END AS text, c.kind, "
+                f"CASE WHEN c.kind <> '{PLAIN}' THEN {{joined}} END AS content, t.content_version, c.length, t.licenses, "
                 "t.notice, t.title, t.authors, t.tags, t.address, {decisions} AS decisions, t.scores, t.status"
                 ).format(joined=JOINED, decisions=decision_list("t.id"))
 # a text at one revision with the list of parts of the version it reads and its bytes, never its text
@@ -273,8 +293,8 @@ HELD = ("(SELECT json_group_array(m.library ORDER BY m.library) FROM memberships
 VIEWS = {
     "about": "SELECT * FROM about_revisions ORDER BY revision DESC LIMIT 1",
     "texts": f"SELECT {TEXT_COLUMNS}, {HELD} AS libraries FROM texts_revisions t {CONTENT_JOIN} WHERE t.latest",
-    "contents": (f"SELECT c.id, c.version, c.change, CASE WHEN c.kind IS NULL THEN {JOINED} END AS text, c.kind, "
-                 f"CASE WHEN c.kind IS NOT NULL THEN {JOINED} END AS content, c.parts, c.length, c.bytes "
+    "contents": (f"SELECT c.id, c.version, c.change, CASE WHEN c.kind = '{PLAIN}' THEN {JOINED} END AS text, c.kind, "
+                 f"CASE WHEN c.kind <> '{PLAIN}' THEN {JOINED} END AS content, c.parts, c.length, c.bytes "
                  "FROM content_lists c"),
     "libraries": ("SELECT id, revision, change, name, forked_from, problems, locked_at FROM libraries_revisions "
                   "WHERE latest"),

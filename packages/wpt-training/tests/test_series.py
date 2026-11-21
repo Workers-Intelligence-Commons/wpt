@@ -70,7 +70,7 @@ def dataset(tmp_path):
         digest = write_shard(path, [(list(range(100 * i, 100 * i + 100)), f"s{i}", f"s{i}/d", "p", 0)])
         shards.append({**asdict(store.put_named(f"corpora/d/{digest}.parquet", path)), "token_sha256": digest,
                        "rows": 1, "tokens": 100})
-    record = {"shards": shards, "total_tokens": 400}
+    record = {"shards": {"plain": shards}, "total_tokens": 400}
     return store, record
 
 
@@ -100,12 +100,12 @@ def test_a_smaller_size_reads_exactly_the_start_of_the_corpus_built_for_a_larger
     assert ((following == found[:, :-1] + 1) | (stream_shards is not None) & (found[:, :-1] == 249)
             & (following == 0)).all()
     assert found.min() >= 0 and found.max() <= 249 and found.max() >= 240
-    assert learned == {"text": 250}
+    assert learned == {"plain": 250}
     again, _ = windows(store, record, 250, stream_shards)
     assert (found == again).all()
     # without a prefix, the whole corpus
     everything, learned = windows(store, record, 0, stream_shards)
-    assert everything.max() >= 250 and learned == {"text": 400}
+    assert everything.max() >= 250 and learned == {"plain": 400}
 
 
 def test_a_prefix_longer_than_the_corpus_is_refused_before_any_step_runs(dataset):

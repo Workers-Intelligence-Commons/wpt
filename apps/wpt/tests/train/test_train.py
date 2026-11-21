@@ -23,7 +23,7 @@ from wpt_store import LocalStore, StoreError
 from wpt_telemetry import FLUSH_THREAD
 from wpt_tokenizer import Tokenizer
 from wpt_utils.device import select_device
-from wpt.train import StoreCheckpoint, main
+from wpt.train import InputError, StoreCheckpoint, check_record, main
 from wpt_training import load_state
 from wpt_utils.lines import bare
 from wpt_depot import corpora
@@ -65,14 +65,14 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["corpus"] == {"id": corpus_id, "depot": built.depot.name(), "dataset": "d"}
     assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
-    assert provenance["learned"] == {"text": record["total_tokens"]}  # the recipe trains on the whole corpus
+    assert provenance["learned"] == {"plain": record["total_tokens"]}  # the recipe trains on the whole corpus
     assert provenance["recipe_name"] == "three"
     assert provenance["recipe"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
     [step] = provenance["steps"]
     assert step["step"]["name"] == "read-text" and step["updates"] == 3 and not step["reused"]
     # the step's result is kept in the store, under its fingerprint
     assert hashlib.sha256(store.get_result("steps", step["fingerprint"])[0]).hexdigest() == step["result"]
-    assert [s["token_sha256"] for s in provenance["shards"]] == [s["token_sha256"] for s in record["shards"]]
+    assert [s["token_sha256"] for s in provenance["shards"]] == [s["token_sha256"] for s in record["shards"]["plain"]]
 
 
 def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built, tmp_path, capsys):
@@ -485,7 +485,7 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
 def test_a_damaged_shard_stops_training_before_it_starts(built, tmp_path, capsys):
     store, corpus_id = built.store, built.corpus_id
     record = corpora.find(store, corpus_id)
-    path = store.path(shard_file(record["shards"][0]))  # the shard's own bytes, whether the store keeps it compressed or not
+    path = store.path(shard_file(record["shards"]["plain"][0]))  # the shard's own bytes, whether the store keeps it compressed or not
     path.write_bytes(path.read_bytes()[:-10] + b"0123456789")
     with pytest.raises(SystemExit) as refused:
         main(["d", corpus_id, "--out", "model"])
@@ -835,6 +835,19 @@ def test_a_corpus_is_found_by_its_dataset_s_id_through_a_rename_and_an_older_rev
         find_corpus(built.store, None, load_data(built.recipe("four", training=one_stage(3), dataset="later")))
 
 
+def test_a_recipe_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the_build_that_makes_one(built):
+    # without a corpus id, an old corpus of the triple must not pass for a triple never built
+    from wpt.train import InputError, find_corpus, load_data
+    data = load_data(built.recipe("old-layout", training=one_stage(3)))
+    record = built.sized("d", data["total_tokens"])
+    built.store.put_json(f"{corpora.folder_of(record)}/{corpora.RECORD}",
+                         {**record, "shards": corpora.token_files(record)})
+
+    with pytest.raises(InputError, match=rf"does not list its token files by kind.*`wpt depot build "
+                                         rf"{record['dataset']['name']} --max-tokens {data['total_tokens']}`"):
+        find_corpus(built.store, None, data)
+
+
 def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_corpus_through_the_depot_s_web_app(
         built, tmp_path, monkeypatch):
     # a machine without the depot's file reads the dataset and the listing of its downloads, which names the latest
@@ -1063,6 +1076,16 @@ def test_a_stale_corpus_is_refused_until_its_dataset_is_built_again(built, tmp_p
     assert not (tmp_path / "model").exists()
 
 
+def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the_build_that_makes_one():
+    # each step reads the token files of the kinds it names: a corpus of one list cannot say which are which
+    record = {"id": "old", "dataset": {"id": "d", "name": "classics"}, "shards": [{"path": "shard-0.bin"}],
+              "total_tokens": 10}
+
+    with pytest.raises(InputError, match=r"does not list its token files by kind.*`wpt depot build classics "
+                                         r"--max-tokens 10`"):
+        check_record(record, {"data": {"total_tokens": 10}})
+
+
 def test_a_corpus_with_fewer_tokens_than_the_recipe_s_total_is_refused(built, tmp_path, capsys):
     record = corpora.find(built.store, built.corpus_id)
     recipe = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())
@@ -1087,13 +1110,13 @@ def test_a_corpus_built_at_the_recipe_s_size_trains_on_what_it_holds_and_the_rec
     main(["ceiling", "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["corpus"]["id"] == sized["id"] and provenance["learned"]["text"] == whole
+    assert provenance["corpus"]["id"] == sized["id"] and provenance["learned"]["plain"] == whole
     warned = [event["text"] for event in built.records("wpt train")[-1].events
               if event["kind"] == "log" and event["severity"] == "warning"]
     assert any(f"step 1 read-text reads the first {whole:,} tokens of plain text, all that corpus {sized['id']} "
                f"holds, not the {asked:,} it asks for" in text for text in warned)
     main(["ceiling", sized["id"], "--out", "given"])  # given by its id, the same rule
-    assert json.loads((tmp_path / "given" / "provenance.json").read_text())["learned"]["text"] == whole
+    assert json.loads((tmp_path / "given" / "provenance.json").read_text())["learned"]["plain"] == whole
 
 
 def test_each_size_reads_the_smaller_of_its_prefix_and_what_a_corpus_built_at_the_recipe_s_size_holds():
@@ -1124,4 +1147,4 @@ def test_a_plain_recipe_trains_on_the_first_total_tokens_of_its_corpus(built, tm
     main(["short", built.corpus_id, "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["learned"]["text"] == 3000 < corpora.find(built.store, built.corpus_id)["total_tokens"]
+    assert provenance["learned"]["plain"] == 3000 < corpora.find(built.store, built.corpus_id)["total_tokens"]

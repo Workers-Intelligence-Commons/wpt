@@ -1,6 +1,6 @@
 // Libraries: named collections of admitted texts. #/libraries lists them,
 // each with how many texts it holds (the depot's counts, GET /api/counts) and
-// the characters of its plain texts and of its items (POST /api/libraries/measure),
+// the characters of its plain texts and of its items of each kind (POST /api/libraries/measure),
 // whether it is locked and the datasets that read it, and makes a new one;
 // the Texts page (texts/texts.tsx) opens each one, so
 // #/libraries/ID opens that library in it. This file keeps
@@ -13,12 +13,11 @@
 // reported problem's view: the problem, who reported it, its texts.
 
 import { Button, Dialog, Select, Skeleton, TextInput } from "@workers-intelligence-commons/components";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { get, part, post, type Answer } from "../api";
 import { WriteProgress, leftOut, useWrite, type Left } from "../decide-forms";
 import { EVERY, sent, type Selection, type TextFilter } from "../filter";
-import { characters, Facts, figures, Help, LibraryLink, PageHead, PlacePager, plural, Problems, ReadWhole, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
-import { ITEMS } from "../mix";
+import { characters, Facts, figures, Help, kindHeld, LibraryLink, PageHead, PLAIN, PlacePager, plural, Problems, ReadWhole, readers, required, RequiredNote, Section, StatusBadge, useDatasets, useLibraries, useMeasure, type Library } from "../parts";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
 import { MatchedTexts } from "../table";
@@ -180,16 +179,17 @@ export function ForkForm({ library, without, onDone }: { library: Library; witho
 const short = (n: number) => characters(n).replace(/ characters?$/, "");
 
 // One library's row: its texts, the characters of its plain texts and of its
-// conversations and tasks (useMeasure, the depot's counts), its state and the
-// datasets that read it.
+// items of each kind it holds, each on its own (useMeasure, the depot's
+// counts), its state and the datasets that read it.
 function LibraryRow({ library: l, texts, reading }: { library: Library; texts: number | null; reading: { id: string; name: string }[] }) {
   const found = figures(useMeasure([l.id]));
+  const items = found ? Object.entries(found.kinds).filter(([k, h]) => k !== PLAIN && h.texts > 0) : [];
   return (
     <tr>
       <td className="wrap-cell" data-label=""><a href={href(["texts"], { library: l.id })}>{l.name}</a> <ReadWhole library={l.id} /></td>
       <td className="number figure" data-label="texts">{texts !== null ? texts.toLocaleString("en") : ""}</td>
-      <td className="number figure" data-label="plain chars" title={found ? plural(found.plain.characters, "character") : undefined}>{found ? short(found.plain.characters) : ""}</td>
-      <td className="number figure" data-label={`${ITEMS} chars`} title={found ? plural(found.items.characters, "character") : undefined}>{found ? short(found.items.characters) : ""}</td>
+      <td className="number figure" data-label="plain chars" title={found ? plural(kindHeld(found, PLAIN).characters, "character") : undefined}>{found ? short(kindHeld(found, PLAIN).characters) : ""}</td>
+      <td className="wrap-cell" data-label="items chars">{found ? (items.length ? items.map(([k, h]) => <span key={k} title={`${plural(h.texts, k)}, ${plural(h.characters, "character")}`}>{k} {short(h.characters)}</span>).reduce<ReactNode[]>((all, one, i) => (i ? [...all, ", ", one] : [one]), []) : "none") : ""}</td>
       <td data-label="">{l.locked_at ? `locked ${l.locked_at.slice(0, 10)}` : "open"}{l.upstream ? <span className="aside">, the upstream's</span> : null}</td>
       <td className="wrap-cell" data-label="read by"><span className="row-links">{reading.length ? reading.map((d, i) => <span key={d.id}>{i > 0 && ", "}<a href={href(["datasets", d.id])}>{d.name}</a></span>)
         : <a href={href(["datasets"], { new: "1", library: l.id })}>make a dataset from it</a>}</span></td>
@@ -214,7 +214,7 @@ function Libraries({ query }: { query: URLSearchParams }) {
       {loaded && (libraries.length === 0 ? <p className="aside">No library yet.</p> : (
         <div className="table-scroll cards">
           <table className="ledger-table" aria-label="The libraries">
-            <thead><tr><th scope="col">library</th><th scope="col" className="number">texts</th><th scope="col" className="number" title="Characters of plain text">plain chars</th><th scope="col" className="number" title={`Characters of ${ITEMS}`}>{ITEMS} chars</th><th scope="col">state</th><th scope="col">read by</th></tr></thead>
+            <thead><tr><th scope="col">library</th><th scope="col" className="number">texts</th><th scope="col" className="number" title="Characters of plain text">plain chars</th><th scope="col" title="Characters of the items of each kind, each kind on its own">items chars</th><th scope="col">state</th><th scope="col">read by</th></tr></thead>
             <tbody>
               {libraries.map((l) => <LibraryRow key={l.id} library={l} texts={counts ? counts[l.id] ?? 0 : null} reading={readers(datasets?.ok ? datasets.data : [], l.id)} />)}
             </tbody>

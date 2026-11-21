@@ -3,7 +3,8 @@
 // of its role (a user's on the right, the others on the left), its text with
 // its line breaks, a thinking block set apart, a tool call as the design
 // system's tool call, folded, with its arguments, a tool's result under the
-// call it answers, a JSON value and a file by their form. The tools offered and the metadata, never read as tokens, stand in a
+// call it answers, a JSON value and a file by their form, an excerpt as the
+// passage it quotes under the id of the quoted text. The tools offered and the metadata, never read as tokens, stand in a
 // fold at the end. The words looked for (find), when given, are marked in
 // every text, in any case, as the search found them.
 
@@ -12,7 +13,8 @@ import { Fragment, type ReactNode } from "react";
 import { wordsPattern } from "./search-words";
 
 type Block = { type: string; text?: string; id?: string; name?: string; arguments?: unknown; call?: string; error?: boolean;
-  content?: Block[]; value?: unknown; sha256?: string; media_type?: string };
+  content?: Block[]; value?: unknown; sha256?: string; media_type?: string; source?: string;
+  selector?: { exact?: string; prefix?: string; suffix?: string } };
 type Message = { role: string; content: Block[]; metadata?: { draft?: { model: string; edited: boolean } } & Record<string, unknown> };
 type Conversation = { messages: Message[]; tools?: { name: string; description: string }[]; metadata?: Record<string, unknown> };
 
@@ -51,6 +53,8 @@ function BlockView({ block, find }: { block: Block; find?: string }): ReactNode 
       return <pre className="turn-json ledger">{pretty(block.value)}</pre>;
     case "file":
       return <p className="turn-text aside">A file, <span className="ledger">{block.media_type}</span>, sha256 <span className="ledger">{block.sha256?.slice(0, 12)}…</span></p>;
+    case "excerpt":
+      return <div className="turn-aside"><span className="turn-label">Quoted from <span className="ledger">{block.source}</span></span><p className="turn-text"><Marked text={block.selector?.exact ?? ""} find={find} /></p></div>;
     default:
       return <pre className="turn-json ledger">{pretty(block)}</pre>;
   }

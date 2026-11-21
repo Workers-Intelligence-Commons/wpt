@@ -38,8 +38,8 @@ def test_emptying_the_cache_leaves_a_corpus_readable_and_a_checkpoint_to_resume_
     fresh = open_store(store.root.as_uri())
 
     assert Tokenizer.from_bytes(fresh.get_bytes(record["tokenizer"]["vocabulary"])).vocab_size > 0
-    assert list(documents(fresh, record["shards"]))
-    [talk] = [row for shard in record["conversation_shards"] for row in read_verified(fresh, shard)]
+    assert list(documents(fresh, record["shards"]["plain"]))
+    [talk] = [row for shard in record["shards"]["conversation"] for row in read_verified(fresh, shard)]
     assert len(talk[0]) > 0
 
     resumed = StoreCheckpoint(fresh, "fox-1", Telemetry.off(), set())

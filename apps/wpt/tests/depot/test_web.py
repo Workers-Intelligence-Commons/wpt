@@ -95,7 +95,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     assert about["requirements"] == REQUIREMENTS
     assert request("GET", "/api/licenses") == (200, [{"id": "CC0-1.0", "name": "Creative Commons Zero v1.0 Universal",
                                                        "allowed": True, "texts": 0}])
-    assert {kind["id"] for kind in request("GET", "/api/kinds")[1]} == {"conversation", "task", "rating", "probe"}
+    assert {kind["id"] for kind in request("GET", "/api/kinds")[1]} == {"plain", "conversation", "task", "rating", "probe"}
 
     assert request("POST", "/api/texts", {"text": "The fox.", "licenses": ["CC0-1.0"], "tags": ["en"], "title": "Fox",
                                           "notice": "(c) Ann", "declaration": ME}) == (200, {"id": "test-depot-1"})
@@ -347,7 +347,7 @@ def test_reading_a_dataset_again_through_the_pages_takes_what_its_libraries_hold
     assert request("POST", f"/api/datasets/{dataset}/read-again", {"revision": read["dataset"]["revision"]}) == (
         200, {"id": dataset, "libraries": 1})
     figures = request("GET", f"/api/datasets/{dataset}")[1]["figures"]
-    assert figures["since"] == 0 and figures["measure"]["plain"]["texts"] == 2
+    assert figures["since"] == 0 and figures["measure"]["kinds"]["plain"]["texts"] == 2
     assert not request("GET", f"/api/datasets/{dataset}")[1]["read_again"]
     status, answer = request("POST", f"/api/datasets/{dataset}/read-again", {"revision": read["dataset"]["revision"]})
     assert status == 422 and "revision 2" in answer["problems"][0]
@@ -536,7 +536,7 @@ def test_passages_give_the_texts_a_filter_matches_with_their_text_a_page_bounded
     tagged = {"tags": ["x"]}
 
     status, first = request("POST", "/api/texts/passages", {"filter": tagged, "characters": 6})
-    assert status == 200 and first["rows"] == [{"id": "test-depot-1", "kind": None, "title": "a", "length": 10,
+    assert status == 200 and first["rows"] == [{"id": "test-depot-1", "kind": "plain", "title": "a", "length": 10,
                                                 "passage": "aaaaaa"}] and first["next"] is not None
     status, second = request("POST", "/api/texts/passages", {"filter": tagged, "after": first["next"], "characters": 6})
     assert [(one["id"], one["passage"]) for one in second["rows"]] == [("test-depot-2", "bbbb")]
@@ -1002,7 +1002,8 @@ def test_measure_gives_what_libraries_hold_by_share_and_the_mix_of_the_shares(we
     # prose holds the least for its proportion, so it limits the mix and code keeps as much as prose
     assert [(one["tag"], one["characters"], one["kept_characters"], one["limits"]) for one in held["shares"]] == [
         ("prose", 4, 4, True), ("code", 8, 4, False), ("poems", 0, 0, False)]
-    assert held["mix"] == {"kept_bytes": 8, "kept_characters": 8, "items_share": 0}
+    assert held["mix"] == {"kept_bytes": 8, "kept_characters": 8, "items_share": 0,
+                           "kind_shares": {"conversation": 0, "task": 0}}
     assert request("POST", "/api/libraries/measure", {"libraries": ["test-depot-1"]})[1]["mix"] is None
     assert request("POST", "/api/libraries/measure", {"libraries": ["test-depot-9"]})[0] == 404
     assert request("POST", "/api/libraries/measure", {"libraries": []})[0] == 400

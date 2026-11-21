@@ -1,8 +1,8 @@
 """What a depot's web app knows of its downloads, kept in the queue's file
 beside the depot (wpt.depot.jobs): when each corpus was last downloaded,
 the streams being sent now, how many texts each export of a dataset counts
-and the size and sha256 of each part of an export once it was sent whole
-(wpt_depot.exports), and the erasures whose corpora are being marked stale.
+and the size, sha256 and conversations left out of each part of an export
+once it was sent whole (wpt_depot.exports), and the erasures whose corpora are being marked stale.
 
 An erasure decided through the web app is written into marking before it
 is carried out, and leaves it once every corpus holding one of its texts
@@ -16,10 +16,11 @@ A build's cap (wpt_depot.corpora.Room) reads the first two: it deletes the
 corpus downloaded least recently first, never one being downloaded. The
 web app reads the streams to bound the text exports: at most EXPORTS at
 once in all, and VISITOR_EXPORTS for one visitor (TooMany otherwise).
-An export's count of texts and a part's size are what reading them again
-would give, kept only to save that work.
+An export's count of texts and a part's size and conversations left out
+are what reading them again would give, kept only to save that work.
 """
 
+import json
 import secrets
 import time
 from contextlib import contextmanager
@@ -95,19 +96,24 @@ class Downloads:
             con.execute("INSERT OR REPLACE INTO export_texts (export, texts) VALUES (?, ?)", (export, texts))
 
     def export_sizes(self, export: str, parts: int) -> dict[tuple[int, str], dict]:
-        """{(part, form): {bytes, sha256}} of each part of the parts of the
-        export sent whole in that form by the same versions of the libraries
-        that make it (wpt_depot.exports.MAKER)."""
+        """{(part, form): {bytes, sha256, left_out}} of each part of the
+        parts of the export sent whole in that form by the same versions of
+        the libraries that make it (wpt_depot.exports.MAKER); left_out: how
+        many conversations the part left out, by why (Export.part)."""
         with connected(self.path) as con:
-            found = con.execute("SELECT part, format, bytes, sha256 FROM export_parts WHERE export = ? AND parts = ? "
-                                "AND maker = ?", (export, parts, MAKER)).fetchall()
-        return {(row["part"], row["format"]): {"bytes": row["bytes"], "sha256": row["sha256"]} for row in found}
+            found = con.execute("SELECT part, format, bytes, sha256, left_out FROM exported_parts WHERE export = ? "
+                                "AND parts = ? AND maker = ?", (export, parts, MAKER)).fetchall()
+        return {(row["part"], row["format"]): {"bytes": row["bytes"], "sha256": row["sha256"],
+                                               "left_out": json.loads(row["left_out"])} for row in found}
 
-    def exported(self, export: str, parts: int, part: int, form: str, size: int, sha256: str):
-        """Keep the size and sha256 of a part of the export in that form, sent whole by these versions."""
+    def exported(self, export: str, parts: int, part: int, form: str, size: int, sha256: str,
+                 left_out: dict[str, int]):
+        """Keep the size, sha256 and conversations left out (by why) of a part
+        of the export in that form, sent whole by these versions."""
         with connected(self.path, write=True) as con:
-            con.execute("INSERT OR REPLACE INTO export_parts (export, parts, part, format, maker, bytes, sha256) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)", (export, parts, part, form, MAKER, size, sha256))
+            con.execute("INSERT OR REPLACE INTO exported_parts (export, parts, part, format, maker, bytes, sha256, "
+                        "left_out) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (export, parts, part, form, MAKER, size, sha256, json.dumps(left_out, sort_keys=True)))
 
     def marking(self, erasures: list[str]):
         """Keep the erasures as being marked: no corpus is sent until they leave (marked)."""

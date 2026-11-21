@@ -85,14 +85,18 @@ one; `wpt depot jobs` lists them.
 A dataset's page "Export" (`GET /api/datasets/{id}/export`) gives the
 texts of its current revision with no tokenizer, no build and no job: every
 plain text a share takes and every conversation and task, whatever its
-`max_tokens`, in numbered parts, each in JSONL compressed with zstd and in
+`max_tokens`, except a conversation whose quotes the export cannot hold
+([data-selection.md](data-selection.md), "Conversations that quote
+texts"), in numbered parts, each in JSONL compressed with zstd and in
 Parquet, made as it is sent and the same bytes every time for the same
 revision. Each text's export key, a seeded hash of its id that its depot
 stores with it and with each library's row of it, places it, and each part
 is one range of the keys, so no pass orders the dataset. Reading a part
 reads, for each of the dataset's libraries, that range of the library's
 rows by key, so it never reads the texts of the other parts nor the rows
-of other libraries. A part
+of other libraries. Once a part was sent whole, the listing gives its
+size, its sha256 and how many conversations it left out (`left_out`, by
+why), and the page sums the conversations left out. A part
 names each depot by the name a corpus records for it, and the app reads a
 text of another local depot from that depot's file. At most 2 parts or
 samples are sent at once in all, and 1 to each visitor; past that the app
@@ -123,7 +127,10 @@ share that splits its part over the tags of its texts
 ([data-selection.md](data-selection.md), "Filling a part") takes other
 texts than the order alone gives, but the same part, so the forecast gives
 that share's tokens and says nothing of its groups, and its count of the
-share's texts is the order's. Its time leaves out the walk of the whole
+share's texts is the order's. A sampled conversation that quotes a text
+the dataset does not hold counts for nothing, as the build leaves it out;
+one whose quoted text only the size or the shares would leave out still
+counts, and the estimate warns that it cannot tell. Its time leaves out the walk of the whole
 dataset that such a share needs first, and the second tokenizing of the
 texts it chooses. The estimate and the
 build read the bytes of each share and of the conversations and tasks from
@@ -146,6 +153,10 @@ erasure (an erasure decided here is being carried into the corpora's
 records; no corpus is sent meanwhile). Opening it starts nothing, and
 nothing builds a stale corpus again by itself. The corpus's files stream
 from the store, each with its size and sha256, and take a `Range` of bytes.
+The page of a built corpus, and the line of its build's job, say what it
+left out: the conversations whose quoted text it left out or whose quote
+matches no single place, and the texts of the kinds no training step
+reads.
 All of them also come as one tar archive (`everything.tar` under the same
 link), made as it is sent and never stored. Its bytes depend only on the
 corpus's record, so its length is known before it is sent and it takes a

@@ -156,7 +156,8 @@ def build_job(depot: Depot, dataset: str, vocabulary: str, max_tokens: int | Non
     shutil.rmtree(work, ignore_errors=True)
     return {"corpus": built["id"], "texts": built["texts"], "conversations": built.get("conversations", 0),
             "tasks": (built.get("tasks") or {}).get("count", 0), "tokens": built["total_tokens"],
-            "item_tokens": built.get("items_tokens") or 0, "changed": built.get("changed")}
+            "item_tokens": built.get("items_tokens") or 0, "left_out": built.get("left_out") or {},
+            "changed": built.get("changed")}
 
 
 def size_of(given) -> int | None:
@@ -479,20 +480,23 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     def summary(record: dict | None) -> dict | None:
         """What a page says of a corpus: its counts (texts: every text and
         item it took, of which conversations and tasks), the tokens of each
-        share and of its items (conversations and tasks), its state and the
-        revision of the dataset it was built from."""
+        share and of its items (conversations and tasks), what it left out
+        (left_out, as its record counts it: the conversations whose quoted
+        text it left out or whose quote is unmatched, the kinds no step
+        reads, and the texts the size or the shares left out), its state and
+        the revision of the dataset it was built from."""
         if record is None:
             return None
         return {key: record.get(key) for key in (
-            "id", "built_at", "texts", "conversations", "total_tokens", "items_tokens", "shares_tokens", "stale", "deleted")} | {
+            "id", "built_at", "texts", "conversations", "total_tokens", "items_tokens", "shares_tokens", "left_out",
+            "stale", "deleted")} | {
             "revision": record["dataset"]["revision"], "tasks": (record.get("tasks") or {}).get("count", 0)}
 
     def roles(record: dict) -> dict:
-        """{key: what the file is} of each file of the corpus: "text tokens"
-        and "conversation tokens" (token files), "table NAME", "vocabulary"
-        or "tasks"."""
-        found = {one["key"]: "text tokens" for one in record.get("shards", [])}
-        found |= {one["key"]: "conversation tokens" for one in record.get("conversation_shards", [])}
+        """{key: what the file is} of each file of the corpus: "KIND tokens"
+        (the token files of each kind of texts, "plain tokens" and
+        "conversation tokens"), "table NAME", "vocabulary" or "tasks"."""
+        found = {one["key"]: f"{kind} tokens" for kind, kept in record.get("shards", {}).items() for one in kept}
         for name, table in record.get("tables", {}).items():
             found |= {one["key"]: f"table {name}" for one in (table if isinstance(table, list) else [table])}
         if "vocabulary" in record.get("tokenizer", {}):
@@ -671,7 +675,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         known = downloads.export_sizes(export.identity, parts)
         listed = [{"part": number, "forms": {form: {"name": f"part-{number:05d}.{form}",
                                                     "download": f"{slug(row['name'])}_part-{number:05d}.{form}",
-                                                    **known.get((number, form), {"bytes": None, "sha256": None})}
+                                                    **known.get((number, form),
+                                                                {"bytes": None, "sha256": None, "left_out": None})}
                                              for form in FORMS}} for number in range(parts)]
         return 200, {"dataset": shared.jsonable(row), "export": export.identity, "texts": texts,
                      "texts_per_part": texts / parts, "parts": listed,
@@ -694,8 +699,8 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         guard.__enter__()  # TooMany before anything is sent
 
         def chunks():
-            digest, size = hashlib.sha256(), 0
-            for chunk in export.part(number, parts, form):
+            digest, size, left_out = hashlib.sha256(), 0, {}
+            for chunk in export.part(number, parts, form, left_out):
                 digest.update(chunk)
                 size += len(chunk)
                 if end is None:
@@ -707,7 +712,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                 if size >= end:
                     return
             if known is None:
-                downloads.exported(export.identity, parts, number, form, size, digest.hexdigest())
+                downloads.exported(export.identity, parts, number, form, size, digest.hexdigest(), left_out)
         headers = {"Content-Disposition": f'attachment; filename="{slug(row["name"])}_{values["name"]}"'}
         if known is not None:
             headers.update({"Accept-Ranges": "bytes", "ETag": f'"{known["sha256"]}"'})
@@ -854,7 +859,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}", download, "the dataset's download of one "
               "vocabulary (its sha256) and size (a number of tokens, or all), at an address that never changes: "
               "state built (the latest fresh corpus built from the dataset's current revision, its max_tokens and "
-              "published vocabulary aside, its files with their sizes, sha256, role (text tokens, conversation "
+              "published vocabulary aside, its files with their sizes, sha256, role (plain tokens, conversation "
               "tokens, table NAME, vocabulary or tasks) and download, the name a browser saves it under: the "
               "dataset, the vocabulary, the size and the role, and archive: the address's last part, download "
               "name and bytes of the tar archive of every file, null when the store cannot size one), checking an erasure (nothing is sent meanwhile), "

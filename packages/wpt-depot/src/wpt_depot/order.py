@@ -36,13 +36,14 @@ them.
 
 Each Entry is a text or a piece with its key, source (the index of its depot
 among the depots the dataset reads), id, piece (its number, None for a whole
-text), revision, kind (None: a plain text), pool (with shares: the index of
+text), revision, kind (wpt_depot.kinds), pool (with shares: the index of
 the first share whose tag a plain text has, None when it has none; without
 shares, 0 for every plain text; None for an item), bytes (its content's
 UTF-8 bytes; a piece's, its share of its text's bytes, split evenly among
 its pieces, since they are known only once it is read), taken: whether a
-corpus takes it at all, that is, a plain text with a pool or a conversation
-or a task (an item of another kind is no training data), and tags (its
+corpus takes it at all, that is, a plain text with a pool or a text of
+one of TRAINING_KINDS, a conversation or a task (a text of any other kind
+is no training data), and tags (its
 tags as JSON text; a piece's, its text's).
 
     walk(libraries, tags, after, long)   the texts and pieces of the libraries, in order, as Entry
@@ -58,8 +59,9 @@ import numpy as np
 
 from . import pieces
 from .ids import export_key
+from .kinds import PLAIN
 
-TRAINING_KINDS = ("conversation", "task")
+TRAINING_KINDS = ("conversation", "task")  # the kinds beside plain a corpus takes
 PAGE = 2_000  # rows of one library read in one statement
 LOWEST, HIGHEST = -(1 << 63), (1 << 63) - 1  # the first and last export keys
 WHOLE = -1  # what a whole text's place holds where a piece's holds its number
@@ -71,7 +73,7 @@ class Entry(NamedTuple):
     id: str
     piece: int | None
     revision: int
-    kind: str | None
+    kind: str
     pool: int | None
     bytes: int
     taken: bool
@@ -93,10 +95,10 @@ class Long(NamedTuple):
     bytes: int
 
 
-def pool_of(kind: str | None, tags: str, shares: Sequence[str] | None) -> tuple[int | None, bool]:
+def pool_of(kind: str, tags: str, shares: Sequence[str] | None) -> tuple[int | None, bool]:
     """(pool, taken) of a text of that kind with tags (JSON text), under
     the tags of a dataset's shares (None without shares), as Entry says."""
-    if kind is not None:
+    if kind != PLAIN:
         return None, kind in TRAINING_KINDS
     if shares is None:
         return 0, True
@@ -149,7 +151,7 @@ def walk(libraries: Sequence[tuple], shares: Sequence[str] | None, after: Sequen
 
 def _pieces(long: list[Long], after: tuple | None) -> Iterator[tuple]:
     """The rows of the pieces of the long texts, in the order of their (key,
-    source, id, number), as _library gives a text's (its kind None, its
+    source, id, number), as _library gives a text's (its kind plain, its
     bytes its share of its text's)."""
     counts = np.array([pieces.count(one.length) for one in long], np.int64)
     total = int(counts.sum())
@@ -166,7 +168,7 @@ def _pieces(long: list[Long], after: tuple | None) -> Iterator[tuple]:
         for key, owner, number in zip(keys[start:end].tolist(), owners[start:end].tolist(),
                                       numbers[start:end].tolist()):
             one, count = long[owner], int(counts[owner])
-            row = (key, one.source, one.id, number, one.revision, None, one.tags,
+            row = (key, one.source, one.id, number, one.revision, PLAIN, one.tags,
                    one.bytes // count + (number < one.bytes % count))
             if after is None or row[:4] > after:
                 yield row

@@ -180,6 +180,20 @@ export function Outcome<T>({ answer, done }: { answer: Answer<T> | null; done: (
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
 
+// what a build left out, as its record counts it (docs/data-selection.md, "Conversations that quote texts")
+export type LeftOut = { "quoted text left out"?: number; "quote unmatched"?: number; "kinds not taken"?: Record<string, number> };
+
+// The conversations a build left out over their quotes, and the texts of the kinds no step reads, in words; null when none
+export const leftOutWords = (l: LeftOut | null | undefined): string | null => {
+  if (!l) return null;
+  const said = [];
+  if (l["quoted text left out"]) said.push(`${plural(l["quoted text left out"], "conversation")} quoting a text the corpus does not hold`);
+  if (l["quote unmatched"]) said.push(`${plural(l["quote unmatched"], "conversation")} whose quote matches no single place of the text`);
+  const kinds = Object.entries(l["kinds not taken"] ?? {}).filter(([, n]) => n > 0);
+  if (kinds.length) said.push(`${kinds.map(([kind, n]) => plural(n, `text of kind ${kind}`, `texts of kind ${kind}`)).join(", ")}, which no training step reads`);
+  return said.length ? said.join("; ") : null;
+};
+
 // What a corpus took, counted one way everywhere: its plain texts, then its
 // conversations and tasks, from texts (every text and item it took), and of
 // them its conversations and tasks; held: how many conversations and tasks
@@ -190,10 +204,14 @@ export function takenWords(texts: number, conversations = 0, tasks = 0, held: nu
   return `${plural(Math.max(0, texts - conversations - tasks), "plain text")}${items ? ` and ${items}${of}` : ""}`;
 }
 
-// A text's name as every page gives it: its title, else its kind with an
-// article ("a conversation"), else "an untitled text".
+// The kind of a text read as it is (wpt_depot.kinds): every other kind is
+// an item's, JSON that matches its kind's schema.
+export const PLAIN = "plain";
+
+// A text's name as every page gives it: its title, else for an item its
+// kind with an article ("a conversation"), else "an untitled text".
 export const textName = (r: { title: string | null; kind: string | null }) =>
-  r.title ?? (r.kind ? `${/^[aeiou]/.test(r.kind) ? "an" : "a"} ${r.kind}` : "an untitled text");
+  r.title ?? (r.kind && r.kind !== PLAIN ? `${/^[aeiou]/.test(r.kind) ? "an" : "a"} ${r.kind}` : "an untitled text");
 
 export const SIZES = [25, 50, 100, 200];
 
@@ -277,17 +295,43 @@ export type Library = { id: string; name: string; forked_from: string | null; pr
 
 // What libraries hold now (POST /api/libraries/measure, read by the server
 // from the depot's counts, at once whatever their size), each library
-// counted apart and summed: every text, the plain texts, the conversations
-// and tasks (items) and the items of other kinds, each in texts, characters
-// and bytes; with shares, the plain texts that have each share's tag (a text
-// with several counts for each) and the mix of the corpus of every token
-// (what each share keeps, the share that limits the others, the share of the
-// bytes the conversations and tasks hold then).
+// counted apart and summed: every text, and each kind of text on its own
+// (kinds: every kind of the depot, plain first, a kind with no text at 0),
+// each in texts, characters and bytes; with shares, the plain texts that
+// have each share's tag (a text with several counts for each) and the mix
+// of the corpus of every token (what each share keeps, the share that limits
+// the others, the share of the bytes the conversations and tasks hold then,
+// together and each kind's own).
 export type Held = { texts: number; characters: number; bytes: number };
 export type ShareHeld = Held & { tag: string; share?: number; kept_bytes?: number; kept_characters?: number; limits?: boolean };
 export type Measure = Held & {
-  plain: Held; items: Held; other: Held; shares: ShareHeld[]; unshared: Held | null;
-  mix: { kept_bytes: number; kept_characters: number; items_share: number } | null;
+  kinds: Record<string, Held>; shares: ShareHeld[]; unshared: Held | null;
+  mix: { kept_bytes: number; kept_characters: number; items_share: number; kind_shares: Record<string, number> } | null;
+};
+// The kinds beside plain a corpus takes (wpt_depot.order.TRAINING_KINDS):
+// the build gives them their part of a size together, from their bytes.
+export const TAKEN = ["conversation", "task"];
+const NOTHING: Held = { texts: 0, characters: 0, bytes: 0 };
+// What the measure counts of one kind, or of several together.
+export const kindHeld = (m: Measure, kind: string): Held => m.kinds[kind] ?? NOTHING;
+export const heldOf = (m: Measure, kinds: string[]): Held => kinds.reduce((t, k) => {
+  const h = kindHeld(m, k);
+  return { texts: t.texts + h.texts, characters: t.characters + h.characters, bytes: t.bytes + h.bytes };
+}, NOTHING);
+// The kinds of items the measure holds texts of, each on its own: those a corpus takes, or those it leaves out.
+export const itemKinds = (m: Measure, taken: boolean): [string, Held][] =>
+  Object.entries(m.kinds).filter(([k, h]) => k !== PLAIN && TAKEN.includes(k) === taken && h.texts > 0);
+// The share of a corpus's bytes the kinds a corpus takes hold, together (one kind given: its own).
+export const takenShare = (m: Measure, kind?: string): number => {
+  const plainBytes = m.mix ? m.mix.kept_bytes : kindHeld(m, PLAIN).bytes;
+  const whole = heldOf(m, TAKEN).bytes + plainBytes;
+  if (m.mix) return kind === undefined ? m.mix.items_share : m.mix.kind_shares[kind] ?? 0;
+  return (kind === undefined ? heldOf(m, TAKEN).bytes : kindHeld(m, kind).bytes) / (whole || 1);
+};
+// The words for the items a corpus takes that the measure holds: "conversations", "tasks", or both.
+export const takenNames = (m: Measure): string => {
+  const held = itemKinds(m, true).map(([k]) => `${k}s`);
+  return held.length ? held.join(" and ") : "conversations and tasks";
 };
 export type MeasureState = Measure | string | null;
 // The figures once they are there, else null.

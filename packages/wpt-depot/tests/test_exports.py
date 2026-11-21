@@ -58,6 +58,42 @@ def test_an_export_holds_every_text_a_corpus_may_take_once_in_parts_by_key_the_s
     assert b"".join(again.part(1, parts, "parquet")) == table
 
 
+def quoting(source, exact, prefix=None):
+    """A conversation whose question quotes exact of the text source (docs/chat-format.md, "Excerpts")."""
+    selector = {"type": "TextQuoteSelector", "exact": exact, **({} if prefix is None else {"prefix": prefix})}
+    return NewText(kind="conversation", licenses=("CC0-1.0",), tags=("en",), content=json.dumps({"messages": [
+        {"role": "user", "content": [{"type": "text", "text": "What is it?"},
+                                     {"type": "excerpt", "source": source, "selector": selector}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "A fox."}]}]}))
+
+
+def test_an_export_leaves_out_and_counts_a_conversation_whose_quote_it_cannot_hold(make_depot, me):
+    # the corpus's rule: the quoted text must be a plain text the export holds, and the quote must find one place
+    depot = make_depot()
+    fox, outside, french, twice = depot.add([
+        NewText(text=words, licenses=("CC0-1.0",), tags=(tag,))
+        for words, tag in (("the quick brown fox jumps", "en"), ("the lazy dog sleeps", "en"),
+                           ("le renard dort", "fr"), ("a fox and a dog", "en"))], me)
+    kept, left_out, untaken, unmatched = depot.add([quoting(fox, "brown fox", "quick "), quoting(outside, "lazy dog"),
+                                                    quoting(french, "renard"), quoting(twice, "dog")], me)
+    depot.change_content(twice, "a dog and a dog", None, me)  # its quote now finds two places
+    depot.decide("admitted", "true", me)
+    library = depot.new_library("mine")
+    depot.put(library, f"id <> '{outside}'")  # the quoted text left out of the dataset
+    dataset = depot.new_dataset("all", "classics", [(None, library)], [("en", 1.0)])  # no share takes french
+
+    export = Export(depot, depot.dataset_by_id(dataset), "https://depot.example")
+    left = {}
+    rows = rows_of(b"".join(export.part(0, 1, "jsonl.zst", left)))
+
+    assert sorted(row["id"] for row in rows) == sorted([fox, twice, kept])
+    assert left == {"quoted text left out": 2, "quote unmatched": 1}
+    # the conversation is exported as it is in the depot: the excerpt names its text, the passage is not put in
+    assert json.loads(next(row["text"] for row in rows if row["id"] == kept)) == json.loads(depot.content(kept))
+    assert [row["id"] for row in pq.read_table(io.BytesIO(b"".join(export.part(0, 1, "parquet")))).to_pylist()] == [
+        row["id"] for row in rows]
+
+
 def test_an_export_reading_another_depot_reads_its_moved_file_and_names_it_by_its_name(make_depot, me, tmp_path):
     depot, other = make_depot("depot"), make_depot("other")
     [mine] = depot.add([NewText(text="the quick fox", licenses=("CC0-1.0",))], me)

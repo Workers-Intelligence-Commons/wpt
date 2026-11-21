@@ -103,6 +103,48 @@ one statement, which reads every row of content_lists once and rewrites no
 table, between a first transaction that marks the depot half upgraded and
 a last one that drops the mark, as the step to format 8 does; it says what
 it does before it starts and how long it took.
+The step to format 12 gives every text a kind: a content version of no
+kind is a plain text, which format 12 names plain; it counts what each
+library holds of each kind on its own, where format 11 counts the
+conversations and tasks together (items) and every other kind together
+(other); it gives the kind conversation the schema that takes the excerpt
+block (wpt_depot.quotes), which the step holds itself (CONVERSATION_12),
+as a new depot of format 12 starts with it; and it writes the table
+quotes, the texts each content version of a conversation quotes. Its first
+transaction marks the depot half upgraded, drops the index
+content_lists_long, whose condition names the kind, adds the row plain to
+the table kinds (PLAIN_12), writes the conversation schema, deletes the
+counts of what each library holds by kind but those of its plain texts,
+which stay right (GROUPS_12), and makes the table quotes and its index
+quotes_text, empty (QUOTES_12). Then it writes the kind plain on every
+content version of no kind, in rowid order, BATCH rowids of content_lists
+a transaction, and in the same transaction adds to the counts what the
+current content versions of the other kinds among those rowids give each
+library that holds their text, by kind (KINDS_12: each looked up through
+the index of the current revisions and memberships_held, and few, since
+nearly every text is plain), and writes the rows of quotes of the
+conversations among those rowids, each read from its parts (_quotes_12);
+each transaction records the last rowid in upgrade_under_way, so a run
+after a stop goes on after it, the counts and quotes it added kept; it
+says how many rows a second it writes every SAY_EVERY seconds. Each batch
+rewrites the rows it changes, and only those: no index of content_lists
+but content_lists_long names the column kind. Its last transaction checks
+that no content version is left without a kind, which reads the table
+once, declares the column kind NOT NULL (NOT_NULL_12) by changing the
+table's statement in sqlite_schema alone, as SQLite's documentation allows
+for a constraint every row meets (a table's statement names no layout of
+its rows on disk, so no row is rewritten), builds the index
+content_lists_long again over kind plain (LONG_12), in one statement that
+reads the table once, gives every dataset revision's figures the layout of
+format 12 (_figures_12) and drops the mark. A library's figures of format
+11 that hold no item become its plain texts and every other kind at 0;
+those that hold items, of a library this depot owns, are read again from
+the counts it filled when they prove them exact, as the step to format 9
+decides, and are null otherwise, since format 11 never split them by kind.
+
+A file written from a folder is made with the code's tables, so the
+content versions of no kind it copies are written of kind plain at once,
+and the step to format 9 reads kind plain as no kind (PLAIN_9).
 
 A clone of those formats named its upstream by the upstream's folder
 or bucket address; a clone of format 4 or newer follows its upstream over the
@@ -144,7 +186,7 @@ from .database import Database, now
 from .errors import DepotExists, OtherFormat, Refused
 from .follow import Upstream
 from .legacy import LAST, STEPS, Legacy
-from .parts import pack
+from .parts import Parted, Reader, pack
 from .schema import FORMAT
 
 UPGRADING = ".upgrading"  # what the name of the file being written adds to the new file's name
@@ -218,6 +260,7 @@ MOVES_9 = ("CREATE TABLE IF NOT EXISTS library_moves (library TEXT NOT NULL, cha
 JOINED_OR_LEFT_9 = ("SELECT library, max(max(joined_change, coalesce(left_change, 0))) FROM memberships "
                     "INDEXED BY memberships_key GROUP BY library")
 KINDS_9 = ("plain", "items", "other")
+PLAIN_9 = "plain"  # the kind a file written from a folder gives a plain text, read as no kind (the module says why)
 # format 10: the listings of the current texts by tag and by license, each row a name and the text's place in the
 # numeric order of ids (ORDER over the column text, ORDER_TEXT_10), the facets of counts it adds, and the indexes it
 # builds, by name, in the order they are built
@@ -291,6 +334,167 @@ DROPPED_10 = "DROP INDEX IF EXISTS text_decisions_decision"
 # format 11: the partial index of the plain content versions longer than 1,048,576 characters
 LONG_11 = ("CREATE INDEX IF NOT EXISTS content_lists_long ON content_lists (id, version) "
            "WHERE kind IS NULL AND length > 1048576")
+# format 12: the kind of a plain text, its row of kinds (id, meaning, schema), the column kind of content_lists as
+# format 11 declares it and as format 12 does, and the index content_lists_long over kind plain
+PLAIN_12 = ("plain", "a text read as it is, which the read-text step learns from as text windows",
+            '{\n  "$schema": "https://json-schema.org/draft/2020-12/schema",\n'
+            '  "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/plain.schema.json",\n'
+            '  "title": "WPT plain text (a text read as it is: its content is the text itself, any Unicode string, '
+            'stored as it is and never as JSON; this schema is that string as a JSON value)",\n'
+            '  "type": "string"\n}\n')
+# format 12: the schema of the kind conversation, which takes the excerpt block (wpt_depot.quotes)
+CONVERSATION_12 = (
+    "{\n"
+    "  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n"
+    "  \"$id\": \"https://github.com/Workers-Intelligence-Commons/wpt/schemas/conversation.schema.json\",\n"
+    "  \"title\": \"WPT conversation (one line of a file in the chat format; docs/chat-format.md)\",\n"
+    "  \"type\": \"object\",\n"
+    "  \"additionalProperties\": false,\n"
+    "  \"required\": [\"messages\"],\n"
+    "  \"properties\": {\n"
+    "    \"metadata\": {\"type\": \"object\", \"description\": \"what identifies the conversation where it was"
+    " recorded, such as a training attempt's step, task and round; never read as tokens\"},\n"
+    "    \"tools\": {\n"
+    "      \"type\": \"array\",\n"
+    "      \"description\": \"the tools offered in the conversation\",\n"
+    "      \"items\": {\n"
+    "        \"type\": \"object\",\n"
+    "        \"additionalProperties\": false,\n"
+    "        \"required\": [\"name\", \"description\", \"parameters\"],\n"
+    "        \"properties\": {\n"
+    "          \"name\": {\"type\": \"string\", \"minLength\": 1},\n"
+    "          \"description\": {\"type\": \"string\"},\n"
+    "          \"parameters\": {\"type\": \"object\", \"description\": \"the JSON Schema of the call's"
+    " arguments\"}\n"
+    "        }\n"
+    "      }\n"
+    "    },\n"
+    "    \"messages\": {\n"
+    "      \"type\": \"array\",\n"
+    "      \"minItems\": 1,\n"
+    "      \"items\": {\n"
+    "        \"type\": \"object\",\n"
+    "        \"additionalProperties\": false,\n"
+    "        \"required\": [\"role\", \"content\"],\n"
+    "        \"properties\": {\n"
+    "          \"role\": {\"enum\": [\"system\", \"user\", \"assistant\", \"tool\"]},\n"
+    "          \"content\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/$defs/block\"}},\n"
+    "          \"metadata\": {\n"
+    "            \"type\": \"object\",\n"
+    "            \"description\": \"what is known about the message where it was recorded; never read as"
+    " tokens\",\n"
+    "            \"properties\": {\"draft\": {\"$ref\": \"#/$defs/draft\"}}\n"
+    "          }\n"
+    "        },\n"
+    "        \"allOf\": [\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"tool\"}}},\n"
+    "           \"then\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\"type\": {\"const\":"
+    " \"tool_result\"}}}}}},\n"
+    "           \"else\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\"type\": {\"not\": {\"const\":"
+    " \"tool_result\"}}}}}}}},\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"assistant\"}}},\n"
+    "           \"else\": {\"properties\": {\"content\": {\"minItems\": 1, \"items\": {\"properties\": {\"type\":"
+    " {\"not\": {\"enum\": [\"thinking\", \"tool_call\"]}}}}},\n"
+    "                                   \"metadata\": {\"not\": {\"required\": [\"draft\"]}}}}},\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"enum\": [\"assistant\", \"system\"]}}},\n"
+    "           \"then\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\"type\": {\"not\": {\"const\":"
+    " \"excerpt\"}}}}}}}}\n"
+    "        ]\n"
+    "      }\n"
+    "    }\n"
+    "  },\n"
+    "  \"$defs\": {\n"
+    "    \"draft\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"additionalProperties\": false,\n"
+    "      \"required\": [\"model\", \"weights\", \"sha256\", \"edited\"],\n"
+    "      \"description\": \"an assistant message that started as a reply drafted by a WPT model, which a"
+    " person then confirmed, edited or not (docs/chat-format.md, \\\"Model drafts\\\")\",\n"
+    "      \"properties\": {\n"
+    "        \"model\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"the name of the model folder"
+    " that drafted it\"},\n"
+    "        \"weights\": {\"type\": \"object\", \"minProperties\": 1, \"description\": \"the sha256 of each of"
+    " that folder's weight files, by file name\",\n"
+    "                    \"additionalProperties\": {\"type\": \"string\", \"pattern\": \"^[0-9a-f]{64}$\"}},\n"
+    "        \"sha256\": {\"type\": \"string\", \"pattern\": \"^[0-9a-f]{64}$\", \"description\": \"the sha256 of the"
+    " drafted content as the model wrote it, of its JSON text written as docs/chat-format.md, Model"
+    " drafts, says\"},\n"
+    "        \"edited\": {\"type\": \"boolean\", \"description\": \"true when the person changed the draft before"
+    " confirming it: the content no longer gives sha256\"}\n"
+    "      }\n"
+    "    },\n"
+    "    \"block\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"required\": [\"type\"],\n"
+    "      \"properties\": {\"type\": {\"enum\": [\"text\", \"thinking\", \"tool_call\", \"tool_result\", \"json\","
+    " \"file\", \"excerpt\"]}},\n"
+    "      \"allOf\": [\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"enum\": [\"text\", \"thinking\"]}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"text\"],\n"
+    "                  \"properties\": {\"type\": true, \"text\": {\"type\": \"string\"}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"tool_call\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"id\", \"name\", \"arguments\"],\n"
+    "                  \"properties\": {\"type\": true, \"id\": {\"type\": \"string\", \"minLength\": 1},\n"
+    "                                 \"name\": {\"type\": \"string\", \"minLength\": 1}, \"arguments\": {\"type\":"
+    " \"object\"}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"tool_result\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"call\", \"content\"],\n"
+    "                  \"properties\": {\"type\": true, \"call\": {\"type\": \"string\", \"minLength\": 1}, \"error\":"
+    " {\"type\": \"boolean\"},\n"
+    "                                 \"content\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/$defs/block\",\n"
+    "                                             \"properties\": {\"type\": {\"enum\": [\"text\", \"json\","
+    " \"file\", \"excerpt\"]}}}}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"json\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"value\"],\n"
+    "                  \"properties\": {\"type\": true, \"value\": true}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"file\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"sha256\", \"media_type\"],\n"
+    "                  \"properties\": {\"type\": true, \"sha256\": {\"type\": \"string\", \"pattern\":"
+    " \"^[0-9a-f]{64}$\"},\n"
+    "                                 \"media_type\": {\"type\": \"string\", \"pattern\":"
+    " \"^[a-z]+/[A-Za-z0-9.+-]+$\"}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"excerpt\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"source\", \"selector\"],\n"
+    "                  \"description\": \"a passage of a plain text of the depot, quoted by its content"
+    " (docs/chat-format.md, \\\"Excerpts\\\"): the corpus build writes the passage in its place\",\n"
+    "                  \"properties\": {\"type\": true, \"source\": {\"type\": \"string\", \"minLength\": 1,"
+    " \"description\": \"the id of the quoted text\"},\n"
+    "                                 \"selector\": {\"type\": \"object\", \"additionalProperties\": false,"
+    " \"required\": [\"type\", \"exact\"],\n"
+    "                                              \"description\": \"a W3C Web Annotation"
+    " TextQuoteSelector (https://www.w3.org/TR/annotation-model/#text-quote-selector)\",\n"
+    "                                              \"properties\": {\"type\": {\"const\":"
+    " \"TextQuoteSelector\"},\n"
+    "                                                             \"exact\": {\"type\": \"string\","
+    " \"description\": \"the passage, character for character\"},\n"
+    "                                                             \"prefix\": {\"type\": \"string\","
+    " \"description\": \"the characters right before it\"},\n"
+    "                                                             \"suffix\": {\"type\": \"string\","
+    " \"description\": \"the characters right after it\"}}}}}}\n"
+    "      ]\n"
+    "    }\n"
+    "  }\n"
+    "}\n"
+)
+NULLABLE_12, NOT_NULL_12 = "kind TEXT,", "kind TEXT NOT NULL,"
+LONG_12 = ("CREATE INDEX IF NOT EXISTS content_lists_long ON content_lists (id, version) "
+           "WHERE kind = 'plain' AND length > 1048576")
+# format 12: the counts of what each library holds by kind of format 11 that format 12 counts again (every one but
+# those of the plain texts), and what the current content versions of a batch of rowids of content_lists that are not
+# plain add to each library that holds their text, by kind
+GROUPS_12 = (f"DELETE FROM counts WHERE facet = '{LIBRARY_KIND_9}' AND substr(name, instr(name, ' ') + 1) <> "
+             "'plain'")
+KINDS_12 = (f"INSERT INTO counts (facet, name, texts, characters, bytes) SELECT '{LIBRARY_KIND_9}', "
+            "m.library || ' ' || c.kind, count(*), sum(c.length), sum(c.bytes) FROM content_lists c "
+            "CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest AND t.content_version = c.version "
+            "CROSS JOIN memberships m INDEXED BY memberships_held ON m.text = c.id AND m.left_change IS NULL "
+            "WHERE c.rowid > ? AND c.rowid <= ? AND c.kind <> 'plain' GROUP BY m.library, c.kind "
+            "ON CONFLICT (facet, name) DO UPDATE SET texts = texts + excluded.texts, "
+            "characters = characters + excluded.characters, bytes = bytes + excluded.bytes")
+# format 12: the table of the texts each content version of a conversation quotes, and its index by quoted text
+QUOTES_12 = ("CREATE TABLE IF NOT EXISTS quotes (conversation TEXT NOT NULL, version INTEGER NOT NULL, "
+             "text TEXT NOT NULL, PRIMARY KEY (conversation, version, text)) WITHOUT ROWID",
+             "CREATE INDEX IF NOT EXISTS quotes_text ON quotes (text)")
 UNDER_WAY = "upgrade_under_way"  # the table that marks a depot whose upgrade has not ended, and how far it went
 BATCH = 250_000  # rows a transaction of the upgrades to formats 6 (texts_revisions), 7 (memberships, pins) and 9
                  # (memberships) goes over
@@ -669,9 +873,10 @@ def _merged_9(held, current, versions):
                     version_row = next(versions, None)
                 if version_row is not None and (version_row[0], version_row[1]) == wanted:
                     kind = version_row[2]
-                    what = "plain" if kind is None else "items" if kind in ITEMS_9 else "other"
+                    plain = kind is None or kind == PLAIN_9
+                    what = "plain" if plain else "items" if kind in ITEMS_9 else "other"
                     size = (what, version_row[3] or 0, version_row[4] or 0,
-                            json.loads(text_row[2] or "[]") if kind is None else ())
+                            json.loads(text_row[2] or "[]") if plain else ())
         summed += 1
         if change is not None and revised.get(library, -1) < change:
             revised[library] = change
@@ -789,8 +994,156 @@ def _to_11(db: Database, log):
         "at format 11")
 
 
+def _to_12(db: Database, log):
+    """Format 11 to 12, in several transactions, as the module says: the
+    conversation kind's schema and the table quotes, the kind plain on
+    every content version of no kind and the quotes of every conversation,
+    then the column kind declared NOT NULL and the index content_lists_long
+    built again."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('contents', 0)")
+            con.execute("DROP INDEX IF EXISTS content_lists_long")
+            con.execute("INSERT OR IGNORE INTO kinds (id, meaning, schema) VALUES (?, ?, ?)", PLAIN_12)
+            con.execute("UPDATE kinds SET schema = ? WHERE id = 'conversation'", (CONVERSATION_12,))
+            con.execute(GROUPS_12)
+            for statement in QUOTES_12:
+                con.execute(statement)
+            _new_format(con, 12)
+    con = db.reader()
+    after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'contents'").fetchall()[0][0]
+    last = con.execute("SELECT coalesce(max(rowid), 0) FROM content_lists").fetchall()[0][0]
+    log(f"{db.path}: writing the kind plain on every content version of no kind, counting what each library "
+        f"holds of each other kind and writing the texts each conversation quotes, rows {after:,} to {last:,} of content_lists, {BATCH:,} rowids a transaction"
+        + ("" if after == 0 else "; going on after the last transaction the last run wrote"))
+    began = said = time.monotonic()
+    first = after
+    while after < last:
+        upto = min(after + BATCH, last)
+        with db.bulk() as written:
+            written.execute(f"UPDATE content_lists SET kind = '{PLAIN_12[0]}' WHERE rowid > ? AND rowid <= ? "
+                            "AND kind IS NULL", (after, upto))
+            written.execute(KINDS_12, (after, upto))
+            _quotes_12(written, after, upto)
+            written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'contents'", (upto,))
+        after = upto
+        if time.monotonic() - said >= SAY_EVERY or after == last:
+            said = time.monotonic()
+            log(f"{db.path}: content row {after:,} of {last:,}, {(after - first) / max(said - began, 1e-9):,.0f} rows "
+                f"a second, {said - began:.0f} seconds")
+    log(f"{db.path}: checking that every content version has a kind, declaring the column kind NOT NULL, "
+        "building the index content_lists_long of the plain content versions longer than 1,048,576 characters and "
+        "giving the dataset revisions' figures a count of each kind, in one transaction that reads content_lists "
+        "twice; run again after a stop, it does it again")
+    finished = time.monotonic()
+    with db.bulk() as written:
+        left = written.execute("SELECT rowid FROM content_lists WHERE kind IS NULL LIMIT 1").fetchall()
+        if left:
+            raise Refused(f"the content version of rowid {left[0][0]} of content_lists has no kind after every batch "
+                          "wrote one: the upgrade stops, the depot half upgraded; run wpt depot upgrade again")
+        statement = written.execute("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'content_lists'"
+                                    ).fetchall()[0][0]
+        if NOT_NULL_12 not in statement:
+            if statement.count(NULLABLE_12) != 1:
+                raise Refused(f"content_lists is declared as {statement!r}, where format 11 declares the column "
+                              f"kind once as {NULLABLE_12!r}: the upgrade stops, the depot half upgraded")
+            version = written.execute("PRAGMA schema_version").fetchall()[0][0]
+            written.execute("PRAGMA writable_schema = ON")
+            try:
+                written.execute("UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = 'content_lists'",
+                                (statement.replace(NULLABLE_12, NOT_NULL_12),))
+                written.execute(f"PRAGMA schema_version = {int(version) + 1}")
+            finally:
+                written.execute("PRAGMA writable_schema = OFF")
+        written.execute(LONG_12)
+        figured = _figures_12(written)
+        written.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the kinds took {finished - began:.0f} seconds and the last transaction "
+        f"{time.monotonic() - finished:.0f}; {figured[0]:,} of {figured[1]:,} libraries with figures keep them; the "
+        f"depot is at format 12, in {time.monotonic() - began:.0f} seconds")
+
+
+def _quotes_12(con, after: int, upto: int):
+    """Write the rows of quotes of the content versions of conversations
+    among the rowids after..upto of content_lists: the ids each one's
+    excerpts quote (blocks of type excerpt in its messages' content and in
+    their tool results' content, each naming its text by its source), read
+    from its parts."""
+    reader = Reader(lambda: con)
+    for text, version, parts in con.execute("SELECT id, version, parts FROM content_lists WHERE rowid > ? AND "
+                                            "rowid <= ? AND kind = 'conversation'", (after, upto)).fetchall():
+        content = json.loads(str(Parted(reader, text, json.loads(parts))))
+        blocks = [block for message in content.get("messages", []) for block in message.get("content", [])]
+        blocks += [inner for block in blocks if block.get("type") == "tool_result"
+                   for inner in block.get("content", [])]
+        quoted = dict.fromkeys(block["source"] for block in blocks if block.get("type") == "excerpt")
+        con.executemany("INSERT OR IGNORE INTO quotes (conversation, version, text) VALUES (?, ?, ?)",
+                        [(text, version, one) for one in quoted])
+
+
+def _figures_12(con) -> tuple[int, int]:
+    """The figures of every dataset revision in the layout of format 12
+    (wpt_depot.schema), from those of format 11 ({plain, items, other,
+    tags}), as the module says: {kinds: {kind: sizes} of every row of
+    kinds, plain first, then the others by id, tags}. (libraries that keep
+    figures, libraries that had them)."""
+    zero = {"texts": 0, "characters": 0, "bytes": 0}
+    kinds = ["plain"] + [kind for (kind,) in con.execute("SELECT id FROM kinds WHERE id <> 'plain' ORDER BY id")]
+    kept = had = 0
+    for dataset, revision, libraries, figures in con.execute(
+            "SELECT id, revision, libraries, figures FROM datasets_revisions WHERE figures IS NOT NULL").fetchall():
+        figures, refs = json.loads(figures), json.loads(libraries)
+        found = []
+        for ref, one in zip(refs, figures["libraries"], strict=True):
+            if one is None or "kinds" in one:
+                found.append(one)
+                continue
+            had += 1
+            if not one["items"]["texts"] and not one["other"]["texts"]:
+                found.append({"kinds": {kind: dict(one["plain"] if kind == "plain" else zero) for kind in kinds},
+                              "tags": one["tags"]})
+            elif _proved_12(con, ref):
+                sized = dict.fromkeys(kinds)
+                library = ref["library"]
+                for kind in kinds:
+                    row = con.execute("SELECT texts, characters, bytes FROM counts WHERE facet = ? AND name = ?",
+                                      (LIBRARY_KIND_9, f"{library} {kind}")).fetchall()
+                    sized[kind] = dict(zip(zero, row[0])) if row else dict(zero)
+                found.append({"kinds": sized, "tags": one["tags"]})
+            else:
+                found.append(None)
+                continue
+            kept += 1
+        con.execute("UPDATE datasets_revisions SET figures = ? WHERE id = ? AND revision = ?",
+                    (json.dumps({"at": figures["at"], "libraries": found}, ensure_ascii=False,
+                                separators=(",", ":")), dataset, revision))
+    return kept, had
+
+
+def _proved_12(con, ref: dict) -> bool:
+    """Whether the counts now are the figures of the library a dataset reads
+    (ref: {depot, library, change}) at the change it reads it at, as the
+    step to format 9 decides (_figures_9): a library this depot owns, read
+    here (never one of another depot, whose counts this depot does not
+    keep), the change that locked it for a library locked then, and its
+    row of library_moves at or before that change, or no row."""
+    library, change = ref["library"], ref["change"]
+    name = con.execute("SELECT name FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchall()[0][0]
+    if ref.get("depot") is not None or ids.owner(library) != name:
+        return False
+    state = con.execute("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? "
+                        "ORDER BY revision DESC LIMIT 1", (library, change)).fetchall()
+    if state and state[0][0] is not None:
+        change = con.execute("SELECT min(change) FROM libraries_revisions WHERE id = ? AND locked_at IS NOT NULL",
+                             (library,)).fetchall()[0][0]
+    moved = con.execute("SELECT change FROM library_moves WHERE library = ?", (library,)).fetchall()
+    return not moved or (moved[0][0] is not None and moved[0][0] <= change)
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11, 11: _to_12}
 
 
 def _write(legacy: Legacy, target: Path, upstream: str | None):
@@ -846,6 +1199,8 @@ def _converted(table: str, row: dict) -> dict:
             value = _json([{**one, "hash_a": one["hash_a"].hex(), "hash_b": one["hash_b"].hex()} for one in value])
         elif table == "parts" and name == "value":
             value = pack(value)
+        elif table == "contents" and name == "kind" and value is None:
+            value = PLAIN_12[0]  # the code's content_lists holds a kind on every row
         elif name in LISTS:
             value = None if value is None else _json(value)
         elif isinstance(value, datetime):

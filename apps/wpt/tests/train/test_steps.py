@@ -102,8 +102,8 @@ def test_answer_as_assistant_learns_from_the_corpus_s_conversations_and_credits_
     assert first["reused"] and first["result"] == json.loads(
         (tmp_path / "base" / "provenance.json").read_text())["steps"][0]["result"]
     assert second["step"]["name"] == "answer-as-assistant" and not second["reused"]
-    assert second["locked"] == ["balancing"] and second["learned"] == {"conversations": 1}
-    assert provenance["learned"]["conversations"] == 1
+    assert second["locked"] == ["balancing"] and second["learned"] == {"conversation": 1}
+    assert provenance["learned"]["conversation"] == 1
     lines = credited(tmp_path / "model")
     assert len(lines) == 17 == len(credited(tmp_path / "base")) + 1  # the plain texts stay credited
     assert "2. `answer-as-assistant`" in (tmp_path / "model" / "README.md").read_text()
@@ -115,26 +115,28 @@ class Shape:
     vocab_size: int
 
 
-def test_each_step_s_fingerprint_names_only_the_part_of_the_corpus_it_reads(built):
-    # wpt.train.fingerprints: text for read-text, conversations for
-    # answer-as-assistant, tasks for the task steps; a later step also
-    # follows the one before it
+def test_each_step_s_fingerprint_names_only_the_kinds_of_texts_it_reads(built):
+    # wpt.train.fingerprints: what the corpus holds of the kinds each step names, plain for read-text,
+    # conversation for answer-as-assistant, task for the task steps; a later step also follows the one before it
     steps = [load_step(entry, PARTS) for entry in ({"step": "read-text", "settings": one_stage(1)},
                                                    {"step": "answer-as-assistant"}, {"step": "finish-tasks"},
                                                    {"step": "finish-tasks-with-less-writing"})]
     config = Shape(vocab_size=10)
-    parts = {"text": "a" * 64, "conversations": "b" * 64, "tasks": "c" * 64}
+    parts = {"plain": "a" * 64, "conversation": "b" * 64, "task": "c" * 64}
 
     def marks(**changed):
         return wpt.train.fingerprints(steps, config, {"fingerprints": {**parts, **changed}}, 1337, {})
 
     base = marks()
     assert len(set(base)) == 4
-    only_chat = marks(conversations="d" * 64)
+    only_chat = marks(conversation="d" * 64)
     assert only_chat[0] == base[0] and all(new != old for new, old in zip(only_chat[1:], base[1:]))
-    only_tasks = marks(tasks="d" * 64)
+    only_tasks = marks(task="d" * 64)
     assert only_tasks[:2] == base[:2] and all(new != old for new, old in zip(only_tasks[2:], base[2:]))
-    assert all(new != old for new, old in zip(marks(text="d" * 64), base))
+    assert all(new != old for new, old in zip(marks(plain="d" * 64), base))
+    # a kind the corpus records nothing of is refused by name, never a KeyError
+    with pytest.raises(wpt.train.InputError, match="step 3 finish-tasks reads texts of the kind task"):
+        wpt.train.fingerprints(steps, config, {"id": "c", "fingerprints": {"plain": "a", "conversation": "b"}}, 1, {})
 
 
 def test_the_hardware_options_stay_out_of_a_step_s_fingerprint(built, tmp_path, capsys):
@@ -161,7 +163,7 @@ def test_the_steps_after_a_reused_one_train_as_in_a_run_of_every_step(built, on_
     reused, fresh = (json.loads((tmp_path / name / "provenance.json").read_text())["steps"]
                      for name in ("reused", "fresh"))
     assert [step["reused"] for step in reused] == [True, False] and [step["reused"] for step in fresh] == [False, False]
-    assert reused[1]["learned"] == {"conversations": 1}
+    assert reused[1]["learned"] == {"conversation": 1}
     weights = [load_file(tmp_path / name / "model.safetensors") for name in ("reused", "fresh")]
     assert weights[0].keys() == weights[1].keys()
     assert all(torch.equal(weights[0][name], weights[1][name]) for name in weights[0])
@@ -246,7 +248,7 @@ spec = importlib.util.spec_from_file_location(
     "text_windows", Path(wpt_training.__file__).parent / "environments" / "text-windows.py")
 text = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(text)
-GIVES, SETTINGS, check, context = text.GIVES, text.SETTINGS, text.check, text.context
+GIVES, KINDS, SETTINGS, check, context = text.GIVES, text.KINDS, text.SETTINGS, text.check, text.context
 
 
 class FailsOnce(text.TextWindows):
@@ -269,7 +271,7 @@ def test_a_step_that_fails_after_a_checkpoint_keeps_it_for_resume(built, tmp_pat
     (tmp_path / "fails_once.py").write_text(FAILS_ONCE)
     environment = str(tmp_path / "fails_once.py")
     (tmp_path / "fails-once-step.py").write_text(f"METHOD = 'next-token'\nENVIRONMENT = {environment!r}\n"
-                                                 "OPTIMIZER = {'name': 'by-part'}\n")
+                                                 "KINDS = ('plain',)\nOPTIMIZER = {'name': 'by-part'}\n")
     (tmp_path / "fail").touch()
     monkeypatch.setenv("WPT_TEST_FAIL", str(tmp_path / "fail"))
     recipe = built.recipe("fails", steps=[{"step": str(tmp_path / "fails-once-step.py"), "settings": one_stage(3)}])
@@ -488,7 +490,7 @@ def test_finish_tasks_learns_from_scored_attempts_at_the_corpus_s_tasks(docker_r
     assert unchanged_routers(before, after)
     assert any(not torch.equal(before[name], after[name]) for name in before)
     steps = json.loads((tmp_path / "model" / "provenance.json").read_text())["steps"]
-    assert steps[0]["reused"] and steps[1]["step"]["name"] == "finish-tasks" and steps[1]["learned"] == {"tasks": 1}
+    assert steps[0]["reused"] and steps[1]["step"]["name"] == "finish-tasks" and steps[1]["learned"] == {"task": 1}
     environment = load_step({"step": "finish-tasks"}, PARTS).environment.module
     assert steps[1]["settings"] == {**load_step({"step": "finish-tasks"}, PARTS).settings, **step["settings"]}
     assert set(environment.SETTINGS) <= set(steps[1]["settings"])
@@ -537,7 +539,7 @@ def test_finish_tasks_with_less_writing_learns_from_the_tasks_finish_tasks_reads
     assert unchanged_routers(before, after)
     assert any(not torch.equal(before[name], after[name]) for name in before)
     steps = json.loads((tmp_path / "model" / "provenance.json").read_text())["steps"]
-    assert steps[1]["step"]["name"] == "finish-tasks-with-less-writing" and steps[1]["learned"] == {"tasks": 1}
+    assert steps[1]["step"]["name"] == "finish-tasks-with-less-writing" and steps[1]["learned"] == {"task": 1}
     assert any(line.startswith(f"{task_id}: ") for line in credited(tmp_path / "model"))
     # the reference attempts are kept first, with no round and no reward, then the rounds' attempts
     run = built.records("wpt train")[-1]

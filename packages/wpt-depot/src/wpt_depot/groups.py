@@ -60,6 +60,7 @@ from pathlib import Path
 import numpy as np
 
 from .fill import FULL, SKIPS
+from .kinds import PLAIN
 from .order import walk
 
 LOOKAHEAD = 16  # texts of each group whose tokens are asked for at first, ahead of the group's head
@@ -182,7 +183,7 @@ def _first_pass(libraries, tags, covered, long, progress) -> _Entries | None:
         walked += 1
         if walked % MEASURED == 0:
             progress({"stage": "choosing", "position": walked})
-        if entry.kind is not None or entry.pool not in covered:
+        if entry.kind != PLAIN or entry.pool not in covered:
             continue
         ids = interned.get((entry.pool, entry.tags))
         if ids is None:

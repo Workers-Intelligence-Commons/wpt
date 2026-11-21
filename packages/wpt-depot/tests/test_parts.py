@@ -84,7 +84,7 @@ def test_a_text_bigger_than_a_part_is_added_from_a_file_read_shown_and_built_int
 
     record = build(depot, "model", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
 
-    [(tokens, _, document, _, _)] = [row for shard in record["shards"] for row in read_verified(store, shard)]
+    [(tokens, _, document, _, _)] = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard)]
     assert document == one
     assert list(tokens) == [*TOKENIZER.encode(text.encode()), END]  # read in parts, tokenized as one text
 
