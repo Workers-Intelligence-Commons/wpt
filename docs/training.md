@@ -564,7 +564,11 @@ losses, the gradients and the routers' balancing counts are kept apart from
 the graphs' memory, which the next replay writes over, so a run trains the
 same way with the graphs or without them. The graphs hold one pass's memory
 between windows. A pass with `--recompute`, or that records or replays
-routes, runs without them.
+routes, runs without them. The graphs' memory comes on top of what the
+passes before the recording left in PyTorch's allocator, so the option
+needs more memory than a run without it, how much is not measured: when
+the GPU runs out of memory, add `--recompute`. The run's log says which of
+the two the run does.
 
 The first update takes longer, and so does the first update at a new window
 length. `--stop-after-updates` with and without the option compares the

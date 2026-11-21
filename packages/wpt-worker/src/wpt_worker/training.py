@@ -346,6 +346,11 @@ def _train(spec, link, store, work, strategy, telemetry):
             raise Refused(f"--compile runs on a CUDA device, and this process runs on {strategy.device.type}: "
                           "run without it")
         log("compile: text windows that run whole train through torch.compile; every other pass runs as it is")
+        if options["recompute"]:
+            log("compile: with --recompute, the passes are not recorded as CUDA graphs")
+        else:
+            log("compile: each whole pass is recorded as CUDA graphs, which keep a pass's memory between windows; "
+                "when the GPU runs out of memory, add --recompute, which runs without the graphs")
     train_in_tf32(strategy.device)
     model = model.to(strategy.device)
     parameters = sum(p.numel() for p in model.parameters())
