@@ -131,6 +131,7 @@ settle alone are listed for legal review in
 - [Tokenizer](docs/tokenizer.md)
 - [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)
+- [Knowledge: what sizes a model, the evidence and what is open](docs/knowledge/README.md)
 - [Machines for training: the wpt manager, gpu workers, sandboxes](docs/machines.md)
 - [The public depot web app: its containers, limits and host](docs/depot-web.md)
 - [Evaluation](docs/evaluation.md)
