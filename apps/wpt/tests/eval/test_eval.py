@@ -4,7 +4,7 @@ import threading
 import pytest
 
 import wpt_telemetry
-from wpt.eval import main
+from wpt.eval import BUILT_IN, main
 from wpt_store import LocalStore
 from wpt_telemetry import FLUSH_THREAD
 from wpt_utils.lines import bare
@@ -119,3 +119,19 @@ def test_a_send_refused_in_the_background_stops_the_evaluation_before_its_next_r
     assert not finished.exists()  # the end of the run would give the same code
     assert "No space left on device" in capsys.readouterr().err
     assert not (trained.folder / "evals").exists()
+
+
+def test_general_knowledge_asks_each_question_in_both_languages(trained, tmp_path):
+    # the built-in test, beside a file of two of its questions (one ends with an apostrophe in French)
+    built_in = BUILT_IN / "general_knowledge.py"
+    questions = json.loads(built_in.with_suffix(".json").read_text(encoding="utf-8"))
+    two = [questions[0], next(one for one in questions if one["fr"]["prompt"].endswith("'"))]
+    test = tmp_path / "general_knowledge.py"
+    test.write_text(built_in.read_text(encoding="utf-8"), encoding="utf-8")
+    test.with_suffix(".json").write_text(json.dumps(two), encoding="utf-8")
+    main([str(trained.folder), str(test)])
+    data = json.loads((trained.folder / "evals" / "general_knowledge.json").read_text())["data"]
+    assert data["questions"] == 2 and set(data["languages"]) == {"fr", "en"}
+    assert [one["prompt"] for one in data["answers"]["fr"]] == [one["fr"]["prompt"] for one in two]
+    assert all(0 <= figures["choice"] <= 1 for figures in data["languages"]["en"].values())
+    assert "| **all** |" in (trained.folder / "README.md").read_text()

@@ -66,4 +66,9 @@ so it can measure whatever the question needs. The result file also records
 the test file's sha256, so a result names the exact code that produced it.
 
 Built-in tests live in `apps/wpt/src/wpt/eval/evals/`; a new file there
-is a new built-in test. There is none yet, so a run names the files it runs.
+is a new built-in test, and a run that names none runs them all:
+
+| Test | What it measures |
+| --- | --- |
+| `general_knowledge` | What everyone knows: the questions of `general_knowledge.json`, sentences to complete with one answer that leaves no doubt ("The capital of Italy is" Rome), each in French and in English with three wrong answers of the same kind. For each language and topic, how often the right answer costs the model the fewest nats of the four (chance is 25%), and how often the model writes it. |
+

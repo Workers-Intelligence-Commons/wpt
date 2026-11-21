@@ -1,0 +1,1682 @@
+[
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de la France est",
+   "answer": "Paris",
+   "wrong": [
+    "Lyon",
+    "Marseille",
+    "Bordeaux"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of France is",
+   "answer": "Paris",
+   "wrong": [
+    "Lyon",
+    "Marseille",
+    "Bordeaux"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de l'Italie est",
+   "answer": "Rome",
+   "wrong": [
+    "Milan",
+    "Naples",
+    "Venise"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Italy is",
+   "answer": "Rome",
+   "wrong": [
+    "Milan",
+    "Naples",
+    "Venice"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de l'Allemagne est",
+   "answer": "Berlin",
+   "wrong": [
+    "Munich",
+    "Hambourg",
+    "Francfort"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Germany is",
+   "answer": "Berlin",
+   "wrong": [
+    "Munich",
+    "Hamburg",
+    "Frankfurt"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de l'Espagne est",
+   "answer": "Madrid",
+   "wrong": [
+    "Barcelone",
+    "Séville",
+    "Valence"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Spain is",
+   "answer": "Madrid",
+   "wrong": [
+    "Barcelona",
+    "Seville",
+    "Valencia"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale du Royaume-Uni est",
+   "answer": "Londres",
+   "wrong": [
+    "Manchester",
+    "Liverpool",
+    "Édimbourg"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of the United Kingdom is",
+   "answer": "London",
+   "wrong": [
+    "Manchester",
+    "Liverpool",
+    "Edinburgh"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale du Japon est",
+   "answer": "Tokyo",
+   "wrong": [
+    "Osaka",
+    "Kyoto",
+    "Pékin"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Japan is",
+   "answer": "Tokyo",
+   "wrong": [
+    "Osaka",
+    "Kyoto",
+    "Beijing"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de la Russie est",
+   "answer": "Moscou",
+   "wrong": [
+    "Kiev",
+    "Varsovie",
+    "Minsk"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Russia is",
+   "answer": "Moscow",
+   "wrong": [
+    "Kyiv",
+    "Warsaw",
+    "Minsk"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de l'Égypte est",
+   "answer": "Le Caire",
+   "wrong": [
+    "Alexandrie",
+    "Tunis",
+    "Rabat"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Egypt is",
+   "answer": "Cairo",
+   "wrong": [
+    "Alexandria",
+    "Tunis",
+    "Rabat"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale de la Chine est",
+   "answer": "Pékin",
+   "wrong": [
+    "Shanghai",
+    "Tokyo",
+    "Séoul"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of China is",
+   "answer": "Beijing",
+   "wrong": [
+    "Shanghai",
+    "Tokyo",
+    "Seoul"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale du Portugal est",
+   "answer": "Lisbonne",
+   "wrong": [
+    "Porto",
+    "Madrid",
+    "Séville"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of Portugal is",
+   "answer": "Lisbon",
+   "wrong": [
+    "Porto",
+    "Madrid",
+    "Seville"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La tour Eiffel se trouve à",
+   "answer": "Paris",
+   "wrong": [
+    "Londres",
+    "Rome",
+    "Berlin"
+   ]
+  },
+  "en": {
+   "prompt": "The Eiffel Tower is in",
+   "answer": "Paris",
+   "wrong": [
+    "London",
+    "Rome",
+    "Berlin"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "Le plus grand océan du monde est l'océan",
+   "answer": "Pacifique",
+   "wrong": [
+    "Atlantique",
+    "Indien",
+    "Arctique"
+   ]
+  },
+  "en": {
+   "prompt": "The largest ocean in the world is the",
+   "answer": "Pacific",
+   "wrong": [
+    "Atlantic",
+    "Indian",
+    "Arctic"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "Le Sahara est un grand",
+   "answer": "désert",
+   "wrong": [
+    "lac",
+    "fleuve",
+    "glacier"
+   ]
+  },
+  "en": {
+   "prompt": "The Sahara is a large",
+   "answer": "desert",
+   "wrong": [
+    "lake",
+    "river",
+    "glacier"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "Le Nil est un fleuve d'",
+   "answer": "Afrique",
+   "wrong": [
+    "Europe",
+    "Asie",
+    "Amérique"
+   ]
+  },
+  "en": {
+   "prompt": "The Nile is a river in",
+   "answer": "Africa",
+   "wrong": [
+    "Europe",
+    "Asia",
+    "America"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "Le Brésil se trouve en Amérique du",
+   "answer": "Sud",
+   "wrong": [
+    "Nord",
+    "Est",
+    "Ouest"
+   ]
+  },
+  "en": {
+   "prompt": "Brazil is in South",
+   "answer": "America",
+   "wrong": [
+    "Africa",
+    "Asia",
+    "Europe"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "On parle japonais au",
+   "answer": "Japon",
+   "wrong": [
+    "Brésil",
+    "Canada",
+    "Mexique"
+   ]
+  },
+  "en": {
+   "prompt": "Japanese is spoken in",
+   "answer": "Japan",
+   "wrong": [
+    "Brazil",
+    "Canada",
+    "Mexico"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "On parle espagnol en",
+   "answer": "Espagne",
+   "wrong": [
+    "Allemagne",
+    "Suède",
+    "Pologne"
+   ]
+  },
+  "en": {
+   "prompt": "Spanish is spoken in",
+   "answer": "Spain",
+   "wrong": [
+    "Germany",
+    "Sweden",
+    "Poland"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "Le mont Everest est la plus haute",
+   "answer": "montagne",
+   "wrong": [
+    "rivière",
+    "forêt",
+    "ville"
+   ]
+  },
+  "en": {
+   "prompt": "Mount Everest is the highest",
+   "answer": "mountain",
+   "wrong": [
+    "river",
+    "forest",
+    "city"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Après lundi vient",
+   "answer": "mardi",
+   "wrong": [
+    "jeudi",
+    "samedi",
+    "dimanche"
+   ]
+  },
+  "en": {
+   "prompt": "After Monday comes",
+   "answer": "Tuesday",
+   "wrong": [
+    "Thursday",
+    "Saturday",
+    "Sunday"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Après vendredi vient",
+   "answer": "samedi",
+   "wrong": [
+    "lundi",
+    "mardi",
+    "mercredi"
+   ]
+  },
+  "en": {
+   "prompt": "After Friday comes",
+   "answer": "Saturday",
+   "wrong": [
+    "Monday",
+    "Tuesday",
+    "Wednesday"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Lundi, mardi, mercredi,",
+   "answer": "jeudi",
+   "wrong": [
+    "dimanche",
+    "samedi",
+    "lundi"
+   ]
+  },
+  "en": {
+   "prompt": "Monday, Tuesday, Wednesday,",
+   "answer": "Thursday",
+   "wrong": [
+    "Sunday",
+    "Saturday",
+    "Monday"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Janvier, février, mars,",
+   "answer": "avril",
+   "wrong": [
+    "juillet",
+    "octobre",
+    "décembre"
+   ]
+  },
+  "en": {
+   "prompt": "January, February, March,",
+   "answer": "April",
+   "wrong": [
+    "July",
+    "October",
+    "December"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Le premier mois de l'année est",
+   "answer": "janvier",
+   "wrong": [
+    "mars",
+    "juin",
+    "décembre"
+   ]
+  },
+  "en": {
+   "prompt": "The first month of the year is",
+   "answer": "January",
+   "wrong": [
+    "March",
+    "June",
+    "December"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Le dernier mois de l'année est",
+   "answer": "décembre",
+   "wrong": [
+    "janvier",
+    "mai",
+    "août"
+   ]
+  },
+  "en": {
+   "prompt": "The last month of the year is",
+   "answer": "December",
+   "wrong": [
+    "January",
+    "May",
+    "August"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Une semaine compte sept",
+   "answer": "jours",
+   "wrong": [
+    "mois",
+    "années",
+    "heures"
+   ]
+  },
+  "en": {
+   "prompt": "A week has seven",
+   "answer": "days",
+   "wrong": [
+    "months",
+    "years",
+    "hours"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Une année compte douze",
+   "answer": "mois",
+   "wrong": [
+    "jours",
+    "semaines",
+    "heures"
+   ]
+  },
+  "en": {
+   "prompt": "A year has twelve",
+   "answer": "months",
+   "wrong": [
+    "days",
+    "weeks",
+    "hours"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Une heure compte soixante",
+   "answer": "minutes",
+   "wrong": [
+    "jours",
+    "mois",
+    "années"
+   ]
+  },
+  "en": {
+   "prompt": "An hour has sixty",
+   "answer": "minutes",
+   "wrong": [
+    "days",
+    "months",
+    "years"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "Après l'été vient l'",
+   "answer": "automne",
+   "wrong": [
+    "hiver",
+    "printemps",
+    "été"
+   ]
+  },
+  "en": {
+   "prompt": "After summer comes",
+   "answer": "autumn",
+   "wrong": [
+    "winter",
+    "spring",
+    "summer"
+   ]
+  }
+ },
+ {
+  "topic": "time",
+  "fr": {
+   "prompt": "La saison la plus froide est l'",
+   "answer": "hiver",
+   "wrong": [
+    "été",
+    "automne",
+    "printemps"
+   ]
+  },
+  "en": {
+   "prompt": "The coldest season is",
+   "answer": "winter",
+   "wrong": [
+    "summer",
+    "autumn",
+    "spring"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Un, deux, trois, quatre,",
+   "answer": "cinq",
+   "wrong": [
+    "huit",
+    "dix",
+    "sept"
+   ]
+  },
+  "en": {
+   "prompt": "One, two, three, four,",
+   "answer": "five",
+   "wrong": [
+    "eight",
+    "ten",
+    "seven"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Deux plus deux font",
+   "answer": "quatre",
+   "wrong": [
+    "trois",
+    "cinq",
+    "six"
+   ]
+  },
+  "en": {
+   "prompt": "Two plus two equals",
+   "answer": "four",
+   "wrong": [
+    "three",
+    "five",
+    "six"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Trois plus quatre font",
+   "answer": "sept",
+   "wrong": [
+    "six",
+    "huit",
+    "neuf"
+   ]
+  },
+  "en": {
+   "prompt": "Three plus four equals",
+   "answer": "seven",
+   "wrong": [
+    "six",
+    "eight",
+    "nine"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Dix moins un font",
+   "answer": "neuf",
+   "wrong": [
+    "huit",
+    "onze",
+    "dix"
+   ]
+  },
+  "en": {
+   "prompt": "Ten minus one equals",
+   "answer": "nine",
+   "wrong": [
+    "eight",
+    "eleven",
+    "ten"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Deux fois cinq font",
+   "answer": "dix",
+   "wrong": [
+    "sept",
+    "douze",
+    "quinze"
+   ]
+  },
+  "en": {
+   "prompt": "Two times five equals",
+   "answer": "ten",
+   "wrong": [
+    "seven",
+    "twelve",
+    "fifteen"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "1, 2, 3, 4,",
+   "answer": "5",
+   "wrong": [
+    "7",
+    "9",
+    "2"
+   ]
+  },
+  "en": {
+   "prompt": "1, 2, 3, 4,",
+   "answer": "5",
+   "wrong": [
+    "7",
+    "9",
+    "2"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "10, 20, 30, 40,",
+   "answer": "50",
+   "wrong": [
+    "45",
+    "60",
+    "41"
+   ]
+  },
+  "en": {
+   "prompt": "10, 20, 30, 40,",
+   "answer": "50",
+   "wrong": [
+    "45",
+    "60",
+    "41"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Un triangle a trois",
+   "answer": "côtés",
+   "wrong": [
+    "roues",
+    "pieds",
+    "yeux"
+   ]
+  },
+  "en": {
+   "prompt": "A triangle has three",
+   "answer": "sides",
+   "wrong": [
+    "wheels",
+    "feet",
+    "eyes"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Un carré a quatre",
+   "answer": "côtés",
+   "wrong": [
+    "roues",
+    "yeux",
+    "ailes"
+   ]
+  },
+  "en": {
+   "prompt": "A square has four",
+   "answer": "sides",
+   "wrong": [
+    "wheels",
+    "eyes",
+    "wings"
+   ]
+  }
+ },
+ {
+  "topic": "numbers",
+  "fr": {
+   "prompt": "Une douzaine, c'est",
+   "answer": "douze",
+   "wrong": [
+    "dix",
+    "vingt",
+    "six"
+   ]
+  },
+  "en": {
+   "prompt": "A dozen is",
+   "answer": "twelve",
+   "wrong": [
+    "ten",
+    "twenty",
+    "six"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de chaud est",
+   "answer": "froid",
+   "wrong": [
+    "grand",
+    "rapide",
+    "rouge"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of hot is",
+   "answer": "cold",
+   "wrong": [
+    "big",
+    "fast",
+    "red"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de grand est",
+   "answer": "petit",
+   "wrong": [
+    "chaud",
+    "lent",
+    "vieux"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of big is",
+   "answer": "small",
+   "wrong": [
+    "hot",
+    "slow",
+    "old"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de jour est",
+   "answer": "nuit",
+   "wrong": [
+    "matin",
+    "semaine",
+    "soleil"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of day is",
+   "answer": "night",
+   "wrong": [
+    "morning",
+    "week",
+    "sun"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de haut est",
+   "answer": "bas",
+   "wrong": [
+    "long",
+    "lourd",
+    "clair"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of up is",
+   "answer": "down",
+   "wrong": [
+    "long",
+    "heavy",
+    "light"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de vrai est",
+   "answer": "faux",
+   "wrong": [
+    "juste",
+    "plein",
+    "long"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of true is",
+   "answer": "false",
+   "wrong": [
+    "right",
+    "full",
+    "long"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de noir est",
+   "answer": "blanc",
+   "wrong": [
+    "rouge",
+    "vert",
+    "bleu"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of black is",
+   "answer": "white",
+   "wrong": [
+    "red",
+    "green",
+    "blue"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire d'ouvert est",
+   "answer": "fermé",
+   "wrong": [
+    "cassé",
+    "propre",
+    "vide"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of open is",
+   "answer": "closed",
+   "wrong": [
+    "broken",
+    "clean",
+    "empty"
+   ]
+  }
+ },
+ {
+  "topic": "opposites",
+  "fr": {
+   "prompt": "Le contraire de vieux est",
+   "answer": "jeune",
+   "wrong": [
+    "grand",
+    "lourd",
+    "froid"
+   ]
+  },
+  "en": {
+   "prompt": "The opposite of old is",
+   "answer": "young",
+   "wrong": [
+    "tall",
+    "heavy",
+    "cold"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Le ciel par beau temps est",
+   "answer": "bleu",
+   "wrong": [
+    "vert",
+    "rouge",
+    "noir"
+   ]
+  },
+  "en": {
+   "prompt": "On a clear day the sky is",
+   "answer": "blue",
+   "wrong": [
+    "green",
+    "red",
+    "black"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "L'herbe est",
+   "answer": "verte",
+   "wrong": [
+    "bleue",
+    "rouge",
+    "noire"
+   ]
+  },
+  "en": {
+   "prompt": "Grass is",
+   "answer": "green",
+   "wrong": [
+    "blue",
+    "red",
+    "black"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "La neige est",
+   "answer": "blanche",
+   "wrong": [
+    "noire",
+    "verte",
+    "rouge"
+   ]
+  },
+  "en": {
+   "prompt": "Snow is",
+   "answer": "white",
+   "wrong": [
+    "black",
+    "green",
+    "red"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Le soleil se lève à l'",
+   "answer": "est",
+   "wrong": [
+    "ouest",
+    "nord",
+    "sud"
+   ]
+  },
+  "en": {
+   "prompt": "The sun rises in the",
+   "answer": "east",
+   "wrong": [
+    "west",
+    "north",
+    "south"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "La Terre tourne autour du",
+   "answer": "Soleil",
+   "wrong": [
+    "Lune",
+    "Mars",
+    "Jupiter"
+   ]
+  },
+  "en": {
+   "prompt": "The Earth goes around the",
+   "answer": "Sun",
+   "wrong": [
+    "Moon",
+    "Mars",
+    "Jupiter"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "La Lune tourne autour de la",
+   "answer": "Terre",
+   "wrong": [
+    "Mars",
+    "Vénus",
+    "Jupiter"
+   ]
+  },
+  "en": {
+   "prompt": "The Moon goes around the",
+   "answer": "Earth",
+   "wrong": [
+    "Mars",
+    "Venus",
+    "Jupiter"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Les abeilles fabriquent du",
+   "answer": "miel",
+   "wrong": [
+    "lait",
+    "pain",
+    "vin"
+   ]
+  },
+  "en": {
+   "prompt": "Bees make",
+   "answer": "honey",
+   "wrong": [
+    "milk",
+    "bread",
+    "wine"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Les vaches donnent du",
+   "answer": "lait",
+   "wrong": [
+    "miel",
+    "vin",
+    "sel"
+   ]
+  },
+  "en": {
+   "prompt": "Cows give",
+   "answer": "milk",
+   "wrong": [
+    "honey",
+    "wine",
+    "salt"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Le chien aboie et le chat",
+   "answer": "miaule",
+   "wrong": [
+    "aboie",
+    "rugit",
+    "hennit"
+   ]
+  },
+  "en": {
+   "prompt": "The dog barks and the cat",
+   "answer": "meows",
+   "wrong": [
+    "barks",
+    "roars",
+    "neighs"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Les poissons vivent dans l'",
+   "answer": "eau",
+   "wrong": [
+    "air",
+    "arbre",
+    "herbe"
+   ]
+  },
+  "en": {
+   "prompt": "Fish live in",
+   "answer": "water",
+   "wrong": [
+    "air",
+    "trees",
+    "grass"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Les oiseaux ont des",
+   "answer": "plumes",
+   "wrong": [
+    "écailles",
+    "sabots",
+    "nageoires"
+   ]
+  },
+  "en": {
+   "prompt": "Birds have",
+   "answer": "feathers",
+   "wrong": [
+    "scales",
+    "hooves",
+    "fins"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Le lion est un",
+   "answer": "animal",
+   "wrong": [
+    "arbre",
+    "fruit",
+    "outil"
+   ]
+  },
+  "en": {
+   "prompt": "The lion is an",
+   "answer": "animal",
+   "wrong": [
+    "tree",
+    "fruit",
+    "instrument"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "La pomme est un",
+   "answer": "fruit",
+   "wrong": [
+    "animal",
+    "métal",
+    "outil"
+   ]
+  },
+  "en": {
+   "prompt": "An apple is a",
+   "answer": "fruit",
+   "wrong": [
+    "metal",
+    "tool",
+    "fish"
+   ]
+  }
+ },
+ {
+  "topic": "nature",
+  "fr": {
+   "prompt": "Le petit du chat est le",
+   "answer": "chaton",
+   "wrong": [
+    "poussin",
+    "veau",
+    "poulain"
+   ]
+  },
+  "en": {
+   "prompt": "A baby cat is a",
+   "answer": "kitten",
+   "wrong": [
+    "chick",
+    "calf",
+    "foal"
+   ]
+  }
+ },
+ {
+  "topic": "body",
+  "fr": {
+   "prompt": "On voit avec les",
+   "answer": "yeux",
+   "wrong": [
+    "oreilles",
+    "mains",
+    "pieds"
+   ]
+  },
+  "en": {
+   "prompt": "We see with our",
+   "answer": "eyes",
+   "wrong": [
+    "ears",
+    "hands",
+    "feet"
+   ]
+  }
+ },
+ {
+  "topic": "body",
+  "fr": {
+   "prompt": "On entend avec les",
+   "answer": "oreilles",
+   "wrong": [
+    "yeux",
+    "mains",
+    "pieds"
+   ]
+  },
+  "en": {
+   "prompt": "We hear with our",
+   "answer": "ears",
+   "wrong": [
+    "eyes",
+    "hands",
+    "feet"
+   ]
+  }
+ },
+ {
+  "topic": "body",
+  "fr": {
+   "prompt": "Le cœur pompe le",
+   "answer": "sang",
+   "wrong": [
+    "lait",
+    "sable",
+    "vent"
+   ]
+  },
+  "en": {
+   "prompt": "The heart pumps",
+   "answer": "blood",
+   "wrong": [
+    "milk",
+    "sand",
+    "air"
+   ]
+  }
+ },
+ {
+  "topic": "body",
+  "fr": {
+   "prompt": "Une main a cinq",
+   "answer": "doigts",
+   "wrong": [
+    "yeux",
+    "bras",
+    "dents"
+   ]
+  },
+  "en": {
+   "prompt": "A hand has five",
+   "answer": "fingers",
+   "wrong": [
+    "eyes",
+    "arms",
+    "teeth"
+   ]
+  }
+ },
+ {
+  "topic": "body",
+  "fr": {
+   "prompt": "On respire avec les",
+   "answer": "poumons",
+   "wrong": [
+    "genoux",
+    "oreilles",
+    "dents"
+   ]
+  },
+  "en": {
+   "prompt": "We breathe with our",
+   "answer": "lungs",
+   "wrong": [
+    "knees",
+    "ears",
+    "teeth"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "L'eau gèle à zéro",
+   "answer": "degré",
+   "wrong": [
+    "mètre",
+    "kilo",
+    "litre"
+   ]
+  },
+  "en": {
+   "prompt": "Water freezes at zero",
+   "answer": "degrees",
+   "wrong": [
+    "meters",
+    "kilograms",
+    "liters"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "L'eau bout à cent",
+   "answer": "degrés",
+   "wrong": [
+    "mètres",
+    "kilos",
+    "litres"
+   ]
+  },
+  "en": {
+   "prompt": "Water boils at one hundred",
+   "answer": "degrees",
+   "wrong": [
+    "meters",
+    "kilograms",
+    "liters"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "La glace est de l'eau",
+   "answer": "gelée",
+   "wrong": [
+    "chaude",
+    "sucrée",
+    "salée"
+   ]
+  },
+  "en": {
+   "prompt": "Ice is frozen",
+   "answer": "water",
+   "wrong": [
+    "milk",
+    "sand",
+    "air"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "Les plantes ont besoin de lumière et d'",
+   "answer": "eau",
+   "wrong": [
+    "huile",
+    "sel",
+    "sable"
+   ]
+  },
+  "en": {
+   "prompt": "Plants need light and",
+   "answer": "water",
+   "wrong": [
+    "oil",
+    "salt",
+    "sand"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "L'eau de mer est",
+   "answer": "salée",
+   "wrong": [
+    "sucrée",
+    "douce",
+    "sèche"
+   ]
+  },
+  "en": {
+   "prompt": "Sea water is",
+   "answer": "salty",
+   "wrong": [
+    "sweet",
+    "dry",
+    "fresh"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "Pour mesurer la température, on utilise un",
+   "answer": "thermomètre",
+   "wrong": [
+    "marteau",
+    "miroir",
+    "ciseau"
+   ]
+  },
+  "en": {
+   "prompt": "To measure temperature we use a",
+   "answer": "thermometer",
+   "wrong": [
+    "hammer",
+    "mirror",
+    "ladder"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "La Terre est une",
+   "answer": "planète",
+   "wrong": [
+    "étoile",
+    "comète",
+    "lune"
+   ]
+  },
+  "en": {
+   "prompt": "The Earth is a",
+   "answer": "planet",
+   "wrong": [
+    "star",
+    "comet",
+    "moon"
+   ]
+  }
+ },
+ {
+  "topic": "science",
+  "fr": {
+   "prompt": "Le Soleil est une",
+   "answer": "étoile",
+   "wrong": [
+    "planète",
+    "comète",
+    "lune"
+   ]
+  },
+  "en": {
+   "prompt": "The Sun is a",
+   "answer": "star",
+   "wrong": [
+    "planet",
+    "comet",
+    "moon"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Les Misérables a été écrit par Victor",
+   "answer": "Hugo",
+   "wrong": [
+    "Dupont",
+    "Martin",
+    "Lefèvre"
+   ]
+  },
+  "en": {
+   "prompt": "Les Misérables was written by Victor",
+   "answer": "Hugo",
+   "wrong": [
+    "Smith",
+    "Brown",
+    "Johnson"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Roméo et Juliette est une pièce de William",
+   "answer": "Shakespeare",
+   "wrong": [
+    "Dickens",
+    "Wordsworth",
+    "Blake"
+   ]
+  },
+  "en": {
+   "prompt": "Romeo and Juliet is a play by William",
+   "answer": "Shakespeare",
+   "wrong": [
+    "Dickens",
+    "Wordsworth",
+    "Blake"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "La Joconde a été peinte par Léonard de",
+   "answer": "Vinci",
+   "wrong": [
+    "Rome",
+    "Paris",
+    "Florence"
+   ]
+  },
+  "en": {
+   "prompt": "The Mona Lisa was painted by Leonardo da",
+   "answer": "Vinci",
+   "wrong": [
+    "Rome",
+    "Paris",
+    "Florence"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Le premier homme à marcher sur la Lune est Neil",
+   "answer": "Armstrong",
+   "wrong": [
+    "Young",
+    "Collins",
+    "Glenn"
+   ]
+  },
+  "en": {
+   "prompt": "The first man to walk on the Moon was Neil",
+   "answer": "Armstrong",
+   "wrong": [
+    "Young",
+    "Collins",
+    "Glenn"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Le piano et le violon sont des instruments de",
+   "answer": "musique",
+   "wrong": [
+    "cuisine",
+    "chirurgie",
+    "mesure"
+   ]
+  },
+  "en": {
+   "prompt": "The piano and the violin are musical",
+   "answer": "instruments",
+   "wrong": [
+    "vehicles",
+    "animals",
+    "buildings"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Pour écrire, on utilise un",
+   "answer": "stylo",
+   "wrong": [
+    "marteau",
+    "verre",
+    "oreiller"
+   ]
+  },
+  "en": {
+   "prompt": "To write, we use a",
+   "answer": "pen",
+   "wrong": [
+    "hammer",
+    "glass",
+    "pillow"
+   ]
+  }
+ }
+]
