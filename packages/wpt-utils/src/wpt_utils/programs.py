@@ -90,7 +90,10 @@ def _checkout() -> Path | None:
 def _changes(top) -> str | None:
     """The sha256 of the uncommitted changes of the git checkout at top,
     every tracked file's difference from its commit and every untracked
-    file git does not ignore; None when there are none."""
+    file git does not ignore; None when there are none. Git reads every
+    one of these files, never this process: the audit hook of
+    wpt_recipes.guard refuses a read of a file under data/ by any code but
+    its service layer (docs/architecture.md, "The service layer")."""
     import hashlib
 
     top = Path(top)
@@ -99,20 +102,43 @@ def _changes(top) -> str | None:
     if difference:
         digest.update(difference)
         changed = True
-    for path in sorted(filter(None, _git(top, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0"))):
-        try:
-            content = (top / path.decode()).read_bytes()
-        except OSError:
-            continue  # gone meanwhile, or a folder git lists
-        digest.update(b"\0" + path + b"\0" + hashlib.sha256(content).digest())
+    # a folder git lists (a nested repository) ends with a slash
+    untracked = sorted(path for path in _git(top, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+                       if path and not path.endswith(b"/"))
+    for path, blob in _blobs(top, untracked).items():
+        digest.update(b"\0" + path + b"\0" + blob)
         changed = True
     return digest.hexdigest() if changed else None
 
 
-def _git(top, *command) -> bytes:
-    """What a git command run in the folder top prints; b"" when it fails."""
+def _blobs(top, paths: list[bytes]) -> dict[bytes, bytes]:
+    """The object id git gives each file of paths (relative to top) as it is,
+    with no conversion of its line endings; a file that is gone meanwhile is
+    left out. The files go to one git command, as lines of its input; one that
+    cannot (its name holds a line break, or the command failed) goes to a command of its own."""
+    together = [path for path in paths if b"\n" not in path]
+    alone = [path for path in paths if b"\n" in path]
+    printed = _git(top, "hash-object", "--no-filters", "--stdin-paths", stdin=b"\n".join(together) + b"\n") \
+        if together else b""
+    ids = printed.split()
+    if len(ids) == len(together):
+        found = dict(zip(together, ids))
+    else:
+        found = {}
+        alone += together
+    for path in alone:
+        blob = _git(top, "hash-object", "--no-filters", "--", path.decode()).strip()
+        if blob:
+            found[path] = blob
+    return dict(sorted(found.items()))
+
+
+def _git(top, *command, stdin: bytes | None = None) -> bytes:
+    """What a git command run in the folder top prints (stdin: what it reads);
+    b"" when it fails."""
     try:
-        return subprocess.run([program("git"), "-C", str(top), *command], capture_output=True, check=True).stdout
+        return subprocess.run([program("git"), "-C", str(top), *command], capture_output=True, check=True,
+                              input=stdin).stdout
     except (MissingTool, OSError, subprocess.CalledProcessError):
         return b""
 

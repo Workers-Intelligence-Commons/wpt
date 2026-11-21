@@ -225,3 +225,34 @@ def test_the_audit_hook_follows_links_and_counts_only_the_project_s_own_tests(tm
     exec(compile(line, str(checkout / "apps" / "conftest.py"), "exec"), {})  # a conftest.py in the checkout is test code
     with pytest.raises(DataAccessRefused, match="only the service layers"):  # one outside the checkout is not
         exec(compile(line, str(tmp_path / "elsewhere" / "conftest.py"), "exec"), {})
+
+
+def test_the_checkout_s_hash_reads_an_untracked_file_under_data_through_git(tmp_path):
+    # wpt_utils.programs.code() hashes every untracked file git does not ignore; under data/ the audit hook
+    # refuses a read by that code, so git reads the file, and the hash still follows the file
+    import subprocess
+
+    from wpt_utils.programs import _changes
+
+    root = tmp_path / "wpt"
+    models = root / "data" / "recipes" / "models"
+    models.mkdir(parents=True)
+    (root / "data" / "recipes" / "series").mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "README.md").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"],
+                   check=True)
+    Recipes(root)  # the hook now guards root/data
+    assert _changes(root) is None
+    recipe = models / "t.json"
+    recipe.write_text('{"a": 1}\n', encoding="utf-8", newline="\n")
+    first = _changes(root)
+    assert first is not None
+    recipe.write_text('{"a": 2}\n', encoding="utf-8", newline="\n")
+    second = _changes(root)
+    assert second not in (None, first)
+    recipe.write_text('{"a": 1}\n', encoding="utf-8", newline="\n")
+    assert _changes(root) == first
+    recipe.unlink()
+    assert _changes(root) is None
