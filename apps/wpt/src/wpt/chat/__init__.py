@@ -2,7 +2,10 @@
 
 You type some text and press Enter; the model continues it until it ends the
 document or reaches the length limit. There are no roles and no history: a
-model trained on text only continues text. Empty line quits. The model writes
+model trained on text only continues text. An empty line quits, and so does
+the end of the input (a pipe or a file that is read to its end, Ctrl+D or
+Ctrl+Z); a byte order mark that starts the input is not part of the first
+text. The model writes
 through its generation cache (wpt_inference), so text and conversations
 may grow past its block_size. It writes by speculative decoding with the
 folder's drafter (drafter/), the same text faster: a model and its
@@ -70,6 +73,15 @@ def answer(model, tokenizer, conversation, max_new_tokens=MAX_NEW_TOKENS, drafte
     return chat.reply(tokenizer, generated), chat.show(tokenizer, generated)
 
 
+def ask(prompt: str) -> str:
+    """The next line typed or piped in; "" (the empty line that quits) when
+    the input has ended."""
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
+
+
 def licenses_line(folder) -> str:
     """What the start line says about licenses, and where the notices are."""
     notice = Path(folder) / NOTICE_NAME
@@ -87,10 +99,11 @@ def about(folder) -> str:
 
 
 def main(argv=None):
-    # notices and generated text can hold any character; Windows pipes default to a narrower code page
-    for stream in (sys.stdout, sys.stdin):
+    # notices and generated text can hold any character; Windows pipes default to a narrower code page;
+    # utf-8-sig drops the byte order mark that PowerShell puts first on a file it pipes in
+    for stream, encoding in ((sys.stdout, "utf-8"), (sys.stdin, "utf-8-sig")):
         if isinstance(stream, io.TextIOWrapper):  # not when a caller replaced it (a test, a host program)
-            stream.reconfigure(encoding="utf-8")
+            stream.reconfigure(encoding=encoding)
     parser = argparse.ArgumentParser(prog="wpt chat", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("model", nargs="?", default="runs/default", help="model folder (default: runs/default)")
     parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS, help="length limit of each continuation")
@@ -138,11 +151,11 @@ def main(argv=None):
         costs = measure_costs(model, 1, drafter.block)  # this machine's pass times, once
     what = "type a message" if args.chat else "type text to continue"
     say(f"model loaded ({tokenizer.vocab_size} tokens, with its drafter) on {describe(device)}. {what}, "
-        "empty line quits.")
+        "an empty line or the end of the input quits.")
     say(licenses_line(args.model))
     conversation = {"messages": []}  # docs/chat-format.md
     while args.chat:
-        text = input("you> ")
+        text = ask("you> ")
         if not text:
             return
         conversation["messages"].append({"role": "user", "content": [{"type": "text", "text": text}]})
@@ -151,7 +164,7 @@ def main(argv=None):
         if blocks:
             conversation["messages"].append({"role": "assistant", "content": blocks})
     while True:
-        text = input("> ")
+        text = ask("> ")
         if not text:
             break
         print(text + continue_text(model, tokenizer, text, args.max_new_tokens, drafter, costs))

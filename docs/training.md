@@ -977,7 +977,8 @@ conversations and tasks a step read. Run
 `wpt eval` on the folder to measure it.
 
 `wpt chat <model folder>` continues text typed by the user, until the model
-ends the document. Its start line names the licenses and where the notice
+ends the document; an empty line, or the end of the input when it is piped
+in, quits, and a byte order mark that starts the input is dropped. Its start line names the licenses and where the notice
 is; `wpt chat <model folder> --about` prints the folder's `NOTICE`. A model
 trained on text only continues text. `wpt chat <model folder> --chat`
 talks to a model trained on conversations: it keeps the history, writes it

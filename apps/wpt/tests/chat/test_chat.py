@@ -154,3 +154,34 @@ def test_the_kernels_named_reach_the_attention_before_the_model_loads_and_one_th
         main([str(folder)])
     assert refused.value.code == 2 and "WPT_KERNELS='fast': not one of tilelang, triton, pytorch" in \
         capsys.readouterr().err
+
+
+def test_the_end_of_the_input_quits_like_an_empty_line_and_a_byte_order_mark_is_not_a_prompt(
+        tmp_path, monkeypatch, capsys):
+    # prompts piped in end with the input, with no traceback; PowerShell starts a file it pipes in with a byte
+    # order mark, which is not part of the first prompt
+    import io
+
+    folder = model_folder(tmp_path / "model")
+    monkeypatch.setattr("wpt.chat.select_device", lambda: torch.device("cpu"))
+    asked = []
+    monkeypatch.setattr("wpt.chat.answer", lambda model, tokenizer, conversation, *rest: (
+        asked.append([m["content"][0]["text"] for m in conversation["messages"]]) or ([], "ok")))
+    for piped in (b"\xef\xbb\xbffirst\nsecond", b"\xef\xbb\xbffirst\nsecond\n"):
+        asked.clear()
+        monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(piped), encoding="ascii"))
+        main([str(folder), "--chat"])  # returns: no EOFError
+        assert asked == [["first"], ["first", "second"]]
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xef\xbb\xbfthe\nfox"), encoding="ascii"))
+    main([str(folder), "--max-new-tokens", "3"])
+    out = capsys.readouterr().out
+    assert "> the" in out and "> fox" in out and "\ufeff" not in out
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b""), encoding="ascii"))
+    main([str(folder)])  # an input with nothing in it
+
+
+def test_a_program_that_pipes_its_prompts_in_gets_a_clean_end(tmp_path):
+    folder = model_folder(tmp_path / "model")
+    done = subprocess.run([sys.executable, "-c", "from wpt.chat import main; main()", str(folder), "--chat"],
+                          input=b"\xef\xbb\xbf", capture_output=True)
+    assert done.returncode == 0 and b"Traceback" not in done.stderr, done.stderr
