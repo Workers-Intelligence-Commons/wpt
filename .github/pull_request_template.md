@@ -4,7 +4,7 @@
 
 ## Part it touches
 
-<!-- One or more: sources and data rules, tokenizer, dataset build, training,
+<!-- One or more: sources and data rules, tokenizer, corpus build, training,
 evaluation, generation and chat, web interface, model architecture,
 documentation. -->
 

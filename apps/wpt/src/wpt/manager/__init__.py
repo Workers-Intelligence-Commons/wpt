@@ -16,7 +16,8 @@ repository's root (an empty value counts as unset):
                       SERIES:SIZE:RUN, another run of that size;
                       required: the manager refuses to start without it
     WPT_CORPUS        the corpus the run trains on (its id, or a start of it); unset, the corpus
-                      last built for the recipe's dataset, found by its id in its depot
+                      of the recipe's build key (a recipe written before snapshots: the one
+                      last built for its dataset, found by its id in its depot)
     WPT_RUN           the run's name (letters, digits, '.', '_', '-'); unset, the manager goes on
                       with the run RUN_FILE names (at the repository's root, git-ignored) when
                       it is a run of this recipe whose model is not in the store yet, else makes
@@ -58,12 +59,13 @@ container, so the manager refuses it.
 The steps, each its own command, in order, each stopping the run with its
 exit code when it fails:
 
-    1. the corpus                        WPT_CORPUS, or the latest fresh one of the recipe's dataset,
-                                         the vocabulary it publishes and the recipe's size
+    1. the corpus                        WPT_CORPUS, or the fresh one of the recipe's build key (its
+                                         snapshot, data section and vocabulary; for a recipe written
+                                         before snapshots, the latest fresh one of its dataset)
                                          (wpt.train.find_corpus); the manager neither downloads nor
-                                         builds: the corpus is built first, on the dataset's download
-                                         page or with `wpt depot build`, and a run without one is
-                                         refused (exit code 2)
+                                         builds: the corpus is built first, with Build on the recipe
+                                         page, and a run without one is refused, saying so (exit
+                                         code 2)
        wpt agent build-image NAME        each image the corpus's tasks name, where DOCKER_HOST
                                          reaches Docker (the sandboxes' machine); none without tasks
     2. wpt train RECIPE ID --run NAME --resume --out FOLDER/NAME

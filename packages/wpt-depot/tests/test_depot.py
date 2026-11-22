@@ -9,14 +9,15 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, Needle, NewText, clone, pull
 from wpt_depot import depot as depots
-from wpt_depot import counts, crediting, erasure, follow, ids, policy, quotes, scoring
-from wpt_depot.errors import (BadContent, BadQuery, BadRemote, BelongsToUpstream, Locked, NoDepotSetting, NotFound,
+from wpt_depot import counts, crediting, erasure, follow, policy, quotes, scoring
+from wpt_depot.errors import (BadContent, BadQuery, BelongsToUpstream, NoDepotSetting, NotFound,
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
 from wpt_depot.filters import Filter
 from wpt_depot.schema import FORMAT, KEYS
 from wpt_depot.settings import depot_address
-from wpt_depot.corpus import measure as corpus_measure, revision_figures
+
+from .conftest import sizes_apart, tags_apart
 
 
 def column(rows: list[dict], name: str) -> list:
@@ -39,7 +40,7 @@ def plain(text, *tags, notice=None):
 
 
 def with_text(depot, table) -> list[dict]:
-    """The rows of a library's texts (Depot.library_texts) with the text of the content version each reads."""
+    """Rows of texts, each with the text of the content version it reads."""
     return [{**one, "text": depot.content(one["id"], one["content_version"])} for one in table]
 
 
@@ -53,117 +54,6 @@ def files_holding(address, passage: str) -> list[Path]:
     path = Path(address)
     return [one for one in (path, path.with_name(path.name + "-wal"))
             if one.is_file() and passage.encode() in one.read_bytes()]
-
-
-def test_only_admitted_texts_never_refused_join_a_library_and_a_refusal_takes_them_out(make_depot, me):
-    depot = make_depot()
-    first, second, third = depot.add([plain("one", "a"), plain("two", "a"), plain("three", "b")], me)
-    depot.decide("admitted", "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'a')", me)
-    depot.decide("refused", f"id = '{second}'", me)
-    library = depot.new_library("first")
-
-    assert depot.put(library, "true") == (1, 2)
-
-    assert column(depot.library_texts(library, depot.change()), "id") == [first]
-    depot.decide("refused", f"id = '{first}'", me)
-    assert depot.show(first)["text"]["libraries"] == []
-    assert [one["status"] for one in depot.show(first)["decisions"]] == ["under review", "admitted", "refused"]
-
-
-def test_a_locked_library_takes_no_text_and_a_fork_is_an_open_library_holding_its_admitted_texts(make_depot, me):
-    depot = make_depot()
-    held, other, refused_later = depot.add([plain("kept", "a"), plain("later", "a"), plain("refused", "a")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("first model")
-    depot.put(library, [held, refused_later])
-    depot.lock(library)
-
-    with pytest.raises(Locked):
-        depot.put(library, f"id = '{other}'")
-    depot.decide("refused", [refused_later], me)  # a locked library keeps it, at the revision it pinned
-    assert column(depot.library_texts(library, depot.change()), "id") == [held, refused_later]
-    fork = depot.fork(library, "next model")
-    assert depot.put(fork, f"id = '{other}'") == (1, 0)
-
-    assert column(depot.sql(f"SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{library}') ORDER BY id"), "id") == [held, refused_later]
-    assert column(depot.sql(f"SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{fork}') ORDER BY id"), "id") \
-        == [held, other]
-    assert depot.sql(f"SELECT forked_from, locked_at FROM libraries WHERE id = '{fork}'") \
-        == [{"forked_from": library, "locked_at": None}]
-
-
-def test_a_text_taken_out_of_an_open_library_leaves_it_stays_admitted_and_can_be_put_back(make_depot, me):
-    depot = make_depot()
-    leaving, staying, outside = depot.add([plain("leaving"), plain("staying"), plain("outside")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, [leaving, staying])
-    before = depot.change()
-
-    assert depot.take_out(library, [leaving, outside]) == (1, 1)
-
-    assert column(depot.library_texts(library, depot.change()), "id") == [staying]
-    assert column(depot.library_texts(library, before), "id") == [leaving, staying]
-    assert depot.show(leaving)["status"] == "admitted"
-    assert depot.put(library, [leaving]) == (1, 0)
-    assert column(depot.library_texts(library, depot.change()), "id") == [leaving, staying]
-
-
-def test_a_locked_library_refuses_a_take_out_and_writes_nothing(make_depot, me):
-    depot = make_depot()
-    [text] = depot.add([plain("pinned")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("locked")
-    depot.put(library, [text])
-    depot.lock(library)
-    before = depot.change()
-
-    with pytest.raises(Locked):
-        depot.take_out(library, [text])
-
-    assert depot.change() == before
-    assert column(depot.library_texts(library, depot.change()), "id") == [text]
-
-
-def test_a_clone_and_a_pull_keep_the_counts_of_what_libraries_hold_exact(serve, make_depot, me, tmp_path,
-                                                                        library_figures):
-    # a clone's dataset form reads its own counts, which a clone fills and every pull keeps
-    upstream = make_depot("upstream")
-    texts = upstream.add([plain("one text", "prose"), plain("two texts", "code"), plain("three", "prose", "en")], me)
-    upstream.decide("admitted", texts, me)
-    library = upstream.new_library("open")
-    upstream.put(library, texts[:2])
-    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    stored, direct = library_figures(follower)
-    assert stored == direct and stored
-    upstream.put(library, [texts[2]])
-    upstream.edit_credits(texts[0], {"tags": ["poems"]}, me)
-    upstream.decide_erasure(upstream.ask_erasure("a word", [(texts[1], 0, 4)], me), "admitted", me)
-    upstream.change_content(texts[2], "three, changed", None, me)  # it leaves the open library
-    own = follower.new_library("own")
-    follower.put(own, texts[:2])
-
-    pull(follower)
-
-    stored, direct = library_figures(follower)
-    assert stored == direct
-    assert {key: value for key, value in stored.items() if key[1].startswith(f"{library} ")} == (
-        library_figures(upstream)[0])
-
-
-def test_a_pull_brings_a_take_out_made_upstream(serve, make_depot, me, tmp_path):
-    upstream = make_depot("upstream")
-    texts = upstream.add([plain("leaving"), plain("staying")], me)
-    upstream.decide("admitted", texts, me)
-    library = upstream.new_library("open")
-    upstream.put(library, texts)
-    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    upstream.take_out(library, [texts[0]])
-
-    pull(follower)
-
-    assert column(follower.library_texts(library, follower.change()), "id") == [texts[1]]
-    assert follower.show(texts[0])["status"] == "admitted"
 
 
 def test_an_item_is_kept_only_when_its_content_matches_its_kind(make_depot, me):
@@ -255,12 +145,12 @@ def test_the_hashes_of_an_erased_passage_are_public_so_anyone_can_match_a_guess(
 
 
 def test_a_change_that_fails_partway_writes_nothing(make_depot, me, monkeypatch):
-    # a change is one transaction: the fork's library row is written before its texts, and the failure undoes it
+    # a change is one transaction: the relicensing writes its revision and decision before it counts them, and the
+    # failure undoes it
     depot = make_depot()
     [text] = depot.add([plain("one", "a")], me)
     depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, "true")
+    depot.add_license("MIT", "MIT", "text")
     before = depot.change()
 
     def fails(*args, **kwargs):
@@ -269,11 +159,11 @@ def test_a_change_that_fails_partway_writes_nothing(make_depot, me, monkeypatch)
     with monkeypatch.context() as patch:
         patch.setattr(counts, "shift", fails)
         with pytest.raises(OSError):
-            depot.fork(library, "fork")
+            depot.relicense("true", ["MIT"], me)
 
-    assert column(depot.sql("SELECT count(*) AS n FROM libraries"), "n") == [1]
     assert depot.change() == before
-    assert depot.show(text)["text"]["libraries"] == [library]
+    assert depot.show(text)["text"]["licenses"] == ["CC0-1.0"] and depot.show(text)["status"] == "admitted"
+    assert column(depot.sql("SELECT count(*) AS n FROM decisions"), "n") == [2]
     assert depot.add([plain("two")], me) == ["depot-2"]
 
 
@@ -333,91 +223,6 @@ def test_a_person_s_query_stops_at_its_deadline(make_depot, me):
         depot.sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n")
 
 
-def test_a_dataset_exported_as_a_remote_is_imported_as_the_same_dataset(make_depot, me):
-    depot = make_depot()
-    depot.add([plain("one", "en")], me)
-    library = depot.new_library("first")
-    change = depot.change()
-    depot.new_dataset("first", "classics", [(None, library)], [("en", 0.7), ("fr", 0.3)])
-    remote = depot.export_dataset("first")
-    other = make_depot("other")
-
-    other.import_dataset(remote)
-
-    assert other.export_dataset("first") == remote
-    assert remote["libraries"] == [{"depot": None, "library": library, "change": change}]
-    with pytest.raises(Refused):
-        other.import_dataset(remote)  # the name is taken
-    with pytest.raises(BadRemote):
-        other.import_dataset({**remote, "id": 3})
-
-
-def test_shares_without_a_number_store_an_even_part_of_what_the_numbers_leave(make_depot, me):
-    depot = make_depot()
-    depot.add([plain("one", "en")], me)
-    library = depot.new_library("first")
-    dataset = depot.new_dataset("mix", "classics", [(None, library)],
-                                [("research-paper", 0.35), ("books", 0.15), ("government", 0.05), ("code", 0.05),
-                                 *[(tag, None) for tag in ("en", "fr", "de", "es", "ru", "pl", "ja", "fi")]])
-    assert [one["share"] for one in depot.dataset_by_id(dataset)["shares"]] == [0.35, 0.15, 0.05, 0.05, *[0.05] * 8]
-
-    depot.edit_dataset(dataset, "mix", [(None, library)], [("en", None), ("fr", None), ("de", None)])
-    assert [one["share"] for one in depot.dataset_by_id(dataset)["shares"]] == [0.333333333333] * 3  # all even
-    with pytest.raises(Refused, match="nothing is left"):
-        depot.edit_dataset(dataset, "mix", [(None, library)], [("en", 0.7), ("fr", 0.3), ("de", None)])
-    assert depot.dataset_by_id(dataset)["revision"] == 2  # the refused edit wrote nothing
-
-
-def test_an_open_library_read_at_a_past_change_gives_its_members_and_revisions_then_after_an_erasure_too(make_depot, me):
-    depot = make_depot()
-    first, second, third = depot.add([plain("one 123", "a"), plain("two"), plain("three")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, [first, second])
-    then = depot.change()
-    depot.put(library, [third])  # joins after
-    depot.decide("refused", [second], me)  # leaves after
-    depot.edit_credits(first, {"title": "One"}, me)  # a newer revision of a member
-
-    def read(change):
-        return [(one["id"], one["revision"], one["title"], one["text"]) for one in
-                with_text(depot, depot.library_texts(library, change))]
-
-    assert read(then) == [(first, 1, None, "one 123"), (second, 1, None, "two")]
-    assert read(depot.change()) == [(first, 2, "One", "one 123"), (third, 1, None, "three")]
-    request = depot.ask_erasure("a number", [(first, 4, 7)], me)
-    depot.decide_erasure(request, "admitted", me)
-    assert read(then) == [(first, 1, None, "one "), (second, 1, None, "two")]  # the cut reaches every revision
-    removal = depot.ask_erasure("all of it", [(second, None, None)], me)
-    depot.decide_erasure(removal, "admitted", me)
-    assert read(then) == [(first, 1, None, "one ")]  # a text removed whole is in no past
-    with pytest.raises(NotFound):
-        depot.library_texts(depot.new_library("later"), then)
-
-
-def test_a_credits_edit_of_a_text_a_locked_library_holds_is_a_new_revision_the_library_does_not_read(make_depot, me):
-    depot = make_depot()
-    depot.add_license("MIT", "MIT License", "text")
-    [text] = depot.add([NewText(text="The fox.", licenses=("CC0-1.0",), title="Fox")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, "true")
-    depot.lock(library)
-    pinned = depot.show(text)["text"]["revision"]
-
-    depot.edit_credits(text, {"title": "The fox"}, me)
-    depot.relicense([text], ["MIT"], me)
-
-    shown = depot.show(text)
-    assert (shown["text"]["title"], shown["text"]["licenses"], shown["revisions"]) == ("The fox", ["MIT"], pinned + 2)
-    assert shown["pins"] == [{"library": library, "name": "first", "revision": pinned}]
-    assert pick(depot.library_texts(library, depot.change()), ["id", "revision", "title", "licenses"]) \
-        == [{"id": text, "revision": pinned, "title": "Fox", "licenses": ["CC0-1.0"]}]
-    assert depot.pinned(library) == {"total": 1, "newer": 1, "next": None, "rows": [
-        {"id": text, "title": "Fox", "revision": pinned, "current": pinned + 2, "status": "admitted"}]}
-    assert column(depot.sql(f"SELECT revision, title FROM texts_revisions WHERE id = '{text}' ORDER BY revision"), "title") == ["Fox", "The fox", "The fox"]  # added, credits, licenses
-
-
 def test_an_erasure_cuts_what_every_revision_shows_and_no_revision_row_holds_content(make_depot, me):
     depot = make_depot()
     secret = "555-0199"
@@ -438,19 +243,23 @@ def test_an_erasure_cuts_what_every_revision_shows_and_no_revision_row_holds_con
 def test_the_sql_names_show_the_current_state_and_their_revisions_every_row(make_depot, me):
     depot = make_depot()
     [text] = depot.add([plain("one")], me)
-    library = depot.new_library("first")
-    depot.rename_library(library, "second")
+    depot.edit_credits(text, {"title": "First"}, me)
     depot.edit_about(maintainer="Grace Hopper")
 
-    assert depot.sql("SELECT id, text, revision, libraries FROM texts") == [
-        {"id": text, "text": "one", "revision": 1, "libraries": "[]"}]
-    assert depot.sql("SELECT name FROM libraries") == [{"name": "second"}]
-    assert column(depot.sql("SELECT name FROM libraries_revisions ORDER BY revision"), "name") == ["first", "second"]
+    assert depot.sql("SELECT id, text, revision, title FROM texts") == [
+        {"id": text, "text": "one", "revision": 2, "title": "First"}]
+    assert column(depot.sql("SELECT title FROM texts_revisions ORDER BY revision"), "title") == [None, "First"]
     assert column(depot.sql("SELECT maintainer FROM about_revisions ORDER BY revision"), "maintainer") == [
         "Ada Lovelace", "Grace Hopper"]
-    for name in ("contents", "memberships", "pins", "datasets_revisions", "erasures_revisions"):
+    for name in ("contents", "erasures_revisions", "snapshots", "snapshot_sets"):
         depot.sql(f"SELECT * FROM {name}")
-    changes = column(depot.sql("SELECT change FROM libraries_revisions ORDER BY revision"), "change")
+    # the tables of libraries and datasets stay readable, as an older format left them
+    for name in ("libraries_revisions", "memberships", "pins", "datasets_revisions"):
+        assert depot.sql(f"SELECT * FROM {name}") == []
+    for name in ("libraries", "datasets"):
+        with pytest.raises(BadQuery):
+            depot.sql(f"SELECT * FROM {name}")
+    changes = column(depot.sql("SELECT change FROM texts_revisions ORDER BY revision"), "change")
     assert changes[0] < changes[1] <= depot.change()
 
 
@@ -465,11 +274,6 @@ def test_a_clone_follows_its_upstream_and_a_pull_brings_its_erasures(serve, make
     upstream.decide_erasure(request, "admitted", me)
 
     upstream.decide("admitted", [added], me)
-    library = upstream.new_library("open")
-    upstream.put(library, [added])
-    locked = upstream.new_library("locked")
-    upstream.put(locked, [added])
-    upstream.lock(locked)
     upstream.edit_credits(added, {"title": "New"}, me)
 
     assert pull(follower) == [request]
@@ -478,13 +282,7 @@ def test_a_clone_follows_its_upstream_and_a_pull_brings_its_erasures(serve, make
         == upstream.sql(f"SELECT revision, change, title, decisions, status FROM texts WHERE id = '{added}'")
     assert follower.sql(f"SELECT decision, change FROM text_decisions WHERE text = '{added}' ORDER BY decision") \
         == upstream.sql(f"SELECT decision, change FROM text_decisions WHERE text = '{added}' ORDER BY decision")
-    assert pick(follower.library_texts(library, follower.change()), ["id", "revision", "title", "status"]) == [
-        {"id": added, "revision": 2, "title": "New", "status": "admitted"}]
     assert follower.change() > upstream.change()  # the pull itself is a change of the follower
-    # every membership and pin the clone and the pull brought has its export key, so the clone's exports hold its texts
-    for table, count in (("memberships", 2), ("pins", 1)):
-        held = follower.sql(f"SELECT text, export_key FROM {table}")
-        assert len(held) == count and all(row["export_key"] == ids.export_key(row["text"]) for row in held)
 
     assert follower.sql("SELECT id, text FROM texts ORDER BY id") == [
         {"id": text, "text": "my address is "}, {"id": added, "text": "a new text"}]
@@ -569,58 +367,19 @@ def test_a_text_id_is_never_used_again_after_an_erasure_removed_its_text(serve, 
     assert column(follower.sql("SELECT id FROM texts ORDER BY id"), "id") == ["upstream-1", added]
 
 
-def test_a_clone_reads_its_locked_library_at_its_state_after_a_pulled_erasure(serve, make_depot, me, tmp_path):
-    upstream = make_depot("upstream")
-    [text] = upstream.add([plain("one 123")], me)
-    upstream.decide("admitted", "true", me)
-    library = upstream.new_library("locked")
-    upstream.put(library, "true")
-    upstream.lock(library)
-    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    state = follower.change()
-    request = upstream.ask_erasure("a number", [(text, 4, 7)], me)
-    upstream.decide_erasure(request, "admitted", me)
-
-    pull(follower)
-
-    assert texts_of(follower, follower.library_texts(library, state)) == [{"id": text, "text": "one "}]
-
-
 def upstream_and_clone_holding(serve, make_depot, me, tmp_path):
-    """An upstream with two admitted texts, and a clone whose own open and
-    own locked libraries hold both: (upstream, clone, texts, open, locked)."""
+    """An upstream with two admitted texts, and a clone of it: (upstream, clone, texts)."""
     upstream = make_depot("upstream")
     upstream.add_license("MIT", "MIT License", "text")
     texts = upstream.add([plain("to be refused"), plain("to be relicensed")], me)
     upstream.decide("admitted", texts, me)
     follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    open_library, locked_library = follower.new_library("open"), follower.new_library("locked")
-    follower.put(open_library, texts)
-    follower.put(locked_library, texts)
-    follower.lock(locked_library)
-    return upstream, follower, texts, open_library, locked_library
-
-
-def test_a_pulled_refusal_or_license_change_takes_the_text_out_of_the_clone_s_own_open_libraries_only(serve, 
-        make_depot, me, tmp_path):
-    upstream, follower, (refused, relicensed), open_library, locked_library = upstream_and_clone_holding(
-        serve, make_depot, me, tmp_path)
-    before = follower.change()
-    upstream.decide("refused", [refused], me)
-    upstream.relicense([relicensed], ["MIT"], me)
-
-    pull(follower)
-
-    pulled = follower.change()
-    assert follower.library_texts(open_library, pulled) == []
-    assert column(follower.library_texts(open_library, before), "id") == [refused, relicensed]
-    assert column(follower.library_texts(locked_library, pulled), "id") == [refused, relicensed]
-    assert column(follower.sql(f"SELECT DISTINCT left_change FROM memberships WHERE library = '{open_library}'"), "left_change") == [pulled]
+    return upstream, follower, texts
 
 
 def test_a_pull_that_fails_partway_writes_nothing_and_the_next_pull_brings_everything(serve, 
         make_depot, me, tmp_path, monkeypatch):
-    upstream, follower, (refused, kept), open_library, _ = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
+    upstream, follower, (refused, kept) = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
     upstream.decide("refused", [refused], me)
     before = follower.change()
 
@@ -635,67 +394,9 @@ def test_a_pull_that_fails_partway_writes_nothing_and_the_next_pull_brings_every
 
     pull(follower)
 
-    assert follower.show(refused)["status"] == "refused"
-    assert column(follower.library_texts(open_library, follower.change()), "id") == [kept]
+    assert follower.show(refused)["status"] == "refused" and follower.show(kept)["status"] == "admitted"
     assert follower.sql("SELECT depot, change, upstream, upstream_change FROM pulls ORDER BY change")[-1] \
         == {"depot": "follower", "change": follower.change(), "upstream": "upstream", "upstream_change": upstream.change()}
-
-
-def test_a_clone_s_own_open_library_read_before_a_pull_holds_the_revisions_it_held_then(serve, make_depot, me, tmp_path):
-    # the refusal keeps the upstream's change number, lower than the clone's change read here
-    upstream, follower, (refused, kept), open_library, _ = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
-    before = follower.change()
-    held = pick(follower.library_texts(open_library, before), ["id", "revision", "decisions"])
-    upstream.decide("refused", [refused], me)
-    assert upstream.sql(f"SELECT change FROM texts WHERE id = '{refused}'")[0]["change"] <= before
-
-    pull(follower)
-
-    assert pick(follower.library_texts(open_library, before), ["id", "revision", "decisions"]) == held
-    assert column(follower.library_texts(open_library, follower.change()), "id") == [kept]
-
-
-def test_a_dataset_naming_an_upstream_library_at_an_upstream_change_reads_the_same_in_the_clone(serve, 
-        make_depot, me, tmp_path):
-    upstream = make_depot("upstream")
-    texts = upstream.add([plain("one"), plain("two"), plain("three")], me)
-    upstream.decide("admitted", texts, me)
-    library = upstream.new_library("theirs")
-    upstream.put(library, texts[:2])
-    dataset = upstream.new_dataset("theirs", "tok", [(None, library)])
-    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    follower.new_library("mine")  # the clone's numbers run past the upstream's
-    follower.new_library("more")
-    named = follower.new_dataset("mine", "tok", [(None, library)])  # by the clone's address, at the upstream's number
-    upstream.put(library, texts[2:])
-    upstream.edit_credits(texts[0], {"title": "Later"}, me)
-    upstream.decide("refused", [texts[1]], me)
-
-    pull(follower)
-
-    for ref in (upstream.dataset_by_id(dataset)["libraries"][0], follower.dataset_by_id(named)["libraries"][0]):
-        assert follower.library_texts(library, ref["change"]) == upstream.library_texts(
-            library, ref["change"])
-        assert pick(follower.library_texts(library, ref["change"]), ["id", "title"]) == [
-            {"id": texts[0], "title": None}, {"id": texts[1], "title": None}]
-
-
-def test_a_clone_of_a_clone_reads_its_upstream_s_library_as_the_upstream_did_at_that_change(serve, make_depot, me, tmp_path):
-    first = make_depot("first")
-    [text] = first.add([plain("theirs")], me)
-    first.decide("admitted", [text], me)
-    second = clone(serve(first), str(tmp_path / "second.sqlite"), About("second", "Grace Hopper", "grace@example.org"))
-    library = second.new_library("mine")
-    second.put(library, [text])
-    second.new_library("more")
-    before = second.change()
-    first.decide("refused", [text], me)
-    pull(second)
-    third = clone(serve(second), str(tmp_path / "third.sqlite"), About("third", "Ada Lovelace", "ada@example.org"))
-
-    assert third.library_texts(library, before) == second.library_texts(library, before)
-    assert pick(third.library_texts(library, before), ["id", "revision", "status"]) == [
-        {"id": text, "revision": 1, "status": "admitted"}]
 
 
 def test_the_decision_that_admits_an_erasure_and_its_carrying_out_are_one_change(make_depot, me):
@@ -710,58 +411,17 @@ def test_the_decision_that_admits_an_erasure_and_its_carrying_out_are_one_change
     assert depot.erasures()[0]["erased"] is not None
 
 
-def test_a_fork_without_a_condition_holds_the_texts_that_condition_does_not_match(make_depot, me):
-    depot = make_depot()
-    kept, left_out, also_kept = depot.add([plain("one", "a"), plain("two", "b"), plain("three", "a")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, "true")
-    depot.lock(library)
+def test_a_problem_reported_before_reports_went_is_still_shown_by_its_decision(tmp_path):
+    # the fixture depot holds two problems reported by the code of format 12; nothing writes one any more, and the
+    # decision that recorded one is shown as any other decision, its reason in its own words
+    copy = tmp_path / "fixture.sqlite"
+    copy.write_bytes((Path(__file__).parent / "fixtures" / "format-12.sqlite").read_bytes())
+    depot, _ = Depot.upgrade(str(copy))
 
-    fork = depot.fork(library, "without b", without="EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'b')")
+    found = depot.decision("fixture-8")
 
-    assert column(depot.sql(f"SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{fork}') ORDER BY id"), "id") \
-        == [kept, also_kept]
-    assert column(depot.sql(f"SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{library}') ORDER BY id"), "id") \
-        == [kept, left_out, also_kept]
-    assert depot.sql(f"SELECT forked_from, locked_at FROM libraries WHERE id = '{fork}'") \
-        == [{"forked_from": library, "locked_at": None}]
-
-
-def test_a_problem_is_reported_on_a_locked_library_and_changes_nothing_else(make_depot, me):
-    depot = make_depot()
-    held, other = depot.add([plain("one", "a"), plain("two", "b")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, f"id = '{held}'")
-    depot.lock(library)
-    before = depot.show(held)
-    reporter = Declaration("Grace Hopper", "grace@example.org", True)
-
-    decision, texts = depot.report(library, "it is not in English", "true", reporter)
-    whole, nothing = depot.report(library, "the library is too small", None, reporter)
-
-    assert (texts, nothing) == ([held], [])  # only the texts the library holds count
-    assert [json.loads(one) for one in column(depot.sql(f"SELECT problems FROM libraries WHERE id = '{library}'"), "problems")] == [[
-        {"texts": [held], "problem": "it is not in English", "decision": decision},
-        {"texts": [], "problem": "the library is too small", "decision": whole}]]
-    assert depot.sql(f"SELECT status, name FROM decisions WHERE id = '{decision}'") == [
-        {"status": "under review", "name": "Grace Hopper"}]
-    assert depot.show(held)["text"] == before["text"] and depot.show(held)["decisions"] == before["decisions"]
-
-
-def test_a_problem_that_names_no_text_of_the_library_or_has_no_confirmation_writes_nothing(make_depot, me):
-    depot = make_depot()
-    [text] = depot.add([plain("one")], me)
-    library = depot.new_library("first")
-
-    with pytest.raises(NotFound):
-        depot.report(library, "a problem", f"id = '{text}'", me)  # the text is in no library
-    with pytest.raises(Refused):
-        depot.report(library, "a problem", None, Declaration("Ada Lovelace", "ada@example.org", False))
-
-    assert [json.loads(one) for one in column(depot.sql(f"SELECT problems FROM libraries WHERE id = '{library}'"), "problems")] == [[]]
-    assert column(depot.sql("SELECT count(*) AS n FROM decisions"), "n") == [1]
+    assert found["decision"]["status"] == "under review" and set(found) == {"decision", "texts", "erasures"}
+    assert any(one["id"] == "fixture-8" for one in depot.latest_decisions(1000))
 
 
 def test_every_id_carries_the_depot_s_name_so_a_clone_adds_its_own_rows_beside_the_upstream_s(serve, make_depot, me, tmp_path):
@@ -811,9 +471,6 @@ def test_blocked_names_each_text_an_admission_cannot_cover_with_its_reasons_and_
         depot.add_license(license_id, license_id, "text")
     held, under_review = depot.add([plain("held"), plain("under review, its license allowed")], me)
     depot.decide("admitted", [held], me)
-    library = depot.new_library("first")
-    depot.put(library, [held])
-    depot.lock(library)
     unlicensed, combined, choice, free = depot.add([
         NewText(text="one", licenses=("CC-BY-NC-4.0",)), NewText(text="two", licenses=("MIT AND CC-BY-NC-4.0",)),
         NewText(text="three", licenses=("CC-BY-NC-4.0", "CC0-1.0")), plain("four")], me)
@@ -822,7 +479,7 @@ def test_blocked_names_each_text_an_admission_cannot_cover_with_its_reasons_and_
 
     assert found == [{"id": unlicensed, "reasons": [NO_ALLOWED_LICENSE]},
                      {"id": combined, "reasons": [NO_ALLOWED_LICENSE]}]
-    assert depot.blocked([under_review, held])["rows"] == []  # a locked library holding a text blocks nothing
+    assert depot.blocked([under_review, held])["rows"] == []
     first = depot.blocked("true", limit=1)
     assert first["rows"] == found[:1] and depot.blocked("true", after=first["next"])["rows"] == found[1:]
     for one in found:
@@ -920,7 +577,7 @@ def test_a_needle_that_leaves_an_item_breaking_its_kind_is_refused_at_the_reques
 
 def test_an_operation_on_named_texts_takes_exactly_those_and_refuses_an_id_that_is_no_text(make_depot, me):
     # what a person reviewed is what is decided: a text added after the review is not, and an id that is not
-    # a text, or a text outside the library a problem is reported on, writes nothing
+    # a text writes nothing
     depot = make_depot()
     ids = depot.add([plain(f"text {n}", "a") for n in range(1, 12)], me)
     reviewed = [ids[9], ids[1]]
@@ -934,13 +591,11 @@ def test_an_operation_on_named_texts_takes_exactly_those_and_refuses_an_id_that_
     with pytest.raises(NotFound):
         depot.decide("admitted", [ids[0], "depot-99"], me)
     assert depot.show(ids[0])["status"] == "under review"
-    library = depot.new_library("first")
-    assert depot.put(library, [ids[1], ids[2]]) == (1, 1)
-    with pytest.raises(Refused):
-        depot.report(library, "a problem", [ids[1], ids[2]], me)
-    assert depot.report(library, "a problem", [ids[1]], me)[1] == [ids[1]]
-    fork = depot.fork(library, "without", [ids[1]])
-    assert depot.search(f"EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{fork}')")["rows"] == []
+    with pytest.raises(NotFound):
+        depot.retag([ids[1], "depot-99"], ["a"], [], me)
+    assert depot.retag([ids[1], ids[2]], ["b"], [], me)[1] == 2
+    assert column(depot.search("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'b')")["rows"], "id") == [
+        ids[1], ids[2]]
 
 
 def test_pages_of_texts_follow_one_another_in_the_numeric_order_of_ids_forward_and_back(make_depot, me):
@@ -1037,20 +692,16 @@ def test_a_refused_text_whose_licenses_change_starts_over_under_review_and_can_t
     assert statuses_everywhere(depot, text) == {"admitted"}
 
 
-def test_an_admitted_text_whose_licenses_change_leaves_its_open_libraries_and_is_no_longer_admitted(make_depot, me):
+def test_an_admitted_text_whose_licenses_change_is_no_longer_admitted(make_depot, me):
     depot = make_depot()
     depot.add_license("MIT", "MIT License", "text")
     changed, kept = depot.add([plain("one"), plain("two")], me)
     depot.decide("admitted", [changed, kept], me)
-    library = depot.new_library("open")
-    depot.put(library, [changed, kept])
 
     depot.relicense([changed], ["MIT", "CC0-1.0"], me)
 
-    assert depot.show(changed)["text"]["libraries"] == []
-    assert depot.show(kept)["text"]["libraries"] == [library]
     assert statuses_everywhere(depot, changed) == {"under review"}
-    assert depot.put(library, [changed]) == (0, 1)
+    assert statuses_everywhere(depot, kept) == {"admitted"}
     assert depot.count("true")["statuses"] == {"under review": 1, "admitted": 1, "refused": 0}
 
 
@@ -1075,9 +726,6 @@ def test_a_license_change_that_breaks_a_rule_writes_nothing(make_depot, me):
     depot.add_license("MIT", "MIT License", "text")
     held, free = depot.add([plain("held"), plain("free")], me)
     depot.decide("admitted", [held], me)
-    library = depot.new_library("first")
-    depot.put(library, [held])
-    depot.lock(library)
     before = depot.change(), depot.sql("SELECT count(*) AS n FROM decisions")[0]["n"]
 
     with pytest.raises(Refused):
@@ -1130,8 +778,6 @@ def test_a_texts_credits_change_in_place_as_a_decision_under_review_and_it_stays
     [text] = depot.add([NewText(text="The fox.", licenses=("CC0-1.0",), title="Fox", tags=("x", "y"),
                                 notice="(c) Ann")], me)
     depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, "true")
 
     decision, reason = depot.edit_credits(text, {"title": "The fox", "tags": ["x", "z"], "authors": ["Ann"],
                                                  "notice": "(c) Ann Lee"}, me)
@@ -1141,7 +787,7 @@ def test_a_texts_credits_change_in_place_as_a_decision_under_review_and_it_stays
                       "x, z; notice changed from depot-1 to depot-2")
     assert (shown["text"]["title"], shown["text"]["tags"], shown["text"]["authors"]) == ("The fox", ["x", "z"], ["Ann"])
     assert shown["notice"] == "(c) Ann Lee"
-    assert (shown["status"], shown["text"]["libraries"]) == ("admitted", [library])
+    assert shown["status"] == "admitted"
     assert [(one["id"], one["status"], one["reason"], one["counts"]) for one in shown["decisions"]][-1] == (
         decision, "under review", reason, True)
     assert all(one["counts"] for one in shown["decisions"])
@@ -1174,15 +820,10 @@ def scores_of(depot, changes, me):
     return depot.edit_scores(list(changes), me)
 
 
-def test_one_scores_change_is_one_decision_on_many_texts_which_keep_their_status_and_libraries(make_depot, me):
+def test_one_scores_change_is_one_decision_on_many_texts_which_keep_their_status(make_depot, me):
     depot = make_depot()
     first, second, third = depot.add([plain("one"), plain("two"), plain("three")], me)
     depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, "true")
-    locked = depot.new_library("locked")
-    depot.put(locked, "true")
-    depot.lock(locked)
 
     decision, reason, changed, left_out = scores_of(
         depot, [{"id": second, "scores": [score("machine-made", 0.03), score("source-rank", 4)]},
@@ -1195,12 +836,13 @@ def test_one_scores_change_is_one_decision_on_many_texts_which_keep_their_status
     assert depot.show(third)["text"]["scores"] is None
     for text in (first, second):
         shown = depot.show(text)
-        assert (shown["status"], shown["text"]["libraries"]) == ("admitted", [library, locked])
+        assert shown["status"] == "admitted"
         assert [(one["id"], one["status"], one["reason"]) for one in shown["decisions"]][-1] == (
             decision, "under review", reason)
     assert column(depot.sql(f"SELECT count(*) AS n FROM texts WHERE EXISTS (SELECT 1 FROM json_each(decisions) WHERE value = '{decision}')"), "n") \
         == [2]
-    assert column(depot.library_texts(locked, depot.change()), "scores") == [None, None, None]
+    assert column(depot.sql("SELECT scores FROM texts_revisions WHERE revision = 1 ORDER BY id"), "scores") == [
+        None, None, None]  # the revisions before stay as they were
     assert depot.sql("SELECT id, (SELECT json_group_array(s.value ->> 'name') FROM json_each(scores) s) AS names "
                      "FROM texts WHERE scores IS NOT NULL ORDER BY id") == [
         {"id": first, "names": '["machine-made"]'}, {"id": second, "names": '["machine-made","source-rank"]'}]
@@ -1264,25 +906,19 @@ def test_scores_keep_the_content_version_they_were_made_from_across_a_content_li
     assert depot.show(text)["text"]["scores"] == [{"name": "rank", "value": 4.0, "content_version": 2}]
 
 
-def test_the_depot_s_counts_answer_a_filter_of_statuses_one_value_and_a_locked_part_as_the_steps_count_it(
-        make_depot, me):
+def test_the_depot_s_counts_answer_a_filter_of_statuses_and_one_value_as_the_steps_count_it(make_depot, me):
     depot = make_depot()
     depot.add([plain("one", "en"), plain("two", "en", "fr"), plain("three"), plain("four", "fr")], me)
     depot.decide("admitted", "id <> 'depot-4'", me)
     depot.decide("refused", "id = 'depot-3'", me)
-    kept, other = depot.new_library("kept"), depot.new_library("other")
-    depot.put(kept, "id IN ('depot-1', 'depot-2')")
-    depot.put(other, "id = 'depot-2'")
-    depot.lock(kept)
     shapes = [Filter(), Filter(tags=("en",)), Filter(tags=("fr",)), Filter(licenses=("CC0-1.0",)),
-              Filter(libraries=(other,)), Filter(libraries=(kept,)), Filter(statuses=("refused",)),
-              Filter(tags=("fr",), statuses=("admitted", "under review")), Filter(locked=True),
-              Filter(tags=("en",), locked=False), Filter(libraries=(other,), locked=True), Filter(tags=("none",))]
+              Filter(statuses=("refused",)), Filter(tags=("fr",), statuses=("admitted", "under review")),
+              Filter(tags=("none",))]
 
     for found in shapes:
         held, stepped = depot.held_count(found), depot.count(found)
         assert held["held"] is True and (held["texts"], held["total"], held["next"]) == (4, 4, None), found
-        assert (held["statuses"], held["locked"]) == (stepped["statuses"], stepped["locked"]), found
+        assert held["statuses"] == stepped["statuses"], found
     # the tags, licenses and blocked texts among the matches are known for every text or none
     whole, stepped = depot.held_count(Filter()), depot.count("true")
     assert {key: whole[key] for key in ("blocked", "tags", "licenses")} == {
@@ -1291,7 +927,7 @@ def test_the_depot_s_counts_answer_a_filter_of_statuses_one_value_and_a_locked_p
         None, [])
     # anything else is counted by steps
     for other_shape in (Filter(tags=("en", "fr")), Filter(tags=("en",), licenses=("CC0-1.0",)), Filter(search="one"),
-                        Filter(ids=("depot-1",)), Filter(change=depot.change() - 1), Filter(outside=(kept,))):
+                        Filter(ids=("depot-1",)), Filter(change=depot.change() - 1), Filter(decision="depot-1")):
         assert depot.held_count(other_shape) is None
 
 
@@ -1419,18 +1055,13 @@ def test_a_clone_receives_the_upstream_s_scores_and_a_pull_brings_their_changes(
     assert scores_of(follower, [{"id": mine, "scores": [score("rank", 3)]}], me)[2] == 1
 
 
-def test_one_credits_change_sets_each_text_s_own_credits_and_the_texts_stay_admitted_where_they_are(make_depot, me):
+def test_one_credits_change_sets_each_text_s_own_credits_and_the_texts_stay_admitted(make_depot, me):
     depot = make_depot()
     first, second, third = depot.add([
         NewText(text="one", licenses=("CC0-1.0",), title="Kept", authors=("{'first': 'Ann', 'last': 'Lee'}",),
                 tags=("en",), address="https://example.org/1", notice="(c) Ann"),
         plain("two", "en"), plain("three", "en")], me)
     depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, "true")
-    locked = depot.new_library("locked")
-    depot.put(locked, "true")
-    depot.lock(locked)
     tags_before = depot.counts()["tag"]
 
     decision, reason, changed, left_out = depot.edit_credits_many(
@@ -1445,35 +1076,38 @@ def test_one_credits_change_sets_each_text_s_own_credits_and_the_texts_stay_admi
     assert (two["text"]["title"], two["text"]["authors"], two["notice"]) == ("owner/repo/src/main.py", None, "(c) Bo")
     assert depot.show(third)["revisions"] == 1
     for shown in (one, two):
-        assert (shown["status"], shown["text"]["libraries"]) == ("admitted", [library, locked])
+        assert shown["status"] == "admitted"
         assert [(one["id"], one["status"], one["reason"]) for one in shown["decisions"]][-1] == (
             decision, "under review", reason)
         assert all(one["counts"] for one in shown["decisions"])
-    assert pick(depot.library_texts(library, depot.change()), ["id", "title", "authors"]) == [
-        {"id": first, "title": "Kept", "authors": ["Ann Lee"]},
+    assert pick(depot.sql("SELECT id, title, authors FROM texts ORDER BY id"), ["id", "title", "authors"]) == [
+        {"id": first, "title": "Kept", "authors": '["Ann Lee"]'},
         {"id": second, "title": "owner/repo/src/main.py", "authors": None},
         {"id": third, "title": None, "authors": None}]
-    assert pick(depot.library_texts(locked, depot.change()), ["id", "revision", "title", "authors"]) == [
-        {"id": first, "revision": 1, "title": "Kept", "authors": ["{'first': 'Ann', 'last': 'Lee'}"]},
-        {"id": second, "revision": 1, "title": None, "authors": None},
-        {"id": third, "revision": 1, "title": None, "authors": None}]
+    # the revisions before stay as they were
+    assert depot.sql("SELECT id, title, authors FROM texts_revisions WHERE revision = 1 ORDER BY id") == [
+        {"id": first, "title": "Kept", "authors": '["{\'first\': \'Ann\', \'last\': \'Lee\'}"]'},
+        {"id": second, "title": None, "authors": None},
+        {"id": third, "title": None, "authors": None}]
     assert depot.counts()["decision"][decision] == 2
     assert depot.counts()["tag"] == tags_before
 
 
-def test_tags_changed_in_one_credits_change_move_the_counts_of_tags(make_depot, me, library_figures):
+def test_tags_changed_in_one_credits_change_move_the_counts_of_tags(make_depot, me):
     depot = make_depot()
     first, second = depot.add([plain("one", "en"), plain("two", "en")], me)
     depot.decide("admitted", "true", me)
-    depot.put(depot.new_library("open"), "true")
+
+    revisions = depot.sql("SELECT count(*) AS n FROM texts_revisions")
 
     depot.edit_credits_many([{"id": first, "tags": ["fr", "fr", "book"]}, {"id": second, "tags": None}], me)
 
-    assert depot.show(first)["text"]["tags"] == ["fr", "book"]
+    assert depot.show(first)["text"]["tags"] == ["book", "fr"]  # in the order of their names
     assert depot.show(second)["text"]["tags"] == []
     assert depot.counts()["tag"] == {"fr": 1, "book": 1}
-    stored, direct = library_figures(depot)
-    assert stored == direct
+    # a change of tags alone writes no revision, only rows of taggings
+    assert depot.sql("SELECT count(*) AS n FROM texts_revisions") == revisions
+    assert [one["decisions"][-1]["reason"] for one in map(depot.show, (first, second))] == ["credits changed: tags"] * 2
 
 
 @pytest.mark.parametrize("change, error", [
@@ -1563,73 +1197,6 @@ def test_a_clone_refuses_a_credits_change_of_its_upstream_s_texts(serve, make_de
     assert follower.show(theirs)["text"]["title"] is None
 
 
-def test_a_library_open_or_locked_takes_a_new_name_and_keeps_its_texts(make_depot, me):
-    depot = make_depot()
-    [text] = depot.add([plain("one")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, "true")
-    depot.lock(library)
-
-    depot.rename_library(library, "first model")
-
-    assert depot.sql(f"SELECT name, locked_at IS NOT NULL AS locked FROM libraries WHERE id = '{library}'") \
-        == [{"name": "first model", "locked": True}]
-    assert depot.show(text)["text"]["libraries"] == [library]
-    with pytest.raises(Refused):
-        depot.rename_library(library, " ")
-    with pytest.raises(NotFound):
-        depot.rename_library("depot-99", "x")
-
-
-def test_a_dataset_changes_as_a_new_revision_keeping_its_id_and_the_change_of_the_libraries_it_kept(make_depot, me):
-    depot = make_depot()
-    depot.add([plain("one", "en")], me)
-    first, second = depot.new_library("first"), depot.new_library("second")
-    dataset = depot.new_dataset("mix", "tok", [(None, first)])
-    change = depot.dataset("mix")["libraries"][0]["change"]
-    depot.add([plain("two")], me)  # the depot's change number moves on
-    now = depot.change()
-
-    depot.edit_dataset(dataset, "mix two", [(None, first), (None, second)], [("en", 1.0)])
-
-    row = depot.dataset_by_id(dataset)
-    assert (row["name"], row["tokenizer"], row["revision"]) == ("mix two", "tok", 2)
-    assert [(one["library"], one["change"]) for one in row["libraries"]] == [(first, change), (second, now)]
-    assert column(depot.sql(f"SELECT name FROM datasets_revisions WHERE id = '{dataset}' ORDER BY revision"), "name") == ["mix", "mix two"]
-    assert row["shares"] == [{"tag": "en", "share": 1.0}]
-    depot.new_dataset("other", "tok", [(None, first)])
-    for name, libraries, shares in (("other", [(None, first)], None), ("mix two", [], None),
-                                    ("mix two", [(None, first)], [("en", 2.0)])):
-        with pytest.raises(Refused):
-            depot.edit_dataset(dataset, name, libraries, shares)
-    with pytest.raises(NotFound):
-        depot.edit_dataset(dataset, "mix two", [(None, "depot-99")])
-    assert depot.dataset_by_id(dataset) == row
-
-
-def test_an_imported_dataset_keeps_each_library_as_its_remote_wrote_it_when_it_changes(make_depot, me, tmp_path):
-    depot = make_depot()
-    depot.add([plain("one", "en")], me)
-    library = depot.new_library("first")
-    written = Path(depot.address).as_uri()  # another form of the depot's address
-    other = make_depot("other")
-    dataset = other.import_dataset({"name": "mix", "tokenizer": "tok", "shares": None, "libraries": [
-        {"depot": written, "library": library, "change": depot.change()},
-        {"depot": str(tmp_path / "nowhere"), "library": "nowhere-1", "change": 7}]})
-    stored = other.dataset_by_id(dataset)["libraries"]
-    depot.add([plain("two")], me)  # the library's depot moves on
-
-    # as the CLI does, with the stored addresses; then with the plain path for the first
-    other.edit_dataset(dataset, "mix two", [(one["depot"], one["library"]) for one in stored])
-    assert other.dataset_by_id(dataset)["libraries"] == stored
-    other.edit_dataset(dataset, "mix three", [(depot.address, library), (str(tmp_path / "nowhere"), "nowhere-1")])
-
-    row = other.dataset_by_id(dataset)
-    assert row["name"] == "mix three"
-    assert row["libraries"] == stored
-
-
 def test_the_depots_maintainer_and_takedown_contact_change_and_its_name_does_not(make_depot):
     depot = make_depot()
 
@@ -1648,20 +1215,17 @@ def test_the_depots_maintainer_and_takedown_contact_change_and_its_name_does_not
 
 @pytest.fixture
 def upstream_and_clone(serve, make_depot, me, tmp_path):
-    """An upstream holding an admitted text in an open and a locked library,
-    an erasure request under review and a dataset, and a clone of it."""
+    """An upstream holding an admitted text, a snapshot of it, a tokenizer
+    recipe of that snapshot and an erasure request under review, and a clone
+    of it."""
     upstream = make_depot("upstream")
     [text] = upstream.add([plain("upstream text 123", "a")], me)
     upstream.decide("admitted", [text], me)
-    library, locked = upstream.new_library("open"), upstream.new_library("locked")
-    upstream.put(library, [text])
-    upstream.put(locked, [text])
-    upstream.lock(locked)
+    snapshot = upstream.create_snapshot("first")["id"]
+    tokenizer = upstream.new_tokenizer("tok", snapshot, None, 1000, 600)
     request = upstream.ask_erasure("a number", [(text, 14, 17)], me)
-    dataset = upstream.new_dataset("theirs", "tok", [(None, library)])
     follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    return upstream, follower, {"text": text, "library": library, "locked": locked, "request": request,
-                                "dataset": dataset}
+    return upstream, follower, {"text": text, "snapshot": snapshot, "tokenizer": tokenizer, "request": request}
 
 
 REFUSED_ON_UPSTREAM_ROWS = {
@@ -1675,13 +1239,9 @@ REFUSED_ON_UPSTREAM_ROWS = {
          {"id": ids["text"], "scores": [{"name": "rank", "value": 2, "content_version": 1}]}]), me),
     "ask to erase": lambda depot, me, ids: depot.ask_erasure("why", [(ids["text"], 0, 8)], me),
     "decide an erasure": lambda depot, me, ids: depot.decide_erasure(ids["request"], "admitted", me),
-    "rename a library": lambda depot, me, ids: depot.rename_library(ids["library"], "mine"),
-    "lock a library": lambda depot, me, ids: depot.lock(ids["library"]),
-    "put into a library": lambda depot, me, ids: depot.put(ids["library"], [ids["mine"]]),
-    "take out of a library": lambda depot, me, ids: depot.take_out(ids["library"], [ids["text"]]),
-    "report on a library": lambda depot, me, ids: depot.report(ids["locked"], "a problem", None, me),
-    "edit a dataset": lambda depot, me, ids: depot.edit_dataset(ids["dataset"], "renamed", [(None, ids["library"])]),
-    "read a dataset again": lambda depot, me, ids: depot.read_again(ids["dataset"]),
+    "retag": lambda depot, me, ids: depot.retag([ids["mine"], ids["text"]], ["b"], [], me),
+    "edit a tokenizer recipe": lambda depot, me, ids: depot.edit_tokenizer(ids["tokenizer"], ids["snapshot"], None,
+                                                                           2000, 600),
 }
 
 
@@ -1713,41 +1273,27 @@ def test_a_decision_on_texts_of_both_depots_is_refused_whole_and_names_the_upstr
     assert upstream.blocked([ids["text"]])["rows"] == [] and not upstream.show(ids["text"])["upstream"]
 
 
-def test_a_clone_s_own_library_holds_and_pins_upstream_texts_and_its_own_rows_stay_changeable(upstream_and_clone,
-                                                                                               me):
+def test_a_clone_s_own_rows_stay_changeable_beside_the_upstream_s(upstream_and_clone, me):
     upstream, follower, ids = upstream_and_clone
     [mine] = follower.add([plain("my own text")], me)
     follower.edit_credits(mine, {"title": "Mine"}, me)
     follower.decide("admitted", [mine], me)
-    library = follower.new_library("my library")
-    follower.rename_library(library, "my pinned library")
-
-    assert follower.put(library, [ids["text"], mine]) == (2, 0)
-    follower.lock(library)
-    fork = follower.fork(ids["library"], "my copy of theirs")  # a fork of an upstream library is the clone's own
-    follower.put(fork, [mine])
+    follower.retag([mine], ["mine"], [], me)
     upstream.edit_credits(ids["text"], {"title": "Newer"}, me)
     pull(follower)
 
-    assert follower.pinned(library)["rows"] == [
-        {"id": mine, "title": "Mine", "revision": 2, "current": 2, "status": "admitted"},
-        {"id": ids["text"], "title": None, "revision": 1, "current": 2, "status": "admitted"}]
-    assert [one["id"] for one in follower.library_texts(fork, follower.change())] == [mine, ids["text"]]
-    assert column(follower.sql(f"SELECT name FROM libraries WHERE id = '{library}'"), "name") == [
-        "my pinned library"]
+    assert pick(follower.search("true")["rows"], ["id", "title", "tags", "status"]) == [
+        {"id": mine, "title": "Mine", "tags": ["mine"], "status": "admitted"},
+        {"id": ids["text"], "title": "Newer", "tags": ["a"], "status": "admitted"}]
 
 
 def test_a_pull_after_the_clone_s_own_work_keeps_both_depots_rows(upstream_and_clone, me):
     upstream, follower, ids = upstream_and_clone
     [mine] = follower.add([plain("my own text")], me)
     follower.decide("admitted", [mine], me)
-    library = follower.new_library("mine")
-    follower.put(library, [mine, ids["text"]])
-    dataset = follower.new_dataset("mine", "tok", [(None, library), (None, ids["library"])])
     own_request = follower.ask_erasure("my own", [(mine, 0, 3)], me)
     [more] = upstream.add([plain("upstream text later")], me)
     upstream.decide("admitted", [more], me)
-    upstream.put(ids["library"], [more])
     upstream.decide_erasure(ids["request"], "admitted", me)
 
     assert pull(follower) == [ids["request"]]
@@ -1755,8 +1301,6 @@ def test_a_pull_after_the_clone_s_own_work_keeps_both_depots_rows(upstream_and_c
     assert follower.sql("SELECT id, text FROM texts ORDER BY id") == [
         {"id": mine, "text": "my own text"}, {"id": ids["text"], "text": "upstream text "},
         {"id": more, "text": "upstream text later"}]
-    assert column(follower.sql(f"SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(libraries) WHERE value = '{library}') ORDER BY id"), "id") == [mine, ids["text"]]
-    assert follower.dataset_by_id(dataset)["name"] == "mine"
     assert follower.decide_erasure(own_request, "admitted", me)  # its own request stays its to decide
     assert column(follower.sql(f"SELECT text FROM texts WHERE id = '{mine}'"), "text") == ["own text"]
 
@@ -1802,51 +1346,33 @@ def contents_of(depot, text) -> list[str]:
     return column(depot.sql(f"SELECT text FROM contents WHERE id = '{text}' ORDER BY version"), "text")
 
 
-def test_a_content_change_starts_the_text_over_and_a_locked_library_keeps_reading_the_old_content(make_depot, me):
-    # the maintainer's 26.11 scenario: 26.10 is locked and trained on, 26.11 is its fork
+def snapshot_texts(depot, snapshot) -> list[dict]:
+    """The texts of a snapshot with the text of the content version each reads."""
+    return texts_of(depot, depot.snapshot_texts(snapshot)["texts"])
+
+
+def test_a_content_change_starts_the_text_over_and_a_snapshot_keeps_reading_the_old_content(make_depot, me):
     depot = make_depot()
     changed, kept = depot.add([plain("The fox jumps."), plain("The dog sleeps.")], me)
     depot.decide("admitted", "true", me)
-    old = depot.new_library("good code 26.10")
-    depot.put(old, "true")
-    depot.lock(old)
-    new = depot.fork(old, "good code 26.11")
+    old = depot.create_snapshot("26.10")["id"]
 
     decision, version = depot.change_content(changed, "The fox jumps high.", None, me)
 
     shown = depot.show(changed)
     assert (version, shown["text"]["content_version"], shown["content_versions"]) == (2, 2, 2)
-    assert shown["status"] == "under review" and shown["text"]["libraries"] == [old]
+    assert shown["status"] == "under review"
     assert shown["decisions"][-1]["id"] == decision
     assert shown["decisions"][-1]["reason"] == "content changed from version 1 to version 2"
     assert [one["counts"] for one in shown["decisions"]] == [False, False, True]
-    assert column(depot.library_texts(new, depot.change()), "id") == [kept]
-    assert depot.put(new, [changed]) == (0, 1)
+    assert column(depot.snapshot_texts(depot.create_snapshot("26.11")["id"])["texts"], "id") == [kept]
     depot.decide("admitted", [changed], me)
-    assert depot.put(new, [changed]) == (1, 0)
-    assert texts_of(depot, depot.library_texts(new, depot.change())) == [
+    assert snapshot_texts(depot, depot.create_snapshot("26.12")["id"]) == [
         {"id": changed, "text": "The fox jumps high."}, {"id": kept, "text": "The dog sleeps."}]
-    assert texts_of(depot, depot.library_texts(old, depot.change())) == [
+    assert snapshot_texts(depot, old) == [
         {"id": changed, "text": "The fox jumps."}, {"id": kept, "text": "The dog sleeps."}]
     assert contents_of(depot, changed) == ["The fox jumps.", "The fox jumps high."]
     assert column(depot.sql(f"SELECT text FROM texts WHERE id = '{changed}'"), "text") == ["The fox jumps high."]
-
-
-def test_an_open_library_read_before_a_content_change_gives_the_old_content(make_depot, me):
-    depot = make_depot()
-    [text] = depot.add([plain("first words")], me)
-    depot.decide("admitted", [text], me)
-    library = depot.new_library("open")
-    depot.put(library, [text])
-    before = depot.change()
-    depot.change_content(text, "second words", None, me)
-    left = depot.change()
-    depot.decide("admitted", [text], me)
-    depot.put(library, [text])
-
-    assert [one["text"] for one in texts_of(depot, depot.library_texts(library, before))] == ["first words"]
-    assert depot.library_texts(library, left) == []
-    assert [one["text"] for one in texts_of(depot, depot.library_texts(library, depot.change()))] == ["second words"]
 
 
 def test_an_erasure_after_a_content_change_cuts_the_passage_from_every_version_and_stays_exact_for_the_one_named(
@@ -1855,9 +1381,7 @@ def test_an_erasure_after_a_content_change_cuts_the_passage_from_every_version_a
     secret = "555-0199"
     [text] = depot.add([plain(f"call {secret} now")], me)
     depot.decide("admitted", [text], me)
-    library = depot.new_library("26.10")
-    depot.put(library, [text])
-    depot.lock(library)
+    snapshot = depot.create_snapshot("26.10")["id"]
     depot.change_content(text, f"Please, call {secret} or {secret} today.", None, me)
     request = depot.ask_erasure("a number", [(text, 5, 13, None, 1)], me)  # the place in the first version
     assert depot.erasure_shown(request)["needles"][0]["passage"] == secret
@@ -1865,7 +1389,7 @@ def test_an_erasure_after_a_content_change_cuts_the_passage_from_every_version_a
     depot.decide_erasure(request, "admitted", me)
 
     assert contents_of(depot, text) == ["call  now", "Please, call  or  today."]
-    assert [one["text"] for one in texts_of(depot, depot.library_texts(library, depot.change()))] == ["call  now"]
+    assert [one["text"] for one in snapshot_texts(depot, snapshot)] == ["call  now"]
     [erased] = depot.erasures()[0]["erased"]
     assert (erased["length"], erased["at"]) == (len(secret), 5)
     [needle] = depot.erasure_shown(request)["needles"]
@@ -1934,18 +1458,6 @@ def test_only_the_depot_writes_a_reason_in_the_form_of_a_content_change(make_dep
     assert [one["status"] for one in depot.show(text)["decisions"]] == ["under review"]
 
 
-def test_a_pulled_content_change_takes_the_text_out_of_the_clone_s_own_open_libraries(serve, make_depot, me, tmp_path):
-    upstream, follower, (changed, kept), open_library, locked_library = upstream_and_clone_holding(
-        serve, make_depot, me, tmp_path)
-    upstream.change_content(changed, "new words", None, me)
-
-    pull(follower)
-
-    assert column(follower.library_texts(open_library, follower.change()), "id") == [kept]
-    assert texts_of(follower, follower.library_texts(locked_library, follower.change())) == [
-        {"id": changed, "text": "to be refused"}, {"id": kept, "text": "to be relicensed"}]
-
-
 def test_rows_an_upstream_sends_with_a_column_the_table_lacks_are_refused_and_never_run_as_sql(make_depot, tmp_path):
     # a column's name comes from the upstream's answer: it must never become a statement of the follower
     depot = make_depot()
@@ -1962,16 +1474,16 @@ def test_rows_an_upstream_sends_with_a_column_the_table_lacks_are_refused_and_ne
 
 
 def counted_again(depot, title_index) -> tuple[dict, dict]:
-    """The depot's counts, its listings of texts by tag and by license, the title index (title_index, the fixture)
-    and what its libraries hold by kind and by tag as every write left them, and as a recount from its rows makes
-    them: equal when each write kept them right."""
+    """The depot's counts, its listings of texts by tag and by license, the title index (title_index, the fixture),
+    and what the texts of each status hold by kind, tag set, tag and license as every write left them, and as a
+    recount from its rows makes them: equal when each write kept them right."""
     def stored():
         split = {facet: {one["name"]: one["texts"] for one in depot.rows(
             "SELECT name, texts FROM counts WHERE facet = ? ORDER BY name", (facet,))} for facet in counts.SPLIT}
         sized = depot.rows("SELECT facet, name, texts, characters, bytes FROM counts WHERE facet IN "
-                           f"{tuple(counts.SIZED)} ORDER BY 1, 2")
+                           f"{counts.TEXT_SIZED} ORDER BY 1, 2")
         return {**depot.counts(), **split, **{table: depot.rows(f"SELECT * FROM {table} ORDER BY 1, 2")
-                                              for table, _, _ in counts.LISTINGS.values()},
+                                              for table, _ in counts.LISTINGS.values()},
                 "titles": title_index(depot), "sized": sized}
     kept = stored()
     depot.recount()
@@ -1988,42 +1500,33 @@ def stored_and_ruled(depot) -> tuple[dict, dict]:
 
 
 def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(make_depot, me, title_index):
-    # the tags, licenses, libraries and overview pages read only the counts, a plain search reads the title index,
+    # the tags, licenses and overview pages read only the counts, a plain search reads the title index,
     # and every filter by status reads the stored status, so each write must keep them right
     depot = make_depot()
     depot.add_license("MIT", "MIT License", "text")
     texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("a",) if n % 2 else ("b",),
                                title=f"Title {n}" if n % 3 else None) for n in range(8)], me)
-    library = depot.new_library("open")
-    forked = []
     writes = [
         lambda: depot.decide("admitted", "true", me),
-        lambda: depot.put(library, texts[:6]),
-        lambda: forked.append(depot.fork(library, "fork")),
-        lambda: depot.lock(forked[0]),  # its pins stay at the revisions of now, below the newer ones of the edits
         lambda: depot.decide("refused", texts[:2], me),
-        lambda: depot.take_out(library, texts[2:3]),
-        lambda: depot.decide("under review", texts[:3], me),  # a refused, an admitted and a taken out text
+        lambda: depot.decide("under review", texts[:3], me),  # two refused texts and an admitted one
         lambda: depot.relicense(texts[3:5], ["MIT"], me),
         lambda: depot.change_content(texts[5], "text 5, changed", None, me),
         lambda: depot.edit_credits(texts[6], {"tags": ["a", "c"]}, me),
         lambda: depot.edit_credits(texts[6], {"title": "Renamed"}, me),
         lambda: depot.edit_scores([{"id": texts[7], "scores": [score("rank", 1)]}], me),
         lambda: depot.score(Filter(ids=tuple(texts[5:8])), "length", 2.0, me),
-        lambda: depot.fork(library, "second fork", [texts[6]]),
-        lambda: depot.edit_credits(texts[3], {"tags": ["d"]}, me),  # newer than the locked fork's pin
+        lambda: depot.edit_credits(texts[3], {"tags": ["d"]}, me),
         lambda: depot.relicense([texts[4]], ["CC0-1.0", "MIT"], me),
         lambda: depot.change_content(texts[5], "text 5, changed again", None, me),
         lambda: depot.edit_scores([{"id": texts[5], "remove": ["length"]}], me),
-        # many texts' content at once: a text of the open library, one the locked fork pins, one at another content
-        # version, and one whose content is that already
-        lambda: depot.put(library, [texts[6]]),
+        # many texts' content at once: an admitted text, a text under review named at its content version, one at
+        # another content version, and one whose content is that already
         lambda: depot.change_content_many([{"id": texts[6], "text": "text 6, from its source"},
                                            {"id": texts[0], "text": "text 0, from its source", "was": 1},
                                            {"id": texts[5], "text": "text 5, from its source"},
                                            {"id": texts[1], "text": "text 1"}], me),
-        # many texts' credits at once: the tags of texts of the open library and of the locked fork, titles alone
-        # (one given, one cleared), authors alone, and texts the locked fork pins
+        # many texts' credits at once: tags alone, titles alone (one given, one cleared) and authors alone
         lambda: depot.edit_credits_many([{"id": texts[2], "tags": ["e"]}, {"id": texts[4], "tags": ["a", "e"]},
                                          {"id": texts[5], "tags": []}], me),
         lambda: depot.edit_credits_many([{"id": texts[0], "title": "First"}, {"id": texts[1], "title": None},
@@ -2034,33 +1537,16 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
     ]
     for write in writes:
         write()
+        assert sizes_apart(depot) == [] and tags_apart(depot) == []  # before the recount, which copies them again
         kept, made = counted_again(depot, title_index)
         assert kept == made
         stored, ruled = stored_and_ruled(depot)
         assert stored == ruled
     assert made["texts"] == {"": 7} and made["tag"] == {"a": 3, "b": 1, "c": 1, "d": 1, "e": 2}
-    assert made["score"] == {"length": 1} and made["pinned newer"] == {forked[0]: 6}
+    assert made["score"] == {"length": 1}
     assert made["license"] == {"CC0-1.0": 6, "MIT": 2} and len(made["text_licenses"]) == 8
     assert made["titles"]["terms"] and made["titles"]["unfound"] == []
     assert [one["id"] for one in depot.search(Filter(search="title"))["rows"]] == texts[2:6]
-
-
-def test_a_credits_change_of_many_texts_moves_a_library_only_when_its_tags_move(make_depot, me, library_figures):
-    # a dataset revision reads its figures from the counts while its libraries have not moved since (library_moves)
-    depot = make_depot()
-    texts = depot.add([plain("one", "en"), plain("two", "en")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, "true")
-    moved = depot.rows("SELECT change FROM library_moves WHERE library = ?", (library,))
-
-    depot.edit_credits_many([{"id": one, "title": "A title", "authors": ["Ann Lee"]} for one in texts], me)
-
-    assert depot.rows("SELECT change FROM library_moves WHERE library = ?", (library,)) == moved
-    depot.edit_credits_many([{"id": texts[0], "tags": ["fr"]}], me)
-    assert depot.rows("SELECT change FROM library_moves WHERE library = ?", (library,)) == [{"change": depot.change()}]
-    stored, direct = library_figures(depot)
-    assert stored == direct
 
 
 def every_match(depot, where) -> list[str]:
@@ -2120,20 +1606,17 @@ def test_a_plain_search_of_a_word_of_three_characters_reads_the_title_index_and_
 
 
 def test_a_search_in_a_smaller_listing_counts_the_title_index_only_as_far_as_that_listing(make_depot, me):
-    # the index counted up to the library's size + 1: past it the library is read, below it the index
+    # the index counted up to the tag's size + 1: past it the tag's texts are read, below it the index
     depot = make_depot()
-    texts = depot.add([NewText(text=f"{n}", licenses=("CC0-1.0",), title="River walk" if n < 8 else "Lake")
-                       for n in range(10)], me)
-    depot.decide("admitted", texts[5:], me)
-    library = depot.new_library("few")
-    depot.put(library, texts[5:])
+    depot.add([NewText(text=f"{n}", licenses=("CC0-1.0",), title="River walk" if n < 8 else "Lake",
+                       tags=("few",) if n >= 5 else ()) for n in range(10)], me)
 
-    for words, read_from in (("river", "memberships"), ("lake", "text_titles")):
-        found = Filter(search=words, libraries=(library,))
+    for words, read_from in (("river", "text_tags"), ("lake", "text_titles")):
+        found = Filter(search=words, tags=("few",))
         plan = depot._plan(found)
         assert read_from in plan.listing.rows
         assert every_match(depot, found) == every_match(depot, depot.condition(found))
-    assert depot._plan(Filter(search="lake", libraries=(library,))).listing.texts == 2
+    assert depot._plan(Filter(search="lake", tags=("few",))).listing.texts == 2
     assert depot._titled(["river"], 5).texts == 6 and depot._titled(["river"], 50).texts == 8
 
 
@@ -2173,26 +1656,9 @@ def test_a_clone_and_its_pulls_keep_the_title_index_of_the_upstream_s_texts_and_
     assert mine == ["follower-1"]
 
 
-def test_a_locked_library_shows_each_text_at_the_status_its_decisions_up_to_the_lock_make(make_depot, me):
-    depot = make_depot()
-    kept, refused_later = depot.add([plain("kept"), plain("refused later")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("first")
-    depot.put(library, "true")
-    depot.lock(library)
-
-    depot.decide("refused", [refused_later], me)
-
-    assert depot.show(refused_later)["status"] == "refused"
-    assert pick(depot.library_texts(library, depot.change()), ["id", "status"]) == [
-        {"id": kept, "status": "admitted"}, {"id": refused_later, "status": "admitted"}]
-    assert [len(one["decisions"]) for one in depot.library_texts(library, depot.change())] == [2, 2]
-    assert [one["status"] for one in depot.pinned(library)["rows"]] == ["admitted", "admitted"]
-
-
 def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_statuses_and_counts(
         serve, make_depot, me, tmp_path, title_index):
-    upstream, follower, (refused, kept), open_library, _ = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
+    upstream, follower, (refused, kept) = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
     decision, _, _ = upstream.decide("refused", [refused], me)
 
     pull(follower)
@@ -2202,18 +1668,12 @@ def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_st
     assert follower.search("status = 'refused'")["rows"][0]["id"] == refused
     kept_counts, made = counted_again(follower, title_index)
     assert kept_counts == made and made["status"] == {"admitted": 1, "refused": 1}
-    assert made["library"] == {open_library: 1, **{key: value for key, value in made["library"].items()
-                                                   if key != open_library}}
-    # a lock it brings makes a text it had brought held by a locked library, which the counts tell apart
-    [later] = upstream.add([plain("locked later")], me)
+    # a text it brings later counts as it is upstream
+    [later] = upstream.add([plain("admitted later")], me)
     upstream.decide("admitted", [later], me)
-    theirs = upstream.new_library("theirs")
-    upstream.put(theirs, [later])
-    pull(follower)
-    upstream.lock(theirs)
     pull(follower)
     kept_counts, made = counted_again(follower, title_index)
-    assert kept_counts == made and follower.held_count(Filter(locked=True))["locked"] == 3
+    assert kept_counts == made and follower.held_count(Filter(statuses=("admitted",)))["statuses"]["admitted"] == 2
 
 
 def test_an_operation_on_a_filter_read_at_a_change_leaves_out_the_texts_changed_since_and_says_how_many(
@@ -2226,34 +1686,15 @@ def test_an_operation_on_a_filter_read_at_a_change_leaves_out_the_texts_changed_
     read_at = depot.change()
     depot.edit_credits(edited, {"title": "Two"}, me)
     [added] = depot.add([plain("four", "x")], me)
-    library = depot.new_library("open")
 
     decision, decided, left = depot.decide("admitted", Filter(tags=("x",), unticked=(unticked,), change=read_at), me)
 
     assert (decided, left) == (1, {CHANGED_SINCE: 2})
     assert [depot.show(one)["status"] for one in (first, edited, unticked, added)] == [
         "admitted", "under review", "under review", "under review"]
-    put_left = {}
-    assert depot.put(library, Filter(change=read_at), left=put_left) == (0, 1) and put_left == {CHANGED_SINCE: 3}
-
-
-def test_an_operation_on_locked_texts_read_before_the_lock_leaves_out_the_texts_the_lock_brought_in(make_depot, me):
-    # a page that filtered on locked libraries before a lock showed none of the texts the lock brought into its filter
-    from wpt_depot.depot import CHANGED_SINCE
-    from wpt_depot.filters import Filter
-    depot = make_depot()
-    [text] = depot.add([plain("one")], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, "true")
-    read_at = depot.change()
-    depot.lock(library)
-
-    with pytest.raises(NotFound):
-        depot.decide("refused", Filter(locked=True, change=read_at), me)
-
-    assert depot.show(text)["status"] == "admitted"
-    assert depot.decide("refused", Filter(locked=True, change=depot.change()), me)[1:] == (1, {})
+    retag_left = {}
+    assert depot.retag(Filter(change=read_at), ["y"], [], me, left=retag_left)[1] == 1
+    assert retag_left == {CHANGED_SINCE: 3}
 
 
 def test_a_page_and_a_count_step_of_a_decision_read_its_rows_when_few_and_test_each_text_reached_when_many(
@@ -2319,38 +1760,55 @@ def test_a_page_in_an_order_no_index_serves_is_refused_past_sorted_matches_with_
 
 
 def recipe_depot(make_depot, me):
+    """A depot holding an admitted text and a snapshot of it: (the depot, the snapshot's id)."""
     depot = make_depot()
-    depot.add([plain("one", "en")], me)
-    dataset = depot.new_dataset("mix", "admitted", [(None, depot.new_library("first"))])
-    return depot, dataset
+    depot.decide("admitted", depot.add([plain("one", "en")], me), me)
+    return depot, depot.create_snapshot("first")["id"]
 
 
 def test_a_tokenizer_recipe_takes_a_new_version_only_when_what_trains_its_vocabulary_changes(make_depot, me):
-    depot, dataset = recipe_depot(make_depot, me)
-    recipe = depot.new_tokenizer("admitted", None, "mix", 1000, 600, "the first note")
-    assert depot.tokenizer("admitted")["version"] == 1 and depot.tokenizer("admitted")["dataset"] == dataset
+    depot, snapshot = recipe_depot(make_depot, me)
+    recipe = depot.new_tokenizer("admitted", "first", None, 1000, 600, "the first note")
+    shown = depot.tokenizer("admitted")
+    assert (shown["version"], shown["sample"], shown["needs_snapshot"]) == (
+        1, {"snapshot": snapshot, "kinds": ["plain"]}, False)
+    assert (shown["depot"], shown["dataset"]) == (None, "")
 
-    assert depot.edit_tokenizer(recipe, None, dataset, 1000, 600, "another note") == 1
-    assert depot.edit_tokenizer(recipe, None, dataset, 1000, 600, "another note") == 1  # no change, no revision
-    assert depot.edit_tokenizer(recipe, None, dataset, 2000, 600, "another note") == 2
-    assert depot.edit_tokenizer(recipe, "https://other.example.org", "theirs", 2000, 600, None) == 3
+    assert depot.edit_tokenizer(recipe, snapshot, None, 1000, 600, "another note") == 1
+    assert depot.edit_tokenizer(recipe, snapshot, ["plain"], 1000, 600, "another note") == 1  # no change, no revision
+    assert depot.edit_tokenizer(recipe, snapshot, None, 2000, 600, "another note") == 2
+    second = depot.create_snapshot("second")["id"]
+    assert depot.edit_tokenizer(recipe, "second", None, 2000, 600, None) == 3
 
     assert [one["revision"] for one in depot.sql(f"SELECT revision FROM tokenizers_revisions WHERE id = '{recipe}' "
                                                  "ORDER BY revision")] == [1, 2, 3, 4]
-    assert depot.tokenizer("admitted")["depot"] == "https://other.example.org"
+    assert depot.tokenizer_by_id(recipe)["sample"]["snapshot"] == second
     with pytest.raises(Refused):
-        depot.new_tokenizer("admitted", None, "mix", 1000, 600)  # a name is taken for good
+        depot.new_tokenizer("admitted", snapshot, None, 1000, 600)  # a name is taken for good
     with pytest.raises(Refused):
-        depot.new_tokenizer("small", None, "mix", 1000, 100)  # under the 513 tokens every vocabulary holds
-    with pytest.raises(Refused):
-        depot.new_tokenizer("far", "ftp://other.example.org", "theirs", 1000, 600)
+        depot.new_tokenizer("small", snapshot, None, 1000, 100)  # under the 513 tokens every vocabulary holds
+    with pytest.raises(Refused, match="kind plain"):
+        depot.new_tokenizer("items", snapshot, ["conversation"], 1000, 600)
     with pytest.raises(NotFound):
-        depot.new_tokenizer("none", None, "no such dataset", 1000, 600)
+        depot.new_tokenizer("none", "no such snapshot", None, 1000, 600)
+
+
+def test_a_tokenizer_recipe_written_before_snapshots_keeps_its_dataset_and_needs_a_snapshot_to_train(make_depot, me):
+    depot, snapshot = recipe_depot(make_depot, me)
+    recipe = depot.new_tokenizer("old", snapshot, None, 1000, 600)
+    with depot.db.write("an older revision") as (con, number):
+        con.execute("UPDATE tokenizers_revisions SET sample = NULL, dataset = 'datasets-1' WHERE id = ?", (recipe,))
+
+    shown = depot.tokenizer("old")
+    assert (shown["sample"], shown["dataset"], shown["needs_snapshot"]) == (None, "datasets-1", True)
+    assert depot.tokenizers()[0]["needs_snapshot"]
+    assert depot.edit_tokenizer(recipe, snapshot, None, 1000, 600) == 2  # naming a snapshot changes what trains it
+    assert not depot.tokenizer("old")["needs_snapshot"]
 
 
 def test_a_vocabulary_is_kept_once_per_version_with_the_texts_it_trained_on(make_depot, me):
-    depot, dataset = recipe_depot(make_depot, me)
-    recipe = depot.new_tokenizer("admitted", None, "mix", 1000, 600)
+    depot, snapshot = recipe_depot(make_depot, me)
+    recipe = depot.new_tokenizer("admitted", snapshot, None, 1000, 600)
     merges = b"a vocabulary file"
 
     sha = depot.add_vocabulary(recipe, 1, merges, [("", "depot-1"), ("https://other.example.org", "other-7")], 12)
@@ -2366,7 +1824,7 @@ def test_a_vocabulary_is_kept_once_per_version_with_the_texts_it_trained_on(make
         depot.add_vocabulary(recipe, 1, b"another", [], 0)
     with pytest.raises(Refused, match="never had"):
         depot.add_vocabulary(recipe, 2, merges, [], 0)
-    depot.edit_tokenizer(recipe, None, dataset, 1000, 700)
+    depot.edit_tokenizer(recipe, snapshot, None, 1000, 700)
     assert not depot.tokenizers()[0]["trained"]  # the new version has none yet
     depot.add_vocabulary(recipe, 2, b"the second", [], 0)
     assert depot.vocabulary(recipe, 1)["merges"] == "a vocabulary file"  # the first never changes
@@ -2374,15 +1832,15 @@ def test_a_vocabulary_is_kept_once_per_version_with_the_texts_it_trained_on(make
 
 def test_a_clone_receives_the_upstream_s_tokenizer_recipes_and_vocabularies_and_a_pull_their_changes(
         serve, make_depot, me, tmp_path):
-    upstream, dataset = recipe_depot(make_depot, me)
-    recipe = upstream.new_tokenizer("admitted", None, "mix", 1000, 600)
+    upstream, snapshot = recipe_depot(make_depot, me)
+    recipe = upstream.new_tokenizer("admitted", snapshot, None, 1000, 600)
     upstream.add_vocabulary(recipe, 1, b"first", [("", "upstream-1")], 3)
     follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
                      About("follower", "Grace Hopper", "grace@example.org"))
     assert follower.tokenizer("admitted")["version"] == 1
     assert follower.vocabulary(recipe, 1)["merges"] == "first"
 
-    upstream.edit_tokenizer(recipe, None, dataset, 2000, 600)
+    upstream.edit_tokenizer(recipe, snapshot, None, 2000, 600)
     upstream.add_vocabulary(recipe, 2, b"second", [("", "upstream-1")], 3)
     pull(follower)
 
@@ -2390,16 +1848,14 @@ def test_a_clone_receives_the_upstream_s_tokenizer_recipes_and_vocabularies_and_
     assert follower.vocabulary(recipe, 2)["merges"] == "second"
     assert follower.vocabulary_texts(recipe, 2) == [{"position": 0, "depot": "", "text": "upstream-1"}]
     with pytest.raises(BelongsToUpstream):
-        follower.edit_tokenizer(recipe, None, dataset, 3000, 600)
+        follower.edit_tokenizer(recipe, snapshot, None, 3000, 600)
 
 
-def test_an_admitted_text_put_back_under_review_leaves_its_open_libraries_and_can_be_decided_again(make_depot, me):
+def test_an_admitted_text_put_back_under_review_can_be_decided_again(make_depot, me):
     # an admission made by mistake must be undone by a recorded decision, and the text then reviewed afresh
     depot = make_depot()
     undone, kept = depot.add([plain("one"), plain("two")], me)
     depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, "true")
 
     decision, decided, left = depot.decide("under review", [undone], me, reason="admitted by mistake")
 
@@ -2410,11 +1866,9 @@ def test_an_admitted_text_put_back_under_review_leaves_its_open_libraries_and_ca
         ("under review", "put back under review: admitted by mistake", True, True)]
     assert shown["decisions"][-1]["id"] == decision
     assert statuses_everywhere(depot, undone) == {"under review"}
-    assert shown["text"]["libraries"] == [] and depot.show(kept)["text"]["libraries"] == [library]
-    assert depot.put(library, [undone]) == (0, 1)
+    assert depot.show(kept)["status"] == "admitted"
     depot.decide("admitted", [undone], me)
     assert statuses_everywhere(depot, undone) == {"admitted"}
-    assert depot.put(library, [undone]) == (1, 0)
 
 
 def test_a_refused_text_put_back_under_review_no_longer_blocks_an_admission(make_depot, me):
@@ -2458,266 +1912,23 @@ def test_a_person_s_reason_cannot_pass_for_the_depot_s_own_put_back(make_depot, 
     assert every_row(depot) == before
 
 
-def test_a_locked_library_keeps_a_text_put_back_under_review_at_its_status_at_the_lock(make_depot, me):
-    depot = make_depot()
-    [text] = depot.add([plain("one")], me)
-    depot.decide("admitted", [text], me)
-    library = depot.new_library("first")
-    depot.put(library, [text])
-    depot.lock(library)
-
-    depot.decide("under review", [text], me)
-
-    assert depot.show(text)["status"] == "under review"
-    assert pick(depot.library_texts(library, depot.change()), ["id", "status"]) == [{"id": text, "status": "admitted"}]
-
-
-def test_a_filter_finds_texts_outside_libraries_on_a_decision_and_by_whole_words(make_depot, me):
+def test_a_filter_finds_texts_on_a_decision_and_by_whole_words(make_depot, me):
     from wpt_depot.filters import Filter, condition
     depot = make_depot()
     river, drivers, other = depot.add([NewText(text="by the river bank", licenses=("CC0-1.0",), title="Rivers"),
                                        NewText(text="the drivers", licenses=("CC0-1.0",), title="Drivers"),
                                        plain("nothing here")], me)
     decision, _, _ = depot.decide("admitted", [river, drivers], me)
-    library = depot.new_library("open")
-    depot.put(library, [river])
 
     def found(**fields):
         return column(depot.search(condition(Filter(**fields)))["rows"], "id")
 
-    assert found(outside=(library,)) == [drivers, other]
     assert found(decision=decision) == [river, drivers]
     assert found(search="river") == [river, drivers]  # the titles
     assert found(search="river", whole_words=True) == []  # neither title holds the whole word
     assert found(search="river", in_text=True, whole_words=True) == [river]
     assert found(search="RIVER", in_text=True, whole_words=True) == [river]  # in any case of its ASCII letters
     assert found(search="RIVER BANK", in_text=True) == [river]
-
-
-def test_measure_sums_what_each_library_holds_of_each_kind_on_its_own_and_by_each_share_tag(make_depot, me):
-    # a dataset's form and page show these figures at once, from the counts, for libraries of any size; each library
-    # counts apart, a text with several share tags counts for each, and every kind of the depot counts on its own,
-    # one it holds no text of at 0, since kinds are a closed list
-    depot = make_depot()
-    talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
-    probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
-    first, both, untagged, chat, asked = depot.add(
-        [plain("abc", "prose"), plain("défg", "code", "prose"), plain("hi"),
-         NewText(kind="conversation", content=talk, licenses=("CC0-1.0",)),
-         NewText(kind="probe", content=probe, licenses=("CC0-1.0",))], me)
-    depot.decide("admitted", "true", me)
-    one, two = depot.new_library("one"), depot.new_library("two")
-    depot.put(one, [first, both, chat, asked])
-    depot.put(two, [both, untagged])
-    size = {kind: depot.rows("SELECT length AS characters, bytes FROM content_lists WHERE id = ?", (text,))[0]
-            for kind, text in (("conversation", chat), ("probe", asked))}
-
-    held = depot.measure([one, two], ["prose", "code"])
-
-    assert list(held["kinds"]) == ["plain", "conversation", "probe", "rating", "task"]
-    assert held["kinds"]["plain"] == {"texts": 4, "characters": 3 + 4 + 4 + 2, "bytes": 3 + 5 + 5 + 2}  # both, twice
-    assert held["kinds"]["conversation"] == {"texts": 1, **size["conversation"]}
-    assert held["kinds"]["probe"] == {"texts": 1, **size["probe"]}
-    assert held["kinds"]["rating"] == held["kinds"]["task"] == {"texts": 0, "characters": 0, "bytes": 0}
-    assert {key: held[key] for key in ("texts", "characters", "bytes")} == {
-        "texts": 6, "characters": 13 + sum(one["characters"] for one in size.values()),
-        "bytes": 15 + sum(one["bytes"] for one in size.values())}
-    assert held["shares"] == [{"tag": "prose", "texts": 3, "characters": 11, "bytes": 13},
-                              {"tag": "code", "texts": 2, "characters": 8, "bytes": 10}]
-    assert held["unshared"] == {"texts": 0, "characters": 0, "bytes": 0}  # both counted twice over: floored at none
-    assert depot.measure([two], ["prose"])["unshared"] == {"texts": 1, "characters": 2, "bytes": 2}
-    assert depot.measure([one])["unshared"] is None
-    with pytest.raises(NotFound):
-        depot.measure(["depot-no-such-library"])
-
-
-def test_a_dataset_revision_stores_what_its_libraries_held_at_its_change_or_says_it_does_not_know(
-        make_depot, me, figures_at):
-    # the dataset's pages show what a build of the revision takes, read at once from the figures it stores, so they
-    # must equal a direct computation at the change it reads each library at, or be unknown: never wrong
-    depot = make_depot()
-    talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
-    texts = depot.add([plain("abc", "prose"), plain("défg", "code"), plain("hi", "prose", "code"), plain("later"),
-                       NewText(kind="conversation", content=talk, licenses=("CC0-1.0",))], me)
-    depot.decide("admitted", "true", me)
-    one, two = depot.new_library("one"), depot.new_library("two")
-    depot.put(one, texts[:3] + texts[4:])
-    depot.put(two, texts[:1])
-    shares = [("prose", 0.6), ("code", 0.4)]
-    dataset = depot.new_dataset("mix", "mix-tok", [(None, one), (None, two)], shares)
-
-    def stored():
-        return [entry["stored"] for entry in depot.dataset_figures(dataset)["libraries"]]
-
-    def shown():
-        return revision_figures(depot, depot.dataset_by_id(dataset))
-
-    made = figures_at(depot, dataset)
-    assert stored() == made and made[0]["kinds"]["conversation"]["texts"] == 1 and made[0]["tags"][1]["texts"] == 2
-    assert shown()["measure"] == corpus_measure(depot, [one, two], [{"tag": t, "share": s} for t, s in shares])
-    assert shown()["since"] == 0
-
-    depot.put(one, texts[3:4])  # after the revision's change: the revision still reads what it read
-    assert stored() == figures_at(depot, dataset) == made and shown()["since"] == 1
-
-    # an edit keeps the change a library is read at, and the library moved since: its figures are not known
-    depot.edit_dataset(dataset, "mix", [(None, one), (None, two)], shares)
-    assert stored() == [None, made[1]] and shown() == {"measure": None, "since": None}
-    # read again now (taken out, then named again), it is known
-    depot.edit_dataset(dataset, "mix", [(None, two)], shares)
-    depot.edit_dataset(dataset, "mix", [(None, two), (None, one)], shares)
-    assert stored() == figures_at(depot, dataset) and shown()["since"] == 0
-
-    # a tag changed on a text both libraries hold: the revision still reads the revision before it, but an edit that
-    # keeps reading them at that change cannot prove what they held then any more
-    before = stored()
-    depot.edit_credits(texts[0], {"tags": ["code"]}, me)
-    assert stored() == figures_at(depot, dataset) == before
-    depot.edit_dataset(dataset, "mix", [(None, two), (None, one)], shares)
-    assert stored() == [None, None]
-    depot.edit_dataset(dataset, "mix", [(None, depot.new_library("three"))], shares)
-    depot.edit_dataset(dataset, "mix", [(None, one), (None, two)], shares)
-    assert stored() == figures_at(depot, dataset)
-
-    # an erasure carried out after the figures were read reaches the past the revision reads: unknown
-    depot.decide_erasure(depot.ask_erasure("a passage", [(texts[1], 0, 2)], me), "admitted", me)
-    assert stored()[0] is None and stored()[1] is not None  # the library two never held the text
-    depot.edit_dataset(dataset, "mix", [(None, two)], shares)
-    depot.edit_dataset(dataset, "mix", [(None, two), (None, one)], shares)
-    assert stored() == figures_at(depot, dataset)
-
-    # a library locked then is read as it pinned it: known while nothing it holds moved since
-    depot.lock(two)
-    locked = depot.new_dataset("locked", "mix-tok", [(None, two)], shares)
-    assert [entry["stored"] for entry in depot.dataset_figures(locked)["libraries"]] == figures_at(depot, locked)
-    assert depot.dataset_figures(locked, 1) == depot.dataset_figures(locked)
-
-
-def test_reading_a_dataset_again_moves_only_this_depot_s_libraries_to_now_with_exact_figures(
-        make_depot, me, tmp_path, figures_at):
-    # an edit keeps each library at its change; reading again is the one way to take what this depot's libraries
-    # hold now, and what it stores must be what a build of the new revision takes
-    depot = make_depot()
-    texts = depot.add([plain("abc", "prose"), plain("défg", "code"), plain("later", "prose")], me)
-    depot.decide("admitted", "true", me)
-    one, two = depot.new_library("one"), depot.new_library("two")
-    depot.put(one, texts[:2])
-    depot.put(two, texts[:1])
-    other = make_depot("other")
-    theirs = other.new_library("theirs")
-    shares = [("prose", 0.5), ("code", 0.5)]
-    dataset = depot.new_dataset("mix", "tok", [(None, one), (None, two), (other.address, theirs)], shares)
-    first = depot.dataset_by_id(dataset)
-    depot.put(one, texts[2:])
-    depot.lock(two)
-    depot.put(depot.new_library("unread"), texts[2:])  # moves the depot's change past the lock
-    other.add([plain("elsewhere")], me)  # another depot moving on is never read again
-
-    assert depot.read_again_shows(dataset)
-    assert depot.read_again(dataset, revision=first["revision"]) == 2
-    row = depot.dataset_by_id(dataset)
-    assert {key: row[key] for key in ("name", "shares", "tokenizer", "vocabulary", "max_tokens")} == {
-        key: first[key] for key in ("name", "shares", "tokenizer", "vocabulary", "max_tokens")}
-    assert [ref["change"] for ref in row["libraries"][:2]] == [depot.change() - 1] * 2  # the change it was read at
-    assert row["libraries"][2] == first["libraries"][2]
-    stored = [entry["stored"] for entry in depot.dataset_figures(dataset)["libraries"]]
-    assert stored == figures_at(depot, dataset) and stored[0]["kinds"]["plain"]["texts"] == 3 and stored[2] is None
-    with pytest.raises(Refused):  # made from the revision before: never undoes the read
-        depot.read_again(dataset, revision=first["revision"])
-    # the other depot's library stays unknown, which reading again cannot change: the page offers nothing, and a
-    # read again with nothing to move writes no revision, so a corpus built from this one stays current
-    assert not depot.read_again_shows(dataset)
-    change = depot.change()
-    assert depot.read_again(dataset) == 0
-    assert (depot.change(), depot.dataset_by_id(dataset)["revision"]) == (change, row["revision"])
-
-
-def test_a_clone_s_own_dataset_keeps_its_figures_through_an_upstream_erasure_pulled_before_it_was_saved(
-        serve, make_depot, me, tmp_path, figures_at):
-    # an upstream erasure a pull brought before the revision was saved is already in what the revision reads, so its
-    # figures stay known; one pulled after it may have cut a text it reads, and a recount, whose rows carry the
-    # upstream's numbering, proves nothing about a later save
-    upstream = make_depot("upstream")
-    texts = upstream.add([plain("my number is 123"), plain("another text")], me)
-    upstream.decide("admitted", texts, me)
-    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    early = upstream.ask_erasure("a number", [(texts[0], 13, 16)], me)
-    upstream.decide_erasure(early, "admitted", me)
-    assert pull(follower) == [early]
-    library = follower.new_library("mine")
-    follower.put(library, texts)
-    dataset = follower.new_dataset("mine", "tok", [(None, library)])
-
-    def stored(of=dataset):
-        return [one["stored"] for one in follower.dataset_figures(of)["libraries"]]
-
-    made = figures_at(follower, dataset)
-    assert stored() == made and made[0]["kinds"]["plain"]["texts"] == 2
-
-    late = upstream.ask_erasure("a word", [(texts[1], 0, 7)], me)
-    upstream.decide_erasure(late, "admitted", me)
-    assert pull(follower) == [late]
-    assert stored() == [None]
-
-    follower.recount()
-    assert stored(follower.new_dataset("after", "tok", [(None, library)])) == [None]
-
-
-def test_the_counts_of_what_libraries_hold_stay_exact_through_every_kind_of_write(make_depot, me, library_figures):
-    # the dataset form reads these counts instead of the texts, so every write that changes what a library holds, or
-    # the tags, content or kind of a text it holds, must leave them equal to a full computation
-    depot = make_depot()
-    talk = json.dumps({"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi?"}]}]})
-    probe = json.dumps({"question": "What is your name?", "patterns": ["(?i)password"]})
-    texts = depot.add([plain(f"text {n} " + "é" * n, *[("prose", "code", "en")[k] for k in range(n % 4)])
-                       for n in range(10)] + [NewText(kind="conversation", content=talk, licenses=("CC0-1.0",)),
-                                              NewText(kind="probe", content=probe, licenses=("CC0-1.0",))], me)
-
-    def exact(write: str):
-        stored, direct = library_figures(depot)
-        assert stored == direct, write
-
-    depot.decide("admitted", texts[:8] + texts[10:], me)
-    one, two = depot.new_library("one"), depot.new_library("two")
-    depot.put(one, texts[:6] + texts[10:])
-    depot.put(two, texts[3:8])
-    exact("put")
-    depot.take_out(one, texts[:2])
-    exact("take out")
-    depot.decide("admitted", texts[8:10], me)
-    depot.put(two, texts[8:10])
-    depot.decide("refused", [texts[3]], me)
-    exact("refusal")
-    depot.decide("under review", [texts[4]], me, reason="checked again")
-    exact("back to review")
-    depot.edit_credits(texts[5], {"tags": ["poems", "en"]}, me)
-    exact("tag edit")
-    depot.change_content(texts[2], "a new text, longer than before", None, me)
-    exact("content edit")
-    depot.decide("admitted", [texts[2], texts[4]], me)
-    depot.put(one, [texts[2], texts[4]])
-    depot.lock(two)
-    depot.change_content(texts[6], "changed in a locked library", None, me)  # it stays in the locked one
-    exact("content edit in a locked library")
-    depot.change_content(texts[10], None, json.dumps({"messages": [{"role": "user", "content": [
-        {"type": "text", "text": "A longer question?"}]}]}), me)
-    exact("item content edit")
-    depot.fork(one, "fork", without=[texts[2]])
-    depot.fork(two, "fork of the locked")
-    exact("fork")
-    depot.decide_erasure(depot.ask_erasure("a passage", [(texts[5], 0, 4)], me), "admitted", me)
-    exact("erasure of a passage")
-    depot.decide_erasure(depot.ask_erasure("the whole text", [(texts[9], None, None)], me), "admitted", me)
-    exact("erasure of a whole text")
-    stored, _ = library_figures(depot)
-    assert {name.split(" ", 1)[1] for facet, name in stored if facet == "library kind"} == {
-        "plain", "probe"}  # each kind on its own (the conversation left its open library with its new content)
-    with depot.db.bulk() as con:
-        con.execute("UPDATE counts SET characters = 0 WHERE facet = 'library kind'")
-        con.execute("DELETE FROM counts WHERE facet = 'library kind' AND name LIKE '% probe'")
-    depot.recount()
-    assert library_figures(depot)[0] == stored
-    exact("recount")
 
 
 def test_change_times_gives_the_time_of_each_change_named_the_depot_holds(make_depot, me):
@@ -2732,12 +1943,11 @@ def test_change_times_gives_the_time_of_each_change_named_the_depot_holds(make_d
 
 def test_a_content_change_of_many_texts_reads_only_the_texts_it_names(make_depot, me, monkeypatch):
     # every read of the depot's tables goes from the change's own lines: no step scans the texts, their content
-    # lists or the memberships of the whole depot, as one that SQLite turned around would; on a depot of
+    # lists or their decisions in the whole depot, as one that SQLite turned around would; on a depot of
     # millions of texts each such scan reads the whole file for a change of a few
     depot = make_depot()
     texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(40)], me)
     depot.decide("admitted", "true", me)
-    depot.put(depot.new_library("all"), "true")
     monkeypatch.setattr(depots.rewriting, "close", lambda con: None)  # its temporary tables kept to plan on
     writer = depot.db._write_connection()
     traced = []
@@ -2747,9 +1957,9 @@ def test_a_content_change_of_many_texts_reads_only_the_texts_it_names(make_depot
                                {"id": texts[7], "text": "text 7, from its source"}], me)
 
     writer.exec_trace = None
-    # the libraries and the erasures are few, whatever the number of texts: read whole, they cost nothing
+    # the erasures are few, whatever the number of texts: read whole, they cost nothing
     tables = {row[0] for row in writer.execute("SELECT name FROM main.sqlite_master WHERE type IN ('table', 'index') "
-                                               "AND tbl_name NOT LIKE 'libraries%' AND tbl_name NOT LIKE 'erasures%'")}
+                                               "AND tbl_name NOT LIKE 'erasures%'")}
     scans = []
     for sql, bindings in traced:
         if not re.match(r"\s*(SELECT|INSERT|UPDATE|DELETE|WITH)", sql, re.I):
@@ -2930,3 +2140,283 @@ def test_a_pull_cuts_the_conversations_that_quote_a_text_the_upstream_erased(ser
         assert secret not in follower.content(talk)
     assert json.loads(follower.content(own))["messages"][0]["content"][1] == excerpt(text, "", suffix=" today")
     assert files_holding(follower.address, secret) == []
+
+
+def test_every_revision_keeps_the_kind_length_and_bytes_of_the_content_version_it_reads(
+        serve, make_depot, me, tmp_path):
+    # the counts, a decision, a change of licenses or tags, a snapshot's read and a build's walk read them from the
+    # revision alone, so every write that makes a revision or a content version, and every cut, keeps them exact
+    upstream = make_depot("upstream")
+    upstream.add_license("MIT", "MIT License", "text")
+    secret = "555-0199"
+    first, second, whole = upstream.add([plain(f"call {secret} today", "a"), plain("ünïcödé text", "b"),
+                                         plain("all of it")], me)
+    talk, item = upstream.add([quoting(excerpt(first, secret, prefix="call ")), probe("Name?")], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
+                     About("follower", "Grace Hopper", "grace@example.org"))
+    [own] = follower.add([quoting(excerpt(first, secret, suffix=" today"))], me)
+    writes = [
+        lambda: upstream.decide("admitted", "true", me),
+        lambda: upstream.relicense([first, item], ["MIT"], me),
+        lambda: upstream.retag(Filter(ids=(first, second)), ["c"], ["a"], me),
+        lambda: upstream.edit_credits(second, {"title": "Second", "tags": ["d"]}, me),
+        lambda: upstream.edit_scores([{"id": second, "scores": [score("rank", 1)]}], me),
+        lambda: upstream.change_content(first, f"call {secret} today, and {secret} tomorrow", None, me),
+        lambda: upstream.change_content(item, None, json.dumps({"question": "Age, in years?",
+                                                                "patterns": ["(?i)x"]}), me),
+        lambda: upstream.change_content_many([{"id": second, "text": "a longer text, ünïcödé"},
+                                              {"id": whole, "text": "all of it, longer"}], me),
+        lambda: upstream.decide("refused", [second], me),
+        # a cut of every version of the text and of the conversation that quotes it, an item's field, a whole text
+        lambda: upstream.decide_erasure(upstream.ask_erasure("a number", [(first, 5, 5 + len(secret))], me),
+                                        "admitted", me),
+        lambda: upstream.decide_erasure(upstream.ask_erasure("a field", [(item, 0, 3, "/question")], me),
+                                        "admitted", me),
+        lambda: upstream.decide_erasure(upstream.ask_erasure("asked", [(whole, None, None)], me), "admitted", me),
+    ]
+    for write in writes:
+        write()
+        assert sizes_apart(upstream) == [] and tags_apart(upstream) == []
+
+    pull(follower)  # carries out the erasures: the clone's cut of its own conversation and of the pulled versions
+
+    for depot in (upstream, follower):
+        assert sizes_apart(depot) == [] and tags_apart(depot) == []
+        assert depot.rows("SELECT count(*) AS n FROM texts_revisions")[0]["n"] > 5
+    assert secret not in follower.content(own)
+    [cut] = follower.rows("SELECT content_length, content_bytes FROM texts_revisions WHERE id = ? AND latest", (own,))
+    assert (cut["content_length"], cut["content_bytes"]) == (len(follower.content(own)),
+                                                             len(follower.content(own).encode()))
+
+
+def probe(question):
+    return NewText(kind="probe", content=json.dumps({"question": question, "patterns": ["(?i)x"]}),
+                   licenses=("CC0-1.0",))
+
+
+def test_a_text_s_current_revision_holds_its_tags_now_through_retags_new_revisions_and_pulls(
+        serve, make_depot, me, tmp_path):
+    # the counts, the texts view and a count step read a text's tags from its current revision, which a change of tags
+    # alone rewrites in place, with no new change of its own that a pull would see
+    upstream = make_depot("upstream")
+    first, second = upstream.add([plain("one", "b", "a", "b"), plain("two")], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
+                     About("follower", "Grace Hopper", "grace@example.org"))
+    upstream.retag(Filter(ids=(first, second)), ["c"], ["a"], me)
+    upstream.decide("admitted", [first], me)  # stored on the current revision, with no new one
+    upstream.relicense([second], ["CC0-1.0"], me)  # a new revision, which copies the tags
+    upstream.edit_credits(first, {"title": "One"}, me)  # a new revision: the follower's past one drops its copy
+    pull(follower)
+
+    for depot in (upstream, follower):
+        assert tags_apart(depot) == []
+        assert {row["id"]: row["tags"] for row in depot.rows("SELECT id, tags FROM texts")} == {
+            first: ["b", "c"], second: ["c"]}
+        assert depot.count(Filter())["tags"] == [{"tag": "c", "texts": 2}, {"tag": "b", "texts": 1}]
+
+
+def test_a_kind_filter_matches_the_kind_of_each_text_s_current_content_and_pages_can_be_ordered_by_kind(
+        make_depot, me):
+    depot = make_depot()
+    first, item, second, other = depot.add([plain("one", "en"), probe("Name?"), plain("two"), probe("Age?")], me)
+    depot.decide("admitted", [first, item], me)
+
+    def ids_of(found, **options):
+        return column(depot.search(found, **options)["rows"], "id")
+
+    assert ids_of(Filter(kinds=("probe",))) == [item, other]
+    assert ids_of(Filter(kinds=("plain",))) == [first, second]
+    assert ids_of(Filter(kinds=("plain", "probe", "plain"))) == [first, item, second, other]
+    assert ids_of(Filter(kinds=("conversation",))) == []
+    assert ids_of(Filter(kinds=("probe",), statuses=("admitted",))) == [item]
+    assert ids_of(Filter(kinds=("plain",), tags=("en",))) == [first]
+    assert ids_of(Filter(), order="kind") == [first, second, item, other]
+    assert ids_of(Filter(), order="kind", descending=True) == [other, item, second, first]
+    # a decision on a kind filter takes those texts only
+    depot.decide("refused", Filter(kinds=("probe",), statuses=("under review",)), me)
+    assert depot.show(other)["status"] == "refused" and depot.show(second)["status"] == "under review"
+
+
+def test_the_depot_s_counts_answer_a_kind_filter_as_the_steps_count_it(make_depot, me):
+    depot = make_depot()
+    first, item, second, other = depot.add([plain("one", "en"), probe("Name?"), plain("two"), probe("Age?")], me)
+    depot.decide("admitted", [first, item, second], me)
+    depot.decide("refused", [second], me)
+    shapes = [Filter(kinds=("plain",)), Filter(kinds=("probe",)), Filter(kinds=("plain", "probe")),
+              Filter(kinds=("conversation",)), Filter(kinds=("probe",), statuses=("admitted",)),
+              Filter(kinds=("plain",), statuses=("refused", "under review"))]
+
+    for found in shapes:
+        held, stepped = depot.held_count(found), depot.count(found)
+        assert held is not None and held["held"] is True, found
+        assert held["statuses"] == stepped["statuses"], found
+    assert depot.held_count(Filter(kinds=("conversation",)))["tags"] == []
+    # with a tag or a license, the counts do not split by kind: the steps count it
+    for other_shape in (Filter(kinds=("plain",), tags=("en",)), Filter(kinds=("plain",), licenses=("CC0-1.0",))):
+        assert depot.held_count(other_shape) is None
+
+
+def test_a_retag_writes_rows_of_taggings_for_the_texts_it_changes_with_one_decision_no_revision_and_keeps_status(
+        make_depot, me, title_index):
+    depot = make_depot()
+    has_both, has_old, has_none, has_new = depot.add(
+        [plain("one", "old", "new"), plain("two", "x", "old"), plain("three"), plain("four", "new", "y")], me)
+    depot.decide("admitted", [has_both, has_old], me)
+    revisions = {one: depot.show(one)["text"]["revision"] for one in (has_both, has_old, has_none, has_new)}
+    change = depot.change()
+
+    decision, changed, left = depot.retag(Filter(), ["new"], ["old"], me)
+
+    assert (changed, left) == (3, 1)
+    assert {one: depot.show(one)["text"]["tags"] for one in (has_both, has_old, has_none, has_new)} == {
+        has_both: ["new"], has_old: ["new", "x"], has_none: ["new"], has_new: ["new", "y"]}
+    assert {one: depot.show(one)["text"]["revision"] for one in revisions} == revisions
+    number = change + 1  # the retag's change: a tag a text left ends its row there, a tag it joined starts one
+    written = {(one["text"], one["tag"], one["joined_change"] == number, one["left_change"]) for one in depot.sql(
+        f"SELECT text, tag, joined_change, left_change FROM taggings WHERE change = {number}")}
+    assert written == {(has_both, "old", False, number), (has_old, "old", False, number), (has_old, "new", True, None),
+                       (has_none, "new", True, None)}
+    assert depot.sql(f"SELECT text FROM text_decisions WHERE decision = '{decision}' ORDER BY text") == [
+        {"text": one} for one in sorted((has_both, has_old, has_none))]
+    assert depot.sql(f"SELECT status, reason FROM decisions WHERE id = '{decision}'") == [
+        {"status": "under review", "reason": "tags changed: added new; removed old"}]
+    assert [depot.show(one)["status"] for one in (has_both, has_old, has_none)] == [
+        "admitted", "admitted", "under review"]
+    assert depot.sql("SELECT count(*) AS n FROM changes")[-1]["n"] == change + 1
+    # a retag that changes no text writes nothing
+    assert depot.retag([has_new], ["new"], ["old"], me) == (None, 0, 1)
+    assert depot.change() == change + 1
+    kept, again = counted_again(depot, title_index)
+    assert kept == again
+
+
+@pytest.mark.parametrize("add, remove", [([], []), (["a"], ["a"]), ([""], []), (["  "], []), ("a", []),
+                                         ([3], [])])
+def test_a_retag_that_breaks_a_rule_writes_nothing(make_depot, me, add, remove):
+    depot = make_depot()
+    depot.add([plain("one", "a")], me)
+    change = depot.change()
+    with pytest.raises(Refused):
+        depot.retag(Filter(), add, remove, me)
+    with pytest.raises(Refused):
+        depot.retag_estimate(Filter(), add, remove)
+    assert depot.change() == change
+
+
+def test_a_retag_estimate_names_the_rows_the_retag_then_writes(make_depot, me):
+    depot = make_depot()
+    depot.add([plain("one", "a", "b"), plain("two", "a"), plain("three"), plain("four", "c"),
+               plain("five", "b", "c")], me)
+    tables = ("texts_revisions", "text_decisions", "decisions")
+
+    def rows():
+        found = {table: depot.sql(f"SELECT count(*) AS n FROM {table}")[0]["n"] for table in tables}
+        found["taggings"] = {tuple(one.values()) for one in depot.sql("SELECT * FROM taggings")}
+        return found, {(one["tag"], one["key"]) for one in depot.sql("SELECT tag, key FROM text_tags")}
+
+    for selection, add, remove in ((Filter(), ["c", "d"], ["a"]), (Filter(tags=("b",)), [], ["b", "z"]),
+                                   ("id <> 'depot-3'", ["e"], []), (["depot-1", "depot-3"], ["e"], ["c"])):
+        estimate = depot.retag_estimate(selection, add, remove)
+        (before, tags_before) = rows()
+        _, changed, left = depot.retag(selection, add, remove, me)
+        (after, tags_after) = rows()
+        assert (estimate["changed"], estimate["texts"]) == (changed, changed + left), selection
+        assert after["texts_revisions"] == before["texts_revisions"], selection  # no revision
+        assert estimate["rows"] == {"text_decisions": after["text_decisions"] - before["text_decisions"],
+                                    "decisions": after["decisions"] - before["decisions"],
+                                    "taggings": len(after["taggings"] - before["taggings"]),
+                                    "text_tags": len(tags_after ^ tags_before)}, selection
+        assert (estimate["tags_added"], estimate["tags_removed"]) == (len(tags_after - tags_before),
+                                                                      len(tags_before - tags_after)), selection
+        assert estimate["written"] == sum(estimate["rows"].values())
+        assert estimate["bytes"] == round(changed * depots.RETAG_BYTES) and estimate["seconds"] > 0
+    nothing = depot.retag_estimate(Filter(tags=("e",)), ["e"], [])
+    assert (nothing["changed"], nothing["written"], nothing["bytes"], nothing["seconds"]) == (0, 0, 0, 0)
+
+
+def test_a_retag_estimate_is_not_below_the_change_file_the_retag_then_records(make_depot, me):
+    # the next backup sends that file: a retag rewrites each text's copy of its tags on its current revision too
+    depot = make_depot()
+    chosen = depot.add([plain(f"text {number}", "t00", "t01") for number in range(1000)], me)
+
+    def recorded():
+        return sum(path.stat().st_size for path in depot.db.waiting_files())
+
+    before = recorded()
+    estimate = depot.retag_estimate(chosen, ["bench-tag"], [])
+    depot.retag(chosen, ["bench-tag"], [], me)
+    assert recorded() - before <= estimate["change_bytes"] == round(1000 * depots.RETAG_CHANGE_BYTES)
+
+
+def test_a_retag_refuses_texts_the_upstream_owns_and_a_clone_retags_its_own(serve, make_depot, me, tmp_path):
+    upstream = make_depot("up")
+    [theirs] = upstream.add([plain("theirs", "a")], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
+                     About("follower", "Grace Hopper", "grace@example.org"))
+    [own] = follower.add([plain("own", "a")], me)
+
+    assert follower.retag_estimate(Filter(), ["b"], [])["upstream"] == 1
+    with pytest.raises(BelongsToUpstream):
+        follower.retag(Filter(), ["b"], [], me)
+    assert follower.retag([own], ["b"], [], me)[1:] == (1, 0)
+    assert follower.show(theirs)["text"]["tags"] == ["a"] and follower.show(own)["text"]["tags"] == ["a", "b"]
+
+
+def taggings_rows(depot) -> list[tuple]:
+    return [tuple(one.values()) for one in depot.sql("SELECT * FROM taggings ORDER BY text, tag, joined_change")]
+
+
+def test_a_clone_receives_the_upstream_s_taggings_and_each_pull_the_tags_given_and_taken_since(
+        serve, make_depot, me, tmp_path, title_index):
+    upstream = make_depot("up")
+    first, second = upstream.add([plain("one", "a", "b"), plain("two", "a")], me)
+    follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
+                     About("follower", "Grace Hopper", "grace@example.org"))
+    assert taggings_rows(follower) == taggings_rows(upstream)
+
+    upstream.retag([first, second], ["c"], ["a"], me)
+    upstream.edit_credits_many([{"id": second, "tags": ["d"]}], me)  # c, given by the retag, taken back
+    pull(follower)
+    assert taggings_rows(follower) == taggings_rows(upstream)
+    upstream.retag([first], [], ["b"], me)  # a tag the follower holds, taken after its pull
+    pull(follower)
+
+    assert taggings_rows(follower) == taggings_rows(upstream)
+    assert [follower.show(one)["text"]["tags"] for one in (first, second)] == [["c"], ["d"]]
+    assert follower.counts()["tag"] == upstream.counts()["tag"] == {"c": 1, "d": 1}
+    assert column(follower.search(Filter(tags=("c",)))["rows"], "id") == [first]
+    assert follower.search(Filter(tags=("b",)))["rows"] == []
+    kept, again = counted_again(follower, title_index)
+    assert kept == again
+
+
+def test_an_erasure_that_removes_a_text_whole_deletes_its_taggings_and_its_tags_counts(make_depot, me, title_index):
+    depot = make_depot()
+    gone, kept = depot.add([plain("a whole text to remove", "a", "b"), plain("kept", "a")], me)
+    depot.retag([gone], [], ["b"], me)  # an ended row too
+    request = depot.ask_erasure("asked by its author", [(gone, None, None)], me)
+
+    depot.decide_erasure(request, "admitted", me)
+
+    assert {row[0] for row in taggings_rows(depot)} == {kept}
+    assert depot.counts()["tag"] == {"a": 1}
+    kept_counts, again = counted_again(depot, title_index)
+    assert kept_counts == again
+
+
+def test_a_filter_of_tags_matches_only_texts_with_every_tag_whichever_listing_a_read_takes(make_depot, me):
+    # a read through one tag's listing does not test that tag again: the other tags, and a listing chosen in its
+    # place (the texts of a refused license, for blocked), must still be tested
+    depot = make_depot()
+    depot.add_license("CC-BY-NC-4.0", "CC-BY-NC-4.0", "text")
+    both, only_a, only_b = depot.add([plain("both", "a", "b"), plain("only a", "a"), plain("only b", "b")], me)
+    depot.retag([only_b], ["rare"], [], me)
+    [unlicensed_rare, unlicensed] = depot.add([NewText(text="nc rare", licenses=("CC-BY-NC-4.0",), tags=("rare",)),
+                                               NewText(text="nc", licenses=("CC-BY-NC-4.0",), tags=("a",))], me)
+
+    assert column(depot.search(Filter(tags=("a", "b")))["rows"], "id") == [both]
+    assert column(depot.search(Filter(tags=("rare",)))["rows"], "id") == [only_b, unlicensed_rare]
+    assert column(depot.search(Filter(tags=("rare", "b")))["rows"], "id") == [only_b]
+    assert depot.count(Filter(tags=("a", "b")))["statuses"] == {"under review": 1, "admitted": 0, "refused": 0}
+    assert column(depot.blocked(Filter(tags=("a",)))["rows"], "id") == [unlicensed]
+    assert column(depot.blocked(Filter(tags=("rare",)))["rows"], "id") == [unlicensed_rare]

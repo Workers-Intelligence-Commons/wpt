@@ -1,0 +1,16 @@
+{
+ "asked_headers": {},
+ "body": null,
+ "body_bytes": 27136,
+ "body_file": "024.bin",
+ "headers": {
+  "Accept-Ranges": "bytes",
+  "Content-Disposition": "attachment; filename=\"ds-two_tok-v1_6000.tar\"",
+  "Content-Length": "27136",
+  "Content-Type": "application/x-tar",
+  "ETag": "\"f2737433a9b567914c690eed54767a126a537d6e3dc55e56915d4579f46661e0\""
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/6000/everything.tar",
+ "status": 200
+}

@@ -1,8 +1,8 @@
 # Data selection
 
-This document covers what WPT trains on: the texts of a depot, the
-libraries that group them, the datasets that say what to train on, and
-the corpus a dataset is built into. How a depot stores them is in
+This document covers what WPT trains on: the texts of a depot, the tags
+that group them, the snapshots that fix which texts a model may read, and
+the corpus a model recipe's data section is built into from a snapshot. How a depot stores them is in
 [architecture.md](architecture.md), "The depot"; which licenses a text may
 carry and how decisions work is in [licenses.md](licenses.md).
 
@@ -24,7 +24,7 @@ or a repository with all its files, with its metadata. Each text is a row of a d
   optional;
 - its tags ("Tags", below);
 - its scores ("Scores", below);
-- its decisions, in order, and the libraries that hold it.
+- its decisions, in order.
 
 A text holds final text only. A text its source publishes as text, such
 as a code file, a record's text field or a plain-text edition, is kept
@@ -40,12 +40,13 @@ A text never changes by itself. A newer version of a work is another
 text, under review. An older one stays where it is until someone refuses
 it or asks for its erasure ([erasure.md](erasure.md)).
 
-Every change of a text but a decision on it makes a new revision of it: a
-new row under the same id, with the next revision number (1, 2, 3...) and
-the depot's change number ("Change numbers", below). Its rows before stay
-as they were, and the highest revision is the current one. A revision
-holds the small fields (licenses, notice, credits, tags, scores) and the
-number of the content version it reads, never the content itself. A
+Every change of a text but a decision on it or a change of its tags makes
+a new revision of it: a new row under the same id, with the next revision
+number (1, 2, 3...) and the depot's change number ("Change numbers",
+below). Its rows before stay as they were, and the highest revision is the
+current one. A revision holds the small fields (licenses, notice, credits,
+scores), the number of the content version it reads and that version's
+kind, length in characters and bytes, never the content itself. A
 decision on a text is linked to it with the change number it was made at,
 and the current revision stores the status its decisions make, so a
 decision changes that status and makes no revision.
@@ -70,9 +71,8 @@ reads it. It is a decision under review, with the person's declaration,
 whose reason the depot writes, `content changed from version OLD to version NEW`. It starts
 the text's decisions over, as a license change does
 ([licenses.md](licenses.md), "Who decides"): the text is under review
-again and leaves every open library, to be put back once it is admitted. A
-locked library keeps reading the content version of the revision it
-pinned. A content that changes nothing writes nothing.
+again. A snapshot made before keeps reading the content version of the
+revision it read. A content that changes nothing writes nothing.
 
 The plain texts of many texts change at once through `wpt depot
 content-file FILE`, or `POST /api/texts/content`
@@ -87,9 +87,8 @@ that is still its current content version, and otherwise leaves it out, so
 a file written from an earlier reading never undoes a change made since.
 Each text the change changes gets what a change of its content alone gives
 it: a new content version, a new revision that reads it, its decisions
-started over, so it is under review again and leaves every open library,
-and a locked library keeps reading the content version of the revision it
-pinned. Its credits, licenses, tags and scores stay as they are. The
+started over, so it is under review again, and a snapshot made before keeps
+reading the content version of the revision it read. Its credits, licenses, tags and scores stay as they are. The
 change is one decision under review for each pair of old and new content
 versions, on the texts it moves, with the person's declaration and the
 reason `content changed from version OLD to version NEW`. A text whose
@@ -109,7 +108,7 @@ Its credits, tags and notice change through `wpt depot credits ID` or
 tags. The change is a decision under
 review, with the person's declaration, whose reason the depot writes,
 naming each credit's old and new value. The decisions before it keep
-counting, so the text keeps its status and its libraries
+counting, so the text keeps its status
 ([licenses.md](licenses.md), "Who decides"). A changed notice is stored
 once, as on an add.
 
@@ -126,8 +125,7 @@ revision, and the change is one decision under review on all of them, with
 the person's declaration, whose reason the depot writes naming the credits
 that changed (`credits changed: title, authors`). As for one text's
 credits, the decisions before it keep counting, so the texts keep their
-status and their libraries, and a locked library keeps reading the
-revision it pinned. A text whose credits would stay as they are is left
+status, and a snapshot made before keeps reading the revision it read. A text whose credits would stay as they are is left
 out of the change, and the command and the route report how many texts
 changed and how many were left out.
 
@@ -224,9 +222,8 @@ text the change changes gets a new revision, and the change is one
 decision under review on all of them, with the person's declaration, whose
 reason the depot writes naming the scores set and removed. Scoring a whole
 depot is so one decision and one new revision per text. As for credits,
-the decisions before it keep counting, so the texts keep their status and
-their libraries, and a locked library keeps reading the revision it
-pinned. A text whose scores would stay as they are is left out of the
+the decisions before it keep counting, so the texts keep their status, and
+a snapshot made before keeps reading the revision it read. A text whose scores would stay as they are is left out of the
 change, and the command and the route report how many texts changed and
 how many were left out. The depot refuses the whole change, writing
 nothing, when a line is not of that shape, when no text would change, when
@@ -288,14 +285,13 @@ refuses the texts a condition on the scores selects.
 ### Change numbers
 
 Every change of a depot has a number, one past the last: a text added, a
-decision, a revision, a library made, changed or locked, a dataset, an
-erasure. Each revision and each membership records the number of the
-change that made it, so the depot can be read as it was at any change
-number.
+decision, a revision, a snapshot, an erasure. Each revision and each
+decision records the number of the change that made it, so the depot can
+be read as it was at any change number, which a snapshot names.
 
 `wpt depot add FILE` adds one text, under review, with its licenses,
 notice, tags and credits; `wpt depot show ID` shows it with its decisions
-and libraries; `wpt depot sql "SELECT ..."` answers any read query over
+and revisions; `wpt depot sql "SELECT ..."` answers any read query over
 the depot's tables. `wpt depot web` does the same as pages
 ([architecture.md](architecture.md), "Two interfaces").
 
@@ -323,15 +319,16 @@ added. A new depot starts with five kinds:
 | Kind | What it is | Who reads it |
 | --- | --- | --- |
 | `plain` | a text read as it is | the `read-text` step, as text windows |
-| `conversation` | a conversation in the chat format ([chat-format.md](chat-format.md)) | the `answer-as-assistant` step |
+| `conversation` | a conversation in the chat format ([chat-format.md](chat-format.md)) | the `answer-as-assistant`, `answer-as-assistant-dft` and `answer-as-assistant-neftune` steps |
 | `task` | a task for agentic training: what it asks, its starting files and its check ([training.md](training.md), "Tasks") | the `finish-tasks` and `finish-tasks-with-less-writing` steps |
 | `rating` | a person's pass or fail on one attempt of a `wpt eval` run | no step: a measure only |
 | `probe` | a question to ask a model and the patterns that flag a reply as alarming | no step: a measure only |
 
 An item gets the same licenses, notice, credits, tags and decisions as a
 plain text. Kinds are a closed list, the rows of `kinds`: the depot's
-counts, a dataset revision's figures and the web app's pages count what a
-library holds of each kind on its own, a kind it holds no text of at 0. Each training step names the kinds it reads ([training.md](training.md),
+counts, a snapshot's summary and the web app's pages count each kind on
+its own. The kind of a text is picked once, from cards on the "Add a text"
+page, and its page names it beside the title as a plain word: a text keeps its kind. Each training step names the kinds it reads ([training.md](training.md),
 "Steps"), and a corpus keeps the tokens of each kind it tokenizes in
 token files of their own ("Corpora", below).
 
@@ -392,137 +389,119 @@ Tags are plain stored data. Nothing computes the Length, File format or
 Structure tags: whoever adds a text writes the tags it has, and the depot
 keeps them as written.
 
-## Libraries
+A hand-picked selection of texts is a tag: tick the texts on the Texts
+page of `wpt depot web` and add a tag to them, or remove one, from its bulk
+bar (`POST /api/texts/retag`). Existing tags are one click each, and only a
+new tag is typed. The change is one decision under review on every text it
+changes, whose reason the depot writes, `tags changed: added x; removed y`,
+and each text keeps its status. A text's tags are kept beside it, never
+as a revision of their own: each text it changes gets a row for each tag it
+gains or loses, a row of its decisions, its rows in the tag listings and
+the copy of its tags on its current revision written again in place, and no
+new revision, so the page shows the texts changed, the rows and bytes written and the time
+before the confirming click, and refuses to write when that cost grew
+since it was shown. From the command line, `wpt depot retag WHERE --add T
+--remove T` makes the same change over every text an SQL condition
+matches: it says the same cost and writes only with `--yes`. A text a
+change would leave as it is gets nothing. In a clone, a change that reaches a text the upstream owns is refused whole.
 
-A library is a named collection of admitted texts inside a depot. Only an
-admitted text joins one: a text under review sits in the depot and in no
-library. A refusal or a change of its licenses takes a text out of every
-open library that holds it ([licenses.md](licenses.md), "Who decides").
+## Snapshots
 
-A library records when each text joined it and when it left, by change
-number. An open library reads each of its texts at its current revision,
-and at a past change number it reads the texts it held then, each at the
-revision it had then. A locked library reads, for good, the exact revision
-of each text it held when it was locked: a newer revision of one of its
-texts does not reach it. The page of a locked library lists those
-revisions and marks each text that has a newer one, and the page of a text
-shows how many revisions it has and which revision each locked library
-reads.
+A snapshot is a name on a change number: the texts admitted at that
+change, each read at its revision as of it, so it reads the same whatever
+its texts did since. A model recipe names the snapshot its corpus is built
+from ("Corpora", below), so a snapshot is what fixes the texts a model may
+read. A snapshot holds every admitted text of every kind; a recipe chooses
+among them by kind and by tag.
 
-- `wpt depot library new NAME` makes an open library.
-- `wpt depot library put LIBRARY WHERE` puts into an open library every
-  admitted text the SQL condition `WHERE` matches, and names the matched
-  texts it left out because they are not admitted.
-- `wpt depot library take-out LIBRARY WHERE` takes out of an open library
-  every text the SQL condition `WHERE` matches, and names the matched texts
-  it did not hold. A text taken out keeps its status: it stays admitted and
-  can be put back.
-- `wpt depot library rename LIBRARY NAME` gives a library, open or
-  locked, a new name. The name is not what it holds, so the change needs
-  no declaration and no decision.
-- `wpt depot library lock LIBRARY` locks it for good, pinning the current
-  revision of each text it holds. No text joins or leaves a locked
-  library; only an erasure still takes a text out or cuts its content
-  ([erasure.md](erasure.md)). Its texts can still get new revisions,
-  which it does not read. A dataset built from a locked library can be
-  built again later.
-- `wpt depot library fork LIBRARY NAME [--without WHERE]` makes a new open
-  library holding the same texts, less those the SQL condition `WHERE`
-  matches, and records which library it started from (`forked_from`). It
-  starts with no problem.
-- `wpt depot library report LIBRARY PROBLEM [WHERE]` reports a problem with
-  a library, locked or not, with the reporter's declaration. A library's
-  `problems` lists them: the ids of the texts concerned (the texts of the
-  library `WHERE` matches, none without `WHERE`), the problem in words,
-  and the decision, under review, that records who reported it. A report
-  changes no membership and no text, so a locked library takes it. To
-  correct an open library, take the texts concerned out of it; to correct
-  a locked one, fork it without them.
+`wpt depot snapshot new NAME [--note TEXT]`, or "Make a snapshot" on the
+Snapshots page of `wpt depot web`, makes one of the texts admitted now. The
+page fills in the next free name, the year and month (`2026-11`, then
+`2026-11b`, ...), and shows what making it takes (its texts, the time and
+the disk) before the one confirming click; it runs as a job of the heavy
+lane ([depot-web.md](depot-web.md), "Jobs and downloads") and reads the
+change current when it ends, which its page then shows. A name is made of
+letters, digits, `.`, `_` and `-`, begins with a letter or a digit, and is
+unique among the snapshots of the depot that made it, so a clone's own
+snapshot may take a name its upstream uses. Making one reads no text: its
+texts come from the index of the admitted texts and its summary from the
+depot's counts ([architecture.md](architecture.md), "Snapshots"), so it
+stores a fraction of a byte a text and reads several hundred thousand
+texts a second.
+`wpt depot snapshot list` lists them and `wpt depot snapshot show NAME`
+shows one.
 
-## Datasets
+A snapshot keeps its texts as sets of the numbers of their ids, one for
+each part and each depot whose texts it holds, each with its bound: the
+change of that depot's numbering its texts are read at. A snapshot made
+now has one part, read at its change for the depot's own texts and, in a
+clone, at the change of the upstream's numbering its pulls had brought by
+then. A snapshot the upgrade to format 13 made from a dataset has one part
+for each library the dataset read, in its order, and a text several parts
+hold is read in the first of them. Its summary says what it holds by kind,
+by tag, by plain tag set, by license and by depot, in texts, characters
+and bytes, so a recipe's measure and its build's plan read the summary and
+never count the texts again.
 
-A dataset is a row of a depot that says what to train on: its name, the
-tokenizer recipe whose vocabulary its corpus uses, the libraries it reads,
-and optional shares. Each library it reads is named by its id, the
-change number it is read at, and the address of its depot. A library the
-depot holds has no address, which means the depot that holds the row, so
-the row reads the same in a clone. A library of another depot has that
-depot's address: a file, or the web address of its `wpt depot web`, which
-is asked about the library when it is named. The change number is the
-owning depot's change number when the library was named. In a clone, a
-library of the upstream is read at the upstream change the clone's pulls
-brought ([architecture.md](architecture.md), "Following an upstream").
-A dataset never picks single texts: it takes every text of its libraries
-that its shares pick.
+A snapshot is never changed, renamed nor removed. An erasure cuts its
+texts in place and removes a text whole without touching the snapshot:
+reading it skips the removed text and counts it, and its page says how
+many texts erasures reached since ([erasure.md](erasure.md)). A text
+refused after a snapshot stays in it.
 
-`wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID ...
-[--share TAG[=SHARE] ...] [--max-tokens N]` makes one. The tokenizer recipe
-is one of the depot's ([tokenizer.md](tokenizer.md)); it may be made after
-the dataset, and a build needs it.
+The page of a snapshot shows its change, its digest with a copy button,
+what it holds by kind and by tag, the texts erased since, the recipes of
+the repository that name it, and the composer of a recipe's data section
+("Corpora", below).
 
-A corpus is built at a size, `max_tokens`: the most tokens the corpus
-holds, or none. The dataset's own `max_tokens`, optional, is only the size
-the web app's build form starts at; nothing else reads it.
-The size counts the tokens of its plain texts, conversations and tasks
-together, and a corpus of any size keeps the dataset's mix of items and
-plain text.
+### A snapshot's digest
 
-Conversations and tasks together have their natural share of the size:
-the share they hold of the UTF-8 bytes of the corpus built without a size
-(every conversation and task, and the plain texts the shares keep, see
-"Shares"), rounded down to a whole token. So every size has the mix of the
-corpus of every token. A share no text has counts for nothing there. The
-share is measured in bytes because bytes are known for every text before
-anything is tokenized. The bytes are those of the figures the dataset's
-revision stores, which count a text two libraries hold once for each, and a
-plain text with several of the shares' tags once for each tag. When a
-revision's figures are not known, the build counts the same figures from
-every text of its libraries, which takes long on a big dataset, so the same
-depot state builds the same corpus either way. The
-items fill that share in the corpus's order (see "Filling a part" below).
-A conversation counts the tokens of its chat template. A task is kept as a JSON line and
-never tokenized, so it counts the tokens of its content written as the JSON
-text of that line.
+A snapshot's digest is the SHA-256, in hexadecimal, of these bytes, which
+depend on its numbers alone, never on how a roaring library lays them out,
+so anyone holding the sets (`GET /api/snapshots/{id}/sets`, or a clone)
+recomputes it with any tool:
 
-Each share then fills its proportion of what the items left, or, without
-shares, the plain texts fill all of it, in the corpus's order. Without a
-size, every conversation and task is taken. The corpus's record keeps the
-tokens its conversations and tasks hold (`items_tokens`).
+    b"wpt-snapshot-1\n"
+    the snapshot's change (at_change) in decimal, b"\n"
+    then for each set, in the order of its part, then of its owner's name
+    compared by its UTF-8 bytes:
+        the part in decimal, b"\n"
+        the owner's name in UTF-8, b"\n"
+        the bound in decimal, b"\n"
+        how many numbers it holds, in decimal, b"\n"
+        its numbers in increasing order, each as 4 bytes, an unsigned
+        integer in little-endian order
 
-`wpt depot dataset edit NAME`, or "Edit it" on the view of the dataset,
-changes its name, its libraries, its shares and its `max_tokens` as a new
-revision, its id and its tokenizer recipe kept, with the checks of a new one. A library it
-read already, named by its depot's address in any form (in a clone, a
-library of the upstream by either depot's address), stays as the
-dataset holds it, its address and its change number included, and its
-depot is not opened, so a dataset imported from a remote whose depots this
-machine cannot reach still changes; a library added is read at its depot's
-change number now. The change needs no declaration and no decision, since it
-decides nothing about a text. A corpus built before keeps its own copy of
-the dataset's row, its id and revision included, so it stays what it was;
-the view of a dataset lists every corpus built from any of its revisions,
-with the revision each was built from.
+A decimal number is written in ASCII digits with no sign, no leading zero
+and no separator. A number above 2**32 - 1 cannot be held, and making a
+snapshot of a depot that holds one admitted is refused. A clone and a pull
+check every snapshot they receive against its digest, a build checks the
+recipe's digest against the snapshot's, and a read checks the sets once in
+each process.
 
-A dataset publishes at most one vocabulary: the sha256 of one of the
-vocabularies of the depot that holds the dataset, whatever depots its
-libraries are of. `wpt depot dataset edit NAME --vocabulary SHA256` (or
-`--no-vocabulary`), or the vocabulary part of the dataset's view, sets or
-clears it as a new revision; a sha256 the depot holds no vocabulary of is
-refused. Training takes the corpus of that vocabulary (see "Corpora"
-below). A build never reads it.
+## The data section of a model recipe
+
+A model recipe's data section ([model.md](model.md), "Model recipes")
+says what its corpus takes: the depot by its public address, the snapshot
+by its name with the change and digest it reads, the kinds it takes (none:
+every kind), its shares, its size (`total_tokens`) and its vocabulary (its
+sha256 and size). It never picks single texts: a hand-picked selection is
+a tag, which a share names.
+
+Recipes are files of the repository, and a person commits them. The
+composer on a snapshot's page builds a data section by clicks: kind chips
+and tag chips from the snapshot's summary, a slider for each share, the
+size from preset buttons or a slider, and the vocabulary from a list of
+the depot's. It shows what the section takes and what its build costs as
+the clicks change it, and gives the section to download or copy, writing
+nothing (`POST /api/recipes/compose`).
 
 ### Shares
 
 Shares are optional and ordered, each a tag and a share of the tokens
-(`0.3` is 30%), each share above 0 and at most 1, each tag once. A share
-given without a number takes an even part of what the shares given as
-numbers leave of 1, and the dataset stores that number: `research-paper`
-0.35, `books` 0.15, `government` 0.05, `code` 0.05 and eight language tags
-without a number store 0.05 for each language. The parts are rounded to 12
-decimals. A share without a number is refused when the numbers reach 1
-already. A text counts for the first share whose tag it has. A text that has none of the
-shares' tags is left out. Without shares, every text of the libraries is
-taken.
+(`0.3` is 30%), each share from 0 to 1, each tag once, their sum at most 1
+and not 0. A text counts for the first share whose tag it has. A text that has none of the
+shares' tags is left out. Without shares, every plain text is taken.
 
 Inside a share, its part splits over every tag its texts carry, the
 share's own tag excepted: each such tag is a group, and the texts that
@@ -537,22 +516,19 @@ part"), and so does the share the build keeps whole without a size.
 
 The build brings the shares to their proportions, and each share's groups
 to their parts of it, without repeating a text.
-Without `max_tokens`, it finds the share with the fewest bytes relative to
+Without a size (`total_tokens`), it finds the share with the fewest bytes relative to
 its proportion and keeps every text of that share; each other share fills
 its proportion of the scarcest share's bytes, in the corpus's order (see
 "Filling a part"), a piece of a long text counting for its share of the
 text's bytes, split evenly among its pieces. The bytes of each share come from
-the figures, as the items' share does. A text the figures count twice
-makes its shares hold more bytes there than the build can take of them, so
-the shares and the items' share then come out off their proportions. With a size, each share fills
+the snapshot's summary, as the items' share does (see "Corpora"). With a size, each share fills
 its part of it. A text enters a corpus once at most, whole or as some of
 its pieces. The order depends on
-the texts' ids alone, so the same dataset builds the same corpus, and a
-change of its name, of its `max_tokens` or of the build's size keeps its
-order. The
+the texts' ids alone, so the same snapshot builds the same corpus, and a
+change of the size keeps its order. The
 corpus's record keeps how many tokens each share holds (`shares_tokens`),
 with each of its groups, and how many texts the build left out (`left_out`: texts no share took, texts
-of which a share took nothing, items `max_tokens` left out, conversations
+of which a share took nothing, items the size left out, conversations
 whose quoted texts it left out or whose quotes are unmatched, and the items
 of each kind that is no training data, by kind: `kinds not taken`).
 
@@ -562,13 +538,13 @@ only a size trims conversations and tasks, to their natural share of it.
 ### Filling a part
 
 Every part of a corpus fills the same way: the items' share, each share
-of the plain texts, and each share of a vocabulary's sample. The texts
+of the plain texts, and a vocabulary's sample. The texts
 come in the corpus's order. A text that fits what is left of its part is
 taken. A text that would pass it is left out, and the next text is tried.
 A part closes once what is left of it is at most a thousandth of it, or
 once a thousand of its texts in a row did not fit. The build stops reading
 once every part is closed, so a nearly full corpus never reads the rest of
-the dataset for its last tokens. A smaller size takes the same texts as a
+the snapshot for its last tokens. A smaller size takes the same texts as a
 larger one up to the first text it leaves out; past it, it takes only what
 fits what is left of it.
 
@@ -589,8 +565,8 @@ To choose so, the build first walks the whole order, reading each text's
 tags and size but not its content, and keeps what the choice needs in
 compact arrays. With a size, it chooses on the texts' exact tokens, which
 worker processes count a few texts ahead of each group; the texts it
-chooses are tokenized again as the build writes them. Without a size, and
-for a vocabulary's sample, it chooses on bytes. The build keeps the list of
+chooses are tokenized again as the build writes them. Without a size, it
+chooses on bytes. The build keeps the list of
 the texts chosen in its work folder, so a build cut short takes the same
 texts when it goes on, and chooses them again, the same, when the list is
 lost. A smaller size takes about the same share of each group as a larger
@@ -610,52 +586,69 @@ text spreads through the corpus, and a corpus of any size takes about its
 share of it. Each piece waits in the groups of its text's tags as a text of
 its own. An item is never cut.
 
-### Remotes
+### Building a snapshot again
 
-A dataset written out as JSON is a remote: the dataset's row without its
-id, pointing to the depots and the change numbers its data comes from, so anyone
-can build its corpus without the depot that made it.
-`wpt depot dataset export NAME` writes one, and
-`wpt depot dataset import FILE` makes a dataset from one.
-
-### Building a dataset again
-
-A dataset names each library with a change number, and a depot keeps
-every revision and membership, so the dataset builds the same corpus
-again whatever its libraries and texts did since. Only an admitted
-erasure changes that corpus: the texts it removes are gone, and the
-passages it cuts are cut in every revision ([erasure.md](erasure.md)).
+A snapshot names the change number it reads and the texts it holds, and a
+depot keeps every revision, so a snapshot builds the same corpus again
+whatever its texts did since. Only an admitted erasure changes that
+corpus: the texts it removes are gone, and the passages it cuts are cut in
+every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
-`wpt depot build DATASET [--vocabulary SHA256] (--max-tokens N | --all)`
-builds the dataset's corpus into the store
-(`WPT_STORE`): what training reads. It runs on the machine that holds the
-depot, or as a job of `wpt depot web` ([depot-web.md](depot-web.md)). A
-rented GPU machine only reads the corpus and trains
-([machines.md](machines.md)). A build is one dataset, one vocabulary and
-one size. The vocabulary is one the depot holds already, by its sha256
-([tokenizer.md](tokenizer.md)): by default the one the dataset
-publishes, and a dataset that publishes none refuses a build that names
-none. Without it nothing is built: a build never trains a vocabulary. The size is always named: a number of tokens,
-or `--all`.
+`wpt depot build RECIPE`, or the Build button of the recipe's page in
+`wpt depot web` ([depot-web.md](depot-web.md), "Jobs and downloads"),
+builds the corpus of a model recipe of the repository (the checkout
+`WPT_REPOSITORY` names, else the one around the current folder) into the
+store (`WPT_STORE`): what training reads. The recipe names this depot, or
+the upstream it follows, by its public address, and a snapshot of it by
+name. It runs on the machine that holds the depot. A rented GPU machine only reads
+the corpus and trains ([machines.md](machines.md)). What a build takes is
+a recipe's data section: the snapshot (its name, and the change number and
+digest it reads, which the build checks), the kinds it takes (none: every
+kind), the shares, the size (`total_tokens`, none for every token) and the
+vocabulary (its sha256 and size). The vocabulary is one the depot holds
+already ([tokenizer.md](tokenizer.md)); without it nothing is built: a
+build never trains a vocabulary. A snapshot whose change number or digest
+is not the section's, or a vocabulary whose sha256 or size is not, refuses
+the build and names both: "snapshot S of depot D reads change N with
+digest H; the recipe says M, G".
 
-The build is a stream. It reads each library in the corpus's order
-through an index, so it reads only the texts it reaches, and a build at a
-small size starts at once whatever the dataset's size. A dataset with
-shares is walked once whole before the stream, to choose each share's
-texts by group (see "Filling a part"), which reads every text's row but
-only the contents of the texts whose tokens the choice needs. Worker processes
-tokenize the texts, and the build takes their results in that order. It
-uploads each token file to the store as soon as it is full, with the part of the `texts` table that
-lists its texts, and deletes its local copies, so the memory and the local
-disk it takes stay bounded whatever the dataset's size. A build cut short
-goes on from the first text after the last token file uploaded and writes
-the same bytes as a build that never stopped.
+The build is a stream. It first puts every text of the snapshot in the
+corpus's order, in memory (see "The order" below). It then reads the texts
+in that order, each at its revision as of the change number its part of
+the snapshot reads, so it reads only the texts it reaches. A build with
+shares walks the order once whole before the stream, to choose each
+share's texts by group (see "Filling a part"), which reads every text's
+row but only the contents of the texts whose tokens the choice needs.
+The build tokenizes its first 16 MiB of texts in its own process, and
+worker processes the rest, so a small size of a large snapshot never
+waits for workers to start; it takes their results in that order. It uploads each token file to the store as soon as it is
+full, with the part of the `texts` table that lists its texts, and
+deletes its local copies, so the local disk it takes stays bounded
+whatever the snapshot's size. A build cut short goes on from the first
+text after the last token file uploaded, from a state named by its build
+key, and writes the same bytes as a build that never stopped; when an
+erasure reached the snapshot meanwhile, it starts over.
 
-The build takes every text of the dataset's libraries, each library at
-the change number the dataset names; a text two libraries hold is taken
-once. It chooses nothing by score. It then keeps:
+What the corpus may take comes from the snapshot's summary, read at once:
+the bytes and texts of each kind and of each set of tags of its plain
+texts. A plain text counts once, for the first share whose tag it has.
+Conversations and tasks together have their natural share of the size:
+the share they hold of the UTF-8 bytes of the corpus built without a size
+(every conversation and task the kinds take, and the plain texts the
+shares keep, see "Shares"), rounded down to a whole token, so every size
+has the mix of the corpus of every token. The items fill that share in
+the corpus's order (see "Filling a part"). A conversation counts the
+tokens of its chat template. A task is kept as a JSON line and never
+tokenized, so it counts the tokens of its content written as the JSON text
+of that line. Each share then fills its proportion of what the items
+left, or, without shares, the plain texts fill all of it, in the corpus's
+order. Without a size, every conversation and task is taken. The corpus's
+record keeps the tokens its conversations and tasks hold
+(`items_tokens`).
+
+The build chooses nothing by score. It keeps:
 
 - every plain text (kind `plain`), as its tokens followed by the
   end-of-document token, in the token files of kind `plain`; a long text
@@ -669,42 +662,39 @@ once. It chooses nothing by score. It then keeps:
 
 The record lists the token files by kind (`shards`, `{"plain": [...],
 "conversation": [...]}`), so a step finds the files of the kinds it
-reads and nothing else.
+reads and nothing else. Items of other kinds, and of the kinds the data
+section leaves out, are not taken: the record counts them by kind
+(`left_out`, `kinds not taken`).
 
-Items of other kinds are not training data: the build leaves them out and
-counts them in the record. The texts go in the order of their export keys,
-a hash of each text's id that its depot stores, the order the dataset's
-export uses too, so that any first part of the corpus is drawn from all of
-it. A piece's key is the same hash of its name. The build finds the long
-texts before it reads, through an index of the depot's long content
-versions, so it never reads every text to find them. The order depends on no dataset and not on where a depot's file is.
-Texts of one key go by the place of their depot among the depots the
-dataset reads, then by their id. Every size of a model series reads the same corpus, the smaller sizes
-its first part ([model.md](model.md), "Model series").
+### The order
 
-A corpus names a depot by what no place of its file changes. The depot
-that holds the dataset is named by its public address, the web address of
-its `wpt depot web` that the setting `WPT_DEPOT_URL` gives, or by its name
-when it has none; a clone names a dataset its upstream owns by the
-upstream's web address. Another local depot is named by the name in its
-own settings, never by its file. The corpus's record, its build's key and
-the erasures it counts, its copy of the dataset's row, its token files,
-its `texts` table and `tasks.jsonl` all carry those names, so the same
-depot state builds the same corpus wherever its files are, and a clone
-builds its upstream's corpus again.
+The texts go in the order of their export keys, a hash of each text's id,
+so that any first part of the corpus is drawn from all of it. A piece's
+key is the same hash of its name. The build finds the long texts before it
+reads, through an index of the depot's long content versions, so it never
+reads every text to find them. A snapshot can hold a number in several
+parts (a part for each library of the dataset an upgrade made the
+snapshot from): the text is taken once, read as of its first part's change number. Texts
+of one key go by their depot's name, then their number, then their piece.
+The order depends on nothing but the snapshot, so every size of a model
+series reads the same corpus, the smaller sizes its first part
+([model.md](model.md), "Model series"). The order takes 8 bytes a text in
+memory, and at most 16 while it is made.
 
-Two depots a corpus reads never carry one name: a build where another
-depot's name is the one the corpus gives the dataset's own depot, or where
-two other depots share a name, is refused. A build of the same corpus
-again finds each other depot's file from the dataset's libraries at the
-revision the corpus took.
+### What a corpus holds
 
-A corpus says everything about what it holds, even once the depots it
-read change or vanish. Beside its token files and `tasks.jsonl`, it holds
+The rows of a corpus name each text's depot by the name of the depot that
+made the snapshot, never by a file or an address, so the same snapshot
+builds the same bytes wherever its file is, and a clone holding its
+upstream's snapshot builds the same corpus. The record names the depot by
+the address the recipe's data section names, which on a clone is its
+upstream's, and the snapshot by its id, name, owner, change number and
+digest.
+
+A corpus says everything about what it holds, even once the depot it read
+changes or vanishes. Beside its token files and `tasks.jsonl`, it holds
 these tables:
 
-- `dataset`: the dataset's row, copied, each library of another depot named by that depot's name, its
-  `max_tokens` the build's size, with the time of the build;
 - `texts`: every text it took, in parts, one for each token file, with its depot's name (above), its id there,
   its kind, its credits, licenses and tags copied, its scores copied with
   the content version each was made from, its notice, and where its
@@ -715,64 +705,51 @@ these tables:
   corpus with its own row, credits, licenses and notice, so a model that
   learned the conversation credits the texts it quotes;
 - `licenses` and `notices`: the license texts and notices those texts
-  name, copied from their depots (ids carry their depot's name, so they never
-  repeat across depots).
+  name, copied from the depot.
 
-Everything goes under `corpora/<dataset name>-<first 8 hex characters of
-the build's key>/` in the store, with the record, `corpus.json`, written
-last, so a build that fails leaves no corpus. The build's key covers the
-depot, the dataset's id and row, the vocabulary, the size and the erasures
-carried out on a text the dataset's libraries hold or held, so another
-vocabulary or size builds into another folder, building a deleted corpus
-again writes into its folder, and an erasure of a text the dataset never
-read changes neither. The record names the vocabulary's sha256 and the
-size. Each share of its `shares_tokens` lists its groups (see "Shares"),
-each with its tag, null for the texts that carry no other tag, how many
-texts it holds and their tokens; a text counts for each of its groups, so
-the groups' tokens add up to more than the share's when texts carry
-several tags. The corpus id covers the
-dataset's id and its row (without its revision and change), the
-vocabulary and every file's content (of each text: its depot, id, notice,
-where its tokens start and, when it has any, its scores), so building the
-same corpus again finds it and writes nothing, and another dataset with
-the same content
-gets a corpus of its own. The record also gives a
-fingerprint of what it holds of each kind a training step reads, `plain`,
-`conversation` and `task` (`fingerprints`), so a step's result depends on
-the kinds it reads alone ([training.md](training.md), "Step results and
-reuse"). A record without its token files by kind is not fresh: training
-refuses it, and building it again writes a corpus of this form.
+Everything goes under `corpora/<build key>/` in the store, with the
+record, `corpus.json`, written last, so a build that fails leaves no
+corpus. The build key covers the snapshot's id and digest, the data
+section's kinds, shares and size, the vocabulary's sha256 and the build's
+rules, never the address the build was asked from, so a clone and the
+server key the same corpus, and another vocabulary or size builds into
+another folder. The record keeps the data section, the build key, the
+code's commit when given, the rules, and the erasures carried out on a
+text the snapshot holds. Each share of its `shares_tokens` lists its
+groups (see "Shares"), each with its tag, null for the texts that carry no
+other tag, how many texts it holds and their tokens; a text counts for
+each of its groups, so the groups' tokens add up to more than the share's
+when texts carry several tags. The corpus id covers the build key and
+every file's content (of each text: its depot, id, notice, where its
+tokens start and, when it has any, its scores), so building the same
+corpus again finds it and writes nothing. When an erasure reached the
+snapshot, the same key builds again into the same folder, with a new id,
+and the files of the record it replaces that it no longer names are
+deleted. The record also gives a fingerprint of what it holds of each
+kind a training step reads, `plain`, `conversation` and `task`
+(`fingerprints`), so a step's result depends on the kinds it reads alone
+([training.md](training.md), "Step results and reuse").
 
-The store keeps only the latest fresh corpus of each dataset, vocabulary
-and size: a new corpus deletes the one before of the same three once it is
-whole, and leaves the corpora of the dataset's other vocabularies and sizes
-as they are. A corpus of an older revision of the dataset, built again,
-deletes none of a newer revision, and the latest corpus of a dataset is
-the last built of its newest revision. A cap (`WPT_CORPORA_CAP`) bounds the bytes all corpora take
-together, the files of a folder left without a record by a build that
-stopped included. To make room, a build deletes those files first, then
-the corpus downloaded least recently, a file at a time, never one being
-built or downloaded. Before its first upload, a build estimates its whole
-size from its first files, and a corpus bigger than the cap fails then,
-before any other corpus is deleted for it. A build whose uploaded files
-were deleted meanwhile writes no record, and started again it starts over.
-A deleted corpus keeps its record, and building it again from that record
-(its dataset revision, vocabulary and size) says when an erasure changed
-its id.
+A cap (`WPT_CORPORA_CAP`) bounds the bytes all corpora take together, the
+files of a folder left without a record by a build that stopped included.
+To make room, a build deletes those files first, then the corpus
+downloaded least recently, a file at a time, never one being built or
+downloaded. Before its first upload, a build estimates its whole size from
+its first files, and a corpus bigger than the cap fails then, before any
+other corpus is deleted for it. A build whose uploaded files were deleted
+meanwhile writes no record, and started again it starts over.
 
 An erasure carried out while a corpus is built is checked once the build
 ends: when it reached a text the corpus took, the corpus is written stale
 and deletes no other corpus.
 
-A model recipe's data part names a depot by the name its corpora carry, a
-dataset in it by id or name, and the total tokens ([model.md](model.md),
-"Model recipes"). `wpt train` reads the corpus it is given, or else the
-latest fresh corpus of the triple that dataset, the vocabulary it publishes
-and the total tokens as the size. A dataset that publishes no vocabulary,
-or a triple not built, refuses the run with the triple and the dataset's
-download page in the depot's web app (`<depot address>/#/download/<dataset
-id>`); training never builds or queues anything. A text added to the depot
-after a build reaches training only once the corpus is built again.
+`wpt train` reads the corpus it is given, or else the corpus of the
+recipe's build key, after checking the snapshot's change and digest
+against the recipe; without one it refuses and says to press Build on the
+recipe's page ([training.md](training.md), "Training"). Training never
+builds or queues anything. A corpus is a cache: building the same recipe
+on the same snapshot gives it again, so a model's reproducibility rests on
+the depot's address, the snapshot and the recipe, never on a kept corpus.
 
 ### Conversations that quote texts
 
@@ -787,7 +764,7 @@ when, for each excerpt:
   quoted text it took.
 
 Otherwise the conversation is left out, whatever left the quoted text out:
-the size, the shares, the dataset's libraries or an erasure. The rule reads
+the size, the shares, the snapshot, the kinds or an erasure. The rule reads
 the depot alone, with no model, so the same depot builds the same corpus.
 The build takes the plain texts first, in the corpus's order, keeping in its
 work folder which ones it took, and then the conversations, in their own
@@ -796,8 +773,8 @@ size, so a corpus with a size holds fewer tokens of items by as many. The
 record counts these conversations in `left_out`: `quoted text left out` and
 `quote unmatched`.
 
-The export of a dataset's texts (the page "Export" of the depot's web app,
-[depot-web.md](depot-web.md)) follows the same rule: it leaves out a
+The frozen export of a legacy dataset's texts ([depot-web.md](depot-web.md),
+"Models trained before snapshots") follows the same rule: it leaves out a
 conversation when a text it quotes is not a plain text the export holds
 from the conversation's depot, or when a selector does not match exactly
 one place of the revision of that text the export holds. It writes a

@@ -19,7 +19,7 @@ body:
       options:
         - sources and data rules
         - tokenizer
-        - dataset build
+        - corpus build
         - training
         - evaluation
         - generation and chat

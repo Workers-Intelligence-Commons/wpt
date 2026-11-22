@@ -18,11 +18,101 @@
     "name": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]*$"
-    }
-  },
-  "properties": {
-    "data": {
-      "description": "what every size trains on, one dataset of a depot and one corpus for every size: its total tokens are the largest size's, the size of the corpus they ask for, and each size reads its start, at most what that corpus holds",
+    },
+    "depot": {
+      "type": "string",
+      "description": "the depot's public address: the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"
+    },
+    "hex64": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64})?$",
+      "description": "64 lowercase hexadecimal digits; empty until a person fills it in, and the check names each recipe to fill in"
+    },
+    "snapshot_data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "depot",
+        "snapshot",
+        "change",
+        "digest",
+        "vocabulary"
+      ],
+      "properties": {
+        "depot": {
+          "$ref": "#/$defs/depot"
+        },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*)?$",
+          "description": "the name of a snapshot of that depot (letters, digits, '.', '_' and '-'); empty until a person names it"
+        },
+        "change": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "the change number the snapshot reads, for a person to read; checked against the snapshot at build and at training"
+        },
+        "digest": {
+          "$ref": "#/$defs/hex64",
+          "description": "the snapshot's digest (wpt_depot.snapshots.digest_of), the proof of the texts it holds; checked at build and at training"
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "the kinds of text the corpus takes (plain, conversation, task); left out or empty: every kind"
+        },
+        "shares": {
+          "type": "array",
+          "description": "the share of the plain text each tag takes, in order (a text counts for the first share whose tag it has); shares sum to at most 1 and name a tag once; left out or empty: the snapshot's own proportions",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tag",
+              "share"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "minLength": 1
+              },
+              "share": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        },
+        "vocabulary": {
+          "$ref": "#/$defs/vocabulary"
+        }
+      }
+    },
+    "vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "size"
+      ],
+      "description": "the vocabulary the corpus is tokenized with: the sha256 of its file and its size in tokens",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "dataset_data": {
+      "description": "legacy: the shape of the series written before snapshots, a dataset of a depot and one corpus for every size",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -31,14 +121,26 @@
       ],
       "properties": {
         "depot": {
-          "type": "string",
-          "description": "the depot's public address, the name its corpora record for it (wpt_depot.corpus.depot_name): the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"
+          "$ref": "#/$defs/depot"
         },
         "dataset": {
           "type": "string",
           "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"
         }
       }
+    }
+  },
+  "properties": {
+    "data": {
+      "description": "what every size trains on, one corpus for every size: the snapshot data shape of a model recipe without total_tokens, or the legacy dataset shape; its total tokens are the largest size's, the size of the corpus they ask for, and each size reads its start, at most what that corpus holds",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/snapshot_data"
+        },
+        {
+          "$ref": "#/$defs/dataset_data"
+        }
+      ]
     },
     "reference": {
       "description": "the reference model every size scales from (a model recipe's `model`): its widths scale with d_model, its counts stay (every size has the same layers), its Engram table size scales with the cube of d_model (docs/model.md, \"Model series\")",

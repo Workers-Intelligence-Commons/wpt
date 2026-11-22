@@ -17,9 +17,14 @@ write_generated, by the command that makes them. The audit hook of
 guard.py refuses any other code that reaches these files.
 
 Every read is checked: a recipe against its schema (InvalidRecipe), and
-check() and problems() add the rules across files. A recipe whose depot
+check() and problems() add the rules across files. A recipe's data part
+has the snapshot shape (a snapshot of a depot, its change and digest, the
+kinds and shares by tag, the size and the vocabulary) or the legacy dataset
+shape of the recipes written before snapshots (a dataset of a depot); the
+schema accepts either. A recipe whose depot, snapshot, digest, vocabulary
 or dataset is still empty passes its schema, so it reads, and the check
-names it for a person to fill in.
+names it for a person to fill in; the check also refuses shares that name
+a tag twice or sum above 1.
 """
 
 import json
@@ -79,9 +84,24 @@ def validate(document, kind: str, where: str):
     """InvalidRecipe unless the document is a valid file of that kind; where
     names it in the message."""
     error = jsonschema.exceptions.best_match(_validator(KINDS[kind][0]).iter_errors(document))
+    while error is not None and error.validator == "oneOf" and error.context:
+        error = _nearest_shape(error)
     if error is not None:
         place = "/".join(map(str, error.absolute_path)) or "(top level)"
         raise InvalidRecipe(f"{where}: at {place}: {error.message}")
+
+
+def _nearest_shape(error):
+    """The error to report for a value that matches none of the shapes a
+    oneOf offers (a data section of neither the snapshot nor the legacy
+    dataset shape): the best of the shape that failed with the fewest
+    errors (the first shape on a tie), so the message names a field
+    instead of the whole value."""
+    by_shape = {}
+    for found in error.context:
+        by_shape.setdefault(found.schema_path[0], []).append(found)
+    nearest = min(sorted(by_shape), key=lambda shape: len(by_shape[shape]))
+    return jsonschema.exceptions.best_match(by_shape[nearest])
 
 
 def dump_json(document) -> str:
@@ -105,11 +125,36 @@ def check_declared(where: str, names: list[str]):
 
 def _empty_data(where: str, data: dict, place: str):
     """InvalidRecipe naming the fields of a data part that a person has not
-    filled in yet: the depot's public address and the dataset's id or name."""
-    empty = [key for key in ("depot", "dataset") if not data[key]]
+    filled in yet: in the snapshot shape, the depot's public address, the
+    snapshot's name and digest and the vocabulary's sha256; in the legacy
+    dataset shape, the depot's public address and the dataset's id or name."""
+    if "dataset" in data:
+        empty = [key for key in ("depot", "dataset") if not data[key]]
+        if empty:
+            raise InvalidRecipe(f"{where}: {' and '.join(f'{place}{key}' for key in empty)} empty: a person names "
+                                f"the depot's public address and the id or name of its dataset")
+        return
+    empty = [key for key in ("depot", "snapshot", "digest") if not data[key]]
+    empty += ["vocabulary.sha256"] if not data["vocabulary"]["sha256"] else []
     if empty:
-        raise InvalidRecipe(f"{where}: {' and '.join(f'{place}{key}' for key in empty)} empty: a person names the "
-                            f"depot's public address and the id or name of its dataset")
+        raise InvalidRecipe(f"{where}: {', '.join(f'{place}{key}' for key in empty)} empty: a person names the "
+                            f"depot's public address and its snapshot, with the snapshot's digest and the sha256 "
+                            f"of the vocabulary")
+
+
+def _shares(where: str, data: dict, place: str):
+    """InvalidRecipe for shares a corpus cannot be built with: a tag named
+    twice, shares summing above 1, or shares all 0 (give none instead)."""
+    shares = data.get("shares") or []
+    tags = [one["tag"] for one in shares]
+    repeated = sorted({tag for tag in tags if tags.count(tag) > 1})
+    if repeated:
+        raise InvalidRecipe(f"{where}: {place}shares name a tag more than once: {', '.join(repeated)}")
+    total = sum(one["share"] for one in shares)
+    if total > 1 + 1e-9:
+        raise InvalidRecipe(f"{where}: {place}shares sum to {total:g}, above 1: each is a part of the plain text")
+    if shares and not total:
+        raise InvalidRecipe(f"{where}: {place}shares are all 0: give one a share above 0, or give no shares")
 
 
 class Recipes:
@@ -185,8 +230,8 @@ class Recipes:
         return self._load(kind, name)
 
     def data_part(self, given: str) -> dict:
-        """The data part of the model recipe a name gives (model_recipe):
-        its depot, dataset and, for a model recipe, total_tokens; read
+        """The data part of the model recipe a name gives (model_recipe), of
+        either shape, with total_tokens for a size of a series too; read
         without deriving a size, so without the vocabulary's size. NotFound
         as model_recipe."""
         name, separated, _ = given.partition(SIZE_OF)
@@ -198,8 +243,9 @@ class Recipes:
         """The model recipe a name gives: NAME, the file of
         data/recipes/models/; SERIES:SIZE, that size of the series file
         data/recipes/series/SERIES.json, derived from it (series.py) for a
-        vocabulary of vocab_size tokens (the vocabulary of the dataset's
-        tokenizer recipe, which its depot holds), which a series needs;
+        vocabulary of vocab_size tokens (the size its data part's vocabulary
+        names, or for the legacy dataset shape the vocabulary of the
+        dataset's tokenizer recipe), which a series needs;
         SERIES:SIZE:RUN, another run of that size (a decay branch, a
         learning rate of the check: series.runs). NotFound when there is no
         such recipe, series, size or run; InvalidRecipe when the series'
@@ -210,8 +256,8 @@ class Recipes:
         size, _, run = rest.partition(SIZE_OF)
         document = self.recipe("series", name)
         if vocab_size is None:
-            raise InvalidRecipe(f"series {name}: a size is derived for the vocabulary's size, which its dataset's "
-                                "tokenizer recipe gives")
+            raise InvalidRecipe(f"series {name}: a size is derived for the vocabulary's size, which its data part "
+                                "names, or its dataset's tokenizer recipe gives")
         if size not in series.sizes(document):
             raise NotFound(f"no size {size!r} in the series {name}; its sizes are {', '.join(series.sizes(document))}")
         try:
@@ -374,4 +420,5 @@ class Recipes:
                 series.check(document)
             except ValueError as error:
                 raise InvalidRecipe(f"{where}: {error}") from None
+        _shares(where, document["data"], "data.")
         _empty_data(where, document["data"], "data.")

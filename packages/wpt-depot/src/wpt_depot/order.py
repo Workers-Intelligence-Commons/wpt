@@ -1,75 +1,98 @@
 """The order in which a corpus build, the estimate of a build and the
-sample that trains a vocabulary read a dataset's texts: every text of its
-libraries, each library as it stood at the change number of its depot the
-dataset names, by its export key (wpt_depot.ids.export_key, which its depot
-stores with each membership and pin), the order an export reads too
-(wpt_depot.exports), but for its long plain texts, each of which comes as
-its pieces (wpt_depot.pieces), each piece at the export key of its name.
-The key is made from a text's id alone, or a piece's name, so the order is
-fixed and shuffled at once: it depends on no dataset, size, vocabulary or
-depot file, a text and each of its pieces keep their place whatever the
-dataset's other texts, and the pieces of a long text spread over the whole
-order, so the first part of the order holds about its share of each long
-text.
+sample that trains a vocabulary read a snapshot's texts (wpt_depot.snapshots):
+every text the snapshot holds, by its export key (wpt_depot.ids.export_key),
+but for its long plain texts, each of which comes as its pieces
+(wpt_depot.pieces), each piece at the export key of its name. The key is
+made from a text's id alone, or a piece's name, so the order is fixed and
+shuffled at once: it depends on no recipe, size, vocabulary or depot file,
+a text and each of its pieces keep their place whatever the snapshot's
+other texts, and the pieces of a long text spread over the whole order, so
+the first part of the order holds about its share of each long text.
 
-A walk (walk) reads each library as its own rows by key, from the index
-memberships_key (pins_key for a library locked then) as Depot.library_range
-gives them, PAGE rows at a time, each row's revision and content version
-looked up as it is read, and merges the libraries' reads with the pieces by
-(key, the place of the text's depot among the depots the dataset reads, id,
-piece): texts of one key go by their depot's place, then by their id, a
-whole text before a piece. A text that two libraries of one depot hold
-comes once, at its revision in the first of those libraries the dataset
-names. Nothing past the last text a walk gives is read, so its first texts
-come at once whatever the dataset's size, and it starts after any text it
-gave before (after: that text's place), which is how a build goes on from
-its last upload.
+An Order (of) is made in memory from the snapshot's sets, never from a
+table of stored keys: each owner's numbers taken from its sets in the order
+of their parts, a number held by several parts kept in the lowest one (first
+part wins), with that part's bound; the export key of each id worked out;
+the long texts found (below) and their pieces added; then everything sorted
+by (key, owner, number, piece), a whole text's piece being WHOLE. The
+sort holds one int64 an entry: the key's high bits over the entry's
+position in its low ones, sorted in place; entries whose high bits are the
+same (a few hundred pairs among 22 million) are then put in the order of
+their whole key, owner, number and piece. Once sorted, an Order holds 8
+bytes an entry (number, 4; set and piece, 2 each; a text has fewer than
+32,768 pieces) and no key: a walk works out each
+entry's key as it reads it, and a place in the order is found by a binary
+search over keys worked out the same way. While it is made, an entry costs
+16 bytes at most, beside a few megabytes for the keys of CHUNK entries.
 
-The pieces need the long texts before the walk starts (long_texts): those
-each library holds, read from the depot's index of long content versions
-(Depot.library_long), whose read grows with the depot's long contents,
-never with a library's texts. A long text comes as pieces when its revision
-in the first library of its depot that holds it is long; a library's row of
-such a text is then passed. The walk holds the export key, text and number
-of every piece in arrays, 16 bytes a piece, and twice that while it sorts
-them.
+A text comes as pieces when its revision as of its bound reads a plain
+content version longer than wpt_depot.pieces.LENGTH characters. Those are
+found from the depot's index of long content versions
+(content_lists_long), whose read grows with the depot's long contents,
+never with the snapshot's texts: each such version's text, when the
+snapshot holds it, is read at its bound.
 
-Each Entry is a text or a piece with its key, source (the index of its depot
-among the depots the dataset reads), id, piece (its number, None for a whole
+A walk (walk) reads the order from a place on, PAGE entries at a time:
+each whole text's revision as of its bound, its kind (of the content version
+that revision reads), its tags as of its bound (schema.tags_at) and bytes,
+in one statement a page. A number
+with no row left (an erasure removed the text whole) is passed by. Nothing
+past the last entry a walk gives is read, and it starts after any place it
+gave before (after), which is how a build goes on from its last upload.
+
+Each Entry is a text or a piece with its key, owner (the depot whose
+numbering the id is in), number, id, piece (its number, None for a whole
 text), revision, kind (wpt_depot.kinds), pool (with shares: the index of
 the first share whose tag a plain text has, None when it has none; without
 shares, 0 for every plain text; None for an item), bytes (its content's
 UTF-8 bytes; a piece's, its share of its text's bytes, split evenly among
 its pieces, since they are known only once it is read), taken: whether a
-corpus takes it at all, that is, a plain text with a pool or a text of
-one of TRAINING_KINDS, a conversation or a task (a text of any other kind
-is no training data), and tags (its
-tags as JSON text; a piece's, its text's).
+corpus takes it at all, that is, a text of a kind the recipe names (every
+kind when it names none) that is a plain text with a pool or a text of one
+of TRAINING_KINDS, a conversation or a task (a text of any other kind is no
+training data), and tags (its tags as JSON text; a piece's, its text's).
 
-    walk(libraries, tags, after, long)   the texts and pieces of the libraries, in order, as Entry
-    long_texts(libraries)                the long texts whose pieces a walk gives
+    of(depot, snapshot)                       the order of a snapshot's texts, as an Order
+    sampled(depot, snapshot, points)          some of its texts, spread over its numbers, in order
+    walk(order, shares, kinds, after)         its texts and pieces, in order, as Entry
+    pool_of(kind, tags, shares, kinds)        a text's pool and whether a corpus takes it
 """
 
-import heapq
+import bisect
 import json
 from collections.abc import Iterator, Sequence
 from typing import NamedTuple
 
 import numpy as np
 
-from . import pieces
+from . import ids, pieces, snapshots
+from .filters import TEXTS_KEY
 from .ids import export_key
 from .kinds import PLAIN
+from .schema import LONG, tags_at
 
 TRAINING_KINDS = ("conversation", "task")  # the kinds beside plain a corpus takes
-PAGE = 2_000  # rows of one library read in one statement
-LOWEST, HIGHEST = -(1 << 63), (1 << 63) - 1  # the first and last export keys
-WHOLE = -1  # what a whole text's place holds where a piece's holds its number
+PAGE = 2_000  # whole texts a walk reads in one statement
+CHUNK = 1 << 16  # entries whose keys are worked out, or whose sorted place is read, at a time
+LOW_BITS = 1  # the fewest low bits of a sorted int64 that hold an entry's position (tests raise it to force ties)
+WHOLE = -1  # what a whole text's piece holds where a piece's holds its number
+# each text asked ([id, bound] pairs as JSON) at its revision as of its bound: (its place among those asked,
+# revision, kind and length and bytes of the content version it reads, which the revision keeps (schema.SIZES), its
+# tags as of its bound)
+AT_BOUND = ("WITH a AS MATERIALIZED (SELECT key, value ->> 0 AS text, value ->> 1 AS bound FROM json_each(?)) "
+            f"SELECT a.key, t.revision, t.content_kind, t.content_length, t.content_bytes, "
+            f"{tags_at('t.id', 'a.bound')} FROM a CROSS JOIN "
+            "texts_revisions t ON t.id = a.text AND t.revision = (SELECT max(r.revision) FROM "
+            f"texts_revisions r INDEXED BY {TEXTS_KEY} WHERE r.id = a.text AND r.change <= a.bound) "
+            "WHERE t.content_kind IS NOT NULL")
+LONG_VERSIONS = (f"SELECT DISTINCT id FROM content_lists INDEXED BY content_lists_long WHERE kind = '{PLAIN}' "
+                 f"AND length > {LONG}")
 
 
 class Entry(NamedTuple):
     key: int
-    source: int
+    owner: str
+    number: int
     id: str
     piece: int | None
     revision: int
@@ -80,122 +103,297 @@ class Entry(NamedTuple):
     tags: str
 
     def place(self) -> list:
-        """The text's place in the order, [key, source, id, piece (WHOLE for a whole text)], what a walk's after
-        names."""
-        return [self.key, self.source, self.id, WHOLE if self.piece is None else self.piece]
+        """The entry's place in the order, [key, owner, number, piece (WHOLE for a whole text)], what a walk's
+        after names."""
+        return [self.key, self.owner, self.number, WHOLE if self.piece is None else self.piece]
 
 
 class Long(NamedTuple):
-    """A long text whose pieces a walk gives: its source, id, revision, tags (JSON text), length and bytes."""
-    source: int
-    id: str
+    """A long text whose pieces a walk gives: its revision, tags (JSON text), length, bytes and number of pieces."""
     revision: int
     tags: str
     length: int
     bytes: int
+    count: int
 
 
-def pool_of(kind: str, tags: str, shares: Sequence[str] | None) -> tuple[int | None, bool]:
+class Order:
+    """A snapshot's texts and pieces in order, as the module says: sets,
+    [(owner, bound)] each set an entry may name; the arrays numbers,
+    owner_sets (each entry's set) and piece (WHOLE for a whole text), one
+    item an entry; long, {(set, number): Long} of the texts that come as
+    pieces; depot, the depot read, and address, its file."""
+
+    def __init__(self, depot, sets: list[tuple[str, int]], numbers: np.ndarray, owner_sets: np.ndarray,
+                 piece: np.ndarray, long: dict):
+        self.depot, self.address, self.sets = depot, depot.address, sets
+        self.numbers, self.owner_sets, self.piece, self.long = numbers, owner_sets, piece, long
+
+    def __len__(self) -> int:
+        return len(self.numbers)
+
+    def whole(self) -> int:
+        """How many texts the order holds, a text that comes as pieces counted once."""
+        return int(np.count_nonzero(self.piece == WHOLE)) + len(self.long)
+
+    def text(self, at: int) -> str:
+        """The id of the text of the entry at that position."""
+        return ids.make(self.sets[int(self.owner_sets[at])][0], int(self.numbers[at]))
+
+    def place(self, at: int) -> tuple:
+        """The entry at that position as (key, owner's UTF-8 bytes, number, piece): what the order sorts by."""
+        owner, number, piece = self.sets[int(self.owner_sets[at])][0], int(self.numbers[at]), int(self.piece[at])
+        text = ids.make(owner, number)
+        return export_key(text if piece == WHOLE else pieces.name(text, piece)), owner.encode(), number, piece
+
+    def start(self, after: Sequence | None) -> int:
+        """The position of the first entry after the place after (Entry.place), 0 without one."""
+        if after is None:
+            return 0
+        key, owner, number, piece = after
+        return bisect.bisect_right(range(len(self)), (key, owner.encode(), number, piece), key=self.place)
+
+    def subset(self, positions: Sequence[int]) -> "Order":
+        """The order of the entries at those positions alone, in order."""
+        at = np.asarray(sorted(positions), np.int64)
+        return Order(self.depot, self.sets, self.numbers[at], self.owner_sets[at], self.piece[at], self.long)
+
+    def spread(self, points: int) -> list[int]:
+        """At most points positions spread evenly over the order: every one when it holds no more."""
+        if len(self) <= points:
+            return list(range(len(self)))
+        return sorted({int(at) for at in np.linspace(0, len(self) - 1, points)})
+
+
+def _ranks(owners: list[str]) -> list[int]:
+    """Each owner's rank among the owners ordered by their UTF-8 bytes."""
+    ordered = {owner: at for at, owner in enumerate(sorted(set(owners), key=str.encode))}
+    return [ordered[owner] for owner in owners]
+
+
+def pool_of(kind: str, tags: str, shares: Sequence[str] | None, kinds: Sequence[str] | None = None
+            ) -> tuple[int | None, bool]:
     """(pool, taken) of a text of that kind with tags (JSON text), under
-    the tags of a dataset's shares (None without shares), as Entry says."""
+    the tags of a recipe's shares (None without shares) and the kinds it
+    names (None or empty: every kind), as Entry says."""
+    if kinds and kind not in kinds:
+        return None, False
     if kind != PLAIN:
         return None, kind in TRAINING_KINDS
     if shares is None:
         return 0, True
-    held = json.loads(tags)
+    held = json.loads(tags or "[]")
     pool = next((at for at, tag in enumerate(shares) if tag in held), None)
     return pool, pool is not None
 
 
-def long_texts(libraries: Sequence[tuple]) -> list[Long]:
-    """The long texts of the libraries (as walk takes them) that a walk
-    gives as pieces, as the module says, in the order of their (source,
-    id)."""
-    found = {}
-    for at, (source, depot, library, change) in enumerate(libraries):
-        earlier = [one for one in libraries[:at] if one[0] == source]
-        for key, text, revision, tags, length, size in depot.library_long(library, change):
-            if (source, text) in found:
-                continue
-            # an earlier library of the depot that holds it holds a revision that is not long: a whole text
-            if any(text in (row[1] for row in held.library_range(name, then, key, key))
-                   for _, held, name, then in earlier):
-                continue
-            found[source, text] = Long(source, text, revision, tags, length, size)
-    return [found[place] for place in sorted(found)]
+def of(depot, snapshot: str) -> Order:
+    """The order of the texts of depot's snapshot whose id is snapshot, as the module says."""
+    parts = snapshots.sets(depot, snapshot)
+    sets, found, held = [], [], {}
+    for _, owner, bound, bitmap in parts:  # in the order of (part, owner): a number keeps its lowest part
+        seen = held.get(owner)
+        fresh = bitmap if seen is None else bitmap - seen
+        held[owner] = bitmap if seen is None else seen | bitmap
+        found.append(np.frombuffer(fresh.to_array(), np.uint32) if len(fresh) else np.zeros(0, np.uint32))
+        sets.append((owner, bound))
+    starts = [0]
+    for count in map(len, found):
+        starts.append(starts[-1] + count)
+    numbers = np.concatenate(found) if found else np.zeros(0, np.uint32)
+    found = None  # each set's array freed: the numbers are all in one now
+    base = len(numbers)
+    long = _long(depot, sets, held, numbers, starts)
+    cut, extra = [], []  # the positions of the long texts' whole entries; (key, number, set, piece) of their pieces
+    for (index, number), one in long.items():
+        low, high = starts[index], starts[index + 1]
+        cut.append(low + int(np.searchsorted(numbers[low:high], number)))
+        text = ids.make(sets[index][0], number)
+        extra.extend((export_key(pieces.name(text, n)), number, index, n) for n in range(one.count))
+    size = base + len(extra)
+    bits = max(LOW_BITS, (size - 1).bit_length())
+    low_mask = (1 << bits) - 1
+    high_mask = np.int64(~low_mask)
+    keyed = np.empty(size, np.int64)  # each entry's key's high bits over its position
+    for index, (owner, _) in enumerate(sets):
+        prefix = ids.prefix(owner)
+        for low in range(starts[index], starts[index + 1], CHUNK):
+            high = min(low + CHUNK, starts[index + 1])
+            keys = np.fromiter((export_key(f"{prefix}{number}") for number in numbers[low:high].tolist()), np.int64,
+                               high - low)
+            keyed[low:high] = (keys & high_mask) | np.arange(low, high, dtype=np.int64)
+    for at, (key, *_) in enumerate(extra):
+        keyed[base + at] = (key & int(high_mask)) | (base + at)
+    keyed.sort()
+    ranks = _ranks([owner for owner, _ in sets])
+    extra_numbers = np.array([number for _, number, _, _ in extra], np.uint32)
+    extra_sets = np.array([index for _, _, index, _ in extra], np.int16 if len(sets) < (1 << 15) else np.int32)
+    extra_pieces = np.array([n for _, _, _, n in extra], np.int16)
+    bounds = np.array(starts[1:], np.int64)
+
+    def entry(position: int) -> tuple:
+        """The entry at that position before the sort, as the sort orders it: (key, owner's rank, number, piece)."""
+        if position >= base:
+            key, number, index, n = extra[position - base]
+            return key, ranks[index], number, n
+        index = int(np.searchsorted(bounds, position, "right"))
+        number = int(numbers[position])
+        return export_key(ids.make(sets[index][0], number)), ranks[index], number, WHOLE
+    for first, last in _ties(keyed, bits):
+        positions = (keyed[first:last] & low_mask).tolist()
+        positions.sort(key=entry)
+        keyed[first:last] = (keyed[first:last] & high_mask) | np.array(positions, np.int64)
+    dropped = np.array(sorted(cut), np.int64)
+    kept = size - len(dropped)
+    sorted_numbers = np.empty(kept, np.uint32)
+    for start, end, positions in _positions(keyed, low_mask, dropped):
+        inside = positions < base
+        chunk = np.empty(len(positions), np.uint32)
+        chunk[inside] = numbers[positions[inside]]
+        chunk[~inside] = extra_numbers[positions[~inside] - base]
+        sorted_numbers[start:end] = chunk
+    numbers = None  # its memory freed before the sets and pieces take theirs
+    owner_sets = np.empty(kept, extra_sets.dtype)
+    piece = np.empty(kept, np.int16)
+    for start, end, positions in _positions(keyed, low_mask, dropped):
+        inside = positions < base
+        chunk_sets = np.empty(len(positions), extra_sets.dtype)
+        chunk_sets[inside] = np.searchsorted(bounds, positions[inside], "right")
+        chunk_sets[~inside] = extra_sets[positions[~inside] - base]
+        owner_sets[start:end] = chunk_sets
+        chunk_piece = np.full(len(positions), WHOLE, np.int16)
+        chunk_piece[~inside] = extra_pieces[positions[~inside] - base]
+        piece[start:end] = chunk_piece
+    return Order(depot, sets, sorted_numbers, owner_sets, piece, long)
 
 
-def walk(libraries: Sequence[tuple], shares: Sequence[str] | None, after: Sequence | None = None,
-         long: list[Long] | None = None) -> Iterator[Entry]:
-    """The texts and pieces of libraries, for each library the dataset
-    names in order (source, its depot opened, library id, change number),
-    in the order the module says, each as Entry under the tags of the
-    dataset's shares (None without shares); only those after the place
-    after when it is given. long: the long texts (long_texts), read from
-    the libraries when not given."""
-    after = None if after is None else tuple(after)
-    long = long_texts(libraries) if long is None else long
-    cut = {(one.source, one.id) for one in long}
-    reads = [_library(source, depot, library, change, after) for source, depot, library, change in libraries]
-    last = None
-    # heapq.merge gives rows of one place in the order of the reads: the first library's revision first
-    for key, source, text, piece, revision, kind, tags, size in heapq.merge(*reads, _pieces(long, after),
-                                                                           key=lambda row: row[:4]):
-        if (key, source, text, piece) == last or (piece == WHOLE and (source, text) in cut):
+def _ties(keyed: np.ndarray, bits: int) -> Iterator[tuple[int, int]]:
+    """Each run [first, last) of two or more neighbours of the sorted keyed whose bits above the low bits are the
+    same, in order, read CHUNK at a time."""
+    first, last = None, 0
+    for low in range(0, max(len(keyed) - 1, 0), CHUNK):
+        high = min(low + CHUNK + 1, len(keyed))
+        part = keyed[low:high] >> bits
+        for at in np.flatnonzero(part[1:] == part[:-1]).tolist():
+            at += low
+            if first is None or at > last - 1:
+                if first is not None:
+                    yield first, last
+                first = at
+            last = at + 2
+    if first is not None:
+        yield first, last
+
+
+def _positions(keyed: np.ndarray, low_mask: int, dropped: np.ndarray) -> Iterator[tuple[int, int, np.ndarray]]:
+    """The positions the sorted keyed holds, without those dropped, CHUNK at a time, each chunk with the place it
+    takes among those kept: (start, end, positions)."""
+    start = 0
+    for low in range(0, len(keyed), CHUNK):
+        positions = keyed[low:low + CHUNK] & low_mask
+        if len(dropped):
+            positions = positions[~np.isin(positions, dropped)]
+        yield start, start + len(positions), positions
+        start += len(positions)
+
+
+def sampled(depot, snapshot: str, points: int) -> Order:
+    """At most points texts of depot's snapshot whose id is snapshot, in
+    the order of their export keys, each whole: those at evenly spaced
+    ranks among its numbers (each owner's numbers in increasing order, the
+    owners in the order of their sets, a number kept in its lowest part), so
+    the same for the same snapshot, made without the export key of every
+    text: what an estimate reads of a big snapshot."""
+    parts = snapshots.sets(depot, snapshot)
+    sets, fresh, held = [], [], {}
+    for _, owner, bound, bitmap in parts:
+        seen = held.get(owner)
+        fresh.append(bitmap if seen is None else bitmap - seen)
+        held[owner] = bitmap if seen is None else seen | bitmap
+        sets.append((owner, bound))
+    sizes = np.array([len(one) for one in fresh], np.int64)
+    total = int(sizes.sum())
+    ranks = range(total) if total <= points else sorted({int(at) for at in np.linspace(0, total - 1, points)})
+    starts = np.concatenate([[0], np.cumsum(sizes)])
+    owner_sets, numbers = [], []
+    for rank in ranks:
+        index = int(np.searchsorted(starts, rank, "right")) - 1
+        owner_sets.append(index)
+        numbers.append(fresh[index][rank - int(starts[index])])
+    keys = np.array([export_key(ids.make(sets[index][0], number)) for index, number in zip(owner_sets, numbers)],
+                    np.int64)
+    numbers = np.array(numbers, np.uint32)
+    owner_sets = np.array(owner_sets, np.int16 if len(sets) < (1 << 15) else np.int32)
+    ranks_of = np.array(_ranks([owner for owner, _ in sets]), np.int32)
+    order = np.lexsort((numbers, ranks_of[owner_sets] if len(sets) else owner_sets, keys))
+    return Order(depot, sets, numbers[order], owner_sets[order], np.full(len(keys), WHOLE, np.int16), {})
+
+
+def _long(depot, sets, held, numbers, starts) -> dict:
+    """{(set, number): Long} of the texts of the order whose revision as of
+    their bound reads a long plain content version, found from the index
+    content_lists_long."""
+    con = depot.db.reader()
+    asked = []  # (set, number, id, bound)
+    for (text,) in con.execute(LONG_VERSIONS).fetchall():
+        owner, number = ids.owner(text), ids.number(text)
+        if number is None or owner not in held or number not in held[owner]:
             continue
-        last = key, source, text, piece
-        pool, taken = pool_of(kind, tags, shares)
-        yield Entry(key, source, text, None if piece == WHOLE else piece, revision, kind, pool, size, taken,
-                    tags or "[]")
+        for index, (named, bound) in enumerate(sets):
+            low, high = int(starts[index]), int(starts[index + 1])
+            if named == owner and low < high:
+                at = low + int(np.searchsorted(numbers[low:high], number))
+                if at < high and int(numbers[at]) == number:
+                    asked.append((index, number, text, bound))
+                    break
+    found = {}
+    for start in range(0, len(asked), PAGE):
+        page = asked[start:start + PAGE]
+        for at, revision, kind, length, size, tags in con.execute(
+                AT_BOUND, (json.dumps([[text, bound] for _, _, text, bound in page]),)).fetchall():
+            if kind == PLAIN and length > LONG:
+                index, number, _, _ = page[at]
+                found[index, number] = Long(revision, tags or "[]", length, size, pieces.count(length))
+    return found
 
 
-def _pieces(long: list[Long], after: tuple | None) -> Iterator[tuple]:
-    """The rows of the pieces of the long texts, in the order of their (key,
-    source, id, number), as _library gives a text's (its kind plain, its
-    bytes its share of its text's)."""
-    counts = np.array([pieces.count(one.length) for one in long], np.int64)
-    total = int(counts.sum())
-    owners = np.repeat(np.arange(len(long), dtype=np.int32), counts)
-    numbers = (np.arange(total) - np.repeat(np.cumsum(counts) - counts, counts)).astype(np.int32)
-    keys = np.fromiter((export_key(pieces.name(long[owner].id, int(number)))
-                        for owner, number in zip(owners, numbers)), np.int64, total)
-    order = np.argsort(keys, kind="stable")  # long is in the order of (source, id), each text's pieces by number
-    keys, owners, numbers = keys[order], owners[order], numbers[order]
-    del order
-    first = 0 if after is None else int(np.searchsorted(keys, after[0]))
-    for start in range(first, total, PAGE):  # a page of plain ints at a time
-        end = start + PAGE
-        for key, owner, number in zip(keys[start:end].tolist(), owners[start:end].tolist(),
-                                      numbers[start:end].tolist()):
-            one, count = long[owner], int(counts[owner])
-            row = (key, one.source, one.id, number, one.revision, PLAIN, one.tags,
-                   one.bytes // count + (number < one.bytes % count))
-            if after is None or row[:4] > after:
-                yield row
+def walk(order: Order, shares: Sequence[str] | None, kinds: Sequence[str] | None = None,
+         after: Sequence | None = None, skipped: list | None = None) -> Iterator[Entry]:
+    """The texts and pieces of the order, from the place after on (every
+    one without it), each as Entry under the tags of the recipe's shares
+    (None without shares) and the kinds it names (None or empty: every
+    kind). skipped, when given, has its first item raised by one for each
+    number passed by because its text has no row left."""
+    con = order.depot.db.reader()
+    for start in range(order.start(after), len(order), PAGE):
+        end = min(start + PAGE, len(order))
+        numbers = order.numbers[start:end].tolist()
+        sets = order.owner_sets[start:end].tolist()
+        piece = order.piece[start:end].tolist()
+        asked = [at for at in range(len(numbers)) if piece[at] == WHOLE]
+        rows = {}
+        if asked:
+            question = [[ids.make(order.sets[sets[at]][0], numbers[at]), order.sets[sets[at]][1]] for at in asked]
+            for place, revision, kind, _, size, tags in con.execute(AT_BOUND, (json.dumps(question),)).fetchall():
+                rows[asked[place]] = (revision, kind, size, tags or "[]")
+        for at in range(len(numbers)):
+            owner = order.sets[sets[at]][0]
+            text = ids.make(owner, numbers[at])
+            if piece[at] == WHOLE:
+                found = rows.get(at)
+                if found is None:
+                    if skipped is not None:
+                        skipped[0] += 1
+                    continue
+                revision, kind, size, tags = found
+                pool, taken = pool_of(kind, tags, shares, kinds)
+                yield Entry(export_key(text), owner, numbers[at], text, None, revision, kind, pool, size, taken,
+                            tags)
+            else:
+                one = order.long[sets[at], numbers[at]]
+                number = piece[at]
+                size = one.bytes // one.count + (number < one.bytes % one.count)
+                pool, taken = pool_of(PLAIN, one.tags, shares, kinds)
+                yield Entry(export_key(pieces.name(text, number)), owner, numbers[at], text, number, one.revision,
+                            PLAIN, pool, size, taken, one.tags)
 
-
-def _library(source: int, depot, library: str, change: int, after: tuple | None) -> Iterator[tuple]:
-    """The rows of one library, in the order of their (key, source, id),
-    from its depot a page at a time: (key, source, id, WHOLE, revision,
-    kind, tags as JSON text, bytes). A page ends before the rows of its
-    last key, which the next page starts with, so the texts of one key are
-    sorted by id together."""
-    low = LOWEST if after is None else after[0]
-    while True:
-        rows = list(depot.library_range(library, change, low, HIGHEST, PAGE))
-        if not rows:
-            return
-        ended = len(rows) < PAGE
-        if not ended:
-            top = rows[-1][0]
-            rows = ([row for row in rows if row[0] != top] if rows[0][0] != top
-                    else list(depot.library_range(library, change, top, top)))
-        found = sorted(((key, source, text, WHOLE, revision, kind, tags, size)
-                        for key, text, revision, kind, tags, size in rows), key=lambda row: row[:3])
-        for row in found:
-            if after is None or row[:4] > after:
-                yield row
-        high = found[-1][0]
-        if ended or high == HIGHEST:
-            return
-        low = high + 1

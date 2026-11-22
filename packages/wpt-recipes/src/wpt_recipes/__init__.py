@@ -1,9 +1,11 @@
 """WPT's recipes and task images, read and checked.
 
 A model recipe (data/recipes/models/<name>.json) says everything that
-changes a model: its data (the address of a depot, the name of a dataset
-there, whose tokenizer recipe in that depot gives the vocabulary, and its
-total tokens), its architecture, its seed, its training steps and its
+changes a model: its data (the address of a depot, a snapshot there with
+its change and digest, the kinds and shares by tag it takes, its total
+tokens and its vocabulary's sha256 and size; recipes written before
+snapshots name a dataset of the depot instead, whose tokenizer recipe
+gives the vocabulary), its architecture, its seed, its training steps and its
 drafter (docs/model.md). A series (data/recipes/series/<name>.json) holds
 the rules several sizes of one model share, and series.py derives each
 size's model recipe from it, for the vocabulary's size. A task image

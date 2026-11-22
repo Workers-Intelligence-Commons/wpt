@@ -1,4 +1,4 @@
-"""The step from format 2 to format 3 (wpt_depot.legacy.STEPS), on the
+"""The step from format 2 to format 3 (wpt_depot.delta.STEPS), on the
 folder of Delta Lake tables: every
 content version stored as the ordered list of its parts (wpt_depot.parts).
 
@@ -60,7 +60,7 @@ CONTENTS_WRITTEN_3 = WriterProperties(compression="SNAPPY")
 
 
 def to_parts(tables):
-    """Format 2 to 3 over the depot's tables (wpt_depot.legacy.Legacy)."""
+    """Format 2 to 3 over the depot's tables (wpt_depot.delta.DeltaFolder)."""
     system, folder = _folder(tables)
     if "parts" in tables.columns("contents"):
         _remove(system, folder)

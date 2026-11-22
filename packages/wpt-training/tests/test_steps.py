@@ -43,7 +43,7 @@ def test_a_step_s_optimizer_is_chosen_apart_from_its_method(tmp_path):
 
 def test_a_step_entry_that_cannot_be_is_refused_saying_why(tmp_path):
     cases = [
-        ({"step": "read-twice"}, r"read-twice: not a built-in step \(answer-as-assistant, finish-tasks, "),
+        ({"step": "read-twice"}, r"read-twice: not a built-in step \(answer-as-assistant, answer-as-assistant-dft, "),
         ({"step": "finish-tasks", "settings": {"round": 3}}, r"finish-tasks.py: no setting 'round' \(settings: "),
         ({"step": "finish-tasks", "settings": {"rounds": "many"}}, r"setting rounds='many' is not a int"),
         ({"step": "finish-tasks", "settings": {"reward": "longer"}}, r"reward 'longer': one of weighed, shorter"),

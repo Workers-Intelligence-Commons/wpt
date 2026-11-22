@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from wpt_recipes import NotFound, Recipes, series, validate
+from wpt_recipes import InvalidRecipe, NotFound, Recipes, series, validate
 
 ROOT = Path(__file__).resolve().parents[3]
 SERIES = "eldest-titmouse"
@@ -89,6 +89,7 @@ def test_the_batch_is_whole_windows_at_least_one_and_the_warm_up_a_share_of_the_
 
 
 def test_each_size_is_a_model_recipe_and_every_size_shares_the_data_of_the_largest(repo, ladder):
+    # eldest-titmouse names a dataset: the legacy shape, which still derives every size
     plans = repo.series_plans(SERIES, VOCABULARY)
     largest = max(plans, key=lambda plan: plan.parameters)
     assert largest.size == "768x15"
@@ -121,3 +122,22 @@ def test_a_size_or_a_series_that_does_not_exist_is_refused(repo, ladder):
     odd["sizes"].append({"name": "300x6", "d_model": 300})  # 300 / 512 of 8 attention heads is not whole
     with pytest.raises(ValueError, match="size 300x6: attention_heads"):
         series.check(odd)
+
+
+SNAPSHOT_DATA = {"depot": "https://depot.example", "snapshot": "2026-11", "change": 1234, "digest": "d" * 64,
+                 "kinds": ["plain"], "shares": [{"tag": "fiction", "share": 0.5}],
+                 "vocabulary": {"sha256": "5" * 64, "size": VOCABULARY}}
+
+
+def test_a_series_of_the_snapshot_shape_gives_every_size_its_data_and_the_largest_size_s_tokens(ladder):
+    snapshot = {**copy.deepcopy(ladder), "data": copy.deepcopy(SNAPSHOT_DATA)}
+    validate(snapshot, "series", "snapshot")
+    largest = series.data_part(ladder)["total_tokens"]
+    assert series.data_part(snapshot) == {**SNAPSHOT_DATA, "total_tokens": largest}
+    for size in series.sizes(snapshot):
+        recipe = series.model_recipe(snapshot, series.plan(snapshot, size, VOCABULARY))
+        validate(recipe, "model", f"snapshot:{size}")
+        assert recipe["data"] == {**SNAPSHOT_DATA, "total_tokens": largest}
+    # a series' sizes give the size: its data part names none
+    with pytest.raises(InvalidRecipe, match="at data: Additional properties are not allowed .'total_tokens' was"):
+        validate({**snapshot, "data": {**SNAPSHOT_DATA, "total_tokens": 100}}, "series", "snapshot")

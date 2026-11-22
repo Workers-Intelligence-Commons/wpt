@@ -15,7 +15,7 @@ import { type Answer } from "./api";
 import { BlockedTexts, blockedCount, type Deciding } from "./blocked";
 import { CountingNote, matched, useCounts } from "./counts";
 import { search, type Found, type Place, type Selection } from "./filter";
-import { PlacePager, Problems, plural, STATUSES, StatusBadge, type Library } from "./parts";
+import { PlacePager, Problems, plural, STATUSES, StatusBadge } from "./parts";
 import { TextTable } from "./table";
 
 const SHOWN = 12; // tags and licenses named in the summary
@@ -27,8 +27,8 @@ const LIMIT = 25; // texts of a page of the list
 // decision, how many of them have its status already (null until counted, or
 // once a text is unticked here, whose status the count does not know); onChange:
 // after a refusal or a license change made from the blocked texts.
-export function Review({ selection, libraries, decision, onChange, children }: {
-  selection: Selection; libraries: Library[]; decision?: Deciding; onChange?: () => void;
+export function Review({ selection, decision, onChange, children }: {
+  selection: Selection; decision?: Deciding; onChange?: () => void;
   children: (chosen: Selection, size: number | null, already: number | null) => ReactNode;
 }) {
   const [left, setLeft] = useState<Set<string>>(new Set(selection.unticked ?? []));
@@ -67,7 +67,6 @@ export function Review({ selection, libraries, decision, onChange, children }: {
           <h3 className="cue">By status</h3>
           <ul className="plain">
             {STATUSES.filter((s) => counted.statuses[s] > 0).map((s) => <li key={s}><StatusBadge status={s} /> {counted.statuses[s].toLocaleString("en")}</li>)}
-            {counted.locked > 0 && <li><span className="aside">in a locked library</span> {counted.locked.toLocaleString("en")}</li>}
           </ul>
         </section>
         <section aria-label="By tag">
@@ -95,7 +94,7 @@ export function Review({ selection, libraries, decision, onChange, children }: {
           <span className="aside">Untick a text to leave it out.</span>
           {left.size > 0 && <Button variant="quiet" onClick={() => setLeft(new Set())}>Tick every one again</Button>}
         </p>
-        <TextTable rows={rows} libraries={libraries} label="The texts it reaches"
+        <TextTable rows={rows} label="The texts it reaches"
           ticked={new Set(rows.filter((r) => !left.has(r.id)).map((r) => r.id))} onTick={tick} />
         <PlacePager label="Pages of the texts it reaches" limit={LIMIT}
           onFirst={() => setPlaces([null])} onPrevious={places.length > 1 ? () => setPlaces(places.slice(0, -1)) : null}

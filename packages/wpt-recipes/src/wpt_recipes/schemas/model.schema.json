@@ -7,19 +7,63 @@
   "required": ["data", "model", "seed", "steps", "drafter"],
   "$defs": {
     "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
-    "settings": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array"]}}
-  },
-  "properties": {
-    "data": {
-      "description": "what the model trains on: a dataset of a depot, whose corpus with the vocabulary the dataset publishes, built at the size total_tokens, training takes; recipes with the same data share one corpus",
+    "settings": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array"]}},
+    "depot": {"type": "string", "description": "the depot's public address: the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"},
+    "hex64": {"type": "string", "pattern": "^([0-9a-f]{64})?$", "description": "64 lowercase hexadecimal digits; empty until a person fills it in, and the check names each recipe to fill in"},
+    "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the corpus the recipe asks for (the max_tokens it is built at) and a ceiling on the tokens of plain text it reads: a corpus built at that size gives its conversations and tasks their share of it, and training reads what it holds"},
+    "snapshot_data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["depot", "snapshot", "change", "digest", "total_tokens", "vocabulary"],
+      "properties": {
+        "depot": {"$ref": "#/$defs/depot"},
+        "snapshot": {"type": "string", "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*)?$", "description": "the name of a snapshot of that depot (letters, digits, '.', '_' and '-'); empty until a person names it"},
+        "change": {"type": "integer", "minimum": 0, "description": "the change number the snapshot reads, for a person to read; checked against the snapshot at build and at training"},
+        "digest": {"$ref": "#/$defs/hex64", "description": "the snapshot's digest (wpt_depot.snapshots.digest_of), the proof of the texts it holds; checked at build and at training"},
+        "kinds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "description": "the kinds of text the corpus takes (plain, conversation, task); left out or empty: every kind"},
+        "shares": {
+          "type": "array",
+          "description": "the share of the plain text each tag takes, in order (a text counts for the first share whose tag it has); shares sum to at most 1 and name a tag once; left out or empty: the snapshot's own proportions",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tag", "share"],
+            "properties": {
+              "tag": {"type": "string", "minLength": 1},
+              "share": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          }
+        },
+        "total_tokens": {"$ref": "#/$defs/total_tokens"},
+        "vocabulary": {"$ref": "#/$defs/vocabulary"}
+      }
+    },
+    "vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size"],
+      "description": "the vocabulary the corpus is tokenized with: the sha256 of its file and its size in tokens",
+      "properties": {
+        "sha256": {"$ref": "#/$defs/hex64"},
+        "size": {"type": "integer", "minimum": 1}
+      }
+    },
+    "dataset_data": {
+      "description": "legacy: the shape of the recipes written before snapshots, a dataset of a depot whose corpus with the vocabulary the dataset publishes, built at the size total_tokens, training takes",
       "type": "object",
       "additionalProperties": false,
       "required": ["depot", "dataset", "total_tokens"],
       "properties": {
-        "depot": {"type": "string", "description": "the depot's public address, the name its corpora record for it (wpt_depot.corpus.depot_name): the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each recipe to fill in"},
+        "depot": {"$ref": "#/$defs/depot"},
         "dataset": {"type": "string", "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each recipe to fill in"},
-        "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the corpus the recipe asks for (the max_tokens it is built at) and a ceiling on the tokens of plain text it reads: a corpus built at that size gives its conversations and tasks their share of it, and training reads what it holds"}
+        "total_tokens": {"$ref": "#/$defs/total_tokens"}
       }
+    }
+  },
+  "properties": {
+    "data": {
+      "description": "what the model trains on: the snapshot data shape (a snapshot of a depot, the kinds and the shares by tag it takes, the corpus size and the vocabulary), or the legacy dataset shape of the recipes written before snapshots; recipes with the same data share one corpus",
+      "oneOf": [{"$ref": "#/$defs/snapshot_data"}, {"$ref": "#/$defs/dataset_data"}]
     },
     "model": {
       "description": "the architecture's numbers (docs/model.md; wpt_model.ModelConfig without vocab_size, which the corpus's vocabulary gives, and block_size, the last window length of the steps' text windows)",
@@ -65,7 +109,7 @@
         "additionalProperties": false,
         "required": ["step"],
         "properties": {
-          "step": {"type": "string", "minLength": 1, "description": "a built-in step of wpt_training (read-text, answer-as-assistant, finish-tasks, finish-tasks-with-less-writing) or a .py file"},
+          "step": {"type": "string", "minLength": 1, "description": "a built-in step of wpt_training (read-text, answer-as-assistant, answer-as-assistant-dft: each assistant token's loss weighed by its probability, answer-as-assistant-neftune: noise on the input embeddings in training passes, its setting alpha, finish-tasks, finish-tasks-with-less-writing) or a .py file"},
           "optimizer": {
             "type": "object", "additionalProperties": false, "required": ["name"],
             "description": "the optimizer the step's loss moves the weights with; left out, the step's own",

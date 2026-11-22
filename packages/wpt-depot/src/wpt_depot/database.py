@@ -81,7 +81,7 @@ import apsw.ext
 from . import ids
 from .errors import BadQuery, DepotExists, NotADepot, TimeLimitReached
 from .parts import unpack
-from .schema import SQL_STRING, VIEWS, ddl
+from .schema import SQL_STRING, TOKENIZERS_12, VIEWS, ddl
 
 WAIT = 24 * 3600 * 1000  # milliseconds a write waits for the write lock another process holds
 WAITING = ".waiting"  # what the waiting folder's name adds to the depot file's name
@@ -248,7 +248,9 @@ class Database:
         try:
             for pragma in pragmas:
                 con.execute(f"PRAGMA {pragma}").fetchall()
+            sampled = any(row[1] == "sample" for row in con.execute("PRAGMA table_info(tokenizers_revisions)"))
             for name, query in VIEWS.items():
+                query = query if name != "tokenizers" or sampled else TOKENIZERS_12
                 con.execute(f"CREATE TEMP VIEW {name} AS {query}")
         except apsw.SQLError as error:
             con.close()

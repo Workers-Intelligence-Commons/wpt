@@ -1,126 +1,36 @@
-"""The routes of `wpt depot web` over what the depot builds and gives to
-download: its tokenizer recipes and their vocabularies, the jobs' queue
-(wpt.depot.jobs), a dataset's corpora built with a vocabulary at a size,
-a dataset's export of its texts, and the sample route another depot's
-vocabulary training reads.
+"""The routes of `wpt depot web` over the depot's tokenizer recipes and
+their vocabularies, and the jobs' queue (wpt.depot.jobs). The snapshots
+are wpt.depot.web.snapshots', the repository's recipes and the corpora
+they build wpt.depot.web.recipes', and the frozen dataset routes, a
+dataset's corpora and export included, wpt.depot.web.legacy's.
 
-Anyone may queue a vocabulary training or a corpus build, each only with
-an explicit confirmation (confirmed: true in its body), after the pages
-show the estimate of what it takes; only the command line cancels a job.
-A build names its dataset, a vocabulary the depot holds already (by its
-sha256: a build never trains one) and a size (max_tokens, or "all"). The
-estimate of a build (GET /api/datasets/{id}/estimate) tokenizes a small
-sample (wpt_depot.estimate) and writes nothing; that of a training
-(GET /api/tokenizers/{name}/estimate) is its sample's bytes at the speed of
-TRAINING_MEASURE. A deleted corpus is built again from its own record, and
-the build says whether its id changed.
+Anyone may queue a vocabulary training, only with an explicit
+confirmation (confirmed: true in its body), after the pages show the
+estimate of what it takes (GET /api/tokenizers/{name}/estimate: its
+sample's bytes at the speed of TRAINING_MEASURE); only the command line
+cancels a job.
 
-A dataset's download of one vocabulary and size
-(GET /api/datasets/{id}/download/{vocabulary}/{size}, the page
-#/download/<id>/<vocabulary>/<size>) never changes its address: it gives
-the latest fresh corpus of that triple built from the dataset's current
-revision (or from one that differs from it only in its max_tokens or the
-vocabulary it publishes, which a build never reads: a corpus is
-identified by its own triple), or a state with nothing to download:
-"checking an erasure" (an erasure decided here is being carried into the
-corpora's records, wpt.depot.downloads; no corpus is sent meanwhile),
-"being built" (the job's progress), "stale" (an admitted erasure reached a
-text of the latest corpus of the dataset's current revision; nothing builds
-it again by itself), "not built" or "no store". Reading it starts nothing.
-A built corpus gives each of its files, streamed from the store with Range
-support, and all of them in one tar archive (wpt.depot.web.archive), made
-as it is sent, of a length known beforehand, with the same Range support. A
-browser saves each file under a name made of the dataset's name, the
-vocabulary, the size and what the file is, so a folder of downloads tells
-the files apart, and the archive under the first three, holding the files
-under those names. GET /api/datasets/{id}/download lists the triples the store holds
-corpora of, each with its address and state, and with the latest fresh
-corpus of the triple built from any revision of the dataset (latest_fresh,
-its revision named), the corpus training takes (wpt.train.recipe_depot).
-
-A dataset's export (GET /api/datasets/{id}/export, the page
-#/export/<id>) gives the texts of its current revision in numbered parts
-(wpt_depot.exports), each made as it is sent, in JSONL compressed with zstd
-or in Parquet, saved under the dataset's name followed by the part's,
-with its size once it was sent whole; it needs no
-tokenizer, no build and no job. A part whose size is known takes one Range
-of bytes. At most downloads.EXPORTS parts (and samples) are sent at once
-in all, and downloads.VISITOR_EXPORTS for one visitor (429 past them).
-
-The job operations of this module (train_job, build_job) run in the
-queue's process; each takes the depot, its arguments, progress and job.
+The job operation of this module (train_job) runs in the queue's process;
+it takes the depot, its arguments, progress and job.
 """
 
-import hashlib
-import queue
-import re
-import shutil
-import threading
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
-from datetime import datetime
 from functools import wraps
 
-from wpt_depot import Depot, corpora, errors
-from wpt_depot.corpus import revision_figures, sample, sample_lines
-from wpt_depot.estimate import estimate
-from wpt_depot.exports import FORMS, Export, parts_for
-from wpt_store import StoreError, store_from_settings
-from wpt_store.names import File
+from wpt_depot import Depot, errors
+from wpt_depot.legacy import Legacy
 from wpt_utils.lines import say
-from wpt_utils.parallel import Sizing
 
 from .. import shared
-from ..downloads import EXPORTS, VISITOR_EXPORTS, Downloads
+from ..downloads import Downloads
 from ..jobs import Job, Jobs
-from . import archive
+from .recipes import recipe_routes, recipes_naming
 from .server import Request, Route, Stream
+from .snapshots import snapshot_routes
 
-CHUNK = 8 << 20  # bytes of a stored file read at a time to send it
-ARCHIVE = "everything.tar"  # the last part of the address of a corpus's archive of every file
-ARCHIVE_FORMAT = "wpt-tar-1"  # mixed into the archive's ETag: raise it when archive.py changes the bytes it writes
-SIZING = 16  # store calls at once to learn the sizes of a corpus's files: each waits on the store, not the machine
-PROGRESS_SECONDS = 5  # seconds between two lines of progress of a sample being ordered
-RANGE = re.compile(r"bytes=(\d*)-(\d*)")
-TEXT_PART = re.compile(r"part-(\d{5})\.(jsonl\.zst|parquet)")
-SHA256 = re.compile(r"[0-9a-f]{64}")
-UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")  # what a downloaded file's name replaces by a hyphen
-ALL = "all"  # the size of a build with no max_tokens
-# the columns of a dataset's row a corpus of it depends on: never max_tokens nor vocabulary, which a build never reads
-SAME = ("name", "tokenizer", "libraries", "shares")
 # the media type of a vocabulary file, the JSON of wpt_tokenizer's merges
 JSON_TYPE = "application/json"
 # the one measure of a vocabulary training: (sample bytes, seconds) it took on the public depot's machine
 TRAINING_MEASURE = (10_000_000_000, 49 * 60)
-
-
-class _Stopped(Exception):
-    """The stream a sample is made for was closed: the sample stops there."""
-
-
-class Guarded:
-    """The chunks of a stream whose guard (a context manager entered
-    already) is left once, when the server closes the stream, sent or not;
-    closed (default: nothing) is called then too."""
-
-    def __init__(self, chunks, guard, closed=lambda: None):
-        self.chunks, self.guard, self.closed, self.left = chunks, guard, closed, False
-
-    def __iter__(self):
-        return self
-
-    def __next__(self) -> bytes:
-        return next(self.chunks)
-
-    def close(self):
-        if not self.left:
-            self.left = True
-            try:
-                self.closed()
-                getattr(self.chunks, "close", lambda: None)()
-            finally:
-                self.guard.__exit__(None, None, None)
 
 
 # The job operations, which the queue's process imports by name
@@ -131,77 +41,14 @@ def train_job(depot: Depot, name: str, *, progress, job: Job) -> dict:
     return {"vocabulary": shared.train_vocabulary(depot, name, say, work=job.work, progress=progress)}
 
 
-def build_job(depot: Depot, dataset: str, vocabulary: str, max_tokens: int | None, corpus: str | None = None, *,
-              progress, job: Job) -> dict:
-    """Build the corpus of the dataset of that id as it is now with the
-    vocabulary of that sha256 at the size max_tokens (None: no limit), or,
-    with corpus, the deleted corpus of that id again, into the store
-    WPT_STORE names, under the cap WPT_CORPORA_CAP sets, going on from the
-    dataset's checkpoint: {corpus, texts (every text and item it took), conversations, tasks, tokens (of plain
-    text), item_tokens (of the conversations and tasks), changed}."""
-    store = store_from_settings(shared.env_file())
-    downloads = Downloads(job.path)
-    cap = shared.corpora_cap()
-    record = None
-    if corpus is not None:
-        record = corpora.find(store, corpus)
-        if record is None:
-            raise errors.NotFound(f"no corpus {corpus} in the store")
-    work = job.work / f"corpus-{dataset}"
-    built = shared.build_corpus(
-        depot, dataset, say, vocabulary=vocabulary, max_tokens=max_tokens, store=store, record=record, work=work,
-        checkpoint=job.checkpoint(), save=job.save, progress=progress,
-        room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download, downloads.busy, say))
-    job.save(None)
-    shutil.rmtree(work, ignore_errors=True)
-    return {"corpus": built["id"], "texts": built["texts"], "conversations": built.get("conversations", 0),
-            "tasks": (built.get("tasks") or {}).get("count", 0), "tokens": built["total_tokens"],
-            "item_tokens": built.get("items_tokens") or 0, "left_out": built.get("left_out") or {},
-            "changed": built.get("changed")}
-
-
-def size_of(given) -> int | None:
-    """A build's size from a route: a whole number of tokens above 0, or "all" (None). BadQuery otherwise."""
-    if given == ALL:
-        return None
-    try:
-        size = int(given)
-    except (TypeError, ValueError):
-        size = 0
-    if isinstance(given, bool) or size < 1 or str(size) != str(given).strip():
-        raise errors.BadQuery(f"a size is a whole number of tokens above 0, or {ALL}: {given!r}")
-    return size
-
-
-def size_name(size: int | None) -> str:
-    """A build's size as its address names it."""
-    return ALL if size is None else str(size)
-
-
-def slug(text: str) -> str:
-    """text as a part of a downloaded file's name: ASCII letters, digits, '.', '_' and '-', the rest each run a hyphen."""
-    return UNSAFE.sub("-", text).strip("-") or "unnamed"
-
-
-def vocabulary_given(given) -> str:
-    """A vocabulary's sha256 from a route. BadQuery when it is not 64 lowercase hexadecimal characters."""
-    if not isinstance(given, str) or not SHA256.fullmatch(given):
-        raise errors.BadQuery(f"name a vocabulary by its sha256, 64 lowercase hexadecimal characters: {given!r}")
-    return given
-
-
 def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
-    """The routes over depot's recipes, jobs, builds and downloads;
+    """The routes over depot's tokenizer recipes and jobs, then those of
+    its snapshots and of the repository's recipes and their corpora;
     refusals wraps a handler so that it answers each failure with its
     status (wpt.depot.web.routes.refusals)."""
     downloads = Downloads(jobs.path)
-    held = {}
     shared.settle_marks(depot, downloads, say)  # the marking a stop of the web app cut short
-
-    def store():
-        if "store" not in held:
-            held["store"] = store_from_settings(shared.env_file())
-        return held["store"]
+    legacy = Legacy(depot.address)
 
     def wrapped(handler):
         """refusals for a handler that gets the Request too."""
@@ -213,14 +60,37 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     # Tokenizer recipes and their vocabularies
 
     def recipe_shown(recipe: dict) -> dict:
-        dataset = None
-        if recipe["depot"] is None:
+        """The recipe's row with snapshot_name, the name of the snapshot its
+        sample reads (None when it names none, or a snapshot the depot no
+        longer holds); dataset_name, for a revision written before
+        snapshots, the name of the dataset it names (None otherwise), and
+        snapshot_offer, {id, name} of the snapshot the upgrade made of
+        that dataset's latest revision it converted (None without one),
+        which an edit can name in one click; and its vocabulary job queued
+        or running."""
+        snapshot = dataset = offer = None
+        if recipe["sample"] is not None:
+            snapshot = {one["id"]: one["name"] for one in depot.snapshots()}.get(recipe["sample"]["snapshot"])
+        elif recipe["depot"] is None:
             try:
-                dataset = depot.dataset_by_id(recipe["dataset"])["name"]
+                dataset = legacy.dataset_by_id(recipe["dataset"])["name"]
             except errors.NotFound:
                 pass
-        return {**recipe, "dataset_name": dataset if recipe["depot"] is None else recipe["dataset"],
+            offer = snapshot_of(recipe["dataset"])
+        else:
+            dataset = recipe["dataset"]
+        return {**recipe, "snapshot_name": snapshot, "dataset_name": dataset, "snapshot_offer": offer,
                 "job": jobs.open_job("vocabulary", recipe=recipe["name"])}
+
+    def snapshot_of(dataset: str) -> dict | None:
+        """{id, name} of the snapshot legacy_snapshot_of names for the
+        latest revision of the dataset it converted; None without one, and
+        on a depot of a format before snapshots, which has no such table."""
+        if not depot.rows("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_snapshot_of'"):
+            return None
+        found = depot.rows("SELECT s.id, s.name FROM legacy_snapshot_of l JOIN snapshots s ON s.id = l.snapshot "
+                           "WHERE l.dataset = ? ORDER BY l.revision DESC LIMIT 1", (dataset,))
+        return found[0] if found else None
 
     @refusals
     def tokenizers(values, body):
@@ -239,8 +109,7 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
                                      "trained": any(one["version"] == recipe["version"] for one in vocabularies)})
 
     def recipe_fields(body) -> tuple:
-        return (body.get("depot") or None, body["dataset"], body["sample_bytes"], body["vocab_size"],
-                body.get("note"))
+        return body["snapshot"], body.get("kinds"), body["sample_bytes"], body["vocab_size"], body.get("note")
 
     @refusals
     def new_tokenizer(values, body):
@@ -322,480 +191,23 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     def job_state(values, body):
         return 200, shared.jsonable(jobs.state(values["id"]))
 
-    # Building a corpus
-
-    def vocabulary_named(sha256: str) -> dict:
-        """{sha256, recipe, version} of the depot's vocabulary of that sha256; NoVocabulary when it holds none."""
-        recipe, version, _ = shared.vocabulary_by_sha256(depot, sha256)
-        return {"sha256": sha256, "recipe": recipe["name"], "version": version}
-
-    @refusals
-    def build(values, body):
-        row = depot.dataset_by_id(values["id"])
-        vocabulary, size = vocabulary_given(body["vocabulary"]), size_of(body["max_tokens"])
-        if body["confirmed"] is not True:
-            raise errors.Refused("a build starts only once confirmed (confirmed: true), after its estimate: nothing "
-                                 "was queued")
-        named = vocabulary_named(vocabulary)
-        corpus = body.get("corpus")
-        record = None
-        if corpus is not None:
-            try:
-                record = corpora.find(store(), corpus)
-            except ValueError as error:  # a start of the ids of several corpora
-                raise errors.BadQuery(str(error)) from None
-            if record is None or record["dataset"]["id"] != row["id"]:
-                raise errors.NotFound(f"no corpus {corpus} of the dataset {row['name']}")
-            if "deleted" not in record:
-                raise errors.Refused(f"the corpus {corpus} keeps its files: nothing to build again")
-            if corpora.triple(record)[1:] != (vocabulary, size):
-                raise errors.Refused(f"the corpus {corpus} was built with another vocabulary or size than the ones "
-                                     "named")
-        what = (f"with the vocabulary {named['recipe']} version {named['version']}, "
-                f"{'every token' if size is None else f'at most {size:,} tokens'}")
-        title = (f"build the corpus of the dataset {row['name']} {what}" if record is None
-                 else f"build the corpus {record['id'][:12]} of the dataset {row['name']} again, {what}")
-        return 200, jobs.add("corpus", title, build_job, row["id"], vocabulary, size, corpus, dataset=row["id"],
-                             target={"vocabulary": vocabulary, "max_tokens": size})
-
-    estimating = threading.Lock()  # one estimate at a time: each tokenizes on one core of the web app
-
-    @wrapped
-    def estimate_route(values, body, request: Request):
-        row = depot.dataset_by_id(values["id"])
-        vocabulary = vocabulary_given(request.query.get("vocabulary"))
-        size = size_of(request.query.get("max_tokens", ALL))
-        recipe, version, tokenizer = shared.vocabulary_by_sha256(depot, vocabulary)
-        with estimating:
-            found = estimate(depot, row, tokenizer, size, shared.public_url(), Sizing("tokenizing workers").limit)
-        cap, others, problem = shared.corpora_cap(), None, None
-        try:
-            others = corpora.Room(store(), cap, "").taken()
-        except (StoreError, OSError) as error:
-            problem = f"{type(error).__name__}: {error}"
-        return 200, {**found, "vocabulary": {"sha256": vocabulary, "recipe": recipe["name"], "version": version},
-                     "max_tokens": size, "cap": cap, "others": others, "read_again": depot.read_again_shows(row["id"]),
-                     "fits": cap is None or found["bytes"] <= cap,
-                     "evicts": None if cap is None or others is None else max(0, others + found["bytes"] - cap),
-                     "store": problem}
-
-    # Downloads of corpora
-
-    def file_name(record: dict, one: dict) -> str:
-        return one["key"].removeprefix(corpora.folder_of(record) + "/")
-
-    def download_start(row: dict, vocabulary: str, size: int | None) -> str:
-        """What every download name of the corpus starts with: the dataset, the vocabulary and the size."""
-        named = vocabulary_shown(vocabulary)
-        words = f"{named['recipe']}-v{named['version']}" if named["recipe"] else vocabulary[:12]
-        return f"{slug(row['name'])}_{slug(words)}_{size_name(size)}"
-
-    def download_names(row: dict, record: dict, vocabulary: str, size: int | None) -> dict:
-        """{file name: the name a browser saves it under} of each file of the
-        corpus: the dataset, the vocabulary, the size and what the file is
-        (numbered when several files are the same thing), so a folder of
-        downloads tells them apart; its own extension kept, and the
-        vocabulary, stored with none, saved as the JSON it is."""
-        start = download_start(row, vocabulary, size)
-        role = roles(record)
-        files = corpora.files(record)
-        alike = Counter(role.get(one["key"], "file") for one in files)
-        seen = Counter()
-        found = {}
-        for one in files:
-            what = role.get(one["key"], "file")
-            seen[what] += 1
-            number = f"-{seen[what]}" if alike[what] > 1 else ""
-            name = file_name(record, one)
-            extension = name[name.index("."):] if "." in name else ".json" if what == "vocabulary" else ""
-            found[name] = f"{start}_{slug(what.replace(' ', '-'))}{number}{extension}"
-        return found
-
-    sizes = {}  # {corpus id: the sizes of its files}: a corpus never changes once built
-    sizing = threading.Lock()
-
-    def sizes_of(record: dict, files: list[dict], references: list[File]) -> list[int]:
-        """The length of each file of the corpus: the record's own when it names
-        one, else the store's, asked SIZING at a time once per corpus and kept."""
-        with sizing:
-            known = sizes.get(record["id"])
-        if known is None:
-            asked = [i for i, one in enumerate(files) if "bytes" not in one]
-            with ThreadPoolExecutor(min(SIZING, len(asked) or 1)) as pool:
-                found = dict(zip(asked, pool.map(lambda i: store().size(references[i]), asked)))
-            known = [found[i] if i in found else one["bytes"] for i, one in enumerate(files)]
-            with sizing:
-                sizes[record["id"]] = known
-        return known
-
-    def archive_of(row: dict, record: dict, vocabulary: str, size: int | None) -> dict:
-        """The tar archive of every file of the corpus, in the order
-        corpora.files gives them (the token files first), each under its
-        download name, dated when the corpus was built: its files'
-        references, its pieces (wpt.depot.web.archive.layout), its length,
-        its ETag and its download name. It reads the record and the store's
-        sizes of the files, never their bytes."""
-        files = corpora.files(record)
-        saved = download_names(row, record, vocabulary, size)
-        references = [File.of(one) for one in files]
-        entries = list(zip((saved[file_name(record, one)] for one in files), sizes_of(record, files, references)))
-        built = int(datetime.fromisoformat(record["built_at"]).timestamp()) if record.get("built_at") else 0
-        pieces, length = archive.layout(entries, built)
-        tag = hashlib.sha256("\n".join([ARCHIVE_FORMAT, str(built), *(f"{name} {one['sha256']}" for (name, _), one
-                                                                       in zip(entries, files))]).encode()).hexdigest()
-        return {"references": references, "pieces": pieces, "bytes": length, "etag": f'"{tag}"',
-                "download": f"{download_start(row, vocabulary, size)}.tar"}
-
-    def target_of(vocabulary: str, size: int | None) -> dict:
-        return {"vocabulary": vocabulary, "max_tokens": size}
-
-    def current(row: dict, record: dict) -> bool:
-        """Whether the corpus's record was built from the dataset's current
-        revision (row), or from a revision that differs from it only in
-        columns a build never reads (those SAME leaves out: max_tokens and
-        vocabulary)."""
-        revision = record["dataset"]["revision"]
-        if revision == row["revision"]:
-            return True
-        built = depot.rows(f"SELECT {', '.join(SAME)} FROM datasets_revisions WHERE id = ? AND revision = ?",
-                           (row["id"], revision))
-        return bool(built) and built[0] == {column: row[column] for column in SAME}
-
-    def state_of(row: dict, records: list[dict], vocabulary: str, size: int | None, job: dict | None) -> tuple:
-        """(the state of the dataset's download of that vocabulary and size,
-        its fresh corpus or None, the latest corpus of the triple or None),
-        records being the triple's corpora, latest first."""
-        built = [one for one in records if current(row, one)]
-        fresh = next((one for one in built if corpora.fresh(one)), None)
-        last = next(iter(records), None)
-        if fresh is not None:
-            return "built", fresh, last
-        if job is not None and job["target"] == target_of(vocabulary, size):
-            return "being built", None, last
-        newest = next(iter(built), None)
-        if newest is not None and "stale" in newest:
-            return "stale", None, newest
-        return "not built", None, last
-
-    def summary(record: dict | None) -> dict | None:
-        """What a page says of a corpus: its counts (texts: every text and
-        item it took, of which conversations and tasks), the tokens of each
-        share and of its items (conversations and tasks), what it left out
-        (left_out, as its record counts it: the conversations whose quoted
-        text it left out or whose quote is unmatched, the kinds no step
-        reads, and the texts the size or the shares left out), its state and
-        the revision of the dataset it was built from."""
-        if record is None:
-            return None
-        return {key: record.get(key) for key in (
-            "id", "built_at", "texts", "conversations", "total_tokens", "items_tokens", "shares_tokens", "left_out",
-            "stale", "deleted")} | {
-            "revision": record["dataset"]["revision"], "tasks": (record.get("tasks") or {}).get("count", 0)}
-
-    def roles(record: dict) -> dict:
-        """{key: what the file is} of each file of the corpus: "KIND tokens"
-        (the token files of each kind of texts, "plain tokens" and
-        "conversation tokens"), "table NAME", "vocabulary" or "tasks"."""
-        found = {one["key"]: f"{kind} tokens" for kind, kept in record.get("shards", {}).items() for one in kept}
-        for name, table in record.get("tables", {}).items():
-            found |= {one["key"]: f"table {name}" for one in (table if isinstance(table, list) else [table])}
-        if "vocabulary" in record.get("tokenizer", {}):
-            found[record["tokenizer"]["vocabulary"]["key"]] = "vocabulary"
-        if "tasks" in record:
-            found[record["tasks"]["file"]["key"]] = "tasks"
-        return found
-
-    def link(row: dict, vocabulary: str, size: int | None) -> str:
-        return f"/api/datasets/{row['id']}/download/{vocabulary}/{size_name(size)}"
-
-    def vocabulary_shown(sha256: str) -> dict:
-        try:
-            return vocabulary_named(sha256)
-        except shared.NoVocabulary:
-            return {"sha256": sha256, "recipe": None, "version": None}
-
-    @refusals
-    def downloads_listed(values, body):
-        row = depot.dataset_by_id(values["id"])
-        job = jobs.open_job("corpus", dataset=row["id"])
-        shown = {"dataset": shared.jsonable(row), "job": job, "corpora": []}
-        marking = downloads.pending()
-        if marking:
-            return 200, {**shown, "state": "checking an erasure", "erasures": marking}
-        try:
-            found = corpora.built_from(store(), shared.corpus_depot(depot, row), row["id"])
-        except (StoreError, OSError) as error:
-            return 200, {**shown, "state": "no store", "problem": f"{type(error).__name__}: {error}"}
-        triples = {}
-        for record in found:
-            triples.setdefault(corpora.triple(record)[1:], []).append(record)
-        if job is not None and job["target"] is not None:
-            triples.setdefault((job["target"]["vocabulary"], job["target"]["max_tokens"]), [])
-        for (vocabulary, size), records in triples.items():
-            state, fresh, last = state_of(row, records, vocabulary, size, job)
-            shown["corpora"].append({"vocabulary": vocabulary_shown(vocabulary), "max_tokens": size,
-                                     "size": size_name(size), "link": link(row, vocabulary, size), "state": state,
-                                     "corpus": summary(fresh or last),
-                                     "latest_fresh": summary(next((one for one in records if corpora.fresh(one)),
-                                                                  None))})
-        return 200, {**shown, "state": "listed"}
-
-    @refusals
-    def download(values, body):
-        row = depot.dataset_by_id(values["id"])
-        vocabulary, size = vocabulary_given(values["vocabulary"]), size_of(values["size"])
-        job = jobs.open_job("corpus", dataset=row["id"])
-        shown = {"dataset": shared.jsonable(row), "vocabulary": vocabulary_shown(vocabulary), "max_tokens": size,
-                 "size": size_name(size), "link": link(row, vocabulary, size),
-                 "job": job if job is not None and job["target"] == target_of(vocabulary, size) else None}
-        marking = downloads.pending()
-        if marking:
-            return 200, {**shown, "state": "checking an erasure", "erasures": marking}
-        try:
-            records = corpora.built_from(store(), shared.corpus_depot(depot, row), row["id"], vocabulary, size)
-        except (StoreError, OSError) as error:
-            return 200, {**shown, "state": "no store", "problem": f"{type(error).__name__}: {error}"}
-        state, fresh, last = state_of(row, records, vocabulary, size, job)
-        if fresh is None:
-            return 200, {**shown, "state": state, "corpus": summary(last)}
-        role = roles(fresh)
-        saved = download_names(row, fresh, vocabulary, size)
-        files = [{"name": file_name(fresh, one), "download": saved[file_name(fresh, one)], "bytes": one.get("bytes"),
-                  "sha256": one["sha256"], "role": role.get(one["key"], "other"), "tokens": one.get("tokens")}
-                 for one in corpora.files(fresh)]
-        try:
-            whole = archive_of(row, fresh, vocabulary, size)
-            together = {"name": ARCHIVE, "download": whole["download"], "bytes": whole["bytes"]}
-        except (StoreError, OSError):
-            together = None  # a file the store cannot size: the files are still listed, each failing on its own
-        return 200, {**shown, "state": "built",
-                     "corpus": {**summary(fresh), "tokenizer": fresh["tokenizer"]}, "files": files,
-                     "archive": together}
-
-    def fresh_corpus(values) -> tuple[dict, dict]:
-        """(the dataset's row, the fresh corpus its download address names). Refused or NotFound without one."""
-        row = depot.dataset_by_id(values["id"])
-        vocabulary, size = vocabulary_given(values["vocabulary"]), size_of(values["size"])
-        marking = downloads.pending()
-        if marking:
-            raise errors.Refused(f"the corpora holding a text of the erasures {', '.join(marking)} are being marked "
-                                 "stale: no corpus is sent until that ends")
-        records = corpora.built_from(store(), shared.corpus_depot(depot, row), row["id"], vocabulary, size)
-        _, found, _ = state_of(row, records, vocabulary, size, None)
-        if found is None:
-            raise errors.NotFound(f"the dataset {row['name']} has no corpus of the vocabulary {vocabulary[:12]} at "
-                                  f"the size {size_name(size)} to download now: see its download page")
-        return row, found
-
-    def ranged(request: Request, size: int, etag: str | None = None):
-        """(start, end, status) of the bytes to send of size bytes: one Range of them (206), else all (200),
-        all as well when If-Range names another ETag than etag, or any with no etag (the bytes kept may be of
-        something else);
-        an answer of 416 for a Range that cannot be met."""
-        asked = request.headers.get("Range")
-        condition = request.headers.get("If-Range")
-        if not asked or (condition is not None and condition.strip() != etag):
-            return 0, size, 200
-        match = RANGE.fullmatch(asked.strip())
-        if match is None or (not match[1] and not match[2]):
-            return 416, {"problems": [f"the Range {asked} is not one range of bytes"]}, None
-        if match[1]:
-            start, end = int(match[1]), min(int(match[2]) + 1 if match[2] else size, size)
-        else:
-            start, end = max(size - int(match[2]), 0), size
-        if start >= end:
-            return 416, {"problems": [f"the Range {asked} is outside the file's {size:,} bytes"]}, None
-        return start, end, 206
-
-    @wrapped
-    def download_file(values, body, request: Request):
-        row, record = fresh_corpus(values)
-        chosen = next((one for one in corpora.files(record) if file_name(record, one) == values["name"]), None)
-        if chosen is None:
-            raise errors.NotFound(f"corpus {record['id']} has no file {values['name']}")
-        reference = File.of(chosen)
-        size = store().size(reference)
-        start, end, status = ranged(request, size, f'"{chosen["sha256"]}"')
-        if status is None:
-            return start, end
-
-        guard = downloads.streaming(record["id"], request.visitor, "file")
-        guard.__enter__()
-
-        def chunks():
-            at = start
-            while at < end:
-                length = min(CHUNK, end - at)
-                yield store().read_range(reference, at, length)
-                at += length
-        saved = download_names(row, record, vocabulary_given(values["vocabulary"]), size_of(values["size"]))
-        headers = {"Accept-Ranges": "bytes", "ETag": f'"{chosen["sha256"]}"',
-                   "Content-Disposition": f'attachment; filename="{saved[values["name"]]}"'}
-        if status == 206:
-            headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
-        kind = JSON_TYPE if roles(record).get(chosen["key"]) == "vocabulary" else "application/octet-stream"
-        return status, Stream(kind, Guarded(chunks(), guard), end - start, headers)
-
-    @wrapped
-    def download_archive(values, body, request: Request):
-        row, record = fresh_corpus(values)
-        whole = archive_of(row, record, vocabulary_given(values["vocabulary"]), size_of(values["size"]))
-        start, end, status = ranged(request, whole["bytes"], whole["etag"])
-        if status is None:
-            return start, end
-
-        guard = downloads.streaming(record["id"], request.visitor, "file")
-        guard.__enter__()
-        references = whole["references"]
-
-        def read(index: int, at: int, length: int) -> bytes:
-            return store().read_range(references[index], at, length)
-        headers = {"Accept-Ranges": "bytes", "ETag": whole["etag"],
-                   "Content-Disposition": f'attachment; filename="{whole["download"]}"'}
-        if status == 206:
-            headers["Content-Range"] = f"bytes {start}-{end - 1}/{whole['bytes']}"
-        chunks = archive.span(whole["pieces"], start, end, read, CHUNK)
-        return status, Stream("application/x-tar", Guarded(chunks, guard), end - start, headers)
-
-    # Exports of texts
-
-    def export_of(row: dict) -> tuple[Export, int, int]:
-        """(the export of the dataset's current revision, how many texts it counts, its parts)."""
-        export = Export(depot, row, shared.public_url())
-        texts = downloads.export_texts(export.identity)
-        if texts is None:
-            texts = export.texts()
-            downloads.counted(export.identity, texts)
-        return export, texts, parts_for(texts)
-
-    @refusals
-    def export_listed(values, body):
-        row = depot.dataset_by_id(values["id"])
-        export, texts, parts = export_of(row)
-        known = downloads.export_sizes(export.identity, parts)
-        listed = [{"part": number, "forms": {form: {"name": f"part-{number:05d}.{form}",
-                                                    "download": f"{slug(row['name'])}_part-{number:05d}.{form}",
-                                                    **known.get((number, form),
-                                                                {"bytes": None, "sha256": None, "left_out": None})}
-                                             for form in FORMS}} for number in range(parts)]
-        return 200, {"dataset": shared.jsonable(row), "export": export.identity, "texts": texts,
-                     "texts_per_part": texts / parts, "parts": listed,
-                     "figures": shared.jsonable(revision_figures(depot, row))}
-
-    @wrapped
-    def export_part(values, body, request: Request):
-        row = depot.dataset_by_id(values["id"])
-        export, _, parts = export_of(row)
-        match = TEXT_PART.fullmatch(values["name"])
-        if match is None or int(match[1]) >= parts:
-            raise errors.NotFound(f"the export of the dataset {row['name']} has no part {values['name']}: its parts "
-                                  f"are part-00000 to part-{parts - 1:05d}, each .jsonl.zst or .parquet")
-        number, form = int(match[1]), match[2]
-        known = downloads.export_sizes(export.identity, parts).get((number, form))
-        start, end, status = (0, None, 200) if known is None else ranged(request, known["bytes"])
-        if status is None:
-            return start, end
-        guard = downloads.streaming(None, request.visitor, "text")
-        guard.__enter__()  # TooMany before anything is sent
-
-        def chunks():
-            digest, size, left_out = hashlib.sha256(), 0, {}
-            for chunk in export.part(number, parts, form, left_out):
-                digest.update(chunk)
-                size += len(chunk)
-                if end is None:
-                    yield chunk
-                    continue
-                piece = chunk[max(start - (size - len(chunk)), 0):max(end - (size - len(chunk)), 0)]
-                if piece:
-                    yield piece
-                if size >= end:
-                    return
-            if known is None:
-                downloads.exported(export.identity, parts, number, form, size, digest.hexdigest(), left_out)
-        headers = {"Content-Disposition": f'attachment; filename="{slug(row["name"])}_{values["name"]}"'}
-        if known is not None:
-            headers.update({"Accept-Ranges": "bytes", "ETag": f'"{known["sha256"]}"'})
-        if status == 206:
-            headers["Content-Range"] = f"bytes {start}-{end - 1}/{known['bytes']}"
-        return status, Stream(FORMS[form], Guarded(chunks(), guard), None if known is None else end - start, headers)
-
-    # The sample another depot's vocabulary training reads
-
-    @wrapped
-    def sample_route(values, body, request: Request):
-        try:
-            size = int(request.query["bytes"])
-        except (KeyError, ValueError):
-            raise errors.BadQuery("name the sample's size in bytes: ?bytes=N") from None
-        if size < 1:
-            raise errors.BadQuery("a sample holds at least one byte")
-        try:
-            row = depot.dataset_by_id(values["dataset"])
-        except errors.NotFound:
-            row = depot.dataset(values["dataset"])
-        guard = downloads.streaming(None, request.visitor, "sample")
-        guard.__enter__()  # TooMany before anything is sent
-        waiting = queue.Queue(maxsize=64)
-        stop = threading.Event()  # set once the server closes the stream: the client went away, or it ended
-
-        def offer(item):
-            """Hand item to the stream; _Stopped once the stream is closed, so the producer stops instead of
-            waiting on a queue nobody reads."""
-            while True:
-                if stop.is_set():
-                    raise _Stopped
-                try:
-                    waiting.put(item, timeout=PROGRESS_SECONDS)
-                    return
-                except queue.Full:
-                    continue
-
-        def produce():
-            try:
-                texts = sample(Depot.view(depot.address), row["name"], size)
-                with closing(texts):
-                    for found in texts:
-                        offer(found)
-                offer(StopIteration())
-            except _Stopped:
-                pass
-            except Exception as error:
-                try:
-                    offer(error)
-                except _Stopped:
-                    pass
-
-        threading.Thread(target=produce, daemon=True).start()
-
-        def texts():
-            while True:
-                try:
-                    found = waiting.get(timeout=PROGRESS_SECONDS)
-                except queue.Empty:
-                    yield None, None, b""
-                    continue
-                if isinstance(found, StopIteration):
-                    return
-                if isinstance(found, Exception):
-                    raise found
-                yield found
-
-        return 200, Stream("application/octet-stream", Guarded(sample_lines(texts()), guard, stop.set))
-
-    recipe_body = {"type": "object", "required": ["dataset", "sample_bytes", "vocab_size"],
-                   "properties": {"depot": {"type": ["string", "null"], "description": "absent or null: this depot; "
-                                            "else the web address of another depot's web app"},
-                                  "dataset": {"type": "string", "minLength": 1, "description": "this depot's dataset "
-                                              "(its name or id), or the other depot's dataset, by its name"},
+    recipe_body = {"type": "object", "required": ["snapshot", "sample_bytes", "vocab_size"],
+                   "properties": {"snapshot": {"type": "string", "minLength": 1, "description": "the snapshot the "
+                                               "sample reads: its id, or the name of one of this depot's own"},
+                                  "kinds": {"type": ["array", "null"], "items": {"type": "string", "minLength": 1},
+                                            "description": "the kinds of texts the sample reads; absent or null: "
+                                            "plain, the one kind a sample takes for now"},
                                   "sample_bytes": {"type": "integer", "minimum": 1},
                                   "vocab_size": {"type": "integer", "minimum": 513},
                                   "note": {"type": ["string", "null"]}}}
     job_answer = {"type": "object", "required": ["id", "kind", "title", "state"]}
     return [
         Route("GET", "/api/tokenizers", tokenizers, "every tokenizer recipe of the depot: its current revision (name, "
-              "version, depot and dataset its vocabulary trains on, sample_bytes, vocab_size, note), whether its "
-              "version has a vocabulary (trained), and its vocabulary job queued or running", answer={"type": "array"}),
+              "version, sample, the snapshot and kinds its vocabulary trains on, with snapshot_name, sample_bytes, "
+              "vocab_size, note; a revision written before snapshots names no sample but a dataset, with "
+              "dataset_name, needs_snapshot is true: it trains nothing until an edit names a snapshot, and "
+              "snapshot_offer names the snapshot the upgrade made of that dataset, or is null), whether "
+              "its version has a vocabulary (trained), and its vocabulary job queued or running", answer={"type": "array"}),
         Route("POST", "/api/tokenizers", new_tokenizer, "a tokenizer recipe at version 1 (wpt depot tokenizer new)",
               body={**recipe_body, "required": ["name", *recipe_body["required"]],
                     "properties": {**recipe_body["properties"], "name": {"type": "string", "minLength": 1}}},
@@ -828,66 +240,11 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               answer={"type": "array"}, request=True,
               query={"offset": "the first position (default 0)", "limit": "how many (default 50, at most 1000)"}),
         Route("GET", "/api/jobs", jobs_listed, "the jobs' queue: every job queued or running in the order they run, "
-              "then the latest that ended; each with its kind, what it does, its state, its progress and its answer "
-              "or problem; only `wpt depot jobs cancel` cancels one", answer={"type": "array"}),
+              "then the latest that ended; each with its kind, its lane (write: the writes over many texts; heavy: "
+              "snapshots, vocabularies and corpora; each lane runs one job at a time), what it does, its key (a "
+              "corpus job's build key, a snapshot job's name), its state, its progress and its answer or problem; "
+              "only `wpt depot jobs cancel` cancels one", answer={"type": "array"}),
         Route("GET", "/api/jobs/{id}", job_state, "one job's state", answer=job_answer),
-        Route("POST", "/api/datasets/{id}/build", build, "queue the build of the dataset's corpus as it is now with "
-              "a vocabulary the depot holds (its sha256) at a size (max_tokens: a number of tokens, or \"all\"), only "
-              "with confirmed: true; refused for a vocabulary not trained (422); with corpus, the deleted corpus of "
-              "that id, of that vocabulary and size, built again (409 when the dataset has a corpus job open)",
-              body={"type": "object", "required": ["vocabulary", "max_tokens", "confirmed"],
-                    "properties": {"vocabulary": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                                   "max_tokens": {"oneOf": [{"type": "integer", "minimum": 1}, {"const": ALL}]},
-                                   "confirmed": {"type": "boolean"},
-                                   "estimate": {"type": "object", "description": "the estimate the client showed"},
-                                   "corpus": {"type": "string", "minLength": 1}}},
-              answer=job_answer),
-        Route("GET", "/api/datasets/{id}/estimate", estimate_route, "the estimate of a build of the dataset's corpus "
-              "with a vocabulary at a size, from a small sample tokenized (wpt_depot.estimate): its tokens, the "
-              "bytes it takes in the store, the seconds its build takes here (an estimate), and whether it fits "
-              "under the store's cap (WPT_CORPORA_CAP) beside the bytes the other corpora take, which the build "
-              "would delete as it needs room (evicts), and read_again, whether reading the dataset again would "
-              "change what it reads (as GET /api/datasets/{id} says); nothing is written or queued",
-              answer={"type": "object", "required": ["tokens", "bytes", "seconds", "fits"]}, request=True,
-              query={"vocabulary": "the vocabulary's sha256", "max_tokens": "a number of tokens, or all (default)"}),
-        Route("GET", "/api/datasets/{id}/download", downloads_listed, "the corpora the store holds of the dataset, "
-              "one row per vocabulary and size, each with the address of its download and its state (as that "
-              "address gives it), and latest_fresh: the latest fresh corpus of that vocabulary and size built from "
-              "any revision of the dataset, with its revision (null without one), the one training takes; checking "
-              "an erasure or no store instead when nothing can be listed",
-              answer={"type": "object", "required": ["state", "corpora"]}),
-        Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}", download, "the dataset's download of one "
-              "vocabulary (its sha256) and size (a number of tokens, or all), at an address that never changes: "
-              "state built (the latest fresh corpus built from the dataset's current revision, its max_tokens and "
-              "published vocabulary aside, its files with their sizes, sha256, role (plain tokens, conversation "
-              "tokens, table NAME, vocabulary or tasks) and download, the name a browser saves it under: the "
-              "dataset, the vocabulary, the size and the role, and archive: the address's last part, download "
-              "name and bytes of the tar archive of every file, null when the store cannot size one), checking an erasure (nothing is sent meanwhile), "
-              "being built (the job and its progress), stale, not built or no store; it starts nothing",
-              answer={"type": "object", "required": ["state"]}),
-        Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}/files/{name}", download_file, "one file of that "
-              "corpus, streamed from the store and saved under its download name; one Range of bytes gives 206, the whole file when If-Range names another "
-              "ETag", request=True),
-        Route("GET", f"/api/datasets/{{id}}/download/{{vocabulary}}/{{size}}/{ARCHIVE}", download_archive, "every "
-              "file of that corpus in one tar archive, made as it is sent and never stored, each file under its "
-              "download name, the token files first: the same bytes each time for the same corpus, its length "
-              "known before it is sent, so one Range of bytes gives 206 and a download resumes (an If-Range naming "
-              "another ETag gives the whole archive); a name past 100 "
-              "bytes or a file past 8 GiB takes a POSIX pax header", request=True),
-        Route("GET", "/api/datasets/{id}/export", export_listed, "the export of the texts of the dataset's current "
-              "revision, with no tokenizer and no build: how many texts its libraries hold, and its parts, each in "
-              "jsonl.zst and parquet, with its download name (the dataset's name, then the part's) and its size and "
-              "sha256 once sent whole (null before), and the figures of that revision as GET /api/datasets/ID gives them",
-              answer={"type": "object", "required": ["export", "texts", "parts", "figures"]}),
-        Route("GET", "/api/datasets/{id}/export/{name}", export_part, "one part of the export (part-NNNNN.jsonl.zst "
-              "or part-NNNNN.parquet), made as it is sent, the same bytes every time for the same revision; one "
-              f"Range of bytes gives 206 once its size is known; at most {EXPORTS} at once in all and "
-              f"{VISITOR_EXPORTS} per visitor (429)", request=True),
-        Route("GET", "/api/datasets/{dataset}/sample", sample_route, "the sample of the dataset (its id or name) that "
-              "trains a vocabulary, in its corpus's order (the texts' export keys, a long text as its pieces), each "
-              "share filling its part of the bytes as a corpus does, a text that would pass it left out: lines "
-              "{depot ('' for this depot), text (a piece under its text's id), bytes} each "
-              "followed by the text's bytes, a line {waiting: true} while the next text is slow to come, and a last "
-              "line {end, texts, bytes}",
-              request=True, query={"bytes": "the sample's size in bytes"}),
+        *snapshot_routes(depot, jobs, refusals, recipes_naming(depot)),
+        *recipe_routes(depot, jobs, refusals, wrapped),
     ]

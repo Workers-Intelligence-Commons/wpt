@@ -6,22 +6,29 @@ functions of this module) only read: a clone reads nothing but those
 answers, so only the upstream's current state travels and an erased
 passage never leaves the upstream.
 
-A clone holds every row of the upstream's tables but its changes, numbers
-and about rows: every revision with the change number it was made at,
-every text's content, every membership and pin. Its about row is its own:
+A clone holds every row of the upstream's tables that travel (TABLES):
+every revision with the change number it was made at, every text's
+content and tags (its rows of taggings, each picked by the change that last
+wrote it, so a tag a text left since the last pull travels again with its
+end), every snapshot with its sets, and every bitmap checked against
+its snapshot's digest (wpt_depot.snapshots) before it is kept. The tables
+of libraries and datasets an older format left (schema.LEGACY) do not
+travel. Its about row is its own:
 its own name, which begins the ids of the rows it adds (the upstream's
 rows keep the upstream's ids, so the two never collide), its maintainer
 and takedown contact, and the upstream's web address, at a change number
 past every one it received; its own changes number on from there. Its
 pulls table records the clone as its first pull (wpt_depot.schema). A
 clone is written at the code's format, and clone and pull read only an
-upstream of that format (OtherFormat).
+upstream of that format (OtherFormat): an upstream of an older format is
+upgraded first, then its clones.
 
 A clone is read-only on the rows its upstream owns, those whose id does
 not carry the clone's name (wpt_depot.ids): every operation that would
 change one is refused (wpt_depot.depot), so only the upstream changes them.
-The clone's own rows stay fully changeable, and its own libraries may hold
-upstream texts.
+The clone's own rows stay fully changeable, and its own snapshots may
+hold upstream texts. Snapshot names are unique among the snapshots of one
+owner, so a clone's own "2026-11" stands beside its upstream's.
 
 What travels is paged, so no answer holds more than PAGE_ROWS rows or about
 PAGE_BYTES bytes and a copy of any size never sits whole in memory: the
@@ -32,12 +39,13 @@ of them per request.
 Rows are chosen by change number: for each depot whose rows the upstream
 holds (its own, and those its own pulls brought, Depot.bounds), the rows of
 that depot's numbering made after what the follower holds of it and up to
-what the upstream's head holds (a membership by its joining or its leaving
-change). The licenses, kinds and pulls tables travel whole. A row of the
-same key (an id and a revision or a content version, a membership's
-library, text and joining change) is replaced by the upstream's, which
-brings a membership that ended. Which revision of an id is the current one
-is worked out again for every id a page brings.
+what the upstream's head holds (a snapshot's set by the change of its
+snapshot, whose owner it shares). The licenses, kinds and pulls tables
+travel whole. A row of the same key (an id and a revision or a content
+version) is replaced by the upstream's, but a snapshot or a set the
+follower holds, which never changes, is kept. A column of bytes (BLOBS)
+travels as base64 text. Which revision of an id is the current one is
+worked out again for every id a page brings.
 
 A clone is written as `<to>.cloning`, with what it has copied so far in
 `<to>.cloning.json`, so a clone cut short goes on from its last page when
@@ -49,8 +57,8 @@ the upstream's head holds, which holds the depot's write lock while it
 reads the upstream. It records in pulls its own change number and the
 upstream's change number it brought the depot up to. An erasure the
 upstream carried out since the last pull is carried out here: the texts it
-removed whole are removed with every revision, membership and pin, the
-clone's own libraries' included, and the content versions of the texts it
+removed whole are removed with every revision, and the content versions
+of the texts it
 cut are read again from the upstream with the parts they list, each part
 no version lists any longer dropped. So are the conversations of the
 upstream that quote a text it reached, which the upstream cut
@@ -60,14 +68,10 @@ and its public hash. An erasure the upstream carries out
 while the pull reads it (a part asked for is gone, or the head has moved
 past an erasure the pull did not bring) makes the pull start over, up to
 TRIES times, writing nothing until it ends whole.
-
-A text the upstream refused, or started over (its licenses or its content
-changed, wpt_depot.policy), leaves every open library of the depot's own
-that holds it, as such a decision made here would: the pull ends those
-memberships at its own change number, so its own libraries read at an
-earlier change still hold the text. Its locked libraries keep their pins.
 """
 
+import base64
+import binascii
 import json
 import urllib.error
 from collections.abc import Iterator
@@ -75,14 +79,14 @@ from pathlib import Path
 
 from wpt_utils import web
 
-from . import counts, ids, policy
+from . import counts, ids, policy, snapshots
 from .database import Database, now
 from .depot import About, Depot, _drop_unlisted, _json, _remove_texts, index_quotes, location
-from .errors import BadQuery, DepotExists, NoUpstream, NotFound, OtherFormat, Refused, UpstreamUnreachable
+from .errors import BadQuery, DepotExists, NoUpstream, OtherFormat, Refused, UpstreamUnreachable
 from .erasure import cut_hashed
 from .kinds import PLAIN
 from .parts import Parted
-from .schema import ADMITTED, FORMAT, KEYS, REVISED, WITHOUT_ROWID
+from .schema import FORMAT, KEYS, REVISED, WITHOUT_ROWID, sizes_sql, tags_sql
 
 PAGE_ROWS = 2000  # rows in one page at most
 PAGE_BYTES = 16 << 20  # bytes of rows in one page, about
@@ -94,29 +98,29 @@ WHOLE = ("licenses", "kinds", "pulls")  # the tables that travel whole
 # the tables that travel by change number, in the order they are copied: the column that names the depot that
 # owns a row, and the condition on its change numbers (t: the table), {s} and {u} the bounds of its owner's range
 _CHANGED = "t.change > {s} AND t.change <= {u}"
+# a snapshot's set has no change of its own: it is chosen by the change of its snapshot, whose owner it shares
+_SNAPSHOT_CHANGED = "EXISTS (SELECT 1 FROM snapshots s WHERE s.id = t.snapshot AND s.change > {s} AND s.change <= {u})"
 FOLLOWED = {
     "notices": ("id", _CHANGED), "decisions": ("id", _CHANGED), "content_lists": ("id", _CHANGED),
-    "texts_revisions": ("id", _CHANGED), "text_decisions": ("decision", _CHANGED), "libraries_revisions": ("id", _CHANGED),
-    "memberships": ("library", "((t.joined_change > {s} AND t.joined_change <= {u}) "
-                               "OR (t.left_change > {s} AND t.left_change <= {u}))"),
-    "pins": ("library", _CHANGED), "erasures_revisions": ("id", _CHANGED), "datasets_revisions": ("id", _CHANGED),
-    "tokenizers_revisions": ("id", _CHANGED), "vocabularies": ("recipe", _CHANGED),
-    "vocabulary_texts": ("recipe", _CHANGED),
+    "texts_revisions": ("id", _CHANGED), "taggings": ("text", _CHANGED), "text_decisions": ("decision", _CHANGED),
+    "erasures_revisions": ("id", _CHANGED), "tokenizers_revisions": ("id", _CHANGED),
+    "vocabularies": ("recipe", _CHANGED), "vocabulary_texts": ("recipe", _CHANGED),
+    "snapshots": ("id", _CHANGED), "snapshot_sets": ("snapshot", _SNAPSHOT_CHANGED),
 }
 TABLES = (*WHOLE, *FOLLOWED)
-# the followed tables whose rows a pull reads in the order of their change numbers, through an index of each column
-# of change (wpt_depot.schema), rather than in the order of their key: each column in turn (a membership by its
-# joining change, then by its leaving change when it joined outside the range), then each row by its rowid, or by its
+# the followed tables whose rows a pull reads in the order of their change numbers, through the index of their
+# column of change (wpt_depot.schema), rather than in the order of their key, then each row by its rowid, or by its
 # key for a table without rowid
 BY_CHANGE = {"texts_revisions": ("change",), "content_lists": ("change",), "text_decisions": ("change",),
-             "pins": ("change",), "memberships": ("joined_change", "left_change")}
+             "taggings": ("change",)}
 # the tables whose rows change what a text adds to the depot's counts (wpt_depot.counts), with the column that names
-# the text; a row of libraries_revisions that locks a library changes it for every text the library holds
-# (_Tracked.add_locked)
-COUNTED = {"texts_revisions": "id", "content_lists": "id", "text_decisions": "text", "memberships": "text",
-           "pins": "text"}
-# the tables whose rows store their text's export key, with the column that names the text
-KEYED = {"memberships": "text", "pins": "text"}
+# the text
+COUNTED = {"texts_revisions": "id", "content_lists": "id", "text_decisions": "text", "taggings": "text"}
+# the columns that hold bytes, which travel as base64 text in a JSON line, by table
+BLOBS = {"snapshot_sets": ("bitmap",)}
+# the tables whose rows are written once and never changed (wpt_depot.snapshots): a row a follower holds already
+# stays as it is
+IMMUTABLE = frozenset({"snapshots", "snapshot_sets"})
 CLONING, PROGRESS = ".cloning", ".cloning.json"
 
 
@@ -175,7 +179,7 @@ def rows(depot: Depot, table: str, ranges: dict | None = None, after: list | Non
     for one in cursor:
         names = names or [one[0] for one in cursor.description]
         row = dict(zip(names, one))
-        line = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        line = _line(table, row)
         yield line
         count, size, last = count + 1, size + len(line), [row[key] for key in keys]
         if size >= PAGE_BYTES:
@@ -206,7 +210,7 @@ def _rows_by_change(depot: Depot, table: str, ranges: dict, after: list | None) 
             if after is not None and [at, who] < after[:2]:
                 continue
             since, upto = ranges[name]
-            # a membership whose joining change is in the range came in the earlier pass
+            # a row whose earlier column of change is in the range came in that column's pass
             earlier = "".join(f" AND NOT (t.{one} > :since AND t.{one} <= :upto)" for one in columns[:at])
             place = ""
             params = {"since": since, "upto": upto, "owner": name, "limit": PAGE_ROWS - len(found)}
@@ -224,7 +228,7 @@ def _rows_by_change(depot: Depot, table: str, ranges: dict, after: list | None) 
                 names = names or [one[0] for one in cursor.description]
                 row = dict(zip(names, one))
                 place_of = [at, who, row[column], *(row.pop(f"tie_{n}") for n in range(len(tie)))]
-                line = (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                line = _line(table, row)
                 yield line
                 found.append(place_of)
                 size += len(line)
@@ -234,6 +238,14 @@ def _rows_by_change(depot: Depot, table: str, ranges: dict, after: list | None) 
                 yield (json.dumps({"next": found[-1]}) + "\n").encode()
                 return
     yield (json.dumps({"next": None}) + "\n").encode()
+
+
+def _line(table: str, row: dict) -> bytes:
+    """The row as a JSON line, each column of BLOBS in base64."""
+    for column in BLOBS.get(table, ()):
+        if row[column] is not None:
+            row[column] = base64.b64encode(row[column]).decode("ascii")
+    return (json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def parts(depot: Depot, keys: list[list[str]]) -> Iterator[bytes]:
@@ -254,26 +266,6 @@ def parts(depot: Depot, keys: list[list[str]]) -> Iterator[bytes]:
 
 
 # The follower's side
-
-
-def library_change(url: str, library: str) -> int:
-    """The change number now of the depot whose web app is at url, after
-    checking through its follow routes that it holds the library; a
-    dataset naming that library is read at that number. NotFound when it
-    does not hold it."""
-    upstream = Upstream(url)
-    top = upstream.head()
-    owner = ids.owner(library)
-    if owner not in top["bounds"]:
-        raise NotFound(f"no library {library} at {url}")
-    ranges, after = {owner: [0, top["bounds"][owner]]}, None
-    while True:
-        found, after = upstream.page("libraries_revisions", ranges, after)
-        if any(row["id"] == library for row in found):
-            return top["change"]
-        if after is None:
-            raise NotFound(f"no library {library} at {url}")
-
 
 
 class Upstream:
@@ -377,13 +369,22 @@ def clone(address: str, to: str, about: About) -> Depot:
             after = "done" if following is None else following
             progress["after"][table] = after
             _write_progress(progress_file, progress)
+    try:
+        with db.bulk() as con:
+            _check_digests(con)
+    except UpstreamUnreachable:  # a run again copies everything anew
+        db.close()
+        working.unlink(missing_ok=True)
+        _remove_waiting(working)
+        progress_file.unlink(missing_ok=True)
+        raise
     with db.bulk() as con:
         for table in REVISED:
             con.execute(f"UPDATE {table} SET latest = (revision = (SELECT max(r.revision) FROM {table} r "
                         f"WHERE r.id = {table}.id))")
         con.execute(f"UPDATE texts_revisions SET status = {policy.linked_status_sql('texts_revisions.id')} "
                     "WHERE latest")
-        counts.recount(con, known=False)  # its rows carry its upstream's numbering
+        counts.recount(con)
         number = _highest(con) + 1
         con.execute("INSERT INTO changes (id, kind, made_at) VALUES (?, 'clone', ?)", (number, now()))
         con.execute("INSERT OR REPLACE INTO pulls (depot, change, upstream, upstream_change) VALUES (?, ?, ?, ?)",
@@ -438,20 +439,22 @@ def _pull(depot: Depot, upstream: Upstream) -> list[str]:
     before = _carried_out(depot)
     with depot.db.write("pull", max(top["bounds"].values(), default=0)) as (con, number):
         tracked = _Tracked(con)
+        received = []
         for table in TABLES:
             after = None
             while True:
                 found, after = upstream.page(table, None if table in WHOLE else ranges, after)
                 if table in COUNTED:
                     tracked.add({one[COUNTED[table]] for one in found})
-                if table == "libraries_revisions":
-                    tracked.add_locked([one["id"] for one in found if one.get("locked_at") is not None])
+                if table == "snapshots":
+                    received += [one["id"] for one in found]
                 _put(con, table, found)
                 if table == "content_lists":
                     _bring_parts(con, upstream, found)
                     index_quotes(con, found)
                 if after is None:
                     break
+        _check_digests(con, received)
         brought = sorted(_carried_out(depot) - before)
         if brought:  # before the erasures are carried out here, while the depot holds the texts they reached uncut
             _cut_own_quotes(con, depot, brought, tracked, number)
@@ -470,26 +473,32 @@ def _pull(depot: Depot, upstream: Upstream) -> list[str]:
 
 
 def _check_head(top: dict, name: str):
-    if top["format"] != FORMAT:
-        raise OtherFormat(f"the upstream is a depot of format {top['format']}, and this wpt follows only one of "
-                          f"format {FORMAT}: both are upgraded to the same format first")
+    if not isinstance(top.get("format"), int) or top["format"] < FORMAT:
+        raise OtherFormat(f"the upstream is a depot of format {top.get('format')}, older than the format {FORMAT} "
+                          "this wpt follows: upgrade the upstream first (`wpt depot upgrade` where it is kept), then "
+                          "clone or pull again")
+    if top["format"] > FORMAT:
+        raise OtherFormat(f"the upstream is a depot of format {top['format']}, newer than the format {FORMAT} this "
+                          "wpt follows: update wpt first, then upgrade this depot (`wpt depot upgrade`)")
     if top["name"] == name:
         raise Refused(f"a clone has a name of its own: {name!r} is the upstream's, and ids carry the name")
 
 
 def _put(con, table: str, found: list[dict]):
     """The rows of a page into the table, each replacing the row of its key;
-    a revision's latest worked out again for every id it names. Every row
+    a revision's latest worked out again for every id it names, and a
+    past revision of a text losing its copy of the text's tags
+    (current_tags, which only the current one holds). Every row
     names the same columns, each one of the table's own: a name the
     upstream sent never reaches the SQL otherwise (UpstreamUnreachable).
-    A membership and a pin get their text's export key
-    (wpt_depot.ids) here."""
+    A column of BLOBS comes as base64 and is stored as its bytes; a row of
+    a table of IMMUTABLE the depot holds already is kept as it is."""
     if not found:
         return
     if table in REVISED:
         found = [{**one, "latest": 0} for one in found]
-    if table in KEYED:  # the key depends on the text's id alone: made here, whatever the upstream sent
-        found = [{**one, "export_key": ids.export_key(one[KEYED[table]])} for one in found]
+    if table in BLOBS:
+        found = [{**one, **{column: _bytes(table, one.get(column)) for column in BLOBS[table]}} for one in found]
     names = list(found[0])
     columns = {one[1] for one in con.execute(f"PRAGMA table_info({table})")}
     strange = sorted({name for one in found for name in one} - columns)
@@ -497,7 +506,7 @@ def _put(con, table: str, found: list[dict]):
         raise UpstreamUnreachable(f"the upstream sent rows of {table} whose columns are not the table's "
                                   f"({', '.join(map(repr, strange)) or 'columns that differ from row to row'}): "
                                   "nothing is written")
-    con.executemany(f"INSERT OR REPLACE INTO {table} ({', '.join(names)}) "
+    con.executemany(f"INSERT OR {'IGNORE' if table in IMMUTABLE else 'REPLACE'} INTO {table} ({', '.join(names)}) "
                     f"VALUES ({', '.join(':' + one for one in names)})", found)
     if table in REVISED:
         touched = _json(sorted({one["id"] for one in found}))
@@ -505,6 +514,38 @@ def _put(con, table: str, found: list[dict]):
                     (touched,))
         con.execute(f"UPDATE {table} SET latest = 1 WHERE id IN (SELECT value FROM json_each(?)) AND revision = "
                     f"(SELECT max(r.revision) FROM {table} r WHERE r.id = {table}.id)", (touched,))
+        if table == "texts_revisions":  # a revision a newer one took over drops its copy of the text's tags
+            con.execute("UPDATE texts_revisions SET current_tags = NULL WHERE id IN (SELECT value FROM json_each(?)) "
+                        "AND NOT latest AND current_tags IS NOT NULL", (touched,))
+
+
+def _bytes(table: str, value) -> bytes | None:
+    """The bytes a column of BLOBS sent as base64 holds. UpstreamUnreachable when it is not base64."""
+    if value is None:
+        return None
+    try:
+        if not isinstance(value, str):
+            raise ValueError(value)
+        return base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        raise UpstreamUnreachable(f"the upstream sent rows of {table} whose bytes are not base64: nothing is "
+                                  "written") from None
+
+
+def _check_digests(con, chosen: list[str] | None = None):
+    """Check that the sets of each snapshot the depot holds, or of those
+    chosen, match its digest (wpt_depot.snapshots), as an outsider would
+    recompute it from the numbers. UpstreamUnreachable for one that does
+    not: the upstream sent sets damaged or cut short."""
+    where, params = ("", ()) if chosen is None else (" WHERE id IN (SELECT value FROM json_each(?))",
+                                                       (_json(sorted(chosen)),))
+    for snapshot, digest, at_change in con.execute(f"SELECT id, digest, at_change FROM snapshots{where}",
+                                                    params).fetchall():
+        sets = [(part, owner, bound, snapshots.FrozenBitMap.deserialize(bitmap)) for part, owner, bound, bitmap in
+                con.execute("SELECT part, owner, bound, bitmap FROM snapshot_sets WHERE snapshot = ?", (snapshot,))]
+        if snapshots.digest_of(sets, at_change) != digest:
+            raise UpstreamUnreachable(f"the upstream sent the snapshot {snapshot} with sets that do not match its "
+                                      "digest: nothing of it is kept")
 
 
 def _bring_parts(con, upstream: Upstream, lists: list[dict], tolerate: bool = False):
@@ -597,8 +638,8 @@ class _Tracked:
     """The texts a pull changes, in the temporary table followed: what each
     adds to the depot's counts is measured before the pull first changes it
     (add), and once every row is in, settle stores the status of each from
-    its decisions, takes those not admitted out of the depot's own open
-    libraries, and shifts the counts by the difference (wpt_depot.counts)."""
+    its decisions and shifts the counts by the difference
+    (wpt_depot.counts)."""
 
     def __init__(self, con):
         self.con = con
@@ -610,15 +651,6 @@ class _Tracked:
     def add(self, texts):
         """Measure the texts named that no earlier call named, before they change."""
         self._add("SELECT value AS id FROM json_each(?)", (_json(sorted(texts)),))
-
-    def add_locked(self, libraries: list[str]):
-        """Measure, as add does, the texts each library named holds when the
-        depot holds it open: a lock the pull brings changes whether a locked
-        library holds them (wpt_depot.counts.SPLIT)."""
-        for library in libraries:
-            if self.con.execute("SELECT 1 FROM libraries WHERE id = ? AND locked_at IS NULL", (library,)).fetchall():
-                self._add("SELECT m.text AS id FROM memberships m INDEXED BY memberships_order WHERE m.library = ? "
-                          "AND m.left_change IS NULL", (library,))
 
     def _add(self, query: str, params: tuple):
         """Measure the texts the query gives (its column id) that no earlier call named, before they change."""
@@ -632,15 +664,13 @@ class _Tracked:
 
     def settle(self, depot: Depot, number: int):
         con = self.con
+        # a carried-out erasure's cut rewrites rows of content_lists the revisions here read (schema.SIZES)
+        con.execute(sizes_sql("temp.followed"))
+        # a revision the upstream changed in place carries no new change: each text's copy of its tags is set again
+        con.execute(tags_sql("SELECT id FROM temp.followed"))
         con.execute(f"UPDATE texts_revisions SET status = {policy.linked_status_sql('texts_revisions.id')} "
                     "WHERE rowid IN (SELECT t.rowid FROM temp.followed f CROSS JOIN texts_revisions t ON t.id = f.id "
                     "AND t.latest)")
-        # each text's open memberships through the index memberships_held, never a library's rows
-        con.execute(f"""UPDATE memberships SET left_change = ? WHERE rowid IN (
-            SELECT m.rowid FROM temp.followed f CROSS JOIN texts_revisions t ON t.id = f.id AND t.latest
-            CROSS JOIN memberships m INDEXED BY memberships_held ON m.text = t.id AND m.left_change IS NULL
-            WHERE t.status <> '{ADMITTED}' AND m.library IN (SELECT id FROM libraries WHERE locked_at IS NULL
-            AND {ids.carries_sql(depot.name())}))""", (number,))
         after = counts.measure(con, "temp.followed", counts.FACETS)
         after.subtract(self.before)
         counts.shift(con, after)
@@ -652,13 +682,11 @@ def _highest(con) -> int:
     return con.execute("""SELECT max(n) FROM (
         SELECT max(id) AS n FROM changes UNION ALL SELECT max(change) FROM about_revisions
         UNION ALL SELECT max(change) FROM texts_revisions UNION ALL SELECT max(change) FROM content_lists
-        UNION ALL SELECT max(change) FROM libraries_revisions UNION ALL SELECT max(change) FROM erasures_revisions
-        UNION ALL SELECT max(change) FROM datasets_revisions UNION ALL SELECT max(joined_change) FROM memberships
-        UNION ALL SELECT max(left_change) FROM memberships UNION ALL SELECT max(change) FROM pulls
+        UNION ALL SELECT max(change) FROM erasures_revisions UNION ALL SELECT max(change) FROM pulls
         UNION ALL SELECT max(change) FROM decisions UNION ALL SELECT max(change) FROM text_decisions
         UNION ALL SELECT max(change) FROM notices UNION ALL SELECT max(change) FROM tokenizers_revisions
         UNION ALL SELECT max(change) FROM vocabularies UNION ALL SELECT max(change) FROM vocabulary_texts
-        UNION ALL SELECT max(change) FROM pins)""").fetchall()[0][0] or 0
+        UNION ALL SELECT max(change) FROM snapshots UNION ALL SELECT max(change) FROM taggings)""").fetchall()[0][0] or 0
 
 
 def _write_progress(path: Path, progress: dict):

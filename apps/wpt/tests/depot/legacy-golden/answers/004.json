@@ -1,0 +1,33 @@
+{
+ "asked_headers": {},
+ "body": {
+  "libraries": [
+   {
+    "change": 34,
+    "depot": null,
+    "library": "fixture-1"
+   },
+   {
+    "change": 34,
+    "depot": null,
+    "library": "fixture-3"
+   },
+   {
+    "change": 13,
+    "depot": null,
+    "library": "up-2"
+   }
+  ],
+  "max_tokens": null,
+  "name": "ds-mixed",
+  "shares": null,
+  "tokenizer": "tok-mixed"
+ },
+ "headers": {
+  "Content-Length": "257",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/datasets/ds-mixed/remote",
+ "status": 200
+}

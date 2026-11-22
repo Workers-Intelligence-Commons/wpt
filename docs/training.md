@@ -3,9 +3,16 @@
 ## Training
 
 ```sh
-uv run wpt depot build DATASET --vocabulary SHA256 --max-tokens N   # the recipe's corpus; prints its id
-uv run wpt train classics-test
+uv run wpt depot snapshot new 2026-11   # the texts admitted now ("Make a snapshot" on the Snapshots page)
+uv run wpt depot build NAME             # the corpus of data/recipes/models/NAME.json (SERIES: for a series); prints its id and build key
+uv run wpt train NAME
 ```
+
+The recipe's data section names the snapshot by its name, change and
+digest. The composer of the snapshot's page in `wpt depot web` makes it by
+clicks, to put beside a model part in `data/recipes/models/NAME.json` and
+commit ([data-selection.md](data-selection.md), "The data section of a
+model recipe").
 
 A run takes minutes to days, so start it detached from the terminal or SSH
 session, which would otherwise end it and lose its output:
@@ -16,25 +23,34 @@ output to `runs/logs/<date-time>.log` and print how to follow and stop it.
 `wpt train` takes a model recipe (`data/recipes/models/<name>.json`,
 `SERIES:SIZE`, a size of a model series, or `SERIES:SIZE:RUN`, another run
 of that size; see [model.md](model.md), "Model recipes") and the id of a
-corpus in the store, or a start of it, and never builds: `wpt depot build`
-builds the corpus of the recipe's dataset, on the machine that holds the
-depot. Without an id, it reads the latest fresh corpus of the triple the
-recipe's dataset, the vocabulary that dataset publishes and the recipe's
-`data.total_tokens` as the size (for a series, the total tokens of its
-largest size). A dataset that publishes no vocabulary, or a triple that is
-not built, refuses the run with the triple and the dataset's download page
-(`<depot address>/#/download/<dataset id>`), and nothing is built or
-queued. To find that corpus, it opens the depot to read the dataset's id,
-current revision and published vocabulary, so without an id
-(`WPT_CORPUS` or the corpus option) the depot must be readable where
-training runs: from its file, when `WPT_DEPOT` names a depot the recipe's
-depot names (its public address, `WPT_DEPOT_URL`, or its name), else
-through its web app, when the recipe names it by a web address, whose
-listing of the dataset's downloads names the latest fresh corpus of each
-triple. Either way, a corpus built from any revision of the dataset
-counts, with a warning when that revision is older than the current one.
-A corpus of another depot or
-dataset than the recipe names is refused. The vocabulary is the corpus's, so
+corpus in the store, or a start of it, and never builds: `wpt depot build
+RECIPE`, or the Build button of the recipe's page in `wpt depot web`, builds
+the corpus of a recipe (of a series, `wpt depot build SERIES:` and the
+series' row `SERIES:` on the Recipes page: the one corpus every size reads),
+on the machine that holds the depot
+([data-selection.md](data-selection.md), "Corpora"). Without an id, it reads the corpus of the
+recipe's build key: the snapshot its data part names, that data part (kinds,
+shares, `data.total_tokens` as the size, for a series the total tokens of its
+largest size) and its vocabulary (`wpt_depot.corpus.build_key`), which names
+the corpus's folder in the store. To find the snapshot, it opens the depot the
+recipe names: from its file, when `WPT_DEPOT` names a depot whose own public
+address (`WPT_DEPOT_URL`, else its name) is the recipe's depot, or a clone
+that follows that address as its upstream (a clone holds its upstream's
+snapshots), else through its web app, when the recipe names it by a web
+address (its name from `GET /api/about`, its snapshots from
+`GET /api/snapshots`). The snapshot is the one of the recipe's name that the
+depot of that address owns, and it must read the recipe's change and digest,
+or the run is refused, naming both. With no fresh corpus of that key in the
+store, the run is refused, saying to press Build on the recipe page, and
+nothing is built or queued. So without an id (`WPT_CORPUS` or the corpus
+option) the depot must be readable where training runs. A corpus given by
+its id must be built from the recipe's snapshot (its name, change and
+digest) with the recipe's kinds, shares and vocabulary, at any size; any
+other is refused.
+
+A recipe of the legacy shape names a dataset of a depot of format 12 or
+older instead, and reads the corpus the store kept of it ("Models trained
+before snapshots", below). The vocabulary is the corpus's, so
 a size of a model series is derived for the vocabulary the corpus holds. Everything that changes the
 resulting model comes from the recipe: the architecture's numbers, the
 seed, the steps ("Steps", below) with their settings, and the drafter. The
@@ -100,8 +116,9 @@ A step is made of four roles, each a Python file of
   with its schedule, and judges the evaluations;
 - the **step** file (`steps/`) names its method, environment and
   optimizer with that optimizer's settings, the kinds of texts it reads
-  (`read-text` reads `plain`, `answer-as-assistant` reads `conversation`,
-  `finish-tasks` and `finish-tasks-with-less-writing` read `task`;
+  (`read-text` reads `plain`, `answer-as-assistant`,
+  `answer-as-assistant-dft` and `answer-as-assistant-neftune` read
+  `conversation`, `finish-tasks` and `finish-tasks-with-less-writing` read `task`;
   [data-selection.md](data-selection.md), "Kinds and items"), the parts of
   the model it locks, and its own defaults for its method's and
   environment's settings.
@@ -139,6 +156,8 @@ The built-in steps:
 | --- | --- | --- | --- | --- |
 | `read-text` | `next-token` | `text-windows` | `by-part`, its defaults | none |
 | `answer-as-assistant` | `assistant-tokens` | `conversations` | `by-part`, lr 1e-4, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `balancing` |
+| `answer-as-assistant-dft` | `assistant-tokens-dft` | `conversations` | as `answer-as-assistant` | `balancing` |
+| `answer-as-assistant-neftune` | `assistant-tokens-neftune` | `conversations` | as `answer-as-assistant` | `balancing` |
 | `finish-tasks` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `routers`, `balancing` |
 | `finish-tasks-with-less-writing` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `routers`, `balancing` |
 
@@ -237,6 +256,13 @@ reaches.
   0.1, `mtp_switch` 0.676.
 - `assistant-tokens` (reads `conversations`): the next-token loss of the
   tokens the assistant wrote only ("The answer-as-assistant step", below).
+- `assistant-tokens-dft` (reads `conversations`): the same tokens, each
+  one's loss weighed by the probability the model gives it ("The
+  answer-as-assistant-dft step", below).
+- `assistant-tokens-neftune` (reads `conversations`): the loss of
+  `assistant-tokens`, with noise on the input embeddings in its training
+  passes ("The answer-as-assistant-neftune step", below). Setting:
+  `alpha` 5.
 - `grpo` (reads `attempts`): group relative policy optimization on scored
   attempts ("The finish-tasks step", below).
 
@@ -423,14 +449,15 @@ The recipe's `total_tokens` is the size of the corpus the recipe asks for
 and a ceiling on what it reads. A corpus built at that size (its
 `max_tokens`) counts everything, its conversations and tasks taking their
 share of it, and never passes it, so it holds fewer tokens of plain text
-than `total_tokens` when the dataset holds items.
+than `total_tokens` when the snapshot holds items.
 Training reads what such a corpus holds: each step that reads text windows
 reads the smaller of its prefix and the corpus's tokens of plain text, from
 the start, and the run's record says how many it reads when that is fewer
 than it asks for. `wpt train` refuses a corpus that holds fewer tokens of
 plain text than `total_tokens` and was built at another size, and a corpus
 that is stale (an admitted erasure reached a text it was built from,
-[erasure.md](erasure.md), "What it covers") until its dataset is built
+[erasure.md](erasure.md), "What it covers") until it is built again (Build
+on the recipe page). A stale corpus of a legacy dataset is never built
 again.
 
 ### Streaming: a corpus larger than the disk
@@ -929,8 +956,8 @@ The model folder holds:
 - `tokenizer.json`, the corpus's vocabulary, exactly the bytes those
   headers name: `wpt chat` and `wpt eval` refuse another (see
   [tokenizer.md](tokenizer.md));
-- `provenance.json`, what produced the model: the corpus (its id, depot
-  and dataset), each step, its fingerprint, result, what it reached and how
+- `provenance.json`, what produced the model ("What a model records",
+  below), each step, its fingerprint, result, what it reached and how
   much of the corpus it learned (`learned`), the most any step learned, and
   how many texts that credits;
 - `CREDITS`, every text the steps learned from, with its credit, license
@@ -993,6 +1020,74 @@ model; `--scheduler-costs FOLDER` reads instead those a run recorded in its
 record folder `FOLDER` of the store, refused when they were measured on
 another setup ([model.md](model.md), "The drafter").
 
+### What a model records
+
+A model trained on a snapshot names, in `provenance.json`, what anyone needs
+to build its corpus again and check it: `data`, the recipe's data section (the
+depot's address, the snapshot's name, change and digest, the kinds, shares,
+size and vocabulary); `recipe_name` and `recipe`; `corpus`, the corpus's id,
+build key, rules, the depot address its record names, the snapshot it read
+(id, name, owner, change, digest) and `data`, the data section it was built
+with, whose size can be larger than the recipe's when the corpus was given
+by its id (training then read its first part, and the model card says so);
+and `repository_commit` with
+`repository_dirty`, the code (the commit pins the design-system submodule
+too). `NOTICE` and the model card say it in one line: "Trained on snapshot S
+(change N, digest H) of the depot D, recipe R, code at commit X".
+
+The corpus is a cache, never kept for this. Whoever holds the depot's
+address, the repository and what ships with the weights checks a model so:
+
+```sh
+git checkout COMMIT                                   # the repository_commit provenance.json names
+uv run wpt depot clone ADDRESS my-copy.sqlite --name NAME --maintainer M --takedown-contact C
+WPT_DEPOT=my-copy.sqlite uv run wpt depot build RECIPE
+```
+
+The clone holds the depot's snapshots and vocabularies, its snapshots'
+sets checked against their digests as they arrive. The build finds the
+recipe's snapshot in the clone, since the clone follows that address,
+checks that it reads the recipe's change and digest, refusing and naming
+both otherwise, and builds the corpus of the recipe's build key, whose id
+and files then compare with what `provenance.json` names. To check only
+which texts a snapshot holds, without a copy of the depot, `GET
+/api/snapshots/{id}/sets` on the depot's web app gives its sets with its
+digest, which anyone recomputes ([data-selection.md](data-selection.md),
+"A snapshot's digest"). Nothing in the web app rebuilds and compares a
+model's corpus for anyone.
+
+A folder written before snapshots names, in `corpus`, the corpus's id, its
+depot and the name of its dataset, and its recipe's data names that dataset.
+Every reader takes both shapes through `wpt_model.provenance` (`corpus_id`,
+`corpus_label`): `wpt eval` records that corpus as the run's input, and the
+`NOTICE` and the model card it writes again say "From corpus C, built from
+dataset T of the depot D". Nothing rewrites such a folder's
+`provenance.json`.
+
+### Models trained before snapshots
+
+A model trained before snapshots has a recipe of the legacy shape, which
+names a dataset, and the code at the commit it records reads the depot's
+web app through the dataset routes: `GET /api/datasets` to find the
+dataset, `GET /api/datasets/{id}/download` for the corpus of its
+vocabulary and size, `GET /api/tokenizers/{name}` and its vocabulary file,
+and, for another depot's vocabulary training, `GET /api/datasets/{id or
+name}/sample`. Those routes stay, frozen and read-only: they answer from
+the depot's legacy tables what they answered for the depot of format 12
+(`wpt_depot/legacy.py`, [depot-web.md](depot-web.md), "Models trained
+before snapshots"), so the depot's address and the repository at that
+commit still check the model. Its corpus is read from the store that holds
+it, since nothing builds a corpus of a dataset any more. The upgrade to
+format 13 also made a snapshot of each locked library and of each dataset
+revision a corpus was built from ([architecture.md](architecture.md),
+"Format"), so the same texts can be built again as a recipe of the
+snapshot shape.
+
+The other way is the depot as it was: restore a backup made before the
+upgrade (`wpt depot restore TO --at MOMENT`) with the wpt of format 12,
+checked out from a commit of then, since the code of format 13 refuses a
+depot of format 12, and serve or build from it with that code.
+
 ## Records written for training
 
 The `answer-as-assistant` and `finish-tasks` steps learn from recorded
@@ -1034,7 +1129,7 @@ credit, notice and decisions. Conversations are items of kind
 tasks for agentic training are items of kind `task` ("Tasks", below); the
 depot checks each against its kind's JSON Schema when it is added. Neither
 is ever a plain text that `read-text` reads. A corpus keeps the
-conversations of its dataset as tokens of the chat template, in token
+conversations it takes from its snapshot as tokens of the chat template, in token
 files of their own, and its tasks as lines of `tasks.jsonl`, and the steps
 read them from there ([data-selection.md](data-selection.md), "Corpora").
 
@@ -1077,6 +1172,37 @@ answers it holds), when one has no assistant message, and when the loss
 is not finite. It needs a vocabulary
 of tokenizer 0.3.0 or later, which reserves the chat template's ids. Talk
 to the result with `uv run wpt chat FOLDER --chat`.
+
+## The answer-as-assistant-dft step
+
+The `answer-as-assistant-dft` step is the answer-as-assistant step with
+another loss, `assistant-tokens-dft`: dynamic fine-tuning (Wu et al., "On
+the Generalization of SFT: A Reinforcement Learning Perspective with
+Reward Rectification"). It reads the same conversations with the same
+settings, optimizer and locked parts, and learns the same tokens, those
+the assistant wrote. The loss of each such token is `-p * log p`, `p` the
+probability the model gives it, and `p` is taken as a number: no gradient
+goes through it, so each token's gradient is the next-token loss's scaled
+by its probability, and the tokens the model finds unlikely move it less.
+The update's loss is the sum over every such token of its conversations,
+on every process, divided by their number, as in `assistant-tokens`. It
+fails when that loss is not finite.
+
+## The answer-as-assistant-neftune step
+
+The `answer-as-assistant-neftune` step is the answer-as-assistant step
+with noisy embeddings, `assistant-tokens-neftune` (Jain et al.,
+"NEFTune: Noisy Embeddings Improve Instruction Finetuning"). It reads the
+same conversations with the same settings, optimizer and locked parts,
+and its loss is the next-token loss of the tokens the assistant wrote, as
+in `assistant-tokens`. In each of its training passes, with the model in
+training mode, the input embeddings (the `embedding` part's output)
+receive uniform noise in [-1, 1] times `alpha / sqrt(L * d)`, `L` the
+pass's length, conversations padded to the longest, and `d` the model's
+width. `alpha` is the step's setting, 5 by default, 0 or more (0: no
+noise). The noise is drawn from PyTorch's generator of the device, which
+the runner seeds for each pass, as dropout. Evaluation and generation
+never see noise: it exists only inside the step's training passes.
 
 ## The finish-tasks step
 
@@ -1854,6 +1980,15 @@ every text, and its fingerprints cover its parts. Shards are compared by their t
 only their rows, not the bytes of the Parquet file (a newer pyarrow may write
 different bytes for the same tokens).
 
+**The corpus is built again exactly**: a snapshot names the change it
+reads and the texts it holds, its digest proves them, and a depot keeps
+every revision, so the depot's address, the snapshot and the recipe give
+the same corpus, its id included, on the server or on any clone, whenever
+it is built ("What a model records", above). Only an admitted erasure
+changes it: the texts it removes are gone and the passages it cuts are cut,
+and the corpus built again says so in its record
+([data-selection.md](data-selection.md), "Building a snapshot again").
+
 **Tool versions**: the repository pins a reference version of each tool
 (`uv.lock` for Python packages, `.python-version`, and
 `packages/wpt-tokenizer/rust-toolchain.toml` for Rust). Each build
@@ -1878,8 +2013,8 @@ any program may. Around it, everything possible is checked:
 
 - before training, every input is checked against its hash: each shard
   (file sha256 and token hash) and the vocabulary;
-- `provenance.json` records what produced the model: the corpus (its id,
-  depot and dataset), how much of it the steps learned, the vocabulary, the
+- `provenance.json` records what produced the model: the snapshot, the
+  depot and the recipe ("What a model records", above), how much of it the steps learned, the vocabulary, the
   recipe's name and content, the command-line options, the strategy (file,
   its sha256), the model shape and parameter count, each step (its files
   and their sha256, its settings, its optimizer's, its locked parts, its

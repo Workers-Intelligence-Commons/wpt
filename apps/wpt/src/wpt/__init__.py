@@ -1,7 +1,7 @@
 """wpt: every WPT job, each a subcommand with its own options (`wpt
 SUBCOMMAND --help`).
 
-    wpt depot ...     the depot: texts, decisions, libraries, datasets, erasures, corpora, and its web pages
+    wpt depot ...     the depot: texts, decisions, snapshots, erasures, corpora, and its web pages
     wpt store ...     what the store holds, its runs, a kept model copied out
     wpt agent ...     the images of agentic tasks, locked and built
     wpt train ...     train a model recipe on the corpus of its depot and dataset

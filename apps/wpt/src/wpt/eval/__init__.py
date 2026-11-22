@@ -45,6 +45,7 @@ from pathlib import Path
 from wpt_model import DrafterMismatch, TokenizerMismatch, check_drafter, load_tokenizer, weight_hashes
 from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CARD_NAME, EVALS_NAME, documents
+from wpt_model.provenance import corpus_id
 from wpt_store import Store, StoreError, read_env_file, store_from_settings
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, short
 from wpt_tokenizer import Tokenizer
@@ -211,7 +212,7 @@ def main(argv=None):
                     for eval_ in evals:
                         find(eval_)  # an unknown test stops the run before any other has run
                     context = open_context(args.model, store, telemetry)
-                    telemetry.input(weights=weights, corpus=context.provenance["corpus"]["id"])
+                    telemetry.input(weights=weights, corpus=corpus_id(context.provenance))
                 with telemetry.span("gpu_worker.model"), Remote(args.model, environ, telemetry.log, args.kernels) as model:
                     context.model, context.device = model, model.device
                     for eval_ in evals:

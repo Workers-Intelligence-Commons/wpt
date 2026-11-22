@@ -18,14 +18,16 @@ recipes of the models. No checkpoint has been published yet.
 
 **The texts live in a depot; the repository holds none.** A depot is an
 SQLite file, known by its address, that holds texts and items (conversations,
-tasks), each with its license, credit and notice, the human decisions that
-admit or refuse it, the libraries that group admitted texts, and the
-datasets that say what to train on (`wpt depot`). `wpt depot build DATASET`
-builds a dataset into a corpus in a store you control (a folder or an S3
-bucket): the token files, with copies of every text's credits, licenses and
-notices. A model recipe names a depot by its public address and a dataset in it, and
-`wpt train` reads from the store the corpus of the vocabulary that dataset publishes, at
-the recipe's size. A depot can follow
+tasks), each of one kind and with its license, credit, notice and tags,
+the human decisions that admit or refuse it, and its snapshots, each a
+name on a change number and the texts admitted then (`wpt depot`). A model
+recipe names a depot by its public address, a snapshot of it with the
+change and digest it reads, the kinds and the shares by tag it takes, its
+size and its vocabulary. `wpt depot build RECIPE` builds that into a corpus
+in a store you control (a folder or an S3 bucket): the token files, with
+copies of every text's credits, licenses and notices. `wpt train` reads
+that corpus from the store. A corpus is a cache: the depot's address, the
+snapshot and the recipe build it again, the same. A depot can follow
 another and pull its updates, the way a Git clone follows its remote.
 WPT hosts no data.
 
@@ -59,10 +61,14 @@ echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where corpora, models and r
 echo "WPT_DEPOT=$HOME/wpt-depot.sqlite" >> .env    # the depot the wpt depot commands work on
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
-uv run wpt depot tokenizer train RECIPE            # the vocabulary of the dataset's tokenizer recipe, into the depot
-uv run wpt depot dataset edit DATASET --vocabulary SHA256        # the vocabulary the dataset publishes
-uv run wpt depot build DATASET --vocabulary SHA256 --max-tokens N # the recipe's corpus (N: its total_tokens); prints its id
-scripts/detach.sh uv run wpt train classics-test --stream --out runs/first
+uv run wpt depot snapshot new 2026-11              # the texts admitted now
+uv run wpt depot tokenizer new tok --snapshot 2026-11 --sample-bytes 100000000 --vocab-size 32768
+uv run wpt depot tokenizer train tok               # its vocabulary, into the depot
+cp data/recipes/models/classics-test.json data/recipes/models/first.json
+uv run wpt depot web                               # "New recipe from this snapshot" on the page of 2026-11: its data section
+# put that data section in place of the "data" of data/recipes/models/first.json, then commit the file
+uv run wpt depot build first                       # the corpus of the recipe's snapshot, kinds, shares, size and vocabulary
+scripts/detach.sh uv run wpt train first --stream --out runs/first
 uv run wpt eval runs/first                         # the tests, into the model card
 uv run wpt chat runs/first                         # continue text with the model
 ```
@@ -72,13 +78,22 @@ lists them, and `uv run wpt SUBCOMMAND --help` gives each one's options).
 The store holds plain named things: `corpora/`, `models/` and `runs/`
 (`wpt store list` lists the corpora and models).
 
-`classics-test` is a small model recipe, enough to see every step work on
-one machine, on the dataset `test1` (id `wic-1`) of the public depot
-https://depot.workers-intelligence-commons.org. A model recipe
-(`data/recipes/models/`) holds everything that changes the model: its
-data, architecture and training steps
+A model recipe (`data/recipes/models/RECIPE.json`) holds everything that
+changes the model: its data, architecture and training steps
 ([model.md](docs/model.md)); the command-line options only say how the
-hardware runs it.
+hardware runs it. Its data section names the depot, the snapshot (its
+name, change number and digest) and the vocabulary (its sha256 and size),
+so it builds only on the depot it names: the composer of a snapshot's page
+in `wpt depot web` makes it by clicks for this depot ("Download recipe" or
+"Copy JSON"), to put in the recipe file and commit, since the corpus and
+the model name the commit they were built from. `classics-test` is a
+small model recipe, enough to see every step work on one machine, which
+the quick start copies for its model part. Like every recipe of the repository, it names the dataset
+`test1` (id `wic-1`) of the public depot
+https://depot.workers-intelligence-commons.org, in the legacy shape of
+recipes written before snapshots ([model.md](docs/model.md), "Model
+recipes"), which `wpt depot build` refuses: it trains only on a corpus of
+that dataset a store holds.
 
 **Streaming** keeps disk use small at each step, for data larger than the
 disk:
@@ -102,12 +117,12 @@ the same command with `--resume` continues.
 | train on another machine's GPUs | a gpu worker on each machine (`deploy/gpu-worker/compose.yaml`, with `compose.nvidia.yaml` or `compose.amd.yaml` for GPUs), their keys in `WPT_GPU_WORKERS` ([machines](docs/machines.md)) |
 | rent the GPUs | `WPT_GPU_WORKERS=N` and `WPT_RENTAL_GPUS` for `wpt manager`, which rents N gpu workers through SkyPilot (as one cluster in one request), replaces a lost one and gives them back at the end ([machines](docs/machines.md)) |
 | train on a built corpus in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_RECIPE` set in `.env`; then `wpt store copy-out NAME runs/NAME` ([machines](docs/machines.md)) |
-| teach the model to chat | conversations in the dataset, the corpus built again, and a recipe whose `steps` add `answer-as-assistant` after `read-text`: `wpt train RECIPE CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
-| teach the model to finish tasks as an agent | tasks in the dataset, the corpus built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and a recipe whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
+| teach the model to chat | conversations in the snapshot, the corpus built again, and a recipe whose `steps` add `answer-as-assistant` after `read-text`: `wpt train RECIPE CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
+| teach the model to finish tasks as an agent | tasks in the snapshot, the corpus built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and a recipe whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
 | teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the recipe's `steps`: it trains on the same tasks ([training](docs/training.md)) |
 | train long windows on a small GPU | `--recompute`: layers run again in the backward pass instead of keeping their values |
 | train faster on a CUDA device (an NVIDIA or AMD GPU) | `--compile`: the passes over whole text windows run through `torch.compile` ([training](docs/training.md), "Compiling the passes") |
-| add texts, conversations and tasks, decide on them, and make libraries and datasets, in a browser | `wpt depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `wpt depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
+| add texts, conversations and tasks, decide on them, tag them, make snapshots, compose recipes and build their corpora, in a browser | `wpt depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `wpt depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
 
 Every option also comes from the environment (`--micro-batch` is
 `WPT_MICRO_BATCH`), and `--help` lists them all. Details:
@@ -128,7 +143,7 @@ settle alone are listed for legal review in
 - [Licenses and what the corpus accepts](docs/licenses.md)
 - [Questions for legal review, in English and French](LEGAL-QUESTIONS.html)
 - [Erasure requests](docs/erasure.md)
-- [Data selection: texts, tags, libraries, datasets, corpora](docs/data-selection.md)
+- [Data selection: texts, tags, snapshots, corpora](docs/data-selection.md)
 - [Tokenizer](docs/tokenizer.md)
 - [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)

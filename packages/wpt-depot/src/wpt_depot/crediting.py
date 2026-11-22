@@ -14,8 +14,11 @@ a time, checks the shape of each, and writes it into the temporary table
 both as JSON text, tags each once); the rules across texts are then
 queries. Each text's new credits are made in Python as the rows are read,
 and the texts whose credits change go into the temporary table `credited`
-(id and the five credits as the new revision stores them, the notice by its
-id), which the new revisions read.
+(id, the five credits as the new revision stores them, the notice by its
+id, the tags as the text has them from then on, in their order, and revised:
+whether a credit other than the tags changes), which the new revisions read,
+a text whose tags alone change getting no revision, only its rows of
+taggings (wpt_depot.taggings).
 
 One change names at most MOST texts: one write holds the depot's lock for
 the time it takes, about three times a decision on that many texts (half
@@ -163,12 +166,12 @@ def credit(con, notice: Callable[[str], str]) -> tuple[int, int, list[str]]:
     stay as they are, or when a credit its line's was names no longer holds
     that value."""
     con.execute("CREATE TEMP TABLE credited (id TEXT PRIMARY KEY, title TEXT, authors TEXT, tags TEXT NOT NULL, "
-                "address TEXT, notice TEXT)")
+                "address TEXT, notice TEXT, revised INTEGER NOT NULL)")
     changed = left_out = 0
     names, batch = set(), []
-    cursor = con.cursor().execute("SELECT c.id, c.given, c.was, n.text, t.title, t.authors, t.tags, t.address, "
-                                  "t.notice FROM temp.credit_changes c JOIN texts_revisions t ON t.id = c.id AND "
-                                  "t.latest LEFT JOIN notices n ON n.id = t.notice")
+    cursor = con.cursor().execute(f"SELECT c.id, c.given, c.was, n.text, t.title, t.authors, t.current_tags, "
+                                  "t.address, t.notice FROM temp.credit_changes c JOIN texts_revisions t ON "
+                                  "t.id = c.id AND t.latest LEFT JOIN notices n ON n.id = t.notice")
     for text, given, was, notice_text, *old in cursor:
         given = json.loads(given)
         now = dict(zip(CREDITS, old))
@@ -183,7 +186,7 @@ def credit(con, notice: Callable[[str], str]) -> tuple[int, int, list[str]]:
             if name in LISTS:
                 before = json.loads(now[name]) if now[name] is not None else None
                 if name == "tags":
-                    value, before = value or [], before or []
+                    value, before = sorted(value or []), before or []
                 if value != before:
                     new[name] = _json(value)
                     moved.append(name)
@@ -195,12 +198,12 @@ def credit(con, notice: Callable[[str], str]) -> tuple[int, int, list[str]]:
             continue
         changed += 1
         names.update(moved)
-        batch.append((text, *(new[name] for name in CREDITS)))
+        batch.append((text, *(new[name] for name in CREDITS), any(name != "tags" for name in moved)))
         if len(batch) == BATCH:
-            con.executemany("INSERT INTO temp.credited VALUES (?, ?, ?, ?, ?, ?)", batch)
+            con.executemany("INSERT INTO temp.credited VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
             batch = []
     if batch:
-        con.executemany("INSERT INTO temp.credited VALUES (?, ?, ?, ?, ?, ?)", batch)
+        con.executemany("INSERT INTO temp.credited VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
     return changed, left_out, [name for name in CREDITS if name in names]
 
 

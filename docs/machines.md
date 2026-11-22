@@ -433,10 +433,13 @@ through a short-lived container with no network
 `wpt manager` trains a recipe on a corpus the store already holds, each
 step its own command:
 
-1. the corpus: `WPT_CORPUS`, or the one last built for the recipe's depot
-   and dataset; the manager neither downloads nor builds, so `wpt depot
-   build DATASET` builds the corpus first, on the machine that holds the
-   depot, and a run without one is refused; then `wpt agent build-image
+1. the corpus: `WPT_CORPUS`, or the one of the recipe's build key (its
+   snapshot, data section and vocabulary; for a recipe of the legacy
+   dataset shape, the one last built for its depot and dataset, which no
+   build makes again); the manager
+   neither downloads nor builds, so the corpus is built first (Build on the
+   recipe page of the depot's web app), and a run without one is refused,
+   saying so; then `wpt agent build-image
    NAME` for each image the corpus's tasks name, where `DOCKER_HOST`
    reaches Docker (nothing without tasks);
 2. `wpt train RECIPE CORPUS_ID --run NAME --resume`: the training, through
@@ -468,7 +471,7 @@ wins (`WPT_STORE`, the manager's folders, `HOME`, `DOCKER_HOST`).
 | Setting | Meaning |
 | --- | --- |
 | `WPT_RECIPE` | the model recipe, `SERIES:SIZE` for a size of a model series, or `SERIES:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
-| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus last built for the recipe's depot and dataset |
+| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus of the recipe's build key (a recipe written before snapshots: the corpus last built for its depot and dataset) |
 | `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the store |
 | `WPT_EVALUATE` | `1`: evaluate the model at the end; off by default |
 | `WPT_STORE` | the store; unset, a folder on the Compose volume `wpt-store`. A `file://` store must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |

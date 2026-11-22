@@ -85,8 +85,8 @@ Fake.cluster_of = {}
 
 @pytest.fixture
 def published(built, tmp_path) -> str:
-    """The id of the corpus wpt train finds for the recipe d: its dataset's, at the vocabulary the dataset now
-    publishes and the recipe's total_tokens."""
+    """The id of the corpus wpt train finds for the recipe d: the one of its build key (its snapshot, data section
+    and vocabulary)."""
     size = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())["data"]["total_tokens"]
     return built.sized("d", size)["id"]
 

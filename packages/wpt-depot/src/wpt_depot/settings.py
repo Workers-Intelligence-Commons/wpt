@@ -3,8 +3,9 @@
 WPT_DEPOT names the depot to work on, from the environment, else from a
 .env file, as WPT_STORE names the store: the path of its SQLite file, or a
 file:// address. WPT_DEPOT_URL, read the same way, is that depot's public
-address, the web address of its web app, which names it in everything a
-corpus records (wpt_depot.corpus.depot_name).
+address, the web address of its web app, which names it in what a corpus
+built here records (wpt.depot.shared.build_corpus) and in the corpora built
+from a dataset before (wpt_depot.legacy.depot_name).
 """
 
 import os

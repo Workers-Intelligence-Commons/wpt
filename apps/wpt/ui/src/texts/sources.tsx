@@ -1,36 +1,35 @@
 // The Open menu of the Texts page: everything that can be opened, each a
 // filter of the texts (filter.tsx) that a link puts into the address: every
-// text, each status, the libraries (open, then locked), the tags, the
-// licenses, and the filters saved in this browser (saved-filters.ts), with
-// the form, opened by a button, that saves the open filter under a name, and a way to forget one.
-// A status, a tag or a license narrows the open filter: it takes the place
-// of that part of the filter only, the search and the other parts kept, and
-// pressed again while it applies, it drops that part. Every text, a library
+// text, each status, each kind, the tags, the licenses, and the filters saved
+// in this browser (saved-filters.ts), with the form, opened by a button, that
+// saves the open filter under a name, and a way to forget one.
+// A status, a kind, a tag or a license narrows the open filter: it takes the
+// place of that part of the filter only, the search and the other parts
+// kept, and pressed again while it applies, it drops that part. Every text
 // and a saved filter open on their own.
-// Each count is what its link opens: every text and each library count the
-// depot's texts (GET /api/counts, read at once and again after every
-// change); a status, a tag or a license counts the open filter with that
-// value in place of its own part (counts.tsx), which shows once counted,
-// and the depot's count stands for it while the open filter is every text.
-// The entry
-// whose filter is the open one is marked as the current one. A library just
-// made opens at once. The boxes that find a tag or a license empty when
-// what is open changes.
+// Each count is what its link opens: every text counts the depot's texts
+// (GET /api/counts, read at once and again after every change); a status, a
+// tag or a license counts the open filter with that value in place of its own
+// part (counts.tsx), which shows once counted, and the depot's count stands
+// for it while the open filter is every text. A kind shows the depot's count
+// of its texts only while nothing else narrows the filter. The entry whose
+// filter is the open one is marked as the current one. The boxes that find a
+// tag or a license empty when what is open changes.
 
-import { Button, Dialog, TextInput } from "@workers-intelligence-commons/components";
+import { Button, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { get, type Answer } from "../api";
 import { settledCounts, shownCounts, useCounts, type Counting, type Counts } from "../counts";
 import { EVERY, toQuery, type TextFilter } from "../filter";
-import { NewLibrary } from "../pages/libraries";
-import { Problems, ReadWhole, required, STATUSES, StatusBadge, type Library, type Status } from "../parts";
+import { PLAIN, Problems, required, STATUSES, StatusBadge, type Status } from "../parts";
 import { href } from "../route";
 import { forgetFilter, saveFilter, useSavedFilters } from "../saved-filters";
 
 
-// the depot's counts: every current text, and how many have each status, tag and license
-type DepotCounts = { texts: number; statuses: Record<Status, number>; tags: Record<string, number>; licenses: Record<string, number>; libraries: Record<string, number> };
+// the depot's counts: every current text, and how many have each status, tag, license and kind
+type DepotCounts = { texts: number; statuses: Record<Status, number>; tags: Record<string, number>; licenses: Record<string, number>; kinds?: Record<string, number> };
 type Part = "statuses" | "tags" | "licenses";
+type Kind = { id: string; meaning?: string | null };
 // the most used first, then by name
 const ranked = (found: Record<string, number>) => Object.entries(found).sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).map(([key, n]) => ({ key, n }));
 
@@ -44,14 +43,12 @@ function countOf(c: Counts, part: Part, value: string): number {
   return c.licenses.find((l) => l.license === value)?.texts ?? 0;
 }
 
-// version: raised after any change, so the counts are read again. into: the
-// library texts are being chosen for, which a status, tag or license link
-// keeps in the address, so narrowing the texts stays inside that task.
-export function Sources({ open, libraries, version, onLibraryMade, into = null }: {
-  open: TextFilter; libraries: Library[]; version: number; onLibraryMade: () => void; into?: string | null;
-}) {
+// version: raised after any change, so the counts are read again.
+export function Sources({ open, version }: { open: TextFilter; version: number }) {
   const [read, setRead] = useState<{ answer: Answer<DepotCounts>; version: number } | null>(null);
   useEffect(() => { get<DepotCounts>("/api/counts").then((answer) => setRead({ answer, version })); }, [version]);
+  const [kinds, setKinds] = useState<Kind[]>([]);
+  useEffect(() => { get<Kind[]>("/api/kinds").then((a) => a.ok && setKinds(a.data)); }, []);
   const answer = read?.answer ?? null;
   const counts = answer?.ok ? answer.data : null;
   const depotStale = read !== null && read.version !== version; // the depot's counts of before the change, read again
@@ -74,7 +71,6 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
     return shown ? countOf(shown, part, value) : undefined;
   };
   const saved = useSavedFilters();
-  const [making, setMaking] = useState(false);
   const openKey = JSON.stringify({ ...open, ids: null }); // a find box empties when what is open changes
   const entry = (filter: TextFilter, label: ReactNode, count?: number, title?: string) => (
     <a className="source wic-focus" href={href(["texts"], toQuery(filter))} aria-current={same(filter, open) ? "true" : undefined} title={title}>
@@ -83,7 +79,7 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
     </a>
   );
   // the open filter with one of its parts set to a single value, or without it when that value alone applies already
-  const narrowed = (part: "statuses" | "tags" | "licenses", value: string): TextFilter => {
+  const narrowed = (part: Part | "kinds", value: string): TextFilter => {
     const alone = open[part].length === 1 && open[part][0] === value;
     return { ...open, ids: null, [part]: alone ? [] : [value] };
   };
@@ -91,7 +87,7 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
     const alone = open[key].length === 1 && open[key][0] === value;
     const count = countFor(key, value);
     return (
-      <a className="source wic-focus" href={href(["texts"], { ...toQuery(narrowed(key, value)), into })} aria-current={alone ? "true" : undefined}
+      <a className="source wic-focus" href={href(["texts"], toQuery(narrowed(key, value)))} aria-current={alone ? "true" : undefined}
         title={alone ? "Applies now; press again to drop it from the filter"
           : `Narrows the open filter, which keeps its search and its other parts${count === undefined ? "; its count shows once counted" : `: ${count.toLocaleString("en")} texts${staleFor(key) ? ", counted before the change, counting again" : ""}`}`}>
         <span className="source-label">{label}</span>
@@ -108,8 +104,21 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
     return rows.map((row) => ({ key: row.key, n: countFor(key, row.key)! })).filter((row) => row.n > 0 || open[key].includes(row.key))
       .sort((a, b) => b.n - a.n || a.key.localeCompare(b.key));
   };
-  const own = libraries.filter((l) => !l.locked_at);
-  const locked = libraries.filter((l) => l.locked_at);
+  // a kind: the open filter with that kind alone, counted in the depot while nothing else narrows it
+  const kindCount = (kind: string) => (counts?.kinds && every({ ...open, kinds: [] }) ? counts.kinds[kind] ?? 0 : undefined);
+  const kindEntry = (k: Kind) => {
+    const alone = open.kinds.length === 1 && open.kinds[0] === k.id;
+    const count = kindCount(k.id);
+    return (
+      <a className="source wic-focus" href={href(["texts"], toQuery(narrowed("kinds", k.id)))} aria-current={alone ? "true" : undefined}
+        title={alone ? "Applies now; press again to drop it from the filter" : `Only the texts of kind ${k.id}${k.meaning ? `: ${k.meaning}` : ""}; the search and the other parts kept`}>
+        <span className="source-label">{k.id}</span>
+        {count !== undefined && <span className={`aside source-count${depotStale ? " recounting" : ""}`}>{count.toLocaleString("en")}</span>}
+      </a>
+    );
+  };
+  // the kinds that hold texts first, the most first, plain ahead of a tie
+  const kindRows = [...kinds].sort((a, b) => (counts?.kinds?.[b.id] ?? 0) - (counts?.kinds?.[a.id] ?? 0) || Number(b.id === PLAIN) - Number(a.id === PLAIN) || a.id.localeCompare(b.id));
   return (
     <nav className="sources small" aria-label="What to open">
       <ul className="plain source-list">
@@ -119,11 +128,9 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
       <SourceGroup title="Statuses" tools={staleFor("statuses") ? <span className="aside">counting again</span> : undefined}>
         {STATUSES.map((s) => <li key={s} className={countFor("statuses", s) === 0 ? "none-held" : undefined}>{part("statuses", s, <StatusBadge status={s} />)}</li>)}
       </SourceGroup>
-      <SourceGroup title="Libraries" tools={<Button variant="quiet" onClick={() => setMaking(true)}>New library</Button>}>
-        {libraries.length === 0 && <li className="aside">No library yet.</li>}
-        {[...own, ...locked].map((l) => (
-          <li key={l.id}>{entry({ ...EVERY, libraries: [l.id] }, <>{l.name}{l.locked_at && <span className="aside"> locked</span>}{l.upstream ? <span className="aside"> upstream</span> : null}</>, counts ? counts.libraries[l.id] ?? 0 : undefined, `${l.name} (${l.id})`)}<ReadWhole library={l.id} /></li>
-        ))}
+      <SourceGroup title="Kinds">
+        {kinds.length === 0 && <li className="aside">reading</li>}
+        {kindRows.map((k) => <li key={k.id} className={kindCount(k.id) === 0 ? "none-held" : undefined}>{kindEntry(k)}</li>)}
       </SourceGroup>
       <Findable key={`tags ${openKey}`} title="Tags" loaded={Boolean(counts)} rows={rankedFor("tags")} recounting={staleFor("tags")}
         entry={(key) => part("tags", key, key)} />
@@ -133,20 +140,14 @@ export function Sources({ open, libraries, version, onLibraryMade, into = null }
         {saved.length === 0 && <li className="aside">None saved in this browser.</li>}
         {saved.map((s) => (
           <li key={s.name} className="saved">
-            {entry(s.filter, s.name)}
+            {s.gone.length ? <span className="source aside" title={`Saved before snapshots, limited to libraries (${s.gone.join(", ")}), which no longer exist: not opened, since without that limit it would match more texts than it was saved for. Forget it, and save the filter again with a tag in place of the library.`}>
+              <span className="source-label">{s.name}: limited to a library, not opened</span></span>
+              : entry(s.filter, s.name)}
             <button type="button" className="forget wic-focus" aria-label={`Forget the saved filter ${s.name}`} title="Forget it" onClick={() => forgetFilter(s.name)}>✕</button>
           </li>
         ))}
         <li><SaveFilter open={open} /></li>
       </SourceGroup>
-      <Dialog open={making} onClose={() => setMaking(false)} title="New library">
-        {making && <NewLibrary onMade={(a) => {
-          if (!a.ok) return;
-          setMaking(false);
-          onLibraryMade();
-          window.location.hash = href(["texts"], { library: a.data.id }); // the new library opens, with "Put texts in it"
-        }} />}
-      </Dialog>
     </nav>
   );
 }

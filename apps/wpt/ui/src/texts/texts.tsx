@@ -12,15 +12,12 @@
 // is open reads as one continuous text (blob.tsx) in place of the open
 // text. What is open is a filter of the texts (filter.tsx), kept in the
 // address with the current text and the mode:
-// #/texts/ID?library=L&view=blob. When it is one library, its head stands
-// above the text (library-head.tsx); ticked texts are acted on through the
-// bar at the bottom (bulk.tsx). The ticked texts are those ticked one by
+// #/texts/ID?kind=conversation&view=blob. Ticked texts are acted on through
+// the bar at the bottom (bulk.tsx). The ticked texts are those ticked one by
 // one, or, once the box of every text is ticked, every text the filter
 // matches less those unticked since, at the change number the list's page
 // was read at; either way the bar sends them as a selection (filter.tsx),
-// never as the list of every id. Opened from a library's "Put texts in
-// it" (into=L), a banner says which library the texts are chosen for (the
-// admitted texts it does not hold); a link that names texts by id may say
+// never as the list of every id. A link that names texts by id may say
 // what they are in words (what=...), which the filter bar shows in place of
 // their number. Clearing the filter opens the first page and its first
 // text, so the list reads from its start. The next two texts are read
@@ -34,8 +31,7 @@
 // text was refused, since that reverses a decision), R asks first, in one
 // line with an optional reason, then refuses it on Enter and opens the next
 // one (Escape refuses nothing), U puts an admitted or refused text back
-// under review the same way, and T takes it out of the open library. The
-// panel's buttons do the same: Admit & next, Refuse, ‹ and Next. Each
+// under review the same way. The panel's buttons do the same: Admit & next, Refuse, ‹ and Next. Each
 // decision is public, under the declaration this browser keeps
 // (declarant.ts), which the panel names; the line under the text says what
 // each press did; without a name and email, a decision asks for them and
@@ -51,14 +47,12 @@ import { type EditorHandle } from "../code-editor";
 import { declared, readDeclarant, saveDeclarant, useDeclarant } from "../declarant";
 import { CountingNote, matched, settledCounts, useCounts } from "../counts";
 import { type Decided } from "../decide-forms";
-import { EVERY, FilterBar, fromQuery, named as namedIds, sent, toQuery, useSearch, type Selection, type TextFilter } from "../filter";
-import { Help, plural, Problems, required, RequiredNote, textName, useLibraries, type Library } from "../parts";
+import { EVERY, FilterBar, fromQuery, goneParts, named as namedIds, sent, toQuery, useSearch, withoutGone, type Selection, type TextFilter } from "../filter";
+import { Help, PageHead, plural, Problems, required, RequiredNote, textName } from "../parts";
 import { href } from "../route";
 import { useSavedFilters } from "../saved-filters";
 import { Blob } from "./blob";
 import { Bulk } from "./bulk";
-import { LibraryFrom } from "./library-from";
-import { LibraryHead, outsideOf } from "./library-head";
 import { Playlist } from "./playlist";
 import { Sources } from "./sources";
 import { prefetch, TextPanel } from "./text-panel";
@@ -87,11 +81,29 @@ type Said = { status: Deciding; id: string; title: string; answer: Answer<{ deci
 type Ticked = { all: boolean; ids: Set<string>; change: number | null };
 const NONE: Ticked = { all: false, ids: new Set(), change: null };
 
+// An address written before snapshots that limited the texts to libraries
+// (filter.tsx, GONE_PARTS) is not opened: without that limit it would show,
+// and let a bulk action reach, more texts than it was written for. The page
+// says so and offers the same address without those parts as a choice.
 export function Texts({ current, query }: { current: string | null; query: URLSearchParams }) {
+  const gone = goneParts(query);
+  if (gone.length) {
+    const kept = withoutGone(query);
+    return (
+      <>
+        <PageHead title="Texts" />
+        <Problems problems={[`This address limits the texts to libraries (${gone.join(", ")}), which no longer exist since snapshots replaced them. It is not opened: without that limit it would show more texts than it was written for, and a bulk action would reach them all.`]} />
+        <p className="small">A hand-picked set of texts is a tag now. <a href={href(current ? ["texts", current] : ["texts"], Object.fromEntries([...new Set(kept.keys())].map((k) => [k, kept.getAll(k)])))}>Open the same filter without the library limit</a>, knowing it matches every text its other parts match.</p>
+      </>
+    );
+  }
+  return <TextsPage current={current} query={query} />;
+}
+
+function TextsPage({ current, query }: { current: string | null; query: URLSearchParams }) {
   const queryText = query.toString();
   const filter = useMemo(() => fromQuery(new URLSearchParams(queryText)), [queryText]);
   const blob = query.get("view") === "blob";
-  const { libraries, reload: reloadLibraries } = useLibraries();
   const playlist = useSearch(filter, LIMIT);
   const { answer } = playlist;
   const rows = answer?.ok ? answer.data.rows : [];
@@ -111,20 +123,12 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
   const who = useDeclarant();
   const { about } = useAbout();
   const saved = useSavedFilters();
-  const library = filter.libraries.length === 1 ? libraries.find((l) => l.id === filter.libraries[0]) ?? null : null;
 
   const address = useCallback((id: string | null, q: Record<string, string | string[] | null>) => href(id ? ["texts", id] : ["texts"], q), []);
-  const into = query.get("into"); // the library "Put texts in it" came from: the one the ticked texts go into first
-  const intoLibrary = into ? libraries.find((l) => l.id === into) ?? null : null;
-  const outsideKey = (f: TextFilter, library: string) => JSON.stringify(f.outside) === JSON.stringify(outsideOf(library).outside);
-  const choosing = intoLibrary && outsideKey(filter, intoLibrary.id) ? intoLibrary : null; // its filter still open
-  // the open filter narrows the texts it offers further than the admitted texts it does not hold
-  const base = choosing ? outsideOf(choosing.id) : null;
-  const narrowed = base !== null && (Object.keys(EVERY) as (keyof TextFilter)[]).some((k) => JSON.stringify(filter[k]) !== JSON.stringify(base[k]));
   // what a link's named texts are, in words (#/texts?id=...&what=...), shown in place of their number while they stay named
   const what = query.get("what");
   const idsLabel = what && filter.ids ? what : undefined;
-  const here = useMemo(() => ({ ...toQuery(filter), view: blob ? "blob" : null, into, what }), [filter, blob, into, what]);
+  const here = useMemo(() => ({ ...toQuery(filter), view: blob ? "blob" : null, what }), [filter, blob, what]);
   const link = useCallback((id: string) => address(id, here), [address, here]);
   const leave = () => {
     if (!dirty.current) return true;
@@ -133,15 +137,15 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
     return ok;
   };
   const go = (id: string) => { window.location.hash = link(id); };
-  const changed = useCallback(() => { setVersion((v) => v + 1); playlist.reload(); reloadLibraries(); }, [playlist.reload, reloadLibraries]);
+  const changed = useCallback(() => { setVersion((v) => v + 1); playlist.reload(); }, [playlist.reload]);
   // a filter cleared to every text goes back to the playlist, since the blob would read every text as one page
   const apply = useCallback((f: TextFilter) => {
     const every = JSON.stringify(f) === JSON.stringify(EVERY);
-    window.location.hash = address(every ? null : current, { ...toQuery(f), view: blob && !every ? "blob" : null, into: into && outsideKey(f, into) ? into : null,
+    window.location.hash = address(every ? null : current, { ...toQuery(f), view: blob && !every ? "blob" : null,
       what: what && JSON.stringify(f.ids) === JSON.stringify(filter.ids) ? what : null });
-  }, [address, current, blob, into, what, filter.ids]);
+  }, [address, current, blob, what, filter.ids]);
   const onDirty = useCallback((d: boolean) => { dirty.current = d; }, []);
-  const shownId = useRef<string | null>(null); // the text the right column shows now: A, R and T act only on it
+  const shownId = useRef<string | null>(null); // the text the right column shows now: A, R and U act only on it
   const onShown = useCallback((id: string | null) => { shownId.current = id; }, []);
   const handle = useCallback((h: EditorHandle | null) => { editor.current = h; }, []);
 
@@ -267,23 +271,6 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
     changed();
   };
 
-  // T in an open library of this depot: the current text leaves it (it stays admitted), then the next opens
-  const takeOut = async () => {
-    if (!current || deciding || shownId.current !== current || !library || library.locked_at || library.upstream) return;
-    if (!leave()) return;
-    const at = rows.findIndex((r) => r.id === current);
-    const row = rows[at];
-    const title = row ? textName(row) : current;
-    setDeciding(true);
-    const a = await write<{ taken_out: number; not_held: number }>(`/api/libraries/${encodeURIComponent(library.id)}/taken-out`, { selection: sent(namedIds([current])) });
-    setDeciding(false);
-    if (!a.ok) { setSaid({ words: <Problems problems={[`Not taken out: ${title}.`, ...a.problems]} /> }); return; }
-    if (!a.data.taken_out) { setSaid({ words: <>{library.name} did not hold {title}.</> }); return; }
-    setSaid({ words: <>Taken out of {library.name}: {title}; it stays admitted.</> });
-    pick.current = { kind: "after", id: current, index: Math.max(at, 0) };
-    changed();
-  };
-
   const currentStatus = rows.find((r) => r.id === current)?.status ?? null;
   const isTicked = (id: string) => ticked.all !== ticked.ids.has(id);
   const tick = (ids: string[], on: boolean) => {
@@ -311,7 +298,6 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
       else if (key === "a") { if (currentStatus === "refused") ask("admitted"); else decide("admitted"); } // reversing a refusal asks first
       else if (key === "r") ask("refused");
       else if (key === "u") ask("under review");
-      else if (key === "t") takeOut();
       else if (key === "x" && current) tick([current], !isTicked(current));
       else if (key === "e") editor.current?.focus();
       else return;
@@ -332,7 +318,7 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
     playlist.open(id);
     window.location.hash = address(id, toQuery(filter));
   };
-  const savedName = saved.find((s) => JSON.stringify({ ...EVERY, ...s.filter }) === JSON.stringify(filter))?.name;
+  const savedName = saved.find((s) => !s.gone.length && JSON.stringify({ ...EVERY, ...s.filter }) === JSON.stringify(filter))?.name;
   const counts = useCounts(filter, version);
   const admittedHere = address(null, toQuery({ ...filter, statuses: ["admitted"] }));
   const total = counts && (counts.done || counts.settled) && !counts.problems ? matched(counts) : null; // how many texts are open, once counted
@@ -353,8 +339,6 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
         title="Admit it, then the next text (A)">Admit &amp; next<span className="key-hint">A</span></Button>
       {currentStatus && currentStatus !== "under review" && <Button variant="quiet" className="review-button" onClick={() => ask("under review")} disabled={deciding} aria-keyshortcuts="U"
         title="Back to review: undo its admission or refusal (U)">Back to review<span className="key-hint">U</span></Button>}
-      {library && !library.locked_at && !library.upstream && <Button variant="quiet" className="review-button" onClick={takeOut} disabled={deciding} aria-keyshortcuts="T"
-        title={`Take it out of ${library.name}, then the next text (T)`}>Take out<span className="key-hint">T</span></Button>}
     </div>
   );
   // the quick filters: each replaces what it is about and keeps the rest
@@ -405,15 +389,15 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
           <Button variant="quiet" className="list-button" aria-expanded={listOut} onClick={() => { byButton.current = !listOut; setListOut(!listOut); }} title="The list of the open texts">Texts</Button>
           {quick.map((q) => <Button key={q.label} variant="quiet" className={`quick${q.on ? " on" : ""}`} aria-pressed={q.on} title={q.title} onClick={q.go}>{q.label}</Button>)}
           <div className="open-menu">
-            <Button variant="quiet" aria-expanded={opening} onClick={() => setOpening(!opening)} title="Every text, each status, library, tag and license with its count, and the saved filters">Open ▾</Button>
+            <Button variant="quiet" aria-expanded={opening} onClick={() => setOpening(!opening)} title="Every text, each status, kind, tag and license with its count, and the saved filters">Open ▾</Button>
             {opening && (
               <div className="open-pop" onClick={(e) => { if (e.target instanceof Element && e.target.closest("a")) setOpening(false); }}>
-                <Sources open={filter} libraries={libraries} version={version} onLibraryMade={changed} into={choosing?.id ?? null} />
+                <Sources open={filter} version={version} />
               </div>
             )}
           </div>
         </div>
-        <FilterBar value={filter} onApply={apply} libraries={libraries} onLeave={toList}
+        <FilterBar value={filter} onApply={apply} onLeave={toList}
           idsLabel={idsLabel} within={counts?.done && !counts.problems ? counts : null} />
         <div className="view-switch small" role="group" aria-label="How the open texts are shown">
           <a className="wic-focus" href={address(current, { ...toQuery(filter), view: null })} aria-current={!blob ? "true" : undefined} title="One text at a time, with the review panel">Text</a>
@@ -421,33 +405,18 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
           <label className="tick" title="Show texts in a monospace type"><input type="checkbox" className="wic-check-box wic-focus" checked={mono} onChange={(e) => { setMono(e.target.checked); keepMono(e.target.checked); }} /> <span>Mono</span></label>
         </div>
       </div>
-      {choosing && (
-        <p className="next-step into-banner row tight" role="note">
-          <span>{total === 0
-            ? <>Nothing left to put in <strong>{choosing.name}</strong>{narrowed ? " under this filter" : ""}.</>
-            : <>Putting texts in <strong>{choosing.name}</strong>: tick, then <q>Put in</q>.</>}</span>
-          <a href={href(["texts"], { library: choosing.id })}>{total === 0 ? `Open ${choosing.name}` : "Back"}</a>
-          {total === 0 && <a href={href(["datasets"], { new: "1", library: choosing.id })}>Make a dataset from it</a>}
-        </p>
-      )}
       <div className="open-bar small">
-        {library ? <LibraryHead library={library} libraries={libraries} onChanged={changed} version={version} /> : (
-          <section className="open-head" aria-label="What is open">
-            <h1 className="open-title">{(choosing ? null : savedName) ?? describe(filter, libraries, idsLabel ?? null)}</h1>
-            {(() => {
-              const final = counts && (counts.done || counts.settled);
-              const c = counts && !final && counts.before ? counts.before : counts && (final || counts.counted > 0) ? counts : null;
-              return c && <span className={`aside${c === counts ? "" : " recounting"}`}>
-                {final || c !== counts ? "" : "so far "}{plural(matched(c), "text")}: {c.statuses["under review"].toLocaleString("en")} under review, {c.statuses.admitted.toLocaleString("en")} admitted, {c.statuses.refused.toLocaleString("en")} refused{c.locked > 0 && <>; {c.locked.toLocaleString("en")} in a locked library</>}
-              </span>;
-            })()}
-            <span><CountingNote counting={counts} /></span>
-            {!choosing && (
-              <LibraryFrom filter={filter} change={answer?.ok ? answer.data.change : null} admitted={shown ? shown.statuses.admitted : null}
-                onDone={(words) => { setSaid({ words }); changed(); }} />
-            )}
-          </section>
-        )}
+        <section className="open-head" aria-label="What is open">
+          <h1 className="open-title">{savedName ?? describe(filter, idsLabel ?? null)}</h1>
+          {(() => {
+            const final = counts && (counts.done || counts.settled);
+            const c = counts && !final && counts.before ? counts.before : counts && (final || counts.counted > 0) ? counts : null;
+            return c && <span className={`aside${c === counts ? "" : " recounting"}`}>
+              {final || c !== counts ? "" : "so far "}{plural(matched(c), "text")}: {c.statuses["under review"].toLocaleString("en")} under review, {c.statuses.admitted.toLocaleString("en")} admitted, {c.statuses.refused.toLocaleString("en")} refused
+            </span>;
+          })()}
+          {!(counts?.settled && !counts.problems) && <span><CountingNote counting={counts} /></span>}
+        </section>
         {!blob && current && <span className="aside ledger position">{(() => { const at = rows.findIndex((r) => r.id === current); return at >= 0 ? `${at + 1} of ${rows.length} on this page` : ""; })()}</span>}
       </div>
       <div className={`texts-body${blob ? " blob-mode" : ""}${listOut ? " list-out" : ""}`}>
@@ -461,10 +430,7 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
             {answer?.ok && (
               <Playlist found={answer.data} busy={playlist.pending} current={current} link={link} isTicked={isTicked} everyTicked={ticked.all && ticked.ids.size === 0}
                 onTick={tick} onTickAll={tickAll} onUntickAll={() => setTicked(NONE)} total={shownTotal} order={playlist.order} onOrder={playlist.setOrder}
-                limit={playlist.limit} onFirst={playlist.first} onPrevious={playlist.previous} onNext={playlist.next} counting={counts}
-                empty={library && JSON.stringify(filter) === JSON.stringify({ ...EVERY, libraries: [library.id] })
-                  ? <>{library.name} is empty. {!library.locked_at && !library.upstream ? <a href={href(["texts"], { ...toQuery(outsideOf(library.id)), into: library.id })}>Put texts in it</a> : null}</>
-                  : choosing ? <>None left.</> : undefined} />
+                limit={playlist.limit} onFirst={playlist.first} onPrevious={playlist.previous} onNext={playlist.next} counting={counts} />
             )}
           </div>
         )}
@@ -473,7 +439,7 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
               onDirty={onDirty} handle={handle} onShown={onShown} find={filter.inText ? filter.search : undefined} />
             : <p className="aside text-column">No text is open: choose one in the list at the left edge, or press J for the first.</p>}
       </div>
-      <Bulk selection={selection} count={tickedCount} libraries={libraries} library={library} into={choosing?.id ?? into} admittedHere={admittedHere} onUntick={() => setTicked(NONE)}
+      <Bulk selection={selection} count={tickedCount} admittedHere={admittedHere} onUntick={() => setTicked(NONE)}
         onDone={(words) => { setSaid({ words }); setTicked(NONE); recheck(); changed(); }} />
       <div className="dock">
         {confirming && <DecideAsk title={confirming.title} status={confirming.status} busy={deciding} who={who} confirmation={about?.confirmation ?? null} requirements={about?.requirements ?? null}
@@ -488,9 +454,9 @@ export function Texts({ current, query }: { current: string | null; query: URLSe
   );
 }
 
-// What is open, in words, when it is no saved filter and no single library:
-// every part of the filter, the texts named by what a link called them.
-function describe(f: TextFilter, libraries: Library[], idsName: string | null): string {
+// What is open, in words, when it is no saved filter: every part of the
+// filter, the texts named by what a link called them.
+function describe(f: TextFilter, idsName: string | null): string {
   const or = (list: string[]) => (list.length < 2 ? list.join("") : `${list.slice(0, -1).join(", ")} or ${list[list.length - 1]}`);
   const and = (list: string[]) => (list.length < 2 ? list.join("") : `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`);
   const status = f.statuses.length === 1 ? f.statuses[0] : null;
@@ -501,9 +467,7 @@ function describe(f: TextFilter, libraries: Library[], idsName: string | null): 
     f.tags.length ? `tagged ${and(f.tags)}` : null,
     f.licenses.length ? `under ${or(f.licenses)}` : null,
     f.ids ? (idsName ?? `among ${f.ids.length} named`) : null,
-    f.libraries.length ? `in ${or(f.libraries.map((id) => libraries.find((l) => l.id === id)?.name ?? id))}` : null,
-    f.outside.length ? `not in ${or(f.outside.map((id) => libraries.find((l) => l.id === id)?.name ?? id))}` : null,
-    f.locked === true ? "in a locked library" : f.locked === false ? "in no locked library" : null,
+    f.kinds.length ? `of kind ${or(f.kinds)}` : null,
     f.decision ? `on the decision ${f.decision}` : null,
     words ? `holding “${words}”${f.wholeWords ? " as whole words" : ""} in ${f.inText ? "their title or text" : "their title"}` : null,
     f.where.trim() ? "matching an SQL condition" : null,
@@ -538,7 +502,7 @@ function DecideAsk({ title, status, busy, who, confirmation, requirements, onDec
       onSubmit={(e) => { e.preventDefault(); onDecide(reason); }} onKeyDown={escape}>
       <span>{head} <strong>{title}</strong>? Public, as {who.name}, <span className="ledger">{who.email}</span>.
         {confirmation && <> It confirms: <q>{confirmation}</q></>}{requirements && <> <a href={requirements} target="_blank" rel="noreferrer">The requirements</a>.</>}
-        {(refusing || again) && <Help label="this decision">{refusing ? "It leaves every open library." : "It undoes its admission or refusal: the decisions before it no longer count, and it leaves every open library until admitted again."}</Help>}</span>
+        {again && <Help label="this decision">It undoes its admission or refusal: the decisions before it no longer count. A snapshot made before keeps the revision it holds.</Help>}</span>
       {reasoned && <input className="wic-input wic-focus decide-reason" autoFocus value={reason} placeholder="Reason, optional and public" aria-label="Reason (optional, public)"
         onChange={(e) => setReason(e.target.value)} />}
       <Button type="submit" variant="primary" disabled={busy} autoFocus={!reasoned}>{refusing ? "Refuse it" : again ? "Put it back" : "Admit it"}{reasoned && <span className="key-hint">(Enter)</span>}</Button>

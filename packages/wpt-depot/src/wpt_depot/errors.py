@@ -42,7 +42,7 @@ class BadDepotSetting(DepotError):
 
 
 class NotFound(DepotError):
-    """No text, item, decision, library, erasure, dataset, license or kind with that id or name."""
+    """No text, item, decision, erasure, snapshot, tokenizer recipe, license or kind with that id or name."""
 
 
 class Refused(DepotError):
@@ -50,14 +50,7 @@ class Refused(DepotError):
     accepted or empty, a person's reason in the form the depot keeps for
     license changes, a license or kind the
     depot does not hold, a license change to the licenses a text names
-    already, a name already taken, a bad needle or share, a
-    problem reported with no text of the library it names."""
-
-
-class Locked(Refused):
-    """The change would add a text to a locked library. A text a locked
-    library holds still takes decisions and changes of its licenses and
-    credits, as new revisions the library does not read."""
+    already, a name already taken, a bad needle or share."""
 
 
 class BelongsToUpstream(Refused):
@@ -78,10 +71,6 @@ class BadQuery(DepotError):
 
 class TimeLimitReached(DepotError):
     """A person's query ran past its time limit and was stopped."""
-
-
-class BadRemote(DepotError):
-    """A remote (an exported dataset) is not in the shape export writes."""
 
 
 class BackupRefused(DepotError):

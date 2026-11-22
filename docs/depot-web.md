@@ -25,7 +25,8 @@ depot through every route, with no login ([architecture.md](architecture.md),
   store settings Compose passes it name the store that holds the corpora
   it builds and serves, with a key that reads and writes it; without
   `WPT_STORE`, it builds and serves no corpus, and an erasure carried out
-  through it marks no corpus stale.
+  through it marks no corpus stale. Compose gives it no `WPT_REPOSITORY`,
+  so its page "Recipes" lists no recipe and says no repository is set.
 - **nginx**: the reverse proxy, with the limits below. It takes the
   visitor's address from the `CF-Connecting-IP` header of a request that
   comes from one of Cloudflare's address ranges. It answers only for
@@ -49,13 +50,13 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts` and `/api/texts/blocked`, `GET /api/datasets/{id}/estimate` | 1 a second | 5, delayed |
-| every other `POST`, except `/api/libraries/measure` | 1 a second | 10, delayed |
-| every other request, `POST` to `/api/libraries/measure` included (it reads only the depot's counts) | 10 a second | 40, at once |
+| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts`, `/api/texts/blocked` and `/api/recipes/compose`, `GET /api/recipes/{name}` (both work out a build's estimate) | 1 a second | 5, delayed |
+| every other `POST` | 1 a second | 10, delayed |
+| every other request | 10 a second | 40, at once |
 
-A filter of every text, or of one status, tag, license or library, gets
-how many texts it matches, their split by status and how many a locked
-library holds at once from the depot's counts, when those hold them. The
+A filter of every text, or of statuses with one tag or license or with
+kinds, gets how many texts it matches and their split by status at once
+from the depot's counts, when those hold them. The
 pages count the rest of it, and every other filter, one step at a time, at most
 one step every two seconds, and send a step refused with 429 or for lack
 of a free reader again after a wait, so counting leaves at least half of the first limit to the other
@@ -63,123 +64,108 @@ requests.
 
 An address holds at most 20 connections at a time. A request body holds
 at most 100 MB, and the app has 100 seconds to answer. The files of a
-corpus, the parts of a dataset's export and a dataset's sample stream for
-as long as they last:
+corpus and its archive, and on the frozen routes of datasets a corpus's
+files, an export's parts and a sample, stream for as long as they last:
 nginx passes each piece on as it comes, without a temporary file, and waits
 up to 600 seconds between two pieces. The limits above count them as any
 other request. A build's estimate counts as a heavy read.
 
 ## Jobs and downloads
 
-The web app runs its long work as jobs, one at a time, in a process of
-their own: the training of a tokenizer recipe's vocabulary, the build of a
-dataset's corpus, and a write over many texts. The queue lives in
+The web app runs its long work as jobs, each in a process of its own, in
+two lanes that each run one job at a time. The write lane runs the writes
+over many texts (a decision, a license change, a score, a change of tags);
+the heavy lane runs the making of a snapshot, the training of a tokenizer
+recipe's vocabulary and the build of a recipe's corpus. A heavy job holds
+the depot's write lock for one short transaction at most, so a decision
+over many texts never waits behind a build of hours, and a small write runs
+in the request while no write job is open. The queue lives in
 `wpt-depot.sqlite.jobs`, which nothing backs up, so a job survives a
 restart of the app: a queued job stays queued, and a job the restart cut
-short runs again, a corpus build going on from its last token file. Anyone
-may start a job. Each dataset has at most one corpus job open, and each
-recipe one vocabulary job. The page "Jobs" shows the queue and each job's
-progress. Only `wpt depot jobs cancel ID`, run where the depot is, cancels
-one; `wpt depot jobs` lists them.
+short runs again, a corpus build going on from its last token file (its
+checkpoint is kept by its build key), a snapshot read again from the start,
+so it reads the change current when it finishes. Anyone may start a job.
+Each build key has at most one corpus job open, each snapshot name one
+snapshot job, and each tokenizer recipe one vocabulary job. The page "Jobs"
+shows the queue, each job's lane and progress. Only `wpt depot jobs cancel
+ID`, run where the depot is, cancels one; `wpt depot jobs` lists them. A
+queue file written by an older app is brought up when the app opens it:
+a job of an operation the app no longer has fails, saying so, and so does
+every write still queued or running, since its selection could name a
+library, which no longer exists, and run now it would reach more texts
+than were chosen. Nothing of it is written; the texts are chosen again.
 
-A dataset's page "Export" (`GET /api/datasets/{id}/export`) gives the
-texts of its current revision with no tokenizer, no build and no job: every
-plain text a share takes and every conversation and task, whatever its
-`max_tokens`, except a conversation whose quotes the export cannot hold
-([data-selection.md](data-selection.md), "Conversations that quote
-texts"), in numbered parts, each in JSONL compressed with zstd and in
-Parquet, made as it is sent and the same bytes every time for the same
-revision. Each text's export key, a seeded hash of its id that its depot
-stores with it and with each library's row of it, places it, and each part
-is one range of the keys, so no pass orders the dataset. Reading a part
-reads, for each of the dataset's libraries, that range of the library's
-rows by key, so it never reads the texts of the other parts nor the rows
-of other libraries. Once a part was sent whole, the listing gives its
-size, its sha256 and how many conversations it left out (`left_out`, by
-why), and the page sums the conversations left out. A part
-names each depot by the name a corpus records for it, and the app reads a
-text of another local depot from that depot's file. At most 2 parts or
-samples are sent at once in all, and 1 to each visitor; past that the app
-answers 429.
+Every heavy action shows its cost before the click that starts it, and its
+route refuses it without `confirmed: true` and the estimate it showed; when
+the estimate now differs (a cost more than 10% above the one shown, another
+build key, a corpus the store's cap would now delete), it answers 409 with
+the new estimate to confirm instead:
 
-A corpus is built for a dataset, one vocabulary the depot holds (by its
-sha256) and a size: a number of tokens, or all. A build at a size counts
-everything, and the corpus never passes that size: conversations and
-tasks take the share of the bytes they hold in the corpus of every token,
-and the shares split the rest ([data-selection.md](data-selection.md), "Datasets"). The dataset's `max_tokens` is only the size the build form
-fills in. The page "Download" lists the
-dataset's corpora and holds the form of a new build: a trained vocabulary,
-the one the dataset publishes filled in, else the latest of its own recipe, and a size, then an estimate (`GET /api/datasets/{id}/estimate`: the
-tokens, the bytes in the store, the time of tokenizing on this machine
-and whether it fits under the cap, from a small sample tokenized, writing
-nothing), and
-only after it a start that restates the estimate and asks for a
-confirmation.
-At a size, the estimate's tokens are a forecast that walks the dataset's
-order as the build does, where a text that does not fit what is left of
-its share is left out. Its headline, above the start, says how many tokens will come
-out and which share will come out short. It also names the smallest size
-at which every share comes within 10 percentage points of its proportion; a built
-corpus whose shares came out uneven offers the same size. The forecast
-counts the texts as the build does: the plain texts, and how many of the
-dataset's conversations and tasks the size takes. It is made by share: a
-share that splits its part over the tags of its texts
-([data-selection.md](data-selection.md), "Filling a part") takes other
-texts than the order alone gives, but the same part, so the forecast gives
-that share's tokens and says nothing of its groups, and its count of the
-share's texts is the order's. A sampled conversation that quotes a text
-the dataset does not hold counts for nothing, as the build leaves it out;
-one whose quoted text only the size or the shares would leave out still
-counts, and the estimate warns that it cannot tell. Its time leaves out the walk of the whole
-dataset that such a share needs first, and the second tokenizing of the
-texts it chooses. The estimate and the
-build read the bytes of each share and of the conversations and tasks from
-the figures the dataset's revision stores. When that revision's figures are
-not known, both count the same figures from every text instead, and the
-estimate warns that it did. When reading the dataset again would change
-what it reads, the form also links to the dataset's page, whose "Read
-again" stores figures for the depot's own libraries. A build never trains a vocabulary: the training is the
-recipe page's own action, with its own estimate and confirmation.
+- a snapshot (`GET /api/snapshots/new`: the name offered, the year and
+  month, then `2026-11b`, `2026-11c`, ... once taken, with the admitted
+  texts now, the seconds and the bytes; `POST /api/snapshots`);
+- a build (`GET /api/recipes/{name}`: tokens, bytes, seconds, from a
+  sample, what the cap would delete, whether its corpus is built already;
+  `POST /api/recipes/{name}/build`);
+- a change of tags over a selection (`POST /api/texts/retag/estimate`:
+  the texts changed, the rows and bytes written, the seconds;
+  `POST /api/texts/retag`, a job of the write lane past 100 texts).
 
-Each dataset, vocabulary and size has one fixed download link
-(`GET /api/datasets/{id}/download/{vocabulary}/{size}`). It gives the
-latest fresh corpus of that vocabulary and size built from the dataset's
-current revision, or from a revision that differs from it only in its
-`max_tokens` or the vocabulary it publishes, which a build never reads.
-Otherwise it says why there is
-none: being built (with the job's progress), stale (an
-admitted erasure reached one of its texts), not built, or checking an
-erasure (an erasure decided here is being carried into the corpora's
-records; no corpus is sent meanwhile). Opening it starts nothing, and
-nothing builds a stale corpus again by itself. The corpus's files stream
-from the store, each with its size and sha256, and take a `Range` of bytes.
-The page of a built corpus, and the line of its build's job, say what it
-left out: the conversations whose quoted text it left out or whose quote
-matches no single place, and the texts of the kinds no training step
-reads.
-All of them also come as one tar archive (`everything.tar` under the same
-link), made as it is sent and never stored. Its bytes depend only on the
-corpus's record, so its length is known before it is sent and it takes a
-`Range` of bytes too, which lets a download resume. A file and the
-archive each send an `ETag`, and a `Range` whose `If-Range` names another
-one gets the whole thing, never bytes of something else.
+`GET /api/snapshots` lists the snapshots; `GET /api/snapshots/{id}` gives
+one with its summary (by kind, tag, plain tag set, license and owner), how
+many of its texts an erasure carried out after it cut or removed (worked
+out once for each last erasure and kept in the queue's file) and the
+repository's recipes that name it; `GET /api/snapshots/{id}/sets` gives its
+sets as portable roaring bitmaps in base64 with its digest, so anyone can
+check it without a copy of the depot; `POST /api/snapshots/{id}/texts`
+gives its texts a page at a time, each at its revision then.
 
-The listing of a dataset's corpora (`GET /api/datasets/{id}/download`)
-names, for each vocabulary and size, the latest fresh corpus built from
-any revision of the dataset, with that revision. Training through the web
-app takes that corpus, by the same rule as from the depot's file
-([training.md](training.md), "Training").
+The page of recipes lists the model recipes of the repository checkout
+`WPT_REPOSITORY` names on the machine that serves the app, read through
+`wpt_recipes`, with the commit the checkout is at; without the setting the
+page says so. Each series follows as `SERIES:`, read at its largest size:
+the one corpus every size of the series reads. Each recipe shows its state (ready, a recipe of the legacy
+dataset shape, which is never built here, its snapshot not here or not the
+one it names, its vocabulary missing), its measure from its snapshot's summary, its estimate
+and the corpus of its build key. `POST /api/recipes/compose` composes a
+data section from a snapshot, kinds, shares, a size and a vocabulary, with
+its measure and estimate, and writes nothing: the recipe file is committed
+by a person. A corpus downloads by its build key: `GET /api/builds/{key}`
+(its state and files), `.../files/{name}` and `.../everything.tar`, each
+taking a `Range` of bytes.
 
-The store keeps only the latest fresh corpus of each dataset, vocabulary
-and size: a build deletes the one before of the same three once its own is
-whole, and the corpora of other vocabularies and sizes stay.
+A corpus is a cache: the same recipe on the same snapshot builds it again,
+so a model never needs a kept corpus to be checked
+([training.md](training.md), "What is exactly repeatable").
+
+### Models trained before snapshots
+
+The dataset routes are frozen: they answer what they answered for a depot
+of format 12, read-only, from the depot's legacy tables
+(`wpt_depot/legacy.py`, served by `wpt/depot/web/legacy.py`), so a model
+trained before snapshots can still be checked with the depot's address and
+the repository at the commit it records ([training.md](training.md),
+"Models trained before snapshots"). They have no page. They are `GET
+/api/datasets` and, for one dataset, its page, its `remote` fields, the
+listing of its corpora (`download`), each corpus's fixed link
+(`download/{vocabulary}/{size}`) with its files and `everything.tar`, its
+export and its parts, and its sample (`sample?bytes=N`), the plain texts a
+vocabulary of another depot trained on. Their answers are the depot's
+legacy rows and the corpora the store kept; nothing builds a corpus of a
+dataset. The export gives a dataset revision's texts in numbered parts,
+each in JSONL compressed with zstd and in Parquet, made as it is sent and
+the same bytes every time, a conversation whose quotes it cannot hold left
+out ([data-selection.md](data-selection.md), "Conversations that quote
+texts"). At most 2 parts and samples are sent at once in all, and 1 to
+each visitor; past that the app answers 429.
+
+A build deletes no other corpus but those the cap makes it delete.
 `WPT_CORPORA_CAP` bounds the bytes all corpora take together, the files a
 stopped build left without a record included. To make room, a build
 deletes those files first, then the corpus downloaded least recently, a
 file at a time, never one being built or downloaded. A corpus whose
 estimated size passes the cap fails before its first upload, with that
-reason. A deleted corpus keeps its record, and a build of the same dataset
-state, vocabulary and size writes the same corpus into its folder again.
+reason. A deleted corpus keeps its record.
 
 ## Cloudflare's address ranges
 
@@ -239,12 +225,12 @@ Let's Encrypt's challenges must reach port 80 over plain HTTP.
    the depot's folder, from `deploy/depot-web/`:
 
    ```sh
-   docker compose run --rm app wpt depot tokenizer import NAME /depot/NAME.json --dataset DATASET
+   docker compose run --rm app wpt depot tokenizer import NAME /depot/NAME.json --snapshot SNAPSHOT
    ```
 
    with `--lock /depot/LOCK.json` to keep the vocabulary a lock file names
    ([tokenizer.md](tokenizer.md), "Importing one"). Without a vocabulary,
-   the first build of a dataset that names the recipe trains it.
+   the recipe's page trains it, its cost shown first.
 
 7. Name what backs the depot up. Every write leaves a change file in
    `wpt-depot.sqlite.waiting/` until `wpt depot backup` sends it to the
@@ -260,11 +246,24 @@ Let's Encrypt's challenges must reach port 80 over plain HTTP.
 To update, `git pull --recurse-submodules`, then `docker compose up -d
 --build` from `deploy/depot-web/`. A change to the script or its systemd
 files needs step 4 again. A new depot format needs the upgrade first, the
-app stopped, since the app refuses a depot of another format:
+app stopped, since the app refuses a depot of another format. One run
+brings the depot up through every format between, so a depot of format 11
+goes to 12 and then to 13. The first command only reads: it says what the
+upgrade does (each locked library and each dataset revision models were
+trained on made a snapshot, the open libraries left as they are), what it
+costs (time, WAL, disk, the full copy the next backup sends) and what to
+check before, and writes nothing. Back the depot up right before the
+upgrade (`wpt depot backup`); only the wpt of the old format opens that
+backup, so restoring it means checking out that wpt first. `--yes` runs
+the check again and upgrades only when it passes; a failed check writes
+nothing. Upgrade this depot before the depots that clone it, since a clone
+of the new format refuses an upstream of the old one:
 
 ```sh
 docker compose stop app
-docker compose run --rm --build app wpt depot upgrade
+docker compose run --rm --build app wpt depot upgrade --check
+docker compose run --rm app wpt depot backup
+docker compose run --rm app wpt depot upgrade --yes
 docker compose up -d --build
 ```
 

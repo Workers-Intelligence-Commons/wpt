@@ -3,7 +3,7 @@
 // text lists them, changes or removes them, and adds one under a name the
 // depot knows or a new one, all saved at once through POST
 // /api/texts/scores with the decider's declaration: a decision under
-// review, the text keeping its status and libraries. A score set here is
+// review, the text keeping its status. A score set here is
 // made from the text's current content version. The bulk form sets one
 // score on, or removes it from, the texts of a selection (POST
 // /api/texts/score), as a job when the selection is large. The names the
@@ -135,7 +135,7 @@ export function TextScores({ id, scores, contentVersion, readOnly, onDone }: {
         <Confirm label="Confirm and save the scores" disabled={nothing || invalid.length > 0} onConfirm={send}
           note={invalid.length > 0 ? `A value is no number: ${invalid.join(", ")}.` : nothing ? "Nothing changed yet."
             : <>{set.length > 0 && <>Sets {set.map((s) => s.name).join(", ")}. </>}{remove.length > 0 && <>Removes {remove.join(", ")}. </>}
-              <Help label="saving scores">Saved as a decision under review whose reason names the scores set and removed. The text keeps its status and its libraries, and a locked library keeps the revision it pinned. A score set here is made from content version {contentVersion}, the text as it is now.</Help></>} />
+              <Help label="saving scores">Saved as a decision under review whose reason names the scores set and removed. The text keeps its status, and a snapshot made before keeps the revision it holds. A score set here is made from content version {contentVersion}, the text as it is now.</Help></>} />
         <Outcome answer={answer} done={() => ""} />
       </>}
     </div>
@@ -174,7 +174,7 @@ export function ScoreForm({ selection, size, onDone }: { selection: Selection; s
       </div>
       <Confirm label={action === "remove" ? "Confirm and remove the score" : "Confirm and set the score"} disabled={!ready} onConfirm={go}
         note={<>{action === "remove" ? `Removes ${given || "the score"} from ${them}.` : `Sets ${given || "the score"} to ${numberOf(value) ?? "a value"} on ${them}, made from each one's current content version.`}
-          <Help label="setting a score">One decision under review on every text it changes, whose reason names the score. The texts keep their status and libraries, and a locked library keeps the revision it pinned. A text whose scores stay as they are is left out.</Help></>} />
+          <Help label="setting a score">One decision under review on every text it changes, whose reason names the score. The texts keep their status, and a snapshot made before keeps the revision it holds. A text whose scores stay as they are is left out.</Help></>} />
       <WriteProgress job={job} />
     </div>
   );

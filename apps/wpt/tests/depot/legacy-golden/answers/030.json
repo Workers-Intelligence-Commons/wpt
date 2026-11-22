@@ -1,0 +1,77 @@
+{
+ "asked_headers": {},
+ "body": {
+  "dataset": {
+   "change": 44,
+   "id": "fixture-1",
+   "libraries": [
+    {
+     "change": 33,
+     "depot": null,
+     "library": "fixture-1"
+    },
+    {
+     "change": 33,
+     "depot": null,
+     "library": "fixture-2"
+    }
+   ],
+   "max_tokens": null,
+   "name": "ds-two",
+   "revision": 3,
+   "shares": [
+    {
+     "share": 0.3,
+     "tag": "en"
+    },
+    {
+     "share": 0.7,
+     "tag": "letter"
+    }
+   ],
+   "tokenizer": "tok",
+   "vocabulary": "a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48"
+  },
+  "export": "d97cdb7b8d1d00aaa29ef6a2a0afc6a8d083e5dd9abd9f5d0caff424de410880",
+  "figures": {
+   "measure": null,
+   "since": null
+  },
+  "parts": [
+   {
+    "forms": {
+     "jsonl.zst": {
+      "bytes": 6011,
+      "download": "ds-two_part-00000.jsonl.zst",
+      "left_out": {
+       "quote unmatched": 0,
+       "quoted text left out": 1
+      },
+      "name": "part-00000.jsonl.zst",
+      "sha256": "ef66f7bd0beb59ae41ab9b16552a539b749da65b4b748000e00ec54009e29bc8"
+     },
+     "parquet": {
+      "bytes": 8965,
+      "download": "ds-two_part-00000.parquet",
+      "left_out": {
+       "quote unmatched": 0,
+       "quoted text left out": 1
+      },
+      "name": "part-00000.parquet",
+      "sha256": "67be9ce72cfeb6625444ca92dae4478d5b3b3934554d89bcc6a397bc3a21bc9a"
+     }
+    },
+    "part": 0
+   }
+  ],
+  "texts": 118,
+  "texts_per_part": 118.0
+ },
+ "headers": {
+  "Content-Length": "1083",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/export",
+ "status": 200
+}

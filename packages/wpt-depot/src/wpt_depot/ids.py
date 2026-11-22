@@ -1,7 +1,7 @@
 """The ids of a depot's rows. Every id but the journal's is the depot's name,
 a hyphen and a number (`gutenberg-12`), so ids never collide across depots:
 a clone follows its upstream and adds rows of its own at once, and a corpus
-or a dataset can name rows of several depots by their ids alone.
+or a snapshot can name rows of several depots by their ids alone.
 
 An id carries a depot's name when it is exactly that name, a hyphen and
 digits: `wpt-eu-3` carries the name `wpt-eu`, never `wpt`, so names that
@@ -12,10 +12,9 @@ received) never takes part.
 A text's export key (export_key) is the first 8 bytes of the SHA-256 of
 EXPORT_SEED and its id, read as a signed 64-bit integer, what SQLite
 stores in an INTEGER column: it depends on the id alone, so it never
-changes and two depots holding a text give it the same key. The column
-export_key of memberships and pins stores it (wpt_depot.schema; SQL
-computes it through the function export_key, wpt_depot.database), and an export reads its parts as ranges of it
-(wpt_depot.exports).
+changes and two depots holding a text give it the same key. A corpus
+build works it out for each text it reads (wpt_depot.order); SQL computes
+it through the function export_key (wpt_depot.database).
 """
 
 import hashlib

@@ -11,8 +11,10 @@ subcommands:
     routes.py   the routes, one per operation of the subcommands it serves
     readers.py  the processes that run a person's SQL, under a time limit
                 and a memory cap
-    builds.py   the routes over tokenizer recipes, jobs, corpus builds and
-                downloads, and the job operations they queue
+    builds.py   the routes over tokenizer recipes and jobs, and the job
+                operations they queue
+    legacy.py   the frozen dataset routes that models trained before
+                snapshots read, over wpt_depot.legacy
 
 A page is one TypeScript file in ui/src/pages/, over the routes.
 """

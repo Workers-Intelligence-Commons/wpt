@@ -40,25 +40,31 @@ hot loops in Rust (PyO3, built by maturin when the workspace is installed).
 ## Vocabularies
 
 A vocabulary (the list of merges) is trained once for each version of a
-tokenizer recipe and shared by every dataset and model that names it. The
+tokenizer recipe and shared by every recipe and model that names it. The
 recipes and their vocabularies live in the depot, so a clone and a pull
 carry them with the rest of its rows ([architecture.md](architecture.md),
 "Following an upstream").
 
-A tokenizer recipe is a revised row of the depot: its name, the dataset
-whose sample trains its vocabulary, `sample_bytes` (the most UTF-8 bytes
-that sample holds), `vocab_size` and a note. The dataset is one of the
-depot's own, or, with `depot`, a dataset of another depot named by its name
-and by the web address of that depot's web app. A change of the dataset,
-the depot, `sample_bytes` or `vocab_size` makes a new revision with the
-next `version`; a change of the note alone makes a new revision at the same
-version.
+A tokenizer recipe is a revised row of the depot: its name, its sample
+(the snapshot whose texts train its vocabulary, by its id, and the kinds it
+reads: plain, the one kind a sample takes), `sample_bytes` (the most UTF-8
+bytes that sample holds), `vocab_size` and a note. A change of the sample,
+`sample_bytes` or `vocab_size` makes a new revision with the next
+`version`; a change of the note alone makes a new revision at the same
+version. A revision written before snapshots names a dataset instead of a
+sample and keeps it; such a recipe trains nothing until an edit names a
+snapshot, and its page says so. When the upgrade to snapshots made a
+snapshot of that dataset (`legacy_snapshot_of`), the web app offers it: "Use
+snapshot NAME", on the recipe's row and page, is that edit in one click,
+the sample and sizes kept, which makes the next version.
 
-    wpt depot tokenizer new NAME --dataset D [--depot URL] --sample-bytes N --vocab-size V [--note T]
-    wpt depot tokenizer edit NAME [--dataset D] [--depot URL] [--sample-bytes N] [--vocab-size V] [--note T]
+    wpt depot tokenizer new NAME --snapshot S [--kind plain] --sample-bytes N --vocab-size V [--note T]
+    wpt depot tokenizer edit NAME [--snapshot S] [--kind plain] [--sample-bytes N] [--vocab-size V] [--note T]
 
+`--snapshot` takes a snapshot's id, or the name of one of the depot's own.
 The page "Tokenizers" of `wpt depot web` makes and changes them the same
-way.
+way, by clicks: a snapshot from a list (the latest first), the kinds as
+chips, the sizes as preset buttons, and the name filled in.
 
 ### Training it
 
@@ -69,17 +75,15 @@ first, the sample's bytes and a time taken in proportion to the one
 training measured, and runs the training as a job of its queue only once
 it is confirmed ([depot-web.md](depot-web.md)).
 
-The sample is the plain texts of the recipe's dataset in the order its
-corpus takes them (the dataset's libraries at the states it names, then
-its shares, a long text as its pieces), each share filling its part of
-`sample_bytes` as a corpus fills a part ([data-selection.md](data-selection.md),
-"Filling a part" and "Long texts"). Items are no sample. The list of the
-texts a vocabulary trained on, and its count, name each text once, a long text
+The sample is the plain texts of the recipe's snapshot in the order a
+corpus takes them (the order of their export keys, a long text as its
+pieces), each at its revision as of the snapshot, filling `sample_bytes`
+as a corpus fills a part ([data-selection.md](data-selection.md), "Filling
+a part" and "Long texts"). Items are no sample. The list of the texts a
+vocabulary trained on, and its count, name each text once, a long text
 whose pieces the sample took included. The training reads the sample
-once, as a stream: the texts of the depot's own dataset from the depot, and
-the texts of another depot's dataset through that depot's sample route
-(`GET /api/datasets/{dataset}/sample?bytes=N`). A dataset with no plain
-text within `sample_bytes` trains nothing (`NoSample`).
+once, as a stream. A snapshot with no plain text within `sample_bytes`
+trains nothing (`NoSample`).
 
 The depot keeps the vocabulary with the list of every text it trained on,
 in the order they were read, by its depot (empty for the depot that holds
@@ -91,7 +95,7 @@ The depot holds at most one vocabulary for each version of a recipe, and
 refuses a second one. From then on, every build that names that version's
 vocabulary, by its sha256, uses it:
 
-- **Adding or changing texts never retrains it.** Many datasets and
+- **Adding or changing texts never retrains it.** Many recipes and
   models, whatever their training settings, share one vocabulary, so a
   model can keep training on new data. A text the vocabulary was not
   trained on still encodes exactly, since every byte has a token, only less
@@ -108,9 +112,9 @@ vocabulary, by its sha256, uses it:
 
 ### Importing one
 
-`wpt depot tokenizer import NAME FILE --dataset D` makes a recipe at
-version 1 from a recipe file (JSON with `sample_bytes`, `vocab_size` and an
-optional `note`), trained on the depot's dataset D. With `--lock LOCK`, it
+`wpt depot tokenizer import NAME FILE --snapshot S [--kind plain]` makes
+a recipe at version 1 from a recipe file (JSON with `sample_bytes`,
+`vocab_size` and an optional `note`), whose sample reads the snapshot S. With `--lock LOCK`, it
 also keeps the vocabulary a lock file names (JSON with the recipe's fields,
 `vocabulary_sha256` and `texts`), read from the store, with its list of
 texts; the lock's `sample_bytes` and `vocab_size` must be the recipe

@@ -198,7 +198,7 @@ place, or whose `exact` is empty. The quoted text is read as its parts,
 so a text of any size is never read whole.
 
 A conversation is never a plain text that the `read-text` step reads. A
-corpus keeps every conversation of its dataset as the tokens of the
+corpus keeps every conversation it takes from its snapshot as the tokens of the
 template below, in token files of their own, and the `answer-as-assistant`
 step reads them ([training.md](training.md), "The answer-as-assistant
 step").

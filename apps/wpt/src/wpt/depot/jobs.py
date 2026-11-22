@@ -1,28 +1,51 @@
 """The queue of a depot's jobs: the long work the web app runs for anyone
-(training a tokenizer recipe's vocabulary, building a dataset's corpus, a
-write over a selection of texts), one job at a time, in a process of its
-own, so the web app keeps the other cores and answers while a job runs.
+(making a snapshot, training a tokenizer recipe's vocabulary, building a
+recipe's corpus, a write over a selection of texts), each in a process of
+its own, so the web app keeps the other cores and answers while a job runs.
+
+The jobs run in two lanes, one job at a time in each (LANES): the write
+lane runs the writes over many texts (decisions, licenses, scores, tags),
+short and each holding the depot's write lock while it writes; the heavy
+lane runs the long work (snapshot, vocabulary, corpus), which holds the
+write lock never (a vocabulary training, a corpus build) or for one short
+transaction at its end (a snapshot). So a multi-hour build never holds back
+a decision over many texts, and a write run in the request waits only for
+the write lane (writing).
 
 The queue is a small SQLite file beside the depot, <depot file>.jobs,
-which nothing backs up: it holds each job's kind, what it does in words,
-what it is for (its dataset or recipe, and its target: what a corpus job
-builds, its vocabulary and size), the operation it runs and its arguments,
-its state, its progress and its answer, and the jobs' other state
-(wpt.depot.downloads). The web app's runner takes the oldest queued job,
-marks it running and runs it in a spawned process. A job's state is queued, running,
-done (its answer), refused (the failure that stopped it, with its HTTP
-status; what it is refused writes nothing), failed (the process ended
-without an answer, or with a failure the routes do not name) or cancelled.
-Each dataset has at most one corpus job queued or running, and each
-tokenizer recipe at most one vocabulary job (Busy otherwise). Only the
-command line cancels a job (wpt depot jobs cancel): a queued one never
-runs, and a running one's process is stopped.
+which nothing backs up: it holds each job's kind and lane, what it does in
+words, what it is for (its key: a corpus job's build key, a snapshot job's
+snapshot name; its recipe: a vocabulary job's tokenizer recipe or a corpus
+job's model recipe; its target: what it makes), the operation it runs and
+its arguments, its state, its progress and its answer, the checkpoints of
+the corpus builds by build key, and the jobs' other state
+(wpt.depot.downloads). Each lane's runner takes the oldest queued job of
+its lane, marks it running and runs it in a spawned process; it looks at
+the queue when a job is added in its own process, and every POLL seconds.
+A job's state is queued, running, done (its answer), refused (the failure that stopped
+it, with its HTTP status; what it is refused writes nothing), failed (the
+process ended without an answer, or with a failure the routes do not name)
+or cancelled. Each build key has at most one corpus job queued or running,
+each snapshot name one snapshot job, and each tokenizer recipe one
+vocabulary job (Busy otherwise). Only the command line cancels a job (wpt
+depot jobs cancel): a queued one never runs, and a running one's process
+is stopped.
 
 A job survives a restart of the web app: a queued job stays queued, and a
 job the restart cut short runs again from the start (a corpus build goes
-on from its last token file uploaded, wpt.depot.shared.build_corpus; a
-write cut short wrote nothing), at most RESTARTS times, then fails with
-that reason.
+on from its last token file uploaded, its checkpoint kept by build key,
+wpt.depot.shared.build_corpus; a snapshot is read again from the start, so
+it reads the change current when it finishes; a write cut short wrote
+nothing), at most RESTARTS times, then fails with that reason.
+
+A queue file of an older layout, whose jobs name a dataset, is brought up when it is opened
+(connected): its jobs' dataset column becomes key and each job gets its
+lane; a corpus job of a dataset that was queued or running fails, since
+datasets no longer exist, and so does every write that was queued or running:
+one of an operation that no longer exists (GONE), and any other
+(WRITES_BEFORE), since its selection was pickled with the libraries it
+named, which a selection no longer holds, so run now it would reach more
+texts than the person chose; the checkpoints of dataset builds are dropped.
 
 A small write runs in the request itself (record) and is kept as a job that
 has ended, so every write answers the same way.
@@ -48,17 +71,26 @@ RESTARTS = 3  # restarts of the web app a running job lives through before it fa
 KEPT = 1000  # jobs that ended the queue keeps; the older ones go
 POLL = 0.5  # seconds between two looks of the runner at the queue and at a running job
 PROGRESS_EVERY = 1.0  # seconds between two writes of a job's progress
-KINDS = ("vocabulary", "corpus", "write")
+LANES = {"write": "write", "snapshot": "heavy", "vocabulary": "heavy", "corpus": "heavy"}  # each kind's lane
+KINDS = tuple(LANES)
 OPEN = ("queued", "running")
 ENDED = ("done", "refused", "failed", "cancelled")
+# the operations of writes that no longer exist: a job of one queued or running when the queue file is brought up fails
+GONE = (":fork_library", ":report_problem", ":put_texts", ":take_out_texts", ":lock_library")
+DATASETS_GONE = "datasets no longer exist: build a recipe of a snapshot instead"
+# why any other write queued or running when the queue file is brought up fails
+WRITES_BEFORE = ("this write was queued before the depot's upgrade, when a selection could name libraries, which no "
+                 "longer exist: run now it could reach more texts than were chosen; nothing was written, choose the "
+                 "texts again")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY, number INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
-    dataset TEXT, recipe TEXT, target TEXT, operation TEXT NOT NULL, arguments BLOB NOT NULL,
+    id TEXT PRIMARY KEY, number INTEGER NOT NULL, kind TEXT NOT NULL, lane TEXT NOT NULL, title TEXT NOT NULL,
+    key TEXT, recipe TEXT, target TEXT, operation TEXT NOT NULL, arguments BLOB NOT NULL,
     state TEXT NOT NULL, stages TEXT NOT NULL, progress TEXT, answer TEXT, problem TEXT, status INTEGER,
     created REAL NOT NULL, started REAL, ended REAL, restarts INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS jobs_open ON jobs (state, number);
-CREATE TABLE IF NOT EXISTS checkpoints (dataset TEXT PRIMARY KEY, state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS checkpoints (key TEXT PRIMARY KEY, state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS erased_since (snapshot TEXT PRIMARY KEY, last_erasure INTEGER NOT NULL, found TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS downloads (corpus TEXT PRIMARY KEY, last REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, corpus TEXT, visitor TEXT NOT NULL, kind TEXT NOT NULL,
     started REAL NOT NULL);
@@ -73,8 +105,9 @@ CREATE TABLE IF NOT EXISTS marking (erasure TEXT PRIMARY KEY, since REAL NOT NUL
 
 
 class Busy(errors.DepotError):
-    """The dataset has a corpus job queued or running already, or the
-    recipe a vocabulary job: nothing was queued."""
+    """The build key has a corpus job queued or running already, the
+    snapshot name a snapshot job, or the tokenizer recipe a vocabulary job:
+    nothing was queued."""
 
 
 def jobs_file(address: str) -> Path:
@@ -99,12 +132,8 @@ def connected(path: Path, write: bool = False):
         con.execute("PRAGMA journal_mode = WAL")
         con.execute("PRAGMA busy_timeout = 60000")
         con.executescript(SCHEMA)
-        if "target" not in {row["name"] for row in con.execute("PRAGMA table_info(jobs)")}:  # a file made before it
-            try:
-                con.execute("ALTER TABLE jobs ADD COLUMN target TEXT")
-            except sqlite3.OperationalError as error:  # another connection added it meanwhile
-                if "duplicate column" not in str(error):
-                    raise
+        if {"target", "key", "lane"} - _columns(con, "jobs") or "key" not in _columns(con, "checkpoints"):
+            _brought_up(con)
         if write:
             con.execute("BEGIN IMMEDIATE")
             try:
@@ -119,6 +148,44 @@ def connected(path: Path, write: bool = False):
         con.close()
 
 
+def _columns(con, table: str) -> set[str]:
+    return {row["name"] for row in con.execute(f"PRAGMA table_info({table})")}
+
+
+def _brought_up(con):
+    """Bring a queue file made before up to SCHEMA, in one transaction that
+    looks again once it holds the write lock (another connection may have
+    done it meanwhile): a jobs table without target gets it; one with
+    dataset has it renamed key, gets lane, and its corpus jobs of a dataset
+    and every write that were queued or running fail (GONE, WRITES_BEFORE);
+    the checkpoints of dataset builds are dropped."""
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        columns = _columns(con, "jobs")
+        if "target" not in columns:
+            con.execute("ALTER TABLE jobs ADD COLUMN target TEXT")
+        if "dataset" in columns:
+            con.execute("ALTER TABLE jobs RENAME COLUMN dataset TO key")
+            con.execute("UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? "
+                        "WHERE kind = 'corpus' AND state IN ('queued', 'running')", (time.time(), DATASETS_GONE))
+            for gone in GONE:
+                con.execute("UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? "
+                            "WHERE kind = 'write' AND state IN ('queued', 'running') AND operation LIKE ?",
+                            (time.time(), "this operation no longer exists: nothing was written", f"%{gone}"))
+            con.execute("UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? "
+                        "WHERE kind = 'write' AND state IN ('queued', 'running')", (time.time(), WRITES_BEFORE))
+        if "lane" not in _columns(con, "jobs"):
+            con.execute("ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'heavy'")
+            con.execute("UPDATE jobs SET lane = 'write' WHERE kind = 'write'")
+        if "key" not in _columns(con, "checkpoints"):
+            con.execute("DROP TABLE checkpoints")
+            con.execute("CREATE TABLE checkpoints (key TEXT PRIMARY KEY, state TEXT NOT NULL)")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    con.execute("COMMIT")
+
+
 def _named(operation) -> str:
     return f"{operation.__module__}:{operation.__qualname__}"
 
@@ -130,7 +197,7 @@ def _operation(name: str):
 
 def _shown(row) -> dict:
     """A job's row as the routes and the command line give it."""
-    return {"id": row["id"], "kind": row["kind"], "title": row["title"], "dataset": row["dataset"],
+    return {"id": row["id"], "kind": row["kind"], "lane": row["lane"], "title": row["title"], "key": row["key"],
             "recipe": row["recipe"], "target": json.loads(row["target"] or "null"), "state": row["state"],
             "stages": json.loads(row["stages"]), "progress": json.loads(row["progress"] or "null"),
             "answer": json.loads(row["answer"] or "null"), "problem": row["problem"], "status": row["status"],
@@ -140,26 +207,26 @@ def _shown(row) -> dict:
 
 class Job:
     """What a running job's operation gets beside its arguments (as job=):
-    the queue's file, the job's id and the folder it works in, and its
-    dataset's checkpoint."""
+    the queue's file, the job's id and the folder it works in, and the
+    checkpoint of its key (a corpus job's build key)."""
 
-    def __init__(self, path: Path, job: str, work: Path, dataset: str | None):
-        self.path, self.id, self.work, self.dataset = path, job, work, dataset
+    def __init__(self, path: Path, job: str, work: Path, key: str | None):
+        self.path, self.id, self.work, self.key = path, job, work, key
 
     def checkpoint(self) -> dict | None:
-        """The state the last build of the job's dataset saved, None without one."""
+        """The state the last build of the job's key saved, None without one."""
         with connected(self.path) as con:
-            found = con.execute("SELECT state FROM checkpoints WHERE dataset = ?", (self.dataset,)).fetchone()
+            found = con.execute("SELECT state FROM checkpoints WHERE key = ?", (self.key,)).fetchone()
         return None if found is None else json.loads(found["state"])
 
     def save(self, state: dict | None):
-        """Keep the state that resumes the job's dataset's build; None forgets it."""
+        """Keep the state that resumes the build of the job's key; None forgets it."""
         with connected(self.path, write=True) as con:
             if state is None:
-                con.execute("DELETE FROM checkpoints WHERE dataset = ?", (self.dataset,))
+                con.execute("DELETE FROM checkpoints WHERE key = ?", (self.key,))
             else:
-                con.execute("INSERT OR REPLACE INTO checkpoints (dataset, state) VALUES (?, ?)",
-                            (self.dataset, json.dumps(state)))
+                con.execute("INSERT OR REPLACE INTO checkpoints (key, state) VALUES (?, ?)",
+                            (self.key, json.dumps(state)))
 
 
 def _work(path: str, address: str, job: str, statuses: dict):
@@ -194,7 +261,7 @@ def _work(path: str, address: str, job: str, statuses: dict):
         operation = _operation(row["operation"])
         if row["kind"] != "write":
             work = work_folder(address)
-            kwargs = {**kwargs, "job": Job(path, job, work, row["dataset"])}
+            kwargs = {**kwargs, "job": Job(path, job, work, row["key"])}
         answer = operation(Depot.open(address), *args, progress=progress, **kwargs)
     except Exception as error:
         status = next((code for kind, code in statuses.items() if isinstance(error, kind)), None)
@@ -217,41 +284,50 @@ class Jobs:
         self.path = jobs_file(address)
         self.statuses = statuses or {errors.DepotError: 422}
         self._context = multiprocessing.get_context("spawn")
-        self._runner = None
+        self._runners = []
         self._stop = threading.Event()
+        # set by add() and stop(), so a lane's runner takes a job queued in this process at once instead of at its
+        # next look at the queue (POLL), which a job queued by another process still waits for
+        self._wake = {lane: threading.Event() for lane in dict.fromkeys(LANES.values())}
         with connected(self.path):
             pass
 
     # Adding and reading
 
-    def add(self, kind: str, title: str, operation, *args, dataset: str | None = None, recipe: str | None = None,
+    def add(self, kind: str, title: str, operation, *args, key: str | None = None, recipe: str | None = None,
             target: dict | None = None, **kwargs) -> dict:
-        """Queue a job of that kind (KINDS) that does what title says by
-        running operation(depot, *args, progress=..., **kwargs), a function
-        the job's process imports by name (and job=, a Job, for a kind that
-        is not a write), for the dataset or the recipe, target saying what
-        it makes (JSON): its state. Busy when the dataset has a corpus job
-        open, or the recipe a vocabulary job."""
+        """Queue a job of that kind (KINDS), in its lane, that does what
+        title says by running operation(depot, *args, progress=...,
+        **kwargs), a function the job's process imports by name (and job=,
+        a Job, for a kind that is not a write), for the key (a corpus job's
+        build key, a snapshot job's name) and the recipe, target saying
+        what it makes (JSON): its state. Busy when the key has a corpus or
+        snapshot job of that kind open, or the recipe a vocabulary job."""
         if kind not in KINDS:
             raise ValueError(f"no kind of job {kind!r}")
         job = secrets.token_hex(8)
         with connected(self.path, write=True) as con:
-            if kind == "corpus" and con.execute("SELECT 1 FROM jobs WHERE kind = 'corpus' AND dataset = ? AND state IN "
-                                                "('queued', 'running')", (dataset,)).fetchone():
-                raise Busy(f"the dataset {dataset} has a corpus job queued or running already: see the jobs page")
+            if kind in ("corpus", "snapshot") and con.execute(
+                    "SELECT 1 FROM jobs WHERE kind = ? AND key = ? AND state IN ('queued', 'running')",
+                    (kind, key)).fetchone():
+                raise Busy(f"the build {key} has a corpus job queued or running already: see the jobs page"
+                           if kind == "corpus" else f"the snapshot {key} is being made already: see the jobs page")
             if kind == "vocabulary" and con.execute("SELECT 1 FROM jobs WHERE kind = 'vocabulary' AND recipe = ? AND "
                                                     "state IN ('queued', 'running')", (recipe,)).fetchone():
                 raise Busy(f"the tokenizer recipe {recipe} has a vocabulary job queued or running already")
             number = con.execute("SELECT coalesce(max(number), 0) + 1 FROM jobs").fetchone()[0]
-            con.execute("INSERT INTO jobs (id, number, kind, title, dataset, recipe, target, operation, arguments, "
-                        "state, stages, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '[]', ?)",
-                        (job, number, kind, title, dataset, recipe, None if target is None else json.dumps(target),
-                         _named(operation), pickle.dumps((args, kwargs)), time.time()))
+            con.execute("INSERT INTO jobs (id, number, kind, lane, title, key, recipe, target, operation, arguments, "
+                        "state, stages, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '[]', ?)",
+                        (job, number, kind, LANES[kind], title, key, recipe,
+                         None if target is None else json.dumps(target), _named(operation),
+                         pickle.dumps((args, kwargs)), time.time()))
+        self._wake[LANES[kind]].set()
         return self.state(job)
 
-    def open_job(self, kind: str, dataset: str | None = None, recipe: str | None = None) -> dict | None:
-        """The job of that kind queued or running for the dataset or the recipe, None without one."""
-        column, value = ("dataset", dataset) if kind == "corpus" else ("recipe", recipe)
+    def open_job(self, kind: str, key: str | None = None, recipe: str | None = None) -> dict | None:
+        """The job of that kind queued or running for the key (a corpus or a
+        snapshot job) or the recipe (a vocabulary job), None without one."""
+        column, value = ("key", key) if kind in ("corpus", "snapshot") else ("recipe", recipe)
         with connected(self.path) as con:
             row = con.execute(f"SELECT * FROM jobs WHERE kind = ? AND {column} = ? AND state IN ('queued', 'running') "
                               "ORDER BY number LIMIT 1", (kind, value)).fetchone()
@@ -268,9 +344,10 @@ class Jobs:
         def keep(state, answer=None, problem=None, status=None):
             with connected(self.path, write=True) as con:
                 number = con.execute("SELECT coalesce(max(number), 0) + 1 FROM jobs").fetchone()[0]
-                con.execute("INSERT INTO jobs (id, number, kind, title, operation, arguments, state, stages, answer, "
-                            "problem, status, created, started, ended) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job, number, kind, title, _named(operation), pickle.dumps(((), {})), state,
+                con.execute("INSERT INTO jobs (id, number, kind, lane, title, operation, arguments, state, stages, "
+                            "answer, problem, status, created, started, ended) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (job, number, kind, LANES[kind], title, _named(operation), pickle.dumps(((), {})), state,
                              json.dumps(stages), json.dumps(answer), problem, status, started, started, time.time()))
         try:
             answer = operation(depot, *args, progress=lambda stage: stages.append({"stage": stage, "at": time.time()}))
@@ -286,7 +363,7 @@ class Jobs:
         return self.state(job)
 
     def state(self, job: str) -> dict:
-        """The state of the job: {id, kind, title, dataset, recipe, target,
+        """The state of the job: {id, kind, lane, title, key, recipe, target,
         state, stages: [{stage, at}], progress, answer, problem, status,
         created, started, ended, restarts}, times in seconds since the
         epoch. NotFound for a job the queue does not hold."""
@@ -307,11 +384,27 @@ class Jobs:
         return [_shown(row) for row in [*open_rows, *ended_rows]]
 
     def writing(self) -> bool:
-        """Whether a write job is queued or running: the jobs of the other
-        kinds hold no write lock of the depot while they run."""
+        """Whether a job of the write lane is queued or running: the jobs of
+        the heavy lane hold the depot's write lock for no more than a short
+        transaction, so a write run in the request waits for none of them."""
         with connected(self.path) as con:
-            return con.execute("SELECT 1 FROM jobs WHERE kind = 'write' AND state IN ('queued', 'running')"
+            return con.execute("SELECT 1 FROM jobs WHERE lane = 'write' AND state IN ('queued', 'running')"
                                ).fetchone() is not None
+
+    def erased_since(self, snapshot: str, last_erasure: int) -> dict | None:
+        """What erased_kept kept for the snapshot (its id) while the depot's
+        erasures stood at last_erasure (wpt_depot.snapshots.last_erasure);
+        None when nothing was kept then."""
+        with connected(self.path) as con:
+            found = con.execute("SELECT found FROM erased_since WHERE snapshot = ? AND last_erasure = ?",
+                                (snapshot, last_erasure)).fetchone()
+        return None if found is None else json.loads(found["found"])
+
+    def erased_kept(self, snapshot: str, last_erasure: int, found: dict):
+        """Keep what erasures did to the snapshot (its id) while the depot's erasures stood at last_erasure."""
+        with connected(self.path, write=True) as con:
+            con.execute("INSERT OR REPLACE INTO erased_since (snapshot, last_erasure, found) VALUES (?, ?, ?)",
+                        (snapshot, last_erasure, json.dumps(found)))
 
     def wait(self, job: str, seconds: float) -> dict:
         """The state of the job once it ended, or after seconds."""
@@ -345,8 +438,9 @@ class Jobs:
 
     def start(self):
         """Take up the jobs a stop cut short (again, or failed past
-        RESTARTS restarts), forget the streams the stop cut, and start the
-        runner thread, which runs the queued jobs one at a time until stop()."""
+        RESTARTS restarts), forget the streams the stop cut, and start a
+        runner thread for each lane, which runs the lane's queued jobs one at
+        a time until stop()."""
         with connected(self.path, write=True) as con:
             con.execute("DELETE FROM streams")
             for row in con.execute("SELECT id, restarts FROM jobs WHERE state = 'running'").fetchall():
@@ -355,33 +449,40 @@ class Jobs:
                                 (time.time(), f"the web app stopped {row['restarts'] + 1} times while it ran", row["id"]))
                 else:
                     con.execute("UPDATE jobs SET state = 'queued', restarts = restarts + 1 WHERE id = ?", (row["id"],))
-        self._runner = threading.Thread(target=self._run, name="jobs", daemon=True)
-        self._runner.start()
+        for lane in dict.fromkeys(LANES.values()):
+            runner = threading.Thread(target=self._run, args=(lane,), name=f"jobs-{lane}", daemon=True)
+            runner.start()
+            self._runners.append(runner)
 
     def stop(self):
-        """Stop the runner, a running job's process with it; the job stays running, so the next start takes it up."""
+        """Stop the runners, the running jobs' processes with them; the jobs stay running, so the next start takes
+        them up."""
         self._stop.set()
-        if self._runner is not None:
-            self._runner.join()
+        for wake in self._wake.values():
+            wake.set()
+        for runner in self._runners:
+            runner.join()
 
-    def _next(self) -> str | None:
-        """Mark the oldest queued job running: its id; None when none is queued."""
+    def _next(self, lane: str) -> str | None:
+        """Mark the oldest queued job of the lane running: its id; None when none is queued."""
         with connected(self.path, write=True) as con:
-            row = con.execute("SELECT id FROM jobs WHERE state = 'queued' ORDER BY number LIMIT 1").fetchone()
+            row = con.execute("SELECT id FROM jobs WHERE state = 'queued' AND lane = ? ORDER BY number LIMIT 1",
+                              (lane,)).fetchone()
             if row is None:
                 return None
             con.execute("UPDATE jobs SET state = 'running', started = ? WHERE id = ?", (time.time(), row["id"]))
             return row["id"]
 
-    def _run(self):
+    def _run(self, lane: str):
         while not self._stop.is_set():
             try:
-                job = self._next()
+                job = self._next(lane)
             except sqlite3.Error as error:
                 print(f"wpt depot web: the jobs file cannot be read: {error}", file=sys.stderr)
                 job = None
             if job is None:
-                self._stop.wait(POLL)
+                self._wake[lane].wait(POLL)
+                self._wake[lane].clear()
                 continue
             # not a daemon: a corpus build starts worker processes of its own, which a daemon may not have;
             # stop() ends the process instead

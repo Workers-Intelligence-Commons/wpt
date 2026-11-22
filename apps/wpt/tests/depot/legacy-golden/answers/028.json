@@ -1,0 +1,13 @@
+{
+ "asked_headers": {},
+ "body": null,
+ "body_bytes": 6011,
+ "body_file": "028.bin",
+ "headers": {
+  "Content-Disposition": "attachment; filename=\"ds-two_part-00000.jsonl.zst\"",
+  "Content-Type": "application/zstd"
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/export/part-00000.jsonl.zst",
+ "status": 200
+}

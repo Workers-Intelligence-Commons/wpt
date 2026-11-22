@@ -1,0 +1,54 @@
+{
+ "asked_headers": {},
+ "body": {
+  "corpus": null,
+  "dataset": {
+   "change": 44,
+   "id": "fixture-1",
+   "libraries": [
+    {
+     "change": 33,
+     "depot": null,
+     "library": "fixture-1"
+    },
+    {
+     "change": 33,
+     "depot": null,
+     "library": "fixture-2"
+    }
+   ],
+   "max_tokens": null,
+   "name": "ds-two",
+   "revision": 3,
+   "shares": [
+    {
+     "share": 0.3,
+     "tag": "en"
+    },
+    {
+     "share": 0.7,
+     "tag": "letter"
+    }
+   ],
+   "tokenizer": "tok",
+   "vocabulary": "a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48"
+  },
+  "job": null,
+  "link": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/123",
+  "max_tokens": 123,
+  "size": "123",
+  "state": "not built",
+  "vocabulary": {
+   "recipe": "tok",
+   "sha256": "a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48",
+   "version": 1
+  }
+ },
+ "headers": {
+  "Content-Length": "723",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/123",
+ "status": 200
+}

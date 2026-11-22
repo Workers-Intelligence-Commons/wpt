@@ -1,0 +1,42 @@
+{
+ "asked_headers": {},
+ "body": [
+  {
+   "change": 38,
+   "dataset": "fixture-1",
+   "dataset_name": "ds-two",
+   "depot": null,
+   "id": "fixture-1",
+   "job": null,
+   "name": "tok",
+   "note": "a larger sample, not trained",
+   "revision": 2,
+   "sample_bytes": 2000000,
+   "trained": 0,
+   "version": 2,
+   "vocab_size": 556
+  },
+  {
+   "change": 39,
+   "dataset": "fixture-2",
+   "dataset_name": "ds-mixed",
+   "depot": null,
+   "id": "fixture-2",
+   "job": null,
+   "name": "tok-mixed",
+   "note": null,
+   "revision": 1,
+   "sample_bytes": 1000000,
+   "trained": 0,
+   "version": 1,
+   "vocab_size": 556
+  }
+ ],
+ "headers": {
+  "Content-Length": "492",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/tokenizers",
+ "status": 200
+}

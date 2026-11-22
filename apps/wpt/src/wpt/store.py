@@ -1,8 +1,10 @@
 """wpt store: what the store named by WPT_STORE (environment or .env)
 holds.
 
-    wpt store list                    every corpus the store holds (its id, the depot and dataset it
-                                      was built from, when, its tokens and texts) and every model it keeps
+    wpt store list                    every corpus the store holds (its id, its build key, the snapshot
+                                      and depot and the recipe it was built for, or for one built
+                                      before snapshots its dataset; when, its tokens and texts, and
+                                      whether it is fresh) and every model it keeps
     wpt store copy-out NAME FOLDER    the model folder the store keeps under the run's name NAME (what
                                       the wpt manager prints at the end of a run) into the new FOLDER,
                                       each file checked against its sha256
@@ -28,13 +30,24 @@ def cmd_list(args, store):
     found = corpora.records(store)
     say(f"{len(found)} corpora:")
     for record in found:
-        say(f"  {record['id']}: dataset {record['dataset']['name']} of {record['depot']}, built "
-            f"{record['built_at']}, {record['total_tokens']:,} tokens of plain text, {record['texts']:,} texts")
+        say(f"  {record['id']}: {_source(record)}, built {record['built_at']}, {record['total_tokens']:,} tokens of "
+            f"plain text, {record['texts']:,} texts" + ("" if corpora.fresh(record) else ", not fresh"))
     models = names(store)
     say(f"{len(models)} models:")
     for name in models:
         say(f"  {name}")
     return 0
+
+
+def _source(record) -> str:
+    """What a corpus was built for: its build key, snapshot and recipe, or
+    for a corpus built before snapshots, its dataset."""
+    if "build_key" not in record:
+        return f"dataset {record['dataset']['name']} of {record['depot']}"
+    snapshot, size = record["snapshot"], record.get("max_tokens")
+    return (f"build key {record['build_key']}, snapshot {snapshot['name']} (change {snapshot['change']}) of "
+            f"{record['depot']}, recipe {record.get('recipe') or '(none)'}, "
+            + ("every token" if size is None else f"size {size:,}"))
 
 
 def cmd_copy_out(args, store):

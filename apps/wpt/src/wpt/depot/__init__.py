@@ -1,5 +1,6 @@
 """wpt depot: the depot WPT_DEPOT names (environment or .env), its texts
-and items, the decisions on them, its libraries, datasets and erasures.
+and items, the decisions on them, its snapshots, tokenizer recipes and
+erasures.
 
     wpt depot new FILE --name N --maintainer M --takedown-contact C
                                           an empty depot in a new SQLite file
@@ -24,21 +25,29 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           after it, in order; refused on any change that does not apply
     wpt depot pull                        fetch the updates of the depot this one follows, admitted
                                           erasures included, over the upstream's web app
-    wpt depot upgrade [--to FILE] [--upstream URL]
-                                          bring a depot of an older format, a folder, up to the format this
-                                          wpt reads: each step up to format 3 in the folder, recorded as a
-                                          change, then a new SQLite file (FILE, by default the folder's path
-                                          with .sqlite added) written from it, which leaves the folder at
-                                          format 3; a clone takes its upstream's web address (URL); every other
-                                          subcommand, the web pages, clone and pull refuse a depot of
-                                          another format; run it again after a crash, it goes on
+    wpt depot upgrade [--check | --yes] [--to FILE] [--upstream URL]
+                                          what bringing a depot of an older format up to the format this wpt
+                                          reads would do, read without writing its file: the steps, what each
+                                          locked library and dataset revision becomes (a snapshot; the dataset
+                                          revisions the corpora of WPT_STORE were built from included), the
+                                          check of every revision each snapshot reads against the libraries'
+                                          reads, the names made snapshots' names, a recipe data section for
+                                          each dataset revision, the cost (time, disk, WAL, the next backup's
+                                          full copy) and what to do before; --yes runs that check again and,
+                                          when it passes, upgrades: a folder runs each step up to format 3 in
+                                          it, recorded as a change, then a new SQLite file (FILE, by default
+                                          the folder's path with .sqlite added) written from it, which leaves
+                                          the folder at format 3; a clone takes its upstream's web address
+                                          (URL); every other subcommand, the web pages, clone and pull refuse
+                                          a depot of another format; run it again after a crash, it goes on
     wpt depot sql "SELECT ..."            any read query over the depot's tables, in SQLite's SQL; one JSON
-                                          row per line: texts, libraries, datasets, about and erasures are
-                                          the current state (texts with their current content and the
-                                          libraries holding them now, a JSON array), <name>_revisions every
+                                          row per line: texts, about and erasures are the current state
+                                          (texts with their current content), <name>_revisions every
                                           revision of each, contents every content version of each text,
                                           content_lists each version as the list of its parts, and parts,
-                                          memberships, pins, pulls and changes as they are; a list is JSON
+                                          pulls and changes as they are; libraries_revisions, memberships,
+                                          pins, library_moves and datasets_revisions hold what a depot of an
+                                          older format held, which nothing writes any more; a list is JSON
                                           text: EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')
     wpt depot add FILE [--kind KIND] --license L [...] [--notice FILE] [--tag T ...] [--title T]
                 [--author A ...] [--address A] DECLARATION
@@ -49,25 +58,23 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           LLVM-exception') or licenses that apply together ('MIT AND
                                           CC-BY-4.0')
     wpt depot show ID                     one text or item as it is now (its scores included), with its
-                                          decisions, libraries, how many revisions it has and the revision
-                                          each locked library holding it pinned, as JSON
+                                          decisions and how many revisions it has, as JSON
     wpt depot decide admit|refuse|back-to-review WHERE DECLARATION [--reason TEXT]
                                           one decision on every text the SQL condition WHERE matches;
                                           admitting is refused when a text has no allowed license;
                                           back-to-review undoes an admission or a refusal: the depot
                                           records it as a decision under review with the reason 'put back
                                           under review' (then ': ' and the reason given), the decisions
-                                          before it no longer count, the texts leave every open library as
-                                          a refusal makes them, and a text under review already is left
-                                          out; the optional reason is public, and never starts with
+                                          before it no longer count, and a text under review already is
+                                          left out; the optional reason is public, and never starts with
                                           'licenses changed from ', 'content changed from version ' or 'put
                                           back under review', the depot's own records
     wpt depot relicense ID [...] --license L [...] DECLARATION
                                           change the licenses of the texts ID as a new revision, their ids
                                           kept: the depot records it as a decision under review with the
                                           reason 'licenses changed from OLD to NEW'; the decisions before it
-                                          no longer count, so each text is under review again and leaves
-                                          every open library; a locked library keeps the revision it pinned
+                                          no longer count, so each text is under review again; a snapshot
+                                          keeps the revision it holds
     wpt depot content ID FILE [--kind KIND] DECLARATION
                                           change the content of the text ID to FILE (UTF-8: its plain text, or
                                           an item's JSON, which must match its kind; a text's kind is fixed,
@@ -75,9 +82,8 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           and a new revision, its id kept: the depot records it as a decision
                                           under review with the reason 'content changed from version OLD to
                                           version NEW'; the decisions before it no longer count, so the text is
-                                          under review again and leaves every open library, to be put back
-                                          after its admission; a locked library keeps the content of the
-                                          revision it pinned; a content that changes nothing writes nothing
+                                          under review again; a snapshot keeps the content of the revision it
+                                          holds; a content that changes nothing writes nothing
     wpt depot content-file FILE DECLARATION
                                           change the content of many plain texts at once, each as wpt
                                           depot content changes one: FILE (UTF-8) holds one JSON object per
@@ -88,18 +94,19 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           under review with the reason 'content changed from version OLD to
                                           version NEW' for each pair of versions, on the texts it moves; the
                                           decisions before it no longer count, so each text is under review
-                                          again and leaves every open library; a locked library keeps the
-                                          content of the revision it pinned; a text whose content is that
+                                          again; a snapshot keeps the content of the revision it holds; a
+                                          text whose content is that
                                           already, or whose was no longer holds, is left out; an item is
                                           refused; prints each decision and how many texts changed and were
                                           left out
     wpt depot credits ID [--title T] [--author A ...] [--tag T ...] [--address A] [--notice FILE]
                 [--clear CREDIT ...] DECLARATION
-                                          change the credits of the text ID as a new revision, its id kept:
+                                          change the credits of the text ID as a new revision, its id kept,
+                                          tags alone as rows of taggings and no revision:
                                           the depot records it as a decision under review whose reason
                                           names each credit's old and new value; the decisions before it
-                                          keep counting, so the text keeps its status and its libraries, and
-                                          a locked library keeps the revision it pinned; an option given
+                                          keep counting, so the text keeps its status, and a snapshot keeps
+                                          the revision it holds and its tags as of it; an option given
                                           replaces that credit (--tag and --author: the whole list), --clear
                                           empties it (title, authors, tags, address, notice)
     wpt depot scores FILE DECLARATION     change the scores of many texts at once, each as a new revision:
@@ -110,8 +117,8 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           the text it was made from), each name removed; the depot records
                                           it as one decision under review on every text it changes, whose
                                           reason names the scores set and removed; the decisions before it
-                                          keep counting, so the texts keep their status and libraries, and a
-                                          locked library keeps the revision it pinned; a text whose scores
+                                          keep counting, so the texts keep their status, and a snapshot
+                                          keeps the revision it holds; a text whose scores
                                           stay as they are is left out; prints how many texts changed and
                                           how many were left out
     wpt depot score NAME (--value V | --remove) WHERE DECLARATION
@@ -146,69 +153,50 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           350,000 lines; the depot records it as one decision under
                                           review on every text it changes, whose reason names the credits
                                           changed; the decisions before it keep counting, so the texts keep
-                                          their status and libraries, and a locked library keeps the
-                                          revision it pinned; a text whose credits stay as they are, or
+                                          their status, and a snapshot keeps the revision it holds; a text
+                                          whose credits stay as they are, or
                                           whose was no longer holds, is left out; prints how many texts
                                           changed and how many were left out
     wpt depot decide admit|refuse --erasure ID DECLARATION [--reason TEXT]
                                           one decision on the erasure request ID; once it is admitted,
                                           the depot carries it out at once and marks stale every corpus
                                           of the store that holds a text it cut or removed
-    wpt depot library new NAME            a new open library
-    wpt depot library put LIBRARY WHERE   every admitted text WHERE matches joins the open library
-    wpt depot library take-out LIBRARY WHERE
-                                          every text WHERE matches leaves the open library and keeps
-                                          its status, admitted included
-    wpt depot library lock LIBRARY        lock the library for good: it pins the current revision of
-                                          each text it holds and reads those for good
-    wpt depot library rename LIBRARY NAME a new name for the library, open or locked
-    wpt depot library fork LIBRARY NAME [--without WHERE]
-                                          a new open library holding the same texts, less those the SQL
-                                          condition WHERE matches
-    wpt depot library report LIBRARY PROBLEM [WHERE] DECLARATION
-                                          a problem with the library, locked or not: the texts of the
-                                          library WHERE matches (none without WHERE) and the problem
-                                          in words; no text and no membership changes
-    wpt depot dataset new NAME --tokenizer RECIPE --library [ADDRESS:]ID [...] [--share TAG[=SHARE] ...]
-                [--max-tokens N]
-                                          a dataset reading those libraries (ADDRESS: another depot's),
-                                          each at its depot's change number now; shares in order; N: the
-                                          size the web app's build form starts at
-    wpt depot dataset edit NAME [--new-name N] [--library [ADDRESS:]ID ...] [--share TAG[=SHARE] ... | --no-shares]
-                [--max-tokens N | --no-max-tokens] [--vocabulary SHA256 | --no-vocabulary]
-                                          change the dataset as a new revision, its id and tokenizer kept:
-                                          an option given replaces that part (--library: every library); a
-                                          library it read already keeps its change number, a new one is read
-                                          at its depot's change number now; a corpus built before keeps its
-                                          own copy; --vocabulary: the vocabulary it publishes, one this depot
-                                          holds, whose corpus training takes
-    wpt depot dataset export NAME         the dataset as a remote, JSON on standard output
-    wpt depot dataset import FILE         a dataset made from a remote
-    wpt depot tokenizer new NAME --dataset D [--depot URL] --sample-bytes N --vocab-size N [--note T]
+    wpt depot tokenizer new NAME --snapshot S [--kind K ...] --sample-bytes N --vocab-size N [--note T]
                                           a tokenizer recipe at version 1: its vocabulary trains on a sample
-                                          of the dataset D, this depot's or that of the depot whose web app
-                                          is at URL
-    wpt depot tokenizer edit NAME [--dataset D] [--depot URL] [--sample-bytes N] [--vocab-size N] [--note T]
+                                          of the texts of kind K (plain, the one kind a sample takes for now
+                                          and the default) of the snapshot S (its id, or the name of one of
+                                          this depot's own)
+    wpt depot tokenizer edit NAME [--snapshot S] [--kind K ...] [--sample-bytes N] [--vocab-size N] [--note T]
                                           change it as a new revision: a change of what trains its
-                                          vocabulary raises its version, a change of its note alone does not
-    wpt depot tokenizer train NAME        train the vocabulary of the recipe's version on its sample, read
-                                          once, and keep it in the depot with the texts it trained on; the
-                                          depot refuses a second vocabulary of the same version
-    wpt depot tokenizer import NAME FILE --dataset D [--lock FILE | --vocabulary FILE]
+                                          vocabulary raises its version, a change of its note alone does not;
+                                          a recipe written before snapshots names a dataset and trains
+                                          nothing until an edit names a snapshot
+    wpt depot tokenizer train NAME        train the vocabulary of the recipe's version on its sample (the
+                                          plain texts of its snapshot, in the snapshot's order), read once,
+                                          and keep it in the depot with the texts it trained on; the depot
+                                          refuses a second vocabulary of the same version
+    wpt depot tokenizer import NAME FILE --snapshot S [--kind K ...] [--lock FILE | --vocabulary FILE]
                                           a tokenizer recipe made from a recipe file (sample_bytes,
-                                          vocab_size, note), trained on this depot's dataset D, with the
+                                          vocab_size, note), its sample read from the snapshot S, with the
                                           vocabulary a lock file names (read from the store WPT_STORE names)
                                           or a vocabulary file as the vocabulary of its version 1
-    wpt depot build DATASET [--vocabulary SHA256] (--max-tokens N | --all)
-                                          the dataset's corpus with that trained vocabulary (default: the
-                                          one the dataset publishes; refused when it publishes none) at
-                                          that size (--all: every token the dataset's rules take), built
-                                          into the store WPT_STORE names under the cap WPT_CORPORA_CAP;
-                                          a size counts everything, conversations and tasks taking the
-                                          share of the bytes they hold in the corpus of every token, and
-                                          the corpus never passes it;
-                                          the older corpora of the same
-                                          dataset, vocabulary and size are deleted once it is whole
+    wpt depot snapshot new NAME [--note TEXT]
+                                          a snapshot of the texts admitted now, called NAME: the change
+                                          number it reads, its texts, their digest and its summary
+    wpt depot snapshot list               every snapshot of the depot, one JSON row per line
+    wpt depot snapshot show NAME [--owner DEPOT]
+                                          one snapshot (of this depot, or of DEPOT, the upstream a clone
+                                          follows): its row, its summary and what an erasure did to it since
+    wpt depot build RECIPE                the corpus of the model recipe RECIPE of the repository checkout
+                                          WPT_REPOSITORY names (else the one around the current folder):
+                                          the snapshot its data section names, of this depot or of the
+                                          upstream it follows, checked against the change and digest it
+                                          names, its kinds, shares, size and vocabulary (one the depot
+                                          holds), built into the store WPT_STORE names under the cap
+                                          WPT_CORPORA_CAP, in the folder of its build key; a size counts
+                                          everything, conversations and tasks taking the share of the bytes
+                                          they hold in the corpus of every token, and the corpus never
+                                          passes it
     wpt depot jobs [cancel ID]            the web app's jobs, one JSON row per line; cancel: a queued job
                                           never runs, a running one is stopped
     wpt depot erase ID [START END] [--field POINTER] --reason TEXT DECLARATION
@@ -217,21 +205,25 @@ and items, the decisions on them, its libraries, datasets and erasures.
                                           text or item (no START, END or POINTER)
     wpt depot erasures                    every erasure request; one JSON row per line
     wpt depot recount                     make the depot's counts (how many texts have each status, tag
-                                          and license, each library holds and each decision is on) again
-                                          from its rows, as one change; the writes keep them right, so it
-                                          repairs only counts a failure outside the app broke
+                                          and license and each decision is on) again
+                                          from its rows, as one change, after copying again onto each
+                                          revision the kind, length and bytes of its content version and
+                                          onto each current one the copy of its text's tags; the
+                                          writes keep them right, so it repairs only what a failure outside
+                                          the app broke
     wpt depot about [--maintainer M] [--takedown-contact C]
                                           change who maintains the depot, or where to ask for a takedown;
                                           its name never changes, since it begins every id
     wpt depot web [--port N]              the same operations as pages, on http://127.0.0.1:N/, but
                                           new, clone, pull, upgrade, backup, restore, about's change,
-                                          dataset import, a dataset naming another depot's library,
-                                          tokenizer import, jobs cancel and recount; a vocabulary
-                                          training and a build run as jobs of its queue, one at a time
+                                          tokenizer import, jobs cancel and recount; a snapshot, a
+                                          vocabulary training and a build run as jobs of its heavy lane, one
+                                          at a time, and the writes over many texts as jobs of its write
+                                          lane, beside them
 
 DECLARATION is --name LEGAL_NAME --email EMAIL --accept: who decides, and
-the confirmation every decision needs (an add, an erasure request and a
-reported problem are decisions 'under review'). The name and email are recorded on the decision
+the confirmation every decision needs (an add and an erasure request are
+decisions 'under review'). The name and email are recorded on the decision
 and are public. The requirements are docs/requirements.md in the WPT repository.
 
 Every subcommand is a controller over wpt_depot, as every route of `wpt
@@ -247,22 +239,24 @@ import sys
 from pathlib import Path
 
 from wpt_depot import About, Declaration, Depot, NewText, backup, clone, restore
-from wpt_depot import remote as remotes
-from wpt_depot.errors import DepotError
+from wpt_depot.errors import DepotError, Refused
 from wpt_depot.filters import literal
 from wpt_depot.kinds import PLAIN
 from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from wpt_depot.settings import depot_address
-from wpt_depot import corpora, measures
+from wpt_depot import corpora, measures, snapshots, upgrade
+from wpt_recipes import Recipes
+from wpt_recipes.errors import RecipeError
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_utils.lines import ERROR, say
+from wpt_utils.programs import code_name
 
 from .downloads import Downloads
 from .jobs import Jobs, jobs_file
-from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_corpus, decide_erasures, env_file,
-                     corpora_cap, import_tokenizer, jsonable, opened, pulled,
-                     train_vocabulary, viewed)
+from .shared import (CONFIRMATION, REPOSITORY, BadSetting, NoRepository, NoSample, NoVocabulary, build_corpus,
+                     checkout, decide_erasures, env_file, corpora_cap, import_tokenizer, jsonable, opened, public_url,
+                     pulled, repository, setting, snapshot_named, train_vocabulary, viewed)
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED, "back-to-review": UNDER_REVIEW}
 BACK = "back-to-review"  # the status of decide that puts texts back under review, never an erasure request
@@ -311,10 +305,25 @@ def cmd_pull(args):
 
 def cmd_upgrade(args):
     address = depot_address(env_file=env_file())
-    depot, start = Depot.upgrade(address, args.to, args.upstream)
+    try:
+        records = corpora.records(store_from_settings(env_file()))
+    except StoreSettingError:
+        records = None  # the check says only the current dataset revisions convert
+    public = public_url()
+    found = upgrade.check(address, records, public)
+    for line in found.lines:
+        say(line)
+    if not found.needed:
+        return 0
+    if not found.passed:
+        say("Nothing was written.", ERROR)
+        return 2
+    if not args.yes:
+        say("Nothing was written: run `wpt depot upgrade --yes` to upgrade, which runs this check again first.")
+        return 0
+    depot, start = Depot.upgrade(address, args.to, args.upstream, records=records, public=public)
     say(f"{depot.address}: format {start} of {address} brought up to format {FORMAT}, at its change "
-        f"{depot.change()}; set WPT_DEPOT to {depot.address}" if start < FORMAT
-        else f"{depot.address}: at format {FORMAT} already, nothing to upgrade")
+        f"{depot.change()}; set WPT_DEPOT to {depot.address}")
     return 0
 
 
@@ -382,8 +391,7 @@ def cmd_content(args):
         say(f"{args.id}: its content is this already, nothing written")
         return 0
     decision, version = changed
-    say(f"decision {decision}: under review, content version {version}; the text left every open library, to be put "
-        "back once it is admitted")
+    say(f"decision {decision}: under review, content version {version}")
     return 0
 
 
@@ -393,7 +401,7 @@ def cmd_content_file(args):
     done = opened().change_content_many(Path(args.file), _declaration(args))
     for decision, reason, texts in done.decisions:
         say(f"decision {decision}: under review, {reason}, on {texts:,} texts")
-    say(f"{done.changed:,} texts changed, under review again and out of every open library"
+    say(f"{done.changed:,} texts changed, under review again"
         + (f"; {done.unchanged:,} left out, their content this already" if done.unchanged else "")
         + (f"; {done.stale:,} left out, their content version no longer the one their line's was names (the "
            f"first: {', '.join(done.stale_ids)})" if done.stale else ""))
@@ -428,6 +436,25 @@ def cmd_score(args):
     else:
         say(f"decision {decision}: under review, {done}, on {changed:,} texts"
             + (f"; {left_out:,} texts left out, their scores unchanged" if left_out else ""))
+    return 0
+
+
+def cmd_retag(args):
+    depot = opened()
+    add, remove = args.add or [], args.remove or []
+    found = depot.retag_estimate(args.where, add, remove)
+    say(f"{found['changed']:,} of the {found['texts']:,} texts the condition matches would change: "
+        f"{found['written']:,} rows written, about {found['bytes'] / 1e6:,.1f} MB added to the depot's file and "
+        f"{found['change_bytes'] / 1e6:,.1f} MB to its next backup, about {found['seconds']:,.0f} seconds")
+    if not args.yes:
+        say("Nothing was written: run it again with --yes to change the tags.")
+        return 0
+    decision, changed, left_out = depot.retag(args.where, add, remove, _declaration(args), progress=_stage)
+    if decision is None:
+        say(f"nothing written: the {left_out:,} texts have those tags already")
+    else:
+        say(f"decision {decision}: under review, tags changed on {changed:,} texts"
+            + (f"; {left_out:,} texts left out, their tags unchanged" if left_out else ""))
     return 0
 
 
@@ -489,17 +516,6 @@ def cmd_about(args):
     return 0
 
 
-def cmd_library_new(args):
-    say(f"library {opened().new_library(args.name)}: {args.name}, open")
-    return 0
-
-
-def cmd_library_rename(args):
-    opened().rename_library(args.library, args.name)
-    say(f"library {args.library}: {args.name}")
-    return 0
-
-
 def _stage(stage: str):
     """What a write over many texts says as it starts each stage."""
     say(f"{stage}...")
@@ -511,103 +527,54 @@ def cmd_recount(args):
     return 0
 
 
-def cmd_library_put(args):
-    joined, left_out = opened().put(args.library, args.where, progress=_stage)
-    say(f"library {args.library}: {joined:,} texts joined it"
-        + (f"; {left_out:,} matched and left out, not admitted" if left_out else ""))
+def cmd_snapshot_new(args):
+    row = opened().create_snapshot(args.name, args.note, progress=lambda stage: say(f"  {stage}"))
+    say(f"snapshot {row['id']}: {row['name']}, {row['texts']:,} texts at change {row['at_change']}, digest "
+        f"{row['digest']}")
     return 0
 
 
-def cmd_library_take_out(args):
-    taken_out, not_held = opened().take_out(args.library, args.where, progress=_stage)
-    say(f"library {args.library}: {taken_out:,} texts taken out of it"
-        + (f"; {not_held:,} matched and not in it" if not_held else ""))
+def cmd_snapshot_list(args):
+    for row in opened().snapshots():
+        print(json.dumps(jsonable(row), ensure_ascii=False))
     return 0
 
 
-def cmd_library_lock(args):
-    opened().lock(args.library)
-    say(f"library {args.library}: locked")
-    return 0
-
-
-def cmd_library_fork(args):
-    library = opened().fork(args.library, args.name, args.without, progress=_stage)
-    say(f"library {library}: {args.name}, a fork of library {args.library}"
-        + (f", less the texts {args.without} matches" if args.without else ""))
-    return 0
-
-
-def cmd_library_report(args):
-    decision, texts = opened().report(args.library, args.problem, args.where, _declaration(args), progress=_stage)
-    say(f"library {args.library}: problem reported by decision {decision}"
-        + (f", on {len(texts):,} texts" if args.where else ""))
-    return 0
-
-
-def cmd_dataset_new(args):
-    shares = [(tag, share) for tag, share in args.share] if args.share else None
-    say(f"dataset {opened().new_dataset(args.name, args.tokenizer, args.library, shares, args.max_tokens)}: "
-        f"{args.name}")
-    return 0
-
-
-def cmd_dataset_edit(args):
+def cmd_snapshot_show(args):
     depot = opened()
-    row = depot.dataset(args.name)
-    libraries = args.library or [(one["depot"], one["library"]) for one in row["libraries"]]
-    shares = (None if args.no_shares else [(tag, share) for tag, share in args.share] if args.share
-              else None if row["shares"] is None else [(one["tag"], one["share"]) for one in row["shares"]])
-    name = args.new_name or row["name"]
-    limit = None if args.no_max_tokens else args.max_tokens if args.max_tokens is not None else row["max_tokens"]
-    vocabulary = None if args.no_vocabulary else args.vocabulary or row["vocabulary"]
-    depot.edit_dataset(row["id"], name, libraries, shares, limit, vocabulary)
-    say(f"dataset {row['id']}: {name}, changed")
-    return 0
-
-
-def cmd_dataset_read_again(args):
-    depot = opened()
-    row = depot.dataset(args.name)
-    read = depot.read_again(row["id"])
-    say(f"dataset {row['id']}: {row['name']}, {read:,} libraries of this depot read again as they are now"
-        if read else f"dataset {row['id']}: {row['name']} already reads its libraries as they are now: nothing "
-                     "written")
-    return 0
-
-
-def cmd_dataset_export(args):
-    sys.stdout.write(remotes.to_json(opened().export_dataset(args.name)))
-    return 0
-
-
-def cmd_dataset_import(args):
-    found = remotes.from_json(Path(args.file).read_text(encoding="utf-8"))
-    say(f"dataset {opened().import_dataset(found)}: {found['name']}")
+    row = depot.snapshot(args.name, args.owner)
+    print(json.dumps(jsonable({**row, "erased_since": snapshots.erased_since(depot, row["id"])}), ensure_ascii=False,
+                     indent=1))
     return 0
 
 
 def cmd_build(args):
     depot = opened()
-    row = depot.dataset(args.dataset)
-    vocabulary = args.vocabulary or row["vocabulary"]
-    if vocabulary is None:
-        raise NoVocabulary(f"the dataset {row['name']!r} publishes no vocabulary: name one with --vocabulary SHA256, "
-                           f"or publish one with `wpt depot dataset edit {row['name']} --vocabulary SHA256`; "
-                           "nothing was built")
+    try:
+        recipes = repository()
+    except NoRepository:
+        if setting(REPOSITORY) is not None:
+            raise
+        recipes = Recipes.find()
+    data = recipes.data_part(args.recipe)  # a series (SERIES: or SERIES:SIZE): its data part at its largest size
+    if "snapshot" not in data:
+        raise Refused(f"the recipe {args.recipe} names a dataset, which no longer exists: give it the snapshot "
+                      "shape (docs/model.md, \"Model recipes\")")
+    snapshot = snapshot_named(depot, data["depot"], data["snapshot"])
     store = store_from_settings(env_file())
     cap = corpora_cap()
     downloads = Downloads(jobs_file(depot.address))
-    record = build_corpus(depot, row["id"], say, vocabulary=vocabulary,
-                          max_tokens=None if args.all else args.max_tokens, store=store,
+    commit = checkout(recipes)["commit"]
+    record = build_corpus(depot, snapshot["id"], data, say, store=store, recipe=args.recipe,
+                          code_commit=code_name() if commit is None else commit,
                           room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download,
                                                            downloads.busy, say))
-    say(f"corpus {record['id']}")
+    say(f"corpus {record['id']}: build key {record['build_key']}")
     return 0
 
 
 def cmd_tokenizer_new(args):
-    recipe = opened().new_tokenizer(args.name, args.depot, args.dataset, args.sample_bytes, args.vocab_size, args.note)
+    recipe = opened().new_tokenizer(args.name, args.snapshot, args.kind, args.sample_bytes, args.vocab_size, args.note)
     say(f"tokenizer recipe {recipe}: {args.name}, version 1")
     return 0
 
@@ -615,11 +582,13 @@ def cmd_tokenizer_new(args):
 def cmd_tokenizer_edit(args):
     depot = opened()
     row = depot.tokenizer(args.name)
-    given = {"depot": args.depot, "dataset": args.dataset, "sample_bytes": args.sample_bytes,
+    sample = row["sample"] or {"snapshot": None, "kinds": None}  # a recipe written before snapshots names none
+    given = {"snapshot": args.snapshot, "kinds": args.kind, "sample_bytes": args.sample_bytes,
              "vocab_size": args.vocab_size, "note": args.note}
-    values = {key: row[key] if value is None else value for key, value in given.items()}
-    if args.depot == "":
-        values["depot"] = None
+    values = {key: (sample if key in sample else row)[key] if value is None else value for key, value in given.items()}
+    if values["snapshot"] is None:
+        raise Refused(f"the tokenizer recipe {args.name} names a dataset, written before snapshots: give it a "
+                      "snapshot (--snapshot)")
     version = depot.edit_tokenizer(row["id"], **values)
     say(f"tokenizer recipe {row['id']}: {args.name}, version {version}")
     return 0
@@ -636,7 +605,7 @@ def cmd_tokenizer_import(args):
     lock = None if args.lock is None else json.loads(Path(args.lock).read_text(encoding="utf-8"))
     vocabulary = None if args.vocabulary is None else Path(args.vocabulary).read_bytes()
     store = store_from_settings(env_file()) if lock is not None else None
-    found = import_tokenizer(depot, args.name, given, args.dataset, lock, vocabulary, store)
+    found = import_tokenizer(depot, args.name, given, args.snapshot, args.kind, lock, vocabulary, store)
     say(f"tokenizer recipe {found['recipe']}: {args.name}, version 1"
         + (f", vocabulary {found['vocabulary']}" if found["vocabulary"] else ", no vocabulary yet"))
     return 0
@@ -690,35 +659,6 @@ def _declares(parser):
     parser.add_argument("--accept", action="store_true", help=CONFIRMATION)
 
 
-def _library(value: str) -> tuple[str | None, str]:
-    """[ADDRESS:]ID: (the depot's address, None for this one, and the library's id)."""
-    address, _, library = value.rpartition(":")
-    if not library:
-        raise argparse.ArgumentTypeError(f"{value!r}: a library is [ADDRESS:]ID")
-    return address or None, library
-
-
-def _tokens(value: str) -> int:
-    try:
-        found = int(value)
-    except ValueError:
-        found = 0
-    if found < 1:
-        raise argparse.ArgumentTypeError(f"{value!r}: a size is a whole number of tokens above 0")
-    return found
-
-
-def _share(value: str) -> tuple[str, float | None]:
-    if "=" not in value:
-        return value, None  # an even part of what the shares given as numbers leave (spread_shares)
-    tag, _, share = value.rpartition("=")
-    try:
-        return tag, float(share)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{value!r}: a share is TAG=SHARE, SHARE a number (0.3 = 30 %), or TAG "
-                                         "alone") from None
-
-
 def parser() -> argparse.ArgumentParser:
     found = argparse.ArgumentParser(prog="wpt depot", description=__doc__,
                                     formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -752,10 +692,14 @@ def parser() -> argparse.ArgumentParser:
                                                            "the only one the store holds backups of")
     restoring.set_defaults(run=cmd_restore)
     commands.add_parser("pull", help="fetch the updates of the depot this one follows").set_defaults(run=cmd_pull)
-    upgrading = commands.add_parser("upgrade", help="bring a depot of an older format up to the format this wpt "
-                                                    "reads, as a new file")
+    upgrading = commands.add_parser("upgrade", help="what bringing a depot of an older format up to the format "
+                                                    "this wpt reads would do and cost; with --yes, do it")
     upgrading.add_argument("--to", metavar="FILE", help="the new file; by default the folder's path with .sqlite added")
     upgrading.add_argument("--upstream", metavar="URL", help="for a clone: the web address of its upstream's web app")
+    acting = upgrading.add_mutually_exclusive_group()
+    acting.add_argument("--check", action="store_true", help="only say what the upgrade would do and cost, reading "
+                                                             "the depot's file without writing it (the default)")
+    acting.add_argument("--yes", action="store_true", help="run the check again, then upgrade when it passes")
     upgrading.set_defaults(run=cmd_upgrade)
     query =commands.add_parser("sql", help="any read query over the depot's tables")
     query.add_argument("query", help="one SELECT statement")
@@ -775,7 +719,7 @@ def parser() -> argparse.ArgumentParser:
     adding.add_argument("--address", help="where it came from")
     _declares(adding)
     adding.set_defaults(run=cmd_add)
-    showing = commands.add_parser("show", help="one text or item, with its decisions, libraries and revisions")
+    showing = commands.add_parser("show", help="one text or item, with its decisions and revisions")
     showing.add_argument("id")
     showing.set_defaults(run=cmd_show)
     deciding = commands.add_parser("decide", help="one decision on every text a condition matches")
@@ -814,8 +758,8 @@ def parser() -> argparse.ArgumentParser:
     _declares(contenting_file)
     contenting_file.set_defaults(run=cmd_content_file)
 
-    crediting = commands.add_parser("credits", help="change a text's credits as a new revision, recorded as a "
-                                                    "decision under review")
+    crediting = commands.add_parser("credits", help="change a text's credits as a new revision (tags alone: no "
+                                                    "revision), recorded as a decision under review")
     crediting.add_argument("id", help="the text or item")
     crediting.add_argument("--title", help="its new title")
     crediting.add_argument("--author", action="append", help="its authors, in order: the whole new list")
@@ -853,6 +797,16 @@ def parser() -> argparse.ArgumentParser:
     scoring_one.add_argument("where", help="an SQL condition over the texts table, in SQLite's SQL")
     _declares(scoring_one)
     scoring_one.set_defaults(run=cmd_score)
+    retagging = commands.add_parser("retag", help="add tags to, and take tags from, every text a condition "
+                                                  "matches, recorded as one decision under review; says what it "
+                                                  "would write, and writes it only with --yes")
+    retagging.add_argument("where", help="an SQL condition over the texts table, in SQLite's SQL")
+    retagging.add_argument("--add", action="append", metavar="TAG", help="a tag to give each text (repeatable)")
+    retagging.add_argument("--remove", action="append", metavar="TAG", help="a tag to take from each text "
+                                                                            "(repeatable)")
+    retagging.add_argument("--yes", action="store_true", help="write the change; without it, only say its cost")
+    _declares(retagging)
+    retagging.set_defaults(run=cmd_retag)
     measuring = commands.add_parser("measure", help="measure how much of each plain text a condition matches is "
                                                     "writing, as scores files for wpt depot scores")
     measuring.add_argument("where", help="an SQL condition over the texts table, in SQLite's SQL")
@@ -875,89 +829,14 @@ def parser() -> argparse.ArgumentParser:
     adding_license.add_argument("file", help="the official text (UTF-8)")
     adding_license.set_defaults(run=cmd_license_add)
 
-    library = commands.add_parser("library", help="make, fill, empty, lock and fork libraries")
-    libraries = library.add_subparsers(dest="action", required=True)
-    making = libraries.add_parser("new", help="a new open library")
-    making.add_argument("name")
-    making.set_defaults(run=cmd_library_new)
-    renaming = libraries.add_parser("rename", help="a new name for a library, open or locked")
-    renaming.add_argument("library")
-    renaming.add_argument("name")
-    renaming.set_defaults(run=cmd_library_rename)
-    putting = libraries.add_parser("put", help="every admitted text a condition matches joins an open library")
-    putting.add_argument("library")
-    putting.add_argument("where", help="an SQL condition over the texts table")
-    putting.set_defaults(run=cmd_library_put)
-    taking = libraries.add_parser("take-out", help="every text a condition matches leaves an open library, "
-                                                   "its status kept")
-    taking.add_argument("library")
-    taking.add_argument("where", help="an SQL condition over the texts table")
-    taking.set_defaults(run=cmd_library_take_out)
-    locking = libraries.add_parser("lock", help="lock a library for good")
-    locking.add_argument("library")
-    locking.set_defaults(run=cmd_library_lock)
-    forking = libraries.add_parser("fork", help="a new open library holding the same texts")
-    forking.add_argument("library")
-    forking.add_argument("name")
-    forking.add_argument("--without", metavar="WHERE", help="an SQL condition over the texts table: the texts it "
-                                                            "matches are left out of the fork")
-    forking.set_defaults(run=cmd_library_fork)
-    reporting = libraries.add_parser("report", help="a problem with a library, locked or not")
-    reporting.add_argument("library")
-    reporting.add_argument("problem", help="the problem in words")
-    reporting.add_argument("where", nargs="?", help="an SQL condition over the texts table: the texts of the "
-                                                    "library it matches are the ones concerned")
-    _declares(reporting)
-    reporting.set_defaults(run=cmd_library_report)
-
-    dataset = commands.add_parser("dataset", help="make, export and import datasets")
-    datasets = dataset.add_subparsers(dest="action", required=True)
-    making = datasets.add_parser("new", help="a dataset reading libraries, at their depots' change number now")
-    making.add_argument("name")
-    making.add_argument("--tokenizer", required=True, help="the tokenizer recipe whose vocabulary its corpus uses")
-    making.add_argument("--library", action="append", required=True, type=_library,
-                        help="[ADDRESS:]ID: a library of this depot, or of the depot at ADDRESS")
-    making.add_argument("--share", action="append", type=_share,
-                        help="TAG=SHARE, in order: a plain text counts for the first share whose tag it has, and "
-                             "one no share takes is left out; the build trims the shares to their proportions; TAG "
-                             "alone: an even part of what the shares given as numbers leave of 1")
-    making.add_argument("--max-tokens", type=int, help="the size the web app's build form starts at")
-    making.set_defaults(run=cmd_dataset_new)
-    editing = datasets.add_parser("edit", help="change a dataset's name, libraries or shares as a new revision")
-    editing.add_argument("name", help="the dataset's name now")
-    editing.add_argument("--new-name", help="its new name")
-    editing.add_argument("--library", action="append", type=_library,
-                         help="[ADDRESS:]ID, every library it reads: a library it read already keeps its change "
-                              "number")
-    sharing = editing.add_mutually_exclusive_group()
-    sharing.add_argument("--share", action="append", type=_share, help="TAG=SHARE or TAG alone, in order: every share")
-    sharing.add_argument("--no-shares", action="store_true", help="no shares: every text")
-    limiting = editing.add_mutually_exclusive_group()
-    limiting.add_argument("--max-tokens", type=int, help="the size the web app's build form starts at")
-    limiting.add_argument("--no-max-tokens", action="store_true", help="the form starts at no limit")
-    publishing = editing.add_mutually_exclusive_group()
-    publishing.add_argument("--vocabulary", help="the sha256 of the vocabulary it publishes, one this depot holds: "
-                                                 "training takes the corpus of that vocabulary")
-    publishing.add_argument("--no-vocabulary", action="store_true", help="it publishes no vocabulary")
-    editing.set_defaults(run=cmd_dataset_edit)
-    reading = datasets.add_parser("read-again", help="a new revision reading every library of this depot at the "
-                                                      "change number now, the others kept: what the next build takes")
-    reading.add_argument("name", help="the dataset's name")
-    reading.set_defaults(run=cmd_dataset_read_again)
-    exporting = datasets.add_parser("export", help="the dataset as a remote, JSON on standard output")
-    exporting.add_argument("name")
-    exporting.set_defaults(run=cmd_dataset_export)
-    importing = datasets.add_parser("import", help="a dataset made from a remote")
-    importing.add_argument("file")
-    importing.set_defaults(run=cmd_dataset_import)
     tokenizer = commands.add_parser("tokenizer", help="make, change, train and import tokenizer recipes")
     tokenizers = tokenizer.add_subparsers(dest="action", required=True)
     making = tokenizers.add_parser("new", help="a tokenizer recipe at version 1")
     making.add_argument("name")
-    making.add_argument("--dataset", required=True, help="the dataset whose sample trains its vocabulary: this "
-                                                          "depot's (name or id), or, with --depot, the other depot's "
-                                                          "name")
-    making.add_argument("--depot", help="the web address of another depot's web app that holds the dataset")
+    making.add_argument("--snapshot", required=True, help="the snapshot whose texts its sample reads: its id, or "
+                                                           "the name of one of this depot's own")
+    making.add_argument("--kind", action="append", help="a kind of texts its sample reads (plain, the default and "
+                                                        "the one kind a sample takes for now)")
     making.add_argument("--sample-bytes", type=int, required=True, help="the sample's UTF-8 bytes at most")
     making.add_argument("--vocab-size", type=int, required=True, help="the vocabulary's tokens at most")
     making.add_argument("--note")
@@ -965,8 +844,9 @@ def parser() -> argparse.ArgumentParser:
     editing = tokenizers.add_parser("edit", help="change a tokenizer recipe as a new revision: a change of what "
                                                  "trains its vocabulary raises its version")
     editing.add_argument("name")
-    editing.add_argument("--dataset")
-    editing.add_argument("--depot", help="another depot's web address; '' for this depot")
+    editing.add_argument("--snapshot", help="the snapshot whose texts its sample reads: its id, or the name of one "
+                                            "of this depot's own")
+    editing.add_argument("--kind", action="append", help="a kind of texts its sample reads: every one")
     editing.add_argument("--sample-bytes", type=int)
     editing.add_argument("--vocab-size", type=int)
     editing.add_argument("--note")
@@ -979,19 +859,30 @@ def parser() -> argparse.ArgumentParser:
                                                      "vocabulary of a lock file or a vocabulary file")
     importing.add_argument("name")
     importing.add_argument("file", help="the recipe file (JSON: sample_bytes, vocab_size, note)")
-    importing.add_argument("--dataset", required=True, help="this depot's dataset (name or id) it trains on")
+    importing.add_argument("--snapshot", required=True, help="the snapshot whose texts its sample reads: its id, or "
+                                                              "the name of one of this depot's own")
+    importing.add_argument("--kind", action="append", help="a kind of texts its sample reads (plain by default)")
     given = importing.add_mutually_exclusive_group()
     given.add_argument("--lock", help="a lock file (JSON: texts, vocabulary_sha256), its vocabulary read from the "
                                       "store WPT_STORE names")
     given.add_argument("--vocabulary", help="a vocabulary file (wpt_tokenizer's format)")
     importing.set_defaults(run=cmd_tokenizer_import)
-    building = commands.add_parser("build", help="a dataset's corpus, built into the store")
-    building.add_argument("dataset")
-    building.add_argument("--vocabulary", help="the sha256 of a vocabulary the depot holds (default: the one the "
-                                               "dataset publishes; refused when it publishes none)")
-    sizing = building.add_mutually_exclusive_group(required=True)
-    sizing.add_argument("--max-tokens", type=_tokens, help="the most tokens the corpus holds, items included")
-    sizing.add_argument("--all", action="store_true", help="every token the dataset's rules take")
+    snapshotting = commands.add_parser("snapshot", help="snapshots: the texts admitted at a change number")
+    snapshot_actions = snapshotting.add_subparsers(dest="action", required=True)
+    making_snapshot = snapshot_actions.add_parser("new", help="a snapshot of the texts admitted now")
+    making_snapshot.add_argument("name")
+    making_snapshot.add_argument("--note")
+    making_snapshot.set_defaults(run=cmd_snapshot_new)
+    listing_snapshots = snapshot_actions.add_parser("list", help="every snapshot of the depot")
+    listing_snapshots.set_defaults(run=cmd_snapshot_list)
+    showing_snapshot = snapshot_actions.add_parser("show", help="one snapshot, with its summary")
+    showing_snapshot.add_argument("name")
+    showing_snapshot.add_argument("--owner", help="the depot whose snapshot it is (default: this one)")
+    showing_snapshot.set_defaults(run=cmd_snapshot_show)
+    building = commands.add_parser("build", help="a model recipe's or a series' corpus, built into the store")
+    building.add_argument("recipe", help="the name of a model recipe of the repository (data/recipes/models/), or "
+                                         "SERIES: for a series (data/recipes/series/), whose one corpus every size "
+                                         "reads")
     building.set_defaults(run=cmd_build)
     job = commands.add_parser("jobs", help="the web app's jobs: list them, or cancel one")
     job.set_defaults(run=cmd_jobs)
@@ -1040,8 +931,8 @@ def main(argv=None) -> int:
             found.error(f"credits takes --clear {both[0]} or a new value for it, not both")
     try:
         return args.run(args)
-    except (DepotError, StoreError, StoreSettingError, NoVocabulary, NoSample, BadSetting, corpora.TooBig,
-            corpora.NoRoom, OSError, UnicodeDecodeError, ValueError) as error:
+    except (DepotError, StoreError, StoreSettingError, NoVocabulary, NoSample, BadSetting, NoRepository, RecipeError,
+            corpora.TooBig, corpora.NoRoom, OSError, UnicodeDecodeError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2
 

@@ -4,7 +4,7 @@ import subprocess
 import tarfile
 
 from wpt.depot.web import archive
-from wpt.depot.web.builds import ARCHIVE_FORMAT
+from wpt.depot.web.legacy import ARCHIVE_FORMAT
 from wpt_utils.programs import program
 
 MTIME = 1_700_000_000
@@ -57,4 +57,4 @@ def test_the_bytes_written_are_the_ones_the_archive_s_etag_names():
     made += archive.headers("big", 9 << 30, MTIME)
     assert (ARCHIVE_FORMAT, hashlib.sha256(made).hexdigest()) == (
         "wpt-tar-1", "2cfc7142e40e9ad461e5b33fc44d026fcf978bb9988fb77a6f4a04a717899680"), (
-        "archive.py writes other bytes: raise ARCHIVE_FORMAT in wpt.depot.web.builds, then the hash here")
+        "archive.py writes other bytes: raise ARCHIVE_FORMAT in wpt.depot.web.legacy, then the hash here")

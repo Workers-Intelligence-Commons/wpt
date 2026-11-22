@@ -23,7 +23,7 @@ function Settings({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Settings"
-        chain={<>Every decision on <a href={href(["texts"])}>texts</a> and <a href={href(["erasures"])}>erasure requests</a>, and every problem reported to a <a href={href(["libraries"])}>library</a>, records this name and email. Both are public and nobody verifies them.</>} />
+        chain={<>Every decision on <a href={href(["texts"])}>texts</a> and <a href={href(["erasures"])}>erasure requests</a> records this name and email. Both are public and nobody verifies them.</>} />
       <form className="form-small" onSubmit={(e) => { e.preventDefault(); save(); }}>
         <RequiredNote />
         <p className="form-note small">Public with each decision; kept in this browser until then.</p>

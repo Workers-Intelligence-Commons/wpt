@@ -1,8 +1,9 @@
-"""Shared setup for the app's tests: a corpus built from a depot of 16
-plain texts, and a tiny model trained on it through wpt train. Test files
+"""Shared setup for the app's tests: a corpus built from a snapshot of a
+depot of 16 plain texts, and a tiny model trained on it through wpt train. Test files
 reach them as fixtures (they cannot import this file under
 --import-mode=importlib)."""
 
+import hashlib
 import json
 import secrets
 import socket
@@ -13,6 +14,7 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, NewText
 from wpt_depot import corpora
+from wpt_depot.errors import NotFound
 from wpt_depot.corpus import build
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
@@ -22,8 +24,8 @@ ME = Declaration("Ada Writer", "ada@example.org", True)
 LICENSE = ("MIT", "MIT License", "Copyright (c) 2026 Ada Writer\n\nPermission is hereby granted, free of charge, to "
            "any person.\n")
 NOTICE = "Fox Stories, copyright (c) 2026 Ada Writer"
-TAG = "en"  # every test text's tag, and the dataset's one share
-TOKENIZER = "t"  # the tokenizer recipe every test dataset names
+TAG = "en"  # every test text's tag, and the recipes' one share
+TOKENIZER = "t"  # the tokenizer recipe every test corpus names as its vocabulary's
 VOCAB_SIZE = 556
 
 
@@ -41,25 +43,48 @@ TINY_DRAFTER = {"epochs": 1, "prompts": 4, "prompt_tokens": 8, "answer_tokens": 
 
 @pytest.fixture
 def built(tmp_path, monkeypatch):
-    """A corpus of a depot's dataset "d": 16 plain texts. The working folder tmp_path is the
+    """A corpus of a depot's snapshot "d": 16 plain texts. The working folder tmp_path is the
     repository, the store is WPT_STORE and the depot WPT_DEPOT. Gives store, depot (the Depot),
-    corpus_id (the corpus of "d", which the model recipe "d", a tiny model
+    corpus_id (the corpus of every token of "d", which the model recipe "d", a tiny model
     trained one step, names), records(command) (the record folders of that
-    command's runs, oldest first), notice (the texts' notice),
+    command's runs, oldest first), notice (the texts' notice), vocabulary
+    (the sha256 of the vocabulary every corpus here is built with),
+    data(name, size) (the data section of a recipe of the snapshot name at
+    that size, as recipe writes it),
     recipe(name, model=..., training=..., drafter=..., steps=...,
-    dataset="d"), which writes a model recipe of that dataset, with those
-    changes to "d" (training: to ONE_STEP, its read-text step; steps: the
-    entries that follow it), and returns its name, and dataset(name,
-    items=()), which adds the items (NewText, licensed MIT and tagged TAG
-    unless they say otherwise) to the depot, admitted, makes the dataset
-    name of every admitted text, builds its corpus and returns its id, and
-    sized(name, size, url=None), which publishes the depot's vocabulary on
-    the dataset name, builds its corpus at that size and returns its record."""
+    snapshot="d"), which writes a model recipe of that snapshot (its data
+    section: the depot by its name, the snapshot's change and digest, the
+    one share TAG, the vocabulary, and as total_tokens the tokens of plain
+    text of the snapshot's corpus of every token, 3000 before one is
+    built), with those changes to "d" (training: to ONE_STEP, its
+    read-text step; steps: the entries that follow it), and returns its
+    name, snapshot(name, items=()), which adds the items (NewText, licensed
+    MIT and tagged TAG unless they say otherwise) to the depot, admitted,
+    makes the snapshot name of every admitted text, builds its corpus of
+    every token and returns its id, and sized(name, size, url=None), which
+    builds the corpus of the snapshot name at that size, its record naming
+    the depot by url (default: its name), and returns its record."""
     store = open_store((tmp_path / "store").as_uri())
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
     stories = [f"story {i}: the quick brown fox jumps over the lazy dog. " * 30 for i in range(16)]
     tokenizer = Tokenizer.train([story.encode() for story in stories], vocab_size=VOCAB_SIZE)
+    vocabulary = {"sha256": hashlib.sha256(tokenizer.to_bytes()).hexdigest(), "size": tokenizer.vocab_size}
+
+    def data_of(name, size):
+        """The data section of a recipe of the snapshot name at that size."""
+        try:
+            snapshot = depot.snapshot(name)
+        except NotFound:  # a recipe of a snapshot not made: its change and digest are not known
+            snapshot = {"at_change": 0, "digest": ""}
+        return {"depot": depot.name(), "snapshot": name, "change": snapshot["at_change"],
+                "digest": snapshot["digest"], "shares": [{"tag": TAG, "share": 1.0}], "total_tokens": size,
+                "vocabulary": vocabulary}
+
+    def sized(name, size, url=None) -> dict:
+        snapshot = depot.snapshot(name)
+        return build(depot, snapshot["id"], data_of(name, size), store, tokenizer, address=url or depot.name(),
+                     recipe=name, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
 
     def write(kind, name, document):
         path = tmp_path / "data" / "recipes" / f"{kind}s" / f"{name}.json"
@@ -67,41 +92,26 @@ def built(tmp_path, monkeypatch):
         path.write_text(json.dumps(document))
         return name
 
-    def dataset(name, items=()):
+    def snapshot(name, items=()):
         items = [replace(item, licenses=item.licenses or (LICENSE[0],), tags=item.tags or (TAG,)) for item in items]
         if items:
             added = depot.add(items, ME)
             depot.decide("admitted", f"id IN ({', '.join(repr(one) for one in added)})", ME)
-        library = depot.new_library(name)
-        depot.put(library, "true")
-        depot.new_dataset(name, TOKENIZER, [(None, library)], [(TAG, 1.0)])
-        if not depot.tokenizers():  # the depot's tokenizer recipe, trained on the first dataset
-            recipe = depot.new_tokenizer(TOKENIZER, None, name, 10**9, VOCAB_SIZE)
-            depot.add_vocabulary(recipe, 1, tokenizer.to_bytes(), [], None)
-        return build(depot, name, store, tokenizer, 1, max_tokens=None, log=lambda *_: None)["id"]
+        depot.create_snapshot(name)
+        return sized(name, None)["id"]
 
-    def sized(name, size, url=None) -> dict:
-        """The record of the corpus of the dataset name built at that size with the depot's vocabulary, which the
-        dataset publishes from then on."""
-        row = depot.dataset(name)
-        found = depot.vocabulary(depot.tokenizer(row["tokenizer"])["id"], 1)
-        depot.edit_dataset(row["id"], name, [(None, one["library"]) for one in row["libraries"]],
-                           [(one["tag"], one["share"]) for one in row["shares"]], vocabulary=found["sha256"])
-        vocabulary = Tokenizer.from_bytes(found["merges"].encode("utf-8"))
-        return build(depot, name, store, vocabulary, 1, max_tokens=size, url=url, log=lambda *_: None)
-
-    def recipe(name="d", model=None, training=None, drafter=None, steps=(), dataset="d"):
+    def recipe(name="d", model=None, training=None, drafter=None, steps=(), snapshot="d"):
         text = {**ONE_STEP, **(training or {})}
-        named = [one["id"] for one in depot.sql(f"SELECT id FROM datasets WHERE name = '{dataset}'")]
-        found = corpora.latest(store, depot.name(), named[0]) if named else None  # the whole corpus, once built
-        total = found["total_tokens"] if found else 3000
+        whole = next((one for one in corpora.records(store)
+                      if one.get("snapshot", {}).get("name") == snapshot and one["max_tokens"] is None), None)
+        total = whole["total_tokens"] if whole else 3000
         read_text = {"step": "read-text", "optimizer": {"name": text["optimizer"], "settings": text["settings"]},
                      "settings": {key: text[key] for key in ("stages", "eval_every", "eval_batches")}}
-        return write("model", name, {"data": {"depot": depot.name(), "dataset": dataset, "total_tokens": total},
+        return write("model", name, {"data": data_of(snapshot, total),
                                      "model": {**TINY_MODEL, **(model or {})}, "seed": text["seed"],
                                      "steps": [read_text, *steps], "drafter": {**TINY_DRAFTER, **(drafter or {})}})
 
-    corpus_id = dataset("d", [NewText(text=story, notice=NOTICE) for story in stories])
+    corpus_id = snapshot("d", [NewText(text=story, notice=NOTICE) for story in stories])
     recipe()
     monkeypatch.setenv("WPT_STORE", store.root.as_uri())  # where each command run also writes its record
     monkeypatch.setenv("WPT_DEPOT", depot.address)  # the depot the recipes name (by its name: it has no public address)
@@ -123,7 +133,8 @@ def built(tmp_path, monkeypatch):
         return sorted(found, key=lambda run: run.start["started"])
 
     return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, recipe=recipe,
-                           records=records, dataset=dataset, sized=sized)
+                           records=records, snapshot=snapshot, sized=sized, vocabulary=vocabulary["sha256"],
+                           data=data_of)
 
 
 @pytest.fixture

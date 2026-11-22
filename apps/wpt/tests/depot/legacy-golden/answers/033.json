@@ -1,0 +1,13 @@
+{
+ "asked_headers": {},
+ "body": null,
+ "body_bytes": 14468,
+ "body_file": "033.bin",
+ "headers": {
+  "Content-Disposition": "attachment; filename=\"ds-mixed_part-00000.parquet\"",
+  "Content-Type": "application/vnd.apache.parquet"
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-2/export/part-00000.parquet",
+ "status": 200
+}

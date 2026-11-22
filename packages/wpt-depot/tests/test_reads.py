@@ -1,17 +1,17 @@
 """What a page, a count step and a write of one text read does not grow with the depot: each route is run on two
 depots that differ only in how many texts they hold, and the SQLite steps its statements take are compared. A route
-that reads a whole table, or every row of a large tag, license or library, takes about twice the steps on the depot
+that reads a whole table, or every row of a large tag or license, takes about twice the steps on the depot
 twice as large; one that reads a listing's window, an index range or the rows of the texts it names takes the same."""
 
 import apsw
 
 from wpt_depot import NewText, follow
 from wpt_depot import depot as depots
-from wpt_depot.exports import Export
+from wpt_depot.legacy import Export, Legacy
 from wpt_depot.filters import Filter
 
 BOUND = 50  # the window, the count step and SORTED of both depots: far below the texts of each
-SOME = 60  # texts of the library some and of the decision on them, the same in both depots: more than BOUND
+SOME = 60  # texts of the decision on them, the same in both depots: more than BOUND
 
 
 def steps_of(depot, action) -> int:
@@ -32,37 +32,29 @@ def steps_of(depot, action) -> int:
     return sum(taken)
 
 
-def holding(make_depot, me, texts: int, name: str):
-    """A depot of texts admitted texts, every one with the tag common, the license CC0-1.0, a score and a place in
-    the open library every and the locked library pinned, 5 more with the tag rare, the license MIT and the library
-    few, and SOME more admitted by a decision of their own, in the library some; a dataset reading every, which then
-    loses one text; the same rows but for the number of texts."""
+def holding(make_depot, me, legacy_rows, texts: int, name: str):
+    """A depot of texts admitted texts, every one with the tag common, the license CC0-1.0 and a score, 5 more with
+    the tag rare and the license MIT, and SOME more admitted by a decision of their own; the legacy rows of an open
+    library every holding the first texts and of a dataset reading it; the same rows but for the number of texts."""
     depot = make_depot(name)
     depot.add_license("MIT", "MIT License", "text")
     ids = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("common",)) for n in range(texts)], me)
     rare = depot.add([NewText(text=f"rare {n}", licenses=("MIT",), tags=("rare",)) for n in range(5)], me)
     depot.decide("admitted", ids + rare, me)
     depot.edit_scores([{"id": one, "scores": [{"name": "rank", "value": 1, "content_version": 1}]} for one in ids], me)
-    every, pinned, few = depot.new_library("every"), depot.new_library("pinned"), depot.new_library("few")
-    depot.put(every, ids)
-    depot.put(pinned, ids)
-    depot.lock(pinned)
-    depot.put(few, rare)
+    every = legacy_rows.library(depot, "every", ids)
     some_ids = depot.add([NewText(text=f"some {n}", licenses=("CC0-1.0",)) for n in range(SOME)], me)
     decision = depot.decide("admitted", some_ids, me)[0]
-    some = depot.new_library("some")
-    depot.put(some, some_ids)
-    dataset = depot.dataset_by_id(depot.new_dataset("every", "classics", [(None, every)]))
-    depot.take_out(every, [ids[0]])
-    return depot, {"ids": ids, "rare": rare, "every": every, "pinned": pinned, "few": few, "some": some,
-                   "some_ids": some_ids, "decision": decision, "dataset": dataset}
+    dataset = legacy_rows.dataset(depot, "every", [every])
+    return depot, {"ids": ids, "rare": rare, "every": every, "some_ids": some_ids, "decision": decision,
+                   "dataset": dataset}
 
 
 def routes(depot, me, held) -> dict:
     """{route: the action that runs it} of each page, count step, count and write of one text that the depot's
     pages and common commands run."""
     held_ = held
-    ids, rare, every, pinned, few = (held[key] for key in ("ids", "rare", "every", "pinned", "few"))
+    ids, every = held["ids"], held["every"]
     one, other = ids[len(ids) // 2], ids[len(ids) // 2 + 1]
 
     def far_page(selection, **options):
@@ -93,31 +85,24 @@ def routes(depot, me, held) -> dict:
         "page of a rare tag": lambda: far_page(Filter(tags=("rare",))),
         "page of a rare tag by title": lambda: far_page(Filter(tags=("rare",)), order="title"),
         "page of a license": lambda: far_page(Filter(licenses=("CC0-1.0",))),
-        "page of a large library": lambda: far_page(Filter(libraries=(every,))),
-        "page of a small library": lambda: far_page(Filter(libraries=(few,))),
         "page of a status": lambda: far_page(Filter(statuses=("admitted",))),
         "page of a search": lambda: far_page(Filter(search="nothing like it")),
         "page of a search in the text": lambda: far_page(Filter(search="nothing like it", in_text=True)),
-        "every page of two libraries": lambda: walk(Filter(libraries=(few, held_["some"])), rare + held_["some_ids"]),
         "every page of a decision on many texts": lambda: walk(Filter(decision=held_["decision"]), held_["some_ids"]),
         "count of a tag's statuses": lambda: held(Filter(tags=("common",))),
-        "count of a library's locked texts": lambda: held(Filter(libraries=(every,), locked=True)),
-        "sample of a large library": lambda: depot.library_spread(every, depot.change(), 20),
-        "texts of an export whose library moved": lambda: Export(depot, held_["dataset"], None).texts(),
+        "count of a license's statuses": lambda: held(Filter(licenses=("MIT",))),
+        "texts of an export": lambda: Export(Legacy(depot.address), held_["dataset"], None).texts(),
         "count step of every text": lambda: depot.count(Filter(), size=BOUND),
         "count step of a tag": lambda: depot.count(Filter(tags=("common",)), size=BOUND),
-        "count step of texts outside a library": lambda: depot.count(Filter(outside=(few,)), size=BOUND),
+        "count step of a decision": lambda: depot.count(Filter(decision=held_["decision"]), size=BOUND),
         "texts a license blocks": lambda: depot.blocked(Filter()),
         "score names": depot.score_names,
         "score values": lambda: depot.score_values("rank"),
-        "count of a library": lambda: depot.library_count(every, depot.change()),
-        "page of a locked library's pins": lambda: depot.pinned(pinned),
+        "count of a library": lambda: Legacy(depot.address).library_count(every, depot.change()),
         "rows a pull reads": pull_rows,
         "refusal of one text": lambda: depot.decide("refused", [one], me),
         "admission of one text by filter": lambda: depot.decide("admitted", Filter(ids=(one,)), me),
-        "put of one text": lambda: depot.put(few, [one]),
-        "take out of one text": lambda: depot.take_out(few, [one]),
-        "report of one text": lambda: depot.report(every, "a problem", [other], me),
+        "retag of one text": lambda: depot.retag([one], ["y"], [], me),
         "relicense of one text": lambda: depot.relicense([other], ["MIT"], me),
         "content of one text": lambda: depot.change_content(other, "a new text", None, me),
         "credits of one text": lambda: depot.edit_credits(one, {"tags": ["x"]}, me),
@@ -129,12 +114,13 @@ def routes(depot, me, held) -> dict:
     }
 
 
-def test_each_page_count_and_write_of_one_text_reads_as_much_on_a_depot_twice_as_large(make_depot, me, monkeypatch):
+def test_each_page_count_and_write_of_one_text_reads_as_much_on_a_depot_twice_as_large(make_depot, me, monkeypatch,
+                                                                                        legacy_rows):
     # the public depot holds 166 million texts: a route whose reads grow with the depot times out there
     for constant in ("WINDOW", "TEXT_WINDOW", "SORTED", "SCORE_READ"):
         monkeypatch.setattr(depots, constant, BOUND)
-    small, held_small = holding(make_depot, me, 400, "small")
-    large, held_large = holding(make_depot, me, 800, "large")
+    small, held_small = holding(make_depot, me, legacy_rows, 400, "small")
+    large, held_large = holding(make_depot, me, legacy_rows, 800, "large")
     on_small, on_large = routes(small, me, held_small), routes(large, me, held_large)
     grown = {}
     for route in on_small:
@@ -142,3 +128,20 @@ def test_each_page_count_and_write_of_one_text_reads_as_much_on_a_depot_twice_as
         if steps[1] > steps[0] * 1.2 + 200:
             grown[route] = steps
     assert grown == {}, "routes whose steps grow with the depot (small, large): " + repr(grown)
+
+
+def test_a_page_in_the_order_of_ids_looks_up_its_texts_only_up_to_its_last_row_not_its_whole_window(make_depot, me,
+                                                                                                    legacy_rows):
+    # the window (depot.WINDOW, 10,000 texts) holds every text of both depots: a first page of 5 rows still reads as
+    # much on the larger one, so a workspace opens as fast whatever the window holds
+    small, _ = holding(make_depot, me, legacy_rows, 400, "small")
+    large, _ = holding(make_depot, me, legacy_rows, 800, "large")
+    grown = {}
+    for name, selection in (("every text", Filter()), ("a tag", Filter(tags=("common",))),
+                            ("a status", Filter(statuses=("admitted",)))):
+        for descending in (False, True):
+            steps = [steps_of(one, lambda: one.search(selection, limit=5, descending=descending))
+                     for one in (small, large)]
+            if steps[1] > steps[0] * 1.2 + 200:
+                grown[(name, descending)] = steps
+    assert grown == {}, "pages whose steps grow with the window (small, large): " + repr(grown)

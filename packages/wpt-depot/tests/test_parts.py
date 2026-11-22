@@ -77,12 +77,11 @@ def test_a_text_bigger_than_a_part_is_added_from_a_file_read_shown_and_built_int
         len(listed(text, SMALL).parts)] and len(listed(text, SMALL).parts) > 10
     assert depot.passages("true", characters=100)["rows"][0]["passage"] == text[:100]
     depot.decide("admitted", "true", me)
-    library = depot.new_library("mine")
-    depot.put(library, "true")
-    depot.new_dataset("model", "classics", [(None, library)])
+    snapshot = depot.create_snapshot("s1")
     store = open_store((tmp_path / "store").as_uri())
+    vocabulary = {"sha256": hashlib.sha256(TOKENIZER.to_bytes()).hexdigest(), "size": TOKENIZER.vocab_size}
 
-    record = build(depot, "model", store, TOKENIZER, max_tokens=None, log=lambda *_: None)
+    record = build(depot, snapshot["id"], {"vocabulary": vocabulary}, store, TOKENIZER, log=lambda *_: None)
 
     [(tokens, _, document, _, _)] = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard)]
     assert document == one

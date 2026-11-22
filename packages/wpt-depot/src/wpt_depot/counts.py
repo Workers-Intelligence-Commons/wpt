@@ -1,88 +1,72 @@
 """The depot's counts: how many current texts it holds, and of them how many
-have each status, each tag, each license and each score name, how many each
-library holds now, how many each decision is on and how many pins of each
-locked library are older than their text's current revision, with what each
-library holds by kind and by tag in characters and bytes, kept in the table
-counts (wpt_depot.schema) so that a page reads them at once whatever the
-depot's size; and the listings of the current texts of each tag and of each
-license (LISTINGS: the tables text_tags and text_licenses), from which a page
-reads the texts of one of them in the numeric order of ids, and the index of
-their titles (TITLE, wpt_depot.titles), which a plain search reads.
+have each status, each tag, each license and each score name, and how many
+each decision is on, with what the texts of each status hold by kind, by
+plain tag set, by tag and by license, in characters and bytes, kept in the
+table counts (wpt_depot.schema) so that a page reads them at once whatever
+the depot's size; and the listings of the current texts of each tag and of
+each license (LISTINGS: the tables text_tags and text_licenses), from which
+a page reads the texts of one of them in the numeric order of ids, and the
+index of their titles (TITLE, wpt_depot.titles), which a plain search reads.
 
 This module is the only code that writes those tables, and the index through
 wpt_depot.titles. Each write of the depot keeps them right in its own
 transaction: it measures what the texts it changes add to the counts before
-and after it changes them (changing), or what the memberships it adds or
-ends add (held), and shifts the counts by the difference (shift); changing
-also takes the texts out of the listings before the change (unlist) and
-puts them back as they are after it (enlist), the title index too when
-TITLE is named among the facets. recount makes the table again from the
-depot's rows, which `wpt depot recount` runs to repair it and a clone runs once it
-has copied its upstream.
+and after it changes them (changing), and shifts the counts by the
+difference (shift), except a decision, which changes statuses alone and
+moves each text's rows from its old status to its new one in one pass
+(moving); changing also takes the texts out of the listings
+before the change (unlist) and puts them back as they are after it
+(enlist), the title index too when TITLE is named among the facets. recount
+makes the table again from the depot's rows, which `wpt depot recount` runs
+to repair it and a clone runs once it has copied its upstream.
 
 A row is (facet, name, texts, characters, bytes): facet TEXTS with the name
 '' (every current text), STATUS with a status (wpt_depot.policy), TAG with
-a tag, LICENSE with a license id a text names, LIBRARY with a library id
-(its memberships that have not ended, locked libraries included) and
-DECISION with a decision id (its rows of text_decisions), SCORE with a
-score name, NEWER with a locked library id (its pins whose text has a newer
-current revision), whose characters and bytes stay 0; the facets of SPLIT,
-which split the texts of TEXTS, TAG, LICENSE and LIBRARY by status and by
-whether a locked library holds them (split_name): SPLIT_TEXTS, SPLIT_TAG,
-SPLIT_LICENSE and SPLIT_LIBRARY with the name `<status> <locked> <name>`,
-locked 1 or 0 and name the facet's own ('' for every text), so a filter of
-one status, one tag, license or library, and whether a locked library holds
-the text, is counted from a few rows read by their key (split); and the
-facets of SIZED, which say what each library
-holds, each text at its current revision, its characters and UTF-8 bytes
-those of the content version it reads (content_lists): LIBRARY_KIND with
-the name `<library id> <kind>`, the texts of the library of that kind, each
-kind on its own (kinds are a closed list, the rows of the table kinds:
-depot_kinds), and LIBRARY_TAG with the name `<library id>
-<tag>`, the plain texts of the library that have the tag. A library id
-holds no space, so the name's first space ends it. A text with several tags
-counts once for each of them. A count that falls to 0 has no row.
+a tag, LICENSE with a license id a text names, DECISION with a decision id
+(its rows of text_decisions) and SCORE with a score name, whose characters
+and bytes stay 0; the facets of SPLIT, which split the texts of TEXTS, TAG
+and LICENSE by status (split_name): SPLIT_TEXTS, SPLIT_TAG and
+SPLIT_LICENSE with the name `<status> <name>`, name the facet's own (''
+for every text), so a filter of one status and one tag or license is
+counted from a few rows read by their key (split), the rows of SPLIT_TAG
+and SPLIT_LICENSE with the characters and bytes of the content versions
+their texts read; and the facets of STATUSED, which say what the current
+texts of each status hold, in texts, characters and bytes: KIND with the
+name `<status> <kind>`, and PLAIN_TAGSET with the name `<status> <tags>`,
+the plain texts whose set of tags is exactly tags, a JSON array of them,
+each once, in order (TAGS), so what the texts of a status hold by kind,
+tag, set of tags and license is read from a few ranges of rows, and a
+snapshot's summary is made without reading a text (of_status). A text with several tags
+counts once for each of them. A text's tags are read from its rows of
+taggings it has not left (wpt_depot.taggings), its other fields from its
+current revision, the kind, characters and bytes of its content version
+included (schema.SIZES): no count reads content_lists. A count that falls to 0 has no row.
 
 Keys of a delta (shift): (facet, name) for its texts, (facet, name,
 "characters") and (facet, name, "bytes") for the other two columns.
-
-The table library_moves, which this module alone writes too, holds for each
-library the change at which what it holds (its rows of HELD) last moved:
-shift records the change being written (the highest id of changes, the row
-each write adds first, wpt_depot.database) for every library whose rows it
-moves. Its change is null when that change is not known, and a library
-with no row has never held a text. A library whose row names a change at
-or before a change C holds now what it held at C, each text at its
-revision then, so its counts now are its figures at C (Depot._figures).
-fill records, for every library that holds or held a text, the latest
-change any of its memberships joined or left at, or any text it holds now
-was revised at, which is at or after its last move; in a depot that
-follows an upstream, whose rows carry the numberings of several depots,
-it records null instead.
 """
 
 import contextlib
 import json
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator
 
 from . import titles
-from .filters import in_locked
 from .ids import order_sql
 from .kinds import PLAIN
-from .schema import ADMITTED, REFUSED, UNDER_REVIEW
+from .schema import ADMITTED, REFUSED, UNDER_REVIEW, sizes_sql, tags_sql
 
-TEXTS, STATUS, TAG, LICENSE, LIBRARY, DECISION = "texts", "status", "tag", "license", "library", "decision"
-SCORE, NEWER = "score", "pinned newer"
-LIBRARY_KIND, LIBRARY_TAG = "library kind", "library tag"
-COUNTED = (TEXTS, STATUS, TAG, LICENSE, LIBRARY, DECISION, SCORE, NEWER)  # the facets of counts of texts alone (read)
-SPLIT_TEXTS, SPLIT_TAG, SPLIT_LICENSE, SPLIT_LIBRARY = "texts split", "tag split", "license split", "library split"
-SPLITS = {TEXTS: SPLIT_TEXTS, TAG: SPLIT_TAG, LICENSE: SPLIT_LICENSE, LIBRARY: SPLIT_LIBRARY}  # each facet's split
-SPLIT = tuple(SPLITS.values())  # the facets split by status and by whether a locked library holds the text
-SIZED = (LIBRARY_KIND, LIBRARY_TAG)  # the facets with characters and bytes
-FACETS = (*COUNTED, *SPLIT, *SIZED)
-HELD = (LIBRARY, *SIZED)  # the facets of what libraries hold (library_moves), measured from rows of memberships
-ROWS = (*HELD, SPLIT_LIBRARY)  # the facets measured from rows of memberships
+TEXTS, STATUS, TAG, LICENSE, DECISION, SCORE = "texts", "status", "tag", "license", "decision", "score"
+KIND, PLAIN_TAGSET = "kind", "plain tagset"
+COUNTED = (TEXTS, STATUS, TAG, LICENSE, DECISION, SCORE)  # the facets of counts of texts alone (read)
+SPLIT_TEXTS, SPLIT_TAG, SPLIT_LICENSE = "texts split", "tag split", "license split"
+SPLITS = {TEXTS: SPLIT_TEXTS, TAG: SPLIT_TAG, LICENSE: SPLIT_LICENSE}  # each facet's split
+SPLIT = tuple(SPLITS.values())  # the facets split by status
+STATUSED = (KIND, PLAIN_TAGSET)  # what the texts of each status hold by kind and by plain tag set, sized
+BY_STATUS = (*SPLIT, *STATUSED)  # every facet whose rows move when a text's status does
+# the facets with characters and bytes of the texts themselves, which move when a text's content version does
+TEXT_SIZED = (*STATUSED, SPLIT_TAG, SPLIT_LICENSE)
+FACETS = (*COUNTED, *SPLIT, *STATUSED)
 COLUMNS = ("texts", "characters", "bytes")
 
 # what each facet adds of the texts of a table of ids `{chosen}` (column id): (facet name, count) rows; each reads
@@ -91,70 +75,65 @@ _MEASURES = {
     TEXTS: "SELECT '', count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest",
     STATUS: "SELECT t.status, count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest "
             "GROUP BY t.status",
-    TAG: "SELECT j.value, count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest, "
-         "json_each(t.tags) j GROUP BY j.value",
+    TAG: "SELECT g.tag, count(*) FROM {chosen} c CROSS JOIN taggings g ON g.text = c.id AND g.left_change IS NULL "
+         "GROUP BY g.tag",
     LICENSE: "SELECT j.value, count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id AND t.latest, "
              "json_each(t.licenses) j GROUP BY j.value",
     DECISION: "SELECT l.decision, count(*) FROM {chosen} c CROSS JOIN text_decisions l ON l.text = c.id "
               "GROUP BY l.decision",
     SCORE: "SELECT s.value ->> 'name', count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id "
            "AND t.latest, json_each(t.scores) s GROUP BY 1",
-    NEWER: "SELECT p.library, count(*) FROM {chosen} c CROSS JOIN pins p ON p.text = c.id CROSS JOIN texts_revisions t "
-           "ON t.id = c.id AND t.latest WHERE t.revision > p.revision GROUP BY p.library",
-    # {locked}: whether a locked library holds the text t (_locked)
-    SPLIT_TEXTS: "SELECT t.status || ' ' || {locked} || ' ', count(*) FROM {chosen} c CROSS JOIN texts_revisions t "
+    SPLIT_TEXTS: "SELECT t.status || ' ', count(*) FROM {chosen} c CROSS JOIN texts_revisions t "
                  "ON t.id = c.id AND t.latest GROUP BY 1",
-    SPLIT_TAG: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM {chosen} c CROSS JOIN "
-               "texts_revisions t ON t.id = c.id AND t.latest, json_each(t.tags) j GROUP BY 1",
-    SPLIT_LICENSE: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM {chosen} c CROSS JOIN "
-                   "texts_revisions t ON t.id = c.id AND t.latest, json_each(t.licenses) j GROUP BY 1",
 }
-# what the rows of memberships a query `{rows}` gives (columns library and text) hold, in one pass that looks up each
-# row's current revision and content version once: (library, its kind, NULL for a text with no current revision or
-# no content version, the tags as JSON text of a plain text, NULL for another, the text's
-# status, NULL with no current revision, whether a locked library holds it ({locked}, _locked), count, sum of
-# characters, sum of bytes) rows, few since they group by library, kind, set of tags, status and locked
-_HELD = ("SELECT h.library, c.kind, "
-         f"CASE WHEN c.id IS NOT NULL AND c.kind = '{PLAIN}' THEN t.tags END, t.status, {{locked}}, count(*), sum(c.length), "
-         "sum(c.bytes) FROM ({rows}) h LEFT JOIN texts_revisions t ON t.id = h.text AND t.latest "
-         "LEFT JOIN content_lists c ON c.id = t.id AND c.version = t.content_version GROUP BY 1, 2, 3, 4, 5")
-# LIBRARY and SPLIT_LIBRARY alone, with no lookup of a content version: (library, status, locked, count) rows
-_LIBRARIES = ("SELECT h.library, t.status, {locked}, count(*) FROM ({rows}) h "
-              "LEFT JOIN texts_revisions t ON t.id = h.text AND t.latest GROUP BY 1, 2, 3")
-# the memberships that have not ended of the texts of a table of ids `{chosen}`, each text's read through the index
-# memberships_held (by text), never a library's rows
-_CHOSEN_ROWS = ("SELECT m.library, m.text FROM {chosen} x CROSS JOIN memberships m INDEXED BY memberships_held "
-                "ON m.text = x.id AND m.left_change IS NULL")
+# the tags the text of the current revision t has now, a JSON array of its tags, each once, in order: the copy the
+# revision holds (schema.tags_sql); for a plain text, the same text names its row of PLAIN_TAGSET (_sized_names)
+TAGS = "t.current_tags"
+# what the texts of a table of ids `{chosen}` add to the facets of TEXT_SIZED, in one pass that looks up each text's
+# current revision once, which holds the kind, length and bytes of the content version it reads (schema.SIZES):
+# (status, its kind, NULL for no content version, its tags and licenses as JSON text, count, characters, bytes) rows
+_TEXT_SIZED = (f"SELECT t.status, t.content_kind, {TAGS}, t.licenses, count(*), coalesce(sum(t.content_length), 0), "
+               "coalesce(sum(t.content_bytes), 0) "
+               "FROM {chosen} x CROSS JOIN texts_revisions t ON t.id = x.id AND t.latest GROUP BY 1, 2, 3, 4")
 # the same over every text of the depot, for the facets of COUNTED
 _WHOLE = {
     TEXTS: "SELECT '', count(*) FROM texts_revisions WHERE latest",
     STATUS: "SELECT status, count(*) FROM texts_revisions WHERE latest GROUP BY status",
-    TAG: "SELECT j.value, count(*) FROM texts_revisions t, json_each(t.tags) j WHERE t.latest GROUP BY j.value",
+    TAG: "SELECT tag, count(*) FROM taggings WHERE left_change IS NULL GROUP BY tag",
     LICENSE: "SELECT j.value, count(*) FROM texts_revisions t, json_each(t.licenses) j WHERE t.latest "
              "GROUP BY j.value",
-    LIBRARY: "SELECT library, count(*) FROM memberships WHERE left_change IS NULL GROUP BY library",
     DECISION: "SELECT decision, count(*) FROM text_decisions GROUP BY decision",
     SCORE: "SELECT s.value ->> 'name', count(*) FROM texts_revisions t, json_each(t.scores) s WHERE t.latest GROUP BY 1",
-    NEWER: "SELECT p.library, count(*) FROM pins p JOIN texts_revisions t ON t.id = p.text AND t.latest "
-           "WHERE t.revision > p.revision GROUP BY p.library",
-    SPLIT_TEXTS: "SELECT t.status || ' ' || {locked} || ' ', count(*) FROM texts_revisions t WHERE t.latest GROUP BY 1",
-    SPLIT_TAG: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM texts_revisions t, "
-               "json_each(t.tags) j WHERE t.latest GROUP BY 1",
-    SPLIT_LICENSE: "SELECT t.status || ' ' || {locked} || ' ' || j.value, count(*) FROM texts_revisions t, "
-                   "json_each(t.licenses) j WHERE t.latest GROUP BY 1",
-    SPLIT_LIBRARY: "SELECT t.status || ' ' || {locked} || ' ' || m.library, count(*) FROM memberships m CROSS JOIN "
-                   "texts_revisions t ON t.id = m.text AND t.latest WHERE m.left_change IS NULL GROUP BY 1",
+    SPLIT_TEXTS: "SELECT t.status || ' ', count(*) FROM texts_revisions t WHERE t.latest GROUP BY 1",
 }
-# the stored listings (LISTINGS): for each facet listed, its table, the column of the name and the column of the
-# current revision that lists the names (a JSON array)
-LISTINGS = {TAG: ("text_tags", "tag", "tags"), LICENSE: ("text_licenses", "license", "licenses")}
+# the same for the facets of TEXT_SIZED, with characters and bytes (SUMS), from the current revisions alone
+SUMS = "count(*), coalesce(sum(t.content_length), 0), coalesce(sum(t.content_bytes), 0)"
+_WHOLE_SIZED = {
+    SPLIT_TAG: f"SELECT t.status || ' ' || g.tag, {SUMS} FROM texts_revisions t "
+               "JOIN taggings g ON g.text = t.id AND g.left_change IS NULL WHERE t.latest GROUP BY 1",
+    SPLIT_LICENSE: f"SELECT t.status || ' ' || j.value, {SUMS} "
+                   "FROM texts_revisions t, json_each(t.licenses) j WHERE t.latest GROUP BY 1",
+    KIND: f"SELECT t.status || ' ' || t.content_kind, {SUMS} FROM texts_revisions t WHERE t.latest "
+          "AND t.content_kind IS NOT NULL GROUP BY 1",
+    PLAIN_TAGSET: f"SELECT t.status || ' ' || {TAGS}, {SUMS} FROM texts_revisions t "
+                  f"WHERE t.latest AND t.content_kind = '{PLAIN}' GROUP BY 1",
+}
+# the stored listings (LISTINGS): for each facet listed, its table, the column of the name, and the rows of the
+# listing of the texts of a table of ids `{chosen}` now (_LISTED): a text's tags from its rows of taggings, its
+# licenses from the column of its current revision that lists them (a JSON array)
+LISTINGS = {TAG: ("text_tags", "tag"), LICENSE: ("text_licenses", "license")}
 # the index of the current texts' titles (wpt_depot.titles), named among the facets of changing, enlist and unlist like
 # a listing, with no count; LISTED: every listing and the index, what a write that adds or removes texts names
 TITLE = "title"
 LISTED = (*LISTINGS, TITLE)
-# the rows of a listing of the texts of a table of ids `{chosen}`, at their current revisions
-_LISTED = ("SELECT DISTINCT j.value, " + order_sql("t.id") + " FROM {chosen} c CROSS JOIN texts_revisions t "
-           "ON t.id = c.id AND t.latest, json_each(t.{column}) j")
+_LISTED = {TAG: ("SELECT DISTINCT g.tag, " + order_sql("c.id") + " FROM {chosen} c CROSS JOIN taggings g "
+                 "ON g.text = c.id AND g.left_change IS NULL"),
+           LICENSE: ("SELECT DISTINCT j.value, " + order_sql("t.id") + " FROM {chosen} c CROSS JOIN texts_revisions t "
+                     "ON t.id = c.id AND t.latest, json_each(t.licenses) j")}
+# the same over every current text, for recount
+_LISTED_WHOLE = {TAG: f"SELECT tag, {order_sql('text')} FROM taggings WHERE left_change IS NULL",
+                 LICENSE: f"SELECT j.value, {order_sql('t.id')} FROM texts_revisions t, json_each(t.licenses) j "
+                          "WHERE t.latest"}
 
 
 def measure(con, chosen: str, facets: Iterable[str]) -> Counter:
@@ -163,69 +142,97 @@ def measure(con, chosen: str, facets: Iterable[str]) -> Counter:
     facet named."""
     facets = tuple(facets)
     found = Counter()
-    rows = _CHOSEN_ROWS.format(chosen=chosen)
-    if any(facet in SIZED for facet in facets):
-        found.update({key: by for key, by in held(con, rows).items() if key[0] in facets})
-    elif LIBRARY in facets or SPLIT_LIBRARY in facets:
-        for library, status, locked, count in con.execute(_LIBRARIES.format(rows=rows,
-                                                                            locked=_locked(con, "h.text"))):
-            if LIBRARY in facets:
-                found[LIBRARY, library] += count
-            if SPLIT_LIBRARY in facets and status is not None:
-                found[SPLIT_LIBRARY, split_name(status, locked, library)] += count
-    locked = _locked(con, "t.id")
     for facet in facets:
         if facet in _MEASURES:
-            _add(found, facet, con.execute(_MEASURES[facet].format(chosen=chosen, locked=locked)))
+            _add(found, facet, con.execute(_MEASURES[facet].format(chosen=chosen)))
+    if any(facet in TEXT_SIZED for facet in facets):
+        _text_sized(con, chosen, facets, found)
     return found
 
 
-def split_name(status: str, locked, name: str) -> str:
-    """The name of a row of a facet of SPLIT: the texts of that status, held
-    by a locked library or not (locked), of that name of the facet split."""
-    return f"{status} {int(locked)} {name}"
+def _text_sized(con, chosen: str, facets: tuple[str, ...], found: Counter):
+    """Add to found what the texts of the table chosen add to the facets of
+    TEXT_SIZED named among facets, from one pass (_TEXT_SIZED)."""
+    for status, kind, tags, licenses, count, length, nbytes in con.execute(_TEXT_SIZED.format(chosen=chosen)):
+        if status is not None:
+            _add_sized(found, status, _sized_names(facets, kind, tags, licenses), count, length, nbytes)
 
 
-def split(con, facet: str, name: str) -> dict[tuple[str, bool], int]:
-    """{(status, locked): how many texts} of the name of a facet of SPLITS
-    (TEXTS with the name ''), read from its rows of the split facet by their
-    keys; a pair with no row is left out."""
-    keys = {split_name(status, locked, name): (status, bool(locked))
-            for status in (UNDER_REVIEW, ADMITTED, REFUSED) for locked in (0, 1)}
+def _sized_names(facets: tuple[str, ...], kind, tags, licenses) -> list[tuple[str, str]]:
+    """(facet, name less its status) of each row of the facets of
+    TEXT_SIZED named among facets that a text of that kind (None for no
+    content version), tags and licenses (JSON arrays as text, as TAGS
+    gives them) counts in; a plain text's tags as they are name its row of
+    PLAIN_TAGSET."""
+    names = []
+    if KIND in facets and kind is not None:
+        names.append((KIND, kind))
+    if PLAIN_TAGSET in facets and kind == PLAIN:
+        names.append((PLAIN_TAGSET, tags))
+    for facet, listed in ((SPLIT_TAG, tags), (SPLIT_LICENSE, licenses)):
+        if facet in facets:
+            names += [(facet, one) for one in json.loads(listed or "[]")]
+    return names
+
+
+def _add_sized(found: Counter, status: str, names: list[tuple[str, str]], count: int, length: int, nbytes: int):
+    """Add to found count texts holding length characters and nbytes bytes
+    (each may be negative) in the rows of the status of names
+    (_sized_names)."""
+    for facet, name in names:
+        key = split_name(status, name)
+        found[facet, key] += count
+        found[facet, key, "characters"] += length
+        found[facet, key, "bytes"] += nbytes
+
+
+def moving(con, chosen: str, new: str) -> Counter:
+    """The delta of STATUS and of every facet of BY_STATUS when each current
+    text whose id the table chosen holds (its column id) takes the status
+    the SQL expression new over its current revision (t) gives: one pass
+    that moves each text's rows from its old status to its new one, since a
+    status change leaves its kind, tags, licenses and content as they are.
+    Read before the statuses are written."""
+    query = (f"SELECT t.status, {new}, t.content_kind, {TAGS}, t.licenses, count(*), "
+             "coalesce(sum(t.content_length), 0), coalesce(sum(t.content_bytes), 0) "
+             "FROM {chosen} x CROSS JOIN texts_revisions t ON t.id = x.id AND t.latest "
+             f"WHERE t.status IS NOT {new} GROUP BY 1, 2, 3, 4, 5").replace("{chosen}", chosen)
+    found = Counter()
+    for old, now, kind, tags, licenses, count, length, nbytes in con.execute(query):
+        names = _sized_names(TEXT_SIZED, kind, tags, licenses)
+        for status, sign in ((old, -1), (now, 1)):
+            found[STATUS, status] += sign * count
+            found[SPLIT_TEXTS, split_name(status, "")] += sign * count
+            _add_sized(found, status, names, sign * count, sign * length, sign * nbytes)
+    return found
+
+
+def split_name(status: str, name: str) -> str:
+    """The name of a row of a facet of SPLIT: the texts of that status, of
+    that name of the facet split."""
+    return f"{status} {name}"
+
+
+def split(con, facet: str, name: str) -> dict[str, int]:
+    """{status: how many texts} of the name of a facet of SPLITS (TEXTS
+    with the name ''), read from its rows of the split facet by their keys;
+    a status with no row is left out."""
+    keys = {split_name(status, name): status for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
     return {keys[one]: count for one, count in con.execute(
         "SELECT name, texts FROM counts WHERE facet = ? AND name IN (SELECT value FROM json_each(?))",
         (SPLITS[facet], json.dumps(list(keys))))}
 
 
-def _locked(con, text: str) -> str:
-    """Whether a locked library holds the text whose id the SQL expression
-    text gives, as an SQL expression of 1 or 0: 0 itself while no library is
-    locked, so a depot with none looks nothing up."""
-    if con.execute("SELECT 1 FROM libraries_revisions WHERE latest AND locked_at IS NOT NULL LIMIT 1").fetchall():
-        return in_locked(text)
-    return "0"
-
-
-def held(con, rows: str, params=()) -> Counter:
-    """The delta of what the rows of memberships that the query rows gives
-    (columns library and text; params its parameters) add to the counts of
-    HELD and of SPLIT_LIBRARY, as if none of them had ended: what a write that adds those rows
-    shifts the counts by, or, negated, one that ends them. The query runs
-    once, and each of its rows is looked up once."""
-    found = Counter()
-    for library, what, tags, status, locked, count, length, nbytes in con.execute(
-            _HELD.format(rows=rows, locked=_locked(con, "h.text")), params):
-        found[LIBRARY, library] += count
-        if status is not None:
-            found[SPLIT_LIBRARY, split_name(status, locked, library)] += count
-        if what is None:
-            continue
-        names = [(LIBRARY_KIND, f"{library} {what}")]
-        names += [(LIBRARY_TAG, f"{library} {tag}") for tag in json.loads(tags or "[]")]
-        for facet, name in names:
-            found[facet, name] += count
-            found[facet, name, "characters"] += length or 0
-            found[facet, name, "bytes"] += nbytes or 0
+def of_kinds(con, statuses: Iterable[str], kinds: Iterable[str]) -> dict[str, int]:
+    """{status: how many current texts of that status are of one of the
+    kinds} for each status given, read from the rows of KIND by their keys
+    (`<status> <kind>`); a status with no row counts 0."""
+    statuses, kinds = list(dict.fromkeys(statuses)), list(dict.fromkeys(kinds))
+    keys = {f"{status} {kind}": status for status in statuses for kind in kinds}
+    found = dict.fromkeys(statuses, 0)
+    for name, count in con.execute("SELECT name, texts FROM counts WHERE facet = ? AND name IN "
+                                   "(SELECT value FROM json_each(?))", (KIND, json.dumps(list(keys)))):
+        found[keys[name]] += count
     return found
 
 
@@ -248,14 +255,11 @@ def shift(con, delta: dict):
     moved = [(facet, name, *by) for (facet, name), by in rows.items() if any(by)]
     if not moved:
         return
-    libraries = sorted({name.split(" ", 1)[0] if facet in SIZED else name for facet, name, *_ in moved if facet in HELD})
-    con.executemany("INSERT INTO library_moves (library, change) SELECT ?, max(id) FROM changes WHERE true "
-                    "ON CONFLICT (library) DO UPDATE SET change = excluded.change", [(one,) for one in libraries])
     con.executemany("INSERT INTO counts (facet, name, texts, characters, bytes) VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT (facet, name) DO UPDATE SET texts = texts + excluded.texts, "
                     "characters = characters + excluded.characters, bytes = bytes + excluded.bytes", moved)
     con.executemany("DELETE FROM counts WHERE facet = ? AND name = ? AND texts = 0",
-                    [(facet, name) for facet, name, *_ in moved])
+                    [(facet, name) for facet, name, texts, *_ in moved if texts <= 0])  # a row that rose stays above 0
 
 
 @contextlib.contextmanager
@@ -283,9 +287,8 @@ def enlist(con, chosen: str, facets: Iterable[str]):
         if facet == TITLE:
             titles.enlist(con, chosen)
         elif facet in LISTINGS:
-            table, name, column = LISTINGS[facet]
-            con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) "
-                        + _LISTED.format(chosen=chosen, column=column))
+            table, name = LISTINGS[facet]
+            con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) " + _LISTED[facet].format(chosen=chosen))
 
 
 def unlist(con, chosen: str, facets: Iterable[str]):
@@ -297,120 +300,30 @@ def unlist(con, chosen: str, facets: Iterable[str]):
         if facet == TITLE:
             titles.unlist(con, chosen)
         elif facet in LISTINGS:
-            table, name, column = LISTINGS[facet]
-            con.execute(f"DELETE FROM {table} WHERE ({name}, key) IN ("
-                        + _LISTED.format(chosen=chosen, column=column) + ")")
+            table, name = LISTINGS[facet]
+            con.execute(f"DELETE FROM {table} WHERE ({name}, key) IN (" + _LISTED[facet].format(chosen=chosen) + ")")
 
 
-def recount(con, known: bool):
-    """The counts made again from the depot's rows, every one of them (fill
-    makes those of SIZED and library_moves; known: whether the depot's rows
-    carry its own numbering alone, False in a depot that follows an
-    upstream), with the listings and the title index."""
+def recount(con):
+    """The counts made again from the depot's rows, every one of them, with
+    the listings and the title index, after the kind, length and bytes each
+    revision keeps of its content version are copied again from
+    content_lists where they differ (schema.sizes_sql), and the tags each
+    current revision copies from taggings (schema.tags_sql)."""
+    con.execute(sizes_sql())
+    con.execute(tags_sql())
     con.execute("DELETE FROM counts")
-    locked = _locked(con, "t.id")
-    for facet in (*COUNTED, *SPLIT):
-        con.execute(f"INSERT INTO counts (facet, name, texts) SELECT '{facet}', * FROM "
-                    f"({_WHOLE[facet].format(locked=locked)})")
+    for facet in FACETS:
+        if facet in _WHOLE_SIZED:
+            con.execute(f"INSERT INTO counts (facet, name, texts, characters, bytes) SELECT '{facet}', * FROM "
+                        f"({_WHOLE_SIZED[facet]})")
+        else:
+            con.execute(f"INSERT INTO counts (facet, name, texts) SELECT '{facet}', * FROM ({_WHOLE[facet]})")
     con.execute("DELETE FROM counts WHERE texts = 0")
-    for table, name, column in LISTINGS.values():
+    for facet, (table, name) in LISTINGS.items():
         con.execute(f"DELETE FROM {table}")
-        con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) SELECT j.value, {order_sql('t.id')} "
-                    f"FROM texts_revisions t, json_each(t.{column}) j WHERE t.latest")
+        con.execute(f"INSERT OR IGNORE INTO {table} ({name}, key) {_LISTED_WHOLE[facet]}")
     titles.refill(con)
-    fill(con, known)
-
-
-# what fill reads, each in the order of the texts' ids (+ keeps SQLite from reading an index for that order, and NOT
-# INDEXED from reading the rows through one): every scan is sequential, and SQLite's sorter orders the rows
-HELD_SCAN = "SELECT text, library FROM memberships NOT INDEXED WHERE left_change IS NULL ORDER BY +text"
-CURRENT_SCAN = "SELECT id, content_version, tags, change FROM texts_revisions NOT INDEXED WHERE latest ORDER BY +id"
-# the latest change each library's memberships joined or left at, read from the index memberships_key alone, which
-# holds both columns in the order of the libraries
-JOINED_OR_LEFT = ("SELECT library, max(max(joined_change, coalesce(left_change, 0))) FROM memberships "
-                  "INDEXED BY memberships_key GROUP BY library")
-VERSIONS_SCAN = "SELECT id, version, kind, length, bytes FROM content_lists NOT INDEXED ORDER BY +id, +version"
-EVERY = 250_000  # memberships merged gives the sums of at once, about
-
-
-def fill(con, known: bool):
-    """The counts of SIZED made from every membership that has not ended,
-    the rows of those facets the table held before replaced: three
-    sequential scans (HELD_SCAN, CURRENT_SCAN, VERSIONS_SCAN) summed by
-    merged, so the time it takes grows with the depot's rows, whatever
-    order they are stored in; and library_moves made again as the module
-    says (known: whether the depot's rows carry its own numbering alone),
-    from merged and one read of the index memberships_key
-    (JOINED_OR_LEFT)."""
-    con.execute(f"DELETE FROM counts WHERE facet IN ('{LIBRARY_KIND}', '{LIBRARY_TAG}')")
-    moves = dict(con.execute(JOINED_OR_LEFT).fetchall())
-    for sums, _, revised in merged(con.execute(HELD_SCAN), con.execute(CURRENT_SCAN), con.execute(VERSIONS_SCAN)):
-        shift(con, delta(sums))
-        for library, change in revised.items():
-            moves[library] = max(moves.get(library, 0), change)
-    con.execute("DELETE FROM library_moves")
-    con.executemany("INSERT INTO library_moves (library, change) VALUES (?, ?)",
-                    [(library, change if known else None) for library, change in moves.items()])
-
-
-def merged(held: Iterator, current: Iterator, versions: Iterator,
-           every: int = EVERY) -> Iterator[tuple[dict, str, dict]]:
-    """What the memberships held adds to the counts of SIZED, from three
-    streams in the order of the texts' ids: held, (text, library) of each
-    membership that has not ended; current, (id, content version, tags as
-    JSON text, change) of each current revision; versions, (id, version,
-    kind, length, bytes) of each content version, by id then version. It
-    goes through the three at once, as one sorted merge, and gives (sums:
-    {(facet, name): [texts, characters, bytes]}, the id of the last text
-    they cover, revised: {library: the latest change a text it holds among
-    them was revised at}) each time about every memberships are summed, at
-    the end of a text, so the sums given cover the texts up to that id and
-    none after; then the rest. A membership of a text with no current
-    revision or no content version counts for nothing."""
-    sums, summed, seen, size, revised, change = {}, 0, None, None, {}, None
-    text_row, version_row = next(current, None), next(versions, None)
-    for text, library in held:
-        if text != seen:
-            if summed >= every:
-                yield sums, seen, revised
-                sums, summed, revised = {}, 0, {}
-            seen, size, change = text, None, None
-            while text_row is not None and text_row[0] < text:
-                text_row = next(current, None)
-            if text_row is not None and text_row[0] == text:
-                change = text_row[3]
-                wanted = (text, text_row[1])
-                while version_row is not None and (version_row[0], version_row[1]) < wanted:
-                    version_row = next(versions, None)
-                if version_row is not None and (version_row[0], version_row[1]) == wanted:
-                    kind = version_row[2]
-                    size = (kind, version_row[3] or 0, version_row[4] or 0,
-                            json.loads(text_row[2] or "[]") if kind == PLAIN else ())
-        summed += 1
-        if change is not None and revised.get(library, -1) < change:
-            revised[library] = change
-        if size is None:
-            continue
-        what, length, nbytes, tags = size
-        for key in ((LIBRARY_KIND, f"{library} {what}"), *((LIBRARY_TAG, f"{library} {tag}") for tag in tags)):
-            one = sums.get(key)
-            if one is None:
-                sums[key] = [1, length, nbytes]
-            else:
-                one[0] += 1
-                one[1] += length
-                one[2] += nbytes
-    if sums or seen is not None:
-        yield sums, seen, revised
-
-
-def delta(sums: dict) -> Counter:
-    """The sums merged gives as a delta (the module says its keys)."""
-    found = Counter()
-    for (facet, name), by in sums.items():
-        for column, value in zip(COLUMNS, by):
-            found[(facet, name) if column == "texts" else (facet, name, column)] += value
-    return found
 
 
 def read(con) -> dict[str, dict[str, int]]:
@@ -422,65 +335,32 @@ def read(con) -> dict[str, dict[str, int]]:
     return found
 
 
-def unmoved(con, library: str, change: int) -> bool:
-    """Whether the library holds now what it held at the change number
-    change of this depot's numbering, as library_moves says (the module
-    says how): no row, or a row whose change is known and at or before
-    change."""
-    found = con.execute("SELECT change FROM library_moves WHERE library = ?", (library,)).fetchall()
-    return not found or (found[0][0] is not None and found[0][0] <= change)
-
-
-def summed(found: Sequence[dict], tags: Sequence[str]) -> dict:
-    """The figures of several libraries (each as figures gives it, for
-    tags) as one: {texts, characters, bytes of them all; kinds: {kind:
-    {texts, characters, bytes}} of every kind any of them names, plain
-    first; shares: for each tag of tags, in order, {tag, texts, characters,
-    bytes}; unshared: the plain texts left once the shares are taken away,
-    when tags are given (None otherwise)}, each library counted apart."""
-    empty = dict.fromkeys(COLUMNS, 0)
-    kinds = {PLAIN: dict(empty)}
-    shares = [dict(empty) for _ in tags]
-    for one in found:
-        pairs = [*((kinds.setdefault(kind, dict(empty)), sized) for kind, sized in one["kinds"].items()),
-                 *zip(shares, one["tags"], strict=True)]
-        for into, read in pairs:
-            for key in COLUMNS:
-                into[key] += read[key]
-    unshared = {key: max(0, kinds[PLAIN][key] - sum(one[key] for one in shares)) for key in COLUMNS}
-    return {key: sum(one[key] for one in kinds.values()) for key in COLUMNS} | {
-        "kinds": kinds, "shares": [{"tag": tag, **shares[at]} for at, tag in enumerate(tags)],
-        "unshared": unshared if tags else None}
-
-
 def among(kinds: dict, chosen: Iterable[str]) -> dict:
     """{texts, characters, bytes} of the kinds chosen of kinds ({kind:
-    {texts, characters, bytes}}, as summed gives them) together, a kind
+    {texts, characters, bytes}}) together, a kind
     kinds does not name counting 0."""
     chosen = set(chosen)
     return {key: sum(sized[key] for kind, sized in kinds.items() if kind in chosen) for key in COLUMNS}
 
 
-def depot_kinds(con) -> list[str]:
-    """Every kind of text of the depot, the ids of its table kinds, a
-    closed list: plain first, then the others in the order of their ids."""
-    return [PLAIN] + [kind for (kind,) in con.execute("SELECT id FROM kinds WHERE id <> ? ORDER BY id", (PLAIN,))]
-
-
-def figures(con, library: str, tags: Sequence[str]) -> dict:
-    """What the library holds, from the counts of SIZED: {kinds: {kind:
-    {texts, characters, bytes}} of every kind of the depot (depot_kinds,
-    in that order, a kind it holds no text of at 0), tags: [the same for
-    the plain texts that have each tag of tags, in order]}. It reads only
-    those rows, by their key: its rows of LIBRARY_KIND as one range of
-    names (`<library id> `: the id holds no space)."""
-    kinds = {kind: dict.fromkeys(COLUMNS, 0) for kind in depot_kinds(con)}
-    for name, *row in con.execute("SELECT name, texts, characters, bytes FROM counts WHERE facet = ? AND name > ? "
-                                  "AND name < ? ORDER BY name", (LIBRARY_KIND, f"{library} ", f"{library}!")):
-        kinds[name.split(" ", 1)[1]] = dict(zip(COLUMNS, row))
-    tagged = []
-    for tag in tags:
-        row = con.execute("SELECT texts, characters, bytes FROM counts WHERE facet = ? AND name = ?",
-                          (LIBRARY_TAG, f"{library} {tag}")).fetchall()
-        tagged.append(dict(zip(COLUMNS, row[0] if row else (0, 0, 0))))
-    return {"kinds": kinds, "tags": tagged}
+def of_status(con, status: str) -> dict[str, dict[str, list[int]]]:
+    """What the current texts of the status hold, from the counts alone:
+    {kinds: {kind: [texts, characters, bytes]}, tags: {tag: [...]} of
+    every text that has the tag, plain_tagsets: {tags sorted and joined by
+    NUL: [...]} of the plain texts that have exactly that set of tags (''
+    for none), licenses: {license: [...]}}, each name in order. Each facet's
+    rows of that status are one range of names (`<status> `), read by
+    their key."""
+    low, high = f"{status} ", f"{status}!"  # every name that begins with the status and a space
+    found = {"kinds": {}, "tags": {}, "plain_tagsets": {}, "licenses": {}}
+    for facet, into in ((KIND, "kinds"), (SPLIT_TAG, "tags"), (PLAIN_TAGSET, "plain_tagsets"),
+                        (SPLIT_LICENSE, "licenses")):
+        for name, *sizes in con.execute("SELECT name, texts, characters, bytes FROM counts WHERE facet = ? "
+                                        "AND name >= ? AND name < ? ORDER BY name", (facet, low, high)):
+            rest = name[len(low):]
+            if facet == PLAIN_TAGSET:
+                rest = "\0".join(json.loads(rest))
+            held = found[into].setdefault(rest, [0, 0, 0])
+            for at, value in enumerate(sizes):
+                held[at] += value
+    return {key: dict(sorted(value.items())) for key, value in found.items()}

@@ -1,0 +1,44 @@
+{
+ "asked_headers": {},
+ "body": {
+  "recipe": {
+   "change": 39,
+   "dataset": "fixture-2",
+   "dataset_name": "ds-mixed",
+   "depot": null,
+   "id": "fixture-2",
+   "job": null,
+   "name": "tok-mixed",
+   "note": null,
+   "revision": 1,
+   "sample_bytes": 1000000,
+   "version": 1,
+   "vocab_size": 556
+  },
+  "revisions": [
+   {
+    "change": 39,
+    "dataset": "fixture-2",
+    "depot": null,
+    "id": "fixture-2",
+    "latest": 1,
+    "name": "tok-mixed",
+    "note": null,
+    "revision": 1,
+    "sample_bytes": 1000000,
+    "version": 1,
+    "vocab_size": 556
+   }
+  ],
+  "trained": false,
+  "upstream": false,
+  "vocabularies": []
+ },
+ "headers": {
+  "Content-Length": "500",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/tokenizers/tok-mixed",
+ "status": 200
+}

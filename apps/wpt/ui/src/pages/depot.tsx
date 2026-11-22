@@ -16,7 +16,7 @@ function Depot() {
   return (
     <>
       <PageHead title="Depot"
-        chain={<>Every <a href={href(["texts"])}>text</a>, <a href={href(["libraries"])}>library</a>, <a href={href(["datasets"])}>dataset</a> and <a href={href(["erasures"])}>erasure request</a> lives in this depot. <span className="ledger">wpt depot new</span> and <span className="ledger">wpt depot clone</span> make another; <span className="ledger">wpt depot pull</span> fetches the depot it follows, and <span className="ledger">wpt depot about</span> changes its maintainer and takedown contact.</>} />
+        chain={<>Every <a href={href(["texts"])}>text</a>, <a href={href(["tags"])}>tag</a>, <a href={href(["snapshots"])}>snapshot</a> and <a href={href(["erasures"])}>erasure request</a> lives in this depot. <span className="ledger">wpt depot new</span> and <span className="ledger">wpt depot clone</span> make another; <span className="ledger">wpt depot pull</span> fetches the depot it follows, and <span className="ledger">wpt depot about</span> changes its maintainer and takedown contact.</>} />
       {about && !about.ok && <Problems problems={about.problems} />}
       {about?.ok && (
         <Facts rows={[

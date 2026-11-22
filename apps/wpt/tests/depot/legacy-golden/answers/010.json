@@ -1,0 +1,132 @@
+{
+ "asked_headers": {},
+ "body": {
+  "corpus": {
+   "built_at": "2026-11-21T17:52:39.640424+00:00",
+   "conversations": 1,
+   "deleted": null,
+   "id": "3291643df5d3aeb25b8a025b8e570c127e04d368845282117227b48381faa6c6",
+   "items_tokens": 89,
+   "left_out": {
+    "kinds not taken": {},
+    "no share": 58,
+    "quote unmatched": 0,
+    "quoted text left out": 1,
+    "trimmed": 43,
+    "trimmed items": 6
+   },
+   "revision": 2,
+   "shares_tokens": [
+    {
+     "groups": [
+      {
+       "tag": null,
+       "texts": 1,
+       "tokens": 170
+      },
+      {
+       "tag": "fr",
+       "texts": 1,
+       "tokens": 102
+      },
+      {
+       "tag": "letter",
+       "texts": 1,
+       "tokens": 220
+      },
+      {
+       "tag": "manual",
+       "texts": 1,
+       "tokens": 156
+      },
+      {
+       "tag": "poem",
+       "texts": 1,
+       "tokens": 245
+      }
+     ],
+     "tag": "en",
+     "tokens": 893
+    },
+    {
+     "groups": [
+      {
+       "tag": null,
+       "texts": 1,
+       "tokens": 175
+      },
+      {
+       "tag": "fr",
+       "texts": 1,
+       "tokens": 180
+      },
+      {
+       "tag": "letter",
+       "texts": 1,
+       "tokens": 226
+      },
+      {
+       "tag": "manual",
+       "texts": 1,
+       "tokens": 241
+      }
+     ],
+     "tag": "poem",
+     "tokens": 822
+    }
+   ],
+   "stale": null,
+   "tasks": 0,
+   "texts": 10,
+   "total_tokens": 1715
+  },
+  "dataset": {
+   "change": 44,
+   "id": "fixture-1",
+   "libraries": [
+    {
+     "change": 33,
+     "depot": null,
+     "library": "fixture-1"
+    },
+    {
+     "change": 33,
+     "depot": null,
+     "library": "fixture-2"
+    }
+   ],
+   "max_tokens": null,
+   "name": "ds-two",
+   "revision": 3,
+   "shares": [
+    {
+     "share": 0.3,
+     "tag": "en"
+    },
+    {
+     "share": 0.7,
+     "tag": "letter"
+    }
+   ],
+   "tokenizer": "tok",
+   "vocabulary": "a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48"
+  },
+  "job": null,
+  "link": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/2000",
+  "max_tokens": 2000,
+  "size": "2000",
+  "state": "not built",
+  "vocabulary": {
+   "recipe": "tok",
+   "sha256": "a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48",
+   "version": 1
+  }
+ },
+ "headers": {
+  "Content-Length": "1616",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/2000",
+ "status": 200
+}

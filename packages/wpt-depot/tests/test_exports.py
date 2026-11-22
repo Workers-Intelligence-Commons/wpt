@@ -1,14 +1,12 @@
 import io
 import json
 import re
-import sqlite3
 from compression import zstd
-from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from wpt_depot import NewText, exports
-from wpt_depot.exports import Export
+from wpt_depot import NewText, legacy
+from wpt_depot.legacy import Export, Legacy
 from wpt_depot.ids import export_key
 
 CONVERSATION = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
@@ -20,8 +18,8 @@ def rows_of(data: bytes) -> list[dict]:
 
 
 def test_an_export_holds_every_text_a_corpus_may_take_once_in_parts_by_key_the_same_bytes_each_time(
-        make_depot, me, monkeypatch):
-    monkeypatch.setattr(exports, "PART_TEXTS", 4)  # several parts from a few texts
+        make_depot, me, monkeypatch, legacy_rows):
+    monkeypatch.setattr(legacy, "PART_TEXTS", 4)  # several parts from a few texts
     depot = make_depot()
     english = depot.add([NewText(text=f"text {n} in english", licenses=("CC0-1.0",), tags=("en",))
                          for n in range(12)], me)
@@ -31,14 +29,13 @@ def test_an_export_holds_every_text_a_corpus_may_take_once_in_parts_by_key_the_s
         NewText(kind="probe", content=json.dumps({"question": "q?", "patterns": ["x"]}), licenses=("CC0-1.0",),
                 tags=("en",))], me)
     depot.decide("admitted", "true", me)
-    first, second = depot.new_library("first"), depot.new_library("second")
-    depot.put(first, "true")
-    depot.put(second, f"id IN ('{english[0]}', '{english[1]}')")  # two texts both libraries hold
+    first = legacy_rows.library(depot, "first", [*english, untagged, talk, probe])
+    second = legacy_rows.library(depot, "second", english[:2])  # two texts both libraries hold
     # a limit and shares that a corpus trims to: an export takes every text a share takes, whatever they say
-    dataset = depot.new_dataset("all", "classics", [(None, first), (None, second)], [("en", 1.0)], max_tokens=3)
+    dataset = legacy_rows.dataset(depot, "all", [first, second], [("en", 1.0)], max_tokens=3)
 
-    export = Export(depot, depot.dataset_by_id(dataset), "https://depot.example")
-    parts = exports.parts_for(export.texts())
+    export = Export(Legacy(depot.address), dataset, "https://depot.example")
+    parts = legacy.parts_for(export.texts())
     found = [rows_of(b"".join(export.part(number, parts, "jsonl.zst"))) for number in range(parts)]
 
     assert export.texts() == 17 and parts == 5  # 15 texts in the first library, 2 in the second
@@ -46,11 +43,11 @@ def test_an_export_holds_every_text_a_corpus_may_take_once_in_parts_by_key_the_s
     assert sorted(taken) == sorted([*english, talk]) and untagged not in taken and probe not in taken
     for number, part in enumerate(found):
         keys = [export_key(row["id"]) for row in part]
-        low, high = exports.bounds(number, parts)
+        low, high = legacy.bounds(number, parts)
         assert keys == sorted(keys) and all(low <= key < high for key in keys)
     assert {row["depot"] for part in found for row in part} == {"https://depot.example"}
     assert json.loads([row for part in found for row in part if row["id"] == talk][0]["text"]) == CONVERSATION
-    again = Export(depot, depot.dataset_by_id(dataset), "https://depot.example")
+    again = Export(Legacy(depot.address), dataset, "https://depot.example")
     assert [b"".join(again.part(number, parts, "jsonl.zst")) for number in range(parts)] == [
         b"".join(export.part(number, parts, "jsonl.zst")) for number in range(parts)]
     table = b"".join(export.part(1, parts, "parquet"))
@@ -67,7 +64,7 @@ def quoting(source, exact, prefix=None):
         {"role": "assistant", "content": [{"type": "text", "text": "A fox."}]}]}))
 
 
-def test_an_export_leaves_out_and_counts_a_conversation_whose_quote_it_cannot_hold(make_depot, me):
+def test_an_export_leaves_out_and_counts_a_conversation_whose_quote_it_cannot_hold(make_depot, me, legacy_rows):
     # the corpus's rule: the quoted text must be a plain text the export holds, and the quote must find one place
     depot = make_depot()
     fox, outside, french, twice = depot.add([
@@ -78,11 +75,11 @@ def test_an_export_leaves_out_and_counts_a_conversation_whose_quote_it_cannot_ho
                                                     quoting(french, "renard"), quoting(twice, "dog")], me)
     depot.change_content(twice, "a dog and a dog", None, me)  # its quote now finds two places
     depot.decide("admitted", "true", me)
-    library = depot.new_library("mine")
-    depot.put(library, f"id <> '{outside}'")  # the quoted text left out of the dataset
-    dataset = depot.new_dataset("all", "classics", [(None, library)], [("en", 1.0)])  # no share takes french
+    # the quoted text left out of the dataset
+    library = legacy_rows.library(depot, "mine", [fox, french, twice, kept, left_out, untaken, unmatched])
+    dataset = legacy_rows.dataset(depot, "all", [library], [("en", 1.0)])  # no share takes french
 
-    export = Export(depot, depot.dataset_by_id(dataset), "https://depot.example")
+    export = Export(Legacy(depot.address), dataset, "https://depot.example")
     left = {}
     rows = rows_of(b"".join(export.part(0, 1, "jsonl.zst", left)))
 
@@ -94,47 +91,20 @@ def test_an_export_leaves_out_and_counts_a_conversation_whose_quote_it_cannot_ho
         row["id"] for row in rows]
 
 
-def test_an_export_reading_another_depot_reads_its_moved_file_and_names_it_by_its_name(make_depot, me, tmp_path):
-    depot, other = make_depot("depot"), make_depot("other")
-    [mine] = depot.add([NewText(text="the quick fox", licenses=("CC0-1.0",))], me)
-    [theirs] = other.add([NewText(text="the lazy dog", licenses=("CC0-1.0",))], me)
-    for one in (depot, other):
-        one.decide("admitted", "true", me)
-    library, their_library = depot.new_library("mine"), other.new_library("theirs")
-    depot.put(library, "true")
-    other.put(their_library, "true")
-    dataset = depot.new_dataset("all", "classics", [(None, library), (other.address, their_library)])
-    moved = tmp_path / "elsewhere" / "moved.sqlite"
-    moved.parent.mkdir()
-    with sqlite3.connect(other.address) as source, sqlite3.connect(moved) as target:
-        source.backup(target)
-    Path(other.address).unlink()
-    depot.edit_dataset(dataset, "all", [(None, library), (str(moved), their_library)])
-
-    export = Export(depot, depot.dataset_by_id(dataset), None)
-    data = b"".join(export.part(0, 1, "jsonl.zst"))
-
-    rows = rows_of(data)
-    assert {(row["depot"], row["id"], row["text"]) for row in rows} == {
-        (depot.name(), mine, "the quick fox"), ("other", theirs, "the lazy dog")}
-    assert str(tmp_path) not in zstd.decompress(data).decode()
-
-
-def test_a_part_reads_its_library_s_rows_of_its_range_of_keys_alone_for_open_and_locked_libraries(make_depot, me):
+def test_a_part_reads_its_library_s_rows_of_its_range_of_keys_alone_for_open_and_locked_libraries(make_depot, me,
+                                                                                                  legacy_rows):
     # a part reads only the rows of each library whose keys fall in its range: the plan of each read of a library
     # walks that range of the index of that library's rows by key, so a small library beside a large one never reads
     # the large one's rows, nor a text outside the range
     depot = make_depot()
     texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(40)], me)
     depot.decide("admitted", "true", me)
-    large, small, locked = depot.new_library("large"), depot.new_library("small"), depot.new_library("locked")
-    depot.put(large, f"id IN ({', '.join(repr(one) for one in texts[:30])})")
-    depot.put(small, [texts[0], texts[35]])
-    depot.put(locked, f"id IN ({', '.join(repr(one) for one in texts[20:])})")
-    depot.lock(locked)
-    export = Export(depot, depot.dataset_by_id(depot.new_dataset("all", "classics", [
-        (None, large), (None, small), (None, locked)])), None)
-    reader = depot.db.reader()
+    large = legacy_rows.library(depot, "large", texts[:30])
+    small = legacy_rows.library(depot, "small", [texts[0], texts[35]])
+    locked = legacy_rows.library(depot, "locked", texts[20:], locked=True)
+    read = Legacy(depot.address)
+    export = Export(read, legacy_rows.dataset(depot, "all", [large, small, locked]), None)
+    reader = read.depot.db.reader()
     traced = []
     reader.exec_trace = lambda cursor, sql, bindings: traced.append((sql, bindings)) or True
 
@@ -154,25 +124,16 @@ def test_a_part_reads_its_library_s_rows_of_its_range_of_keys_alone_for_open_and
         plans.add(index)
     assert plans == {"pins_key", "memberships_key"}
     # a library is counted from the index alone too, never through the table's rows
-    for library, table in ((large, "memberships"), (locked, "pins")):
-        held, params = depot._held(library, depot.change())
-        plan = " ".join(row[3] for row in reader.execute(f"EXPLAIN QUERY PLAN SELECT count(*) FROM ({held})", params))
-        assert re.search(rf"USING COVERING INDEX {table}_\w+ \(library=\?\)", plan), plan
+    traced = []
+    reader.exec_trace = lambda cursor, sql, bindings: traced.append((sql, bindings)) or True
+    assert [read.library_count(one, depot.change()) for one in (large, locked)] == [30, 20]
+    reader.exec_trace = None
+    for (sql, bindings), table in zip([one for one in traced if "count(*)" in one[0]], ("memberships", "pins"),
+                                      strict=True):
+        plan = " ".join(row[3] for row in reader.execute(f"EXPLAIN QUERY PLAN {sql}", bindings))
+        assert re.search(rf"USING COVERING INDEX {table}_key \(library=\?", plan), plan
     # the small library's read of a part gives only its own texts of that part
-    low, high = exports.bounds(0, 1)
-    assert sorted(row[1] for row in depot.library_range(small, depot.change(), low, high - 1)) == sorted(
+    low, high = legacy.bounds(0, 1)
+    assert sorted(row[1] for row in Legacy(depot.address).library_range(small, depot.change(), low, high - 1)) == sorted(
         [texts[0], texts[35]])
 
-
-def test_every_way_a_library_gets_a_text_stores_the_text_s_export_key_with_it(make_depot, me):
-    depot = make_depot()
-    texts = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(4)], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("open")
-    depot.put(library, texts)
-    fork = depot.fork(library, "fork", without=[texts[0]])
-    depot.lock(fork)
-
-    for table, count in (("memberships", 7), ("pins", 3)):
-        rows = depot.rows(f"SELECT text, export_key FROM {table}")
-        assert len(rows) == count and all(row["export_key"] == export_key(row["text"]) for row in rows)

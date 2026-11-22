@@ -1,102 +1,88 @@
-// Where a dataset stands on its way from texts to a corpus, read the same way
-// on every page that shows it: its tokenizer recipe (GET /api/tokenizers),
-// the trained vocabularies (GET /api/vocabularies) and the corpora built from
-// it (GET /api/datasets/ID). The first stage not done is the next one, with
-// the button or link that does it; the stages after it wait. Texts, library
-// and dataset count as done here: the dataset's own page measures them. Only
-// a corpus of the dataset's current revision counts, since a corpus page
-// serves only those.
+// Where a model recipe stands on its way from the depot's texts to a corpus,
+// read the same way on every page that shows it: snapshot -> recipe ->
+// vocabulary -> corpus. A snapshot (GET /api/snapshots) is a name on a change
+// number with the set of admitted texts then; a model recipe is a file of the
+// repository (GET /api/recipes) whose data section names a snapshot, kinds,
+// shares by tag, a size and a vocabulary; the vocabulary is trained from a
+// tokenizer recipe (GET /api/tokenizers, GET /api/vocabularies); the corpus is
+// what a build of the recipe gives, a cache kept by its build key. The first
+// stage not done is the next one, with the button or link that does it; the
+// stages after it wait.
+//
+// This file also keeps what every page reads these through: one request per
+// address at a time (shared), read again after a page's own action
+// (pipelineChanged) or a move to another address, and the stage card (Stage).
 
 import { ButtonLink } from "@workers-intelligence-commons/components";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { get, part, post, type Answer, type Job } from "./api";
-import { ownLibraries, type Dataset } from "./parts";
+import { get, type Answer, type Job } from "./api";
 import { href } from "./route";
 
-export type Recipe = { name: string; version: number; trained?: number | boolean; job: Job<unknown> | null };
-export type Trained = { sha256: string; recipe: string; name: string | null; version: number };
-// A corpus as GET /api/datasets/ID lists it, of any revision of the dataset.
-export type BuiltCorpus = {
-  id: string; revision: number; vocabulary: string; max_tokens: number | null; built_at: string; texts: number; conversations: number;
-  total_tokens: number; items_tokens?: number | null; stale: { erasures: string[] } | null; deleted: { at: string; why: string; whole: boolean } | null;
+// [texts, characters, bytes]
+export type Sized = [number, number, number];
+// A snapshot as GET /api/snapshots lists it; GET /api/snapshots/ID adds its
+// summary, what erasures carried out since did to it and the recipes naming it.
+export type Snapshot = {
+  id: string; name: string; owner: string; at_change: number; change: number; made_at: string; origin: { kind: string } & Record<string, unknown>;
+  note: string | null; texts: number; characters: number; bytes: number; digest: string;
 };
-// The corpora that count for a dataset now: built from its current revision and not deleted.
-export const currentCorpora = (dataset: Dataset, corpora: BuiltCorpus[] | null | undefined) =>
-  (corpora ?? []).filter((c) => !c.deleted && c.revision === dataset.revision);
+export type Summary = {
+  version: number; kinds: Record<string, Sized>; tags: Record<string, Sized>; plain_tagsets: Record<string, Sized>;
+  licenses: Record<string, Sized>; owners: Record<string, number>;
+};
+export type SnapshotShown = Snapshot & {
+  summary: Summary; erased_since: { texts: number; erasures: string[] }; recipes: { name: string; matches: boolean }[];
+};
+// What GET /api/snapshots/new offers: the next free name and the cost of making one now.
+export type SnapshotEstimate = { texts: number; seconds: number; bytes: number; set_bytes: number; summary_bytes: number; at: string; basis: string; change: number };
+export type SnapshotOffer = { name: string; being_made: string[]; estimate: SnapshotEstimate };
 
+// A recipe's data section, of the snapshot shape.
+export type Share = { tag: string; share: number };
+export type DataSection = {
+  depot: string; snapshot: string; change: number; digest: string; kinds: string[]; shares: Share[];
+  total_tokens: number | null; vocabulary: { sha256: string; size: number | null };
+};
+export type RecipeState = "ready" | "dataset" | "snapshot not here" | "snapshot differs" | "no vocabulary" | "vocabulary differs" | "invalid";
+// The summary of a built corpus, as the recipes' routes give it.
+export type CorpusSummary = {
+  id: string; build_key: string; built_at: string; recipe: string | null; texts: number; conversations: number; tasks: number;
+  total_tokens: number; items_tokens: number | null; fresh: boolean; stale: { erasures: string[] } | null;
+  deleted: { at: string; why: string } | null; code_commit: string | null; link: string;
+};
+export type RecipeRow = {
+  name: string; file?: string; state: RecipeState; why: string | null; data?: DataSection; shape?: "snapshot" | "dataset";
+  snapshot?: Snapshot | null; vocabulary?: { sha256: string; size: number; recipe: string; version: number } | null;
+  build_key?: string | null; corpus?: CorpusSummary | null; job?: Job<unknown> | null;
+};
+export type Recipes = { repository: { commit: string | null; dirty: boolean } | null; problem: string | null; recipes: RecipeRow[] };
+
+// A tokenizer recipe as GET /api/tokenizers lists it, and a vocabulary a tokenizer recipe trained.
+export type Tokenizer = {
+  id: string; name: string; version: number; revision: number; sample: { snapshot: string; kinds: string[] | null } | null;
+  snapshot_name: string | null; needs_snapshot: boolean; dataset: string; dataset_name: string | null; depot: string | null;
+  snapshot_offer?: { id: string; name: string } | null; // for a revision written before snapshots: the snapshot made of its dataset
+  sample_bytes: number; vocab_size: number; note: string | null; trained?: number | boolean; job: Job<unknown> | null;
+};
+export type Trained = { sha256: string; recipe: string; name: string | null; version: number; texts?: number; bytes?: number | null; made_at?: string };
 export const trainedWords = (v: Trained) => `${v.name ?? v.recipe} version ${v.version}`;
-// A trained vocabulary's name in an address (mix-tok-v1), and each one's by
-// its sha256 when no other vocabulary bears it, as a corpus page's address names it.
+// A trained vocabulary's short name (mix-tok-v1), and each one's by its sha256 when no other vocabulary bears it.
 export const vocabularyName = (v: Trained) => `${v.name ?? v.recipe}-v${v.version}`;
 export function vocabularyNames(trained: Trained[]): Map<string, string> {
   return new Map(trained.filter((v) => trained.filter((o) => vocabularyName(o) === vocabularyName(v)).length === 1).map((v) => [v.sha256, vocabularyName(v)]));
 }
 
-// The stages after the dataset itself, and the next step: its words, where it
-// leads (href) or, for publishing, that the dataset's page does it (publish:
-// the vocabulary to publish; its words name that page, since a link elsewhere
-// publishes nothing, and the dataset's page shows its own button).
-export type Step = { label: string; href: string; publish?: Trained };
-export type Standing = {
-  vocabulary: { state: StageState; word: string };
-  corpus: { state: StageState; word: string };
-  next: Step | null; // null: every stage done, or waiting on a job, or not known yet
-  done: Step | null; // once built: where its corpora download
-  fresh: number; // corpora of the current revision built and not stale
-  own: Trained[]; // the vocabularies its own recipe trained, the latest last
-};
-
-// recipes, trained: null while read; corpora: undefined while read, null when the store cannot be read here.
-export function standing(dataset: Dataset, recipes: Recipe[] | null, trained: Trained[] | null, corpora: BuiltCorpus[] | null | undefined): Standing {
-  const own = (trained ?? []).filter((v) => v.name === dataset.tokenizer);
-  const live = currentCorpora(dataset, corpora);
-  const fresh = live.filter((c) => !c.stale).length;
-  const stale = live.length - fresh;
-  const corporaPage = href(["download", dataset.id]);
-  const waitingCorpus = { state: "waiting" as StageState, word: "waiting" };
-  const unknown = { state: "unknown" as StageState, word: "" };
-  if (!recipes || !trained) return { vocabulary: unknown, corpus: unknown, next: null, done: null, fresh, own };
-  const recipe = recipes.find((r) => r.name === dataset.tokenizer);
-  let vocabulary: Standing["vocabulary"];
-  let next: Step | null = null;
-  if (dataset.vocabulary) {
-    vocabulary = trained.some((v) => v.sha256 === dataset.vocabulary) ? { state: "done", word: "published" } : { state: "problem", word: "not held here" };
-  } else if (!recipe) {
-    vocabulary = { state: "next", word: "no recipe" };
-    if (!dataset.upstream) next = { label: "Make the recipe", href: href(["tokenizers"], { new: "1", name: dataset.tokenizer, dataset: dataset.name }) };
-  } else if (recipe.job) {
-    vocabulary = { state: "waiting", word: "training" };
-  } else if (own.length === 0) {
-    vocabulary = { state: "next", word: "to train" };
-    if (!dataset.upstream) next = { label: "Train it", href: href(["tokenizers", recipe.name], { train: "1" }) };
-  } else {
-    vocabulary = { state: "next", word: "to publish" };
-    if (!dataset.upstream) next = { label: `Open to publish v${own.at(-1)!.version}`, href: href(["datasets", dataset.id]), publish: own.at(-1) };
-  }
-  let corpus: Standing["corpus"] = waitingCorpus;
-  let done: Step | null = null;
-  if (vocabulary.state === "done") {
-    if (corpora === undefined) corpus = unknown;
-    else if (corpora === null) corpus = { state: "problem", word: "no store" };
-    else if (fresh) { corpus = { state: "done", word: "built" }; done = { label: "Download", href: corporaPage }; }
-    else if (stale) { corpus = { state: "problem", word: "stale" }; next = { label: "Build again", href: corporaPage }; }
-    else { corpus = { state: "next", word: "to build" }; next = { label: "Build a corpus", href: corporaPage }; }
-  }
-  return { vocabulary, corpus, next, done, fresh, own };
-}
-
-// What the stages read changes after a page's own action (a job that ends, a
-// vocabulary published): pipelineChanged() tells every part of the page that
-// reads them to read again, as does a move to another address, since a page
-// kept for a new address would otherwise show what it read first.
+// What the stages read changes after a page's own action (a job that ends):
+// pipelineChanged() tells every part of the page that reads them to read
+// again, as does a move to another address, since a page kept for a new
+// address would otherwise show what it read first.
 //
 // The parts of a page that read the same address at the same time share one
-// request (shared): a page holds several parts that show the stages, and each
-// reads through these hooks. A change forgets the requests under way, so what
-// is read after it never comes from a request sent before it.
+// request (shared). A change forgets the requests under way, so what is read
+// after it never comes from a request sent before it.
 const CHANGED = "wpt-pipeline-changed";
 const reading = new Map<string, Promise<Answer<unknown>>>();
-function shared<T>(address: string): Promise<Answer<T>> {
+export function shared<T>(address: string): Promise<Answer<T>> {
   let answer = reading.get(address);
   if (!answer) {
     const sent: Promise<Answer<unknown>> = get<unknown>(address).finally(() => { if (reading.get(address) === sent) reading.delete(address); });
@@ -115,55 +101,37 @@ export function usePipelineChange(read: () => void) {
   }, [read]);
 }
 
-// The recipes and the trained vocabularies, read once, again by reload and on a change (pipelineChanged).
-export function useRecipesAndVocabularies(): { recipes: Answer<Recipe[]> | null; trained: Answer<Trained[]> | null; reload: () => void } {
-  const [recipes, setRecipes] = useState<Answer<Recipe[]> | null>(null);
-  const [trained, setTrained] = useState<Answer<Trained[]> | null>(null);
-  const reload = useCallback(() => {
-    shared<Recipe[]>("/api/tokenizers").then(setRecipes);
-    shared<Trained[]>("/api/vocabularies").then(setTrained);
-  }, []);
+// One address read once, again on a change (pipelineChanged) and by reload.
+function useShared<T>(address: string | null): { answer: Answer<T> | null; reload: () => void } {
+  const [answer, setAnswer] = useState<Answer<T> | null>(null);
+  const reload = useCallback(() => { if (address) shared<T>(address).then(setAnswer); }, [address]);
   useEffect(reload, [reload]);
   usePipelineChange(reload);
-  return { recipes, trained, reload };
+  return { answer, reload };
+}
+export const useSnapshots = () => useShared<Snapshot[]>("/api/snapshots");
+export const useRecipes = () => useShared<Recipes>("/api/recipes");
+
+// The tokenizer recipes and the trained vocabularies, read once, again by reload and on a change.
+export function useRecipesAndVocabularies(): { recipes: Answer<Tokenizer[]> | null; trained: Answer<Trained[]> | null; reload: () => void } {
+  const tokenizers = useShared<Tokenizer[]>("/api/tokenizers");
+  const vocabularies = useShared<Trained[]>("/api/vocabularies");
+  const reload = useCallback(() => { tokenizers.reload(); vocabularies.reload(); }, [tokenizers.reload, vocabularies.reload]);
+  return { recipes: tokenizers.answer, trained: vocabularies.answer, reload };
 }
 
-// The corpora of each dataset asked for, by id: undefined while read, null when the store cannot be read;
-// read again on a change (pipelineChanged).
-export function useCorpora(ids: string[]): Map<string, BuiltCorpus[] | null> {
-  const [found, setFound] = useState<Map<string, BuiltCorpus[] | null>>(new Map());
-  const [reading, setReading] = useState(0);
-  const again = useCallback(() => setReading((n) => n + 1), []);
-  usePipelineChange(again);
-  const key = ids.join("\u0000");
-  useEffect(() => {
-    let live = true;
-    for (const id of ids) shared<{ corpora: BuiltCorpus[] | null }>(`/api/datasets/${part(id)}`).then((a) => {
-      if (live) setFound((m) => new Map(m).set(id, a.ok ? a.data.corpora : null));
-    });
-    return () => { live = false; };
-  }, [key, reading]);
-  return found;
-}
-
-// The standing of one dataset, by its id or name, with everything it reads.
-export function usePipeline(dataset: Dataset | null): Standing | null {
-  const { recipes, trained } = useRecipesAndVocabularies();
-  const corpora = useCorpora(dataset ? [dataset.id] : []);
-  if (!dataset) return null;
-  return standing(dataset, recipes?.ok ? recipes.data : null, trained?.ok ? trained.data : null, corpora.get(dataset.id));
-}
+// A snapshot's page, and the words that name it with its change.
+export const snapshotHref = (s: { id: string }, query?: Record<string, string | null>) => href(["snapshots", s.id], query);
+export const snapshotWords = (s: { name: string; at_change: number }) => `${s.name} (change ${s.at_change.toLocaleString("en")})`;
 
 // One stage of a pipeline, as a card: its name (linked to its page when
 // given), its state as a mark of a glyph and a word, never colour alone
 // (done ✓, next →, waiting ○, problem ✕, unknown: still read, a grey card
-// with no mark, so no state shows before it is true; word: another word for the state,
-// such as "training"; mark false: none, for a stage that is a source rather
-// than a step to finish), its big number and what it counts (empty: nothing
-// to count yet, shown small and muted), an optional line under them, and at
-// most one button; current marks the stage of the page shown with an ink bar
-// under it. The same card makes a dataset's stages on every page about it
-// (stages.tsx) and, without a number, the strip of a list of datasets (Chain).
+// with no mark, so no state shows before it is true; word: another word for
+// the state, such as "training"; mark false: none), its big number and what
+// it counts (empty: nothing to count yet, shown small and muted), an
+// optional line under them, and at most one button; current marks the stage
+// of the page shown with an ink bar under it.
 export type StageState = "done" | "next" | "waiting" | "problem" | "unknown";
 // done: a tick drawn by .check, since some faces draw "✓" like a root sign
 const GLYPH: Record<StageState, string> = { done: "", next: "→", waiting: "○", problem: "✕", unknown: "" };
@@ -186,70 +154,66 @@ export function Stage({ name, to, state, word, mark = true, value, empty = false
 }
 const Glyph = ({ state }: { state: StageState }) => <span className={`chain-glyph${state === "done" ? " check" : ""}`} aria-hidden="true">{GLYPH[state]}</span>;
 
-// A dataset's five stages, in order (STAGES), each with its name and the page it links
-// to, for both the cards (stages.tsx) and the strip (Chain): the library stage
-// opens the one library of this depot it reads, else the list of libraries.
-export const STAGES = ["texts", "library", "dataset", "vocabulary", "corpus"] as const;
+// A recipe's four stages, in order, each with its name, the page it links to
+// and its state; next: the step to do now (its words and where it leads),
+// done: where its corpus downloads once built.
+export const STAGES = ["snapshot", "recipe", "vocabulary", "corpus"] as const;
 export type Where = (typeof STAGES)[number];
-export function stagePlaces(dataset: Dataset): Record<Where, { name: string; to: string }> {
-  const mine = ownLibraries(dataset);
-  return {
-    texts: { name: "Texts", to: href(["texts"]) },
-    library: { name: dataset.libraries.length === 1 ? "Library" : "Libraries", to: mine.length === 1 ? href(["texts"], { library: mine[0] }) : href(["libraries"]) },
-    dataset: { name: "Dataset", to: href(["datasets", dataset.id]) },
-    vocabulary: { name: "Vocabulary", to: href(["tokenizers", dataset.tokenizer]) },
-    corpus: { name: "Corpus", to: href(["download", dataset.id]) },
-  };
+export type Step = { label: string; href: string };
+export type Standing = { stages: Record<Where, { name: string; to: string; state: StageState; word: string }>; next: Step | null; done: Step | null };
+
+export function standing(r: RecipeRow): Standing {
+  const page = href(["recipes", r.name]);
+  const s = (name: string, to: string, state: StageState, word: string) => ({ name, to, state, word });
+  const snapshotTo = r.snapshot ? snapshotHref(r.snapshot) : href(["snapshots"]);
+  const later = (name: string, to: string) => s(name, to, "waiting", "waiting");
+  const vocabularyTo = href(["tokenizers"]);
+  if (r.state === "invalid" || r.state === "dataset") {
+    const word = r.state === "invalid" ? "invalid" : "of a dataset";
+    return { stages: { snapshot: s("Snapshot", snapshotTo, "unknown", ""), recipe: s("Recipe", page, "problem", word), vocabulary: later("Vocabulary", vocabularyTo), corpus: later("Corpus", page) }, next: null, done: null };
+  }
+  const recipe = s("Recipe", page, "done", "in the repository");
+  if (r.state === "snapshot not here" || r.state === "snapshot differs") {
+    const word = r.state === "snapshot differs" ? "differs" : "not here";
+    return { stages: { snapshot: s("Snapshot", snapshotTo, "problem", word), recipe, vocabulary: later("Vocabulary", vocabularyTo), corpus: later("Corpus", page) }, next: null, done: null };
+  }
+  const snapshot = s("Snapshot", snapshotTo, "done", r.snapshot?.name ?? r.data?.snapshot ?? "");
+  if (r.state === "no vocabulary")
+    return { stages: { snapshot, recipe, vocabulary: s("Vocabulary", vocabularyTo, "next", "to train"), corpus: later("Corpus", page) }, next: { label: "Train a vocabulary", href: vocabularyTo }, done: null };
+  if (r.state === "vocabulary differs")
+    return { stages: { snapshot, recipe, vocabulary: s("Vocabulary", vocabularyTo, "problem", "size differs"), corpus: later("Corpus", page) }, next: null, done: null };
+  const vocabulary = s("Vocabulary", r.vocabulary ? href(["tokenizers", r.vocabulary.recipe]) : vocabularyTo, "done", r.vocabulary ? `v${r.vocabulary.version}` : "held");
+  if (r.job) return { stages: { snapshot, recipe, vocabulary, corpus: s("Corpus", page, "waiting", r.job.state === "running" ? "building" : "queued") }, next: null, done: null };
+  if (r.corpus?.fresh) return { stages: { snapshot, recipe, vocabulary, corpus: s("Corpus", page, "done", "built") }, next: null, done: { label: "Download", href: page } };
+  if (r.corpus?.stale) return { stages: { snapshot, recipe, vocabulary, corpus: s("Corpus", page, "problem", "stale") }, next: { label: "Build again", href: href(["recipes", r.name], { build: "1" }) }, done: null };
+  return { stages: { snapshot, recipe, vocabulary, corpus: s("Corpus", page, "next", "to build") }, next: { label: "Build", href: href(["recipes", r.name], { build: "1" }) }, done: null };
 }
 
-// A dataset's stages in one line, for a list of datasets (the overview): the
-// stage cards without their numbers, the same five stages marked the same way,
-// each a link to its page. With action, the next step's button closes the
-// line: a step still to do in red when primary (the page's main one), else
-// quiet; a download, once built, always in ink, as every download is.
-export function Chain({ dataset, at, action = "none" }: { dataset: Dataset; at: Standing | null; action?: "primary" | "quiet" | "none" }) {
-  const places = stagePlaces(dataset);
-  const states: Partial<Record<Where, { state: StageState; word?: string }>> = {
-    vocabulary: { state: at?.vocabulary.state ?? "unknown", word: at?.vocabulary.word },
-    corpus: { state: at?.corpus.state ?? "unknown", word: at?.corpus.word },
-  };
+// A recipe's stages in one line, for a list of recipes: the stage cards
+// without their numbers, each a link to its page. With action, the next
+// step's button closes the line: in red when primary (the page's main one),
+// else quiet; a download, once built, always in ink.
+export function Chain({ recipe, at, action = "none" }: { recipe: RecipeRow; at: Standing; action?: "primary" | "quiet" | "none" }) {
   return (
     <div className="chain-row">
-      <ol className="stages stages-small" aria-label={`Stages of ${dataset.name}`}>
-        {STAGES.map((key) => <Stage key={key} name={places[key].name} to={places[key].to} state={states[key]?.state ?? "done"} word={states[key]?.word} />)}
+      <ol className="stages stages-small stages-4" aria-label={`Stages of ${recipe.name}`}>
+        {STAGES.map((key) => <Stage key={key} name={at.stages[key].name} to={at.stages[key].to} state={at.stages[key].state} word={at.stages[key].word || undefined} />)}
       </ol>
       {action !== "none" && <StepButton at={at} primary={action === "primary"} />}
     </div>
   );
 }
 
-// The button of a dataset's next step, the same on every page and list: a
-// step to do in red when it is the view's main one, else quiet; once built,
-// Download in ink. Nothing while the standing is read or a job runs.
 export function StepButton({ at, primary }: { at: Standing | null; primary: boolean }) {
   if (at?.next) return <ButtonLink variant={primary ? "primary" : "quiet"} href={at.next.href}>{at.next.label}</ButtonLink>;
   if (at?.done) return <ButtonLink variant="ink" href={at.done.href}>{at.done.label}</ButtonLink>;
   return null;
 }
 
-// Where a dataset stands, as one mark: the stage it has reached, by its glyph and words ("→ vocabulary: to train").
-// While a state is still read: a grey dash, no words.
+// Where a recipe stands, as one mark: the first stage not done, by its glyph and words ("→ vocabulary: to train").
 export function StageMark({ at }: { at: Standing }) {
-  const [name, s] = at.vocabulary.state === "done" ? ["corpus", at.corpus] : ["vocabulary", at.vocabulary];
-  if (s.state === "unknown") return <span className="stage-word aside" aria-label="reading">…</span>;
-  return <span className={`stage-word chain-${s.state}`}><Glyph state={s.state} /> {name}: {s.word}</span>;
+  const key = STAGES.find((k) => at.stages[k].state !== "done") ?? "corpus";
+  const st = at.stages[key];
+  if (st.state === "unknown") return <span className="stage-word aside" aria-label="reading">…</span>;
+  return <span className={`stage-word chain-${st.state}`}><Glyph state={st.state} /> {key}: {st.word}</span>;
 }
-
-// Sets the vocabulary a dataset publishes (a sha256, or null for none) as a
-// new revision of it, the rest of its row as read (POST /api/datasets/ID,
-// which keeps each library it reads as stored). The revision read goes with
-// it, so the server refuses the change when someone changed the dataset
-// after it was read, rather than undo their change.
-export const publishVocabulary = async (dataset: Dataset, vocabulary: string | null) => {
-  const a = await post(`/api/datasets/${part(dataset.id)}`, {
-    name: dataset.name, libraries: dataset.libraries.map((r) => ({ depot: r.depot, library: r.library })),
-    shares: dataset.shares, max_tokens: dataset.max_tokens, vocabulary, revision: dataset.revision,
-  });
-  if (a.ok) pipelineChanged(); // the stages shown read again
-  return a;
-};

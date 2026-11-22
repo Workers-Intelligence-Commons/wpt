@@ -1,0 +1,16 @@
+{
+ "asked_headers": {},
+ "body": null,
+ "body_bytes": 1300,
+ "body_file": "015.bin",
+ "headers": {
+  "Accept-Ranges": "bytes",
+  "Content-Disposition": "attachment; filename=\"ds-two_tok-v1_6000_table-licenses.parquet\"",
+  "Content-Length": "1300",
+  "Content-Type": "application/octet-stream",
+  "ETag": "\"20f5a2e90a6aea8a253e05a9368d0fa1ab6984feb11bd5e70062f72ac6bde9e5\""
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/6000/files/licenses.parquet",
+ "status": 200
+}

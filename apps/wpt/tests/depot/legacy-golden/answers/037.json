@@ -1,0 +1,12 @@
+{
+ "asked_headers": {},
+ "body": null,
+ "body_bytes": 484,
+ "body_file": "037.bin",
+ "headers": {
+  "Content-Type": "application/octet-stream"
+ },
+ "method": "GET",
+ "route": "/api/datasets/ds-two/sample?bytes=500",
+ "status": 200
+}

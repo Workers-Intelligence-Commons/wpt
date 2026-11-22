@@ -41,7 +41,7 @@ the matching area label when the issue is opened:
 
 - `area: sources and data rules`
 - `area: tokenizer`
-- `area: dataset build`
+- `area: corpus build`
 - `area: training`
 - `area: evaluation`
 - `area: generation and chat`
@@ -141,25 +141,27 @@ uv run wpt depot decide admit "EXISTS (SELECT 1 FROM json_each(tags) WHERE value
 One decision applies to every text the SQL condition over the `texts`
 table matches. Anyone's decisions are appended. A text is admitted when at
 least one decision admits it and none refuses it, and only an admitted
-text joins a library and trains. A refused text stays in the depot as a
-reference. A decision never changes a text a locked library holds.
+text enters a snapshot and trains. A refused text stays in the depot as a
+reference. A decision never changes what a snapshot made before it holds.
 
-## Libraries and datasets
+## Snapshots, tags and recipes
 
-A library groups admitted texts, and a dataset says which libraries to
-train on, with optional shares by tag. `wpt depot library new`, `put`,
-`lock`, `fork` and `report` make and fill libraries, and report a
-problem with one; `wpt depot dataset new`,
-`export` and `import` make datasets and write them out as remotes;
-`wpt depot tokenizer new` and `train` make a tokenizer recipe and its
-vocabulary; `wpt depot build DATASET` builds a dataset's corpus into the store
-([docs/data-selection.md](docs/data-selection.md)).
+A snapshot is a name on a change number: the texts admitted then, each
+read at its revision as of it, never changed afterward. A hand-picked
+selection of texts is a tag. A model recipe of the repository names a
+snapshot (with its change and digest), the kinds it takes and its shares
+by tag. `wpt depot snapshot new` makes a snapshot of the admitted texts;
+`wpt depot tokenizer new` and `train` make a tokenizer recipe on a
+snapshot and its vocabulary; and `wpt depot build RECIPE` builds the
+corpus a model recipe names into the store. The pages "Snapshots" and
+"Recipes" of `wpt depot web` do the same by clicks, each showing its cost
+first ([docs/data-selection.md](docs/data-selection.md)).
 
 ## Changing a text
 
 A text never changes. A newer or corrected version is another text, added
 under review; the older one stays where it is until someone refuses it or
-asks for its erasure. A locked library keeps the texts it holds.
+asks for its erasure. A snapshot keeps the revisions it read.
 
 ## Erasure requests
 

@@ -16,25 +16,34 @@ that changes the resulting model comes from it: the architecture's
 numbers, the seed, and its steps, which run in order on one model
 (docs/training.md, "Steps"):
 each a built-in step of wpt_training (read-text, answer-as-assistant,
-finish-tasks, finish-tasks-with-less-writing) or a .py file, with its
+answer-as-assistant-dft, answer-as-assistant-neftune, finish-tasks,
+finish-tasks-with-less-writing) or a .py file, with its
 method, environment, optimizer, settings and locked parts. The model's
 context is the last window length of the last step that reads text
-windows. The recipe's data part names a depot, by the name its corpora
-record for it (its public address), and a dataset of it, by id or name,
-whose corpus is built into the store named by WPT_STORE (environment or
-.env), on the machine that holds the depot (`wpt depot build`, or the
-dataset's download page); a size of a series is derived for the size of
-the corpus's vocabulary. CORPUS_ID is what that build prints (or a start
-of it); without it, the latest fresh corpus of the triple the recipe's
-dataset (found by its id), the vocabulary that dataset publishes and the
-data part's total_tokens as the size, which training reads from the
-depot's file or its web app (wpt.train.recipe_depot; a dataset's corpora
-stay its own through a rename, and a new dataset given an old name has
-none); a dataset that publishes no vocabulary, or a triple not built,
-refuses the run, naming the triple and the dataset's download page; when that corpus was built
-from an older revision of the dataset than the current one, training uses
-it and warns, naming both revisions. A corpus of another depot or dataset
-than the recipe's is refused. It holds everything the
+windows. The recipe's data part names a depot by its public address, a
+snapshot of it with the change and digest it reads, its kinds, shares,
+size (total_tokens) and vocabulary; its corpus is built into the store
+named by WPT_STORE (environment or .env) by Build on the recipe page of
+the depot's web app (or `wpt depot build`); a size of a series is
+derived for the size of the corpus's vocabulary. CORPUS_ID is what that
+build prints (or a start of it); without it, the corpus of the build's
+key (wpt_depot.corpus.build_key: the snapshot, the data part and the
+vocabulary), once the depot the address names (this depot's file, or a
+clone of it, or its web app: wpt.train.recipe_depot) holds that snapshot
+with the change and digest the recipe says; no fresh corpus of that key
+refuses the run, saying to press Build on the recipe page. A corpus given
+by its id must be built from that snapshot with the recipe's kinds,
+shares and vocabulary, at any size. A recipe written before snapshots
+names a dataset instead, by id or name: without CORPUS_ID, the latest
+fresh corpus of the triple that dataset (found by its id), the vocabulary
+it publishes and the data part's total_tokens, read from the depot's file
+or its web app (a dataset's corpora stay its own through a rename); a
+dataset that publishes no vocabulary, or a triple not built, refuses the
+run, naming the dataset's listing of corpora (a frozen route of the
+depot's web app) and saying that no build makes a corpus of a dataset; a
+corpus built from an older
+revision of the dataset is used with a warning; a corpus of another depot
+or dataset, or one built from a snapshot, is refused. The corpus holds everything the
 steps read, by kind of texts, each step reading the kinds it names: the
 token files of plain texts and of conversations, and the tasks. Training never builds anything and writes nothing to the depot: it
 reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
@@ -177,8 +186,10 @@ The model folder gets config.json, the weights (their headers name the
 licenses), tokenizer.json (the corpus's vocabulary, for wpt chat), the
 drafter (drafter/: config.json, model.safetensors, and provenance.json,
 which names the sha256 of the weights it was trained against),
-provenance.json (what produced it: the corpus, each step, its fingerprint
-and result, and what of the corpus each one learned from), CREDITS (every
+provenance.json (what produced it: the depot, the snapshot with its
+change and digest, the recipe, the code's commit, the corpus's id and
+build key, each step, its fingerprint and result, and what of the corpus
+each one learned from; docs/training.md, "What a model records"), CREDITS (every
 text the steps learned from, one line each, from the corpus's tables:
 wpt_depot.notice), and LICENSE, NOTICE and README.md (the model card). It is written beside the target as a hidden folder,
 recorded, then renamed into place: a run that fails before leaves the
@@ -203,6 +214,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from wpt_depot import corpora
+from wpt_depot.corpus import build_key, canonical
 from wpt_depot.errors import DepotError
 from wpt_depot.kinds import PLAIN
 from wpt_depot.notice import model_notice
@@ -342,7 +354,7 @@ def parse_args(argv=None, environ=None):
 
 def load_data(name) -> dict:
     """The data part of the model recipe of that name (or SERIES:SIZE[:RUN]):
-    its depot, dataset and total_tokens, from the repository holding the
+    its depot, snapshot (or, written before snapshots, dataset) and total_tokens, from the repository holding the
     current folder."""
     try:
         return Recipes.find().data_part(name)
@@ -360,17 +372,58 @@ def load_recipe(name, record):
         raise InputError(str(error)) from None
 
 
+# how a recipe of a snapshot gets its corpus
+BUILD = ("press Build on the recipe page of the depot's web app (a series is listed as SERIES:), or run `wpt depot "
+         "build NAME` (SERIES: for a series) where the depot is")
+# how a recipe of the legacy dataset shape gets another corpus: no build makes a corpus of a dataset
+LEGACY_AGAIN = ("no build makes a corpus of a dataset: give the recipe's data part a snapshot of the depot "
+                "(docs/data-selection.md, \"The data section of a model recipe\"), then " + BUILD)
+
+
+def on_snapshot(data) -> bool:
+    """Whether a recipe's data part names a snapshot (else, in a recipe
+    written before snapshots, a dataset)."""
+    return "snapshot" in data
+
+
+def recipe_snapshot(data, reader=None) -> dict:
+    """The row of the snapshot a recipe's data part names, of the depot its
+    address names (wpt.train.recipe_depot; reader: the depot already
+    opened), once it reads the change and holds the texts (digest) the
+    recipe says. InputError when the depot cannot be read, holds no such
+    snapshot, or the snapshot reads another change or digest."""
+    try:
+        row = (reader or recipe_depot.opened(data, Path.cwd() / ".env")).snapshot(data["depot"], data["snapshot"])
+    except recipe_depot.Missing as error:
+        raise InputError(f"{error}: the recipe names a snapshot the depot does not hold") from None
+    except (recipe_depot.Unreadable, DepotError) as error:
+        raise InputError(f"the snapshot {data['snapshot']!r} of the depot {data['depot']!r} cannot be read "
+                         f"({type(error).__name__}: {error}); give the corpus id instead") from None
+    if row["at_change"] != data["change"] or row["digest"] != data["digest"]:
+        raise InputError(f"snapshot {data['snapshot']} of depot {data['depot']} reads change {row['at_change']} "
+                         f"with digest {row['digest']}; the recipe says {data['change']}, {data['digest']}")
+    return row
+
+
+def recipe_key(data, snapshot) -> str:
+    """The key of the build a recipe's data part asks of the snapshot (its
+    row): wpt_depot.corpus.build_key. InputError for a data part no build
+    could make."""
+    try:
+        return build_key(snapshot, data, data["vocabulary"]["sha256"])
+    except DepotError as error:
+        raise InputError(str(error)) from None
+
+
 def recipe_dataset(data, reader=None) -> dict:
-    """The current row of the dataset a recipe's data part names (its id or
-    name), read from its depot without writing to it (wpt.train.recipe_depot;
-    reader: the depot already opened); InputError when the depot cannot be
-    read or holds no such dataset."""
+    """The current row of the dataset a recipe's data part written before
+    snapshots names (its id or name), read from its depot without writing
+    to it (wpt.train.recipe_depot; reader: the depot already opened);
+    InputError when the depot cannot be read or holds no such dataset."""
     try:
         return (reader or recipe_depot.opened(data, Path.cwd() / ".env")).dataset(data["dataset"])
     except recipe_depot.Missing:
-        raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: make it, publish its "
-                         "vocabulary, then build its corpus at the recipe's size (`wpt depot build "
-                         f"{data['dataset']} --max-tokens N` on the machine that holds the depot)") from None
+        raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: {LEGACY_AGAIN}") from None
     except (recipe_depot.Unreadable, DepotError) as error:
         raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
                          f"({type(error).__name__}: {error}); give the corpus id instead") from None
@@ -378,18 +431,28 @@ def recipe_dataset(data, reader=None) -> dict:
 
 def find_corpus(store, given, data, log=say) -> dict:
     """The record of the corpus given (an id or a start of it), or without
-    one the corpus of the recipe's data part: the latest fresh corpus of the
-    triple its dataset (found by its id in its depot, so a dataset's corpora
-    stay its own through a rename), the vocabulary that dataset publishes
-    and the size total_tokens, read from the depot's file or through its
-    web app (recipe_depot.FileDepot.built, WebDepot.built), with a warning
-    in the log when it was built from an older revision of the dataset than
-    the current one. InputError when the store holds no such corpus, the
-    dataset publishes no vocabulary, or that triple is not built: the
-    message names the triple and the dataset's download page, and nothing
-    is built or queued; when the triple's latest corpus is one that does
-    not list its token files by kind, the message gives the build that
-    makes it again, as check_record does."""
+    one the corpus of the recipe's data part.
+
+    A data part that names a snapshot: the corpus of the build's key
+    (recipe_key), once the depot the address names (this depot or the
+    upstream it follows) holds the snapshot with the change and digest the
+    recipe says (recipe_snapshot). InputError when the store holds no fresh
+    corpus of that key, saying to press Build on the recipe page; nothing
+    is built or queued.
+
+    A data part written before snapshots, which names a dataset: the latest
+    fresh corpus of the triple its dataset (found by its id in its depot,
+    so a dataset's corpora stay its own through a rename), the vocabulary
+    that dataset publishes and the size total_tokens, read from the
+    depot's file or through its web app (recipe_depot.FileDepot.built,
+    WebDepot.built), with a warning in the log when it was built from an
+    older revision of the dataset than the current one. InputError when
+    the store holds no such corpus, the dataset publishes no vocabulary,
+    or that triple is not built: the message names the triple and the
+    dataset's listing of corpora, and says that no build makes a corpus
+    of a dataset, as check_record does."""
+    if given is None and on_snapshot(data):
+        return _snapshot_corpus(store, data)
     dataset = None
     try:
         if given is not None:
@@ -405,8 +468,7 @@ def find_corpus(store, given, data, log=say) -> dict:
             vocabulary, size = dataset.get("vocabulary"), data["total_tokens"]
             if vocabulary is None:
                 raise InputError(f"the dataset {dataset['name']!r} ({dataset['id']}) of the depot {data['depot']!r} "
-                                 "publishes no vocabulary, so no corpus is the recipe's: publish one on the "
-                                 f"dataset's page, then build the size {size:,} on its download page {page}")
+                                 f"publishes no vocabulary, so no corpus is the recipe's: {LEGACY_AGAIN}")
             try:
                 found = reader.built(store, data["depot"], dataset, vocabulary, size)
             except (recipe_depot.Unreadable, recipe_depot.Missing) as error:
@@ -416,13 +478,11 @@ def find_corpus(store, given, data, log=say) -> dict:
                 older = corpora.latest(store, data["depot"], dataset["id"], vocabulary, size)
                 if older is not None and not corpora.by_kind(older) and not {"stale", "deleted"} & older.keys():
                     raise InputError(f"corpus {older['id']} does not list its token files by kind, which each "
-                                     f"training step reads: build the dataset {dataset['name']!r} again with "
-                                     f"`wpt depot build {dataset['name']} --max-tokens {size}`, or on its download "
-                                     f"page {page}")
+                                     f"training step reads: {LEGACY_AGAIN}")
                 raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
                                  f"{data['depot']!r} with its published vocabulary {vocabulary} at the size "
-                                 f"{size:,} (the recipe's total_tokens) in {store}: build it on its download page "
-                                 f"{page}")
+                                 f"{size:,} (the recipe's total_tokens) in {store}, whose corpora the depot lists at "
+                                 f"{page}; {LEGACY_AGAIN}")
     except ValueError as error:
         raise InputError(str(error)) from None
     if found is None:
@@ -430,23 +490,73 @@ def find_corpus(store, given, data, log=say) -> dict:
     if dataset is not None and found["dataset"]["revision"] < dataset["revision"]:
         log(f"corpus {found['id']} was built from revision {found['dataset']['revision']} of the dataset "
             f"{dataset['name']!r} ({dataset['id']}), whose current revision is {dataset['revision']}: this run "
-            f"trains on the older revision; to train on the current one, build the size {size:,} again with "
-            f"`wpt depot build {dataset['name']} --max-tokens {size}` or on its download page {page}", WARNING)
+            f"trains on the older revision", WARNING)
     return found
+
+
+def _snapshot_corpus(store, data) -> dict:
+    """The record of the fresh corpus of the build a recipe's data part
+    that names a snapshot asks for (find_corpus)."""
+    key = recipe_key(data, recipe_snapshot(data))
+    found = corpora.of_key(store, key)
+    if found is not None and not corpora.by_kind(found) and not {"stale", "deleted"} & found.keys():
+        raise InputError(f"corpus {found['id']} does not list its token files by kind, which each training step "
+                         f"reads: {BUILD} to build it again")
+    if found is None or not corpora.fresh(found):
+        why = ("" if found is None else f" (corpus {found['id']} of that key is stale: the erasures "
+               f"{', '.join(found['stale']['erasures'])})" if "stale" in found
+               else f" (corpus {found['id']} of that key was deleted: {found['deleted']['why']})")
+        size = data["total_tokens"]
+        raise InputError(f"no fresh corpus of snapshot {data['snapshot']} of the depot {data['depot']} with the "
+                         f"vocabulary {data['vocabulary']['sha256']} at the size {size:,} (build key {key}) in "
+                         f"{store}{why}: {BUILD}")
+    return found
+
+
+def _source(record) -> str:
+    """What a corpus was built from, as a refusal names it."""
+    if "build_key" in record:
+        snapshot = record["snapshot"]
+        return (f"snapshot {snapshot['name']} (change {snapshot['change']}, digest {snapshot['digest']}) of the "
+                f"depot {record['depot']}")
+    return f"dataset {record['dataset']['name']!r} of the depot {record['depot']!r}"
+
+
+def _same_build(record, data) -> bool:
+    """Whether a corpus built from a snapshot is one the recipe's data part
+    asks for, its size aside: the same snapshot (name, change and digest,
+    which names its owner too), kinds, shares and vocabulary."""
+    snapshot = record["snapshot"]
+    try:
+        theirs, ours = canonical(record["data"]), canonical(data)
+    except DepotError:
+        return False
+    return ((snapshot["name"], snapshot["change"], snapshot["digest"]) == (data["snapshot"], data["change"],
+                                                                         data["digest"])
+            and (theirs["kinds"], theirs["shares"]) == (ours["kinds"], ours["shares"])
+            and record["vocabulary"]["sha256"] == data["vocabulary"]["sha256"])
 
 
 def load_corpus(store, record, recipe):
     """The corpus's tokenizer, its vocabulary checked, once the corpus is
-    known to be built from the recipe's depot and dataset: the depot the
-    recipe names, and a dataset of the id or name the recipe gives then,
-    or, renamed since, of the id the recipe's dataset has in its depot now."""
+    known to be the recipe's. A recipe of a snapshot: a corpus built from
+    that snapshot (name, change, digest) with the recipe's kinds, shares
+    and vocabulary, at any size (check_record checks the size). A recipe
+    of a dataset: a corpus built from the depot the recipe names, and a
+    dataset of the id or name the recipe gives then, or, renamed since, of
+    the id the recipe's dataset has in its depot now."""
     data = recipe["data"]
-    if (record["depot"] != data["depot"]
+    if on_snapshot(data):
+        if "build_key" not in record or not _same_build(record, data):
+            raise InputError(f"corpus {record['id']} was built from {_source(record)}"
+                             + (" with kinds, shares or vocabulary other than the recipe's" if "build_key" in record
+                                else "") + f"; this recipe names snapshot {data['snapshot']} (change "
+                             f"{data['change']}, digest {data['digest']}) of the depot {data['depot']}")
+    elif ("build_key" in record or record["depot"] != data["depot"]
             or (data["dataset"] not in (record["dataset"]["name"], record["dataset"]["id"])
                 and record["dataset"]["id"] != recipe_dataset(data)["id"])):
-        raise InputError(f"corpus {record['id']} was built from dataset {record['dataset']['name']!r} of the depot "
-                         f"{record['depot']!r}; this recipe names dataset {data['dataset']!r} of the depot "
-                         f"{data['depot']!r}")
+        raise InputError(f"corpus {record['id']} was built from {_source(record)}; this recipe names dataset "
+                         f"{data['dataset']!r} of the depot {data['depot']!r}")
     return Tokenizer.from_bytes(store.get_bytes(record["tokenizer"]["vocabulary"]))  # sha256-checked by the store
 
 
@@ -463,18 +573,19 @@ def check_record(record, recipe):
     built at that size (built_for: such a corpus gives its conversations
     and tasks their share of the size, and training reads what it holds),
     or it does not list its token files by kind, which each step reads
-    (corpora.by_kind)."""
+    (corpora.by_kind). The message says how to build it again: Build on
+    the recipe page for a corpus of a snapshot; for one of a dataset, a
+    snapshot in the recipe first, since no build makes a corpus of a
+    dataset."""
+    snapshot = "build_key" in record
     if not corpora.by_kind(record):
+        again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} does not list its token files by kind, which each training step "
-                         f"reads: build the dataset {record['dataset']['name']!r} again with `wpt depot build "
-                         f"{record['dataset']['name']} --max-tokens {recipe['data']['total_tokens']}`")
+                         f"reads: {again}")
     if "stale" in record:
-        page = recipe_depot.download_page(recipe["data"]["depot"], record["dataset"]["id"])
+        again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
-                         f"{', '.join(record['stale']['erasures'])} on texts it was built from; build the dataset "
-                         f"{record['dataset']['name']!r} again at the recipe's size with `wpt depot build "
-                         f"{record['dataset']['name']} --max-tokens {recipe['data']['total_tokens']}`, or on its "
-                         f"download page {page}")
+                         f"{', '.join(record['stale']['erasures'])} on texts it was built from; {again}")
     wanted = recipe["data"]["total_tokens"]
     if record["total_tokens"] < wanted and not built_for(record, recipe):
         size = corpora.triple(record)[2]
@@ -612,12 +723,27 @@ def provenance(args, recipe, record, model_config, n_params, worker, strategy_fi
     """What produced the model; worker: what the gpu worker said of itself
     when it was ready (its device, its processes, its Python and the
     versions of the libraries it trained with); texts: how many texts of
-    the corpus the steps learned from."""
+    the corpus the steps learned from. A corpus built from a snapshot
+    gives `data`, the recipe's data section (the depot's address, the
+    snapshot's name, change and digest, the kinds, shares, size and
+    vocabulary), and `corpus` its id, build key, rules, the snapshot it
+    read (with its owner) and `data`, the data section it was built with,
+    which builds it again: a corpus given by its id may have been built at
+    a larger size than the recipe's, and holds other texts past the first
+    one a smaller build leaves out. One built before snapshots gives
+    `corpus` its id, depot and dataset (wpt_model.provenance reads both)."""
     processes = worker["processes"]
+    if "build_key" in record:
+        corpus = {"id": record["id"], "build_key": record["build_key"], "rules": record["rules"],
+                  "depot": record["depot"], "snapshot": record["snapshot"], "data": record["data"]}
+        source = {"data": recipe["data"]}
+    else:
+        corpus, source = {"id": record["id"], "depot": record["depot"], "dataset": record["dataset"]["name"]}, {}
     return {
+        **source,
         "recipe_name": args.recipe,
         "recipe": recipe,  # everything that changes the model: data, architecture, seed, steps, drafter
-        "corpus": {"id": record["id"], "depot": record["depot"], "dataset": record["dataset"]["name"]},
+        "corpus": corpus,  # a cache: the snapshot, its data section and the code build it again
         "learned": learned(done),  # what of the corpus the steps learned from
         "texts": texts,
         "vocabulary": record["tokenizer"]["vocabulary"],
@@ -643,18 +769,23 @@ def print_series(name) -> int:
     recipes = Recipes.find()
     try:
         data = recipes.data_part(f"{name}{SIZE_OF}")
-        try:
-            depot = recipe_depot.opened(data, Path.cwd() / ".env")
-            # the size the trained vocabulary has, which a corpus's record gives training; the recipe's before
-            vocab_size, trained = depot.vocab_size(depot.dataset(data["dataset"])["tokenizer"])
-        except (recipe_depot.Unreadable, recipe_depot.Missing, DepotError, OSError) as error:
-            say(f"InputError: series {name}: the vocabulary's size comes from the tokenizer recipe of the dataset "
-                f"{data['dataset']!r} of the depot {data['depot']!r}, which cannot be read "
-                f"({type(error).__name__}: {error})", ERROR)
-            return REFUSED
+        if on_snapshot(data):  # the series names its vocabulary, with its size
+            vocab_size = data["vocabulary"]["size"]
+            said = f"the vocabulary {data['vocabulary']['sha256'] or '(not named yet)'} its data part names"
+        else:
+            try:
+                depot = recipe_depot.opened(data, Path.cwd() / ".env")
+                # the size the trained vocabulary has, which a corpus's record gives training; the recipe's before
+                vocab_size, trained = depot.vocab_size(depot.dataset(data["dataset"])["tokenizer"])
+            except (recipe_depot.Unreadable, recipe_depot.Missing, DepotError, OSError) as error:
+                say(f"InputError: series {name}: the vocabulary's size comes from the tokenizer recipe of the "
+                    f"dataset {data['dataset']!r} of the depot {data['depot']!r}, which cannot be read "
+                    f"({type(error).__name__}: {error})", ERROR)
+                return REFUSED
+            said = (f"that of the tokenizer recipe of its dataset {data['dataset']!r}"
+                    + ("" if trained else " (not trained yet: the size it asks for)"))
         plans = recipes.series_plans(name, vocab_size)
-        say(f"series {name}: a vocabulary of {vocab_size:,} tokens, that of the tokenizer recipe of its dataset "
-            f"{data['dataset']!r}" + ("" if trained else " (not trained yet: the size it asks for)"))
+        say(f"series {name}: a vocabulary of {vocab_size:,} tokens, {said}")
         total = recipes.series_total_tokens(name)
         say(f"series {name}: one corpus of {total:,} training tokens; wpt train {name}:SIZE reads its first prefix tokens")
         for plan in plans:

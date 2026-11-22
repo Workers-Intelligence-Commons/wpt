@@ -119,7 +119,7 @@ a.stat:hover { border-color: var(--ink); }
 /* a pipeline: one card per stage, the state marked by a glyph and a word,
    the next stage lit (an ochre frame), the stage of the page shown marked
    (an ink bar under it), the stages still waiting faded; .stages-small is the
-   same cards without their numbers, the strip of a list of datasets */
+   same cards without their numbers, the strip of a list of recipes */
 .stages { list-style: none; margin: 0 0 var(--gap-block); padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; gap: var(--gap-block); --stage-gap: var(--gap-block); }
 .stages[aria-busy="true"] { min-height: 160px; }
 .stage { position: relative; display: flex; flex-direction: column; gap: 0; padding: var(--gap-tight) var(--gap-group) var(--gap-group); background: var(--paper-raised); border: 1px solid var(--line); border-top: 4px solid var(--ink); min-width: 0; }
@@ -155,7 +155,7 @@ a.stat:hover { border-color: var(--ink); }
 /* a stage with nothing to count yet: a word, small and muted, never a big one */
 .stage-value.empty { color: var(--ink-muted); font-family: var(--font-serif); font-weight: 400; font-size: 17px; line-height: 38px; }
 
-/* the small strip: the same five cards, name and mark only */
+/* the small strip: the same cards, name and mark only */
 .stages-small { margin: 0; }
 .stages-small .stage { padding-bottom: var(--gap-tight); }
 .stages-small .stage-top { margin: 0; }
@@ -192,7 +192,7 @@ a.stat:hover { border-color: var(--ink); }
   .page-group + .page-group { padding-left: 0; border-left: 0; }
 }
 
-/* a dataset's strip with its next step's button, in a row of the overview: every strip in one column,
+/* a recipe's strip with its next step's button, in a row of the overview: every strip in one column,
    every button in the next, so the stages line up */
 .chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 12em; align-items: center; gap: var(--gap-tight) var(--gap-group); }
 .chain-row > .wic-btn { justify-self: end; }
@@ -206,21 +206,17 @@ a.stat:hover { border-color: var(--ink); }
 .pipeline-list { gap: var(--gap-tight); }
 .pipeline-list > .pipeline-row { display: grid; grid-template-columns: 8em minmax(0, 1fr); align-items: center; gap: var(--gap-tight) var(--gap-group); padding: var(--gap-tight) 0; border-bottom: 1px solid var(--line); }
 .pipeline-list > .pipeline-row:last-child { border-bottom: 0; }
-.pipeline-name { min-width: 8em; text-decoration: none; font-size: 17px; }
-.pipeline-name:hover { text-decoration: underline var(--red) 2px; }
+.pipeline-list a.pipeline-name { min-width: 8em; font-size: 17px; text-decoration-line: underline; }
+.pipeline-list > .pipeline-heads { padding: 0 0 var(--gap-hair); font-style: italic; }
 /* the stages of a row are links, and look like links */
 .pipeline-list .stage-name a { text-decoration-line: underline; }
-.row-links { display: inline-flex; gap: var(--gap-group); }
-/* the pages of a row, beside its next step: quiet, so the step leads */
-.row-links :is(a, .link-button) { color: var(--ink-muted); }
-.stat-off { border-left: 4px solid var(--red); }
-.export-cell { white-space: nowrap; }
 
 /* links inside tables and counted lists: the ink of the text, underlined on hover only, so a dense page
    does not underline every cell; links in running text keep their line */
 .ledger-table td a:not(.wic-btn), .ledger-table td .link-button, .counted a, .plain.small li > a, .pipeline-list a { text-decoration-line: none; }
 .ledger-table td a:not(.wic-btn):hover, .ledger-table td .link-button:hover, .counted a:hover, .plain.small li > a:hover, .ledger-table td a:not(.wic-btn):focus-visible { text-decoration-line: underline; }
-.ledger-table td:first-child a:not(.wic-btn) { font-weight: 600; }
+/* the first cell's link opens the row's own page: a link that looks like one */
+.ledger-table td:first-child a:not(.wic-btn) { font-weight: 600; text-decoration-line: underline; }
 
 /* details below the main figures, folded: one line each until opened */
 .fold { margin-top: var(--gap-group); padding: var(--gap-tight) var(--gap-block); background: var(--paper-raised); border: 1px solid var(--line); }
@@ -235,6 +231,7 @@ a.stat:hover { border-color: var(--ink); }
 div.done > p { margin: 0; }
 div.done > p + p::first-letter { text-transform: uppercase; }
 .not-allowed { color: var(--red-ink); }
+.breaks { overflow-wrap: anywhere; } /* a line that may hold a long unbroken word, such as a sha256 */
 
 /* forms: the red star of a required field and the note that explains it */
 .required-mark { color: var(--red-ink); margin-left: var(--gap-hair); }
@@ -251,13 +248,12 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 .entry-row .wic-field { margin-bottom: 0; }
 
 /* facts: labels and their values */
-.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--gap-hair) var(--gap-group); margin: 0; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: var(--gap-hair) var(--gap-group); margin: 0; }
 .facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .notice-text { white-space: pre-wrap; }
 .plain { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--gap-hair); }
 .plain li { min-width: 0; display: flex; flex-wrap: wrap; gap: 0 var(--gap-tight); align-items: baseline; }
 .plain li > .cut { flex: 0 1 auto; min-width: 0; max-width: 32em; }
-.stacked li { display: block; }
 
 /* tables of one-line rows */
 .table-scroll { overflow-x: auto; }
@@ -320,7 +316,6 @@ div.done > p + p::first-letter { text-transform: uppercase; }
 
 /* an SQL condition the page made, shown by its name */
 .chip { display: inline-flex; align-items: center; gap: var(--gap-hair); justify-self: start; padding: 2px var(--gap-tight); border: 1px solid var(--line-strong); background: var(--paper-raised); }
-
 
 /* the bar of the ticked rows, stuck to the bottom of the screen */
 .selection-bar { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group);
@@ -434,15 +429,8 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .diff del { background: var(--red-soft); color: var(--ink); text-decoration: line-through; text-decoration-color: var(--red-ink); }
 .erased-mark { background: var(--red-soft); color: var(--red-ink); font-style: italic; }
 
-/* a dataset's remote, as JSON */
-.remote { margin: 0; padding: var(--gap-tight) var(--gap-group); background: var(--paper-raised); white-space: pre-wrap; max-height: 24em; overflow: auto; }
-
 /* a license's official text */
 .license-text { margin: 0; padding: var(--gap-group); background: var(--paper-raised); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto; font-family: var(--font-serif); font-size: 15px; line-height: 23px; }
-
-/* a library's reported problems, folded */
-.problems summary { cursor: pointer; }
-.problems[open] summary { margin-bottom: var(--gap-tight); }
 
 .schema-object { border: 0; border-left: 2px solid var(--line); margin: 0 0 var(--gap-group); padding: 0 0 0 var(--gap-group); }
 .schema-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-tight); padding: 0; margin-bottom: var(--gap-tight); }
@@ -458,9 +446,6 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .kinds { margin-top: var(--gap-hair); }
 .kinds li { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: var(--gap-tight); align-items: baseline; max-width: 44em; }
 .kinds li > .ledger { text-align: right; white-space: nowrap; }
-.fields.roomy { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
-/* a long file name, whole: it wraps where it must, so every part that tells files apart stays in view */
-.ledger-table td.file-name { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; min-width: 16ch; }
 .playlist-unit { margin-left: auto; }
 .in-text { white-space: nowrap; }
 .next-step { margin: 0 0 var(--gap-group); padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--ochre); background: var(--paper-raised); }
@@ -488,10 +473,8 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .open-pop { position: absolute; z-index: 40; top: calc(100% + var(--gap-hair)); left: 0; width: 300px; max-height: 70vh; overflow-y: auto; padding: 0 var(--gap-tight) var(--gap-tight);
   background: var(--paper-raised); border: 1px solid var(--line-strong); box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 20%, transparent); }
 .open-bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 var(--gap-group); padding: var(--gap-hair) 0; }
-.open-bar > .library-head, .open-head { flex: 1 1 420px; min-width: 0; }
+.open-head { flex: 1 1 420px; min-width: 0; }
 .open-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--gap-group); }
-.open-head-main { flex: 1 1 420px; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--gap-group); }
-.open-head-main > .chain { flex-basis: 100%; margin: 0; }
 .open-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 700; }
 .open-head .problems { flex-basis: 100%; }
 .position { white-space: nowrap; }
@@ -692,19 +675,19 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .cards .ledger-table td { max-width: none; border: 0; padding: 0 var(--gap-tight); white-space: normal; }
   /* each value after its label, the labels in one column on the left, a value that wraps hanging under its own start */
   .cards .ledger-table td[data-label]:not([data-label=""]) { text-align: left; padding-left: calc(var(--gap-tight) + 7.5em); }
-  .cards .ledger-table td[data-label]:not([data-label=""])::before { content: attr(data-label); display: inline-block; width: 7.5em; margin-left: -7.5em; vertical-align: top;
-    font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
-  /* a corpus's files on a phone: what it is on one line, its size and its download on the next, the name it is saved as in its title */
-  .cards .files-table tr { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-group); }
-  .cards .files-table td { width: auto; }
-  .cards .files-table td:first-child { flex-basis: 100%; }
-  .cards .files-table td[data-label="size"]:not([data-label=""]) { padding-left: var(--gap-tight); }
-  .cards .files-table td[data-label="size"]:not([data-label=""])::before { content: none; }
-  /* the sizes in one column, so every download button starts at the same place */
-  .cards .files-table td[data-label="size"]:not([data-label=""]) { width: 6em; text-align: left; }
+  .cards .ledger-table td[data-label]:not([data-label=""])::before { content: attr(data-label); display: inline-block; box-sizing: border-box; width: 7.5em; margin-left: -7.5em; padding-right: var(--gap-tight); vertical-align: top;
+    white-space: normal; font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
+  .cards .ledger-table caption { display: block; width: 100%; text-align: left; }
+  /* a cell with nothing in it shows no label either */
+  .cards .ledger-table td:empty { display: none; }
+  .cards .ledger-table td > .cut, .cards .ledger-table td > a.cut { display: inline-block; vertical-align: top; }
+  /* the overview's few figures side by side, smaller, rather than one alone on a half-empty row */
+  .stats.stats-row { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  .stats.stats-row .stat { padding: var(--gap-tight); }
+  .stats.stats-row .stat-value { font-size: 24px; line-height: 30px; }
+  .pipeline-list > .pipeline-heads { display: none; }
   /* a corpus's mix takes the whole row, its names never cut */
   .stats > .stat:has(.mix) { grid-column: 1 / -1; }
-  .cards .files-table td.file-name { display: none; }
   .filter-bar > .find { grid-column: 1 / -1; }
   .filter-bar:not(.shown) > :not(.find):not(.filter-toggle) { display: none; }
   .filter-bar > .filter-toggle { display: inline-flex; grid-column: 1 / -1; justify-self: start; }
@@ -720,19 +703,9 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .filter-bar > .wic-btn { justify-self: start; }
 }
 
-/* a fold inside a line of facts: its summary one fact among the others, its body under the line once opened */
-.inline-fold > summary { cursor: pointer; list-style: none; }
-.inline-fold > summary::-webkit-details-marker { display: none; }
-.inline-fold[open] { flex-basis: 100%; }
-.fold-body { margin: var(--gap-hair) 0 0; max-width: 60em; }
-
 /* the main button of a long form in a dialog, kept in view at the bottom of the dialog while the form scrolls */
 .sticky-submit { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group);
   margin-top: var(--gap-group); padding: var(--gap-tight) 0; background: var(--paper-raised); border-top: 1px solid var(--line-strong); }
-/* what a form's button waits for, beside it: plain ink, readable, never faint */
-.sticky-submit .blocking { color: var(--ink); font-weight: 700; }
-/* the size beside an export part's link, on its own line and whole, never cut */
-.part-size { display: block; white-space: normal; }
 /* a suggested tag the text has already: marked, in its place */
 .tag-suggestions .wic-btn[aria-pressed="true"] { background: var(--paper-raised); box-shadow: inset 0 -3px 0 var(--ochre); }
 .recounting { opacity: 0.6; }
@@ -753,18 +726,11 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .none-held .source-count { color: var(--ink-muted); }
 /* a button in a table row keeps the row's height */
 .wrap .ledger-table td .wic-btn { height: 28px; }
-/* the links of a row that lead to other pages read as links, even in a dense table */
-.ledger-table td .row-links a, .ledger-table td .row-links .link-button { text-decoration-line: underline; }
 /* a text column after a number column starts apart from it, so the two never read as one */
 .ledger-table th.number + th:not(.number), .ledger-table td.number + td:not(.number) { padding-left: var(--gap-block); }
 /* a page with nothing in it yet: one line and its actions */
 .empty-state { display: grid; justify-items: start; gap: var(--gap-group); padding: var(--gap-block); background: var(--paper-raised); border: 1px solid var(--line); }
 .empty-state p { margin: 0; }
-/* beside a share of the dataset form: its part of the plain texts, and how many it takes */
-.share-said { display: inline-flex; align-items: center; gap: var(--gap-tight); min-height: 36px; white-space: nowrap; }
-/* the export of one part: its two forms side by side, each a button over its form and size */
-.export-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15em), 15em)); gap: var(--gap-group) var(--gap-block); }
-.export-choice { display: grid; justify-items: start; gap: var(--gap-hair); }
 .next-steps li { display: flex; align-items: center; gap: var(--gap-group); }
 .next-steps .cue { min-width: 8em; }
 /* a short table: as wide as its columns, so a number stays near its label */
@@ -782,27 +748,24 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .entry-row .wic-field:has(input[type="number"]) { flex: 0 0 7em; }
 .entry-row .wic-field:has(input[list]) { flex: 0 1 14em; }
 
-/* a recipe a dataset names and nobody made yet: above the recipes, with the button that makes it */
-.wanted { justify-content: space-between; padding: var(--gap-tight) var(--gap-group); border: 1px dashed var(--ochre); background: var(--paper-raised); }
-/* the commands a refused copy shows instead, ready to select */
-.copy-by-hand { flex-basis: 100%; max-height: 12em; overflow: auto; user-select: all; }
-
 /* a mix as a bar (mix.tsx, MixBar): each part a piece as wide as its part of
-   the corpus, the conversations hatched (they take their own natural part),
-   the shares solid; under it a legend, a part per line, figure first */
+   the corpus, the shares solid, the conversations last and hatched (they take
+   their own natural part); under it a legend, a part per row: swatch, figure,
+   name and what it holds */
 .mix { display: grid; gap: var(--gap-hair); font-family: var(--font-serif); font-weight: 400; font-size: 14px; line-height: 18px; color: var(--ink-muted); }
 .mix-bar { display: flex; gap: 2px; height: 10px; margin: 6px 0 2px; }
-.mix-seg { flex-basis: 0; min-width: 3px; }
-.mix-legend { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 2px var(--gap-tight); }
+.mix-seg { flex-basis: 0; min-width: 6px; }
+.mix-legend { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: 2px var(--gap-tight); }
 .mix-legend li { display: contents; }
-.mix-part { display: inline; }
-.mix-swatch { display: inline-block; width: 10px; height: 10px; margin-right: var(--gap-hair); }
-.mix-items { background: repeating-linear-gradient(135deg, var(--ink-muted) 0 2px, transparent 2px 5px); box-shadow: inset 0 0 0 1px var(--ink-muted); }
+.mix-swatch { display: inline-block; width: 10px; height: 10px; }
+.mix-items { background: repeating-linear-gradient(135deg, var(--ink-muted) 0 2px, transparent 2px 5px); }
+.mix-swatch.mix-items { box-shadow: inset 0 0 0 1px var(--ink-muted); }
 .mix-share-0 { background: var(--ink); }
 .mix-share-1 { background: var(--ochre); }
 .mix-share-2 { background: var(--line-strong); }
-.mix-figure { font-family: var(--font-gothic); font-weight: 800; font-size: 18px; line-height: 24px; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
-.mix-rest-word { font-style: italic; font-size: 13px; }
+.mix-figure { font-family: var(--font-gothic); font-weight: 800; font-size: 18px; line-height: 24px; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; text-align: right; }
+.mix-name { color: var(--ink); }
+.mix-detail { color: var(--ink-muted); }
 /* a figure in a table that is a quantity in words ("about 5.4 million"): the body face with even digits, never the typewriter */
 .ledger-table td.figure { font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* a text's title with its id beside it, so the line of facts under it keeps to its facts */
@@ -828,29 +791,119 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .scores-table tr > td:nth-child(3) { order: 3; flex: 1 1 100%; }
   .scores-table tr > td:nth-child(3)::before { content: "made from "; } /* the column's head is hidden */
 }
-.estimate-ask { align-items: center; }
-.estimate-head { margin: 0 0 var(--gap-hair); }
 
-/* a library read whole: the strip's text in the middle, its own scrollbar at the right standing for the whole strip */
-.strip-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.strip-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-hair) var(--gap-group); padding-bottom: var(--gap-hair); border-bottom: 1px solid var(--line-strong); }
-.strip-title { margin: 0; font-size: 1.4rem; }
-.strip-frame > .open-head { flex: 0 0 auto; padding-bottom: var(--gap-hair); }
-.read-whole { color: var(--ink-muted); white-space: nowrap; }
-.read-whole:hover { color: var(--ink); }
-.strip-where { flex: 1 1 260px; min-width: 0; }
-.strip-go { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gap-tight); }
-.strip-go input { font: inherit; padding: 2px 6px; border: 1px solid var(--line-strong); background: var(--paper-raised); color: var(--ink); }
-.strip-note { margin: var(--gap-hair) 0 0; }
-.strip-body { flex: 1; min-height: 0; display: flex; gap: var(--gap-tight); padding-top: var(--gap-hair); }
-.strip-view { position: relative; flex: 1; min-width: 0; overflow-y: auto; overflow-anchor: none; scrollbar-width: none; padding-right: var(--gap-tight); }
-.strip-view::-webkit-scrollbar { display: none; }
-.strip-view:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
-.strip-block { max-width: 60em; }
-.strip-block > .blob-rule { margin-top: var(--gap-group); }
-.strip-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--text-font, var(--font-serif)); font-size: 15px; line-height: 23px; }
-.strip-edge { padding: var(--gap-group) 0; text-align: center; }
-.strip-bar { position: relative; flex: 0 0 18px; background: var(--paper-raised); border-left: 1px solid var(--line); cursor: pointer; touch-action: none; }
-.strip-bar.waiting { cursor: not-allowed; opacity: 0.6; }
-.strip-thumb { position: absolute; left: 2px; right: 2px; height: 28px; background: var(--line-strong); border-radius: 3px; pointer-events: none; }
-.strip-bar:hover .strip-thumb { background: var(--ink-muted); }
+/* a recipe's four stages (snapshot, recipe, vocabulary, corpus) side by side */
+.stages.stages-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .stages.stages-4 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); } }
+@media (max-width: 760px) { .stages.stages-4 { grid-template-columns: minmax(0, 1fr); } }
+
+/* choices made by a click: a row of chips, each a toggle (aria-pressed), the pressed one underlined in ochre */
+.chips-field { border: 0; margin: 0 0 var(--gap-group); padding: 0; min-width: 0; }
+.chips-field > legend { padding: 0; margin-bottom: var(--gap-tight); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--gap-tight); }
+.chip-button { font: inherit; font-size: 15px; line-height: 20px; min-height: 36px; padding: var(--gap-tight) var(--gap-group); border: 1px solid var(--line-strong); background: var(--paper); color: var(--ink); cursor: pointer; }
+.chip-button:hover:not(:disabled) { background: var(--paper-raised); }
+.chip-button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.chip-button[aria-pressed="true"] { background: var(--paper-raised); border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--ochre); font-weight: 700; }
+.chip-button:disabled { cursor: not-allowed; color: var(--ink-muted); border-style: dashed; }
+
+/* the recipe composer: its choices beside what they give, one above the other on a narrow screen */
+.composer-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap-block); align-items: start; }
+.composer-result[aria-busy="true"] { opacity: 0.7; }
+.share-slider { display: grid; grid-template-columns: 8em minmax(0, 1fr) 4em; align-items: center; gap: var(--gap-tight); margin-top: var(--gap-tight); }
+.share-slider input, .size-slider { width: 100%; accent-color: var(--ink); min-height: 32px; }
+.size-slider { margin-top: var(--gap-tight); }
+.recipe-json { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--paper-raised); padding: var(--gap-tight); max-height: 24em; overflow: auto; font-size: 13px; }
+.ledger-table.compact td, .ledger-table.compact th { padding-top: 2px; padding-bottom: 2px; }
+@media (max-width: 900px) { .composer-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* the kind picker (kind-picker.tsx): one card a kind, its meaning under its name; on an open text, its card alone, small and greyed */
+.kind-picker { border: 0; margin: 0 0 var(--gap-group); padding: 0; min-width: 0; }
+.kind-picker > legend { padding: 0; margin-bottom: var(--gap-tight); }
+.kind-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14em), 1fr)); gap: var(--gap-tight); }
+.kind-card { position: relative; display: grid; align-content: start; gap: 2px; padding: var(--gap-tight) var(--gap-group); border: 1px solid var(--line-strong); background: var(--paper); cursor: pointer; min-width: 0; }
+.kind-card:hover { background: var(--paper-raised); }
+.kind-card input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.kind-card:has(input:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+.kind-card:has(input:checked), .kind-card:has(input:checked):hover { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.kind-card:has(input:checked) .kind-meaning { color: var(--paper); opacity: 0.85; }
+.kind-name { font-weight: 700; }
+.kind-help { display: grid; gap: var(--gap-hair); }
+.kind-card:has(input:checked) .kind-name::before { content: "✓ "; }
+.kind-meaning { font-size: 15px; line-height: 20px; color: var(--ink-muted); }
+/* the kind of a text already added: a plain muted word, no box, so it never reads as a button */
+.kind-card.kind-fixed { display: inline-flex; padding: 0; cursor: default; color: var(--ink-muted); border: 0; background: transparent; font-size: 14px; }
+.kind-card.kind-fixed:hover, .kind-card.kind-fixed:has(input:checked), .kind-card.kind-fixed:has(input:checked):hover { background: transparent; color: var(--ink-muted); border: 0; box-shadow: none; }
+.kind-card.kind-fixed .kind-name { font-weight: 400; }
+.kind-card.kind-fixed:has(input:checked) .kind-name::before { content: none; }
+
+/* a conversation edited as a chat (conversation-editor.tsx): the transcript's messages, each with its role
+   buttons, its blocks and their moves always shown */
+.conversation-editor { display: grid; gap: var(--gap-group); min-width: 0; }
+.conversation-editor .wic-message { width: min(100%, 72ch); }
+.conversation-editor .chat-turn { display: flex; flex-direction: column; min-width: 0; }
+/* every message on the same left edge, the user's told from the assistant's by the colour of its side rule */
+.conversation-editor .wic-message-user { clip-path: none; align-self: flex-start; background: transparent; padding: 0 0 0 var(--space-4); border-left: 3px solid var(--ochre); }
+.conversation-editor .wic-message-body { font-size: 16px; line-height: 25px; }
+.chat-roles { margin-bottom: var(--gap-tight); }
+.chat-roles .chip-button { min-height: 32px; padding: 2px var(--gap-tight); font-size: 14px; }
+/* a role the message cannot take keeps the same solid box, greyed; its title says why */
+.chat-roles .chip-button:disabled { border-style: solid; opacity: 0.5; }
+.chat-blocks { display: grid; gap: var(--gap-tight); min-width: 0; }
+.chat-inner { padding-left: var(--gap-tight); border-left: 3px solid var(--line-strong); }
+.chat-block { display: grid; gap: var(--gap-hair); min-width: 0; }
+.chat-text { width: 100%; min-width: 0; }
+.chat-block-thinking, .chat-block-excerpt { padding-left: var(--gap-tight); border-left: 3px solid var(--line-strong); }
+.chat-block-head { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-tight); }
+.chat-moves { display: inline-flex; align-items: center; gap: 2px; }
+.chat-moves > .aside { margin-right: var(--gap-tight); }
+.chat-moves .wic-btn { min-width: 32px; height: 32px; padding: 0 var(--gap-tight); }
+.chat-fields { display: grid; gap: var(--gap-tight); min-width: 0; }
+.chat-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12em), 1fr)); gap: var(--gap-tight); }
+.chat-adds { align-items: center; }
+.chat-new { flex-wrap: wrap; }
+.chat-problems { padding: var(--gap-tight) var(--gap-group); border-left: 3px solid var(--red-ink); background: var(--paper-raised); }
+.chat-problems ul { margin: var(--gap-hair) 0 0; padding-left: 1.2em; }
+
+/* The passage picker (passage-picker.tsx) and the excerpt blocks it fills. */
+.passage-picker { display: grid; gap: var(--gap-tight); min-width: 0; }
+.passage-picker .viewer { max-height: 50vh; }
+.passage-list { display: grid; gap: var(--gap-tight); min-width: 0; }
+.passage-texts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--gap-hair); max-height: 45vh; overflow-y: auto; }
+.passage-text { display: grid; gap: 2px; width: 100%; text-align: left; font: inherit; padding: var(--gap-tight) var(--gap-group); min-height: 44px;
+  border: 1px solid var(--line); background: var(--paper); color: var(--ink); cursor: pointer; overflow-wrap: anywhere; }
+.passage-text:hover { background: var(--paper-raised); border-color: var(--line-strong); }
+.passage-text:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.passage-title { font-weight: 700; }
+/* the quote picked and its button, kept in view at the bottom of the dialog while the text scrolls */
+.passage-chosen { display: grid; gap: var(--gap-tight); justify-items: start; position: sticky; bottom: 0; z-index: 1; padding: var(--gap-tight) 0; background: var(--paper-raised); border-top: 1px solid var(--line-strong); }
+.passage-quote { margin: 0; padding-left: var(--gap-tight); border-left: 3px solid var(--ochre); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-serif); }
+.passage-quote mark { background: var(--paper-raised); color: var(--ink); box-shadow: inset 0 -2px 0 var(--ochre); }
+.chat-by-hand > summary { cursor: pointer; }
+.passage-head { flex-wrap: wrap; justify-content: space-between; align-items: center; }
+
+/* nothing of the page shows over a dialog: the review bar stuck to the bottom of a phone's screen hides while one is open */
+body:has(dialog[open]) .dock { visibility: hidden; }
+/* a recipe's line beside its next step's button */
+.head-why { align-self: center; font-style: normal; color: var(--ink-muted); }
+/* details folded under "More" inside a section */
+.data-more { margin-top: var(--gap-tight); }
+.data-more > summary { cursor: pointer; margin-bottom: var(--gap-hair); }
+/* links in a short list that are its point, underlined as links */
+.plain.linked li > a { text-decoration-line: underline; }
+/* the filter's clear button: a small cross after the menus */
+.clear-filter { align-self: center; font-size: 18px; line-height: 1; padding: var(--gap-hair); }
+
+/* on a phone, after the rules above they override */
+@media (max-width: 760px) {
+  /* a dialog fills the screen and scrolls inside, so its last button is always reachable */
+  .wic-dialog-center, .wic-dialog-center:not(:has(.wide)), .wic-dialog-center:has(.wide) { width: 100vw; max-width: 100vw; height: 100dvh; margin: 0; }
+  .wic-dialog-center .wic-dialog-sheet, .wic-dialog-center:not(:has(.wide)) .wic-dialog-sheet, .wic-dialog-center:has(.wide) .wic-dialog-sheet { height: 100%; max-height: 100dvh; clip-path: none; }
+  .wic-dialog-center .wic-dialog-head { padding: var(--space-3) var(--gap-group) var(--space-2); }
+  .wic-dialog-center .wic-dialog-body { padding: var(--space-2) var(--gap-group) var(--gap-group); }
+  .passage-picker .viewer { max-height: 38vh; }
+  /* the kinds two by two, short */
+  .kind-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kind-card { padding: var(--gap-hair) var(--gap-tight); }
+  .kind-meaning { font-size: 13px; line-height: 17px; }
+}

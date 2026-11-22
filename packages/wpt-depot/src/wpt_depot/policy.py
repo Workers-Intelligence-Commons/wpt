@@ -63,6 +63,15 @@ def scores_change(set_names: list[str], removed: list[str]) -> str:
     return f"scores changed: {'; '.join(parts)}"
 
 
+def tags_change(added: list[str], removed: list[str]) -> str:
+    """The reason the depot writes on the decision that records tags given
+    to or taken from many texts at once (Depot.retag): the tags added and
+    those removed. It never starts over (starts_over)."""
+    parts = ([f"added {', '.join(added)}"] if added else []) + (
+        [f"removed {', '.join(removed)}"] if removed else [])
+    return f"tags changed: {'; '.join(parts)}"
+
+
 def credits_change(names: list[str]) -> str:
     """The reason the depot writes on the decision that records a change of
     the credits of many texts at once: the names of the credits that

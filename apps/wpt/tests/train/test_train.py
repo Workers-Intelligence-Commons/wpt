@@ -3,12 +3,10 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
 import threading
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -63,7 +61,14 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     tokenizer = Tokenizer.from_bytes(load_tokenizer(tmp_path / "model"))
     assert model.config.vocab_size == tokenizer.vocab_size
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["corpus"] == {"id": corpus_id, "depot": built.depot.name(), "dataset": "d"}
+    # the snapshot, the recipe and the code build the corpus again: the corpus itself is a cache
+    assert provenance["corpus"] == {"id": corpus_id, "build_key": record["build_key"], "rules": record["rules"],
+                                    "depot": built.depot.name(), "snapshot": record["snapshot"],
+                                    "data": record["data"]}
+    assert provenance["data"] == json.loads((tmp_path / "data" / "recipes" / "models" / "three.json").read_text())["data"]
+    assert (provenance["data"]["snapshot"], provenance["data"]["change"], provenance["data"]["digest"]) == (
+        "d", record["snapshot"]["change"], record["snapshot"]["digest"])
+    assert provenance["repository_commit"] is not None
     assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
     assert provenance["learned"] == {"plain": record["total_tokens"]}  # the recipe trains on the whole corpus
     assert provenance["recipe_name"] == "three"
@@ -478,13 +483,16 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
     assert f"\n{built.notice}\n" in credits and "MIT (MIT License)\nCopyright (c) 2026 Ada Writer" in credits
     notice = (folder / "NOTICE").read_text()
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
-    assert f"From corpus {built.corpus_id}, built from dataset d of the depot {built.depot.name()}" in notice
+    snapshot = corpora.find(built.store, built.corpus_id)["snapshot"]
+    trained_on = (f"Trained on snapshot d (change {snapshot['change']}, digest {snapshot['digest']}) of the depot "
+                  f"{built.depot.name()}, recipe d, code at commit ")
+    assert trained_on in notice and f"corpus {built.corpus_id}:" in notice
     assert credits.rstrip("\n") in notice
     assert notice.endswith((ROOT / "OUTPUT-NOTICE").read_text())
     assert (folder / "LICENSE").read_text() == (ROOT / "LICENSE").read_text()
     card = (folder / "README.md").read_text()
     assert card.startswith("---\nlicense: agpl-3.0\n---\n") and "Weights: AGPL-3.0-or-later" in card
-    assert built.corpus_id in card and "None yet: run `wpt eval" in card
+    assert built.corpus_id in card and f"- {trained_on}" in card and "None yet: run `wpt eval" in card
     assert json.loads((folder / "provenance.json").read_text())["texts"] == len(learned)
     with safe_open(folder / "model.safetensors", "pt") as weights:
         assert weights.metadata()["license"] == "AGPL-3.0-or-later"
@@ -502,13 +510,21 @@ def test_a_damaged_shard_stops_training_before_it_starts(built, tmp_path, capsys
     assert not (tmp_path / "model").exists()
 
 
-def test_a_corpus_of_another_dataset_than_the_recipe_s_is_refused(built, tmp_path, capsys):
+def test_a_corpus_of_another_snapshot_or_other_shares_than_the_recipe_s_is_refused(built, tmp_path, capsys):
     # the model must train on what its recipe names, so a corpus of another
-    # dataset stops the run before it starts
-    other = built.dataset("other")
+    # snapshot, or of the same one with other shares, stops the run before it starts
+    other = built.snapshot("other")
     with pytest.raises(SystemExit) as refused:
         main(["d", other, "--out", "model"])
-    assert refused.value.code == 2 and "this recipe names dataset 'd'" in capsys.readouterr().err
+    said = bare(capsys.readouterr().err)
+    assert refused.value.code == 2 and "was built from snapshot other" in said and "this recipe names snapshot d " in said
+    folder = tmp_path / "data" / "recipes" / "models"
+    recipe = json.loads((folder / "d.json").read_text())
+    recipe["data"]["shares"] = [{"tag": "en", "share": 0.5}]
+    (folder / "half.json").write_text(json.dumps(recipe))
+    with pytest.raises(SystemExit) as refused:
+        main(["half", built.corpus_id, "--out", "model"])
+    assert refused.value.code == 2 and "with kinds, shares or vocabulary other than the recipe's" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
 
 
@@ -774,36 +790,26 @@ def test_the_update_asked_for_is_profiled_into_the_record_and_training_goes_on(b
 
 
 def test_a_store_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_one_line(built, monkeypatch, capsys):
-    def failing(store, depot, dataset, vocabulary, size):
+    def failing(store, key):
         raise StoreError("the bucket does not answer")
 
-    built.sized("d", None)  # "d" publishes a vocabulary, so the run asks the store for the corpus of its triple
-    monkeypatch.setattr(corpora, "latest_fresh", failing)
+    monkeypatch.setattr(corpora, "of_key", failing)  # the run asks the store for the corpus of its build key
     with pytest.raises(SystemExit) as refused:
         main(["d"])
     assert refused.value.code == 2 and bare(capsys.readouterr().err) == "StoreError: the bucket does not answer\n"
 
 
-def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_dataset_s_published_vocabulary_at_its_size(
-        built, tmp_path, capsys):
+def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_build_key(built, tmp_path, capsys):
     # the id goes from the build to the training through the store, not through a person's hands: the recipe's
-    # dataset, the vocabulary that dataset publishes and the recipe's total_tokens name the corpus
-    whole = built.dataset("later")  # every token, with the depot's vocabulary, which the dataset does not publish
-    recipe = built.recipe("three", training=one_stage(3), dataset="later")  # total_tokens: every token of later
-    row = built.depot.dataset("later")
+    # snapshot, data section and vocabulary make the build's key, which names the corpus's folder
+    whole = built.snapshot("later")  # every token
+    recipe = built.recipe("three", training=one_stage(3), snapshot="later")  # total_tokens: every token of later
     size = json.loads((tmp_path / "data" / "recipes" / "models" / "three.json").read_text())["data"]["total_tokens"]
-    page = f"fox/#/download/{row['id']}"
-    with pytest.raises(SystemExit) as refused:
-        main([recipe, "--out", "model"])
-    said = capsys.readouterr().err
-    assert refused.value.code == 2 and "publishes no vocabulary" in said and page in said
-    built.depot.edit_dataset(row["id"], "later", [(None, one["library"]) for one in row["libraries"]],
-                             [(one["tag"], one["share"]) for one in row["shares"]],
-                             vocabulary=corpora.find(built.store, whole)["tokenizer"]["sha256"])
     with pytest.raises(SystemExit) as refused:  # only the corpus of every token is built, not that size
         main([recipe, "--out", "model"])
     said = bare(capsys.readouterr().err)
-    assert refused.value.code == 2 and f"at the size {size:,} (the recipe's total_tokens)" in said and page in said
+    assert refused.value.code == 2 and f"no fresh corpus of snapshot later of the depot fox with the vocabulary " \
+        f"{built.vocabulary} at the size {size:,}" in said and "press Build on the recipe page" in said
 
     sized = built.sized("later", size)["id"]
     main([recipe, "--out", "model"])
@@ -816,95 +822,83 @@ def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_dataset_s_publish
     assert refused.value.code == 2 and "no corpus 00000000" in capsys.readouterr().err
 
 
-def test_a_corpus_is_found_by_its_dataset_s_id_through_a_rename_and_an_older_revision_is_used_with_a_warning(built):
-    # a renamed dataset keeps its corpora, and a newer revision of it than its corpus trains on that corpus, said
-    from wpt.train import InputError, find_corpus, load_corpus, load_data
-    from wpt.train.recipe_depot import download_page
-    built.dataset("later")
-    renamed = load_data(built.recipe("three", training=one_stage(3), dataset="renamed"))
-    sized = built.sized("later", renamed["total_tokens"])  # built from revision 2, which publishes it
-    dataset = built.depot.dataset("later")
-    built.depot.edit_dataset(dataset["id"], "renamed", [(None, one["library"]) for one in dataset["libraries"]],
-                             [(one["tag"], one["share"]) for one in dataset["shares"]],
-                             vocabulary=dataset["vocabulary"])
-    said = []
-
-    record = find_corpus(built.store, None, renamed, lambda text, level="INFO": said.append((level, text)))
-
-    assert record["id"] == sized["id"] and (record["dataset"]["id"], record["dataset"]["revision"]) == (
-        dataset["id"], 2)
-    assert said == [("WARNING", f"corpus {sized['id']} was built from revision 2 of the dataset 'renamed' "
-                                f"({dataset['id']}), whose current revision is 3: this run trains on the older "
-                                f"revision; to train on the current one, build the size {renamed['total_tokens']:,} "
-                                f"again with `wpt depot build renamed --max-tokens {renamed['total_tokens']}` or on its "
-                                f"download page {download_page(renamed['depot'], dataset['id'])}")]
-    load_corpus(built.store, record, {"data": renamed})  # built under its old name, it is still the recipe's dataset
-    built.depot.new_dataset("later", "classics", [(None, dataset["libraries"][0]["library"])])
-    with pytest.raises(InputError, match="'later' .* publishes no vocabulary"):  # a new dataset of the old name
-        find_corpus(built.store, None, load_data(built.recipe("four", training=one_stage(3), dataset="later")))
+def test_a_recipe_whose_snapshot_reads_another_change_or_digest_or_is_missing_is_refused(built, tmp_path):
+    # the change and the digest prove which texts the snapshot holds: a recipe that says others names other texts
+    from wpt.train import InputError, find_corpus, load_data
+    data = load_data(built.recipe("three", training=one_stage(3)))
+    built.sized("d", data["total_tokens"])
+    assert find_corpus(built.store, None, data)["build_key"]
+    snapshot = built.depot.snapshot("d")
+    for wrong in ({"change": data["change"] + 1}, {"digest": "0" * 64}):
+        with pytest.raises(InputError, match=f"snapshot d of depot fox reads change {snapshot['at_change']} with "
+                                             f"digest {snapshot['digest']}; the recipe says "):
+            find_corpus(built.store, None, {**data, **wrong})
+    with pytest.raises(InputError, match="no snapshot 'never' of the depot 'fox'"):
+        find_corpus(built.store, None, {**data, "snapshot": "never"})
+    with pytest.raises(InputError, match="cannot be read"):  # a depot neither WPT_DEPOT nor a web address names
+        find_corpus(built.store, None, {**data, "depot": "elsewhere"})
 
 
 def test_a_recipe_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the_build_that_makes_one(built):
-    # without a corpus id, an old corpus of the triple must not pass for a triple never built
+    # without a corpus id, an old corpus of the build key must not pass for one never built
     from wpt.train import InputError, find_corpus, load_data
     data = load_data(built.recipe("old-layout", training=one_stage(3)))
     record = built.sized("d", data["total_tokens"])
     built.store.put_json(f"{corpora.folder_of(record)}/{corpora.RECORD}",
                          {**record, "shards": corpora.token_files(record)})
 
-    with pytest.raises(InputError, match=rf"does not list its token files by kind.*`wpt depot build "
-                                         rf"{record['dataset']['name']} --max-tokens {data['total_tokens']}`"):
+    with pytest.raises(InputError, match=r"does not list its token files by kind.*press Build on the recipe page"):
         find_corpus(built.store, None, data)
 
 
-def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_corpus_through_the_depot_s_web_app(
-        built, tmp_path, monkeypatch):
-    # a machine without the depot's file reads the dataset and the listing of its downloads, which names the latest
-    # fresh corpus of each triple; the corpus built with that public address is the recipe's
-    from wpt.depot.jobs import Jobs
-    from wpt.depot.web.routes import STATUSES, routes
-    from wpt.depot.web.server import make_server
-    from wpt.train import InputError, find_corpus, load_corpus
-    from wpt_depot.settings import URL_SETTING
-    (tmp_path / "static").mkdir()
-    (tmp_path / "static" / "index.html").write_text("<p>interface</p>")
-    jobs = Jobs(built.depot.address, STATUSES)
-    server = make_server(routes(built.depot, jobs), tmp_path / "static")
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    address = f"http://127.0.0.1:{server.server_address[1]}"
-    try:
-        monkeypatch.setenv(URL_SETTING, address)
-        row = built.depot.dataset("d")
-        size = corpora.find(built.store, built.corpus_id)["total_tokens"]
-        public = built.sized("d", size, url=address)
-        monkeypatch.delenv("WPT_DEPOT")  # the depot's web app, in this process, still knows its public address
-        data = {"depot": address, "dataset": row["id"], "total_tokens": size}
+def test_a_recipe_written_before_snapshots_trains_on_its_dataset_s_corpus_and_its_folder_says_so(built, tmp_path):
+    # a recipe of a dataset (the legacy shape) still trains on a corpus built from that dataset, given by its id,
+    # and the model folder names that corpus, its dataset and its depot as such folders always did
+    record = corpora.find(built.store, built.corpus_id)
+    legacy = {key: value for key, value in record.items() if key not in ("build_key", "snapshot", "data")}
+    legacy.update(id="1e9acy" + record["id"][6:], dataset={"id": "fox-1", "name": "classics", "revision": 1})
+    built.store.put_json(f"{corpora.FOLDER}/classics-1e9acy00/{corpora.RECORD}", legacy)  # its files stay where they are
+    folder = tmp_path / "data" / "recipes" / "models"
+    recipe = json.loads((folder / "d.json").read_text())
+    recipe["data"] = {"depot": built.depot.name(), "dataset": "classics", "total_tokens": record["total_tokens"]}
+    (folder / "old.json").write_text(json.dumps(recipe))
 
-        record = find_corpus(built.store, None, data)
+    main(["old", legacy["id"][:12], "--out", "model"])
 
-        assert record["id"] == public["id"] and record["depot"] == address
-        load_corpus(built.store, record, {"data": data})
-        with pytest.raises(InputError, match=f"build it on its download page {address}/#/download/{row['id']}"):
-            find_corpus(built.store, None, {**data, "total_tokens": size - 1})  # that size is not built
-        # one rule on both paths: a corpus of an older revision counts, with a warning, though the download link of
-        # the triple, whose revision rule is its own, no longer gives it once the dataset's name changed
-        current = built.depot.dataset("d")
-        built.depot.edit_dataset(current["id"], "renamed", [(None, one["library"]) for one in current["libraries"]],
-                                 [(one["tag"], one["share"]) for one in current["shares"]],
-                                 vocabulary=current["vocabulary"])
-        said = []
+    provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
+    assert provenance["corpus"] == {"id": legacy["id"], "depot": built.depot.name(), "dataset": "classics"}
+    assert "data" not in provenance
+    assert (f"From corpus {legacy['id']}, built from dataset classics of the depot {built.depot.name()}:"
+            in (tmp_path / "model" / "NOTICE").read_text())
+    with pytest.raises(SystemExit) as refused:  # a corpus of a snapshot is not a dataset's
+        main(["old", built.corpus_id, "--out", "other"])
+    assert refused.value.code == 2
 
-        older = find_corpus(built.store, None, data, lambda text, level="INFO": said.append((level, text)))
 
-        assert older["id"] == public["id"]
-        assert [level for level, _ in said] == ["WARNING"] and (
-            f"was built from revision {current['revision']} of the dataset 'renamed'" in said[0][1])
-        link = json.loads(urllib.request.urlopen(
-            f"{address}/api/datasets/{row['id']}/download/{current['vocabulary']}/{size}").read())
-        assert link["state"] == "not built"
-    finally:
-        server.shutdown()
-        server.server_close()
+def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_snapshot_through_the_depot_s_web_app(
+        built, monkeypatch):
+    # a machine without the depot's file reads the snapshot from the depot's web app (its own name, GET /api/about,
+    # and its snapshots, GET /api/snapshots), then the corpus of the build key from the store
+    from wpt.train import InputError, find_corpus, load_corpus, recipe_depot
+    address = "https://depot.example.org"
+    answers = {"/api/about": {"about": built.depot.about()},
+               "/api/snapshots": [{**row, "owner": row["owner"]} for row in built.depot.snapshots()]}
+    asked = []
+    monkeypatch.setattr(recipe_depot.WebDepot, "_json", lambda self, route: asked.append(route) or answers[route])
+    monkeypatch.delenv("WPT_DEPOT")
+    size = corpora.find(built.store, built.corpus_id)["total_tokens"]
+    data = {**built.data("d", size), "depot": address}
+    public = built.sized("d", size, url=address)
+
+    record = find_corpus(built.store, None, data)
+
+    assert record["id"] == public["id"] and record["depot"] == address and asked == ["/api/about", "/api/snapshots"]
+    load_corpus(built.store, record, {"data": data})
+    with pytest.raises(InputError, match="press Build on the recipe page"):
+        find_corpus(built.store, None, {**data, "total_tokens": size - 1})  # that size is not built
+    answers["/api/about"] = {"about": {**built.depot.about(), "name": "other"}}  # another depot's snapshots
+    with pytest.raises(InputError, match="no snapshot 'd' of the depot 'https://depot.example.org' \\(other\\)"):
+        find_corpus(built.store, None, data)
 
 
 def test_a_stopped_run_saves_its_step_and_continues_on_another_machine(built, tmp_path, monkeypatch):
@@ -1073,7 +1067,7 @@ def refusal(capsys, argv) -> str:
     return capsys.readouterr().err
 
 
-def test_a_stale_corpus_is_refused_until_its_dataset_is_built_again(built, tmp_path, capsys):
+def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, capsys):
     # an admitted erasure reached a text the corpus holds (docs/erasure.md): training on it would learn the erased passage
     record = corpora.find(built.store, built.corpus_id)
     text = corpora.read_table(built.store, record, "texts").to_pylist()[0]["id"]
@@ -1081,17 +1075,18 @@ def test_a_stale_corpus_is_refused_until_its_dataset_is_built_again(built, tmp_p
 
     said = refusal(capsys, [built.recipe("stale"), built.corpus_id, "--out", "model"])
     assert "is stale" in said
-    assert re.search(rf"`wpt depot build {record['dataset']['name']} --max-tokens \d+`, or on its download page ", said)
+    assert "press Build on the recipe page" in said
     assert not (tmp_path / "model").exists()
 
 
 def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the_build_that_makes_one():
-    # each step reads the token files of the kinds it names: a corpus of one list cannot say which are which
+    # each step reads the token files of the kinds it names: a corpus of one list cannot say which are which; no
+    # build makes a corpus of a dataset, so the message says to give the recipe a snapshot
     record = {"id": "old", "dataset": {"id": "d", "name": "classics"}, "shards": [{"path": "shard-0.bin"}],
               "total_tokens": 10}
 
-    with pytest.raises(InputError, match=r"does not list its token files by kind.*`wpt depot build classics "
-                                         r"--max-tokens 10`"):
+    with pytest.raises(InputError, match=r"does not list its token files by kind.*no build makes a corpus of a "
+                                         r"dataset.*press Build on the recipe page"):
         check_record(record, {"data": {"total_tokens": 10}})
 
 

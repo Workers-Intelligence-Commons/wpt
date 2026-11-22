@@ -1,7 +1,8 @@
-"""How each share of a dataset splits its budget over the tags its texts
+"""How each share of a recipe splits its budget over the tags its texts
 carry, each tag's part following the square root of what it holds
-(docs/data-selection.md, "Shares"): a first pass over the dataset's order, the choice of texts it makes, and the chosen set a corpus
-build or a vocabulary's sample follows as it walks the order again.
+(docs/data-selection.md, "Shares"): a first pass over the snapshot's
+order, the choice of texts it makes, and the chosen set a corpus build
+follows as it walks the order again.
 
 A plain text belongs to the first share whose tag it has (wpt_depot.order).
 Inside a share, every tag its texts carry other than the share's own is a
@@ -10,11 +11,12 @@ is None. Nothing here knows a tag's name or kind: the groups come from the
 texts' tags alone. A piece of a long text is an entry of its own in the
 groups of its text's tags.
 
-The first pass (plan) walks the whole order once, before anything is
-chosen, and keeps numpy arrays only, never an object per text: for each
-entry of a share's plain texts, its depot and id (an id is a depot's name,
-a hyphen and a number, wpt_depot.ids: the name interned and the number
-kept; an id of another shape is kept apart), its revision, its piece, its
+The first pass (plan) walks the whole order of the snapshot once
+(wpt_depot.order), before anything is chosen, and keeps numpy arrays only,
+never an object per text: for each entry of a share's plain texts, its id
+(an id is a depot's name, a hyphen and a number, wpt_depot.ids: the name
+interned and the number kept; an id of another shape is kept apart), its
+revision, its piece, its
 bytes and the ids of its groups; then each group's queue, its entries in
 the order. That is about 25 bytes an entry and 8 bytes for each pair of an
 entry and one of its groups; 8 bytes a pair more for a moment while the
@@ -46,15 +48,15 @@ an entry's place is its rank among them. The chosen set is the sorted array
 of the places of the entries chosen, so a walk that counts the entries of
 those shares as it meets them knows whether each one is chosen (Picker).
 
-    plan(libraries, tags, budget, long, addresses, count, progress)   the texts the shares choose, as a Plan
-    groups_of(tags, share)                                            the groups of a text of a share
+    plan(order, tags, budget, kinds, count, progress, walked)   the texts the shares choose, as a Plan
+    groups_of(tags, share)                                      the groups of a text of a share
 """
 
 import array
 import hashlib
 import heapq
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -142,47 +144,49 @@ class Picker:
         return not self.open
 
 
-def plan(libraries: Sequence[tuple], tags: list[str], budget: dict, long: list,
-         addresses: Sequence[str] | None = None, count: Callable[[list[tuple]], list[int]] | None = None,
-         progress=lambda state: None) -> Plan:
-    """The texts each share of a dataset chooses, as the module says:
-    libraries and long as wpt_depot.order.walk takes them, tags the tags of
-    the shares in order, budget {pool: the most it takes, None for no
-    limit}; addresses, the depot file of each source, and count, the tokens
-    of a list of entries, when sizes are tokens (else bytes). progress gets
-    {stage: "choosing", ...} now and then."""
+def plan(order, tags: list[str], budget: dict, kinds: Sequence[str] | None = None,
+         count: Callable[[list[tuple]], list[int]] | None = None, progress=lambda state: None,
+         walked: Iterable | None = None) -> Plan:
+    """The texts each share of a recipe chooses, as the module says: order
+    the snapshot's (wpt_depot.order.Order), tags the tags of the shares in
+    order, budget {pool: the most it takes, None for no limit}, kinds the
+    kinds the recipe names; count, the tokens of a list of entries, when
+    sizes are tokens (else bytes). progress gets {stage: "choosing", ...}
+    now and then. walked: the entries in order instead of a walk of order
+    (order None), with the fields of wpt_depot.order.Entry the first pass
+    reads: a legacy dataset's sample (wpt_depot.legacy), on bytes."""
     covered = {pool for pool, limit in budget.items() if limit is not None}
     if not covered:
         return Plan({}, np.zeros(0, np.int64))
-    entries = _first_pass(libraries, tags, covered, long, progress)
+    entries = _first_pass(walk(order, tags, kinds) if walked is None else walked, tags, covered, progress)
     if entries is None:
         return Plan({}, np.zeros(0, np.int64))
-    return _choose(entries, budget, addresses, count, progress)
+    return _choose(entries, budget, None if order is None else order.address, count, progress)
 
 
 class _Entries:
     """What the first pass keeps of the entries of the shares a plan covers
-    with two groups or more, in the order: whos (each interned (source, id
-    without its number)), odd (the (source, id) of an id kept apart, whose
+    with two groups or more, in the order: whos (each interned id without
+    its number), odd (the id of an id kept apart, whose
     who is -1 - its index), and arrays: who, number, revision, piece (-1:
     a whole text), bytes, offsets (an entry's groups are groups[offsets[e]:
     offsets[e + 1]]), groups, and for each group its pool, its tag and its
     queue (queue[starts[g]:starts[g + 1]], its entries in the order)."""
 
 
-def _first_pass(libraries, tags, covered, long, progress) -> _Entries | None:
+def _first_pass(walked, tags, covered, progress) -> _Entries | None:
     """The entries of the shares covered that have two groups or more
-    (_Entries), from one walk of the whole order; None when no share has."""
+    (_Entries), from one walk of the whole order (walked); None when no share has."""
     share, who, number = array.array("h"), array.array("i"), array.array("I")
     revision, piece, size = array.array("I"), array.array("i"), array.array("I")
     counts, pairs = array.array("H"), array.array("i")
     whos, odd, interned_who = [], [], {}
     group_key, group_ids, interned = [], {}, {}
-    walked = 0
-    for entry in walk(libraries, tags, long=long):
-        walked += 1
-        if walked % MEASURED == 0:
-            progress({"stage": "choosing", "position": walked})
+    seen = 0
+    for entry in walked:
+        seen += 1
+        if seen % MEASURED == 0:
+            progress({"stage": "choosing", "position": seen})
         if entry.kind != PLAIN or entry.pool not in covered:
             continue
         ids = interned.get((entry.pool, entry.tags))
@@ -200,15 +204,15 @@ def _first_pass(libraries, tags, covered, long, progress) -> _Entries | None:
         name, dash, digits = entry.id.rpartition("-")
         if dash and digits.isascii() and digits.isdigit() and (digits == "0" or digits[0] != "0") \
                 and int(digits) < BIG_NUMBER:
-            held = interned_who.get((entry.source, name))
+            held = interned_who.get(name)
             if held is None:
-                held = interned_who[entry.source, name] = len(whos)
-                whos.append((entry.source, f"{name}-"))
+                held = interned_who[name] = len(whos)
+                whos.append(f"{name}-")
             who.append(held)
             number.append(int(digits))
         else:
             who.append(-1 - len(odd))
-            odd.append((entry.source, entry.id))
+            odd.append(entry.id)
             number.append(0)
         share.append(entry.pool)
         revision.append(entry.revision)
@@ -260,11 +264,11 @@ def _first_pass(libraries, tags, covered, long, progress) -> _Entries | None:
     found.starts = np.concatenate([[0], np.cumsum(np.bincount(found.groups, minlength=len(found.pool)))]
                                   ).astype(np.int64)
     found.entries = entries
-    progress({"stage": "choosing", "position": walked, "entries": entries})
+    progress({"stage": "choosing", "position": seen, "entries": entries})
     return found
 
 
-def _choose(entries: _Entries, budget: dict, addresses, count, progress) -> Plan:
+def _choose(entries: _Entries, budget: dict, address, count, progress) -> Plan:
     """The texts each share of entries chooses, as the module says, one
     share after the other."""
     decided = np.zeros(entries.entries, np.int8)
@@ -280,12 +284,11 @@ def _choose(entries: _Entries, budget: dict, addresses, count, progress) -> Plan
     def describe(entry: int) -> tuple:
         held = int(entries.who[entry])
         if held >= 0:
-            source, name = entries.whos[held]
-            text = f"{name}{int(entries.number[entry])}"
+            text = f"{entries.whos[held]}{int(entries.number[entry])}"
         else:
-            source, text = entries.odd[-1 - held]
+            text = entries.odd[-1 - held]
         number = int(entries.piece[entry])
-        return addresses[source], text, int(entries.revision[entry]), None if number < 0 else number
+        return address, text, int(entries.revision[entry]), None if number < 0 else number
 
     def ask(entry: int, active: set, head: dict):
         """The tokens of entry, and of the next texts of the groups active, worked out by count: the

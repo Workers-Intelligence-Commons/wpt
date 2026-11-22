@@ -87,12 +87,14 @@ The depot carries out an admitted request at once:
   a cut that breaks one is refused, and the request stays undecided. The
   removed text leaves no marker.
 - Every revision of a text reads one of its content versions, so a cut
-  reaches every revision, and a locked library that pinned an older
-  revision reads its version cut. A passage in a small field of the
+  reaches every revision, and a snapshot that reads an older revision
+  reads its version cut. A passage in a small field of the
   text, such as its title, is cut from every revision that holds it.
 - A needle without a start and an end removes its text or item from the
-  depot: every revision of it, every content version, and its place in
-  every library, locked or open.
+  depot: every revision of it and every content version. A snapshot's
+  sets are never changed: the removed text's number stays in them, a read
+  of the snapshot skips it and counts it, and the snapshot's page says how
+  many of its texts erasures reached since it was made.
 - A text removed whole leaves its id unused for good: no later text takes
   it, so an id names one text everywhere it is recorded.
 - A later content change of that text is refused when its new content
@@ -121,8 +123,8 @@ The depot carries out an admitted request at once:
   built again leaves out a conversation whose quote no longer matches
   ([data-selection.md](data-selection.md), "Conversations that quote
   texts").
-- A cut text keeps its id, its libraries and its decisions, in a locked
-  library too: the admitted erasure is its admission again.
+- A cut text keeps its id, its decisions and its place in every snapshot
+  that holds it: the admitted erasure is its admission again.
 - The request's `erased` gets one entry per passage: its place once cut
   in the content version its needle names (`at`: how many characters of
   its string stand before it, in characters, inside the field for an item;
@@ -161,20 +163,23 @@ the pull brings the result.
 Erasure applies to the depot and to every corpus built after it, never
 to the depot's backups. A corpus
 already in the store is not rewritten: it keeps the passage until its
-dataset is built again, and it is marked stale (its record names the
+recipe is built again, and it is marked stale (its record names the
 erasures), so `wpt train` refuses it and its download link gives
 nothing until someone builds it again; nothing builds it by itself. A
 corpus being built when the erasure is carried out is written stale when
-its build ends, if it took a text the erasure reached. The same holds for
-an erasure carried out in another local depot a dataset reads: a corpus
-is marked stale by the texts it holds, whichever depot holds them, and its
-build's key counts the erasures of every depot it read. An erasure decided
+its build ends, if it took a text the erasure reached. A corpus is marked
+stale by the texts it holds, whichever depot's numbering their ids carry,
+and its record names the erasures carried out on the texts its snapshot
+holds. An erasure decided
 through `wpt depot web` is recorded as being checked before it is carried
 out, and the web app sends no corpus until every corpus holding one of its
-texts is marked stale, which it does in the background. Built again,
-a dataset gives what its libraries held at its change numbers, less what
-the erasure removed or cut ([data-selection.md](data-selection.md),
-"Building a dataset again"). Models already trained and published are not
+texts is marked stale, which it does in the background. Built again, a
+recipe gives what its snapshot held at its change, less what the erasure
+removed or cut, its plan unchanged since it comes from the snapshot's
+summary ([data-selection.md](data-selection.md), "Building a snapshot
+again"). The legacy tables of a depot brought up from format 12 hold no
+content, and the frozen dataset routes read the texts' content from the
+depot as erasures left it. Models already trained and published are not
 changed.
 
 A trained vocabulary is not retrained when a text changes (see

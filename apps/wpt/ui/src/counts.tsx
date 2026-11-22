@@ -20,9 +20,9 @@
 // finished counts of the same selection as before, so a page keeps showing
 // them, marked as being counted again, until the new count is done.
 // A first step of a filter the depot's counts answer (every text, or one
-// status, tag, license or library) comes back at once from them (held):
-// how many texts it matches, their split by status and how many a locked
-// library holds are then final (settled); the parts the counts do not give
+// status, tag or license, or kinds with statuses) comes back at once from
+// them (held): how many texts it matches and their split by status are then
+// final (settled); the parts the counts do not give
 // (by tag, by license, the blocked texts, null in that answer) are counted
 // by steps that skip the depot's counts, and only those parts are added up.
 
@@ -33,13 +33,13 @@ import { plural, STATUSES, type Status } from "./parts";
 
 // blocked: how many an admission cannot cover, by the depot's reason (blocked.tsx)
 export type Counts = {
-  statuses: Record<Status, number>; locked: number; blocked: Record<string, number>;
+  statuses: Record<Status, number>; blocked: Record<string, number>;
   tags: { tag: string; texts: number }[]; licenses: { license: string; texts: number }[];
 };
 // counted: texts gone over so far; total: how many there are to go over, known from the first step (null for a
 // search through the title index that gives too many to count at once)
 // before: while not done, the last finished counts of the same selection at an earlier version, else null
-// settled: the statuses and locked are final already, read from the depot's counts, while the rest is counted
+// settled: the statuses are final already, read from the depot's counts, while the rest is counted
 // rest: once settled and while not done, what is still counted, in words ("by tag and license")
 export type Counting = Counts & { counted: number; total: number | null; done: boolean; settled: boolean; rest: string | null; problems: string[] | null; before: Counts | null };
 
@@ -70,7 +70,7 @@ let running = false;
 let lastStart = 0;
 
 const EMPTY: Counting = {
-  statuses: { "under review": 0, admitted: 0, refused: 0 }, locked: 0, blocked: {}, tags: [], licenses: [],
+  statuses: { "under review": 0, admitted: 0, refused: 0 }, blocked: {}, tags: [], licenses: [],
   counted: 0, total: null, done: false, settled: false, rest: null, problems: null, before: null,
 };
 
@@ -127,7 +127,7 @@ async function run() {
         job.start = null;
         job.known = { tags: step.tags !== null, licenses: step.licenses !== null, blocked: step.blocked !== null };
         publish(job, {
-          statuses: step.statuses, locked: step.locked, tags: step.tags ?? [], licenses: step.licenses ?? [], blocked: step.blocked ?? {},
+          statuses: step.statuses, tags: step.tags ?? [], licenses: step.licenses ?? [], blocked: step.blocked ?? {},
           counted: rest ? 0 : step.texts, total: step.total, done: !rest, settled: true, problems: null, before: null,
           rest: !rest ? null : [step.tags === null || step.licenses === null ? "by tag and license" : null, step.blocked === null ? "the blocked texts" : null].filter(Boolean).join(" and "),
         });
@@ -138,7 +138,6 @@ async function run() {
       const known = job.known;
       publish(job, {
         statuses: s.settled ? s.statuses : Object.fromEntries(STATUSES.map((st) => [st, s.statuses[st] + step.statuses[st]])) as Record<Status, number>,
-        locked: s.settled ? s.locked : s.locked + step.locked,
         tags: known.tags ? s.tags : added("tag", s.tags, step.tags ?? []),
         licenses: known.licenses ? s.licenses : added("license", s.licenses, step.licenses ?? []),
         blocked: known.blocked ? s.blocked : Object.fromEntries([...new Set([...Object.keys(s.blocked), ...Object.keys(step.blocked ?? {})])]
@@ -189,7 +188,7 @@ export function useCounts(what: TextFilter | Selection | null, version = 0): Cou
 // The counts to show: the finished ones, else, while counted again, those of before; null otherwise.
 export const shownCounts = (c: Counting | null): Counts | null => (c?.done && !c.problems ? c : c?.before ?? null);
 
-// The counts whose statuses and locked are final: the finished ones, or those the depot's counts settled while the
+// The counts whose statuses are final: the finished ones, or those the depot's counts settled while the
 // rest is counted; else, while counted again, those of before; null otherwise.
 export const settledCounts = (c: Counting | null): Counts | null => (c && !c.problems && (c.done || c.settled) ? c : c?.before ?? null);
 

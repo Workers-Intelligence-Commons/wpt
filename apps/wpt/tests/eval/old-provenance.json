@@ -1,0 +1,238 @@
+{
+ "recipe_name": "classics-tiny",
+ "recipe": {
+  "data": {
+   "depot": "https://depot.example.org",
+   "dataset": "classics",
+   "total_tokens": 6002
+  },
+  "model": {
+   "window_layers": 1,
+   "sparse_groups": 1,
+   "sparse_layers": 1,
+   "d_model": 16,
+   "attention_heads": 2,
+   "attention_head_dim": 64,
+   "n_experts": 4,
+   "top_k": 2,
+   "expert_width": 8,
+   "latent_width": 8,
+   "shared_width": 16,
+   "engram_layers": [
+    2
+   ],
+   "engram_order": 3,
+   "engram_heads": 2,
+   "engram_dim": 4,
+   "engram_table_size": 31,
+   "residual_groups": 3,
+   "loops": 0
+  },
+  "seed": 1337,
+  "steps": [
+   {
+    "step": "read-text",
+    "optimizer": {
+     "name": "by-part",
+     "settings": {}
+    },
+    "settings": {
+     "stages": [
+      {
+       "block_size": 16,
+       "steps": 1,
+       "batch_size": 4
+      }
+     ],
+     "eval_every": 2,
+     "eval_batches": 20,
+     "prefix_tokens": 6002
+    }
+   }
+  ],
+  "drafter": {
+   "epochs": 1,
+   "prompts": 4,
+   "prompt_tokens": 8,
+   "answer_tokens": 8,
+   "batch": 2,
+   "anchors": 4,
+   "held_out": 0.25
+  }
+ },
+ "corpus": {
+  "id": "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e",
+  "depot": "https://depot.example.org",
+  "dataset": "classics"
+ },
+ "learned": {
+  "plain": 6002
+ },
+ "texts": 16,
+ "vocabulary": {
+  "bytes": 467,
+  "key": "corpora/c6f9a92ad80fe68a99f97c31cd4432d956e8f7f6bd4299fc9bc88bd9eee5b2d7/vocabulary",
+  "sha256": "ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b"
+ },
+ "shards": [
+  {
+   "key": "corpora/c6f9a92ad80fe68a99f97c31cd4432d956e8f7f6bd4299fc9bc88bd9eee5b2d7/f0bbe01958de87c1a918b58c8628466ea40f215bdf1e9243950cd5981f72a117.parquet",
+   "sha256": "c10d1145f9686f57fdd1c81d43ebabbacc7e7a1f8ca5a8a164426d60499431fe",
+   "token_sha256": "f0bbe01958de87c1a918b58c8628466ea40f215bdf1e9243950cd5981f72a117"
+  }
+ ],
+ "options": {
+  "out": "model",
+  "micro_batch": null,
+  "checkpoint_every": 500,
+  "segment": 0,
+  "strategy": "single",
+  "processes": 1,
+  "max_shard_size": null,
+  "stream_shards": 8,
+  "run": null,
+  "scheduler_costs": null,
+  "max_restarts": 0,
+  "stop_after_minutes": 0,
+  "stop_after_updates": 0,
+  "profile_update": 0,
+  "kernels": null,
+  "stream": false,
+  "recompute": false,
+  "compile": false,
+  "resume": false
+ },
+ "strategy": {
+  "name": "single",
+  "file": "wpt_training/strategies/single.py",
+  "file_sha256": "25e7f3b2155d31aebaf6567ed347f1bd47cb77fdcf09545bb1b8fca1633c93cb",
+  "processes": 1
+ },
+ "steps": [
+  {
+   "number": 1,
+   "step": {
+    "name": "read-text",
+    "file": "wpt_training/steps/read-text.py",
+    "file_sha256": "863fc50ea514abf866689be38d875a26658c19f37630d7f31c803c3dddad888f"
+   },
+   "method": {
+    "name": "next-token",
+    "file": "wpt_training/methods/next-token.py",
+    "file_sha256": "3215a452b68a97b60eff60c5cb615d5372257380688312194b9677c48ebfddc3"
+   },
+   "environment": {
+    "name": "text-windows",
+    "file": "wpt_training/environments/text-windows.py",
+    "file_sha256": "97c33c53c14d4bcb52008307da450c991e544f9e89d59ee3ee2f37945ffbc14f"
+   },
+   "reads": "windows",
+   "kinds": [
+    "plain"
+   ],
+   "optimizer": {
+    "name": "by-part",
+    "file": "wpt_training/optimizers/by-part.py",
+    "file_sha256": "9705feb9c7017256982c52f0177b5b9bc886ccbbc791475fd63d2976099e1278",
+    "settings": {
+     "lr": 0.002,
+     "weight_decay": 0.1,
+     "momentum": 0.95,
+     "beta1": 0.9,
+     "beta2": 0.95,
+     "eps": 1e-08,
+     "table_lr_factor": 5.0,
+     "schedule": "steps",
+     "warmup": 2000,
+     "first_drop": 0.8,
+     "first_factor": 0.316,
+     "second_drop": 0.9,
+     "second_factor": 0.1,
+     "average_states": 10,
+     "average_every": 500,
+     "average_beta": 0.8,
+     "patience": 0,
+     "min_improve": 0.01,
+     "smoothing": 3,
+     "chinchilla": 20
+    }
+   },
+   "settings": {
+    "mtp_weight": 0.3,
+    "mtp_late_weight": 0.1,
+    "mtp_switch": 0.676,
+    "stages": [
+     {
+      "block_size": 16,
+      "steps": 1,
+      "batch_size": 4
+     }
+    ],
+    "eval_every": 2,
+    "eval_batches": 20,
+    "prefix_tokens": 6002
+   },
+   "locked": [],
+   "continues": false,
+   "fingerprint": "de917ef5d5c4f417d026078b6e833fe1a70fbd7a916e4fabfcb7142fd0e91611",
+   "best_validation_loss": null,
+   "updates": 1,
+   "stages": [
+    {
+     "block_size": 16,
+     "steps": 1,
+     "batch_size": 4,
+     "first_step": 1,
+     "last_step": 1
+    }
+   ],
+   "weights_update": 1,
+   "skipped": 0,
+   "learned": {
+    "plain": 6002
+   },
+   "result": "9b5d806d8701b782ffd2240776b6bf13c23ea6ade02ae098352c0a9a581d7564",
+   "reused": false
+  }
+ ],
+ "model": {
+  "vocab_size": 556,
+  "block_size": 16,
+  "window_layers": 1,
+  "sparse_groups": 1,
+  "sparse_layers": 1,
+  "d_model": 16,
+  "attention_heads": 2,
+  "attention_head_dim": 64,
+  "n_experts": 4,
+  "top_k": 2,
+  "expert_width": 8,
+  "latent_width": 8,
+  "shared_width": 16,
+  "engram_layers": [
+   2
+  ],
+  "engram_order": 3,
+  "engram_heads": 2,
+  "engram_dim": 4,
+  "engram_table_size": 31,
+  "residual_groups": 3,
+  "loops": 0
+ },
+ "parameters": 78672,
+ "repository_commit": "0123456789abcdef0123456789abcdef01234567",
+ "repository_dirty": false,
+ "device": "cpu",
+ "tools": {
+  "code": {
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "changes": null
+  },
+  "python": "3.14.9",
+  "platform": "Linux-x86_64",
+  "torch": "2.9.0",
+  "numpy": "2.5.4",
+  "pyarrow": "26.0.0",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+ }
+}

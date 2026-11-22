@@ -1,5 +1,6 @@
 """`wpt store list`, `runs` and `run`: what the store holds, and its runs."""
 
+from wpt_depot import corpora
 from wpt_store.models import keep_model, put_model
 from wpt_telemetry import Telemetry
 
@@ -21,7 +22,9 @@ def test_the_store_lists_its_corpora_models_and_runs(built, tmp_path, capsys):
 
     assert main(["list"]) == 0
     listed = capsys.readouterr().out
-    assert f"{built.corpus_id}: dataset d of {built.depot.name()}" in listed and "  fox-1" in listed
+    record = corpora.find(built.store, built.corpus_id)
+    assert (f"{built.corpus_id}: build key {record['build_key']}, snapshot d (change {record['snapshot']['change']}) "
+            f"of {built.depot.name()}, recipe d, every token" in listed and "  fox-1" in listed)
 
     assert main(["runs"]) == 0
     assert "wpt train" in capsys.readouterr().out

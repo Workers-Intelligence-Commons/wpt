@@ -19,7 +19,7 @@ TALK = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}
 
 
 def test_emptying_the_cache_leaves_a_corpus_readable_and_a_checkpoint_to_resume_from(built):
-    corpus_id = built.dataset("talks", [NewText(kind="conversation", content=json.dumps(TALK))])
+    corpus_id = built.snapshot("talks", [NewText(kind="conversation", content=json.dumps(TALK))])
     store = built.store
     record = corpora.find(store, corpus_id)
     assert record["conversations"] == 1

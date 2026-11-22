@@ -1,25 +1,30 @@
 """What the two controllers of `wpt depot`, its subcommands and its web
 routes, share: the depot WPT_DEPOT names, the words of the confirmation a
 decision needs, rows made fit for JSON, the store and its cap for corpora,
-a vocabulary trained and a corpus built from the depot's tokenizer recipes,
-a recipe imported from a file, the corpora built from a dataset, and an
-erasure carried out with the corpora it makes stale."""
+the repository checkout WPT_REPOSITORY names, whose model recipes the web
+app builds, a vocabulary trained from the depot's tokenizer recipes, a
+corpus built from a snapshot, the check that an estimate a person confirmed
+still holds, a recipe imported from a file, and an erasure carried out with
+the corpora it makes stale."""
 
 import json
 import os
 import re
+import subprocess
 import tempfile
 import threading
 from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
-from wpt_depot import Declaration, Depot, corpora, pull
-from wpt_depot.corpus import build, depot_name, remote_sample, sample
+from wpt_depot import Declaration, Depot, corpora, pull, snapshots
+from wpt_depot.corpus import build, sample
 from wpt_depot.errors import NotFound, Refused
+from wpt_recipes import NotFound as NoRecipes, Recipes
+from wpt_utils.programs import MissingTool, program
 from wpt_depot.schema import ADMITTED
 from wpt_depot.settings import depot_address, depot_url
-from wpt_store import StoreError, StoreSettingError, read_env_file, store_from_settings
+from wpt_store import StoreSettingError, read_env_file, store_from_settings
 from wpt_tokenizer import Tokenizer
 
 # what a person confirms with every decision: the subcommands' --accept and the web pages' button say it
@@ -30,6 +35,9 @@ REQUIREMENTS = "https://github.com/Workers-Intelligence-Commons/wpt/blob/main/do
 CAP = "WPT_CORPORA_CAP"  # the setting of the bytes the store's corpora may take together
 UNITS = {"": 1, "B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12}
 RECIPE_FIELDS = ("sample_bytes", "vocab_size")  # what a recipe file gives that the depot's recipe keeps as it is
+REPOSITORY = "WPT_REPOSITORY"  # the setting of the repository checkout whose recipes the web app lists and builds
+# how far a cost may pass the one a person confirmed and still hold (unchanged): its share, then its unit of slack
+TOLERANCE = 0.1
 
 
 class NoVocabulary(Exception):
@@ -38,12 +46,17 @@ class NoVocabulary(Exception):
 
 
 class NoSample(Exception):
-    """The recipe's dataset holds no plain text that fits its sample_bytes;
-    nothing was trained."""
+    """The depot has no snapshot to read the sample of, or the snapshot holds
+    no plain text that fits the recipe's sample_bytes; nothing was trained."""
 
 
 class BadSetting(Exception):
     """A setting holds what it cannot: nothing was done."""
+
+
+class NoRepository(Exception):
+    """WPT_REPOSITORY names no repository checkout holding data/recipes:
+    no recipe can be read."""
 
 
 def env_file() -> Path:
@@ -69,6 +82,74 @@ def corpora_cap() -> int | None:
     return int(float(match[1]) * UNITS[match[2]])
 
 
+def repository() -> Recipes:
+    """The recipes of the repository checkout WPT_REPOSITORY names (its
+    root folder). NoRepository when it is not set, or names no folder
+    holding data/recipes."""
+    found = setting(REPOSITORY)
+    if found is None:
+        raise NoRepository(f"{REPOSITORY} is not set: set it to the folder of a checkout of the WPT repository to "
+                           "list its recipes")
+    root = Path(found).expanduser().resolve()
+    try:
+        recipes = Recipes.find(root)
+    except NoRecipes:
+        recipes = None
+    if recipes is None or recipes.root != root:
+        raise NoRepository(f"{REPOSITORY} names no checkout of the WPT repository (no data/recipes in it)")
+    return recipes
+
+
+def checkout(recipes: Recipes) -> dict:
+    """{commit: the commit the checkout of recipes is at, None when git
+    cannot tell; dirty: whether it has changes not committed, None then}."""
+    try:
+        git = program("git")
+        commit = subprocess.run([git, "-C", str(recipes.root), "rev-parse", "HEAD"], capture_output=True,
+                                check=True).stdout.decode().strip()
+        dirty = subprocess.run([git, "-C", str(recipes.root), "status", "--porcelain"], capture_output=True,
+                               check=True).stdout.strip() != b""
+    except (MissingTool, OSError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+    return {"commit": commit or None, "dirty": dirty if commit else None}
+
+
+def snapshot_named(depot: Depot, address: str, name: str) -> dict:
+    """The row of the snapshot called name of the depot a recipe names by
+    address: this depot's own when address is its public address
+    (WPT_DEPOT_URL, else its name), its upstream's when it is the address
+    of the upstream it follows (wpt_depot.snapshots.owner_named). NotFound
+    otherwise, or without such a snapshot."""
+    owner = snapshots.owner_named(depot, address, public_url())
+    if owner is None:
+        raise NotFound(f"the recipe names the depot {address!r}, which is neither this depot "
+                       f"({public_url() or depot.name()}) nor the upstream it follows")
+    return depot.snapshot(name, owner)
+
+
+def unchanged(shown, now: dict, costs: dict[str, float], same=()) -> list[str]:
+    """What makes the estimate now differ from the one a person confirmed
+    (shown, as the route gave it): each key of same whose value changed,
+    and each cost of costs ({key: its slack, in its unit}) now above the
+    shown one by more than TOLERANCE of it plus its slack; [] when the
+    confirmed estimate still holds. A cost now lower always holds."""
+    if not isinstance(shown, dict):
+        return ["the estimate shown was not given back with the confirmation"]
+    found = []
+    for key in same:
+        if shown.get(key) != now.get(key):
+            found.append(f"{key} was {shown.get(key)!r} and is now {now.get(key)!r}")
+    for key, slack in costs.items():
+        was, then = shown.get(key), now.get(key)
+        if then is None:
+            continue
+        if not isinstance(was, (int, float)) or isinstance(was, bool):
+            found.append(f"the estimate shown gives no {key}")
+        elif then > was * (1 + TOLERANCE) + slack:
+            found.append(f"{key} was {was:,} and is now {then:,}")
+    return found
+
+
 def opened() -> Depot:
     """The depot WPT_DEPOT names, the change files a crash left pending kept
     or dropped (wpt_depot.database). NoDepotSetting without the setting;
@@ -79,12 +160,6 @@ def opened() -> Depot:
 def public_url() -> str | None:
     """The depot's public address WPT_DEPOT_URL gives (wpt_depot.settings.depot_url); None without it."""
     return depot_url(env_file=env_file())
-
-
-def corpus_depot(depot: Depot, dataset: dict) -> str:
-    """The name the corpora of depot's dataset (its row) record for depot
-    (wpt_depot.corpus.depot_name), with the public address WPT_DEPOT_URL gives."""
-    return depot_name(depot, dataset, public_url())
 
 
 def viewed(address: str) -> Depot:
@@ -100,17 +175,6 @@ def corpora_store(log):
     except StoreSettingError as error:
         log(f"no corpus is marked stale: {error}")
         return None
-
-
-def corpora_of(depot: Depot, dataset: str) -> tuple[list[dict] | None, str | None]:
-    """(the records of the corpora the store WPT_STORE names built from
-    depot's dataset of that id, the last built first, through its renames,
-    or None when the store cannot be read; why it cannot, or None)."""
-    try:
-        return corpora.built_from(store_from_settings(env_file()), corpus_depot(depot, depot.dataset_by_id(dataset)),
-                                  dataset), None
-    except (StoreSettingError, StoreError, OSError) as error:
-        return None, f"{type(error).__name__}: {error}"
 
 
 def decide_erasures(depot: Depot, requests: list[str], status: str, declaration: Declaration, reason: str | None,
@@ -182,7 +246,7 @@ def stale(depot: Depot, store, erasures: list[str], log):
     texts = sorted({needle["text"] for row in depot.erasures() if row["id"] in erasures
                     for needle in row["needles"]})
     marked = corpora.mark_stale(store, texts, erasures)
-    log(f"{len(marked)} corpora marked stale: their datasets give nothing to download, and wpt train refuses them, "
+    log(f"{len(marked)} corpora marked stale: nothing downloads them, and wpt train refuses them, "
         "until they are built again" if marked else "no corpus of the store holds a text of the erasure")
 
 
@@ -231,35 +295,40 @@ def vocabulary_by_sha256(depot: Depot, sha256: str) -> tuple[dict, int, Tokenize
             Tokenizer.from_bytes(found[0]["merges"].encode("utf-8")))
 
 
-def build_corpus(depot: Depot, dataset: str, log, *, vocabulary: str | None = None, max_tokens: int | None,
+def build_corpus(depot: Depot, snapshot: str | None, data: dict | None, log, *, vocabulary: str | None = None,
                  store=None, record: dict | None = None, work: Path | None = None, checkpoint: dict | None = None,
-                 save=lambda state: None, progress=lambda state: None, room=None) -> dict:
-    """Build the corpus of depot's dataset of that id, as it is now, with the
-    vocabulary of that sha256 (default: the one of the current version of
-    the dataset's tokenizer recipe) at the size max_tokens (a number of
-    tokens, None for none), into store (default: the store WPT_STORE
-    names): the corpus's record
-    (wpt_depot.corpus.build, which says what work, checkpoint, save,
-    progress and room do). With record, a corpus built before: the same
-    dataset row, vocabulary and size again (max_tokens unread), and the record of the build,
-    which says `changed` when its id is not record's (an erasure carried
-    out since changed what it holds). NoVocabulary without that vocabulary;
-    the depot's and the store's failures as they are."""
+                 save=lambda state: None, progress=lambda state: None, room=None, recipe: str | None = None,
+                 code_commit: str | None = None) -> dict:
+    """Build the corpus of depot's snapshot of that id with the data
+    section data (its kinds, shares and total_tokens,
+    wpt_depot.corpus.canonical; its vocabulary, when it names none, the
+    one given) and the vocabulary of that sha256, into store (default: the
+    store WPT_STORE names): the corpus's record (wpt_depot.corpus.build,
+    which says what work, checkpoint, save, progress and room do). With
+    record, a corpus built before: its snapshot, data section and
+    vocabulary again (snapshot, data and vocabulary unread), and the record
+    of the build, which says `changed` when its id is not record's (an
+    erasure carried out since changed what it holds). recipe and
+    code_commit: the model recipe's name and the code's commit the record
+    names. The record names the depot data names (the recipe's, which on
+    a clone is its upstream), else this depot's public address or name.
+    NoVocabulary without that vocabulary; the depot's and the
+    store's failures as they are."""
     store = store if store is not None else store_from_settings(env_file())
     if record is not None:
-        row, version = record["dataset"], record["tokenizer"]["recipe_version"]
-        recipe, tokenizer = vocabulary_of(depot, record["tokenizer"]["recipe"], version)
-        max_tokens = corpora.triple(record)[2]
-    elif vocabulary is None:
-        row = depot.dataset_by_id(dataset)
-        recipe, tokenizer = vocabulary_of(depot, row["tokenizer"])
-        version = recipe["version"]
-    else:
-        row = depot.dataset_by_id(dataset)
-        recipe, version, tokenizer = vocabulary_by_sha256(depot, vocabulary)
-    built = build(depot, row["name"], store, tokenizer, version, dataset=row, url=public_url(), work=work,
-                  checkpoint=checkpoint, save=save, progress=progress, room=room, max_tokens=max_tokens,
-                  recipe=recipe["name"], log=log)
+        snapshot, data, vocabulary = record["snapshot"]["id"], record["data"], record["vocabulary"]["sha256"]
+    if vocabulary is None:
+        vocabulary = ((data or {}).get("vocabulary") or {}).get("sha256")
+    if vocabulary is None:
+        raise NoVocabulary("a build names its vocabulary by its sha256: nothing was built")
+    tokenizer_recipe, version, tokenizer = vocabulary_by_sha256(depot, vocabulary)
+    data = {**(data or {})}
+    data.setdefault("vocabulary", {"sha256": vocabulary, "size": tokenizer.vocab_size})
+    # the record names the depot the recipe names, the upstream's address when a clone builds
+    built = build(depot, snapshot, data, store, tokenizer, address=data.get("depot") or public_url() or depot.name(),
+                  recipe=recipe, code_commit=code_commit, tokenizer_recipe=tokenizer_recipe["name"],
+                  tokenizer_version=version,
+                  work=work, checkpoint=checkpoint, save=save, progress=progress, room=room, log=log)
     if record is not None and built["id"] != record["id"]:
         why = (f"corpus {record['id']} was built again as {built['id']}: an erasure carried out since changed what "
                "it holds")
@@ -269,17 +338,16 @@ def build_corpus(depot: Depot, dataset: str, log, *, vocabulary: str | None = No
 
 
 def sample_of(depot: Depot, recipe: dict) -> Iterator[tuple[str, str, bytes]]:
-    """The sample of the dataset a tokenizer recipe of depot names: (the
-    depot vocabulary_texts keeps, '' for depot, another local depot's name
-    (wpt_depot.corpus.sample), or a depot's web address from its sample
-    route; the text's id; its UTF-8 bytes),
-    read in one pass, from depot (wpt_depot.corpus.sample) or through
-    another depot's web app (wpt_depot.corpus.remote_sample)."""
-    if recipe["depot"] is None:
-        name = depot.dataset_by_id(recipe["dataset"])["name"]
-        yield from sample(depot, name, recipe["sample_bytes"])
-    else:
-        yield from remote_sample(recipe["depot"], recipe["dataset"], recipe["sample_bytes"])
+    """The sample a tokenizer recipe of depot trains on: (the depot
+    vocabulary_texts keeps, '' for depot; the text's id; its UTF-8 bytes),
+    read in one pass, from the plain texts of the snapshot its sample names
+    (wpt_depot.corpus.sample). NoSample for a recipe that names no sample
+    (needs_snapshot: a revision written before snapshots, which named a
+    dataset)."""
+    if recipe["needs_snapshot"]:
+        raise NoSample(f"the tokenizer recipe {recipe['name']} names a dataset, written before snapshots: an edit "
+                       "naming a snapshot gives it a sample; nothing was trained")
+    yield from sample(depot, recipe["sample"]["snapshot"], recipe["sample_bytes"])
 
 
 def train_vocabulary(depot: Depot, name: str, log, *, work: Path | None = None, progress=lambda state: None) -> str:
@@ -316,7 +384,7 @@ def train_vocabulary(depot: Depot, name: str, log, *, work: Path | None = None, 
                                         merged=lambda done: progress({"stage": "merging", "merges": done,
                                                                       "of": recipe["vocab_size"]}))
         if not counted["texts"]:
-            raise NoSample(f"the dataset of the tokenizer recipe {name} holds no plain text within "
+            raise NoSample(f"the snapshot the tokenizer recipe {name} reads holds no plain text within "
                            f"{recipe['sample_bytes']:,} bytes")
 
         def read_back():
@@ -332,11 +400,12 @@ def train_vocabulary(depot: Depot, name: str, log, *, work: Path | None = None, 
     return sha
 
 
-def import_tokenizer(depot: Depot, name: str, given: dict, dataset: str, lock: dict | None = None,
-                     vocabulary: bytes | None = None, store=None) -> dict:
+def import_tokenizer(depot: Depot, name: str, given: dict, snapshot: str, kinds: list[str] | None = None,
+                     lock: dict | None = None, vocabulary: bytes | None = None, store=None) -> dict:
     """Make depot's tokenizer recipe named so from a recipe file's fields
     (given: its sample_bytes and vocab_size, and its note when it has one),
-    trained on depot's dataset (its name or id), and keep the vocabulary a
+    its sample read from the texts of those kinds (plain by default) of
+    depot's snapshot (its id or the name of one of depot's own), and keep the vocabulary a
     lock file names (lock: its texts and vocabulary_sha256, the vocabulary
     read from store) or the vocabulary file given, as the vocabulary of its
     version 1: {recipe: its id, vocabulary: its sha256 or None}. Refused
@@ -357,7 +426,7 @@ def import_tokenizer(depot: Depot, name: str, given: dict, dataset: str, lock: d
         texts = [("" if depot.is_here(one["depot"]) else one["depot"], one["id"]) for one in lock["texts"]]
     if vocabulary is not None:
         Tokenizer.from_bytes(vocabulary)  # a vocabulary file it cannot read is refused before anything is written
-    recipe = depot.new_tokenizer(name, None, dataset, given["sample_bytes"], given["vocab_size"], given.get("note"))
+    recipe = depot.new_tokenizer(name, snapshot, kinds, given["sample_bytes"], given["vocab_size"], given.get("note"))
     sha = None
     if vocabulary is not None:
         sha = depot.add_vocabulary(recipe, 1, vocabulary, texts, None)

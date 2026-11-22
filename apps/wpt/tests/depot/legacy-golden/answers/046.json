@@ -1,0 +1,262 @@
+{
+ "asked_headers": {},
+ "body": [
+  {
+   "depot": "",
+   "position": 0,
+   "text": "fixture-1"
+  },
+  {
+   "depot": "",
+   "position": 1,
+   "text": "fixture-10"
+  },
+  {
+   "depot": "",
+   "position": 2,
+   "text": "fixture-100"
+  },
+  {
+   "depot": "",
+   "position": 3,
+   "text": "fixture-101"
+  },
+  {
+   "depot": "",
+   "position": 4,
+   "text": "fixture-102"
+  },
+  {
+   "depot": "",
+   "position": 5,
+   "text": "fixture-103"
+  },
+  {
+   "depot": "",
+   "position": 6,
+   "text": "fixture-104"
+  },
+  {
+   "depot": "",
+   "position": 7,
+   "text": "fixture-105"
+  },
+  {
+   "depot": "",
+   "position": 8,
+   "text": "fixture-106"
+  },
+  {
+   "depot": "",
+   "position": 9,
+   "text": "fixture-107"
+  },
+  {
+   "depot": "",
+   "position": 10,
+   "text": "fixture-108"
+  },
+  {
+   "depot": "",
+   "position": 11,
+   "text": "fixture-109"
+  },
+  {
+   "depot": "",
+   "position": 12,
+   "text": "fixture-11"
+  },
+  {
+   "depot": "",
+   "position": 13,
+   "text": "fixture-110"
+  },
+  {
+   "depot": "",
+   "position": 14,
+   "text": "fixture-111"
+  },
+  {
+   "depot": "",
+   "position": 15,
+   "text": "fixture-112"
+  },
+  {
+   "depot": "",
+   "position": 16,
+   "text": "fixture-113"
+  },
+  {
+   "depot": "",
+   "position": 17,
+   "text": "fixture-114"
+  },
+  {
+   "depot": "",
+   "position": 18,
+   "text": "fixture-115"
+  },
+  {
+   "depot": "",
+   "position": 19,
+   "text": "fixture-116"
+  },
+  {
+   "depot": "",
+   "position": 20,
+   "text": "fixture-117"
+  },
+  {
+   "depot": "",
+   "position": 21,
+   "text": "fixture-118"
+  },
+  {
+   "depot": "",
+   "position": 22,
+   "text": "fixture-119"
+  },
+  {
+   "depot": "",
+   "position": 23,
+   "text": "fixture-12"
+  },
+  {
+   "depot": "",
+   "position": 24,
+   "text": "fixture-120"
+  },
+  {
+   "depot": "",
+   "position": 25,
+   "text": "fixture-121"
+  },
+  {
+   "depot": "",
+   "position": 26,
+   "text": "fixture-122"
+  },
+  {
+   "depot": "",
+   "position": 27,
+   "text": "fixture-123"
+  },
+  {
+   "depot": "",
+   "position": 28,
+   "text": "fixture-124"
+  },
+  {
+   "depot": "",
+   "position": 29,
+   "text": "fixture-125"
+  },
+  {
+   "depot": "",
+   "position": 30,
+   "text": "fixture-126"
+  },
+  {
+   "depot": "",
+   "position": 31,
+   "text": "fixture-127"
+  },
+  {
+   "depot": "",
+   "position": 32,
+   "text": "fixture-128"
+  },
+  {
+   "depot": "",
+   "position": 33,
+   "text": "fixture-129"
+  },
+  {
+   "depot": "",
+   "position": 34,
+   "text": "fixture-13"
+  },
+  {
+   "depot": "",
+   "position": 35,
+   "text": "fixture-130"
+  },
+  {
+   "depot": "",
+   "position": 36,
+   "text": "fixture-131"
+  },
+  {
+   "depot": "",
+   "position": 37,
+   "text": "fixture-132"
+  },
+  {
+   "depot": "",
+   "position": 38,
+   "text": "fixture-133"
+  },
+  {
+   "depot": "",
+   "position": 39,
+   "text": "fixture-134"
+  },
+  {
+   "depot": "",
+   "position": 40,
+   "text": "fixture-135"
+  },
+  {
+   "depot": "",
+   "position": 41,
+   "text": "fixture-136"
+  },
+  {
+   "depot": "",
+   "position": 42,
+   "text": "fixture-137"
+  },
+  {
+   "depot": "",
+   "position": 43,
+   "text": "fixture-138"
+  },
+  {
+   "depot": "",
+   "position": 44,
+   "text": "fixture-139"
+  },
+  {
+   "depot": "",
+   "position": 45,
+   "text": "fixture-14"
+  },
+  {
+   "depot": "",
+   "position": 46,
+   "text": "fixture-140"
+  },
+  {
+   "depot": "",
+   "position": 47,
+   "text": "fixture-141"
+  },
+  {
+   "depot": "",
+   "position": 48,
+   "text": "fixture-142"
+  },
+  {
+   "depot": "",
+   "position": 49,
+   "text": "fixture-143"
+  }
+ ],
+ "headers": {
+  "Content-Length": "2683",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/tokenizers/tok/vocabularies/1/texts",
+ "status": 200
+}

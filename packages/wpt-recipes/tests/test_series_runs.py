@@ -103,7 +103,10 @@ def test_the_learning_rate_check_runs_the_smallest_size_at_multiples_of_the_law_
 def test_a_branch_longer_than_its_size_makes_the_series_dataset_hold_its_trunk(ladder):
     # twice 768x15's 20,966 updates of 39 windows: the one dataset holds the tokens of 41,932 updates
     longer = {**ladder, "branches": [0.5, 2]}
-    assert series.data_part(longer)["total_tokens"] == 41932 * 39 * (WINDOW + 1)
+    assert series.data_part(longer)["total_tokens"] == 41932 * 39 * (WINDOW + 1)  # legacy dataset shape
+    snapshot = {"depot": "https://depot.example", "snapshot": "2026-11", "change": 1, "digest": "d" * 64,
+                "vocabulary": {"sha256": "5" * 64, "size": 32768}}
+    assert series.data_part({**longer, "data": snapshot}) == {**snapshot, "total_tokens": 41932 * 39 * (WINDOW + 1)}
     assert series.data_part(ladder)["total_tokens"] == series.plan(ladder, "768x15", 0).prefix_tokens
 
 

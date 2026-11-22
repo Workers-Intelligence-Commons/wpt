@@ -4,10 +4,9 @@ import sys
 import threading
 import time
 
-import apsw
 import pytest
 
-from wpt_depot import About, Declaration, Depot, NewText, clone, pull
+from wpt_depot import About, Declaration, Depot, NewText, clone
 from wpt_depot.schema import FORMAT
 from wpt_utils.lines import bare
 from wpt.depot import main
@@ -88,7 +87,7 @@ def web(tmp_path, serve):
     return serve(depot), depot
 
 
-def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_erasures(web):
+def test_the_pages_routes_take_texts_through_decisions_tokenizer_recipes_and_erasures(web):
     request, depot = web
     status, about = request("GET", "/api/about")
     assert status == 200 and about["about"]["name"] == "test-depot" and about["confirmation"] == CONFIRMATION
@@ -104,15 +103,8 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     both = ["test-depot-1", "test-depot-2"]
     assert wrote(request, "/api/decisions", {"status": "admitted", "selection": named(both), "reason": "free and clear",
                                              "declaration": ME}) == (200, {"decision": "test-depot-3", "texts": 2, "left": {}})
-    assert request("POST", "/api/libraries", {"name": "first model"}) == (200, {"id": "test-depot-1"})
-    assert wrote(request, "/api/libraries/test-depot-1/texts", {"selection": named(both)}) == (
-        200, {"library": "test-depot-1", "joined": 2, "left_out": 0, "left": {}})
-    assert wrote(request, "/api/libraries/test-depot-1/forks", {"name": "next"}) == (200, {"id": "test-depot-2", "left": {}})
-    assert wrote(request, "/api/libraries/test-depot-1/lock", {}) == (200, {})
-    status, held = request("GET", "/api/libraries")
-    assert [(one["name"], one["locked_at"] is not None) for one in held] == [("first model", True), ("next", False)]
-    assert "texts" not in held[0]  # the size comes on demand
-    assert request("GET", "/api/libraries/test-depot-1/size") == (200, {"id": "test-depot-1", "texts": 2})
+    assert request("GET", "/api/libraries")[0] == 404  # libraries are gone
+    assert request("POST", "/api/libraries", {"name": "first model"})[0] == 404
 
     status, shown = request("GET", "/api/texts/test-depot-2")
     assert status == 200 and json.loads(shown["text"]["content"]) == CONVERSATION
@@ -123,12 +115,18 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
                                                                          {"id": "test-depot-2", "title": None}]})
 
     assert request("GET", "/api/tokenizers") == (200, [])  # the depot's own recipes: none yet
-    change = depot.change()
-    assert request("POST", "/api/datasets", {"name": "first", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}],
-                                             "shares": [{"tag": "en", "share": 1}]}) == (200, {"id": "test-depot-1"})
-    status, remote = request("GET", "/api/datasets/first/remote")
-    assert status == 200 and remote["libraries"] == [{"depot": None, "library": "test-depot-1", "change": change}]
-    assert [one["name"] for one in request("GET", "/api/datasets")[1]] == ["first"]
+    snapshot = depot.create_snapshot("s1")["id"]
+    recipe = {"name": "tiny", "snapshot": "s1", "sample_bytes": 1000, "vocab_size": 560}
+    assert request("POST", "/api/tokenizers", {**recipe, "kinds": ["conversation"]})[0] == 422  # plain only, for now
+    assert request("POST", "/api/tokenizers", {**recipe, "snapshot": "s9"})[0] == 404
+    assert request("POST", "/api/tokenizers", recipe)[0] == 200
+    [shown] = request("GET", "/api/tokenizers")[1]
+    assert (shown["sample"], shown["snapshot_name"], shown["needs_snapshot"], shown["dataset_name"]) == (
+        {"snapshot": snapshot, "kinds": ["plain"]}, "s1", False, None)
+    assert request("PUT", "/api/tokenizers/tiny", {"snapshot": snapshot, "sample_bytes": 2000,
+                                                   "vocab_size": 560}) == (200, {"version": 2})
+    assert request("POST", "/api/datasets", {"name": "first", "tokenizer": "tiny", "libraries": [
+        {"library": "test-depot-1"}]})[0] == 404  # datasets are gone
 
     assert request("POST", "/api/erasures", {"reason": "a name", "needles": [{"text": "test-depot-1", "start": 4, "end": 7}],
                                              "declaration": ME}) == (200, {"id": "test-depot-1"})
@@ -136,7 +134,7 @@ def test_the_pages_routes_take_texts_through_decisions_libraries_datasets_and_er
     assert asked["needles"] == [{"text": "test-depot-1", "field": None, "start": 4, "end": 7, "version": 1}] and asked["erased"] is None
 
 
-def test_the_pages_routes_add_a_license_decide_an_erasure_report_a_problem_and_fork_without_texts(web):
+def test_the_pages_routes_add_a_license_and_decide_erasures(web):
     request, depot = web
     assert request("POST", "/api/licenses", {"id": "MIT", "name": "MIT License", "text": "The MIT text."}) == (200, {})
     assert request("POST", "/api/licenses", {"id": "MIT", "name": "MIT License", "text": "again"})[0] == 422
@@ -145,19 +143,7 @@ def test_the_pages_routes_add_a_license_decide_an_erasure_report_a_problem_and_f
         request("POST", "/api/texts", {"text": text, "licenses": ["MIT"], "tags": [tag], "declaration": ME})
     assert [(one["id"], one["texts"]) for one in request("GET", "/api/licenses")[1]] == [("CC0-1.0", 0), ("MIT", 2)]
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1", "test-depot-2"]), "declaration": ME})
-    request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1", "test-depot-2"])})
-    request("POST", "/api/libraries/test-depot-1/lock", {})
-    assert wrote(request, "/api/libraries/test-depot-1/problems", {
-        "problem": "a bad text", "selection": named(["test-depot-2"]), "declaration": ME}) == (
-        200, {"decision": "test-depot-4", "texts": 1, "left": {}})
-    assert request("POST", "/api/libraries/test-depot-1/problems", {"problem": "a bad text", "selection": named(["test-depot-9"]),
-                                                          "declaration": ME})[0] == 404
-    assert wrote(request, "/api/libraries/test-depot-1/forks", {"name": "cleaner", "without": named(["test-depot-2"])}) \
-        == (200, {"id": "test-depot-2", "left": {}})
-    held = {one["name"]: (request("GET", f"/api/libraries/{one['id']}/size")[1]["texts"], one["problems"])
-            for one in request("GET", "/api/libraries")[1]}
-    assert held == {"first": (2, [{"texts": ["test-depot-2"], "problem": "a bad text", "decision": "test-depot-4"}]), "cleaner": (1, [])}
+    depot.create_snapshot("first")
 
     request("POST", "/api/erasures", {"reason": "a number", "needles": [{"text": "test-depot-1", "start": 5, "end": 13}],
                                       "declaration": ME})
@@ -195,18 +181,13 @@ def test_each_refusal_answers_its_status_and_writes_nothing(web):
     assert request("POST", "/api/decisions", {"status": "admitted", "where": "true", "declaration": ME})[0] == 400  # no ids
 
 
-def test_a_pull_a_remote_import_and_a_change_of_the_depot_s_facts_are_no_routes(web):
+def test_a_pull_and_a_change_of_the_depot_s_facts_are_no_routes(web):
     # the server is open to anyone: these reach past the depot (another address, the store) or change the depot's
     # own facts, so only the commands do them
     request, depot = web
-    request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/datasets", {"name": "first", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}]})
-    status, remote = request("GET", "/api/datasets/first/remote")
     change, about = depot.change(), depot.about()
 
-    for target, body in (("/api/pull", {}), ("/api/jobs/x/cancel", {}),
-                         ("/api/remotes", {"remote": {**remote, "name": "again"}}),
-                         ("/api/about", {"maintainer": "Grace Hopper"})):
+    for target, body in (("/api/pull", {}), ("/api/jobs/x/cancel", {}), ("/api/about", {"maintainer": "Grace Hopper"})):
         assert request("POST", target, body) == (404, {"problems": [f"no route POST {target}"]})
 
     assert (depot.change(), depot.about()) == (change, about)
@@ -295,64 +276,6 @@ def test_a_query_s_answer_past_its_bounds_is_refused(web, monkeypatch):
     assert (status, answer["problems"][0].split(":")[0]) == (422, "AnswerTooLarge")
 
 
-def test_a_dataset_made_or_changed_through_the_pages_reads_only_this_depot_s_libraries_or_those_it_read(web, tmp_path):
-    # the server answers any client: it opens no depot at an address a client gives
-    request, depot = web
-    request("POST", "/api/libraries", {"name": "first"})
-    other = {"depot": str(tmp_path / "elsewhere"), "library": "x-1"}
-    status, answer = request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": [other]})
-    assert status == 422 and str(tmp_path / "elsewhere") in answer["problems"][0]
-    mine = {"depot": (tmp_path / "depot.sqlite").as_uri(), "library": "test-depot-1"}  # this depot, in another form
-    assert request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": [mine]}) == (
-        200, {"id": "test-depot-1"})
-    assert request("POST", "/api/datasets/test-depot-1", {"name": "mix", "libraries": [mine, other]})[0] == 422
-    assert depot.dataset("mix")["revision"] == 1
-    elsewhere = Depot.new(str(tmp_path / "elsewhere.sqlite"), About("elsewhere", "Ada Lovelace", "ada@example.org"))
-    theirs = {"depot": elsewhere.address, "library": elsewhere.new_library("theirs")}
-    cross = depot.new_dataset("cross", "t", [(None, "test-depot-1"), (theirs["depot"], theirs["library"])])
-    stored = depot.dataset_by_id(cross)["libraries"]
-    # a library of another depot the dataset reads already, as it stores it, is kept: the page edits the dataset
-    assert request("POST", f"/api/datasets/{cross}", {"name": "crossed", "libraries": stored}) == (200, {"id": cross})
-    assert depot.dataset("crossed")["libraries"] == stored
-
-
-def test_a_dataset_change_made_from_an_older_reading_is_refused_rather_than_undo_a_later_one(web):
-    # the pages send the revision they read, so publishing a vocabulary never resends a stale row over an edit
-    request, depot = web
-    request("POST", "/api/libraries", {"name": "first"})
-    libraries = [{"library": "test-depot-1"}]
-    dataset = request("POST", "/api/datasets", {"name": "mix", "tokenizer": "t", "libraries": libraries})[1]["id"]
-    read = request("GET", f"/api/datasets/{dataset}")[1]["dataset"]
-    assert request("POST", f"/api/datasets/{dataset}", {"name": "mix", "libraries": libraries, "max_tokens": 1000,
-                                                         "revision": read["revision"]})[0] == 200
-    status, answer = request("POST", f"/api/datasets/{dataset}", {"name": "renamed", "libraries": libraries,
-                                                                  "revision": read["revision"]})
-    assert status == 422 and "revision 2" in answer["problems"][0]
-    assert (depot.dataset_by_id(dataset)["name"], depot.dataset_by_id(dataset)["max_tokens"]) == ("mix", 1000)
-
-
-def test_reading_a_dataset_again_through_the_pages_takes_what_its_libraries_hold_now(web):
-    # the dataset page's button: since tells how many texts the next build would add, and reading again makes it 0
-    request, depot = web
-    [first, later] = depot.add([NewText(text="One.", licenses=("CC0-1.0",)), NewText(text="Two.", licenses=("CC0-1.0",))],
-                               Declaration("Ada Lovelace", "ada@example.org", True))
-    depot.decide("admitted", "true", Declaration("Ada Lovelace", "ada@example.org", True))
-    library = depot.new_library("first")
-    depot.put(library, [first])
-    dataset = depot.new_dataset("mix", "t", [(None, library)])
-    depot.put(library, [later])
-    read = request("GET", f"/api/datasets/{dataset}")[1]
-    assert read["figures"]["since"] == 1 and read["read_again"]
-
-    assert request("POST", f"/api/datasets/{dataset}/read-again", {"revision": read["dataset"]["revision"]}) == (
-        200, {"id": dataset, "libraries": 1})
-    figures = request("GET", f"/api/datasets/{dataset}")[1]["figures"]
-    assert figures["since"] == 0 and figures["measure"]["kinds"]["plain"]["texts"] == 2
-    assert not request("GET", f"/api/datasets/{dataset}")[1]["read_again"]
-    status, answer = request("POST", f"/api/datasets/{dataset}/read-again", {"revision": read["dataset"]["revision"]})
-    assert status == 422 and "revision 2" in answer["problems"][0]
-
-
 def test_the_web_command_serves_the_depot_its_setting_names(tmp_path, monkeypatch):
     address = str(tmp_path / "depot")
     Depot.new(address, About("served", "Ada Lovelace", "ada@example.org"))
@@ -390,16 +313,14 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
         request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "tags": tags, "declaration": ME})
     request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-4"]), "declaration": ME})
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]), "declaration": ME})
-    request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
-    request("POST", "/api/libraries/test-depot-1/lock", {})
     assert request("GET", "/api/tags") == (200, [{"tag": "a", "texts": 2}, {"tag": "en", "texts": 3},
                                                  {"tag": "fr", "texts": 1}])
 
     status, every = request("POST", "/api/texts/search", {"filter": {}, "limit": 2})
     assert status == 200 and "ids" not in every and "total" not in every and every["previous"] is None
-    assert [(one["id"], one["status"], one["locked"], one["length"]) for one in every["rows"]] == [
-        ("test-depot-1", "admitted", True, 3), ("test-depot-2", "under review", False, 3)]
+    assert [(one["id"], one["status"], one["length"]) for one in every["rows"]] == [
+        ("test-depot-1", "admitted", 3), ("test-depot-2", "under review", 3)]
+    assert "locked" not in every["rows"][0] and "libraries" not in every["rows"][0]
     status, second = request("POST", "/api/texts/search", {"filter": {}, "after": every["next"], "limit": 2})
     assert [one["id"] for one in second["rows"]] == ["test-depot-3", "test-depot-4"] and second["next"] is None
     status, back = request("POST", "/api/texts/search", {"filter": {}, "before": second["previous"], "limit": 2})
@@ -422,9 +343,12 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     assert whole["held"] is True
     status, stepped = request("POST", "/api/texts/counts", {"filter": {}, "held": False})
     assert stepped["held"] is False and {**stepped, "held": True} == whole
-    assert whole["statuses"] == {"under review": 2, "admitted": 1, "refused": 1} and whole["locked"] == 1
+    assert whole["statuses"] == {"under review": 2, "admitted": 1, "refused": 1} and "locked" not in whole
     assert whole["tags"] == [{"tag": "en", "texts": 3}, {"tag": "a", "texts": 2}, {"tag": "fr", "texts": 1}]
     assert whole["licenses"] == [{"license": "CC0-1.0", "texts": 4}]
+    # the depot's counts read at once give each kind's texts, every status together
+    status, depot_counts = request("GET", "/api/counts")
+    assert status == 200 and depot_counts["texts"] == 4 and depot_counts["kinds"] == {"plain": 4}
     steps, start = [], None
     while True:
         status, step = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}, "size": 3, "held": False,
@@ -436,17 +360,16 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     # the steps go over the listing of the tag, its 3 texts; the first step is full, so one more step reads none
     assert [(one["texts"], one["total"]) for one in steps] == [(3, 3), (0, None)]
     assert sum(one["statuses"]["under review"] + one["statuses"]["admitted"] for one in steps) == 3
-    # one tag is read at once from the depot's counts too, its statuses and locked texts as the steps count them
+    # one tag is read at once from the depot's counts too, its statuses as the steps count them
     status, tagged = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}})
-    assert tagged["held"] is True and (tagged["statuses"], tagged["locked"]) == (
-        {status: sum(one["statuses"][status] for one in steps) for status in tagged["statuses"]},
-        sum(one["locked"] for one in steps))
+    assert tagged["held"] is True and tagged["statuses"] == {
+        status: sum(one["statuses"][status] for one in steps) for status in tagged["statuses"]}
     status, given = request("POST", "/api/texts/counts", {"filter": {"ids": ["test-depot-2", "test-depot-9"]}})
     assert (given["texts"], given["total"], given["next"], given["statuses"]["under review"]) == (1, 1, None, 1)
 
     # a selection is the filter, the change its page was read at and the ids unticked: a text that came to match
     # the filter after that change is left out, and counted; a filter that names no ids runs as a job
-    shown = {"tags": ["en"], "statuses": ["under review", "refused"], "locked": False}
+    shown = {"tags": ["en"], "statuses": ["under review", "refused"]}
     status, found = request("POST", "/api/texts/search", {"filter": shown, "limit": 1})
     assert [one["id"] for one in found["rows"]] == ["test-depot-2"] and found["change"] == depot.change()
     request("POST", "/api/texts", {"text": "five", "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
@@ -458,7 +381,7 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     status, started = request("POST", "/api/decisions", {"status": "admitted", "selection": selection,
                                                          "declaration": ME})
     assert status in (200, 202) and (started["kind"], started["title"]) == (  # the Jobs page names the filter
-        "write", "admit texts under review or refused, tagged en, in no locked library, less 1 unticked")
+        "write", "admit texts under review or refused, tagged en, less 1 unticked")
     job = started
     while job["state"] in ("queued", "running"):
         time.sleep(0.05)
@@ -473,58 +396,12 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     assert request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-5", "test-depot-9"]),
                                               "declaration": ME})[0] == 404  # one is no text: nothing is decided
     assert request("GET", "/api/texts/test-depot-5")[1]["status"] == "under review"
-    status, chosen = request("POST", "/api/texts/search", {"filter": {"libraries": ["test-depot-1"]}})
-    assert [one["id"] for one in chosen["rows"]] == ["test-depot-1"]
     assert request("POST", "/api/texts/search", {"filter": {"statuses": ["pending"]}})[0] == 400
     assert request("POST", "/api/texts/search", {"filter": {"where": "no_such_column"}})[0] == 400
 
     status, latest = request("GET", "/api/decisions/latest")
     assert [(one["id"], one["status"], one["texts"]) for one in latest[:2]] == [
         ("test-depot-9", "admitted", 2), ("test-depot-8", "under review", 1)]
-
-
-def test_a_lock_of_a_library_past_inline_texts_runs_as_a_job_showing_its_stages(web, monkeypatch):
-    request, depot = web
-    monkeypatch.setattr(sys.modules["wpt.depot.web.routes"], "INLINE", 1)  # the package names its routes function routes
-    me = Declaration(ME["name"], ME["email"], True)
-    added = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",)) for n in range(2)], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("big")
-    depot.put(library, list(added))
-    status, started = request("POST", f"/api/libraries/{library}/lock", {})
-    assert status in (200, 202) and (started["kind"], started["title"]) == ("write", "lock the library big")
-    job = started
-    while job["state"] in ("queued", "running"):
-        time.sleep(0.05)
-        job = request("GET", f"/api/jobs/{started['id']}")[1]
-    assert (job["state"], job["answer"]) == ("done", {})
-    assert "pinning the revision of each text" in [one["stage"] for one in job["stages"]]
-    assert depot.rows("SELECT locked_at FROM libraries WHERE id = ?", (library,))[0]["locked_at"] is not None
-    assert wrote(request, f"/api/libraries/{library}/lock", {})[0] == 422  # locked already
-
-
-def test_texts_taken_out_of_an_open_library_stay_admitted_and_a_locked_library_refuses_it(web):
-    request, depot = web
-    for text in ("one", "two", "three"):
-        request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "declaration": ME})
-    every = ["test-depot-1", "test-depot-2", "test-depot-3"]
-    request("POST", "/api/decisions", {"status": "admitted", "selection": named(every), "declaration": ME})
-    request("POST", "/api/libraries", {"name": "open"})
-    request("POST", "/api/libraries", {"name": "locked"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(every[:2])})
-    request("POST", "/api/libraries/test-depot-2/texts", {"selection": named(every)})
-    request("POST", "/api/libraries/test-depot-2/lock", {})
-
-    assert wrote(request, "/api/libraries/test-depot-1/taken-out", {"selection": named(["test-depot-1", "test-depot-3"])}) == (
-        200, {"library": "test-depot-1", "taken_out": 1, "not_held": 1, "left": {}})
-    status, held = request("POST", "/api/texts/search", {"filter": {"libraries": ["test-depot-1"]}})
-    assert [one["id"] for one in held["rows"]] == ["test-depot-2"]
-    assert request("GET", "/api/texts/test-depot-1")[1]["status"] == "admitted"
-    change = depot.change()
-    status, refused = request("POST", "/api/libraries/test-depot-2/taken-out", {"selection": named(["test-depot-1"])})
-    assert status == 422 and refused["problems"][0].startswith("Locked:")
-    assert depot.change() == change
-    assert request("POST", "/api/libraries/test-depot-9/taken-out", {"selection": named(["test-depot-1"])})[0] == 404
 
 
 def test_passages_give_the_texts_a_filter_matches_with_their_text_a_page_bounded_by_count_and_characters(web):
@@ -558,12 +435,9 @@ def test_the_review_of_an_admission_gets_the_texts_it_cannot_cover_with_their_re
     for text, licenses in (("free", ["CC0-1.0"]), ("held", ["CC0-1.0"]), ("unlicensed", ["CC-BY-NC-4.0"])):
         request("POST", "/api/texts", {"text": text, "licenses": licenses, "declaration": ME})
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-2"]), "declaration": ME})
-    request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-2"])})
-    request("POST", "/api/libraries/test-depot-1/lock", {})
 
     assert request("POST", "/api/texts/blocked", {"selection": named(["test-depot-3", "test-depot-2", "test-depot-1"])}) == (200, {
-        "rows": [{"id": "test-depot-3", "reasons": ["no allowed license"]}], "next": None, "partial": False})  # a locked library blocks nothing
+        "rows": [{"id": "test-depot-3", "reasons": ["no allowed license"]}], "next": None, "partial": False})
     assert request("POST", "/api/texts/blocked", {"selection": {"filter": {}}, "limit": 1})[1]["rows"] == [
         {"id": "test-depot-3", "reasons": ["no allowed license"]}]
     assert request("POST", "/api/texts/blocked", {"selection": named([])}) == (200, {"rows": [], "next": None, "partial": False})
@@ -571,7 +445,7 @@ def test_the_review_of_an_admission_gets_the_texts_it_cannot_cover_with_their_re
 
 
 
-def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_library_keeps_its_revision(web):
+def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_snapshot_keeps_its_revision(web):
     # the review's blocked list and a text's page change licenses through this route, then admit the texts
     request, depot = web
     request("POST", "/api/licenses", {"id": "CC-BY-NC-4.0", "name": "Non commercial", "text": "text"})
@@ -580,9 +454,7 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_libr
     request("POST", "/api/texts", {"text": "held", "licenses": ["CC0-1.0"], "declaration": ME})
     request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-1"]), "declaration": ME})
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-3"]), "declaration": ME})
-    request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-3"])})
-    request("POST", "/api/libraries/test-depot-1/lock", {})
+    snapshot = depot.create_snapshot("first")["id"]
 
     status, changed = wrote(request, "/api/texts/licenses", {"selection": named(["test-depot-2", "test-depot-1"]),
                                                             "licenses": ["CC0-1.0"], "declaration": ME})
@@ -594,15 +466,15 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_locked_libr
     assert shown["decisions"][-1]["reason"] == "licenses changed from CC-BY-NC-4.0 to CC0-1.0"
     assert request("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-depot-2"])}) == (
         200, {"rows": [], "next": None, "partial": False})
-    locked = {"selection": named(["test-depot-3"]), "licenses": ["CC-BY-NC-4.0"], "declaration": ME}
-    assert request("POST", "/api/texts/licenses", {**locked, "selection": named(["test-depot-9"])})[0] == 404
-    assert request("POST", "/api/texts/licenses", {**locked, "licenses": []})[0] == 400
-    assert request("POST", "/api/texts/licenses", locked)[0] == 200
+    held = {"selection": named(["test-depot-3"]), "licenses": ["CC-BY-NC-4.0"], "declaration": ME}
+    assert request("POST", "/api/texts/licenses", {**held, "selection": named(["test-depot-9"])})[0] == 404
+    assert request("POST", "/api/texts/licenses", {**held, "licenses": []})[0] == 400
+    assert request("POST", "/api/texts/licenses", held)[0] == 200
     shown = request("GET", "/api/texts/test-depot-3")[1]
     assert (shown["text"]["licenses"], shown["revisions"]) == (["CC-BY-NC-4.0"], 2)
-    assert shown["pins"] == [{"library": "test-depot-1", "name": "first", "revision": 1}]
-    assert request("POST", "/api/libraries/test-depot-1/pins", {}) == (200, {"total": 1, "newer": 1, "next": None, "rows": [
-        {"id": "test-depot-3", "title": None, "revision": 1, "current": 2, "status": "admitted"}]})
+    assert [(one["id"], one["revision"], one["licenses"]) for one in depot.snapshot_texts(snapshot)["texts"]] == [
+        ("test-depot-3", 1, ["CC0-1.0"])]
+
 
 def test_the_content_of_many_texts_changes_from_the_route_as_from_the_command(web, tmp_path, monkeypatch):
     request, depot = web
@@ -613,7 +485,6 @@ def test_the_content_of_many_texts_changes_from_the_route_as_from_the_command(we
         one.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), title=f"Title {n}", tags=("en",)) for n in range(4)]
                 + [NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",))], me)
         one.decide("admitted", "true", me)
-        one.put(one.new_library("open"), "true")
     lines = [{"id": "test-depot-1", "text": "text 0, as its source publishes it"},
              {"id": "test-depot-2", "text": "text 1"},
              {"id": "test-depot-3", "text": "text 2, as its source publishes it", "was": 3}]
@@ -635,7 +506,7 @@ def test_the_content_of_many_texts_changes_from_the_route_as_from_the_command(we
                  "--accept"]) == 0
 
     def state(one):
-        return (one.sql("SELECT id, revision, content_version, status, title, tags, licenses, libraries, text "
+        return (one.sql("SELECT id, revision, content_version, status, title, tags, licenses, text "
                         "FROM texts ORDER BY id"),
                 one.sql("SELECT id, status, reason FROM decisions ORDER BY id"),
                 one.sql("SELECT text, decision FROM text_decisions ORDER BY text, decision"), one.counts())
@@ -800,130 +671,52 @@ def test_each_thing_a_page_lists_has_a_view_and_the_details_change_through_the_r
     status, admitted = request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1"]),
                                                           "reason": "clear", "declaration": ME})
     assert admitted["title"] == "admit Fox"  # a write over one text names it on the Jobs page
-    request("POST", "/api/libraries", {"name": "first"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
-    request("POST", "/api/libraries/test-depot-1/problems", {"problem": "too short", "selection": named(["test-depot-1"]),
-                                                            "declaration": ME})
-    request("POST", "/api/datasets", {"name": "mix", "tokenizer": "classics", "libraries": [{"library": "test-depot-1"}]})
 
     status, license = request("GET", "/api/licenses/CC0-1.0")
     assert (status, license["text"], license["allowed"], license["texts"]) == (200, "The CC0 text.", True, 1)
     assert request("GET", "/api/licenses/MIT")[0] == 404
     status, decision = request("GET", "/api/decisions/test-depot-2")
-    assert (status, decision["decision"]["reason"], decision["texts"], decision["problem"]) == (200, "clear", 1, None)
-    status, problem = request("GET", "/api/decisions/test-depot-3")
-    assert problem["problem"] == {"library": "test-depot-1", "texts": ["test-depot-1"], "problem": "too short"}
-    assert problem["decision"]["name"] == ME["name"]
+    assert (status, decision["decision"]["reason"], decision["texts"]) == (200, "clear", 1)
+    assert set(decision) == {"decision", "texts", "erasures"}  # no reported problem
     assert request("GET", "/api/decisions/latest")[0] == 200  # still the latest decisions
-    status, dataset = request("GET", "/api/datasets/test-depot-1")
-    assert status == 200 and dataset["dataset"]["name"] == "mix" and dataset["remote"]["name"] == "mix"
-    assert [(one["name"], one["local"]) for one in dataset["libraries"]] == [("first", True)]
-    # what its revision reads, as it stores it: the library's one text then, and none gained or lost since
-    assert (dataset["figures"]["measure"]["texts"], dataset["figures"]["since"]) == (1, 0)
-    assert dataset["corpora"] is None and dataset["store"]  # no store is set: only the definition
-    monkeypatch.setenv("WPT_STORE", (tmp_path / "store").as_uri())
-    assert request("GET", "/api/datasets/test-depot-1")[1]["corpora"] == []
 
     assert request("POST", "/api/texts/test-depot-1/credits", {"title": "The fox", "tags": ["en", "animals"],
                                                               "declaration": ME}) == (
-        200, {"decision": "test-depot-4", "reason": "title changed from Fox to The fox; tags changed from en to en, "
-                                                    "animals"})
+        200, {"decision": "test-depot-3", "reason": "title changed from Fox to The fox; tags changed from en to animals, "
+                                                    "en"})
     shown = request("GET", "/api/texts/test-depot-1")[1]
-    assert (shown["status"], shown["text"]["title"], shown["text"]["libraries"]) == ("admitted", "The fox",
-                                                                                     ["test-depot-1"])
-    request("POST", "/api/libraries/test-depot-1/lock", {})
+    assert (shown["status"], shown["text"]["title"]) == ("admitted", "The fox")
+    assert "libraries" not in shown["text"] and "pins" not in shown
     assert request("POST", "/api/texts/test-depot-1/credits", {"title": "Fox", "declaration": ME})[0] == 200
-    assert request("POST", "/api/libraries/test-depot-1/name", {"name": "first model"}) == (200, {})
-    request("POST", "/api/libraries", {"name": "second"})
-    assert request("POST", "/api/datasets/test-depot-1", {"name": "mix two", "libraries": [
-        {"library": "test-depot-1"}, {"library": "test-depot-2"}], "shares": None}) == (200, {"id": "test-depot-1"})
-    assert [one["name"] for one in request("GET", "/api/datasets/test-depot-1")[1]["libraries"]] == ["first model",
-                                                                                                    "second"]
 
 
 def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it(web, serve, tmp_path):
     request, upstream = web
     assert request("POST", "/api/texts", {"text": "Theirs.", "licenses": ["CC0-1.0"], "declaration": ME})[0] == 200
-    assert request("POST", "/api/libraries", {"name": "theirs"})[0] == 200
+    upstream.decide("admitted", ["test-depot-1"], Declaration(ME["name"], ME["email"], True))
+    upstream.create_snapshot("theirs")
+    assert request("POST", "/api/tokenizers", {"name": "theirs", "snapshot": "theirs", "sample_bytes": 1000,
+                                               "vocab_size": 560})[0] == 200
     follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert mine("POST", "/api/texts", {"text": "Mine.", "licenses": ["CC0-1.0"], "declaration": ME}) == (
         200, {"id": "test-clone-1"})
-    assert mine("POST", "/api/libraries", {"name": "mine"}) == (200, {"id": "test-clone-1"})
     change = follower.change()
 
     status, refused = mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-1", "test-clone-1"]),
                                                        "declaration": ME})
     assert status == 422 and "test-depot-1" in refused["problems"][0] and "to the upstream" in refused["problems"][0]
-    assert mine("POST", "/api/libraries/test-depot-1/name", {"name": "renamed"})[0] == 422
+    assert mine("PUT", "/api/tokenizers/theirs", {"snapshot": "test-depot-1", "sample_bytes": 2000,
+                                                  "vocab_size": 560})[0] == 422
     assert follower.change() == change
 
     assert mine("GET", "/api/texts/test-depot-1")[1]["upstream"] is True
     assert mine("GET", "/api/texts/test-clone-1")[1]["upstream"] is False
-    assert [(one["id"], one["upstream"]) for one in mine("GET", "/api/libraries")[1]] == [
-        ("test-clone-1", False), ("test-depot-1", True)]
+    assert mine("GET", "/api/tokenizers/theirs")[1]["upstream"] is True
     assert mine("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-clone-1"]), "status": "refused"}) == (
         200, {"rows": [{"id": "test-depot-1", "reasons": ["belongs to the upstream"]}], "next": None, "partial": False})
     assert mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-clone-1"]), "declaration": ME})[0] == 200
     assert request("GET", "/api/texts/test-depot-1")[1]["upstream"] is False  # in the upstream, it is its own
-
-
-def test_a_clone_s_upstream_library_lists_the_datasets_naming_it_by_either_depot_s_address(web, serve, tmp_path):
-    request, upstream = web
-    assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})
-    assert request("POST", "/api/datasets", {"name": "upstream-set", "tokenizer": "t",
-                                             "libraries": [{"library": "test-depot-1"}]})[0] == 200
-    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
-    mine = serve(follower)
-    assert mine("POST", "/api/libraries", {"name": "mine"}) == (200, {"id": "test-clone-1"})
-    assert mine("POST", "/api/datasets", {"name": "by-clone", "tokenizer": "t",
-                                          "libraries": [{"library": "test-depot-1"}]})[0] == 200
-    follower.new_dataset("by-upstream-url", "t", [(request.url, "test-depot-1")], None)  # a command
-
-    status, found = mine("GET", "/api/datasets")
-
-    assert status == 200
-    assert {one["name"]: one["here"] for one in found} == {
-        "upstream-set": ["test-depot-1"], "by-clone": ["test-depot-1"], "by-upstream-url": ["test-depot-1"]}
-    assert request("GET", "/api/datasets")[1][0]["here"] == ["test-depot-1"]  # in the upstream, by its own address
-    # the dataset's own page gives its row as the list does
-    assert [mine("GET", f"/api/datasets/{one['id']}")[1]["dataset"] for one in found] == found
-
-
-def test_a_clone_s_page_of_an_upstream_dataset_marks_the_upstream_library_as_read_here(web, serve, tmp_path):
-    request, upstream = web
-    assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})
-    assert request("POST", "/api/datasets", {"name": "upstream-set", "tokenizer": "t",
-                                             "libraries": [{"library": "test-depot-1"}]}) == (200, {"id": "test-depot-1"})
-    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
-    mine = serve(follower)
-
-    status, shown = mine("GET", "/api/datasets/test-depot-1")
-
-    assert status == 200
-    assert [(one["library"], one["local"], one["name"], one["locked_at"]) for one in shown["libraries"]] == [
-        ("test-depot-1", True, "theirs", None)]
-    # the figures the upstream stored with the revision come with it, the clone holding the same rows
-    assert shown["figures"] == request("GET", "/api/datasets/test-depot-1")[1]["figures"]
-    assert shown["figures"]["measure"] is not None
-
-
-def test_an_upstream_library_the_clone_does_not_hold_yet_is_read_here_only_once_a_pull_brings_it(
-        web, serve, tmp_path):
-    request, upstream = web
-    follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
-    mine = serve(follower)
-    assert request("POST", "/api/libraries", {"name": "theirs"}) == (200, {"id": "test-depot-1"})  # after the clone
-    assert follower.new_dataset("set", "t", [(request.url, "test-depot-1")], None) == "test-clone-1"
-
-    def shown():
-        listed = mine("GET", "/api/datasets")[1][0]["here"]
-        page = mine("GET", "/api/datasets/test-clone-1")[1]
-        return listed, page["dataset"]["here"], [one["local"] for one in page["libraries"]]
-
-    assert shown() == ([], [], [False])
-    pull(follower)  # wpt depot pull: a command only
-    assert shown() == (["test-depot-1"], ["test-depot-1"], [True])
 
 
 def test_the_web_command_refuses_a_depot_of_another_format_before_serving(tmp_path, monkeypatch, capsys):
@@ -944,15 +737,13 @@ def test_the_web_command_refuses_a_depot_of_another_format_before_serving(tmp_pa
         "this wpt reads: update wpt to read it; a depot is never brought down to an older format")
 
 
-def test_texts_put_back_under_review_from_the_pages_leave_their_open_libraries_and_the_job_says_so(web):
+def test_texts_put_back_under_review_from_the_pages_and_the_job_says_so(web):
     request, depot = web
     for text in ("one", "two"):
         request("POST", "/api/texts", {"text": text, "licenses": ["CC0-1.0"], "tags": ["en"], "declaration": ME})
     both = ["test-depot-1", "test-depot-2"]
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(both), "declaration": ME})
     request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-2"]), "declaration": ME})
-    request("POST", "/api/libraries", {"name": "open"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": named(["test-depot-1"])})
 
     status, started = request("POST", "/api/decisions", {"status": "under review", "selection": {"filter": {"tags": ["en"]}},
                                                          "reason": "too quick", "declaration": ME})
@@ -964,7 +755,7 @@ def test_texts_put_back_under_review_from_the_pages_leave_their_open_libraries_a
         job = request("GET", f"/api/jobs/{started['id']}")[1]
     assert (job["state"], job["answer"]) == ("done", {"decision": "test-depot-5", "texts": 2, "left": {}})
     shown = request("GET", "/api/texts/test-depot-1")[1]
-    assert (shown["status"], shown["text"]["libraries"]) == ("under review", [])
+    assert shown["status"] == "under review"
     assert (shown["decisions"][-1]["reason"], shown["decisions"][-1]["put_back"]) == (
         "put back under review: too quick", True)
     assert request("GET", "/api/texts/test-depot-2")[1]["status"] == "under review"
@@ -973,45 +764,9 @@ def test_texts_put_back_under_review_from_the_pages_leave_their_open_libraries_a
     assert status == 404 and "under review already" in refused["problems"][0]
 
 
-def test_measure_gives_what_libraries_hold_by_share_and_the_mix_of_the_shares(web, monkeypatch):
-    # the dataset form and the build estimate show these figures without sending SQL, at once for a library of any
-    # size: the route reads the depot's counts, never a text, a membership or a content version
-    request, depot = web
-    request("POST", "/api/texts", {"text": "aaaa", "licenses": ["CC0-1.0"], "tags": ["prose"], "declaration": ME})
-    request("POST", "/api/texts", {"text": "bbbbbbbb", "licenses": ["CC0-1.0"], "tags": ["code"], "declaration": ME})
-    request("POST", "/api/decisions", {"status": "admitted", "selection": {"filter": {}}, "declaration": ME})
-    request("POST", "/api/libraries", {"name": "mix"})
-    request("POST", "/api/libraries/test-depot-1/texts", {"selection": {"filter": {}}})
-    read = set()
-
-    def watched(con):  # every connection opened from here on records the tables its statements read
-        def authorize(action, table, column, database, trigger):
-            if action == apsw.SQLITE_READ:
-                read.add(table)
-            return apsw.SQLITE_OK
-        con.authorizer = authorize
-
-    monkeypatch.setattr(apsw, "connection_hooks", [*apsw.connection_hooks, watched])
-
-    status, held = request("POST", "/api/libraries/measure", {"libraries": ["test-depot-1"], "shares": [
-        {"tag": "prose", "share": 1}, {"tag": "code", "share": 1}, {"tag": "poems", "share": 1}]})
-
-    assert "counts" in read and not read & {"texts_revisions", "memberships", "content_lists", "parts"}
-
-    assert status == 200 and (held["texts"], held["characters"]) == (2, 12)
-    # prose holds the least for its proportion, so it limits the mix and code keeps as much as prose
-    assert [(one["tag"], one["characters"], one["kept_characters"], one["limits"]) for one in held["shares"]] == [
-        ("prose", 4, 4, True), ("code", 8, 4, False), ("poems", 0, 0, False)]
-    assert held["mix"] == {"kept_bytes": 8, "kept_characters": 8, "items_share": 0,
-                           "kind_shares": {"conversation": 0, "task": 0}}
-    assert request("POST", "/api/libraries/measure", {"libraries": ["test-depot-1"]})[1]["mix"] is None
-    assert request("POST", "/api/libraries/measure", {"libraries": ["test-depot-9"]})[0] == 404
-    assert request("POST", "/api/libraries/measure", {"libraries": []})[0] == 400
-
-
 def test_change_times_gives_the_time_of_each_change_the_depot_holds(web):
     request, depot = web
-    request("POST", "/api/libraries", {"name": "open"})
+    request("POST", "/api/texts", {"text": "one", "licenses": ["CC0-1.0"], "declaration": ME})
     now = depot.change()
 
     status, times = request("POST", "/api/changes/times", {"changes": [now, now, now + 50]})
@@ -1019,67 +774,3 @@ def test_change_times_gives_the_time_of_each_change_the_depot_holds(web):
     assert status == 200 and [one["change"] for one in times] == [now] and times[0]["made_at"]
 
 
-def test_a_library_reads_as_one_strip_from_its_start_its_end_and_once_mapped_any_position(web):
-    request, depot = web
-    me = Declaration(ME["name"], ME["email"], True)
-    texts = ["first text\n", "", "second, longer text\n" * 5, "last"]
-    depot.add([NewText(text=text, licenses=("CC0-1.0",), title=f"T{n}") for n, text in enumerate(texts)], me)
-    depot.decide("admitted", "true", me)
-    library = depot.new_library("all")
-    depot.put(library, "true")
-    strip = "".join(texts)
-
-    first = request("POST", f"/api/libraries/{library}/strip", {"at": 0, "characters": 15})[1]
-    assert ([one["id"] for one in first["pieces"]], first["position"], first["edge"]) == (
-        ["test-depot-1", "test-depot-2", "test-depot-3"], 0, False)
-    assert "".join(one["text"] for one in first["pieces"]) == strip[:31]  # read on to the end of its line
-    last = first["pieces"][-1]
-    after = request("POST", f"/api/libraries/{library}/strip",
-                    {"text": last["id"], "offset": last["start"] + len(last["text"])})[1]
-    assert "".join(one["text"] for one in after["pieces"]) == strip[31:] and after["edge"]
-    end = request("POST", f"/api/libraries/{library}/strip", {"end": True, "characters": 6})[1]
-    assert ("".join(one["text"] for one in end["pieces"]), end["position"]) == (strip[-24:], len(strip) - 24)
-
-    for _ in range(200):  # the map is made in the background
-        status, shown = request("GET", f"/api/libraries/{library}/strip")
-        if shown["ready"]:
-            break
-        assert request("POST", f"/api/libraries/{library}/strip", {"at": 20})[0] == 422
-        time.sleep(0.05)
-    assert shown == {"texts": 4, "characters": len(strip), "ready": True, "fresh": True, "walked": 4, "failed": None}
-    middle = request("POST", f"/api/libraries/{library}/strip", {"at": 20, "characters": 10})[1]
-    assert ("".join(one["text"] for one in middle["pieces"]), middle["position"]) == (strip[11:31], 11)  # its line
-    depot.take_out(library, ["test-depot-1"])  # its map is of another state: the last one answers while a new one is made
-    status, moved = request("POST", f"/api/libraries/{library}/strip", {"at": 0, "characters": 1})
-    assert status == 200 and moved["pieces"][0]["id"] == "test-depot-2"
-    for _ in range(200):
-        status, shown = request("GET", f"/api/libraries/{library}/strip")
-        if shown["fresh"]:
-            break
-        assert shown["ready"] and request("POST", f"/api/libraries/{library}/strip", {"at": 5})[0] == 200
-        time.sleep(0.05)
-    assert (shown["texts"], shown["characters"]) == (3, len(strip) - len(texts[0]))
-    assert request("POST", f"/api/libraries/{library}/strip", {"text": "test-depot-1", "at": 3})[0] == 400
-    assert request("GET", "/api/libraries/test-depot-99/strip")[0] == 404
-
-
-def test_a_failed_walk_of_a_library_is_answered_and_not_tried_again_on_every_request(web, tmp_path, monkeypatch):
-    from wpt.depot.web import strips as maps_module
-    _, depot = web
-    library = depot.new_library("one")
-    walks = []
-
-    def failing(*args):
-        walks.append(1)
-        raise OSError("the disk went away")
-    monkeypatch.setattr(maps_module.strips, "build", failing)
-    maps = maps_module.Maps(depot, tmp_path / "strips")
-    for _ in range(200):
-        found, walking = maps.get(library)
-        if walking["failed"]:
-            break
-        time.sleep(0.01)
-    assert (found, walking) == (None, {"fresh": False, "walked": 0, "failed": "OSError: the disk went away"})
-    for _ in range(5):
-        assert maps.get(library)[1]["failed"]
-    assert len(walks) == 1

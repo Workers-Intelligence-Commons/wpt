@@ -16,7 +16,11 @@ Next to its weights, a model folder carries:
 write_documents(folder) generates NOTICE and README.md (documents(folder)
 gives their text) from the folder's own files (config.json, provenance.json,
 CREDITS, evals/*.json, drafter/config.json and drafter/provenance.json), so
-they cannot disagree with what the folder holds. The drafter's weights are
+they cannot disagree with what the folder holds. What they say of the
+corpus comes from wpt_model.provenance, which reads a folder trained on a
+snapshot ("Trained on snapshot S (change N, digest H) of the depot D,
+recipe R, code at commit X") and one written before snapshots ("From
+corpus C, built from dataset T of the depot D") alike. The drafter's weights are
 the model's, under the same license and header; its prompts are the
 beginnings of the plain texts the model read, so it reads no text the model
 did not.
@@ -34,6 +38,7 @@ from pathlib import Path
 from wpt_utils.programs import code_name
 
 from .config import layer_kinds
+from .provenance import corpus_id, corpus_label, on_snapshot
 
 LICENSE = "AGPL-3.0-or-later"
 OUTPUT_LICENSE = "CC0-1.0"
@@ -77,9 +82,9 @@ def write_documents(folder):
 
 
 def notice(provenance, credits: str) -> str:
-    """NOTICE: the licenses, the corpus the model learned from, the texts
-    of credits (CREDITS), then the output notice."""
-    corpus = provenance["corpus"]
+    """NOTICE: the licenses, what the model learned from
+    (wpt_model.provenance.corpus_label), the texts of credits (CREDITS),
+    then the output notice."""
     lines = [
         "WPT model notice", "",
         f"Weights: {LICENSE}. These weights are part of WPT (Workers' Pre-trained",
@@ -90,7 +95,7 @@ def notice(provenance, credits: str) -> str:
         f"Project: {REPOSITORY}",
         *_built_from(provenance), "", "",
         "Texts this model learned from", "",
-        f"From corpus {corpus['id']}, built from dataset {corpus['dataset']} of the depot {corpus['depot']}:",
+        *_learned_from(provenance),
         "one line per text, with its depot and id there, its title, authors and",
         "address when it has them, and its licenses (any one of them allows it),",
         "then the notices and the license texts the lines name.", "",
@@ -101,7 +106,7 @@ def notice(provenance, credits: str) -> str:
 def card(config, provenance, evals, drafter=None) -> str:
     lines = [
         "---", "license: agpl-3.0", "---", "",
-        f"# WPT model, corpus {provenance['corpus']['id'][:12]}", "",
+        f"# WPT model, corpus {corpus_id(provenance)[:12]}", "",
         f"> {SUMMARY}",
         ">",
         "> The full notice, with every text it learned from and its credit, is in",
@@ -117,8 +122,7 @@ def card(config, provenance, evals, drafter=None) -> str:
         f"{', '.join(map(str, config['engram_layers'])) or 'none'}",
         f"- Context: {config['block_size']} tokens; vocabulary: {config['vocab_size']:,} tokens", "",
         "## Training", "",
-        f"- Corpus: `{provenance['corpus']['id']}`, built from dataset `{provenance['corpus']['dataset']}` of the "
-        f"depot `{provenance['corpus']['depot']}`",
+        *_corpus_lines(provenance),
         *(f"- {line}" for line in _built_from(provenance)),
         f"- Device: {provenance['device']}",
         f"- Every input and tool version: [provenance.json](provenance.json)", "",
@@ -200,6 +204,31 @@ def _step(step):
     if step["reused"]:
         text += f"; the result of an earlier run (`{step['result'][:12]}`)"
     return text + "."
+
+
+def _learned_from(provenance):
+    """The NOTICE's line that heads the texts: what the model was trained on."""
+    if on_snapshot(provenance):
+        return [f"Trained on {corpus_label(provenance)}, corpus {corpus_id(provenance)}:"]
+    return [f"From {corpus_label(provenance)}:"]
+
+
+def _corpus_lines(provenance):
+    """The model card's lines on the corpus."""
+    if on_snapshot(provenance):
+        built = (provenance["corpus"].get("data") or {}).get("total_tokens")
+        wanted = (provenance.get("data") or {}).get("total_tokens")
+        again = "the same snapshot, recipe and code build it again"
+        if built is not None and built != wanted:
+            again = (f"built at {built:,} tokens, not the recipe's {_tokens(wanted)}: the same snapshot and code "
+                     "build it again from its own data section, `corpus.data` in provenance.json")
+        return [f"- Trained on {corpus_label(provenance)}", f"- Corpus: `{corpus_id(provenance)}` (a cache: {again})"]
+    corpus = provenance["corpus"]
+    return [f"- Corpus: `{corpus['id']}`, built from dataset `{corpus['dataset']}` of the depot `{corpus['depot']}`"]
+
+
+def _tokens(count) -> str:
+    return "no size" if count is None else f"{count:,}"
 
 
 def _built_from(provenance):

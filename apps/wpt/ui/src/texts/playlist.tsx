@@ -23,7 +23,7 @@ import { shortValue } from "./choices";
 
 const ORDERS: { by: Order["by"]; label: string }[] = [
   { by: "id", label: "id" }, { by: "title", label: "title" }, { by: "status", label: "status" }, { by: "length", label: "length" },
-  { by: "tags", label: "tags" }, { by: "licenses", label: "licenses" }, { by: "libraries", label: "libraries" },
+  { by: "tags", label: "tags" }, { by: "licenses", label: "licenses" }, { by: "kind", label: "kind" },
 ];
 
 // A row's status as one mark, coloured as the status badges are.

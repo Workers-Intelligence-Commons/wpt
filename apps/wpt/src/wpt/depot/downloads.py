@@ -2,7 +2,7 @@
 beside the depot (wpt.depot.jobs): when each corpus was last downloaded,
 the streams being sent now, how many texts each export of a dataset counts
 and the size, sha256 and conversations left out of each part of an export
-once it was sent whole (wpt_depot.exports), and the erasures whose corpora are being marked stale.
+once it was sent whole (wpt_depot.legacy), and the erasures whose corpora are being marked stale.
 
 An erasure decided through the web app is written into marking before it
 is carried out, and leaves it once every corpus holding one of its texts
@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from wpt_depot import errors
-from wpt_depot.exports import MAKER
+from wpt_depot.legacy import MAKER
 
 from .jobs import connected
 
@@ -85,7 +85,7 @@ class Downloads:
             return {row["corpus"] for row in con.execute("SELECT DISTINCT corpus FROM streams WHERE corpus IS NOT NULL")}
 
     def export_texts(self, export: str) -> int | None:
-        """How many texts the export (its identity, wpt_depot.exports.Export) counts, once kept; None before."""
+        """How many texts the export (its identity, wpt_depot.legacy.Export) counts, once kept; None before."""
         with connected(self.path) as con:
             found = con.execute("SELECT texts FROM export_texts WHERE export = ?", (export,)).fetchone()
         return None if found is None else found["texts"]
@@ -98,7 +98,7 @@ class Downloads:
     def export_sizes(self, export: str, parts: int) -> dict[tuple[int, str], dict]:
         """{(part, form): {bytes, sha256, left_out}} of each part of the
         parts of the export sent whole in that form by the same versions of
-        the libraries that make it (wpt_depot.exports.MAKER); left_out: how
+        the libraries that make it (wpt_depot.legacy.MAKER); left_out: how
         many conversations the part left out, by why (Export.part)."""
         with connected(self.path) as con:
             found = con.execute("SELECT part, format, bytes, sha256, left_out FROM exported_parts WHERE export = ? "

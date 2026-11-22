@@ -1,10 +1,13 @@
 // Add one plain text, or one item of a kind whose content is edited with a
-// form built from the kind's JSON Schema, under review, with its licenses,
-// notice, tags, title, authors and address (wpt depot add). Licenses are
+// form built from the kind's JSON Schema (a conversation in the chat editor,
+// conversation-editor.tsx, held until the depot would take it), under review, with its licenses,
+// notice, tags, title, authors and address (wpt depot add). The kind is
+// picked with one click on its card (kind-picker.tsx), the kind picked last
+// time in this browser picked again when the page opens. Licenses are
 // chosen with the license picker (license-picker.tsx). A plain text can be
 // read from a file, chosen or dropped on the text box, the title then taken
 // from the file's name. "Add another" empties the text, the title and the
-// address, and keeps the licenses, notice, authors and tags, which it says,
+// address, and keeps the kind, licenses, notice, authors and tags, which it says,
 // then puts the cursor back in the text box; choosing another kind for the
 // next text takes the kept tags off, since they told the last kind apart,
 // and says so with a button that puts them back. The tags box holds only the
@@ -17,24 +20,25 @@
 // texts added since the page opened are linked as one filter of the
 // Texts page.
 
-import { Button, Select, TextArea, TextInput } from "@workers-intelligence-commons/components";
+import { Button, TextArea, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { get, post, type Answer } from "../api";
 import { LicensePicker } from "../license-picker";
-import { Confirm, Help, only, optional, Outcome, PageHead, PLAIN, plural, Problems, required, RequiredNote, Section, type Declaration } from "../parts";
+import { Confirm, Help, optional, Outcome, PageHead, PLAIN, plural, Problems, required, RequiredNote, Section, type Declaration } from "../parts";
 import { href } from "../route";
 import { KIND_WORDS, kindStart } from "../kind-words";
-import { SchemaForm, initial, type Schema } from "../schema-form";
+import { KindPicker, lastKind, useKinds } from "../kind-picker";
+import { SchemaForm, initial } from "../schema-form";
+import { ConversationEditor, type Conversation } from "../conversation-editor";
+import { isConversation } from "../transcript";
 import type { Page } from "./index";
-
-type Kind = { id: string; meaning: string; schema: Schema };
 
 const list = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean);
 const TOP_TAGS = 10; // the depot's tags shown as toggles before "more"
 const an = (word: string) => `${/^[aeiou]/.test(word) ? "an" : "a"} ${word}`;
 
 function Add() {
-  const [kinds, setKinds] = useState<Kind[]>([]);
+  const kinds = useKinds() ?? [];
   const [kind, setKind] = useState("");
   const [text, setText] = useState("");
   const [content, setContent] = useState<unknown>(null);
@@ -52,17 +56,26 @@ function Add() {
   const [cleared, setCleared] = useState<string[]>([]); // kept tags taken off when the kind changed
   const [allTags, setAllTags] = useState(false); // every depot tag shown as a toggle, not only the most used
   const [fileProblem, setFileProblem] = useState("");
+  const [chatProblems, setChatProblems] = useState<string[]>([]); // what the depot would refuse in the conversation edited
   const [addedIds, setAddedIds] = useState<string[]>([]); // every text added on this page since it opened
   const [known, setKnown] = useState<{ tag: string; texts: number }[]>([]); // the depot's tags, to suggest
   const top = useRef<HTMLDivElement>(null);
-  useEffect(() => { get<Kind[]>("/api/kinds").then((a) => a.ok && setKinds(a.data)); }, []);
   useEffect(() => { get<{ tag: string; texts: number }[]>("/api/tags").then((a) => a.ok && setKnown([...a.data].sort((x, y) => y.texts - x.texts))); }, []);
   const schema = kinds.find((k) => k.id === kind)?.schema;
   const start = (id: string) => {
     const found = kinds.find((k) => k.id === id);
     return found ? kindStart(id, initial(found.schema, found.schema)) : null;
   };
-  const pick = (id: string) => {
+  // the kind picked last time in this browser, picked again once the kinds are read, before anything is written
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current || kinds.length === 0) return;
+    started.current = true;
+    const last = lastKind();
+    if (last && last !== PLAIN && !kind && text === "" && kinds.some((k) => k.id === last)) { setKind(last); setContent(start(last)); }
+  });
+  const pick = (picked: string) => {
+    const id = picked === PLAIN ? "" : picked; // "" a plain text
     setKind(id);
     setContent(start(id));
     // the kept tags told the last text's kind apart: another kind takes them off, a way back offered
@@ -95,7 +108,7 @@ function Add() {
     setKept(true);
     // back to the top, the cursor in the text box, ready for the next text
     window.scrollTo({ top: 0 });
-    window.setTimeout(() => (top.current?.querySelector<HTMLElement>("textarea") ?? top.current?.querySelector<HTMLElement>("input, select"))?.focus(), 0);
+    window.setTimeout(() => (top.current?.querySelector<HTMLElement>("textarea") ?? top.current?.querySelector<HTMLElement>("input:not(.kind-picker input), select"))?.focus(), 0);
   };
   // the texts added on this page, opened on the Texts page by their ids, named in words
   const addedHere = href(["texts", addedIds.at(-1) ?? ""], { id: addedIds, what: `the ${plural(addedIds.length, "text")} added just now` });
@@ -144,19 +157,17 @@ function Add() {
     }
   };
   const dropped = (e: DragEvent) => { e.preventDefault(); read(e.dataTransfer.files); };
-  const why = chosen.length === 0 ? "Tick a license first." : !kind && text === "" ? "Write or choose the text first." : null;
+  const chatting = kind === "conversation" && isConversation(content);
+  const why = chosen.length === 0 ? "Tick a license first." : !kind && text === "" ? "Write or choose the text first."
+    : chatting && chatProblems.length ? chatProblems[0] : null;
   return (
     <>
       <PageHead title="Add a text"
-        chain={<>What you add is under review among the <a href={href(["texts"])}>texts</a>, and joins no <a href={href(["libraries"])}>library</a> until it is admitted. Its licenses are those of the <a href={href(["licenses"])}>licenses</a> page.</>} />
+        chain={<>What you add is under review among the <a href={href(["texts"])}>texts</a>, and joins no <a href={href(["snapshots"])}>snapshot</a> until it is admitted. Its licenses are those of the <a href={href(["licenses"])}>licenses</a> page.</>} />
       <div className="form-narrow" ref={top}>
         <RequiredNote />
         <Section title="The text">
-          <Select label={required("What it is")} required value={kind} onChange={(e) => pick(e.target.value)}>
-            <option value="">A plain text: prose, code or any other text file</option>
-            {kinds.filter((k) => k.id !== PLAIN).map((k) => <option key={k.id} value={k.id}>An item: {k.id}</option>)}
-          </Select>
-          {kind && <p className="wic-field-hint">{(kinds.find((k) => k.id === kind)?.meaning ?? "").replace(/^./, (c) => c.toUpperCase())}.</p>}
+          {kinds.length > 0 && <KindPicker kinds={kinds} value={kind || PLAIN} onChange={pick} />}
           {cleared.length > 0 && (
             <p className="form-note small row tight">
               <span>Tags {cleared.join(", ")} taken off.<Help label="the tags taken off">They came from the text before, which was {addedKind ? an(addedKind) : "a plain text"}.</Help></span>
@@ -171,11 +182,13 @@ function Add() {
                   <input ref={jsonPicker} type="file" accept=".json,application/json" hidden onChange={(e) => { readJson(e.target.files); e.target.value = ""; }} />
                 </div>
                 {fileProblem && <Problems problems={[fileProblem]} />}
-                <SchemaForm value={content} schema={schema} root={schema} name={`The ${kind}`} words={KIND_WORDS[kind]} need="required" onChange={setContent} />
+                {kind === "conversation" && isConversation(content)
+                  ? <ConversationEditor value={content as Conversation} onChange={setContent} onProblems={setChatProblems} />
+                  : <SchemaForm value={content} schema={schema} root={schema} name={`The ${kind}`} words={KIND_WORDS[kind]} need="required" onChange={setContent} />}
               </>
             : (
               <div onDragOver={(e) => e.preventDefault()} onDrop={dropped}>
-                <TextArea label={required(only("Text", "for a plain text"))} required rows={8} value={text} className="code" onChange={(e) => setText(e.target.value)}
+                <TextArea label={required("Text")} required rows={8} value={text} className="code" onChange={(e) => setText(e.target.value)}
                   hint="Type, paste or drop a file." />
                 <div className="file-pick small">
                   <Button variant="quiet" onClick={() => picker.current?.click()}>Choose a file</Button>
@@ -234,8 +247,8 @@ function Add() {
           )}
           {answer && !answer.ok && <Outcome answer={answer} done={() => null} />}
           {!answer?.ok && addedIds.length > 0 && <p className="small aside"><a href={addedHere}>{plural(addedIds.length, "text")} added here</a>.</p>}
-          <Confirm label="Confirm and add" disabled={why !== null || answer?.ok === true} onConfirm={send}
-            note={answer?.ok ? <>Added.</> : why ?? <>Under {chosen.join(" or ")}, {sentTags.length ? `tagged ${sentTags.join(", ")}` : "no tag"}, under review.</>} />
+          {!answer?.ok && <Confirm label="Confirm and add" disabled={why !== null} onConfirm={send}
+            note={why ?? <>Under {chosen.join(" or ")}, {sentTags.length ? `tagged ${sentTags.join(", ")}` : "no tag"}, under review.</>} />}
         </Section>
       </div>
     </>

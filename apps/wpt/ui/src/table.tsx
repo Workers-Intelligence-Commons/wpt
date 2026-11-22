@@ -2,35 +2,27 @@
 // title, its id in the title's hover text: a long value is cut and shown
 // whole on hover. A column header that names an order sorts by
 // it, and a second click turns the order around; a box ticks each row when
-// ticked is given. A library's own page names that library in otherLibraries,
-// and its libraries column then shows only the other libraries of each text,
-// or is left out when no text of the page is in another one. MatchedTexts
-// is such a table, paged, of the texts a filter matches, for a view that
-// shows the texts of one thing (a license, a tag, a decision, a problem).
+// ticked is given. A kind column links each kind to the texts of that kind.
+// MatchedTexts is such a table, paged, of the texts a filter matches, for a
+// view that shows the texts of one thing (a license, a tag, a decision).
 
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { type ReactNode } from "react";
 import { MatchedCount, useCounts } from "./counts";
 import { useSearch, type Order, type Row, type TextFilter } from "./filter";
-import { LibraryLink, PlacePager, Problems, StatusBadge, textName, useLibraries, type Library } from "./parts";
+import { PLAIN, PlacePager, Problems, StatusBadge, textName } from "./parts";
 import { href } from "./route";
 
 const name = textName;
 
-type Column = { by: Order["by"]; label: string; className?: string; cell: (r: Row, byId: Map<string, Library>) => ReactNode };
+type Column = { by: Order["by"]; label: string; className?: string; cell: (r: Row) => ReactNode };
 
 const COLUMNS: Column[] = [
   { by: "title", label: "title", className: "wide-cell", cell: (r) => <a href={href(["texts", r.id])} title={`${name(r)} (${r.id})`} className="cut">{name(r)}</a> },
+  { by: "kind", label: "kind", className: "nowrap", cell: (r) => { const kind = r.kind ?? PLAIN; return <a href={href(["texts"], { kind })} title={`Every text of kind ${kind}`}>{kind}</a>; } },
   { by: "status", label: "status", className: "nowrap", cell: (r) => <StatusBadge status={r.status} /> },
   { by: "tags", label: "tags", cell: (r) => <Links values={r.tags} part="tags" /> },
   { by: "licenses", label: "licenses", className: "ledger", cell: (r) => <Links values={r.licenses} part="licenses" /> },
-  {
-    by: "libraries", label: "libraries", cell: (r, byId) => (
-      <span className="cut" title={r.libraries.map((id) => byId.get(id)?.name ?? id).join(", ")}>
-        {r.libraries.map((id, i) => <span key={id}>{i > 0 && ", "}<LibraryLink library={byId.get(id) ?? { id }} /></span>)}
-      </span>
-    ),
-  },
   { by: "length", label: "characters", className: "number ledger", cell: (r) => r.length.toLocaleString("en") },
 ];
 
@@ -46,7 +38,6 @@ function Links({ values, part }: { values: string[]; part: string }) {
 // The texts a filter matches, a page at a time, sortable, with their count
 // as it grows; empty: what to say when none does.
 export function MatchedTexts({ filter, label, empty }: { filter: TextFilter; label: string; empty: string }) {
-  const { libraries } = useLibraries();
   const { answer, pending, next, previous, first, limit, setLimit, order, setOrder } = useSearch(filter, 25);
   const counting = useCounts(filter);
   if (!answer) return <Skeleton lines={4} label={`Reading ${label.toLowerCase()}`} />;
@@ -54,21 +45,19 @@ export function MatchedTexts({ filter, label, empty }: { filter: TextFilter; lab
   if (answer.data.rows.length === 0 && !previous) return <p className="small">{empty}</p>;
   return (
     <>
-      <TextTable rows={answer.data.rows} libraries={libraries} busy={pending} order={order} onOrder={setOrder} label={label} />
+      <TextTable rows={answer.data.rows} busy={pending} order={order} onOrder={setOrder} label={label} />
       <PlacePager onFirst={first} onPrevious={previous} onNext={next} limit={limit} onLimit={setLimit} label={`Pages of ${label.toLowerCase()}`}
         counted={<MatchedCount counting={counting} />} />
     </>
   );
 }
 
-export function TextTable({ rows, libraries, order, onOrder, ticked, onTick, busy = false, label, otherLibraries }: {
-  rows: Row[]; libraries: Library[]; order?: Order; onOrder?: (o: Order) => void; ticked?: Set<string>;
-  onTick?: (ids: string[], on: boolean) => void; busy?: boolean; label: string; otherLibraries?: string;
+export function TextTable({ rows, order, onOrder, ticked, onTick, busy = false, label }: {
+  rows: Row[]; order?: Order; onOrder?: (o: Order) => void; ticked?: Set<string>;
+  onTick?: (ids: string[], on: boolean) => void; busy?: boolean; label: string;
 }) {
-  const shown = (r: Row) => (otherLibraries ? { ...r, libraries: r.libraries.filter((id) => id !== otherLibraries) } : r);
-  const columns = otherLibraries && rows.every((r) => shown(r).libraries.length === 0) ? COLUMNS.filter((c) => c.by !== "libraries") : COLUMNS;
-  const heading = (c: Column) => (otherLibraries && c.by === "libraries" ? "other libraries" : c.label);
-  const byId = new Map(libraries.map((l) => [l.id, l]));
+  const columns = COLUMNS;
+  const heading = (c: Column) => c.label;
   const allTicked = rows.length > 0 && rows.every((r) => ticked?.has(r.id));
   const sort = (by: Order["by"]) => onOrder?.({ by, descending: order?.by === by ? !order.descending : false });
   return (
@@ -103,7 +92,7 @@ export function TextTable({ rows, libraries, order, onOrder, ticked, onTick, bus
                     onChange={(e) => onTick([r.id], e.target.checked)} />
                 </td>
               )}
-              {columns.map((c) => <td key={c.label} className={c.className}>{c.cell(shown(r), byId)}</td>)}
+              {columns.map((c) => <td key={c.label} className={c.className}>{c.cell(r)}</td>)}
             </tr>
           ))}
         </tbody>

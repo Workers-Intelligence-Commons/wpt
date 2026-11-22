@@ -105,7 +105,7 @@ exists under the id or address given.
   the loss, the copying test of `wpt eval` and the time.
 - Whether imitation delays or brings forward copying at these sizes.
 - **Specialists of one small size against one model.** A measure trains a
-  common model for half the updates, branches by tag of the dataset,
+  common model for half the updates, branches by tag of the snapshot,
   averages, and compares with one model of equal compute on seen and unseen
   domains. No source does it under 125M.
 - Putting specialists trained from scratch back into one model of the same

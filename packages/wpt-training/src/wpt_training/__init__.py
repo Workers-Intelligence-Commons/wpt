@@ -1,12 +1,15 @@
 """Training: one runner, for every step of a model recipe.
 
 A step is what is done to the model (steps/: `read-text`,
-`answer-as-assistant`, `finish-tasks`, `finish-tasks-with-less-writing`). It
+`answer-as-assistant`, `answer-as-assistant-dft`,
+`answer-as-assistant-neftune`, `finish-tasks`,
+`finish-tasks-with-less-writing`). It
 chooses one of each of these roles, its settings, and the parts of the
 model it locks (wpt_model.PARTS):
 
     a method       how a loss is made from a batch of examples (methods/:
-                   `next-token`, `assistant-tokens`, `grpo`)
+                   `next-token`, `assistant-tokens`, `assistant-tokens-dft`,
+                   `assistant-tokens-neftune`, `grpo`)
     an optimizer   how the weights move, with its schedule and its verdict on
                    each evaluation (optimizers/: `by-part`); a recipe may give
                    a step another one, so any loss runs with any optimizer

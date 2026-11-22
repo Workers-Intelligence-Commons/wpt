@@ -857,10 +857,20 @@ and the repository, or from a series file, the name of one of its sizes
 (and of that size's run, when it is another than its own) and the
 repository ("Model series", below). A model recipe holds:
 
-- the data: a depot (`depot`), by the name its corpora carry for it (its
-  public address, [data-selection.md](data-selection.md)), a dataset there
-  by id or name (`dataset`) and the total tokens; the vocabulary is the one the corpus
-  was built with, from the dataset's tokenizer recipe;
+- the data, in one of two shapes. The snapshot shape: a depot (`depot`, its
+  public address, [data-selection.md](data-selection.md)), the name of one of
+  its snapshots (`snapshot`) with the change number it reads (`change`) and
+  its digest (`digest`), the kinds of text it takes (`kinds`, left out: every
+  kind), the share of the plain text each tag takes (`shares`, in order, a tag
+  once, summing to at most 1; left out: the snapshot's own proportions), the
+  total tokens (`total_tokens`) and the vocabulary (`vocabulary`, its file's
+  `sha256` and its `size`). The legacy dataset shape, of the recipes written
+  before snapshots: the depot, a dataset there by id or name (`dataset`) and
+  the total tokens, the vocabulary the one the corpus was built with, from the
+  dataset's tokenizer recipe; such a recipe trains on a corpus of that
+  dataset a store holds, found through the depot's frozen dataset routes,
+  and is never built ([training.md](training.md), "Models trained before
+  snapshots");
 - the architecture's numbers: the layout of the layers (`window_layers`,
   `sparse_groups`, `sparse_layers`, "Attention"), width, attention heads
   and head width, expert counts and widths, top `k`, latent width,
@@ -925,8 +935,9 @@ that. Four recipes exist, each of one stage (none yet sets V4's 4K, 16K,
   16 GB GPU is estimated to need `--recompute --micro-batch 1 --segment
   8192`; nothing is measured yet. No full run yet.
 
-Every recipe uses attention heads 128 wide, of which the window layers
-rotate the last 64.
+Every recipe of the repository has the legacy dataset shape, naming the
+dataset `wic-1` or `wic-2` of the public depot. Every recipe uses
+attention heads 128 wide, of which the window layers rotate the last 64.
 
 ### Model series
 
@@ -935,7 +946,8 @@ sizes of one model, so the rules of a scaling test are written once and
 each size follows them. It holds the rules every size shares and the list
 of sizes, each a name and a width. `SERIES:SIZE` names one size wherever a
 model recipe's name goes (`wpt train`, `WPT_RECIPE`). Every size reads
-the same corpus, the one of the series' depot and dataset, and a smaller
+the same corpus, the one of the series' snapshot and data part at its
+largest size, and a smaller
 size its first part (its prefix). The code derives
 each size's model recipe (`wpt_recipes.series`):
 
@@ -979,13 +991,15 @@ each size's model recipe (`wpt_recipes.series`):
   least 1, and the updates read `D` tokens. The warm-up is the series'
   `warmup_share` of the updates, at least 1; the drops stay at 80% and 90%.
 - the data: one corpus for the whole series. Its data part holds the
-  series' depot and dataset, and the most tokens any
+  series' own (a model recipe's data part of either shape without
+  `total_tokens`), and the most tokens any
   size's run reads (its own, or its trunk's, below), so every size's
   recipe has the same data part and reads the same corpus. Each size's
   `read-text` step reads only the start of its training tokens
   (`prefix_tokens`: its updates times its batch times the window plus one,
   training.md, "Prefix"), so every size sees the same texts in the same
-  order.
+  order. `wpt depot build SERIES:`, or Build on the series' row `SERIES:`
+  of the Recipes page of `wpt depot web`, builds that corpus.
 
 The seed and the drafter are the series' own, the same at every size. The
 model's provenance holds the size's derived recipe and the name

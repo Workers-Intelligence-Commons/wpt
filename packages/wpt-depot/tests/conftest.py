@@ -9,9 +9,34 @@ import pytest
 from deltalake import write_deltalake
 
 from wpt_depot import About, Declaration, Depot, follow, format3, kinds, titles
-from wpt_depot.legacy import STEPS, Legacy
+from wpt_depot.delta import STEPS, DeltaFolder
+from wpt_depot.ids import export_key
+from wpt_depot.legacy import Legacy
 
 ME = Declaration("Ada Lovelace", "ada@example.org", True)
+# the revisions of texts whose kind, length and bytes (schema.SIZES) are not those of the content version they read,
+# as its row of content_lists holds them, or are missing: none when every write kept them exact
+SIZES_APART = ("SELECT t.id, t.revision, t.content_kind, t.content_length, t.content_bytes, c.kind, c.length, c.bytes "
+               "FROM texts_revisions t LEFT JOIN content_lists c ON c.id = t.id AND c.version = t.content_version "
+               "WHERE (t.content_kind, t.content_length, t.content_bytes) IS NOT (c.kind, c.length, c.bytes) "
+               "OR t.content_kind IS NULL ORDER BY t.id, t.revision")
+
+# the current revisions whose copy of their text's tags (schema.tags_sql) is not the tags its rows of taggings give,
+# and the past revisions that still hold a copy: none when every write kept it exact
+TAGS_APART = ("SELECT t.id, t.revision, t.current_tags, (SELECT json_group_array(g.tag ORDER BY g.tag) FROM taggings g "
+              "WHERE g.text = t.id AND g.left_change IS NULL) AS now FROM texts_revisions t "
+              "WHERE CASE WHEN t.latest THEN t.current_tags IS NOT now ELSE t.current_tags IS NOT NULL END "
+              "ORDER BY t.id, t.revision")
+
+
+def tags_apart(depot: Depot) -> list[tuple]:
+    """The rows of TAGS_APART in the depot."""
+    return [tuple(row.values()) for row in depot.rows(TAGS_APART)]
+
+
+def sizes_apart(depot: Depot) -> list[tuple]:
+    """The rows of SIZES_APART in the depot."""
+    return [tuple(row.values()) for row in depot.rows(SIZES_APART)]
 
 
 @pytest.fixture
@@ -30,19 +55,103 @@ def make_depot(tmp_path):
     return make
 
 
+# each revision of a text given, in its column tags, the tags the text had while it was its current one (until the
+# change before the next revision), as a format older than 13 kept them on its revisions
+TAGS_ON_REVISIONS = ("UPDATE texts_revisions SET tags = (SELECT json_group_array(g.tag ORDER BY g.tag) FROM taggings g "
+                     "WHERE g.text = texts_revisions.id AND g.joined_change <= u.until AND (g.left_change IS NULL OR "
+                     "g.left_change > u.until)) FROM (SELECT r.id, r.revision, coalesce((SELECT min(n.change) - 1 FROM "
+                     "texts_revisions n WHERE n.id = r.id AND n.revision > r.revision), 1 << 62) AS until "
+                     "FROM texts_revisions r) u WHERE u.id = texts_revisions.id AND u.revision = texts_revisions.revision")
+
+
+class LegacyRows:
+    """Writes the rows of the legacy tables (schema.LEGACY) that no code
+    writes any more into a depot of the code's format, as an older format
+    left them, for the frozen reader of those tables (wpt_depot.legacy),
+    which reads the tags of a text from its revisions, as those formats
+    kept them: each write gives every revision the tags its text had while
+    it was the current one (TAGS_ON_REVISIONS)."""
+
+    def library(self, depot: Depot, name: str, texts: list[str], locked: bool = False) -> str:
+        """A library of the depot holding texts from now on, locked at once
+        when locked (its pins at each text's current revision): its id."""
+        with depot.db.write("legacy library") as (con, number):
+            con.execute(TAGS_ON_REVISIONS)
+            library = depot._id(depot._take(con, "libraries"))
+            con.execute("INSERT INTO libraries_revisions (id, revision, change, latest, name, locked_at) "
+                        "VALUES (?, 1, ?, 1, ?, ?)", (library, number, name, "2026-01-01T00:00:00Z" if locked else None))
+            for text in texts:
+                key = export_key(text)
+                con.execute("INSERT INTO memberships (library, text, joined_change, export_key) VALUES (?, ?, ?, ?)",
+                            (library, text, number, key))
+                if locked:
+                    con.execute("INSERT INTO pins (library, text, revision, change, export_key) SELECT ?, id, "
+                                "revision, ?, ? FROM texts_revisions WHERE id = ? AND latest", (library, number, key, text))
+            if texts:
+                self._moved(con, library, number)
+        return library
+
+    def _moved(self, con, library: str, number: int):
+        """The library's memberships moved at the change number, as library_moves records it."""
+        con.execute("INSERT INTO library_moves (library, change) VALUES (?, ?) ON CONFLICT (library) DO UPDATE SET "
+                    "change = excluded.change", (library, number))
+
+    def put(self, depot: Depot, library: str, texts: list[str]):
+        """The texts in the open library from now on."""
+        with depot.db.write("legacy put") as (con, number):
+            con.executemany("INSERT INTO memberships (library, text, joined_change, export_key) VALUES (?, ?, ?, ?)",
+                            [(library, text, number, export_key(text)) for text in texts])
+            self._moved(con, library, number)
+
+    def lock(self, depot: Depot, library: str):
+        """The open library locked now: a revision of it with locked_at, its
+        texts pinned at their current revisions."""
+        with depot.db.write("legacy lock") as (con, number):
+            [(revision, name)] = con.execute("SELECT revision, name FROM libraries_revisions WHERE id = ? AND latest",
+                                             (library,)).fetchall()
+            con.execute("UPDATE libraries_revisions SET latest = 0 WHERE id = ?", (library,))
+            con.execute("INSERT INTO libraries_revisions (id, revision, change, latest, name, locked_at) "
+                        "VALUES (?, ?, ?, 1, ?, '2026-01-01T00:00:00Z')", (library, revision + 1, number, name))
+            con.execute("INSERT INTO pins (library, text, revision, change, export_key) SELECT m.library, m.text, "
+                        "t.revision, ?, m.export_key FROM memberships m JOIN texts_revisions t ON t.id = m.text AND "
+                        "t.latest WHERE m.library = ? AND m.left_change IS NULL", (number, library))
+
+    def dataset(self, depot: Depot, name: str, libraries: list[str], shares: list[tuple[str, float]] | None = None,
+                max_tokens: int | None = None) -> dict:
+        """A dataset of the depot reading its libraries at the current
+        change, with no figures stored: its current row, as Legacy reads it."""
+        with depot.db.write("legacy dataset") as (con, number):
+            con.execute(TAGS_ON_REVISIONS)
+            dataset = depot._id(depot._take(con, "datasets"))
+            refs = [{"depot": None, "library": one, "change": number - 1} for one in libraries]
+            con.execute("INSERT INTO datasets_revisions (id, revision, change, latest, name, tokenizer, libraries, "
+                        "shares, max_tokens) VALUES (?, 1, ?, 1, ?, 'tok', ?, ?, ?)",
+                        (dataset, number, name, json.dumps(refs),
+                         None if shares is None else json.dumps([{"tag": tag, "share": share} for tag, share in shares]),
+                         max_tokens))
+        return Legacy(depot.address).dataset_by_id(dataset)
+
+
+@pytest.fixture
+def legacy_rows():
+    """The writer of legacy rows (LegacyRows)."""
+    return LegacyRows()
+
+
 @pytest.fixture
 def library_figures():
-    """library_figures(depot): (what the depot's counts say each library
-    holds of each kind and by tag, the same computed from its rows directly: each
-    open membership's text at its current revision and content version),
+    """library_figures(con): (what the counts of the depot con reads say
+    each library holds of each kind and by tag, as a depot of format 9 to 12
+    counted it, the same computed from its rows directly: each open
+    membership's text at its current revision and content version, a
+    content version of no kind, as format 11 and older leave it, plain),
     each {(facet, name): (texts, characters, bytes)}."""
-    def figures(depot: Depot):
-        con = depot.db.reader()
+    def figures(con):
         stored = {(facet, name): (texts, characters, size) for facet, name, texts, characters, size in con.execute(
             "SELECT facet, name, texts, characters, bytes FROM counts WHERE facet IN ('library kind', 'library tag')")}
         direct = {}
         for library, kind, length, size, tags in con.execute(
-                "SELECT m.library, c.kind, c.length, c.bytes, t.tags FROM memberships m "
+                "SELECT m.library, coalesce(c.kind, 'plain'), c.length, c.bytes, t.tags FROM memberships m "
                 "JOIN texts_revisions t ON t.id = m.text AND t.latest "
                 "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version WHERE m.left_change IS NULL"):
             keys = [("library kind", f"{library} {kind}")]
@@ -76,36 +185,50 @@ def title_index():
     return read_title_index
 
 
+def legacy_figures(depot: Depot, dataset: str) -> list[dict]:
+    """For each library of the dataset's current revision, in order, what it held at the change the revision reads
+    it at, computed directly from the legacy rows (a library locked then: its pins; another: the texts that had
+    joined it and not left it then, each at its latest revision then), as a revision's figures name them: {kinds:
+    {kind: {texts, characters, bytes}} of every kind of the depot, plain first, then by id, tags: the same for the
+    plain texts that have each tag of its shares}; None for a library named by another depot's address, which no
+    revision's figures know."""
+    con = depot.db.reader()
+    [(refs, shares)] = con.execute("SELECT libraries, shares FROM datasets_revisions WHERE id = ? AND latest",
+                                   (dataset,)).fetchall()
+    tags = [one["tag"] for one in json.loads(shares or "[]")]
+    kinds = ["plain"] + [kind for (kind,) in con.execute("SELECT id FROM kinds WHERE id <> 'plain' ORDER BY id")]
+    found = []
+    for ref in json.loads(refs):
+        if ref["depot"] is not None:
+            found.append(None)
+            continue
+        library, change = ref["library"], ref["change"]
+        [(locked,)] = con.execute("SELECT locked_at FROM libraries_revisions WHERE id = ? AND change <= ? ORDER BY "
+                                  "revision DESC LIMIT 1", (library, change)).fetchall()
+        held = ("SELECT text, revision FROM pins WHERE library = :library" if locked is not None else
+                "SELECT m.text, (SELECT max(r.revision) FROM texts_revisions r WHERE r.id = m.text AND r.change <= "
+                ":change) AS revision FROM memberships m WHERE m.library = :library AND m.joined_change <= :change "
+                "AND (m.left_change IS NULL OR m.left_change > :change)")
+        one = {"kinds": {kind: {"texts": 0, "characters": 0, "bytes": 0} for kind in kinds},
+               "tags": [{"texts": 0, "characters": 0, "bytes": 0} for _ in tags]}
+        for kind, length, size, text_tags in con.execute(
+                f"SELECT c.kind, c.length, c.bytes, t.tags FROM ({held}) h JOIN texts_revisions t ON t.id = h.text "
+                "AND t.revision = h.revision JOIN content_lists c ON c.id = t.id AND c.version = t.content_version",
+                {"library": library, "change": change}):
+            into = [one["kinds"][kind]] + ([one["tags"][at] for at, tag in enumerate(tags) if tag in json.loads(text_tags)]
+                                           if kind == "plain" else [])
+            for sums in into:
+                sums["texts"] += 1
+                sums["characters"] += length
+                sums["bytes"] += size
+        found.append(one)
+    return found
+
+
 @pytest.fixture
 def figures_at():
-    """figures_at(depot, dataset): for each library of the dataset's current revision, in order, what it held at the
-    change the revision reads it at, computed directly from the texts it held then (Depot.library_texts, each at its
-    revision then), as a revision's figures name them: {kinds: {kind: {texts, characters, bytes}} of every kind of
-    the depot, plain first, then by id, tags: the same for the plain texts that have each tag of its shares}; None
-    for a library named by another depot's
-    address, which no revision's figures know."""
-    def figures(depot: Depot, dataset: str) -> list[dict]:
-        row = depot.dataset_by_id(dataset)
-        tags = [one["tag"] for one in row["shares"] or []]
-        found = []
-        for ref in row["libraries"]:
-            if ref["depot"] is not None:
-                found.append(None)
-                continue
-            kinds = ["plain"] + sorted(one["id"] for one in depot.sql("SELECT id FROM kinds") if one["id"] != "plain")
-            one = {"kinds": {kind: {"texts": 0, "characters": 0, "bytes": 0} for kind in kinds},
-                   "tags": [{"texts": 0, "characters": 0, "bytes": 0} for _ in tags]}
-            for text in depot.library_texts(ref["library"], ref["change"]):
-                kind = text["kind"]
-                into = [one["kinds"][kind]] + ([one["tags"][at] for at, tag in enumerate(tags) if tag in text["tags"]]
-                                               if kind == "plain" else [])
-                for sums in into:
-                    sums["texts"] += 1
-                    sums["characters"] += text["length"]
-                    sums["bytes"] += text["bytes"]
-            found.append(one)
-        return found
-    return figures
+    """figures_at(depot, dataset): legacy_figures."""
+    return legacy_figures
 
 
 @pytest.fixture
@@ -242,14 +365,14 @@ def format_2_rows(folder: str, upstream: str | None) -> dict[str, list[dict]]:
 @pytest.fixture
 def make_legacy(tmp_path):
     """make_legacy(format, upstream=None): the folder of a depot of that format (0 to 3), its Delta Lake tables
-    written as format 2 laid them out and brought to the format asked through the steps of wpt_depot.legacy
+    written as format 2 laid them out and brought to the format asked through the steps of wpt_depot.delta
     (from 2 to 3) or as the older formats laid them out (below 2)."""
     def make(reached: int = 3, upstream: str | None = None) -> Path:
         folder = tmp_path / f"old-{reached}"
         for name, schema in FORMAT_2.items():
             write_deltalake(str(folder / name), pa.Table.from_pylist(
                 format_2_rows(str(folder), upstream)[name], schema=schema), mode="error")
-        old = Legacy(folder)
+        old = DeltaFolder(folder)
         old.table("contents").alter.add_constraint({format3.CONSTRAINT_2: (
             "(kind IS NULL AND text IS NOT NULL AND content IS NULL) "
             "OR (kind IS NOT NULL AND text IS NULL AND content IS NOT NULL)")})

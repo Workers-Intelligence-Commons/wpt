@@ -2,23 +2,19 @@
 // editable, under one line of facts: a plain text in CodeMirror
 // (code-editor.tsx), with find and replace inside this text, or an item
 // through the form of its kind's schema, a conversation read first as a
-// transcript. Saving is save only, with Save or Ctrl+S, a new content
+// transcript and edited as a chat (conversation-editor.tsx), its kind shown in the facts line, fixed. Saving is save only, with Save or Ctrl+S, a new content
 // version through POST /api/texts/ID/content, which the depot records as a
-// public decision under review, so the text goes back under review and
-// leaves every open library until it is admitted again; an admitted text
-// asks once more. Beside it, the review panel (panel.tsx): its scores, its
+// public decision under review, so the text goes back under review (a
+// snapshot made before keeps the revision it holds); an admitted text asks
+// once more. Beside it, the review panel (panel.tsx): its scores, its
 // tags, the moves and decisions, the presets, its facts and the menu of its
 // other actions, each opening its form in a dialog: its record (credits,
 // revision and content version and how many it has of each, every decision
 // with its reason, those that no longer count marked, a put back shown as a
-// correction, its libraries, each locked one with the revision it pinned,
-// its reported problems and erasure requests), a decision with a reason,
-// its licenses, its credits (a new revision; a locked library keeps the
-// revision it pinned), taking it out of an open library that holds it (it
-// stays admitted), a problem reported to a library that holds it, and a
-// request to erase a passage (erase-form.tsx). A text that belongs to the
-// upstream this depot follows says so, is shown read only, and keeps only
-// the report to a library of this depot's own and the take-out from one.
+// correction, and its erasure requests), a decision with a reason, its
+// licenses, its credits (a new revision), and a request to erase a passage
+// (erase-form.tsx). A text that belongs to the upstream this depot follows
+// says so and is shown read only, with its record.
 // The texts read are kept a little, and the Texts page asks for the next
 // ones ahead (prefetch), so moving on shows the next one at once.
 
@@ -31,29 +27,31 @@ import type { Deciding } from "../blocked";
 import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../decide-forms";
 import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
-import { Confirm, Cut, Facts, Help, Joined, LibraryLink, MoreMenu, optional, Outcome, PLAIN, plural, Problems, required, RequiredNote, Section, settingsHref, StatusBadge, textName, type Declaration, type Library, type Status } from "../parts";
+import { Confirm, Cut, Facts, Help, Joined, MoreMenu, optional, Outcome, PLAIN, plural, Problems, required, RequiredNote, Section, settingsHref, StatusBadge, textName, type Declaration, type Status } from "../parts";
 import { codePoints, TextViewer } from "../reader";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
 import { Correction } from "../pages/decisions";
 import { href } from "../route";
 import { KIND_WORDS } from "../kind-words";
-import { SchemaForm, type Schema } from "../schema-form";
+import { FixedKind, useKinds } from "../kind-picker";
+import { SchemaForm } from "../schema-form";
 import { type Score } from "../scores";
 import { ReviewPanel } from "./panel";
 import { isConversation, Transcript } from "../transcript";
+import { ConversationEditor, type Conversation } from "../conversation-editor";
 
 // counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
 // put_back: it put the text back under review, a correction of the decisions before it
 type Decision = { id: string; status: Status; name: string; email: string; made_at: string; reason: string | null; counts: boolean; put_back: boolean };
 type Row = {
   id: string; text: string | null; kind: string; content: string | null; licenses: string[]; notice: string | null;
-  title: string | null; authors: string[] | null; tags: string[]; address: string | null; decisions: string[]; libraries: string[];
+  title: string | null; authors: string[] | null; tags: string[]; address: string | null; decisions: string[];
   revision: number; content_version: number; scores: Score[] | null;
 };
-// pins: each locked library holding it, with the revision it pinned; upstream: it belongs to the upstream this depot follows
-export type Shown = { text: Row; status: Status; notice: string | null; decisions: Decision[]; libraries: Library[]; revisions: number;
-  pins: { library: string; name: string; revision: number }[]; content_versions: number; upstream: boolean };
+// upstream: it belongs to the upstream this depot follows
+export type Shown = { text: Row; status: Status; notice: string | null; decisions: Decision[]; revisions: number;
+  content_versions: number; upstream: boolean };
 
 export const showText = (id: string) => get<Shown>(`/api/texts/${encodeURIComponent(id)}`);
 
@@ -101,7 +99,7 @@ export function TextPanel({ id, actions, version, onChanged, onSaved, onDirty, h
   return <Loaded key={id} actions={actions} shown={shown.answer.data} reload={() => { load(true); onChanged(); }} onSaved={(words) => { forgetText(id); onSaved(words); }} onDirty={onDirty} handle={handle} find={find} />;
 }
 
-type Dialogs = "decide" | "relicense" | "credits" | "take-out" | "report" | "erase" | "record";
+type Dialogs = "decide" | "relicense" | "credits" | "erase" | "record";
 
 // The open text in two parts: its content, always in view, under one line of facts, and the review panel beside
 // it (panel.tsx), whose menu opens the other actions, each in a dialog.
@@ -117,13 +115,13 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
   const named = textName(row);
   const title = row.title ? named : named[0].toUpperCase() + named.slice(1); // a real title (often a file name) stays as written
   const theirs = shown.upstream;
-  const reportable = shown.libraries.filter((l) => !l.upstream); // only the depot's own libraries take a problem
-  const leavable = reportable.filter((l) => !l.locked_at); // and only its own open ones let a text out
+  const kinds = useKinds();
   const facts = (
     <>
       <strong className="content-title" title={title}>{title}</strong>
       <StatusBadge status={shown.status} />
-      <span className="ledger aside">v{row.content_version}{item ? <> · {row.kind}</> : <> · {codePoints(row.text ?? "").toLocaleString("en")} chars</>}</span>
+      <FixedKind kind={row.kind ?? PLAIN} meaning={kinds?.find((k) => k.id === (row.kind ?? PLAIN))?.meaning} />
+      <span className="ledger aside">v{row.content_version}{!item && <> · {codePoints(row.text ?? "").toLocaleString("en")} chars</>}</span>
       {theirs && <span className="aside" title="Only the upstream this depot follows decides on it, changes its licenses, content or credits, or erases it">the upstream's, read only</span>}
     </>
   );
@@ -133,8 +131,6 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
       {!theirs && <Button variant="quiet" onClick={() => setOpen("decide")}>Decide, with a reason</Button>}
       {!theirs && <Button variant="quiet" onClick={() => setOpen("relicense")}>Change licenses</Button>}
       {!theirs && <Button variant="quiet" onClick={() => setOpen("credits")}>Edit credits</Button>}
-      {leavable.length > 0 && <Button variant="quiet" onClick={() => setOpen("take-out")}>Take out of a library</Button>}
-      {reportable.length > 0 && <Button variant="quiet" onClick={() => setOpen("report")}>Report a problem</Button>}
       {!theirs && <Button variant="quiet" onClick={() => setOpen("erase")}>Ask to erase</Button>}
     </MoreMenu>
   );
@@ -143,9 +139,9 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
       <div className="text-column">
         {said && <p className="done cue content-said" role="status">{said}</p>}
         {theirs ? <><div className="content-line small">{facts}</div><ReadOnly row={row} find={find} /></>
-          : <EditContent key={`${row.id}:${row.content_version}`} row={row} status={shown.status} facts={facts} libraries={shown.libraries} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
+          : <EditContent key={`${row.id}:${row.content_version}`} row={row} status={shown.status} facts={facts} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
       </div>
-      <ReviewPanel key={`${row.id}:${row.revision}`} text={row} status={shown.status} decisions={shown.decisions.length} libraries={shown.libraries} readOnly={theirs}
+      <ReviewPanel key={`${row.id}:${row.revision}`} text={row} status={shown.status} decisions={shown.decisions.length} readOnly={theirs}
         actions={actions} more={more} onSaved={onSaved} onRecord={() => setOpen("record")} />
       <Dialog open={open === "record"} onClose={() => setOpen(null)} title={`The record of ${title}`}>
         {open === "record" && <div className="wide"><Record shown={shown} /></div>}
@@ -158,12 +154,6 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
       </Dialog>
       <Dialog open={open === "credits"} onClose={() => setOpen(null)} title="Edit the credits of this text">
         {open === "credits" && <Credits row={row} notice={shown.notice} onDone={done} />}
-      </Dialog>
-      <Dialog open={open === "take-out"} onClose={() => setOpen(null)} title="Take this text out of a library">
-        {open === "take-out" && leavable.length > 0 && <TakeOut id={row.id} libraries={leavable} onDone={done} />}
-      </Dialog>
-      <Dialog open={open === "report"} onClose={() => setOpen(null)} title="Report a problem with this text">
-        {open === "report" && reportable.length > 0 && <Report id={row.id} libraries={reportable} onDone={done} />}
       </Dialog>
       <Dialog open={open === "erase"} onClose={() => setOpen(null)} title="Ask to erase a passage">
         {open === "erase" && <div className="wide"><EraseForm row={row} onDone={done} /></div>}
@@ -186,10 +176,8 @@ function Record({ shown }: { shown: Shown }) {
   const [allErasures, setAllErasures] = useState<{ id: string; status: Status; needles: { text: string }[] }[]>([]);
   useEffect(() => { get<typeof allErasures>("/api/erasures").then((a) => a.ok && setAllErasures(a.data)); }, [row.id]);
   const erasures = allErasures.filter((e) => e.needles.some((n) => n.text === row.id));
-  const problems = shown.libraries.flatMap((l) => (l.problems ?? []).filter((p) => p.texts.includes(row.id)).map((p) => ({ library: l, problem: p })));
   return (
     <div className="record small">
-      {shown.pins.length > 0 && <p className="aside">A locked library holds it ({shown.pins.map((p) => p.name).join(", ")}): a decision, a license change, a content change or an edit of its credits makes a new revision, and the locked library keeps reading the one it pinned.</p>}
       <Section title="Credits">
         <Facts rows={[
           ["revision", <span className="ledger">{row.revision} of {shown.revisions}</span>],
@@ -202,16 +190,6 @@ function Record({ shown }: { shown: Shown }) {
           ["notice", shown.notice && <span className="notice-text">{shown.notice}</span>],
         ]} />
       </Section>
-      <Section title="Libraries">
-        {shown.libraries.length ? (
-          <ul className="plain">
-            {shown.libraries.map((l) => {
-              const pin = shown.pins.find((p) => p.library === l.id);
-              return <li key={l.id}><LibraryLink library={l} />{pin && <span className={pin.revision < row.revision ? "aside" : "quiet"}> reads revision {pin.revision}{pin.revision < row.revision ? ", an older one" : ""}</span>}</li>;
-            })}
-          </ul>
-        ) : <p className="aside">None holds it{shown.status === "admitted" ? "" : ": only an admitted text joins one"}.</p>}
-      </Section>
       <Section title="Decisions">
         <ol className="decisions">
           {shown.decisions.map((d) => (
@@ -223,13 +201,6 @@ function Record({ shown }: { shown: Shown }) {
           ))}
         </ol>
       </Section>
-      {problems.length > 0 && (
-        <Section title="Problems reported">
-          <ul className="plain stacked">
-            {problems.map(({ library, problem }) => <li key={problem.decision}><a href={href(["libraries", library.id, "problems", problem.decision])}>{problem.problem}</a> <span className="quiet">to <LibraryLink library={library} />, <a className="ledger" href={href(["decisions", problem.decision])}>{problem.decision}</a></span></li>)}
-          </ul>
-        </Section>
-      )}
       {erasures.length > 0 && (
         <Section title="Erasure requests">
           <ul className="plain">
@@ -265,8 +236,7 @@ function DecideOn({ id, status: now, onDone }: { id: string; status: Status; onD
         <TextInput label={optional("Reason")} hint="Public, with the decision." value={reason} onChange={(e) => setReason(e.target.value)} />
       </div>
       <Confirm label={status === "admitted" ? "Confirm and admit" : status === "refused" ? "Confirm and refuse" : "Confirm and put back under review"} onConfirm={send}
-        note={status === "refused" ? "A refusal takes it out of every open library."
-          : status === "under review" ? "A public decision that puts it back under review: the decisions before it no longer count, and it leaves every open library until it is admitted again; a locked library keeps the revision it pinned." : undefined} />
+        note={status === "under review" ? "A public decision that puts it back under review: the decisions before it no longer count; a snapshot made before keeps the revision it holds." : undefined} />
       <Outcome answer={answer} done={() => ""} />
     </div>
   );
@@ -285,11 +255,12 @@ function Relicense({ row, onDone }: { row: Row; onDone: (words: ReactNode) => vo
 
 // The text in the editor, always editable, or an item's content through the form of its kind's schema,
 // prefilled; a conversation is read as a transcript first, and its form opens on "Edit" or the E key (the
-// handle's focus). Above it, the facts line with "Find" and its count of lines. Once it differs, a bar under it
+// handle's focus). Above it, the facts line, with its kind (kind-picker.tsx) greyed since a text keeps the
+// kind it was added with, "Find" and its count of lines. Once it differs, a bar under it
 // saves (Save, or Ctrl+S) or reverts: saving makes a new content version, a public decision under review, so
-// the text goes back under review and leaves every open library; an admitted text asks once more before that.
-function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, find }: {
-  row: Row; status: Status; facts: ReactNode; libraries: Library[]; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
+// the text goes back under review; an admitted text asks once more before that.
+function EditContent({ row, status, facts, onDone, onDirty, handle, find }: {
+  row: Row; status: Status; facts: ReactNode; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
   handle: (h: EditorHandle | null) => void; find?: string;
 }) {
   const item = row.kind !== PLAIN;
@@ -303,23 +274,20 @@ function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, f
   }, [conversation, editing, handle]);
   const [doc, setDoc] = useState<{ text: Text; changed: boolean } | null>(null); // the editor's, once edited
   const [content, setContent] = useState<unknown>(original);
-  const [schema, setSchema] = useState<Schema | null>(null);
   const [answer, setAnswer] = useState<Answer<{ decision: string | null; version: number | null }> | null>(null);
   const [editor, setEditor] = useState<EditorHandle | null>(null);
   const [fresh, setFresh] = useState(0); // raised by Revert: the editor starts again from the text as saved
   const [asking, setAsking] = useState(false); // an admitted text's save, asked once more
-  useEffect(() => {
-    if (item) get<{ id: string; schema: Schema }[]>("/api/kinds").then((a) => a.ok && setSchema(a.data.find((k) => k.id === row.kind)?.schema ?? null));
-  }, [item, row.kind]);
+  const [chatProblems, setChatProblems] = useState<string[]>([]); // what the depot would refuse in the conversation edited
+  const kinds = useKinds();
+  const schema = (item && kinds?.find((k) => k.id === row.kind)?.schema) || null;
   const changed = item ? JSON.stringify(content) !== JSON.stringify(original) : Boolean(doc?.changed);
   useEffect(() => { onDirty(changed); if (!changed) setAsking(false); }, [changed, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
   const handed = useCallback((h: EditorHandle | null) => { setEditor(h); handle(h); }, [handle]);
-  const open = libraries.filter((l) => !l.locked_at && !l.upstream);
-  const locked = libraries.filter((l) => l.locked_at);
   const who = useDeclarant();
   const { about } = useAbout();
-  const ready = declared(who) && about !== null;
+  const ready = declared(who) && about !== null && !(conversation && chatProblems.length);
   const save = () => {
     if (!changed || !ready) return;
     if (status === "admitted" && !asking) { setAsking(true); return; }
@@ -343,7 +311,7 @@ function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, f
     if (!a.ok) return;
     onDirty(false);
     if (a.data.decision === null) onDone("Nothing changed: its content is this already.");
-    else onDone(<>Saved as content version {a.data.version} (<a href={href(["decisions", a.data.decision])}>{a.data.decision}</a>): under review again{open.length > 0 && <>, out of {open.map((l, i) => <span key={l.id}>{i > 0 && ", "}<LibraryLink library={l} /></span>)}</>}.</>);
+    else onDone(<>Saved as content version {a.data.version} (<a href={href(["decisions", a.data.decision])}>{a.data.decision}</a>): under review again.</>);
   };
   return (
     <div className="edit-content">
@@ -359,7 +327,9 @@ function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, f
       </div>
       {conversation && !editing ? <div className="viewer content-scroll"><Transcript content={original} find={find} /></div>
         : item ? (
-          <div className="content-scroll">{schema ? <SchemaForm key={fresh} value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />}</div>
+          <div className="content-scroll">{conversation && isConversation(content)
+            ? <ConversationEditor key={fresh} value={content as Conversation} onChange={setContent} onProblems={setChatProblems} />
+            : schema ? <SchemaForm key={fresh} value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />}</div>
         ) : (
           <Suspense fallback={<Skeleton lines={8} label="Opening the editor" />}>
             <CodeEditor key={fresh} initial={row.text ?? ""} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
@@ -367,12 +337,13 @@ function EditContent({ row, status, facts, libraries, onDone, onDirty, handle, f
         )}
       {changed && (
         <div className={`save-bar small${asking ? " asking" : ""}`} role="group" aria-label="Unsaved changes">
-          {asking ? <span className="act">It is admitted: saving puts it back under review{open.length > 0 && <> and out of {open.map((l) => l.name).join(", ")}</>}.</span>
+          {asking ? <span className="act">It is admitted: saving puts it back under review.</span>
             : <span>Edited, not saved.</span>}
           <Button variant="primary" disabled={!ready} onClick={save}>{asking ? "Save anyway" : "Save"}<span className="key-hint">(Ctrl S)</span></Button>
           <Button variant="quiet" onClick={asking ? () => setAsking(false) : revert}>{asking ? "Keep editing" : "Revert"}</Button>
-          <span className="aside save-words">{ready
-            ? <>A public decision as {who.name}: content version {row.content_version + 1}, the text back under review{locked.length > 0 && <>; {locked.map((l) => l.name).join(", ")} keeps the version it pinned</>}. It confirms: <q>{about!.confirmation}</q> <a href={about!.requirements} target="_blank" rel="noreferrer">The requirements</a>.</>
+          <span className="aside save-words">{conversation && chatProblems.length ? <>{chatProblems[0]}</>
+            : ready
+            ? <>A public decision as {who.name}: content version {row.content_version + 1}, the text back under review; a snapshot made before keeps the version it holds. It confirms: <q>{about!.confirmation}</q> <a href={about!.requirements} target="_blank" rel="noreferrer">The requirements</a>.</>
             : declared(who) ? <>Reading the depot's requirements before it can save…</>
             : <>Set a name and email in <a href={settingsHref()}>Settings</a> to save.</>}</span>
         </div>
@@ -423,53 +394,7 @@ function Credits({ row, notice, onDone }: { row: Row; notice: string | null; onD
       <TextArea label={optional("Notice")} hint="The copyright notice exactly as the source gives it, or why the work is public domain." rows={4} value={noticeText} onChange={(e) => setNoticeText(e.target.value)} />
       <Confirm label="Confirm and save the credits" disabled={Object.keys(changes).length === 0} onConfirm={send}
         note={Object.keys(changes).length === 0 ? "Nothing changed yet."
-          : <>Changes: {Object.keys(changes).join(", ")}.<Help label="saving credits">Saved as a decision under review whose reason names what changed. The decisions before it keep counting: the text keeps its status and its libraries, and a locked library keeps the revision it pinned.</Help></>} />
-      <Outcome answer={answer} done={() => ""} />
-    </div>
-  );
-}
-
-// Out of one of the depot's own open libraries that hold it; it stays admitted.
-function TakeOut({ id, libraries, onDone }: { id: string; libraries: Library[]; onDone: (words: ReactNode) => void }) {
-  const [library, setLibrary] = useState(libraries[0].id);
-  const [answer, setAnswer] = useState<Answer<{ taken_out: number }> | null>(null);
-  const name = libraries.find((l) => l.id === library)?.name ?? library;
-  const send = async () => {
-    const a = await write<{ taken_out: number; not_held: number }>(`/api/libraries/${encodeURIComponent(library)}/taken-out`, { selection: sent(named([id])) });
-    setAnswer(a);
-    if (a.ok) onDone(a.data.taken_out ? `Taken out of ${name}; it keeps its status.` : `${name} did not hold it.`);
-  };
-  return (
-    <div className="action-form">
-      <RequiredNote />
-      <Select label={required("Out of the library")} required value={library} onChange={(e) => setLibrary(e.target.value)}
-        hint="Only this depot's own open libraries let a text out; a locked one is corrected by a fork without it.">
-        {libraries.map((l) => <option key={l.id} value={l.id}>{l.name} ({l.id})</option>)}
-      </Select>
-      <p className="small">It leaves {name} and keeps its status and its decisions: it stays admitted, and can be put back. No declaration is needed: it changes a library, not the text.</p>
-      <Button variant="primary" onClick={send}>Take it out</Button>
-      <Outcome answer={answer} done={() => ""} />
-    </div>
-  );
-}
-
-function Report({ id, libraries, onDone }: { id: string; libraries: Library[]; onDone: (words: ReactNode) => void }) {
-  const [library, setLibrary] = useState(libraries[0].id);
-  const [problem, setProblem] = useState("");
-  const [answer, setAnswer] = useState<Answer<{ decision: string }> | null>(null);
-  const send = async (declaration: Declaration) => {
-    const a = await write<{ decision: string }>(`/api/libraries/${encodeURIComponent(library)}/problems`, { problem, selection: sent(named([id])), declaration });
-    setAnswer(a);
-    if (a.ok) onDone(`Problem reported, recorded by decision ${a.data.decision}.`);
-  };
-  return (
-    <div className="action-form">
-      <RequiredNote />
-      <Select label={required("To the library")} required value={library} onChange={(e) => setLibrary(e.target.value)}>
-        {libraries.map((l) => <option key={l.id} value={l.id}>{l.name} ({l.id}){l.locked_at ? ", locked" : ""}</option>)}
-      </Select>
-      <TextArea label={required("The problem")} required value={problem} onChange={(e) => setProblem(e.target.value)} hint="Public. It names this text and changes no text and no membership." />
-      <Confirm label="Confirm and report" disabled={!problem.trim()} onConfirm={send} />
+          : <>Changes: {Object.keys(changes).join(", ")}.<Help label="saving credits">Saved as a decision under review whose reason names what changed. The decisions before it keep counting: the text keeps its status, and a snapshot made before keeps the revision it holds.</Help></>} />
       <Outcome answer={answer} done={() => ""} />
     </div>
   );

@@ -1,4 +1,4 @@
-"""The token shard format shared by the dataset build (writer) and training
+"""The token shard format shared by the corpus build (writer) and training
 (reader).
 
 A shard is a Parquet file with one row per document pass:
@@ -9,7 +9,7 @@ A shard is a Parquet file with one row per document pass:
     pool      string         the mixture pool it was drawn for ("held-out" for evaluation)
     pass      int32          which repetition of the pool this row belongs to
 
-A dataset's record names each shard by its key in the store and the sha256
+A corpus's record names each shard by its key in the store and the sha256
 of its file (`key`, `sha256`), which every read checks. A shard is also
 identified by its token hash, which covers only the rows' content. A newer pyarrow
 may write different file bytes for the same rows; the token hash stays the
@@ -85,7 +85,7 @@ def read_shard(path):
 
 
 def shard_file(shard) -> File:
-    """The stored file of a shard a dataset's record names."""
+    """The stored file of a shard a corpus's record names."""
     return File(shard["key"], shard["sha256"])
 
 
@@ -159,7 +159,7 @@ def token_file(store, shards) -> Path:
 
 
 class ShardStream:
-    """Training tokens read a few shards at a time, for a dataset larger than
+    """Training tokens read a few shards at a time, for a corpus larger than
     the disk of the machine that trains.
 
     The shards are walked in order at the speed training uses tokens: before

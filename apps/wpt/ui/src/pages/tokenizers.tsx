@@ -1,52 +1,72 @@
 // Tokenizers: the depot's tokenizer recipes (GET /api/tokenizers), each the
-// dataset whose sample trains its vocabulary (this depot's, or another
-// depot's named by the web address of its web app), the sample's bytes, the
-// vocabulary's size and a note, with whether its version has a vocabulary,
-// and each recipe a dataset names that is not made yet, with its make button;
-// a new recipe (wpt depot tokenizer new), its dataset chosen in a list of
-// this depot's or named by hand on another depot, its form opened and filled in by
-// the address (?new=1&name=NAME&dataset=DATASET, as a dataset's page links
-// to it), with a small sample and vocabulary for a quick test; once made,
-// its page opens. #/tokenizers/NAME is one recipe (a name not made yet: the datasets that wait for it and its make button): its
-// vocabularies, each with its file and the texts it trained on (folded, by
-// title, a page at a time), the training of its version's vocabulary
-// queued as a job once its estimate (GET /api/tokenizers/NAME/estimate: the
-// sample's bytes and an approximate time) is shown and confirmed (?train=1
-// opens the estimate at once), then followed to its end, its dataset's
-// stages, its revisions folded, and its edit as a
-// new revision, which raises its version when it changes what trains the
-// vocabulary (wpt depot tokenizer edit). A vocabulary its dataset of this
-// depot does not publish has a button that publishes it there (POST
-// /api/datasets/ID, its row as it is but the vocabulary). A recipe of the
-// upstream this depot follows has no edit.
+// snapshot and kinds whose sample trains its vocabulary, the sample's bytes,
+// the vocabulary's size and a note, with whether its version has a
+// vocabulary; a recipe written before snapshots names a dataset and trains
+// nothing until an edit names a snapshot: "Use snapshot NAME" makes that
+// edit in one click with the snapshot the upgrade made of that dataset
+// (snapshot_offer), on its row and on its page. A new recipe (wpt depot tokenizer
+// new) is made of clicks: its snapshot picked in a list (the latest first, or
+// the one the address names: ?new=1&snapshot=ID), its kinds as chips from the
+// snapshot's summary, the sample and the vocabulary sizes as preset buttons,
+// its name filled in from the snapshot's; once made, its page opens.
+// #/tokenizers/NAME is one recipe: where it stands as a strip of stages
+// (its snapshot, the recipe, its vocabulary, the model recipes of the
+// repository naming one of its vocabularies, listed under it), its vocabularies, each with its file, the
+// texts it trained on (folded, by title, a page at a time) and a link that
+// composes a model recipe with it on its snapshot's page; the training of its
+// version's vocabulary queued as a job once its estimate (GET
+// /api/tokenizers/NAME/estimate: the sample's bytes and an approximate time)
+// is shown and confirmed (?train=1 opens the estimate at once), then followed
+// to its end; its revisions folded; and its edit as a new revision, which
+// raises its version when it changes what trains the vocabulary (wpt depot
+// tokenizer edit). A recipe of the upstream this depot follows has no edit.
 
-import { Button, ButtonLink, Dialog, Select, Skeleton, TextInput } from "@workers-intelligence-commons/components";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, ButtonLink, Dialog, Picker, Skeleton, TextInput } from "@workers-intelligence-commons/components";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { get, part, post, put, waiting, type Answer, type Job } from "../api";
 import { EVERY, search } from "../filter";
-import { Cut, Facts, Help, Joined, Outcome, PageHead, Pager, plural, Problems, optional, required, RequiredNote, Section, useDatasets, type Dataset } from "../parts";
+import { Help, Outcome, PageHead, Pager, plural, Problems, optional, PLAIN, required, RequiredNote, Section } from "../parts";
 import { href } from "../route";
-import { pipelineChanged, publishVocabulary, usePipeline, usePipelineChange } from "../pipeline";
-import { DatasetStages } from "../stages";
-import { bytes, duration } from "./download";
-import { JobLine, JobProgress, type Known } from "./jobs";
+import { pipelineChanged, snapshotHref, Stage, StageMark, standing, usePipelineChange, useRecipes, useSnapshots, type Snapshot, type SnapshotShown, type Tokenizer as Recipe } from "../pipeline";
+import { bytes, duration } from "../sizes";
+import { JobLine, JobProgress } from "./jobs";
 import type { Page } from "./index";
 
-type Recipe = {
-  id: string; name: string; version: number; revision: number; depot: string | null; dataset: string; dataset_name: string | null;
-  sample_bytes: number; vocab_size: number; note: string | null; trained?: number | boolean; job: Job<unknown> | null;
-};
 type Vocabulary = { recipe: string; version: number; sha256: string; texts: number; bytes: number | null; made_at: string };
 type Shown = { recipe: Recipe; revisions: Recipe[]; vocabularies: Vocabulary[]; upstream: boolean; trained: boolean };
 // below this part of the sample asked, a vocabulary says why it trained on less
 const SHORT_SAMPLE = 0.9;
 type TrainingEstimate = { sample_bytes: number; version: number; seconds: number; basis: string };
 
-const trainsOn = (r: Recipe) => (r.depot ? <><span className="ledger">{r.dataset}</span> <span className="aside">of</span> <Cut text={r.depot} className="ledger" /></>
-  : <a href={href(["datasets", r.dataset])}>{r.dataset_name ?? r.dataset}</a>);
+// The kinds a sample takes for now (wpt_depot's SAMPLE_KINDS).
+const SAMPLE_KINDS = [PLAIN];
+const kindsWords = (kinds: string[] | null | undefined) => (kinds?.length ? kinds.join(", ") : PLAIN);
+// What a recipe's vocabulary trains on: its snapshot and kinds, or the dataset a revision written before snapshots names.
+const trainsOn = (r: Recipe) => (r.sample
+  ? <>{r.snapshot_name ? <a href={snapshotHref({ id: r.sample.snapshot })}>{r.snapshot_name}</a> : <span className="ledger">{r.sample.snapshot}</span>} <span className="aside">{kindsWords(r.sample.kinds)}</span></>
+  : <span className="act">the dataset {r.dataset_name ?? r.dataset}, from before snapshots</span>);
 
-// The sample and the vocabulary a new recipe is filled in with: small, for a quick test.
+// A recipe written before snapshots, given the snapshot made of its dataset in one click: an edit
+// (PUT /api/tokenizers/NAME) naming that snapshot, the rest kept, which makes its next version.
+function UseSnapshot({ recipe, primary = false, onDone }: { recipe: Recipe; primary?: boolean; onDone: (a: Answer<unknown>) => void }) {
+  const [sending, setSending] = useState(false);
+  const offer = recipe.snapshot_offer;
+  if (!recipe.needs_snapshot || !offer) return null;
+  const use = async () => {
+    setSending(true);
+    const a = await put(`/api/tokenizers/${part(recipe.name)}`, { snapshot: offer.id, kinds: [PLAIN], sample_bytes: recipe.sample_bytes, vocab_size: recipe.vocab_size, note: recipe.note });
+    setSending(false);
+    if (a.ok) pipelineChanged();
+    onDone(a);
+  };
+  return <Button variant={primary ? "primary" : "quiet"} disabled={sending} onClick={use}
+    title={`Its vocabulary then trains on the plain texts of the snapshot ${offer.name}, which the upgrade made from the dataset ${recipe.dataset_name ?? recipe.dataset} this recipe named: the texts of every library it read, in its order and bounds; this makes version ${recipe.version + 1}.`}>Use snapshot {offer.name}</Button>;
+}
+
+// The sample and the vocabulary a new recipe is filled in with: small, for a quick test; and the sizes offered as buttons.
 const SAMPLE = 2_000_000;
+const SAMPLES = [2e6, 2e7, 2e8, 1e9];
+const VOCABULARIES = [2048, 8192, 32768, 65536];
 // A size typed with or without a unit ("2 MB", "1.5GB", "500000"), in bytes; null when it is none.
 const FACTORS: Record<string, number> = { "": 1, b: 1, byte: 1, bytes: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12 };
 export function parseBytes(typed: string): number | null {
@@ -60,39 +80,30 @@ const TOKENS = 2048;
 function Tokenizers({ query }: { query: URLSearchParams }) {
   const [rows, setRows] = useState<Answer<Recipe[]> | null>(null);
   const [making, setMaking] = useState(query.get("new") === "1");
-  const [answer, setAnswer] = useState<Answer<{ id: string }> | null>(null);
+  const [answer, setAnswer] = useState<Answer<unknown> | null>(null);
   const load = useCallback(() => { get<Recipe[]>("/api/tokenizers").then(setRows); }, []);
   useEffect(load, [load]);
-  const { datasets } = useDatasets();
-  // the recipes a dataset names that are not made yet, each with the first dataset that waits for it
-  const missing = rows?.ok && datasets?.ok ? [...new Map(datasets.data.filter((d) => !rows.data.some((r) => r.name === d.tokenizer)).map((d) => [d.tokenizer, d] as const)).entries()] : [];
   return (
     <>
       <PageHead title="Tokenizers"
-        chain={<>A tokenizer recipe says how a vocabulary trains: on a sample of a dataset, up to a number of tokens. Each version's vocabulary is kept in the depot once trained, for good, and a corpus build names one of them.</>}
-        actions={<Button variant="quiet" onClick={() => { setAnswer(null); setMaking(true); }}>New recipe</Button>} />
-      {!making && answer && !answer.ok && <Outcome answer={answer} done={() => ""} />}
+        chain={<>A tokenizer recipe says how a vocabulary trains: on a sample of a <a href={href(["snapshots"])}>snapshot</a>'s texts, up to a number of tokens. Each version's vocabulary is kept in the depot once trained, for good, and a <a href={href(["recipes"])}>model recipe</a> names one of them.</>}
+        actions={<Button variant={rows?.ok && rows.data.length === 0 ? "primary" : "quiet"} onClick={() => { setAnswer(null); setMaking(true); }}>New tokenizer recipe</Button>} />
+      {!making && answer && <Outcome answer={answer} done={() => "Saved: it names the snapshot now, ready to train."} />}
       {!rows && <Skeleton lines={4} />}
       {rows && !rows.ok && <Problems problems={rows.problems} />}
-      {missing.map(([name, d], i) => (
-        <p key={`missing-${name}`} className="wanted row tight">
-          <span><strong className="ledger">{name}</strong> <span className="aside">wanted by</span> <a href={href(["datasets", d.id])}>{d.name}</a></span>
-          <ButtonLink variant={i === 0 ? "primary" : "quiet"} href={href(["tokenizers"], { new: "1", name, dataset: d.name })}>Make the recipe</ButtonLink>
-        </p>
-      ))}
-      {rows?.ok && (rows.data.length === 0 ? (missing.length === 0 && <p>No tokenizer recipe yet.</p>) : (
-        <div className="table-scroll">
+      {rows?.ok && (rows.data.length === 0 ? <p className="empty-state">No tokenizer recipe yet.</p> : (
+        <div className="table-scroll cards">
           <table className="ledger-table" aria-label="The tokenizer recipes">
-            <thead><tr><th scope="col">recipe</th><th scope="col" className="number">version</th><th scope="col">trains on</th><th scope="col" className="number">sample</th><th scope="col" className="number">vocabulary size</th><th scope="col">vocabulary</th></tr></thead>
+            <thead><tr><th scope="col">tokenizer recipe</th><th scope="col" className="number">version</th><th scope="col">trains on</th><th scope="col" className="number">sample</th><th scope="col" className="number">vocabulary size</th><th scope="col">vocabulary</th></tr></thead>
             <tbody>
               {rows.data.map((r) => (
                 <tr key={r.id}>
-                  <td className="nowrap"><a href={href(["tokenizers", r.name])}>{r.name}</a></td>
-                  <td className="number ledger">{r.version}</td>
-                  <td>{trainsOn(r)}</td>
-                  <td className="number ledger" title={plural(r.sample_bytes, "byte")}>{bytes(r.sample_bytes)}</td>
-                  <td className="number ledger">{r.vocab_size.toLocaleString("en")}</td>
-                  <td>{r.trained ? "trained" : r.job ? <JobProgress job={r.job} /> : <a href={href(["tokenizers", r.name], { train: "1" })}>train it</a>}</td>
+                  <td className="nowrap" data-label="tokenizer recipe"><a href={href(["tokenizers", r.name])}>{r.name}</a></td>
+                  <td className="number ledger" data-label="version">{r.version}</td>
+                  <td data-label="trains on">{trainsOn(r)}</td>
+                  <td className="number ledger" data-label="sample" title={plural(r.sample_bytes, "byte")}>{bytes(r.sample_bytes)}</td>
+                  <td className="number ledger" data-label="vocabulary size">{r.vocab_size.toLocaleString("en")}</td>
+                  <td data-label="vocabulary">{r.trained ? "trained" : r.job ? <JobProgress job={r.job} /> : r.needs_snapshot ? (r.snapshot_offer ? <UseSnapshot recipe={r} onDone={(a) => { setAnswer(a); load(); }} /> : <span className="aside">needs a snapshot: edit it</span>) : <a href={href(["tokenizers", r.name], { train: "1" })}>train it</a>}</td>
                 </tr>
               ))}
             </tbody>
@@ -100,8 +111,8 @@ function Tokenizers({ query }: { query: URLSearchParams }) {
         </div>
       ))}
       <Dialog open={making} onClose={() => setMaking(false)} title="New tokenizer recipe">
-        {making && <RecipeForm name={query.get("name") ?? undefined} dataset={query.get("dataset") ?? undefined} onDone={(a, name) => {
-          setAnswer(a as Answer<{ id: string }>);
+        {making && <RecipeForm taken={rows?.ok ? rows.data.map((r) => r.name) : []} snapshot={query.get("snapshot") ?? undefined} onDone={(a, name) => {
+          setAnswer(a);
           if (a.ok) { setMaking(false); window.location.hash = href(["tokenizers", name], { made: "1" }); } // its page, with "Train its vocabulary"
         }} />}
       </Dialog>
@@ -109,54 +120,90 @@ function Tokenizers({ query }: { query: URLSearchParams }) {
   );
 }
 
+// A free name for a new recipe of the snapshot: tok-NAME, then tok-NAME-2, ...
+function freeName(snapshot: string, taken: string[]): string {
+  const base = `tok-${snapshot}`.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  if (!taken.includes(base)) return base;
+  for (let n = 2; ; n += 1) if (!taken.includes(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+// Size buttons, the one equal to value pressed, and a field for another size behind "Other".
+function SizeChoice({ label, value, presets, words, onChange, field }: { label: ReactNode; value: number | null; presets: number[]; words: (n: number) => string; onChange: (n: number) => void; field: ReactNode }) {
+  const [other, setOther] = useState(value !== null && !presets.includes(value));
+  return (
+    <fieldset className="chips-field">
+      <legend className="cue">{label}</legend>
+      <div className="chips">
+        {presets.map((p) => <button key={p} type="button" className="chip-button" aria-pressed={!other && value === p} onClick={() => { setOther(false); onChange(p); }}>{words(p)}</button>)}
+        <button type="button" className="chip-button" aria-pressed={other} onClick={() => setOther(true)}>Other</button>
+      </div>
+      {other && field}
+    </fieldset>
+  );
+}
+
 // A new recipe (POST /api/tokenizers), or, given one, its edit (PUT /api/tokenizers/NAME).
-function RecipeForm({ recipe, name: givenName, dataset: givenDataset, onDone }: { recipe?: Recipe; name?: string; dataset?: string; onDone: (a: Answer<unknown>, name: string) => void }) {
-  const { datasets } = useDatasets();
-  const [name, setName] = useState(recipe?.name ?? givenName ?? "");
-  const [depot, setDepot] = useState(recipe?.depot ?? "");
-  const [elsewhere, setElsewhere] = useState(Boolean(recipe?.depot)); // a dataset of another depot, named by hand
-  const [dataset, setDataset] = useState(recipe ? (recipe.depot ? recipe.dataset : recipe.dataset_name ?? recipe.dataset) : givenDataset ?? "");
-  // the sample's size as typed, in bytes or with a unit ("2 MB"); an edit starts from the recipe's exact bytes unless the short form says the same
+function RecipeForm({ recipe, taken = [], snapshot: givenSnapshot, onDone }: { recipe?: Recipe; taken?: string[]; snapshot?: string; onDone: (a: Answer<unknown>, name: string) => void }) {
+  const { answer: listed } = useSnapshots();
+  const snapshots: Snapshot[] = listed?.ok ? [...listed.data].reverse() : [];
+  const [snapshot, setSnapshot] = useState<string | null>(recipe?.sample?.snapshot ?? givenSnapshot ?? null);
+  const [summary, setSummary] = useState<SnapshotShown | null>(null);
+  const [kinds, setKinds] = useState<string[]>(recipe?.sample?.kinds?.length ? recipe.sample.kinds : [PLAIN]);
+  const [name, setName] = useState(recipe?.name ?? "");
+  const [named, setNamed] = useState(false); // the name was typed: no longer filled in from the snapshot's
+  // the sample's size as typed, in bytes or with a unit ("2 MB")
   const [sample, setSample] = useState(recipe ? (parseBytes(bytes(recipe.sample_bytes)) === recipe.sample_bytes ? bytes(recipe.sample_bytes) : String(recipe.sample_bytes)) : bytes(SAMPLE));
   const sampleBytes = parseBytes(sample);
   const [size, setSize] = useState(String(recipe?.vocab_size ?? TOKENS));
   const [note, setNote] = useState(recipe?.note ?? "");
   const [problems, setProblems] = useState<string[]>([]);
+  // the latest snapshot when none is named
+  useEffect(() => { if (!snapshot && snapshots.length) setSnapshot(snapshots[0].id); }, [snapshots.length]);
+  const chosen = snapshots.find((s) => s.id === snapshot) ?? null;
+  useEffect(() => { if (!recipe && !named && chosen) setName(freeName(chosen.name, taken)); }, [chosen?.id]);
+  useEffect(() => { setSummary(null); if (snapshot) get<SnapshotShown>(`/api/snapshots/${part(snapshot)}`).then((a) => a.ok && setSummary(a.data)); }, [snapshot]);
   const send = async () => {
-    const body = { depot: depot.trim() || null, dataset: dataset.trim(), sample_bytes: sampleBytes, vocab_size: Number(size), note: note.trim() || null };
+    const body = { snapshot, kinds, sample_bytes: sampleBytes, vocab_size: Number(size), note: note.trim() || null };
     const a = recipe ? await put(`/api/tokenizers/${part(recipe.name)}`, body) : await post("/api/tokenizers", { ...body, name: name.trim() });
     setProblems(a.ok ? [] : a.problems);
     onDone(a, recipe?.name ?? name.trim());
   };
+  const plainHeld = summary?.summary.kinds[PLAIN]?.[2] ?? null;
   return (
     <form onSubmit={(e) => { e.preventDefault(); send(); }}>
       <RequiredNote />
-      {recipe && <p className="form-note small">A new dataset, sample or size makes version {recipe.version + 1}.<Help label="versions">Its vocabulary trains anew; a change of the note alone keeps version {recipe.version}.</Help></p>}
+      {recipe && <p className="form-note small">A new snapshot, kinds, sample or size makes version {recipe.version + 1}.<Help label="versions">Its vocabulary trains anew; a change of the note alone keeps version {recipe.version}.</Help></p>}
       <div className="fields">
-        {!recipe && <TextInput label={required("Name")} hint="Small letters, digits, dot, dash, underscore. Kept for good." required value={name} onChange={(e) => setName(e.target.value)} />}
-        {!elsewhere && datasets?.ok && datasets.data.length > 0 ? (
-          <Select label={required("Dataset")} required value={datasets.data.some((d) => d.name === dataset) ? dataset : ""} onChange={(e) => {
-            if (e.target.value === "\u0000other") { setElsewhere(true); setDataset(""); } else setDataset(e.target.value);
-          }}>
-            <option value="" disabled>choose a dataset</option>
-            {datasets.data.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
-            <option value={"\u0000other"}>a dataset of another depot</option>
-          </Select>
-        ) : (
-          <>
-            <TextInput label={elsewhere ? required("Other depot's address") : optional("Other depot's address")} hint="Its web app's address." value={depot} placeholder="https://..." onChange={(e) => setDepot(e.target.value)} />
-            <TextInput label={required("Dataset")} required value={dataset} onChange={(e) => setDataset(e.target.value)} placeholder="its name" />
-            {datasets?.ok && datasets.data.length > 0 && <Button variant="quiet" onClick={() => { setElsewhere(false); setDepot(""); setDataset(""); }}>Choose a dataset of this depot instead</Button>}
-          </>
+        {!listed && <Skeleton lines={1} />}
+        {listed && !listed.ok && <Problems problems={listed.problems} />}
+        {listed?.ok && (snapshots.length === 0
+          ? <p className="small">No snapshot yet: a vocabulary trains on one. <ButtonLink variant="quiet" href={href(["snapshots"], { new: "1" })}>Make a snapshot</ButtonLink></p>
+          : <div className="wic-field"><span className="cue">{required("Snapshot")}</span>
+              <Picker label="Snapshot" options={snapshots.map((s) => ({ value: s.id, label: s.name, slug: `change ${s.at_change}`, group: snapshots.some((o) => o.owner !== s.owner) ? s.owner : undefined }))} value={snapshot} onChange={setSnapshot} /></div>)}
+        {summary && (
+          <fieldset className="chips-field">
+            <legend className="cue">Kinds<Help label="kinds">A sample takes plain texts only for now; the other kinds of the snapshot are shown for what it holds.</Help></legend>
+            <div className="chips">
+              {Object.entries(summary.summary.kinds).map(([k, held]) => (
+                <button key={k} type="button" className="chip-button" disabled={!SAMPLE_KINDS.includes(k)} aria-pressed={kinds.includes(k)}
+                  onClick={() => setKinds((now) => (now.includes(k) ? (now.length > 1 ? now.filter((x) => x !== k) : now) : [...now, k]))}>{k} <span className="aside">{bytes(held[2])}</span></button>
+              ))}
+            </div>
+          </fieldset>
         )}
-        <TextInput label={required("Sample size")} required value={sample} placeholder="2 MB" onChange={(e) => setSample(e.target.value)}
-          hint={sampleBytes ? <>{plural(sampleBytes, "byte")} of plain text at most.</> : <span className="not-allowed">A size such as 2 MB or 500000.</span>} />
-        <TextInput label={required("Vocabulary tokens")} hint={<>At least 513.<Help label="the sizes">The sample takes at most this many bytes of plain text, split between the dataset's shares; a dataset smaller than that gives all it has, and conversations are never in it. The vocabulary holds this many tokens: 513 are always there (one for each of the 256 possible bytes, one that ends a text, and 256 kept for later use), and the rest are learned from the sample. The sizes filled in are for a quick test; a vocabulary for real training takes a bigger sample and more tokens.</Help></>} required type="number" min="513" step="1" value={size} onChange={(e) => setSize(e.target.value)} />
+        <SizeChoice label={<>{required("Sample size")}: {sampleBytes ? bytes(sampleBytes) : "…"}</>} value={sampleBytes} presets={SAMPLES} words={bytes} onChange={(n) => setSample(bytes(n))}
+          field={<TextInput label="Other sample size" value={sample} placeholder="2 MB" onChange={(e) => setSample(e.target.value)}
+            hint={sampleBytes ? <>{plural(sampleBytes, "byte")} at most.</> : <span className="not-allowed">A size such as 2 MB or 500000.</span>} />} />
+        {plainHeld !== null && sampleBytes !== null && sampleBytes > plainHeld && <p className="small aside">The snapshot holds {bytes(plainHeld)} of plain text: the sample takes it all.</p>}
+        <SizeChoice label={<>{required("Vocabulary tokens")}: {Number(size) >= 513 ? Number(size).toLocaleString("en") : "…"}<Help label="the sizes">The vocabulary holds this many tokens: 513 are always there (one for each of the 256 possible bytes, one that ends a text, and 256 kept for later use), and the rest are learned from the sample. The smallest sizes are for a quick test.</Help></>}
+          value={Number(size) || null} presets={VOCABULARIES} words={(n) => n.toLocaleString("en")} onChange={(n) => setSize(String(n))}
+          field={<TextInput label="Other vocabulary size" hint="At least 513." type="number" min="513" step="1" value={size} onChange={(e) => setSize(e.target.value)} />} />
+        {!recipe && <TextInput label={required("Name")} hint="Filled in from the snapshot's. Small letters, digits, dot, dash, underscore. Kept for good." required value={name} onChange={(e) => { setNamed(true); setName(e.target.value); }} />}
         <TextInput label={optional("Note")} value={note} onChange={(e) => setNote(e.target.value)} />
       </div>
       <Problems problems={problems} />
       <div className="sticky-submit">
-        <Button type="submit" variant="primary" disabled={(!recipe && !name.trim()) || !dataset.trim() || (elsewhere && !depot.trim()) || !sampleBytes || !(Number(size) >= 513)}>
+        <Button type="submit" variant="primary" disabled={(!recipe && !name.trim()) || !snapshot || kinds.length === 0 || !sampleBytes || !(Number(size) >= 513)}>
           {recipe ? "Save the recipe" : "Make the recipe"}
         </Button>
       </div>
@@ -192,35 +239,8 @@ function TrainedOn({ name, version, total }: { name: string; version: number; to
   );
 }
 
-// The button that publishes a vocabulary on the recipe's dataset of this
-// depot, or the words that say it does already, with the next step. onDone
-// reads the dataset again after any answer, so after a refusal for a change
-// made since the page read it, the next click sends the current revision.
-function PublishOn({ vocabulary, dataset, onDone }: { vocabulary: Vocabulary; dataset: Dataset; onDone: () => void }) {
-  const [answer, setAnswer] = useState<Answer<unknown> | null>(null);
-  const at = usePipeline(dataset);
-  const publish = async () => {
-    const a = await publishVocabulary(dataset, vocabulary.sha256);
-    setAnswer(a);
-    onDone();
-  };
-  if (dataset.vocabulary === vocabulary.sha256) return (
-    <p className="small row tight"><span>{answer?.ok ? <strong className="cue">Published on <a href={href(["datasets", dataset.id])}>{dataset.name}</a></strong> : <>Published on <a href={href(["datasets", dataset.id])}>{dataset.name}</a></>}{at && at.fresh > 0 && <> · <a href={href(["download", dataset.id])}>{plural(at.fresh, "corpus", "corpora")} built</a></>}</span>
-      {at && at.fresh === 0 && <ButtonLink variant="primary" href={href(["download", dataset.id])}>Build a corpus</ButtonLink>}</p>
-  );
-  return (
-    <div className="row tight publish-on">
-      <Button variant="primary" onClick={publish}>Publish it on {dataset.name}</Button>
-      {dataset.vocabulary && <span className="small aside">Replaces its current one.</span>}
-      <Help label="publishing">{dataset.vocabulary ? `${dataset.name} publishes another vocabulary now; this one would take its place.` : `${dataset.name} publishes none yet: model training needs one, and a corpus build picks the published one first.`} It makes a new revision of the dataset; publishing another vocabulary undoes it.</Help>
-      {answer && !answer.ok && <Problems problems={answer.problems} />}
-    </div>
-  );
-}
-
 function OneTokenizer({ name, query }: { name: string; query: URLSearchParams }) {
   const [shown, setShown] = useState<Answer<Shown> | null>(null);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [editing, setEditing] = useState(false);
   const [answer, setAnswer] = useState<Answer<unknown> | null>(null);
   const [said, setSaid] = useState("");
@@ -237,20 +257,19 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
       if (list.ok && !list.data.some((r) => r.name === name)) setShown({ ok: false, status: 404, problems: [`no tokenizer recipe ${name}`] } as Answer<Shown>);
       else get<Shown>(`/api/tokenizers/${part(name)}`).then((a) => latest() && setShown(a));
     });
-    get<Dataset[]>("/api/datasets").then((a) => latest() && a.ok && setDatasets(a.data));
   }, [name]);
   useEffect(load, [load]);
   usePipelineChange(load); // a job that ends, here or in a part of the page, changes what the recipe holds
+  const { answer: snapshotsRead } = useSnapshots();
+  const { answer: modelRecipes } = useRecipes();
   const estimated = useCallback(async () => { setAnswer(null); setEstimate(await get<TrainingEstimate>(`/api/tokenizers/${part(name)}/estimate`)); }, [name]);
   const wantsTraining = query.get("train") === "1";
   useEffect(() => {  // ?train=1: the estimate opens at once, when there is something to train
-    if (wantsTraining && shown?.ok && !shown.data.trained && !shown.data.recipe.job && !shown.data.upstream) estimated();
+    if (wantsTraining && shown?.ok && !shown.data.trained && !shown.data.recipe.job && !shown.data.upstream && !shown.data.recipe.needs_snapshot) estimated();
   }, [wantsTraining, shown?.ok]);
-  if (shown && !shown.ok && shown.status === 404) return <NotMade name={name} datasets={datasets} />;
   if (!shown) return <Skeleton lines={6} label="Reading the recipe" />;
-  if (!shown.ok) return <Problems problems={shown.problems} />;
+  if (!shown.ok) return <><PageHead title={name} meta={<a href={href(["tokenizers"])}>tokenizers</a>} /><Problems problems={shown.problems} /></>;
   const { recipe, revisions, vocabularies, upstream, trained } = shown.data;
-  const dataset = recipe.depot ? null : datasets.find((d) => d.id === recipe.dataset) ?? null;
   const train = async () => {
     const a = await post<Job<unknown>>(`/api/tokenizers/${part(name)}/train`, { confirmed: true });
     setEstimate(null);
@@ -259,35 +278,57 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
     load();
   };
   const following = started ?? recipe.job;
-  const known: Known = { published: new Map(datasets.filter((d) => d.vocabulary).map((d) => [d.vocabulary!, { id: d.id, name: d.name }])) };
   const current = vocabularies.find((v) => v.version === recipe.version);
-  const publishedOn = current ? datasets.find((d) => d.vocabulary === current.sha256) : undefined;
+  // where a model recipe with one of its vocabularies is composed: the snapshot its sample read
+  const composeOn = (sha256: string) => (recipe.sample ? snapshotHref({ id: recipe.sample.snapshot }, { compose: "1", vocabulary: sha256 }) : href(["snapshots"]));
   // the current version's sample came out short of the size asked
   const short = current?.bytes != null && current.bytes < recipe.sample_bytes * SHORT_SAMPLE;
+  // the snapshot its sample reads, and the model recipes of the repository naming one of its vocabularies
+  const sampled = recipe.sample && snapshotsRead?.ok ? snapshotsRead.data.find((one) => one.id === recipe.sample!.snapshot) ?? null : null;
+  const naming = modelRecipes?.ok ? modelRecipes.data.recipes.filter((r) => r.vocabulary?.recipe === recipe.name) : null;
   return (
     <>
       <PageHead title={recipe.name}
-        meta={<><a href={href(["tokenizers"])}>tokenizers</a>{!(publishedOn && publishedOn.id === dataset?.id) && <span>{publishedOn ? `published on ${publishedOn.name}` : trained ? "trained, not published" : "not trained yet"}</span>}{upstream && <span>the upstream's</span>}</>}
-        chain={<>Its vocabulary trains on a sample of {trainsOn(recipe)}, then is published on the dataset to build corpora and train models. A change of what trains the vocabulary makes a new version, which trains its own.</>}
+        meta={<><a href={href(["tokenizers"])}>tokenizers</a><span>tokenizer recipe</span><span>{trained ? "trained" : "not trained yet"}</span>{upstream && <span>the upstream's</span>}</>}
+        chain={<>A tokenizer recipe: its vocabulary trains on a sample of {trainsOn(recipe)}; a model recipe names the vocabulary by its sha256. A change of what trains the vocabulary makes a new version, which trains its own.</>}
         actions={<>
-          {!trained && !following && !upstream && <Button variant="primary" onClick={estimated}>Train its vocabulary</Button>}
-          {!upstream && <Button variant="quiet" onClick={() => { setAnswer(null); setEditing(true); }}>Edit the recipe</Button>}
+          {!trained && !following && !upstream && !recipe.needs_snapshot && <Button variant="primary" onClick={estimated}>Train its vocabulary</Button>}
+          {!upstream && <UseSnapshot recipe={recipe} primary onDone={(a) => { setSaid(a.ok ? "Saved: it names the snapshot now, ready to train." : ""); setAnswer(a); if (a.ok) load(); }} />}
+          {trained && current && <ButtonLink variant="primary" href={composeOn(current.sha256)}>New recipe with this vocabulary</ButtonLink>}
+          {!upstream && <Button variant="quiet" onClick={() => { setAnswer(null); setEditing(true); }}>Edit the tokenizer recipe</Button>}
         </>} />
-      {dataset && <DatasetStages id={dataset.id} here="vocabulary" action="none" />}
       {query.get("made") === "1" && !trained && !following && !answer && <p className="done cue" role="status">Made {recipe.name}.</p>}
       {!editing && <Outcome answer={answer} done={() => said} />}
-      {following && !(publishedOn && following.state === "done") && <JobLine key={following.id} job={following} onEnded={load} known={known} />}
-      <Facts rows={[["version", `v${recipe.version}`], ["dataset", dataset ? null : trainsOn(recipe)],
-        ["sample", `at most ${bytes(recipe.sample_bytes)}`], ["vocabulary", plural(recipe.vocab_size, "token")]]} />
+      {following && <JobLine key={following.id} job={following} onEnded={load} />}
+      <ol className="stages stages-4" aria-label={`Where ${recipe.name} stands`}>
+        {recipe.sample
+          ? <Stage name="Snapshot" to={snapshotHref({ id: recipe.sample.snapshot })} state="done" mark={false} value={recipe.snapshot_name ?? recipe.sample.snapshot}
+              label={<>{sampled ? `${plural(sampled.texts, "text")}, ` : ""}{kindsWords(recipe.sample.kinds)}</>} />
+          : <Stage name="Snapshot" to={href(["snapshots"])} state="problem" word="none" value="none" empty label={<>the dataset {recipe.dataset_name ?? recipe.dataset}, from before snapshots</>}
+              line={recipe.snapshot_offer ? undefined : "Edit it to name a snapshot."} />}
+        <Stage name="Tokenizer recipe" state="done" mark={false} current value={`v${recipe.version}`} label={`a sample of at most ${bytes(recipe.sample_bytes)}`} />
+        <Stage name="Vocabulary" state={trained ? "done" : following ? "waiting" : recipe.needs_snapshot ? "waiting" : "next"} word={trained ? undefined : following ? "training" : recipe.needs_snapshot ? "waiting" : "to train"}
+          value={recipe.vocab_size.toLocaleString("en")} label="tokens" />
+        <Stage name="Model recipes" to={href(["recipes"])} state={naming === null ? "unknown" : naming.length ? "done" : "waiting"} word={naming?.length ? undefined : naming ? "none yet" : ""}
+          value={naming === null ? "…" : naming.length.toLocaleString("en")} empty={!naming?.length} label={naming === null ? "" : naming.length === 0 ? "no model recipe names its vocabulary yet" : naming.length === 1 ? "names its vocabulary" : "name its vocabularies"} />
+      </ol>
       {recipe.note && <p className="small aside">{recipe.note}</p>}
-      <Section title="Vocabularies" help={short ? <>Less than the {bytes(recipe.sample_bytes)} asked, and nothing went wrong: {(dataset?.shares?.length ?? 0) > 1 ? "each share takes the texts that fit its part of the sample, in the dataset's order" : "the sample takes the texts that fit it, in the dataset's order"}, a text longer than about a million characters as pieces of that length, and closes once nearly full or after a thousand texts in a row that do not fit; a dataset smaller than the sample gives all it has.</> : undefined}>
+      {naming && naming.length > 0 && (
+        <Section title={<>Model recipes naming it: {naming.length}</>}>
+          <ul className="plain linked">
+            {naming.map((r) => <li key={r.name}><a href={href(["recipes", r.name])}>{r.name}</a> <StageMark at={standing(r)} /></li>)}
+          </ul>
+        </Section>
+      )}
+      <Section title="Vocabularies" help={short ? <>Less than the {bytes(recipe.sample_bytes)} asked, and nothing went wrong: the sample takes the texts that fit it, in the snapshot's order, a text longer than about a million characters as pieces of that length, and closes once nearly full or after a thousand texts in a row that do not fit; a snapshot smaller than the sample gives all it has.</> : undefined}>
         {vocabularies.length === 0 ? <p className="small aside">None yet.</p> : vocabularies.map((v) => (
           <div key={v.version} className="vocabulary">
             <p className="page-meta"><span className="cue">v{v.version}{v.version === recipe.version ? "" : " (older)"}</span><span>{plural(v.texts, "plain text")}</span>
               {v.bytes !== null && <span>{bytes(v.bytes)}{v.version === recipe.version && v.bytes < recipe.sample_bytes * SHORT_SAMPLE && <> of {bytes(recipe.sample_bytes)}, whole texts</>}</span>}
               <span>{v.made_at.replace("T", " ").slice(0, 16)} UTC</span></p>
-            {v.version === recipe.version && dataset && !upstream && <PublishOn vocabulary={v} dataset={dataset} onDone={() => { setStarted(null); load(); }} />}
-            <p><ButtonLink variant="ink" href={`/api/tokenizers/${part(name)}/vocabularies/${v.version}/file`} title={`Its sha256, which a corpus records: ${v.sha256}`}>Download the vocabulary</ButtonLink></p>
+            <p className="small aside">sha256 <span className="ledger">{v.sha256}</span></p>
+            <p className="row tight"><ButtonLink variant="ink" href={`/api/tokenizers/${part(name)}/vocabularies/${v.version}/file`} title={`Its sha256, which a recipe names: ${v.sha256}`}>Download the vocabulary</ButtonLink>
+              <ButtonLink variant="quiet" href={composeOn(v.sha256)}>New recipe with this vocabulary</ButtonLink></p>
             {v.texts > 0 && (
               <details className="vocabulary-texts">
                 <summary className="small">Its {plural(v.texts, "plain text")}</summary>
@@ -301,12 +342,12 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
         <details className="fold small">
           <summary className="cue">{plural(revisions.length, "revision")}</summary>
           <table className="ledger-table" aria-label="Its revisions">
-            <thead><tr><th scope="col" className="number">revision</th><th scope="col" className="number">version</th><th scope="col">dataset</th><th scope="col" className="number">sample</th><th scope="col" className="number">tokens</th><th scope="col">note</th></tr></thead>
+            <thead><tr><th scope="col" className="number">revision</th><th scope="col" className="number">version</th><th scope="col">trains on</th><th scope="col" className="number">sample</th><th scope="col" className="number">tokens</th><th scope="col">note</th></tr></thead>
             <tbody>
               {revisions.map((r) => (
                 <tr key={r.revision}>
                   <td className="number ledger">{r.revision}</td><td className="number ledger">{r.version}</td>
-                  <td>{r.depot ? `${r.dataset} of ${r.depot}` : datasets.find((d) => d.id === r.dataset)?.name ?? r.dataset}</td>
+                  <td>{r.sample ? `${r.sample.snapshot} ${kindsWords(r.sample.kinds)}` : `dataset ${r.dataset}`}</td>
                   <td className="number ledger">{bytes(r.sample_bytes)}</td><td className="number ledger">{r.vocab_size.toLocaleString("en")}</td><td>{r.note ?? ""}</td>
                 </tr>
               ))}
@@ -331,26 +372,6 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
       <Dialog open={editing} onClose={() => setEditing(false)} title={`Edit ${recipe.name}`}>
         {editing && <RecipeForm recipe={recipe} onDone={(a) => { setSaid(!a.ok ? "" : (a.data as { version: number }).version === recipe.version ? `Saved: still version ${recipe.version}.` : `Saved as version ${(a.data as { version: number }).version}, not trained yet.`); setAnswer(a); if (a.ok) { setEditing(false); load(); } }} />}
       </Dialog>
-    </>
-  );
-}
-
-// A recipe a dataset names, not made yet: the datasets that wait for it, the
-// stages of the first, and the button that makes it, filled in for that dataset.
-function NotMade({ name, datasets }: { name: string; datasets: Dataset[] }) {
-  const waiting = datasets.filter((d) => d.tokenizer === name);
-  const first = waiting[0] ?? null;
-  return (
-    <>
-      <PageHead title={name}
-        meta={<><a href={href(["tokenizers"])}>tokenizers</a><span>no recipe yet</span>{waiting.length > 0 && <span>wanted by <Joined values={waiting.map((d) => d.id)} render={(id) => <a href={href(["datasets", id])}>{waiting.find((d) => d.id === id)!.name}</a>} /></span>}</>}
-        chain={<>A tokenizer recipe a dataset names, not made yet: once made, its vocabulary trains on a sample of the dataset.</>}
-      />
-      {first && <DatasetStages id={first.id} here="vocabulary" action="none" />}
-      <div className="empty-state">
-        <Facts rows={[["dataset", first?.name ?? null], ["sample", `at most ${bytes(SAMPLE)}`], ["vocabulary", plural(TOKENS, "token")]]} />
-        <ButtonLink variant="primary" href={href(["tokenizers"], { new: "1", name, dataset: first?.name ?? null })}>Make the recipe</ButtonLink>
-      </div>
     </>
   );
 }

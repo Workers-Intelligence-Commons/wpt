@@ -19,12 +19,11 @@ function OneTag({ tag }: { tag: string }) {
     <>
       <PageHead title={tag}
         meta={<a href={href(["texts"], { tag })}><MatchedCount counting={found} /></a>}
-        chain={<>One of the <a href={href(["tags"])}>tags</a> the <a href={href(["texts"])}>texts</a> have; a dataset's shares choose texts by tag.</>} />
+        chain={<>One of the <a href={href(["tags"])}>tags</a> the <a href={href(["texts"])}>texts</a> have. A hand-picked set of texts is a tag; a recipe's shares choose texts by tag.</>} />
       {found?.problems && <Problems problems={found.problems} />}
       {found && found.counted > 0 && (
         <div className="stats">
           {STATUSES.map((s) => <Stat key={s} href={href(["texts"], { tag, status: s })} value={found.statuses[s].toLocaleString("en")} label={s} />)}
-          {found.locked > 0 && <Stat value={found.locked.toLocaleString("en")} label="in a locked library" />}
         </div>
       )}
       <Section title="Texts that have it" tools={<a className="small" href={href(["texts"], { tag })}>Open them in the texts</a>}>

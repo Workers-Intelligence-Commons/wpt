@@ -1,0 +1,15 @@
+{
+ "asked_headers": {},
+ "body": {
+  "problems": [
+   "NotFound: the tokenizer recipe tok has no vocabulary of its version 2"
+  ]
+ },
+ "headers": {
+  "Content-Length": "87",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/tokenizers/tok/vocabularies/2/file",
+ "status": 404
+}

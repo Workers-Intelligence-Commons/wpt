@@ -10,7 +10,7 @@ from wpt_depot.errors import BackupRefused, DepotExists
 from wpt_depot.filters import Filter
 from wpt_depot.schema import KEYS
 
-READ = "SELECT id, revision, text, decisions, libraries FROM texts ORDER BY id"
+READ = "SELECT id, revision, text, decisions FROM texts ORDER BY id"
 
 
 def plain(text):
@@ -39,7 +39,8 @@ def test_a_restore_holds_every_row_the_depot_held_after_a_full_copy_and_its_chan
     texts = depot.add([plain("one"), plain("two")], me)
     first = backup(depot, store)
     depot.decide("admitted", texts, me)
-    depot.put(depot.new_library("all"), texts)
+    depot.retag(texts, ["all"], [], me)
+    depot.edit_credits(texts[0], {"title": "One"}, me)
     second = backup(depot, store)
 
     restored = restore(store, str(tmp_path / "restored.sqlite"))
@@ -47,6 +48,25 @@ def test_a_restore_holds_every_row_the_depot_held_after_a_full_copy_and_its_chan
     assert first["full"] is not None and second["full"] is None and len(second["changes"]) == 3
     assert table_rows(restored.address) == table_rows(depot.address)
     assert list(depot.db.waiting.glob("*.changeset")) == []
+
+
+def test_a_restore_holds_the_taggings_of_tags_given_and_taken_after_the_full_copy(make_depot, me, tmp_path, store):
+    depot = make_depot()
+    texts = depot.add([NewText(text="one", licenses=("CC0-1.0",), tags=("a",)), plain("two")], me)
+    backup(depot, store)
+    depot.retag(texts, ["b"], ["a"], me)
+    depot.edit_credits_many([{"id": texts[1], "tags": ["c"]}], me)  # b, given by the retag, taken back
+    at = depot.change()
+    depot.retag(texts, ["d"], [], me)
+    backup(depot, store)
+
+    restored = restore(store, str(tmp_path / "restored.sqlite"))
+    then = restore(store, str(tmp_path / "then.sqlite"), at=str(at))
+
+    assert table_rows(restored.address)["taggings"] == table_rows(depot.address)["taggings"]
+    assert [restored.show(one)["text"]["tags"] for one in texts] == [["b", "d"], ["c", "d"]]
+    assert [then.show(one)["text"]["tags"] for one in texts] == [["b"], ["c"]]
+    assert then.search(Filter(tags=("d",)))["rows"] == []
 
 
 def test_a_restore_holds_the_title_index_the_depot_held(make_depot, me, tmp_path, store, title_index):

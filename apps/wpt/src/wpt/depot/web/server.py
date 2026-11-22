@@ -8,7 +8,7 @@ depot's file and runs in a process of its own, stopped at a time limit
 and capped in memory (readers.py); the follow routes, which a clone or a
 pull of this depot reads, and the downloads of corpora, send their
 answers as they are made (Stream); the long work runs in the jobs' queue
-(wpt.depot.jobs); and a pull, a remote's import and a change of the
+(wpt.depot.jobs); and a pull and a change of the
 depot's maintainer or takedown contact are commands only (what that leaves
 open: docs/architecture.md, "Two interfaces"). Each route declares the JSON
 Schema of the body it takes and
@@ -39,13 +39,14 @@ PROBLEMS = {"type": "object", "required": ["problems"],
 ASSETS = "assets"
 HASHED, REVALIDATED = "public, max-age=31536000, immutable", "no-cache"
 REFUSALS = {"400": "the body does not match the route's schema, or a query is not one read of the depot",
-            "404": "no such text, library, dataset, erasure, recipe or route",
+            "404": "no such text, snapshot, recipe, erasure, legacy dataset or route",
             "422": "the depot's rules refuse it, or a person's SQL ran past its time or memory, or its answer past its "
                    "size; nothing was written",
             "500": "a failure the routes do not name, whose trace the server prints; nothing was written",
             "503": "what the route needs is missing on this machine (the store)",
-            "409": "a job of the same dataset or recipe is queued or running already",
-            "429": "as many text exports are being sent as the web app sends at once"}
+            "409": "a job of the same recipe, snapshot or tokenizer recipe is queued or running already, or an "
+                   "estimate changed since it was shown",
+            "429": "as many legacy text exports and samples are being sent as the web app sends at once"}
 
 
 @dataclass(frozen=True)

@@ -28,8 +28,8 @@ def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the
     # command to copy, into the git-ignored file; the model it trained comes
     # back out of the store as the folder wpt train wrote, file for file,
     # and the manager's own copy of that folder is gone; it trains on the
-    # corpus of the recipe's dataset, the vocabulary it publishes and the
-    # recipe's total_tokens
+    # corpus of the recipe's build key: its snapshot, data section and
+    # vocabulary
     size = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())["data"]["total_tokens"]
     corpus = built.sized("d", size)["id"]
     monkeypatch.setenv("WPT_RECIPE", "d")
@@ -58,7 +58,7 @@ def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the
 
 
 def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
-    other = built.dataset("later")  # the corpus last built, of another dataset than the recipe's
+    other = built.snapshot("later")  # the corpus last built, of another snapshot than the recipe's
     monkeypatch.setenv("WPT_RECIPE", "d")
     monkeypatch.setenv("WPT_CORPUS", built.corpus_id[:12])
     main([])
@@ -69,12 +69,12 @@ def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
 
 
 def test_a_recipe_whose_corpus_is_not_built_stops_the_run_before_anything_starts(built, monkeypatch, capsys):
-    built.recipe("unbuilt", dataset="unbuilt")
+    built.recipe("unbuilt")  # the snapshot d at the size of its whole corpus, a build key never built
     monkeypatch.setenv("WPT_RECIPE", "unbuilt")
     with pytest.raises(SystemExit) as refused:
         main([])
     err = capsys.readouterr().err
-    assert refused.value.code == 2 and "`wpt depot build unbuilt --max-tokens N`" in err
+    assert refused.value.code == 2 and "no fresh corpus of snapshot d" in err and "press Build on the recipe page" in err
     [run] = built.records("wpt manager")
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
         "manager.corpus"]
@@ -89,7 +89,7 @@ def test_the_images_to_build_are_those_the_corpus_s_tasks_name_each_once(built):
             "limits": {"max_turns": 2, "max_tokens": 6, "command_seconds": 5}}, "files": {}, "check": check}))
 
     assert task_images(built.store, corpora.find(built.store, built.corpus_id)) == []
-    found = built.dataset("tasks", [task("tiny"), task("agent"), task("tiny")])
+    found = built.snapshot("tasks", [task("tiny"), task("agent"), task("tiny")])
     assert task_images(built.store, corpora.find(built.store, found)) == ["agent", "tiny"]
 
 

@@ -1,0 +1,17 @@
+{
+ "asked_headers": {
+  "Range": "bytes=999999-"
+ },
+ "body": {
+  "problems": [
+   "the Range bytes=999999- is outside the file's 2,126 bytes"
+  ]
+ },
+ "headers": {
+  "Content-Length": "75",
+  "Content-Type": "application/json"
+ },
+ "method": "GET",
+ "route": "/api/datasets/fixture-1/download/a91ae8228cebd0a40979163b2d070f6ef677b26682eabad243de6df818b5ac48/6000/files/55388ae85e67b62227e7cb5774ad4689d2254928c199870b5304f6560c35bf2c.parquet",
+ "status": 416
+}

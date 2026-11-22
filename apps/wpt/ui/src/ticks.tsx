@@ -1,10 +1,9 @@
 // Several values chosen at once: a list of every option as ticks, scrolled
 // in place, with a box above it that keeps only the options holding every
-// word typed, and the same list folded
-// into a compact menu for a filter bar, beside a menu of one value of a few.
+// word typed, and the same list folded into a compact menu for a filter bar.
 
 import { Button } from "@workers-intelligence-commons/components";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 export type Option = { value: string; label: ReactNode; words?: string; count?: number };
 
@@ -120,31 +119,12 @@ function Fold({ label, said, title, children }: { label: string; said: string; t
 
 // A TickList folded into a menu ("Tags: any", "Tags: 3 ticked").
 export function TickMenu({ label, options, chosen, onChange, search }: { label: string; options: Option[]; chosen: string[]; onChange: (values: string[]) => void; search?: boolean }) {
-  // each chosen value by its label when the label is words (a library's name, not its id)
+  // each chosen value by its label when the label is words (a name, not an id)
   const named = (value: string) => { const o = options.find((one) => one.value === value); return typeof o?.label === "string" ? o.label : value; };
   const said = chosen.length === 0 ? "any" : chosen.length === 1 ? named(chosen[0]) : `${chosen.length} ticked`;
   return (
     <Fold label={label} said={said} title={chosen.map(named).join(", ") || said}>
       <TickList label={label} options={options} chosen={chosen} onChange={onChange} search={search} />
-    </Fold>
-  );
-}
-
-// One value of a few, folded into a menu the same way ("In a locked
-// library: either"); choosing one applies it and closes the menu.
-export function ChoiceMenu({ label, options, chosen, onChange }: { label: string; options: { value: string; label: string }[]; chosen: string; onChange: (value: string) => void }) {
-  const name = useId();
-  return (
-    <Fold label={label} said={options.find((o) => o.value === chosen)?.label ?? chosen}>
-      <div className="tick-options" role="radiogroup" aria-label={label}>
-        {options.map((o) => (
-          <label key={o.value} className="tick">
-            <input type="radio" className="wic-focus" name={name} checked={o.value === chosen}
-              onChange={(e) => { onChange(o.value); (e.target.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); }} />
-            <span className="tick-label">{o.label}</span>
-          </label>
-        ))}
-      </div>
     </Fold>
   );
 }

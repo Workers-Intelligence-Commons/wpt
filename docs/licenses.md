@@ -86,6 +86,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | pyarrow | 26.0.0 | Apache-2.0 | |
 | pycparser | 3.11 | BSD-3-Clause | tests, through moto (cffi) |
 | pygments | 2.21.0 | BSD-2-Clause | through pytest |
+| pyroaring | 1.2.0 | MIT; its compiled part includes CRoaring (Apache-2.0 OR MIT) | the sets of text numbers a snapshot holds (wpt-depot) |
 | pytest | 9.1.1 | MIT | tests |
 | pytest-testmon | 2.3.0 | MIT | tests: runs the ones a change touches (ci/tests.py); pinned, since ci/startup/child_files.py extends one of its internals |
 | pytest-xdist | 3.8.0 | MIT | tests: runs them in parallel (ci/tests.py) |
@@ -426,8 +427,8 @@ through Mark, so its built files hold that drawing.
 ## What the corpus accepts
 
 **When in doubt, it is not used.** A doubtful text stays under review. A
-text under review joins no library, so no corpus reads it
-([data-selection.md](data-selection.md), "Libraries").
+text under review is in no snapshot, so no corpus reads it
+([data-selection.md](data-selection.md), "Snapshots").
 
 **The linking test.** A license is allowed only if, were the content code,
 a program under the project's license (AGPL-3.0-or-later) could statically
@@ -762,8 +763,8 @@ public, and is not verified; the form says so before anyone confirms.
   a text on the Texts page, and "Change their licenses" in the review of an
   admission) changes the licenses of texts as a new revision of each, their
   ids kept ([data-selection.md](data-selection.md), "Texts"). Every new
-  license is one the depot holds. A locked library goes on reading the
-  revision it pinned. The change is a decision under review that carries the
+  license is one the depot holds. A snapshot made before goes on reading
+  the revision it read. The change is a decision under review that carries the
   decider's declaration and a reason the depot writes itself, `licenses
   changed from OLD to NEW`, with the text's old and new lists of
   licenses. Texts whose old lists differ get one decision each. A text
@@ -771,8 +772,8 @@ public, and is not verified; the form says so before anyone confirms.
   change never only wipes its decisions.
 - `wpt depot content ID FILE` (or saving a text's content on the Texts page) changes
   a text's content as a new content version and a new revision of it, its
-  id kept ([data-selection.md](data-selection.md), "Texts"). A locked
-  library goes on reading the revision it pinned, with its content. The
+  id kept ([data-selection.md](data-selection.md), "Texts"). A snapshot
+  made before goes on reading the revision it read, with its content. The
   change is a decision under review that carries the decider's
   declaration and a reason the depot writes itself, `content changed from
   version OLD to version NEW`. A content that changes nothing writes
@@ -783,29 +784,32 @@ public, and is not verified; the form says so before anyone confirms.
   starts each one's decisions over, as a change of one text's content does.
 - `wpt depot credits ID` (or "Edit credits" beside a text on the Texts page) changes a
   text's credits as a new revision of it: its title, authors, tags,
-  address or notice. A locked library goes on reading the revision it
-  pinned. The change is a decision
+  address or notice. A snapshot made before goes on reading the revision
+  it read. The change is a decision
   under review that carries the decider's declaration and a reason the
   depot writes itself, naming each credit's old and new value, separated
   by semicolons (`title changed from A to B; tags changed from x, y to x,
   z`); a notice is named by its id. Unlike a license or content change, it
   starts nothing over: the decisions before it keep counting, so an admitted text
-  stays admitted and in its libraries.
+  stays admitted.
 - `wpt depot credits-file FILE` changes the credits of many texts the same
   way, as one decision under review on every text it changes, whose
   reason the depot writes naming the credits that changed (`credits
-  changed: title, authors`). It starts nothing over either.
+  changed: title, authors`). It starts nothing over either. A change of
+  tags over a selection on the Texts page is the same, its reason `tags
+  changed: added x; removed y`.
 - An erasure request is decided the same way, by
   `wpt depot decide admit|refuse --erasure ID` or on the "Erasures" page
   ([erasure.md](erasure.md)).
-- Reporting a problem with a library is a decision under review too
-  ([data-selection.md](data-selection.md), "Libraries"). A locked library
-  takes it as any other.
+- A decision recorded on no text and no erasure request is either a
+  problem reported on a library of a depot of format 12 or older, or a
+  decision whose texts erasures removed since; its page says both and
+  shows it read-only.
 
-A library's name, a dataset, and the depot's maintainer and takedown
-contact change with no declaration and no decision, since they decide
-nothing about a text ([data-selection.md](data-selection.md), "Libraries"
-and "Datasets").
+A snapshot, a tokenizer recipe, and the depot's maintainer and takedown
+contact are made or changed with no declaration and no decision, since
+they decide nothing about a text ([data-selection.md](data-selection.md),
+"Snapshots").
 
 Anyone's decisions are appended. The depot keeps every decision on a text
 in order, and the app's policy (`wpt_depot.policy`), not the depot, says
@@ -814,12 +818,11 @@ content changes, or when it is put back under review. Only the decisions from it
 so a refusal made before it no longer blocks the text, an admission made
 before it no longer admits it, and the text is under review again. Of the decisions that
 count, a text is admitted when at least one admits it and none refuses it,
-and decisions under review count for neither. Only an admitted text joins
-a library and trains. A refusal, a put back under review, a license change or a content change
-takes the text out of every open library that holds it. Nothing puts it
-back by itself: once it is admitted again, a person puts it back. A locked
-library keeps the revision it pinned, whatever decision, put back, license change,
-content change or change of credits comes after ([data-selection.md](data-selection.md), "Libraries"). A refused text
+and decisions under review count for neither. Only an admitted text
+enters a snapshot and trains. A snapshot keeps the revisions it read,
+whatever decision, put back, license change, content change or change of
+credits comes after ([data-selection.md](data-selection.md),
+"Snapshots"). A refused text
 stays in the depot as a reference: a decision never deletes a text.
 
 No program admits or refuses: every decision carries a person's
