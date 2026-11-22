@@ -68,3 +68,8 @@ source. A rule never rests on an unchecked figure alone without saying so.
 - [How large a model for how many training tokens?](size-and-tokens.md)
 - [What does a model's shape cost in training speed?](shape-and-speed.md)
 - [At small sizes, are parameters better spent on experts or compute on loops?](experts-and-loops.md)
+- [Can the vocabulary's two tables shrink without losing precision on the vocabulary?](vocabulary-tables.md)
+- [Does a small model learn more from other models than from the text alone?](teachers-and-specialists.md)
+- [At an equal number of bytes, few precise weights or many coarse ones?](bits-and-parameters.md)
+- [Does a parameter do more in a lookup table than in a layer?](lookup-memory.md)
+- [With the same tokens, does a small model gain from more, smaller updates?](batch-and-updates.md)
