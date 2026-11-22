@@ -135,3 +135,28 @@ def test_general_knowledge_asks_each_question_in_both_languages(trained, tmp_pat
     assert [one["prompt"] for one in data["answers"]["fr"]] == [one["fr"]["prompt"] for one in two]
     assert all(0 <= figures["choice"] <= 1 for figures in data["languages"]["en"].values())
     assert "| **all** |" in (trained.folder / "README.md").read_text()
+
+
+def test_copying_measures_what_the_model_reuses_from_its_prompt(trained, tmp_path):
+    # the built-in test, with fewer prompts and a lower floor of words: the test vocabulary is small
+    source = (BUILT_IN / "copying.py").read_text(encoding="utf-8")
+    test = tmp_path / "copying.py"
+    test.write_text(source.replace("PROMPTS = 200", "PROMPTS = 6").replace("FEWEST_WORDS = 16", "FEWEST_WORDS = 8"),
+                    encoding="utf-8")
+    main([str(trained.folder), str(test)])
+    data = json.loads((trained.folder / "evals" / "copying.json").read_text())["data"]
+    assert data["words"] >= 8 and data["sequence"]["prompts"] == 6
+    assert 0 <= data["sequence"]["tokens"] <= 1 and data["sequence"]["first_nats"] > 0
+    assert set(data["stated"]) == {"en", "fr"}
+    assert all(0 <= figures[key] <= 1 for found in data["stated"].values() for figures in found.values()
+               for key in ("choice", "written"))
+    assert "| en |" in (trained.folder / "README.md").read_text()
+
+
+def test_copying_measures_nothing_with_a_vocabulary_of_too_few_whole_words(trained, tmp_path):
+    test = tmp_path / "copying.py"
+    test.write_text((BUILT_IN / "copying.py").read_text(encoding="utf-8").replace(
+        "FEWEST_WORDS = 16", "FEWEST_WORDS = 10**6"), encoding="utf-8")
+    main([str(trained.folder), str(test)])
+    record = json.loads((trained.folder / "evals" / "copying.json").read_text())
+    assert "sequence" not in record["data"] and "nothing measured" in record["text"]

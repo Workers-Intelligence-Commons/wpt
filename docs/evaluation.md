@@ -71,4 +71,4 @@ is a new built-in test, and a run that names none runs them all:
 | Test | What it measures |
 | --- | --- |
 | `general_knowledge` | What everyone knows: the questions of `general_knowledge.json`, sentences to complete with one answer that leaves no doubt ("The capital of Italy is" Rome), each in French and in English with three wrong answers of the same kind. For each language and topic, how often the right answer costs the model the fewest nats of the four (chance is 25%), and how often the model writes it. |
-
+| `copying` | Whether the model reuses what its context says, on prompts made from a seed, whose answer is in the prompt alone. Sequences of 8 whole-word tokens written twice then half a third time: the share of the second half the model writes, and the cost in nats of a word the first and the third time it is read. A value, a word or a number of 4 digits, stated in a sentence and asked for in the next, in French and in English: how often it costs the fewest nats of four (chance is 25%), and how often the model writes it. |
