@@ -549,11 +549,16 @@ every micro-batch of every process, then the validation loss.
 
 ## Recomputing layers: long windows on a small GPU
 
-`--recompute` (or `WPT_RECOMPUTE=1`) keeps only each sublayer's input
-during a pass and runs the sublayer again during the backward pass, instead
-of keeping everything the sublayer computed. The result is the same; memory drops and
-each update takes longer. Its memory and time with the window, exact and
-sparse layers are not measured.
+`--recompute` (or `WPT_RECOMPUTE=1`) keeps only the input of each window
+layer's attention and of each experts sublayer during a pass and runs the
+sublayer again during the backward pass, instead of keeping everything the
+sublayer computed. The exact and sparse layers' attention is not run again
+(model.md, "Memory"): it keeps what its backward pass reads, which on the
+CPU at width 512 adds about 250 KiB per token to the 170 KiB that a pass
+keeps with every sublayer run again, against 1,670 KiB with nothing run
+again (FP32; a GPU keeps most of it in BF16). The result is the same bit
+for bit on the CPU; memory drops and each update takes longer. Its memory
+and time on a GPU are not measured.
 
 On an integrated Radeon 860M (gfx1152, which ROCm supports only through
 `HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz steps on the

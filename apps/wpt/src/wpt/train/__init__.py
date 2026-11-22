@@ -330,8 +330,9 @@ def parse_args(argv=None, environ=None):
                              "first (WPT_STREAM)")
     parser.add_argument("--recompute", action="store_true",
                         default=environ.get("WPT_RECOMPUTE", "") in ("1", "true", "yes"),
-                        help="keep only each layer's input and run the layer again for the backward pass: the same "
-                             "training with much less memory, about a third slower (WPT_RECOMPUTE)")
+                        help="keep only the input of each window layer's attention and of each experts sublayer, and run "
+                             "it again for the backward pass: the same training with much less memory, slower "
+                             "(WPT_RECOMPUTE)")
     parser.add_argument("--compile", action="store_true",
                         default=environ.get("WPT_COMPILE", "") in ("1", "true", "yes"),
                         help="run the passes over whole text windows through torch.compile, on a CUDA device: "

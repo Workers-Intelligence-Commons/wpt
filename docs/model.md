@@ -839,9 +839,14 @@ Residuals are BF16 on GPUs. CPUs compute in FP32. Training on a CUDA
 device computes FP32 matrix products in TF32. No layer uses dropout, as in the
 papers.
 
-**Memory.** `wpt train --recompute` keeps only each sublayer's input during a
-pass and runs the sublayer again during the backward pass: the same result
-with much less memory, and slower (training.md). The sources of
+**Memory.** `wpt train --recompute` keeps only the input of each window
+layer's attention and of each experts sublayer during a pass and runs the
+sublayer again during the backward pass: the same result with much less
+memory, and slower (training.md). The exact and sparse layers' attention
+runs once and keeps what its backward pass reads: their kernels keep only
+their inputs, output and softmax denominators, so running them again
+would cost a second forward pass of the costliest kernels for little
+memory. The sources of
 Attention Residuals stay in memory either way: each is a sublayer's output.
 The sublayers' second run records no balancing counts.
 

@@ -33,11 +33,14 @@ pass. At 0 the model is one pass: no weight and no work of the loop.
 Open to review: the loss reads the last pass only, and no exit gate learns
 when to stop (Ouro's).
 
-With recompute set, training keeps only each sublayer's input and runs the
-sublayer again during the backward pass, instead of keeping everything it
-computed: the same result with much less memory, for about a third more
-time. The second run records no statistics (expert balancing), so a step
-counts every token once.
+With recompute set, training keeps only the input of each window layer's
+attention and of each experts sublayer, and runs the sublayer again during
+the backward pass, instead of keeping everything it computed: the same
+result with much less memory, for more time. The exact and sparse layers'
+attention runs once: its kernels keep little for their backward pass, and
+a second run would repeat the costliest kernels of the pass. The second
+run records no statistics (expert balancing), so a step counts every token
+once.
 
 compile_training runs each sublayer (Layer.attend, Layer.feed) and the
 multi-token prediction block through torch.compile in training passes over
@@ -442,7 +445,10 @@ class WPT(nn.Module):
             if number == self.config.first_half + 1:
                 bridge = h  # the first half's output, as Attention Residuals gives it to the second half
             args = (h, canonical, sequence, bridge, handoff)
-            out, given = checkpoint(attend, *args, use_reentrant=False) if recompute else attend(*args)
+            if recompute and layer.kind not in (EXACT, SPARSE):
+                out, given = checkpoint(attend, *args, use_reentrant=False)
+            else:  # an exact or sparse layer's kernels keep little for their backward pass: it runs once
+                out, given = attend(*args)
             if given is not None:
                 handoff = given
             sources.output(j, out)

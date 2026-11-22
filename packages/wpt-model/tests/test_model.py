@@ -117,25 +117,35 @@ def test_a_replayed_pass_routes_each_token_through_the_experts_recorded_while_wr
     assert [len(routes.chosen[experts, 0]) for experts in routed] == [12, 12]
 
 
-def test_recomputing_layers_trains_the_same_and_counts_each_token_once(few_chosen):
-    # --recompute only trades time for memory: the same gradients, the
-    # exact layers' keys and values reaching the sparse layers included,
-    # and the layers' second run adds nothing to balancing
+def test_recomputing_layers_trains_the_same_and_counts_each_token_once(few_chosen, monkeypatch):
+    # --recompute only trades time for memory: the same gradients bit for
+    # bit, the exact layers' keys and values reaching the sparse layers
+    # included, and the layers' second run adds nothing to balancing; the
+    # exact and sparse layers' attention runs once, never again for the
+    # backward pass
     torch.manual_seed(0)
     model = WPT(ModelConfig(**{**TINY, "block_size": 256})).train()
     ids, after = torch.randint(50, (2, 200)), torch.randint(50, (2, 200))
+    runs = []
+    for name in ("exact_attention", "sparse_attention"):
+        def counted(*args, kernel=getattr(attention, name), name=name):
+            runs.append(name)
+            return kernel(*args)
+        monkeypatch.setattr(attention, name, counted)
     results = []
     for recompute in (False, True):
         model.recompute = recompute
         model.zero_grad()
+        runs.clear()
         logits, ahead = model(ids, next_tokens=after)
         (logits.logsumexp(-1).mean() + ahead.logsumexp(-1).mean()).backward()
         experts = model.layers[3].experts
-        results.append(([p.grad.clone() for p in model.parameters()], experts.histogram.clone()))
+        results.append(([p.grad.clone() for p in model.parameters()], experts.histogram.clone(), sorted(runs)))
         experts.histogram = None
-    (grads, counts), (grads_again, counts_again) = results
-    assert all(torch.allclose(a, b, atol=1e-6) for a, b in zip(grads, grads_again))
+    (grads, counts, ran), (grads_again, counts_again, ran_again) = results
+    assert all(torch.equal(a, b) for a, b in zip(grads, grads_again))
     assert torch.equal(counts, counts_again)
+    assert ran == ran_again == ["exact_attention", "exact_attention", "sparse_attention"]
 
 
 def training_pass(model, ids, after):
