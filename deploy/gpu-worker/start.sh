@@ -13,9 +13,9 @@ if [ ! -f /start/wpt_utils/lines.py ]; then
     echo "start.sh: /start/wpt_utils holds no lines.py: copy packages/wpt-utils/src/wpt_utils from the repository beside compose.yaml (docs/machines.md)" >&2
     exit 2
 fi
-# torch.compile (wpt train --compile) needs a C++ compiler, which the public image lacks; every other run works without
+# torch.compile, which wpt train uses wherever it can, needs a C++ compiler, which the public image lacks
 command -v g++ >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends g++; } >/dev/null 2>&1 ||
-    echo "start.sh: g++ could not be installed: a run with --compile will stop"
+    echo "start.sh: g++ could not be installed: runs train uncompiled, and a run with --compile stops"
 # a node of a cluster the manager rented in one request: its private address is its rank's line of the nodes'
 # list, printed (with its rank) for the manager and given to the worker for its key
 if [ "${SKYPILOT_NUM_NODES:-1}" -gt 1 ]; then

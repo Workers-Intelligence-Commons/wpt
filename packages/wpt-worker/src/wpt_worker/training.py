@@ -74,7 +74,7 @@ from wpt_inference.drafting import DrafterFailed, train_drafter
 from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig
 from wpt_model.kernels import KernelUnavailable, kernels
-from wpt_model.model import fused_loss_failure
+from wpt_model.model import compile_failure, fused_loss_failure
 from wpt_store import StoreError
 from wpt_store.shards import documents, prefix_shards
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
@@ -341,11 +341,17 @@ def _train(spec, link, store, work, strategy, telemetry):
                 f"checkpointed chunks ({failure})", WARNING)
         else:
             log("output head: the fused head and loss")
-    if options["compile"]:
-        if strategy.device.type != "cuda":
-            raise Refused(f"--compile runs on a CUDA device, and this process runs on {strategy.device.type}: "
-                          "run without it")
-        log("compile: text windows that run whole train through torch.compile; every other pass runs as it is")
+    compiling = options["compile"]  # True: --compile, False: --no-compile, None: wherever it can
+    if compiling is not False:
+        failure = compile_failure(strategy.device)
+        if failure and compiling:
+            raise Refused(f"--compile: {failure}: run without it")
+        if failure:
+            log(f"compile: off, since {failure} (--compile stops the run instead)")
+        compiling = not failure
+    if compiling:
+        log("compile: text windows that run whole train through torch.compile; every other pass runs as it is"
+            + ("" if options["compile"] else " (--no-compile runs them uncompiled)"))
         if options["recompute"]:
             log("compile: with --recompute, the passes are not recorded as CUDA graphs"
                 + (f" in the stages of {options['recompute_from']:,} tokens or more" if options["recompute_from"]
@@ -399,7 +405,7 @@ def _train(spec, link, store, work, strategy, telemetry):
                     with telemetry.span("step", step=step.name, number=number, fingerprint=mark) as span:
                         method = step.start_method()
                         environment = step.start_environment(data)
-                        model.compile_training(options["compile"] and step.reads == WINDOWS)  # its shapes come back
+                        model.compile_training(compiling and step.reads == WINDOWS)  # its shapes come back
                         try:
                             trained = train(model, strategy, step, method, environment, seed, draws[number - 1],
                                             Options(options["checkpoint_every"], options["segment"],

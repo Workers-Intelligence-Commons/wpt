@@ -207,6 +207,25 @@ def fused_loss_failure():
     return f"{type(_fused_error).__name__}: {_fused_error}"
 
 
+def compile_failure(device):
+    """None when compile_training can work on device; else why not, a
+    phrase: torch.compile writes Triton kernels for a CUDA device (an
+    NVIDIA or AMD GPU) and builds its host code with a C++ compiler (on
+    Windows, cl from the Visual Studio build tools' shell)."""
+    if device.type != "cuda":
+        return f"the passes compile on a CUDA device only, and this process runs on {device.type}"
+    from torch.utils._triton import has_triton
+    if not has_triton():
+        return "torch.compile writes Triton kernels, and Triton does not import here"
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+        get_cpp_compiler()
+    except Exception as error:  # none found, or one that does not run
+        said = (str(error).strip().splitlines() or [""])[0]
+        return f"torch.compile needs a C++ compiler, and none works here ({type(error).__name__}: {said})"
+    return None
+
+
 def _chunk_loss(head, hidden, targets):
     return F.cross_entropy(head(hidden).float(), targets, reduction="sum")
 

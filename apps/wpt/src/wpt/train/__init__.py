@@ -90,10 +90,12 @@ many tokens; with `split`, each process runs its slice of a longer window
 in segments of that many tokens. Each gives the same training as whole
 windows. --kernels names what computes the attention on the gpu worker
 (wpt_model.kernels; docs/model.md, "Attention"); one that cannot work there
-refuses the run. --compile runs the passes over whole text windows through
-torch.compile on a CUDA device, and anywhere else refuses the run; a
-checkpoint resumes with it or without it (docs/training.md, "Compiling
-the passes").
+refuses the run. The passes over whole text windows run through
+torch.compile wherever they can (a CUDA device with Triton and a C++
+compiler), and uncompiled elsewhere, which the log says in one line;
+--compile makes a gpu worker where they cannot refuse the run, and
+--no-compile runs them uncompiled; a checkpoint resumes either way
+(docs/training.md, "Compiling the passes").
 
 A step's batch is the number of examples per update over every process
 together, so the same recipe trains the same way on any hardware. Each
@@ -311,6 +313,17 @@ OPTIONS = [
 SHARD_FIELDS = ("key", "sha256", "token_sha256")  # what a model's provenance keeps of each token file of its corpus
 
 
+def switch(parser, environ, variable):
+    """An option the environment turns on (1, true, yes) or off (0, false,
+    no), or None when it says nothing."""
+    value = environ.get(variable, "").strip().lower()
+    if not value:
+        return None
+    if value not in ("1", "true", "yes", "0", "false", "no"):
+        parser.error(f"{variable}={environ[variable]!r}: 1 (on) or 0 (off)")
+    return value in ("1", "true", "yes")
+
+
 def parse_args(argv=None, environ=None):
     environ = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="wpt train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -336,11 +349,13 @@ def parse_args(argv=None, environ=None):
                         help="keep only the input of each window layer's attention and of each experts sublayer, and run "
                              "it again for the backward pass: the same training with much less memory, slower "
                              "(WPT_RECOMPUTE)")
-    parser.add_argument("--compile", action="store_true",
-                        default=environ.get("WPT_COMPILE", "") in ("1", "true", "yes"),
-                        help="run the passes over whole text windows through torch.compile, on a CUDA device: "
-                             "the same training within rounding, faster once the first update has compiled it; "
-                             "on any other device it stops the run (WPT_COMPILE)")
+    parser.add_argument("--compile", action=argparse.BooleanOptionalAction,
+                        default=switch(parser, environ, "WPT_COMPILE"),
+                        help="the passes over whole text windows run through torch.compile: the same training "
+                             "within rounding, faster once the first update has compiled it. Unset, they do "
+                             "wherever they can (a CUDA device with Triton and a C++ compiler) and run uncompiled "
+                             "elsewhere, which the log says; --compile stops the run where they cannot, "
+                             "--no-compile runs them uncompiled (WPT_COMPILE=1 or 0)")
     parser.add_argument("--resume", action="store_true", default=environ.get("WPT_RESUME", "") in ("1", "true", "yes"),
                         help="continue the step that stopped from its checkpoint: the model folder's, or with --run "
                              "the store's (WPT_RESUME)")

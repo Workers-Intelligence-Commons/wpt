@@ -15,7 +15,8 @@ in this order:
 
     checks    the tests of packages/wpt-model that compare a GPU's fused
               kernels with the PyTorch reference (they skip off an NVIDIA
-              GPU), through pytest, in this checkout
+              GPU), through pytest, in this checkout; and whether wpt
+              train compiles its passes here when not told
     sameness  about 20 updates of a small model with the recipes' layers,
               trained by REV, by every commit from REV to HEAD and by the
               working tree's changes, each compared with the one before it:
@@ -112,6 +113,11 @@ def child(spec):
     returns the last line's object."""
     sys.path[:0] = [str(Path(spec["root"]) / source) for source in SOURCES]
     import torch
+    if spec["kind"] == "facts":
+        from wpt_model.model import compile_failure
+        from wpt_utils.device import select_device
+        found = compile_failure(select_device())
+        return {"compiles": found is None, "why_not": found}
     from wpt_model import WPT
     from wpt_model.config import ModelConfig
     from wpt_utils.device import select_device, train_in_tf32
@@ -326,6 +332,8 @@ class Battery:
                 raise RuntimeError(f"{summary}; " + "; ".join(failed[:20]))
             return {"summary": summary}
         self.item("checks", "fused kernels against the PyTorch reference", run)
+        self.item("checks", "wpt train compiles here unasked (wpt_model.model.compile_failure)",
+                  lambda: self.one_child(None, {"kind": "facts"}, timeout=600))
 
     def commits(self):
         """Every revision after REV, in order: its commits, then the working tree's changes (None) if any."""
@@ -498,6 +506,8 @@ def table(items):
             text = f"difference {result['difference']:.3g}, spread {result['spread']:.3g}"
         elif item["kind"] == "sameness" and "spread" in result:
             text = f"spread {result['spread']:.3g}"
+        elif item["kind"] == "checks" and "compiles" in result:
+            text = "compiles" if result["compiles"] else f"does not compile: {result['why_not']}"
         elif item["kind"] == "checks" and result:
             text = result["summary"]
         else:

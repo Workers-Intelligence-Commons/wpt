@@ -584,9 +584,14 @@ does not crash.
 
 ## Compiling the passes
 
-`--compile` (or `WPT_COMPILE=1`) runs each layer, the sums of Attention
-Residuals between them and the multi-token prediction block through
-`torch.compile`, forward and backward, which joins
+Training runs each layer, the sums of Attention Residuals between them
+and the multi-token prediction block through `torch.compile`, forward and
+backward, wherever it can: on a CUDA device (an NVIDIA or AMD GPU) where
+Triton imports and a C++ compiler works. Where it cannot, the run trains
+uncompiled and its log says why in one line. `--compile` (or
+`WPT_COMPILE=1`) makes that a refusal of the run instead, before
+training, and `--no-compile` (or `WPT_COMPILE=0`) trains uncompiled
+anywhere. `torch.compile` joins
 the model's many small operations into few GPU kernels. It trains the same
 way within rounding. On a GPU, the sums of Attention Residuals run as
 Triton kernels of their own instead of through `torch.compile`, as they
@@ -594,9 +599,10 @@ do without the option (docs/model.md, "Attention Residuals"). It covers the pass
 text windows, whose shape stays the same for a stage. Evaluations, windows in segments or
 slices, conversations and task attempts run uncompiled, since their length
 or their place in a window changes from pass to pass and each new one would
-compile again. The run's log says so when the option is on. The option needs
+compile again. The run's log says whether it compiles. Compiling needs
 a C++ compiler where the run happens: a gpu worker installs `g++` when it
-starts, and on Windows the run starts from the Visual Studio build tools' shell.
+starts, and on Windows the run starts from the Visual Studio build tools'
+shell, where `cl` is.
 
 The exact and sparse layers' attention, the routing and the routed experts
 stay out of the compiled graphs: each is marked with
@@ -612,17 +618,16 @@ the graphs' memory, which the next replay writes over, so a run trains the
 same way with the graphs or without them. The graphs hold one pass's memory
 between windows. A pass with `--recompute`, or that records or replays
 routes, runs without them. The graphs' memory comes on top of what the
-passes before the recording left in PyTorch's allocator, so the option
-needs more memory than a run without it, how much is not measured: when
-the GPU runs out of memory, add `--recompute`. The run's log says which of
-the two the run does.
+passes before the recording left in PyTorch's allocator, so a compiled
+run needs more memory than an uncompiled one, how much is not measured:
+when the GPU runs out of memory, add `--recompute` or `--no-compile`. The
+run's log says which the run does.
 
 The first update takes longer, and so does the first update at a new window
-length. `--stop-after-updates` with and without the option compares the
+length. `--stop-after-updates` with and without `--no-compile` compares the
 speeds, since what it measures leaves the first update out.
 
-The weights keep their names, so a checkpoint resumes with the option or
-without it. On anything but a CUDA device the option refuses the run.
+The weights keep their names, so a checkpoint resumes compiled or not.
 
 ## Long windows: segments and slices
 
@@ -812,8 +817,8 @@ signal does: the update finishes, a checkpoint is saved and comes back,
 the command exits with code 130, and `--resume` continues. With both, the
 first reached stops it. They count over every step the command trains. The
 updates count from its first, and the minutes from the end of its first,
-since that update also compiles the kernels and, with `--compile`, the
-passes.
+since that update also compiles the kernels and, where the run compiles,
+the passes.
 
 Such a run ends by printing what it measured from the end of that first
 update, which is the short run that says what a whole one costs: its
@@ -2032,7 +2037,7 @@ tables, and the tokenizer uses none.
 **Training is not bit-exact**: GPU arithmetic differs between GPUs, drivers
 and PyTorch versions, so the same inputs give equivalent but not identical
 weights. On a CUDA device, training also computes FP32 matrix products in
-TF32, and `--compile` joins operations in its own order; on the CPU, training
+TF32, and `torch.compile` ("Compiling the passes") joins operations in its own order; on the CPU, training
 computes them in FP32 and repeats bit for bit. On a GPU, the attention kernels also add up the entries' gradients
 in the order the GPU's atomic additions take, so two runs on one GPU can
 differ slightly too (docs/model.md, "Attention"); `wpt train` logs whether

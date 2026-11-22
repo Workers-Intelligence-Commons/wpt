@@ -182,7 +182,8 @@ def test_drafter_feature_layers_the_model_does_not_have_are_refused_before_train
 
 
 @pytest.mark.parametrize("given", ["option", "environment"])
-def test_compiling_off_a_cuda_device_refuses_the_run_before_training(built, on_the_cpu, monkeypatch, capsys, given):
+def test_compiling_asked_for_off_a_cuda_device_refuses_the_run_before_training(built, on_the_cpu, monkeypatch, capsys,
+                                                                               given):
     # docs/training.md, "Compiling the passes": as --kernels names what cannot work here
     if given == "environment":
         monkeypatch.setenv("WPT_COMPILE", "1")
@@ -190,8 +191,24 @@ def test_compiling_off_a_cuda_device_refuses_the_run_before_training(built, on_t
         main([built.recipe("three", training=one_stage(3)), built.corpus_id, "--out", "model",
               *(["--compile"] if given == "option" else [])])
     assert refused.value.code == 2
-    assert "--compile runs on a CUDA device, and this process runs on cpu" in capsys.readouterr().err
+    assert "--compile: the passes compile on a CUDA device only, and this process runs on cpu" in \
+        capsys.readouterr().err
     assert not [e for e in built.records("wpt train")[-1].events if e.get("name") == "training.step"]
+
+
+def test_a_run_that_cannot_compile_trains_uncompiled_and_says_why_in_one_line(built, on_the_cpu, capsys):
+    # unasked, the passes compile wherever they can; here they cannot, and --no-compile is never refused
+    main([built.recipe("two", training=one_stage(2)), built.corpus_id, "--out", "model"])
+    said = [line for line in bare(capsys.readouterr().out).splitlines() if "compile:" in line]
+    assert len(said) == 1 and "compile: off, since the passes compile on a CUDA device only" in said[0]
+    forget_steps(built.store)  # it trains again
+    main([built.recipe("two", training=one_stage(2)), built.corpus_id, "--out", "other", "--no-compile"])
+    assert "compile:" not in capsys.readouterr().out
+    from wpt.train import parse_args
+    assert [parse_args(["r", *given], environ=environ).compile for given, environ in (
+        ([], {}), (["--compile"], {}), (["--no-compile"], {}), ([], {"WPT_COMPILE": "0"}),
+        ([], {"WPT_COMPILE": "yes"}), (["--no-compile"], {"WPT_COMPILE": "1"}))] == [None, True, False, False, True,
+                                                                                     False]
 
 
 def test_kernels_named_that_cannot_work_on_the_gpu_worker_refuse_the_run_before_training(built, on_the_cpu, monkeypatch,

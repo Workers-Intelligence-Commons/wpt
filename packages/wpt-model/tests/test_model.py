@@ -492,3 +492,23 @@ def test_the_next_token_loss_alone_is_the_first_of_the_two_and_runs_no_multi_tok
         monkeypatch.setattr(model.mtp, "forward", lambda *args, **kwargs: pytest.fail("the block ran"))
         alone = model(ids, targets=(after,))
     assert torch.equal(alone, both[0])
+
+
+def test_the_passes_compile_only_where_a_cuda_device_triton_and_a_c_compiler_are(monkeypatch):
+    # docs/training.md, "Compiling the passes": what wpt train checks before it compiles
+    import torch._inductor.cpp_builder as builder
+    import torch.utils._triton as triton_check
+    from wpt_model.model import compile_failure
+
+    assert "this process runs on cpu" in compile_failure(torch.device("cpu"))
+    monkeypatch.setattr(triton_check, "has_triton", lambda: False)
+    assert "Triton does not import" in compile_failure(torch.device("cuda"))
+    monkeypatch.setattr(triton_check, "has_triton", lambda: True)
+
+    def none():
+        raise RuntimeError("no g++\nmore")
+
+    monkeypatch.setattr(builder, "get_cpp_compiler", none)
+    assert compile_failure(torch.device("cuda")).endswith("none works here (RuntimeError: no g++)")
+    monkeypatch.setattr(builder, "get_cpp_compiler", lambda: "g++")
+    assert compile_failure(torch.device("cuda")) is None
