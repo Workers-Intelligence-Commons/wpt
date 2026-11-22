@@ -1,10 +1,14 @@
 """The output head and its summed cross-entropy in one pass, gradients
-included (docs/model.md, "Training"): the forward pass computes the scores
-of a chunk of tokens, then in one Triton kernel their losses and, in place
-of the scores, their gradient, then the gradients of the hidden states and
-of the head weight, which the backward pass only scales by the incoming
-gradient. Nothing waits on the host, so a CUDA graph can record it
-(model.py).
+included (docs/model.md, "Training"): the forward pass takes the tokens a
+chunk at a time and computes their scores, then in one Triton kernel
+their losses and, in place of the scores, their gradient, then the
+gradients of the chunk's hidden states and of the head weight, which the
+backward pass only scales by the incoming gradient. The head weight is
+cast once to the hidden states' dtype, each chunk's weight gradient is
+one product in that dtype, as autocast gives any weight's, and the chunks'
+add up in one FP32 sum as they come: memory holds that sum, not a
+gradient of the whole weight per chunk. Nothing waits on the host, so a
+CUDA graph can record it (model.py).
 
 The kernel takes one token's row of scores per program, in blocks of
 BLOCK: a first pass keeps a running maximum and sum of exponentials in
@@ -63,25 +67,37 @@ def _loss_kernel(scores_ptr, targets_ptr, losses_ptr, V, BLOCK: tl.constexpr):
 
 class _HeadLoss(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, hidden, targets, weight):
+    def forward(ctx, hidden, targets, weight, chunk):
         hidden, targets = hidden.contiguous(), targets.contiguous()
-        scores = F.linear(hidden, weight)
-        rows, V = scores.shape
-        losses = torch.empty(rows, dtype=torch.float32, device=hidden.device)
-        # the losses, and in place of the scores their gradient
-        _loss_kernel[(rows,)](scores, targets, losses, V, BLOCK=min(BLOCK, triton.next_power_of_2(V)),
-                              num_warps=WARPS)
-        ctx.save_for_backward(scores @ weight, scores.t() @ hidden)
-        return losses.sum()
+        cast = weight.to(hidden.dtype)
+        d_hidden = torch.empty_like(hidden)
+        d_weight = torch.zeros(weight.shape, dtype=torch.float32, device=weight.device)
+        total = 0
+        for a in range(0, len(targets), chunk):
+            part = hidden[a:a + chunk]
+            scores = F.linear(part, cast)
+            rows, V = scores.shape
+            losses = torch.empty(rows, dtype=torch.float32, device=hidden.device)
+            # the losses, and in place of the scores their gradient
+            _loss_kernel[(rows,)](scores, targets[a:a + chunk], losses, V, BLOCK=min(BLOCK, triton.next_power_of_2(V)),
+                                  num_warps=WARPS)
+            torch.matmul(scores, cast, out=d_hidden[a:a + chunk])
+            d_weight += scores.t() @ part
+            total = total + losses.sum()
+        ctx.save_for_backward(d_hidden, d_weight)
+        ctx.dtype = weight.dtype
+        return total if torch.is_tensor(total) else hidden.new_zeros((), dtype=torch.float32)
 
     @staticmethod
     @once_differentiable
     def backward(ctx, grad):
         d_hidden, d_weight = ctx.saved_tensors
-        return d_hidden.mul_(grad), None, d_weight.mul_(grad)
+        return d_hidden.mul_(grad), None, d_weight.mul_(grad).to(ctx.dtype), None
 
 
-def head_loss(hidden, targets, weight):
+def head_loss(hidden, targets, weight, chunk=None):
     """The summed cross-entropy of the scores hidden (m, d_model) @ weight^T
-    against targets (m,), in hidden's dtype, which weight must share."""
-    return _HeadLoss.apply(hidden, targets, weight)
+    against targets (m,), in hidden's dtype, `chunk` tokens at a time (all
+    at once when None); weight is cast to that dtype, and its gradient comes
+    back in its own."""
+    return _HeadLoss.apply(hidden, targets, weight, chunk or max(1, len(targets)))

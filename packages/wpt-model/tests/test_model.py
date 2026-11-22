@@ -330,6 +330,42 @@ def test_the_fused_head_and_loss_follow_the_cross_entropy_over_rows_of_several_b
         assert (got.float() - want).abs().max() <= 2e-2 * want.abs().max()
 
 
+@pytest.mark.skipif(select_device().type != "cuda" or not _fused_loss(),
+                    reason="needs a GPU where the fused head and loss imports")
+def test_the_fused_head_and_loss_in_chunks_is_as_close_to_the_exact_loss_as_the_chunks_under_autocast():
+    # head_loss.py: an FP32 weight cast once, its chunks' BF16 gradients added up in one FP32 sum; against
+    # the loss in FP64 on the same inputs, the loss and both gradients are within twice the distance of
+    # the checkpointed form's math (autocast casting the weight for each chunk, autograd adding the
+    # chunks' gradients), plus 1e-3 of the norm: the rounding that form itself makes
+    from wpt_model import head_loss as module
+
+    device = select_device()
+    generator = torch.Generator(device).manual_seed(0)
+    V, chunk = module.BLOCK + 3000, 16
+    hidden = torch.randn(70, 64, device=device, generator=generator).bfloat16()
+    weight = torch.randn(V, 64, device=device, generator=generator) * 0.3
+    targets = torch.randint(0, V, (70,), device=device, generator=generator)
+
+    def gradients(compute):
+        h, w = hidden.clone().requires_grad_(), weight.clone().requires_grad_()
+        loss = compute(h, w)
+        (loss * 0.25).backward()
+        return loss.detach().double(), h.grad.double(), w.grad.double(), w.grad.dtype
+
+    def by_autocast(h, w):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            return sum(F.cross_entropy(F.linear(h[a:a + chunk], w).float(), targets[a:a + chunk], reduction="sum")
+                       for a in range(0, len(targets), chunk))
+
+    fused = gradients(lambda h, w: module.head_loss(h, targets, w, chunk))
+    plain = gradients(by_autocast)
+    exact = gradients(lambda h, w: F.cross_entropy(h.double() @ w.double().t(), targets, reduction="sum"))
+    assert fused[3] == torch.float32
+    for got, pytorch, reference in zip(fused[:3], plain[:3], exact[:3]):
+        gap = float((got - reference).norm() / reference.norm())
+        assert gap <= 2 * float((pytorch - reference).norm() / reference.norm()) + 1e-3
+
+
 def test_the_same_pass_gives_the_same_gradients_every_time(few_chosen):
     # a resumed run trains exactly as a run never interrupted only if every
     # gradient adds up in a fixed order: the sparse layers' gradients added

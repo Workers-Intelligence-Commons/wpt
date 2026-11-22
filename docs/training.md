@@ -270,13 +270,16 @@ A method on text windows is a `wpt_training.TextMethod`: its
 `loss(model, x, y)` returns the training loss (`model(x, next_tokens=y)`
 returns the scores and the multi-token prediction scores). With
 `targets=(y, after_next)` in that call, the model returns the two
-cross-entropies summed over the tokens instead of the scores, 4,096 tokens
+cross-entropies summed over the tokens instead of the scores (with
+`targets=(y,)`, the next-token one alone, which validation reads), 4,096 tokens
 at a time: the built-in loss never holds every token's scores at once. On
 a GPU where Triton imports, a pass with gradients runs the fused head and
 loss on each 4,096 tokens, which computes the gradients in its forward
 pass, the losses and the scores' gradients in one kernel. Each chunk's
 head gradient is then one BF16 product, as autocast gives any weight's,
-and the chunks' add up in FP32. Elsewhere
+and the chunks' add up in one FP32 sum as they come, so memory holds that
+sum rather than a BF16 gradient of the whole head per chunk; the head is
+cast to BF16 once per pass. Elsewhere
 each chunk's scores are computed again in the backward pass.
 A method that defines its own `loss` defines `part_loss(model, x, y,
 following, window)` too, the share of a part of the windows (`following`:

@@ -401,12 +401,13 @@ class WPT(nn.Module):
         """The cross-entropy of the head's scores for hidden (B, t, d_model)
         against targets (B, t), summed, CHUNK tokens at a time. With
         gradients on a GPU where Triton imports, the fused head and loss
-        (head_loss.py) does it, one call per chunk: the gradients come out of
-        its forward pass, and the head weight is cast to the autocast dtype
-        (the hidden states' without autocast) for each call, so that each
+        (head_loss.py) does it, one call over every chunk: the gradients come
+        out of its forward pass, and the head weight is cast once to the
+        autocast dtype (the hidden states' without autocast), so that each
         chunk's gradient is one product in that dtype and the chunks' add up
-        in FP32 into the FP32 parameter's. Otherwise, with gradients, each chunk is a checkpoint: it
-        keeps only its hidden states, and the backward pass computes its
+        in one FP32 sum, the FP32 parameter's gradient. Otherwise, with
+        gradients, each chunk is a checkpoint: it keeps only its hidden
+        states, and the backward pass computes its
         scores again, in the same autocast, through the one head weight,
         whose gradient adds up over the chunks. A chunk holds only the head
         and the loss: no routing, statistic or random draw runs twice."""
@@ -416,14 +417,11 @@ class WPT(nn.Module):
         if grads and hidden.is_cuda and (fused := _fused_loss()):
             # the fused head and loss, which computes the gradients inside its forward pass: only with
             # gradients, and outside autocast so that its matrix products keep the dtypes given here. A chunk's
-            # weight gradient is one product in the autocast dtype, as autocast gives any weight's; one call over
-            # every chunk would add them up through FP32 products, several times slower
+            # weight gradient is one product in the autocast dtype, as autocast gives any weight's; one product
+            # over every chunk in FP32 would be several times slower
             dtype = compute_dtype(hidden)
             with torch.autocast("cuda", enabled=False):
-                for a in range(0, len(targets), CHUNK):
-                    total = total + fused(hidden[a:a + CHUNK].to(dtype), targets[a:a + CHUNK],
-                                          self.head.weight.to(dtype))
-            return total
+                return fused(hidden.to(dtype), targets, self.head.weight, CHUNK)
         for a in range(0, len(targets), CHUNK):
             args = (self.head, hidden[a:a + CHUNK], targets[a:a + CHUNK])
             total = total + (checkpoint(_chunk_loss, *args, use_reentrant=False) if grads else _chunk_loss(*args))
