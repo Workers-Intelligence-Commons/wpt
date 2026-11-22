@@ -113,6 +113,11 @@ per query and its rows in blocks of 16 or 32: the most programs at once
 on each multiprocessor. Their configs also hold blocks of 2 to 4 warps,
 for a GPU with more registers and memory bandwidth per multiprocessor,
 such as an H100, where none was timed (open to review).
+
+The autotuner keeps its choices in Triton's cache on disk (cache_results),
+by kernel, GPU architecture and key: a later process on the machine reads
+them instead of timing every config again, and keeps the same tiles, so
+the rounding that depends on them does not change from run to run.
 """
 
 import math
@@ -297,7 +302,7 @@ def _forward_tile(q, acc, m, l, k_ptr, v_ptr, b, n0, N, p, qk_scale, stride_kb, 
     return acc * alpha[:, None] + tl.dot(w.to(v.dtype), v), m_new, l * alpha + tl.sum(w, 1)
 
 
-@triton.autotune(configs=_FORWARD, key=["H", "C", "size"], prune_configs_by=_PRUNE)
+@triton.autotune(configs=_FORWARD, key=["H", "C", "size"], prune_configs_by=_PRUNE, cache_results=True)
 @triton.jit
 def _exact_forward_kernel(q_ptr, k_ptr, v_ptr, pos_ptr, out_ptr, lse_ptr, top_ptr, qk_scale, T, N, stride_kb, stride_kn,
                           stride_vb, stride_vn, size, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr,
@@ -390,7 +395,7 @@ def _bin_counts(q, lse, k_ptr, b, end, N, last, hi, top, shift, open_, qk_scale,
     return tl.cumsum(counts, 1)
 
 
-@triton.autotune(configs=_CHOICE, key=["H", "C", "size"], prune_configs_by=_PRUNE)
+@triton.autotune(configs=_CHOICE, key=["H", "C", "size"], prune_configs_by=_PRUNE, cache_results=True)
 @triton.jit
 def _exact_choice_kernel(q_ptr, k_ptr, pos_ptr, lse_ptr, top_ptr, chosen_ptr, bin_ptr, qk_scale, T, N, K, window,
                          stride_kb, stride_kn, size, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr,
@@ -543,7 +548,8 @@ def _exact_tile(dk, dv, k, v, n, q_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, dq_
     return dk + tl.dot(ds, q), dv
 
 
-@triton.autotune(configs=_BACKWARD, key=["H", "C", "size"], prune_configs_by=_PRUNE, reset_to_zero=["dq_ptr"])
+@triton.autotune(configs=_BACKWARD, key=["H", "C", "size"], prune_configs_by=_PRUNE, reset_to_zero=["dq_ptr"],
+                 cache_results=True)
 @triton.jit
 def _exact_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, reach_ptr, dq_ptr, dk_ptr, dv_ptr,
                            qk_scale, scale, T, N, stride_kb, stride_kn, stride_vb, stride_vn, size, H: tl.constexpr,
@@ -678,7 +684,7 @@ def _query_columns(ptr, row, H: tl.constexpr, HP: tl.constexpr, C: tl.constexpr,
                    other=0.0)
 
 
-@triton.autotune(configs=_SPARSE, key=["H", "C", "K"])
+@triton.autotune(configs=_SPARSE, key=["H", "C", "K"], cache_results=True)
 @triton.jit
 def _sparse_forward_kernel(q_ptr, k_ptr, v_ptr, sink_ptr, idx_ptr, pos_ptr, out_ptr, lse_ptr, qk_scale, T, N, K,
                            window, stride_kb, stride_kn, stride_vb, stride_vn, H: tl.constexpr, HP: tl.constexpr,
@@ -716,7 +722,8 @@ def _sparse_forward_kernel(q_ptr, k_ptr, v_ptr, sink_ptr, idx_ptr, pos_ptr, out_
     tl.store(lse_ptr + row * H + heads, (top + tl.log2(total)) * LN2, mask=heads < H)
 
 
-@triton.autotune(configs=_SPARSE_BACKWARD, key=["H", "C", "K"], restore_value=["dk_ptr", "dv_ptr"])
+@triton.autotune(configs=_SPARSE_BACKWARD, key=["H", "C", "K"], restore_value=["dk_ptr", "dv_ptr"],
+                 cache_results=True)
 @triton.jit
 def _sparse_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, idx_ptr, lse_ptr, delta_ptr, near_dq_ptr, dq_ptr,
                                     dk_ptr, dv_ptr, qk_scale, scale, T, N, K, stride_kb, stride_kn, stride_vb,
@@ -757,7 +764,7 @@ def _sparse_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, idx_ptr, lse_pt
     tl.store(dq_ptr + rows, (dq * scale).to(dq_ptr.dtype.element_ty), mask=there_q)
 
 
-@triton.autotune(configs=_SPARSE_KEYS_BACKWARD, key=["H", "C"])
+@triton.autotune(configs=_SPARSE_KEYS_BACKWARD, key=["H", "C"], cache_results=True)
 @triton.jit
 def _sparse_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, starts_ptr, choosers_ptr,
                                  near_dk_ptr, near_dv_ptr, dk_ptr, dv_ptr, qk_scale, scale, N, stride_kb, stride_kn,
@@ -851,7 +858,7 @@ def _window_queries_tile(q, do, dq, lse, delta, k_ptr, v_ptr, b, n0, N, p, qk_sc
     return dq + tl.dot(ds.to(k.dtype), k)
 
 
-@triton.autotune(configs=_WINDOW_KEYS, key=["H", "C"], prune_configs_by=_PRUNE)
+@triton.autotune(configs=_WINDOW_KEYS, key=["H", "C"], prune_configs_by=_PRUNE, cache_results=True)
 @triton.jit
 def _window_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, reach_ptr, floor_ptr, dk_ptr,
                                  dv_ptr, qk_scale, scale, T, N, window, stride_kb, stride_kn, stride_vb, stride_vn,
@@ -881,7 +888,7 @@ def _window_keys_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr
     tl.store(dv_ptr + offsets, dv, mask=there)
 
 
-@triton.autotune(configs=_WINDOW_QUERIES, key=["H", "C"], prune_configs_by=_PRUNE)
+@triton.autotune(configs=_WINDOW_QUERIES, key=["H", "C"], prune_configs_by=_PRUNE, cache_results=True)
 @triton.jit
 def _window_queries_backward_kernel(q_ptr, k_ptr, v_ptr, do_ptr, lse_ptr, delta_ptr, pos_ptr, dq_ptr, qk_scale, T, N,
                                     window, stride_kb, stride_kn, stride_vb, stride_vn, H: tl.constexpr,

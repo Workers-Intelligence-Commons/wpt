@@ -37,7 +37,8 @@ the same on every GPU; the threads per tile are Triton's autotuner's
 choice per D, from configs that fit an H100 (sm_90) and an RTX 5080
 laptop GPU (sm_120). TILE was chosen among 1024 to 8192 on the RTX
 5080, where it changed the time by less than the runs' spread; it is
-open to review on an H100.
+open to review on an H100. The autotuner keeps its choices in Triton's
+cache on disk, as triton_kernels.py's do.
 """
 
 import torch
@@ -142,7 +143,7 @@ def _score(v, u, r):
     return tl.sum(v * u[None, :], 1) * r
 
 
-@triton.autotune(configs=_CONFIGS, key=["D"])
+@triton.autotune(configs=_CONFIGS, key=["D"], cache_results=True)
 @triton.jit
 def _mix_kernel(values_ptr, scales_ptr, u_ptr, h_ptr, kept_u_ptr, lse_ptr, n, M, D: tl.constexpr, DP: tl.constexpr,
                 TOKENS: tl.constexpr):
@@ -171,7 +172,7 @@ def _mix_kernel(values_ptr, scales_ptr, u_ptr, h_ptr, kept_u_ptr, lse_ptr, n, M,
     tl.store(lse_ptr + m, best + tl.log2(total) / LOG2E, mask=real)
 
 
-@triton.autotune(configs=_CONFIGS, key=["D"])
+@triton.autotune(configs=_CONFIGS, key=["D"], cache_results=True)
 @triton.jit
 def _unmix_kernel(grad_ptr, values_ptr, scales_ptr, u_ptr, lse_ptr, kept_grad_ptr, mean_ptr, flag_ptr, parts_ptr, n,
                   M, D: tl.constexpr, DP: tl.constexpr, TOKENS: tl.constexpr):
@@ -206,7 +207,7 @@ def _unmix_kernel(grad_ptr, values_ptr, scales_ptr, u_ptr, lse_ptr, kept_grad_pt
     tl.store(parts_ptr + pid.to(tl.int64) * D + d, tl.sum(along - mean[:, None] * plain, 0), mask=d < D)
 
 
-@triton.autotune(configs=_CONFIGS, key=["D"])
+@triton.autotune(configs=_CONFIGS, key=["D"], cache_results=True)
 @triton.jit
 def _gradient_kernel(values_ptr, scales_ptr, us_ptr, lses_ptr, grads_ptr, means_ptr, flags_ptr, out_ptr, first, sums,
                      M, D: tl.constexpr, DP: tl.constexpr, TOKENS: tl.constexpr):

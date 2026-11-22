@@ -126,7 +126,11 @@ sparse layers that read one exact layer's choice), then sums each row's
 gradients over its list, one program per row. Both the atomic additions
 and the order in which they fill the lists vary, and both forms' exact
 layers add their query gradients with FP32 atomic additions, so the
-gradients can differ in the last bits from run to run.
+gradients can differ in the last bits from run to run. The Triton
+kernels' tile sizes are Triton's autotuner's choice, which it keeps in
+Triton's cache on disk: a later process on the same machine reads it
+instead of timing every config again at its start, and gets the same
+tiles.
 
 Which form runs is decided once, before the first use (`wpt train` decides
 it before training and logs it). `wpt train`, `wpt eval` and `wpt chat`
