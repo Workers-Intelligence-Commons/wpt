@@ -168,6 +168,73 @@ def test_recompute_from_keeps_every_activation_in_the_shorter_stages_and_trains_
         assert torch.equal(value, every[name]) and torch.equal(value, longer[name]), name
 
 
+class FakeMemory:
+    """A device's memory as wpt_training.memory reads it, its numbers given: nothing held, no probe's peak
+    above it, and (free, reserved, total) left."""
+
+    def __init__(self, left):
+        self.numbers = left
+
+    def allocated(self):
+        return 0
+
+    def start(self):
+        pass
+
+    def peak(self):
+        return 0
+
+    def left(self):
+        return self.numbers
+
+
+@pytest.mark.parametrize("fits", [True, False], ids=["fits", "does-not-fit"])
+def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_hand(dataset, monkeypatch, fits):
+    # docs/training.md, "Recomputing layers": with nothing asked, each stage of text windows probes its
+    # memory (here real probe passes on the CPU, read through faked numbers that make every pass fit, or
+    # none) and keeps every activation or recomputes; the weights are bit for bit those of a run that
+    # recomputes none, and of one that recomputes every stage: the probes leave no trace
+    from wpt_training import memory
+
+    store, record = dataset
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
+                      "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
+                                              {"block_size": 32, "steps": 2, "batch_size": 2}],
+                                   "prefix_tokens": 500}}, PARTS)
+    gib = 2 ** 30
+    monkeypatch.setattr(memory, "reader", lambda device: FakeMemory((16 * gib, 0, 16 * gib) if fits else (0, 0, gib)))
+    results = []
+    for recompute, automatic in ((False, False), (True, False), (False, True)):
+        torch.manual_seed(1337)
+        model = WPT(ModelConfig(**{**TINY, "block_size": 32}))
+        model.recompute = recompute
+        passes, run_pass, said = [], model._pass, []
+
+        def counted(first, idx, *args, model=model, passes=passes, run_pass=run_pass):
+            if torch.is_grad_enabled():
+                passes.append((idx.shape[1], model.recompute))
+            return run_pass(first, idx, *args)
+
+        model._pass = counted
+        environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(),
+                                                  lambda _: None, 1337, 1))
+        try:
+            train(model, CPU, step, step.start_method(), environment, 1337, 1,
+                  options=Options(automatic=automatic), log=lambda text, *_: said.append(text))
+        finally:
+            environment.close()
+        results.append(({k: v.clone() for k, v in model.state_dict().items()}, set(passes), said))
+    (none, _, _), (every, _, _), (chosen, chosen_passes, said) = results
+    probes = {(8, False), (16, False), (32, False)}  # half a window and a window, of each stage
+    assert chosen_passes == probes | ({(16, True), (32, True)} if not fits else set())
+    choices = [line for line in said if "foreseen" in line]
+    assert len(choices) == 2 and all(("every activation kept" if fits else "recompute the layers") in line
+                                     for line in choices)
+    assert "stage 1: " in choices[0] and "a pass of 32 tokens" in choices[0]  # 2 windows of 16
+    for name, value in none.items():
+        assert torch.equal(value, every[name]) and torch.equal(value, chosen[name]), name
+
+
 @pytest.mark.parametrize("weight", [
     lambda m: m.layers[0].attention.q.weight,     # a window layer's queries, 2 heads
     lambda m: m.layers[0].attention.gate.weight,  # its output gate, 2 heads

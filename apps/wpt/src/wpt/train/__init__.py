@@ -344,11 +344,13 @@ def parse_args(argv=None, environ=None):
     parser.add_argument("--stream", action="store_true", default=environ.get("WPT_STREAM", "") in ("1", "true", "yes"),
                         help="read the corpus's token files a few at a time instead of copying them all to disk "
                              "first (WPT_STREAM)")
-    parser.add_argument("--recompute", action="store_true",
-                        default=environ.get("WPT_RECOMPUTE", "") in ("1", "true", "yes"),
-                        help="keep only the input of each window layer's attention and of each experts sublayer, and run "
-                             "it again for the backward pass: the same training with much less memory, slower "
-                             "(WPT_RECOMPUTE)")
+    parser.add_argument("--recompute", action=argparse.BooleanOptionalAction,
+                        default=switch(parser, environ, "WPT_RECOMPUTE"),
+                        help="keep only the input of each window layer's attention and of each experts sublayer, and "
+                             "run it again for the backward pass: the same training with much less memory, slower. "
+                             "Unset, each stage of text windows keeps every activation where its pass fits the GPU's "
+                             "memory, measured by two short probe passes, and recomputes where it does not; "
+                             "--recompute recomputes in every stage, --no-recompute in none (WPT_RECOMPUTE=1 or 0)")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction,
                         default=switch(parser, environ, "WPT_COMPILE"),
                         help="the passes over whole text windows run through torch.compile: the same training "
@@ -366,7 +368,7 @@ def parse_args(argv=None, environ=None):
         parser.error("--stop-after-minutes and --stop-after-updates: 0 (no limit) or more")
     if args.recompute_from < 0:
         parser.error("--recompute-from: 0 (every stage) or a number of tokens")
-    if args.recompute_from and not args.recompute:
+    if args.recompute_from and args.recompute is not True:
         parser.error("--recompute-from narrows --recompute to the longer windows: give --recompute too")
     if args.profile_update < 0:
         parser.error("--profile-update: 0 (no profile) or an update's number")

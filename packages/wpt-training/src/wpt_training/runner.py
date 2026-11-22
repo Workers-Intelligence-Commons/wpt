@@ -104,11 +104,17 @@ class Options:
     that runs under the profiler: profiling.py; 0 none), recompute_from
     (with a model that recomputes its layers, model.recompute, a stage of
     windows shorter than this many tokens keeps every activation instead;
-    0 every stage recomputes)."""
+    0 every stage recomputes), automatic (each stage of text windows
+    keeps every activation when its pass fits the device's memory and
+    recomputes its layers when it does not, whatever model.recompute says:
+    memory.py), micro_batch (the examples per pass in one process, 0 its
+    whole share: what automatic's pass holds)."""
     checkpoint_every: int = 0
     segment: int = 0
     profile_update: int = 0
     recompute_from: int = 0
+    automatic: bool = False
+    micro_batch: int = 0
 
 
 @dataclass(frozen=True)
@@ -277,6 +283,41 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
             model.recompute = recomputes
 
 
+def _pass_tokens(stage, options, strategy) -> tuple[int, int]:
+    """(the tokens of one pass of a stage of text windows in this process,
+    the length of each of its windows): its examples per pass, each its
+    slice of a window (split windows) or a segment of it, whichever is
+    shorter."""
+    split = strategy.splits_windows
+    window = stage.block_size // strategy.world_size if split else stage.block_size
+    length = min(window, options.segment) if options.segment else window
+    share = stage.batch_size if split else -(-stage.batch_size // strategy.world_size)
+    return min(options.micro_batch or share, share) * length, length
+
+
+def _automatic(model, optimizer, stage, index, options, strategy, record) -> tuple[bool, str]:
+    """Whether a stage recomputes its layers, left to the runner
+    (Options.automatic), and the log's words for it: from a measure of the
+    device's memory (memory.py), one choice for every process."""
+    from . import memory
+
+    found = memory.reader(strategy.device)
+    if stage.block_size is None:
+        return False, "every activation kept: its examples have no fixed length to measure the memory of"
+    if found is None or not hasattr(model, "carried"):
+        return False, f"every activation kept: nothing measures the memory of {strategy.device.type}"
+    choice = memory.measure(model, optimizer.optimizer, *_pass_tokens(stage, options, strategy), found)
+    recompute = choice.recompute
+    if strategy.world_size > 1:  # every process runs the same way
+        recompute = bool(strategy.reduce(torch.tensor([float(recompute)], device=strategy.device), "max").item())
+    record.event("training.memory", values={"foreseen": choice.foreseen, "usable": choice.usable,
+                                            "allocated": choice.allocated, "state": choice.state,
+                                            "fixed": choice.fixed, "per_token": choice.per_token},
+                 stage=index + 1, tokens=choice.tokens, recompute=recompute)
+    return recompute, choice.text() + ("" if recompute == choice.recompute
+                                       else "; another process recomputes, so this one does too")
+
+
 def weights(state: dict) -> dict:
     """The weights a step's checkpoint state leaves the model with: those its
     optimizer kept or of the evaluation judged best, else the last."""
@@ -393,12 +434,17 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
                     and stage.block_size < options.recompute_from)
             if recomputes:
                 model.recompute = not kept
+            chosen = None
+            if options.automatic:
+                model.recompute, chosen = _automatic(model, optimizer, stage, index, options, strategy, record)
             log(f"{step.name}: "
                 + (f"stage {index + 1} of {len(stages)}: windows of {stage.block_size:,} tokens, "
                    if stage.block_size is not None else "")
                 + f"{stage.batch_size} per update, updates {update} to {end}"
                 + (f" (from {begin})" if update != begin else "")
                 + (", every activation kept (shorter than --recompute-from)" if kept else ""))
+            if chosen:
+                log(f"{step.name}: stage {index + 1}: {chosen}")
             environment.stage(index)
             with record.span("training.stage", stage=index + 1, block_size=stage.block_size,
                              batch_size=stage.batch_size, first_step=begin,

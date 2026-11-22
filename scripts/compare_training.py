@@ -4,7 +4,7 @@ model, and how fast.
 
 Usage:
     uv run scripts/compare_training.py --base REV [--out FOLDER] [--tiny]
-        [--budget-minutes M] [--parts checks,sameness,speed,compiled,tilelang,chain]
+        [--budget-minutes M] [--parts checks,sameness,speed,compiled,tilelang,memory,chain]
 
 Run it from a checkout where `uv run scripts/setup.py` installed PyTorch;
 the working tree is the revision measured, committed or not. The files of
@@ -37,6 +37,12 @@ in this order:
     tilelang  the working tree's uncompiled speed through the TileLang
               kernels, on a CUDA device only; every other part names the
               Triton kernels, and each measure records the form that ran
+    memory    the working tree's speed without recomputation, compiled
+              (on a CUDA device) and not, each measure first foreseen by
+              wpt train's choice of recomputation (wpt_training.memory):
+              its foreseen peak and the memory it counts as usable, next
+              to the peaks measured (allocated, reserved by PyTorch, and
+              in use on the device), so the margin can be judged
     chain     the same speed for every commit between REV and HEAD, at
               width 512 and 8,192 tokens, with and without recomputation:
               what each change brings (REV and the last revision are the
@@ -82,7 +88,7 @@ CHECKS = ["packages/wpt-model/tests/test_kernels.py", "packages/wpt-model/tests/
           "packages/wpt-model/tests/test_tilelang_kernels.py",
           "packages/wpt-model/tests/test_residuals.py", "packages/wpt-model/tests/test_model.py",
           "packages/wpt-model/tests/test_attention.py"]
-PARTS = ("checks", "sameness", "speed", "compiled", "tilelang", "chain")
+PARTS = ("checks", "sameness", "speed", "compiled", "tilelang", "memory", "chain")
 WIDTHS = (256, 512)
 WINDOWS = (2048, 8192, 32768)
 PASS_TOKENS = 32768
@@ -173,10 +179,36 @@ def child(spec):
         torch.save({"weights": weights, "validation": validation, "losses": losses}, spec["out"])
         return {"device": str(device), "kernels": form}
 
+    def peaks(prefix):
+        """The allocator's peaks since the last reset, and what the device has in use now (every process)."""
+        free, total = torch.cuda.mem_get_info(device)
+        return {f"{prefix}peak_gib": peak(), f"{prefix}reserved_peak_gib": torch.cuda.max_memory_reserved(device) / 2**30,
+                f"{prefix}device_used_gib": (total - free) / 2**30}
+
+    class Nothing:  # off a GPU, what wpt_training.memory reads: no memory, so its arithmetic still runs
+        def allocated(self):
+            return 0
+
+        def start(self):
+            pass
+
+        def peak(self):
+            return 0
+
+        def left(self):
+            return 0, 0, 0
+
     recompute = spec["recompute"] == "on"
     for batch, length in spec["measures"]:
         measured = {"device": str(device), "kernels": form, "window": length, "batch": batch}
         try:
+            if spec.get("estimate"):  # what wpt train's choice foresees for this pass, before it runs
+                from wpt_training import memory
+                found = memory.reader(device) or Nothing()
+                choice = memory.measure(model, optimizer, batch * length, length, found)
+                measured.update(foreseen_gib=choice.foreseen / 2**30, usable_gib=choice.usable / 2**30,
+                                would_recompute=choice.recompute, fixed_gib=choice.fixed / 2**30,
+                                per_token_kib=choice.per_token / 2**10, state_gib=choice.state / 2**30)
             if device.type == "cuda":
                 measured["gpu"] = torch.cuda.get_device_name(device)
                 torch.cuda.reset_peak_memory_stats(device)
@@ -185,7 +217,7 @@ def child(spec):
             synchronize()
             measured["first_update_seconds"] = time.perf_counter() - started
             if device.type == "cuda":
-                measured["first_update_peak_gib"] = peak()
+                measured.update(peaks("first_update_"))
             for _ in range(spec["warmup"] - 1):
                 update(batch, length, recompute)
             synchronize()
@@ -199,7 +231,7 @@ def child(spec):
             measured["seconds_per_update"] = seconds / spec["timed"]
             measured["tokens_per_second"] = batch * length * spec["timed"] / seconds
             if device.type == "cuda":
-                measured["peak_gib"] = peak()
+                measured.update(peaks(""))
         except Exception as error:  # an out-of-memory error among them: the next, longer windows still run
             measured["error"] = f"{type(error).__name__}: {str(error)[:500]}"
             optimizer.zero_grad(set_to_none=True)
@@ -381,7 +413,7 @@ class Battery:
                           parent=previous, recompute=recompute, compiled=compiled)
                 previous = revision
 
-    def speed(self, kind, compiled, revisions, widths, windows, recomputes, form="triton"):
+    def speed(self, kind, compiled, revisions, widths, windows, recomputes, form="triton", estimate=False):
         if compiled and not self.gpu():
             say("compiled measures need a CUDA device: none here", WARNING)
             return
@@ -395,9 +427,11 @@ class Battery:
                               + ("compiled" if compiled else "uncompiled") + f" | {form}" for window in windows]
                     about = [dict(revision=revision or "working tree", width=width, window=window,
                                   recompute=recompute, compiled=compiled, form=form) for window in windows]
-                    self.measures(kind, revision, model, recompute, compiled, windows, tokens, labels, about, form)
+                    self.measures(kind, revision, model, recompute, compiled, windows, tokens, labels, about, form,
+                                  estimate)
 
-    def measures(self, kind, revision, model, recompute, compiled, windows, tokens, labels, about, form):
+    def measures(self, kind, revision, model, recompute, compiled, windows, tokens, labels, about, form,
+                 estimate=False):
         """The windows' measures in one child, shortest first; after a child that died, the rest in a new one."""
         left = list(range(len(windows)))
         while left:
@@ -407,6 +441,7 @@ class Battery:
             say(f"{kind} {labels[left[0]]} ... (and {len(left) - 1} longer windows in the same process)")
             started = time.monotonic()
             spec = {"kind": "speed", "model": model, "recompute": recompute, "compile": compiled, "kernels": form,
+                    "estimate": estimate,
                     "measures": [(max(1, tokens // windows[i]), windows[i]) for i in left],
                     "warmup": WARMUP, "timed": 1 if self.args.tiny else TIMED}
             lines, error = self.run_child(revision, spec, timeout=600 * len(left))
@@ -455,6 +490,9 @@ class Battery:
                         self.speed("speed", False, [None], widths, windows, ("off", "on"), "tilelang")
                     else:
                         say("TileLang measures need a CUDA device: none here", WARNING)
+                elif part == "memory":
+                    for compiled in (False, True) if self.gpu() else (False,):
+                        self.speed("memory", compiled, [None], widths, windows, ("off",), estimate=True)
                 elif part == "chain":
                     between = self.commits()
                     if "speed" in parts:
@@ -497,11 +535,16 @@ def table(items):
     rows = ["kind | label | status | result"]
     for item in items:
         result = item.get("result") or {}
-        if item["kind"] in ("speed", "chain") and "tokens_per_second" in result:
+        if item["kind"] in ("speed", "chain", "memory") and "tokens_per_second" in result:
             text = (f"{result.get('kernels', '?')}: {result['tokens_per_second']:,.0f} tok/s, first update "
                     f"{result['first_update_seconds']:.1f} s"
                     + (f", peak {result['peak_gib']:.2f} GiB (first update {result['first_update_peak_gib']:.2f})"
-                       if "peak_gib" in result else ""))
+                       if "peak_gib" in result else "")
+                    + (f", reserved {result['reserved_peak_gib']:.2f} GiB, device {result['device_used_gib']:.2f} GiB"
+                       if "reserved_peak_gib" in result else "")
+                    + (f"; foreseen {result['foreseen_gib']:.2f} GiB of {result['usable_gib']:.2f} usable: "
+                       + ("would recompute" if result["would_recompute"] else "would keep every activation")
+                       if "foreseen_gib" in result else ""))
         elif item["kind"] == "sameness" and "difference" in result:
             text = f"difference {result['difference']:.3g}, spread {result['spread']:.3g}"
         elif item["kind"] == "sameness" and "spread" in result:

@@ -556,24 +556,51 @@ every micro-batch of every process, then the validation loss.
 
 ## Recomputing layers: long windows on a small GPU
 
-`--recompute` (or `WPT_RECOMPUTE=1`) keeps only the input of each window
-layer's attention and of each experts sublayer during a pass and runs the
-sublayer again during the backward pass, instead of keeping everything the
-sublayer computed. The exact and sparse layers' attention is not run again
-(model.md, "Memory"): it keeps what its backward pass reads, which on the
-CPU at width 512 adds about 250 KiB per token to the 170 KiB that a pass
-keeps with every sublayer run again, against 1,670 KiB with nothing run
-again (FP32; a GPU keeps most of it in BF16). The result is the same bit
-for bit on the CPU; memory drops and each update takes longer. Its memory
-and time on a GPU are not measured.
+Recomputing keeps only the input of each window layer's attention and of
+each experts sublayer during a pass and runs the sublayer again during the
+backward pass, instead of keeping everything the sublayer computed. The
+exact and sparse layers' attention is not run again (model.md, "Memory"):
+it keeps what its backward pass reads. The result is the same bit for bit
+on the CPU; memory drops and each update takes longer. On an RTX 5090,
+with the recipes' 11 layers, a vocabulary of 65,536 and 32,768 tokens per
+pass, a pass took 21.8 to 25.0 GiB at width 512 keeping every activation
+and 10.1 GiB recomputing, and 11.5 to 13.3 GiB against 5.6 GiB at width
+256, about the same for windows of 2,048, 8,192 or 32,768 tokens: memory
+grows with the tokens of a pass, not with its windows' length.
+Recomputing cost 6 to 10 % of the tokens per second.
+
+Unasked, each stage of text windows chooses when it starts (or resumes):
+it keeps every activation when its pass fits the GPU's memory, and
+recomputes when it does not (`wpt_training/memory.py`). The choice never
+tries the pass and catches an out-of-memory error, since on Windows the
+NVIDIA driver raises none: it spills into the machine's memory, which
+stops answering. Two probe passes, forward and backward without
+recomputing, over one window of 2,048 tokens and one of 1,024 (no longer
+than the stage's windows), give the memory per token and the part that
+does not grow with the tokens; the stage's pass (its examples per pass, of
+a slice or a segment where the windows run in parts) is extrapolated from
+them, with 30 % more per token, since longer windows took up to a fifth
+more per token than windows of 2,048. The optimizer's state is added while
+it does not exist yet, at two FP32 numbers per trained weight, and the sum
+must fit what the GPU has left, free or held by PyTorch, less a tenth of
+its memory. The probes change no weight, gradient, optimizer state,
+balancing count or random stream, and run uncompiled. The log gives the
+choice and its numbers for each stage, and the event `training.memory`
+records them. With several processes, each measures its own GPU, and all
+recompute when one must. A stage of conversations or tasks, whose
+examples have no fixed length, keeps every activation, and so does every
+stage off a CUDA device, where nothing measures the memory.
+
+`--recompute` (or `WPT_RECOMPUTE=1`) recomputes in every stage, and
+`--no-recompute` (or `WPT_RECOMPUTE=0`) in none.
 
 `--recompute-from N` (or `WPT_RECOMPUTE_FROM`), with `--recompute`, runs
 the layers again only in the stages whose windows hold at least `N`
-tokens: a shorter stage keeps every activation, and takes less time where
-its windows fit the GPU's memory whole. A stage of a step that reads no
-text windows recomputes as `--recompute` says. The log says which stages
-keep every activation. Like `--recompute`, it is an option of the hardware
-and changes nothing in the training: a run may resume with another `N`.
+tokens: a shorter stage keeps every activation. A stage of a step that
+reads no text windows recomputes as `--recompute` says. The log says which
+stages keep every activation. Like the rest of this section, it is a
+matter of the hardware and changes nothing in the training: a run may
+resume with another choice.
 
 On an integrated Radeon 860M (gfx1152, which ROCm supports only through
 `HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz steps on the
@@ -616,11 +643,12 @@ longer grows with their number. Nothing in the pass waits on the host. The
 losses, the gradients and the routers' balancing counts are kept apart from
 the graphs' memory, which the next replay writes over, so a run trains the
 same way with the graphs or without them. The graphs hold one pass's memory
-between windows. A pass with `--recompute`, or that records or replays
-routes, runs without them. The graphs' memory comes on top of what the
+between windows. A pass that recomputes its layers, or that records or
+replays routes, runs without them. The graphs' memory comes on top of what the
 passes before the recording left in PyTorch's allocator, so a compiled
-run needs more memory than an uncompiled one, how much is not measured:
-when the GPU runs out of memory, add `--recompute` or `--no-compile`. The
+run needs more memory than an uncompiled one, how much is not measured, and
+the choice of recomputing (above) foresees a pass uncompiled: when the GPU
+runs out of memory, add `--recompute` or `--no-compile`. The
 run's log says which the run does.
 
 The first update takes longer, and so does the first update at a new window

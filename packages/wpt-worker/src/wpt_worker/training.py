@@ -325,7 +325,7 @@ def _train(spec, link, store, work, strategy, telemetry):
     torch.manual_seed(seed)  # the same initial weights in every process
     model = WPT(model_config)
     model.set_canonical_ids(torch.tensor(spec["canonical"], dtype=torch.long))  # Engram's, from the vocabulary
-    model.recompute = options["recompute"]
+    model.recompute = options["recompute"] is True  # None: each stage chooses (wpt_training.memory)
     named = options["kernels"]
     if strategy.device.type == "cuda" or named:  # decided once, before training (docs/model.md, "Attention")
         try:
@@ -357,8 +357,8 @@ def _train(spec, link, store, work, strategy, telemetry):
                 + (f" in the stages of {options['recompute_from']:,} tokens or more" if options["recompute_from"]
                    else ""))
         else:
-            log("compile: each whole pass is recorded as CUDA graphs, which keep a pass's memory between windows; "
-                "when the GPU runs out of memory, add --recompute, which runs without the graphs")
+            log("compile: each whole pass is recorded as CUDA graphs, which keep a pass's memory between windows"
+                + ("" if options["recompute"] is False else ", except in a stage that recomputes its layers"))
     train_in_tf32(strategy.device)
     model = model.to(strategy.device)
     parameters = sum(p.numel() for p in model.parameters())
@@ -409,7 +409,9 @@ def _train(spec, link, store, work, strategy, telemetry):
                         try:
                             trained = train(model, strategy, step, method, environment, seed, draws[number - 1],
                                             Options(options["checkpoint_every"], options["segment"],
-                                                    options["profile_update"], options["recompute_from"]),
+                                                    options["profile_update"], options["recompute_from"],
+                                                    automatic=options["recompute"] is None,
+                                                    micro_batch=options["micro_batch"] or 0),
                                             checkpoint=checkpoint, resume=resume, identity=mark,
                                             done=marks[:number - 1], log=log, telemetry=telemetry,
                                             save_last=True,  # its result is kept from the checkpoint
