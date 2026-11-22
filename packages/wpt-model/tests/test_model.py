@@ -400,3 +400,16 @@ def test_a_model_with_one_vocabulary_table_reads_its_embeddings_from_the_output_
     tied.zero_grad()
     F.cross_entropy(tied(ids).flatten(0, 1), ids.flatten()).backward()
     assert torch.isfinite(tied.head.weight.grad).all() and tied.head.weight.grad.abs().sum() > 0
+
+
+def test_the_next_token_loss_alone_is_the_first_of_the_two_and_runs_no_multi_token_prediction(monkeypatch):
+    # what validation reads: the same sum bit for bit as the first of the
+    # two losses, without the multi-token prediction block's work
+    torch.manual_seed(0)
+    model = WPT(ModelConfig(**{**TINY, "block_size": 256})).eval()
+    ids, after = torch.randint(50, (2, 200)), torch.randint(50, (2, 200))
+    with torch.no_grad():
+        both = model(ids, next_tokens=after, targets=(after, after[:, 1:]))
+        monkeypatch.setattr(model.mtp, "forward", lambda *args, **kwargs: pytest.fail("the block ran"))
+        alone = model(ids, targets=(after,))
+    assert torch.equal(alone, both[0])

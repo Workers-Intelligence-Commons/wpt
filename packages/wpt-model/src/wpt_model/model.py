@@ -345,7 +345,10 @@ class WPT(nn.Module):
         multi-token prediction scores of the first t positions against the
         second), computed CHUNK tokens at a time so that the scores of all
         the tokens are never held at once (a fused kernel, or the backward
-        pass computing each chunk's scores again; see _summed). With record
+        pass computing each chunk's scores again; see _summed). targets may
+        also be (tokens,) alone, with or without next_tokens: the tuple then
+        starts with the next-token cross-entropy alone, and the multi-token
+        prediction block does not run. With record
         or replay (B = 1), the routed layers record their choices into it,
         or route as it holds. sequence: where idx sits in a longer window
         (carried, split), the whole window when None. features: layer
@@ -355,10 +358,11 @@ class WPT(nn.Module):
         layer's attention, and the last layer's is the output head's
         input."""
         sequence = WHOLE if sequence is None else sequence
-        if targets is not None and next_tokens is None:
-            raise ValueError("targets need next_tokens")
-        if (targets is not None and self.graphs is not None and idx.is_cuda and self._whole(sequence)
-                and record is None and replay is None and not features and not self.recompute):
+        if targets is not None and next_tokens is None and len(targets) > 1:
+            raise ValueError("targets after next need next_tokens")
+        if (targets is not None and len(targets) > 1 and self.graphs is not None and idx.is_cuda
+                and self._whole(sequence) and record is None and replay is None and not features
+                and not self.recompute):
             return self.graphs.losses(idx, next_tokens, targets)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=idx.is_cuda):
             hidden, found = self._hidden(idx, record, replay, sequence, features)
@@ -381,7 +385,10 @@ class WPT(nn.Module):
             return self._sums(hidden, next_tokens, targets, sequence)
 
     def _sums(self, hidden, next_tokens, targets, sequence):
-        """The two summed cross-entropies from the final hidden states, inside forward's autocast."""
+        """The two summed cross-entropies from the final hidden states, inside
+        forward's autocast; the next-token one alone for targets (tokens,)."""
+        if len(targets) == 1:
+            return (self._summed(self.final_norm(hidden), targets[0]),)
         ahead = self._running(self.mtp, sequence)(hidden, self.embedding(next_tokens), sequence)
         return (self._summed(self.final_norm(hidden), targets[0]),
                 self._summed(ahead[:, :targets[1].shape[1]], targets[1]))

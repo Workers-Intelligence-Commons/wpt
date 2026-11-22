@@ -252,7 +252,7 @@ reaches.
   plus the multi-token prediction loss at `mtp_weight`, then at
   `mtp_late_weight` after `mtp_switch` of the step's updates (DeepSeek-V3:
   after 10T of 14.8T tokens). Evaluations compare the next-token loss
-  alone. Settings: `mtp_weight` 0.3, `mtp_late_weight`
+  alone, and the multi-token prediction block does not run in them. Settings: `mtp_weight` 0.3, `mtp_late_weight`
   0.1, `mtp_switch` 0.676.
 - `assistant-tokens` (reads `conversations`): the next-token loss of the
   tokens the assistant wrote only ("The answer-as-assistant step", below).

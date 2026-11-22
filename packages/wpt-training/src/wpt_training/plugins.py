@@ -253,8 +253,9 @@ class TextMethod(Method):
         """The next-token loss alone, which evaluations compare: the mean
         cross-entropy of the next-token scores, summed by the model a chunk
         of tokens at a time as in training, so that the scores of every
-        token of the windows are never held at once."""
-        next_sum, _ = model(x, next_tokens=y, targets=(y, y[:, 1:]))
+        token of the windows are never held at once; the multi-token
+        prediction block does not run."""
+        next_sum = model(x, targets=(y,))
         return next_sum / y.numel()
 
 
