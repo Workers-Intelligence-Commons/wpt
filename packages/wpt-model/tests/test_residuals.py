@@ -2,14 +2,18 @@
 of one pass, read through one tensor with a written-out backward pass,
 give what the paper's formula gives over stacked sources, in the inputs
 of the sublayers and in every gradient, in the full form and in groups;
-and a compiled pass's sums, Triton kernels on a GPU, give it within BF16
-rounding."""
+and a pass's sums, Triton kernels on a GPU whether compiled or not, give
+it within BF16 rounding."""
 
 import importlib.util
+import sys
+import types
 
 import pytest
 import torch
 
+import wpt_model
+from wpt_model import residuals as residuals_module
 from wpt_model.layers import EPS
 from wpt_model.residuals import Residuals
 from wpt_utils.device import select_device
@@ -95,13 +99,15 @@ def test_with_its_queries_at_zero_every_sum_is_the_plain_average_of_its_sources(
 @pytest.mark.skipif(select_device().type != "cuda" or importlib.util.find_spec("triton") is None,
                     reason="needs a GPU where Triton runs")
 @pytest.mark.parametrize("groups", [6, 3])
-def test_a_compiled_pass_s_sums_on_a_gpu_are_as_close_to_the_paper_s_as_the_uncompiled_sums(groups):
+def test_a_pass_s_sums_on_a_gpu_are_as_close_to_the_paper_s_as_the_sums_written_in_pytorch(groups, monkeypatch):
     # the full form, as the recipes have it, through the Triton kernels of
-    # a compiled pass, its sources in BF16: against the formula in FP32 on
-    # the same inputs, every input and gradient is as close as the same
-    # pass uncompiled; the sublayers read their inputs, so every gradient
-    # goes through the sums of later sublayers. In groups, the sums with a
-    # partial sum run through torch.compile and the others through the
+    # a pass compiled or not, its sources in BF16: against the formula in
+    # FP32 on the same inputs, every input and gradient is within twice
+    # the distance of the same pass written in PyTorch, in BF16 too (plus
+    # 1e-3 of the norm), the rounding the reference itself makes; the
+    # sublayers read their inputs, so every gradient goes through the sums
+    # of later sublayers. In groups, the sums with a partial sum run
+    # through torch.compile (or PyTorch) and the others through the
     # kernels, and a source's gradient joins both
     torch.manual_seed(0)
     device, sublayers, width = select_device(), 6, 96  # a width that is no power of 2
@@ -127,5 +133,21 @@ def test_a_compiled_pass_s_sums_on_a_gpu_are_as_close_to_the_paper_s_as_the_unco
     expected = everything(expected)
     compiled = everything(through_sources(residuals, embedding, layers, compiled=True))
     uncompiled = everything(through_sources(residuals, embedding, layers))
-    for got, plain, reference in zip(compiled, uncompiled, expected):
-        assert gap(got, reference) <= 2 * gap(plain, reference) + 1e-3
+    monkeypatch.setattr(residuals_module, "_imported", False)  # the kernels as if Triton did not import
+    plain = everything(through_sources(residuals, embedding, layers))
+    for got, again, pytorch, reference in zip(compiled, uncompiled, plain, expected):
+        assert gap(got, reference) <= 2 * gap(pytorch, reference) + 1e-3
+        assert gap(again, reference) <= 2 * gap(pytorch, reference) + 1e-3
+
+
+def test_where_the_kernels_do_not_import_the_sums_run_as_written(monkeypatch):
+    # off a GPU, or on one where Triton does not import, no sum asks for
+    # the kernels, and the failed import is remembered
+    monkeypatch.setattr(residuals_module, "_imported", None)
+    monkeypatch.delattr(wpt_model, "residual_kernels", raising=False)
+    monkeypatch.setitem(sys.modules, "wpt_model.residual_kernels", None)  # its import fails
+    values = torch.zeros(2, 1, 3, 4)
+    assert residuals_module._residual_kernels() is None and residuals_module._imported is False
+    assert not residuals_module._kernels(values, None)
+    monkeypatch.setattr(residuals_module, "_imported", types.SimpleNamespace())  # imported: still never on the CPU
+    assert not residuals_module._kernels(values, None)

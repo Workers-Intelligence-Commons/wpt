@@ -37,17 +37,18 @@ dtype (_Gradients): each sum's backward pass adds its share to every
 source's place there at once, and each source takes its place's sum when
 every sum that reads it is done, so autograd adds up no gradient source
 by source. A pass's graph is gone through backward once (each sum
-refuses a second time). In a compiled training pass
-(WPT.compile_training) on a GPU, both passes of a sum with no partial
-sum, every sum of the full form, run as Triton kernels
-(residual_kernels.py) that read each source from memory once; such a
+refuses a second time). On a GPU where Triton imports, both passes of a
+sum with no partial sum, every sum of the full form, run as Triton
+kernels (residual_kernels.py) that read each source from memory once, in
+every pass, compiled (WPT.compile_training) or not; such a
 sum keeps no scores or weights, only per token the log of its softmax's
 denominator, from which the kernels compute them again; its backward
 pass adds nothing into the gradients' tensor, but keeps its output's
 gradient, and each source's gradient is then one FP32 sum
 over the sums that read it, made when the source takes it. Elsewhere in
 a compiled pass, the math of both passes runs through torch.compile,
-which fuses it into a few kernels.
+which fuses it into a few kernels; elsewhere in a pass that is not
+compiled, as written in PyTorch (_mix, _unmix).
 """
 
 import torch
@@ -256,18 +257,29 @@ def _through_compile(function):
     return _compiled[function]
 
 
-def _kernels(compiled, values, partial):
+def _kernels(values, partial):
     """Whether a sum runs through the Triton kernels (residual_kernels.py):
-    in a compiled pass on a GPU, with no partial sum. The kernels cover
-    the full form, where every sum has none, which WPT's recipes use; a
-    sum with a partial sum runs through torch.compile, open to review."""
-    return compiled and partial is None and values.is_cuda
+    on a GPU where they import, with no partial sum, in any pass. The
+    kernels cover the full form, where every sum has none, which WPT's
+    recipes use; a sum with a partial sum runs through torch.compile in a
+    compiled pass, else as written, open to review."""
+    return partial is None and values.is_cuda and _residual_kernels() is not None
+
+
+_imported = None  # residual_kernels.py once imported, False where it does not import
 
 
 def _residual_kernels():
-    """residual_kernels.py, imported at first use: it needs Triton."""
-    from . import residual_kernels
-    return residual_kernels
+    """residual_kernels.py, imported at first use (it needs Triton), or
+    None where it does not import: the sums then run without it."""
+    global _imported
+    if _imported is None:
+        try:
+            from . import residual_kernels
+            _imported = residual_kernels
+        except Exception:  # an ImportError, or an error of Triton's own while it starts
+            _imported = False
+    return _imported or None
 
 
 class _Mixing(torch.autograd.Function):
@@ -276,9 +288,9 @@ class _Mixing(torch.autograd.Function):
     the scores (u . v_i) r_i; u = w * g. `added` are the complete sources as
     autograd sees them: its backward pass adds their gradients into
     gradients (_Gradients), or keeps what they need in its slot of
-    gradients.kept, and hands them nothing. compiled: both passes
-    run through the Triton kernels of residual_kernels.py on a GPU when
-    there is no partial sum (_kernels), else their math (_mix, _unmix)
+    gradients.kept, and hands them nothing. Both passes run through the
+    Triton kernels of residual_kernels.py on a GPU when there is no
+    partial sum (_kernels); else, compiled, their math (_mix, _unmix)
     through torch.compile, which fuses it into a few kernels."""
 
     @staticmethod
@@ -287,7 +299,7 @@ class _Mixing(torch.autograd.Function):
         values, scales = values[:n], scales[:n]
         scores = weights = partial_scale = None
         with torch.autocast(values.device.type, enabled=False):
-            if _kernels(compiled, values, partial):  # what its backward pass needs in gradients.kept's slot
+            if _kernels(values, partial):  # what its backward pass needs in gradients.kept's slot
                 h = _residual_kernels().mix(u.to(values.dtype), values, scales, gradients.kernels_kept(), slot)
             else:
                 mix = _through_compile(_mix) if compiled else _mix
@@ -307,7 +319,7 @@ class _Mixing(torch.autograd.Function):
         u, scores, weights, partial, partial_scale = ctx.saved_tensors
         n, values = len(ctx.values), ctx.values
         with torch.autocast(values.device.type, enabled=False):
-            if _kernels(ctx.compiled, values, partial):
+            if _kernels(values, partial):
                 d_u = _residual_kernels().unmix(grad.to(values.dtype).contiguous(), values, ctx.scales,
                                                 ctx.gradients.kept, ctx.slot)
                 d_partial = None

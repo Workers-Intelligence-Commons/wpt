@@ -574,8 +574,8 @@ Residuals between them and the multi-token prediction block through
 `torch.compile`, forward and backward, which joins
 the model's many small operations into few GPU kernels. It trains the same
 way within rounding. On a GPU, the sums of Attention Residuals run as
-Triton kernels of their own instead of through `torch.compile`
-(docs/model.md, "Attention Residuals"). It covers the passes over whole
+Triton kernels of their own instead of through `torch.compile`, as they
+do without the option (docs/model.md, "Attention Residuals"). It covers the passes over whole
 text windows, whose shape stays the same for a stage. Evaluations, windows in segments or
 slices, conversations and task attempts run uncompiled, since their length
 or their place in a window changes from pass to pass and each new one would

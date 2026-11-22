@@ -1,8 +1,7 @@
-"""The sums of Attention Residuals (residuals.py) as Triton kernels, for a
-compiled training pass on a GPU: the forward and backward passes of one
-sum over n complete sources, with no partial sum, and each source's
-gradient over the sums that read it. residuals.py imports this module
-only there.
+"""The sums of Attention Residuals (residuals.py) as Triton kernels, for
+every pass on a GPU: the forward and backward passes of one sum over n
+complete sources, with no partial sum, and each source's gradient over
+the sums that read it. residuals.py imports this module only there.
 
 The sums move data: each reads its n sources (n, B, T, D) in BF16, and
 there are as many sums as sublayers, so the sources are read about

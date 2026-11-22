@@ -448,9 +448,10 @@ The sources of one pass are kept side by side in one tensor of the compute
 dtype (BF16 on a GPU), each written once, when complete, with its inverse
 RMS `r_i`. Since `w_l . RMSNorm_l(v_i) = ((w_l * g_l) . v_i) r_i`, with
 `g_l` the RMSNorm's weight, a sum is two batched products over that
-tensor, one for the scores and one for the weighted sum. In a compiled
-training pass on a GPU, each sum's forward and backward passes are Triton
-kernels instead, which read each source from memory once
+tensor, one for the scores and one for the weighted sum. On a GPU where
+Triton imports, each sum's forward and backward passes are Triton kernels
+instead, in every pass, compiled or not, which read each source from
+memory once
 (`wpt_model/residual_kernels.py`). The scores and the softmax are FP32. The backward pass is written out, so that it keeps
 nothing per sublayer but the scores and weights: the sources stay only in
 that tensor. The sources' gradients sit side by side in one tensor too:
