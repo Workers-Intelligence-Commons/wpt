@@ -180,7 +180,7 @@ agreement for NVIDIA software development kits).
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
-| triton-windows | 3.8.0.post29 | MIT | compiles the Triton attention, grouped expert, Attention Residuals and fused output head and loss kernels. It bundles, with no license file of theirs, NVIDIA's GPU compiler `ptxas.exe` (NVIDIA proprietary, CUDA Toolkit license agreement) and the TinyCC C compiler (`tcc.exe`, `libtcc.dll`; LGPL-2.1-or-later) |
+| triton-windows | 3.8.0.post29 | MIT | compiles the Triton attention, grouped expert, Attention Residuals, SiTU-GLU and fused output head and loss kernels. It bundles, with no license file of theirs, NVIDIA's GPU compiler `ptxas.exe` (NVIDIA proprietary, CUDA Toolkit license agreement) and the TinyCC C compiler (`tcc.exe`, `libtcc.dll`; LGPL-2.1-or-later) |
 
 ### ROCm build, Linux only
 

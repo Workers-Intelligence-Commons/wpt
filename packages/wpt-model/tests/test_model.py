@@ -1,3 +1,4 @@
+import importlib.util
 import shutil
 import sys
 import types
@@ -436,6 +437,48 @@ def test_a_model_with_one_vocabulary_table_reads_its_embeddings_from_the_output_
     tied.zero_grad()
     F.cross_entropy(tied(ids).flatten(0, 1), ids.flatten()).backward()
     assert torch.isfinite(tied.head.weight.grad).all() and tied.head.weight.grad.abs().sum() > 0
+
+
+def situ_by_formula(gate, up):
+    return 4 * torch.tanh(gate / 4) * torch.sigmoid(gate) * (25 * torch.tanh(up / 25))
+
+
+@pytest.mark.skipif(select_device().type != "cuda" or importlib.util.find_spec("triton") is None,
+                    reason="needs a GPU where Triton runs")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_the_situ_glu_kernel_is_as_close_to_the_formula_as_the_formula_in_pytorch(dtype):
+    # situ_kernels.py: against the formula in FP64 on the same inputs, its output and both gradients are
+    # within twice the distance of the formula computed in PyTorch in the same dtype, plus 1e-6 of the
+    # norm: the rounding the PyTorch form makes, one rounding per operation, against one at the end
+    from wpt_model.situ_kernels import situ_glu as fused
+
+    device = select_device()
+    generator = torch.Generator(device).manual_seed(0)
+    gate = (torch.randn(77, 300, device=device, generator=generator) * 6).to(dtype)
+    up = (torch.randn(77, 300, device=device, generator=generator) * 30).to(dtype)
+    direction = torch.randn(77, 300, device=device, generator=generator).to(dtype)
+
+    def run(compute, cast):
+        g, u = cast(gate).requires_grad_(), cast(up).requires_grad_()
+        out = compute(g, u)
+        out.backward(cast(direction))
+        return [x.double() for x in (out.detach(), g.grad, u.grad)]
+
+    exact = run(situ_by_formula, lambda x: x.double())
+    for got, plain, reference in zip(run(fused, torch.clone), run(situ_by_formula, torch.clone), exact):
+        gap = float((got - reference).norm() / reference.norm())
+        assert gap <= 2 * float((plain - reference).norm() / reference.norm()) + 1e-6
+
+
+def test_off_a_gpu_or_without_triton_situ_glu_is_the_formula(monkeypatch):
+    # layers.situ_glu: the PyTorch form on the CPU, and on a GPU where the kernel does not import
+    from wpt_model import layers
+
+    gate, up = torch.randn(5, 7) * 4, torch.randn(5, 7) * 30
+    assert torch.equal(layers.situ_glu(gate, up), situ_by_formula(gate, up))
+    monkeypatch.setattr(layers, "_situ", None)
+    monkeypatch.setitem(sys.modules, "wpt_model.situ_kernels", None)  # its import fails
+    assert layers._fused_situ() is None and layers._situ is False
 
 
 def test_the_next_token_loss_alone_is_the_first_of_the_two_and_runs_no_multi_token_prediction(monkeypatch):

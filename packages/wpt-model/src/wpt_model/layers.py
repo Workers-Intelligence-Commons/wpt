@@ -44,8 +44,27 @@ class ShortConv(nn.Module):
 
 def situ_glu(gate, up):
     """SiTU-GLU (K3) of the two branches' pre-activations: each branch is
-    capped by a scaled tanh, so one unit's output never exceeds 100."""
+    capped by a scaled tanh, so one unit's output never exceeds 100. On a
+    GPU where Triton imports, outside torch.compile (which fuses it by
+    itself), one kernel each way (situ_kernels.py), else as written here."""
+    if gate.is_cuda and gate.dtype == up.dtype and not torch.compiler.is_compiling() and (fused := _fused_situ()):
+        return fused(gate, up)
     return 4 * torch.tanh(gate / 4) * torch.sigmoid(gate) * (25 * torch.tanh(up / 25))
+
+
+_situ = None  # situ_kernels.situ_glu once imported, False where it does not import
+
+
+def _fused_situ():
+    """situ_kernels.situ_glu, or None where Triton does not import; imported once."""
+    global _situ
+    if _situ is None:
+        try:
+            from .situ_kernels import situ_glu as fused
+            _situ = fused
+        except Exception:  # an ImportError, or an error of Triton's own while it starts
+            _situ = False
+    return _situ or None
 
 
 class FeedForward(nn.Module):

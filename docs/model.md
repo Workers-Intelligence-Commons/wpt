@@ -254,7 +254,12 @@ scaled tanh functions so one unit's output never exceeds 100:
 SiTU-GLU(x) = [4 tanh(W_g x / 4) * sigmoid(W_g x)] * [25 tanh(W_u x / 25)]
 ```
 
-followed by the expert's down projection.
+followed by the expert's down projection. On a GPU where Triton imports,
+outside `torch.compile` (which fuses it by itself), the activation is one
+Triton kernel each way (`wpt_model/situ_kernels.py`): it computes in FP32
+and rounds once, where the operations written in PyTorch round each
+result to BF16, and it keeps only the two branches' pre-activations for
+the backward pass.
 
 **Routing.** Router scores are `s = sigmoid(W_r x)`. The top `k` experts
 are chosen on `s + b`; their weights are `p_i = s_i / sum of the chosen s`,
