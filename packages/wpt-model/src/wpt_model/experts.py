@@ -174,7 +174,10 @@ class Experts(nn.Module):
             raise ValueError("routes are recorded and replayed for one sequence at a time")
         flat = x.reshape(-1, D)
         if self.ttt is None:
-            y = sum(expert(flat) for expert in self.shared)
+            first, *others = self.shared
+            y = first(flat)
+            for expert in others:
+                y = y + expert(flat)
         else:  # the two down projections as one matrix, which In-Place TTT changes
             z = torch.cat([situ_glu(expert.gate(flat), expert.up(flat)) for expert in self.shared], -1)
             y = F.linear(z, torch.cat([expert.down.weight for expert in self.shared], 1))
@@ -192,7 +195,7 @@ class Experts(nn.Module):
         order = chosen.reshape(-1).argsort(stable=True)  # the m * k copies, grouped by expert
         inverse = torch.empty_like(order)
         inverse[order] = torch.arange(len(order), device=order.device)
-        copies = z.unsqueeze(1).expand(m, k, z.shape[-1]).reshape(m * k, -1)[order]
+        copies = _Rows.apply(z, order // k, inverse, k)  # copy i of token i // k, in the experts' order
         # where each expert's copies end: no count whose size the host must read (as torch.bincount's)
         ends = torch.searchsorted(chosen.reshape(-1)[order], torch.arange(self.n, device=order.device), right=True)
         if copies.is_cuda and copies.dtype == torch.bfloat16:  # grouped matrix multiplications: no wait for the sizes
@@ -200,4 +203,26 @@ class Experts(nn.Module):
         else:
             out = torch.cat([expert_forward(part, self.w_gate[j], self.w_up[j], self.w_down[j])
                              for j, part in enumerate(copies.split(ends.diff(prepend=ends[:1] * 0).tolist()))])
-        return (out[inverse].view(m, k, -1) * weights[..., None].to(out.dtype)).sum(1)
+        return (_Rows.apply(out, inverse, order, 1).view(m, k, -1) * weights[..., None].to(out.dtype)).sum(1)
+
+
+class _Rows(torch.autograd.Function):
+    """x[index], whose gradient is the incoming one's rows `back`, every
+    `copies` rows of it summed: index puts each row of x in `copies` places
+    and back is the permutation that takes those places back in order. A
+    gather both ways, where indexing's backward pass would add its rows in
+    place, by a sort of the indices on a GPU."""
+
+    @staticmethod
+    def forward(ctx, x, index, back, copies):
+        ctx.save_for_backward(back)
+        ctx.copies = copies
+        return x[index]
+
+    @staticmethod
+    def backward(ctx, grad):
+        back, = ctx.saved_tensors
+        rows = grad[back]
+        if ctx.copies > 1:
+            rows = rows.view(-1, ctx.copies, grad.shape[-1]).sum(1)
+        return rows, None, None, None
