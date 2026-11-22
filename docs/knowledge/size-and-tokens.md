@@ -90,6 +90,18 @@ All figures from published sources in this section are **unchecked**.
   ([width-and-vocabulary.md](width-and-vocabulary.md)): the number of
   updates is not enough when the model is under the floor of width.
   **measured here**
+- On the same corpus, a model of 191.1M parameters (width 512, 11 layers)
+  reaches a validation loss of 3.01 after 354M tokens, 1.9 tokens per
+  parameter, in 6.5 hours on one laptop GPU; the model of 30.5M parameters
+  (width 128, 21 layers) reaches 3.49 after 1.18B tokens, 39 tokens per
+  parameter, in 10 hours. Both losses are on windows of 32,768 tokens. The
+  larger model with a tenth of the rule's tokens wins on loss, and neither
+  copies a stated fact. **measured here**
+- The wide model reads windows of 2,048 tokens for 1,620 updates, then 8,192
+  for 675, then 32,768 for 405, each update 131,072 tokens. The validation
+  loss goes from 3.45 to 3.15 over the second stage and to 3.01 over the
+  third; no run with one window length was made to compare. **measured
+  here**
 
 ## Open
 

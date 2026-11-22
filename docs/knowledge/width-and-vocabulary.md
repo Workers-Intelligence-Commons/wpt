@@ -81,6 +81,18 @@ All figures from published sources in this section are **unchecked**.
   the start of the same sentence, it does not repeat the fact; it does not
   continue a repeated sequence of four letters. (RTX 5080 Laptop GPU, commit
   d0d454b22b.) **measured here**
+- A model of width 512 and 11 layers (124.0M parameters without the tables,
+  191.1M with them), the same vocabulary and corpus, 128 entries per
+  dimension, trained on 354M tokens in 2,700 updates, validation loss 3.01:
+  given the same 10 prompts, one sample of 24 tokens each, it still does not
+  repeat a fact or a number its context states. It continues `return a +`
+  with `b`, the argument the prompt names, where the narrow model writes
+  `c`, and it continues the four repeated letters with those letters, not in
+  their order. Copying has started and is not there. The model has read 1.9
+  tokens per parameter, so the measure does not separate the floor of width
+  from a lack of training
+  ([size-and-tokens.md](size-and-tokens.md)). (Same machine and commit.)
+  **measured here**
 
 ## Open
 

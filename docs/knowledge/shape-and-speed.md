@@ -37,9 +37,13 @@ a width of 512 and 11 layers, 124.0M parameters without the tables and
 | wide | 64 of 2,048 | 16 | 19 | 16,600 |
 | wide | 64 of 2,048 | 2 | 23 | 13,800 |
 | wide | 4 of 32,768 | 1 | 26 | 12,300 |
+| wide | 64 of 2,048 | 4 | 1,620 | 16,100 |
+| wide | 16 of 8,192 | 1 | 675 | 15,300 |
+| wide | 4 of 32,768 | 1 | 405 | 12,000 |
 
-The runs of 600 and 3,000 updates include their evaluations; the others are
-`--stop-after-minutes` measures, which leave the first update out.
+The runs of 405 updates and more include their evaluations; the others are
+`--stop-after-minutes` measures, which leave the first update out. The last
+three rows are the three stages of one run.
 
 The cost of the multi-token prediction block: one pass, forward and
 backward, over 4 windows of 4,096 tokens with the narrow model, without
