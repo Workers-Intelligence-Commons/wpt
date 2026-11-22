@@ -842,6 +842,17 @@ memory; then the 40 operations with the most self CUDA time and the 40 with the
 most self CPU time. A failure of the profiler is a warning, and the training
 goes on. The other updates run without any of it.
 
+`uv run scripts/compare_training.py --base REV` compares the training of
+the working tree with that of revision REV on synthetic tokens, with no
+corpus, depot or store: the fused kernels' tests, whether every commit
+since REV trains the same small model as the one before it (bit for bit on
+the CPU, within the spread of two runs of REV on a GPU), and the tokens
+per second, first update and peak memory of the recipes' shapes at widths
+256 and 512 with windows of 2,048, 8,192 and 32,768 tokens, recomputation
+and `--compile` on and off. It writes `results.json` and `results.txt`
+into a folder of its own; its docstring says what each part measures, and
+`--tiny` checks the script itself on any device.
+
 ## Checkpoints and resuming
 
 Inside a step, every `--checkpoint-every` updates (default 500, 0 for none
