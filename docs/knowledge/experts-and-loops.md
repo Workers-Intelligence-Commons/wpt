@@ -60,8 +60,8 @@ trained.
 ### Published
 
 All figures in this section are **unchecked**: they were read through an
-automatic reader of the papers' pages, and the existence of each source
-under its id has not been confirmed by hand.
+automatic reader of the papers' pages. Each source exists on arXiv under
+its id, with the subject given here.
 
 #### Mixtures of experts in small models
 
