@@ -1,11 +1,15 @@
 """The three kinds of attention layer (docs/model.md, "Attention") against
 HySparse2's formulas, one token at a time."""
 
+import copy
+
 import pytest
 import torch
 
 from wpt_model import WPT, ModelConfig
 from wpt_model import attention
+from wpt_model.kernels import kernels
+from wpt_utils.device import select_device
 from wpt_model.attention import ROPE_DIMS, WINDOW, ExactAttention, SparseAttention, WindowAttention
 
 CONFIG = ModelConfig(vocab_size=50, block_size=300, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=32,
@@ -76,6 +80,47 @@ def test_a_window_layer_gives_the_formula_s_result():
         expected.append(gated_output(layer, o, x[0, t]))
     with torch.no_grad():
         assert torch.allclose(layer(x)[0], torch.stack(expected), atol=1e-5)
+
+
+@pytest.mark.skipif(select_device().type != "cuda", reason="needs a GPU")
+def test_a_window_layer_through_the_kernels_is_as_close_to_the_exact_result_as_its_pytorch_form(monkeypatch):
+    # a window layer on a GPU runs as sparse attention with no chosen rows: a whole pass of 300 tokens and
+    # the same text as two segments (the second reading the 127 entries before it), in BF16 under
+    # autocast; against the layer in FP64, its output and every gradient are within twice the distance of
+    # its PyTorch form under the same autocast, plus 1e-3 of the norm: the rounding that form makes
+    device = select_device()
+    if kernels(device) is None:
+        pytest.skip("the PyTorch form computes the attention on this GPU")
+    torch.manual_seed(0)
+    layer = randomized(WindowAttention(CONFIG)).to(device)
+    x = torch.randn(2, 384, CONFIG.d_model, device=device)
+    direction = torch.randn(2, 384, CONFIG.d_model, device=device)
+
+    def run(model, dtype, segments):
+        model.zero_grad()
+        inputs = x.to(dtype).requires_grad_()
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dtype != torch.float64):
+            if segments:
+                first = WPT.carried(0, {})
+                head = model(inputs[:, :256], first)
+                out = torch.cat([head, model(inputs[:, 256:], WPT.carried(256, first.passed))], 1)
+            else:
+                out = model(inputs)
+        (out.double() * direction.double()).sum().backward()
+        return [out.detach().double(), inputs.grad.double(), *(p.grad.double() for p in model.parameters())]
+
+    def pytorch_form(*args):
+        with monkeypatch.context() as patched:
+            patched.setattr(attention, "kernels", lambda device: None)
+            return run(*args)
+
+    exact = pytorch_form(copy.deepcopy(layer).double(), torch.float64, False)
+    for segments in (False, True):
+        fused = run(layer, torch.float32, segments)
+        plain = pytorch_form(layer, torch.float32, segments)
+        for got, pytorch, reference in zip(fused, plain, exact):
+            gap = float((got - reference).norm() / reference.norm())
+            assert gap <= 2 * float((pytorch - reference).norm() / reference.norm()) + 1e-3
 
 
 def test_exact_and_sparse_layers_give_the_formula_s_result(monkeypatch):

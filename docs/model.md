@@ -95,8 +95,13 @@ and values from its own input.
 Two operations grow with the text: the exact layers' attention, which also
 gives each query's chosen tokens, and the sparse layers' attention over
 given tokens and the window (`kernels.py`). The window layers' attention
-runs in PyTorch, in blocks of 128 queries that each read two blocks of keys,
-so its cost grows with the text times 128.
+is a sparse layer's with no chosen tokens. Where kernels compute the
+attention on a GPU, outside `torch.compile` (which fuses the PyTorch form
+by itself), a training or evaluation pass runs it through the same
+sparse kernels, which keep no scores for the backward pass. Elsewhere,
+and in a generation cache's passes, it runs in PyTorch, in blocks of 128
+queries that each read two blocks of keys. Either way its cost grows with
+the text times 128.
 
 `pytorch_kernels.py` states the two operations' contract and computes them
 in plain PyTorch: the reference, which runs on every device. It computes in

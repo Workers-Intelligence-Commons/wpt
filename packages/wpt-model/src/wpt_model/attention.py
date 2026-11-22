@@ -35,10 +35,15 @@ may follow earlier tokens (sequence.py: a segment or a slice of a training
 window, or new tokens read through a generation cache), and the same
 forward computes every case. Positions count from the text's first token.
 
-The window layers' attention runs here in PyTorch (window_attention), in
-blocks of WINDOW queries that each read two blocks of keys, so its cost
-grows with the text times WINDOW; the exact and sparse layers' runs in
-kernels.py.
+The window layers' attention is a sparse layer's with no chosen rows: on
+a GPU where kernels.py runs the attention through kernels, outside
+torch.compile (which fuses the PyTorch form by itself), a pass whose
+tokens all sit at one place runs it through kernels.py's sparse_attention,
+which keeps no scores. Elsewhere it runs here in PyTorch
+(window_attention), in blocks of WINDOW queries that each read two blocks
+of keys, so its cost grows with the text times WINDOW, and the scores of a
+block stay in memory for the backward pass. The exact and sparse layers'
+attention runs in kernels.py.
 """
 
 import torch
@@ -46,7 +51,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .carry import Entries, Tail
-from .kernels import exact_attention, sparse_attention
+from .kernels import exact_attention, kernels, sparse_attention
 from .layers import EPS
 from .sequence import WHOLE
 
@@ -144,10 +149,21 @@ class WindowAttention(nn.Module):
         window (sequence.py)."""
         positions = sequence.positions(x.shape[1], x.device)
         entries = self.entries(x, positions)
-        table = torch.cat([sequence.before(self, "window", entries).to(entries.dtype), entries], 1)
+        earlier = sequence.before(self, "window", entries)
         c = self.head_dim
-        o = window_attention(self.queries(x, positions), table[..., :c], table[..., c:], self.sink, positions,
-                             c ** -0.5)
+        q = self.queries(x, positions)
+        start = sequence.start
+        if (isinstance(start, int) and (start == 0 or start >= WINDOW - 1) and x.is_cuda
+                and not torch.compiler.is_compiling() and kernels(x.device) is not None):
+            # the kernels read token p's key at row p of their table: the pass's own entries from the text's
+            # start, else the WINDOW - 1 entries before them too, the positions counted from that table's first row
+            table = entries if start == 0 else torch.cat([earlier.to(entries.dtype), entries], 1)
+            rows = positions - start + (0 if start == 0 else WINDOW - 1)
+            chosen = positions.new_empty((x.shape[0], x.shape[1], 0))
+            o = sparse_attention(q, table[..., :c], table[..., c:], self.sink, chosen, rows, c ** -0.5, WINDOW)
+        else:
+            table = torch.cat([earlier.to(entries.dtype), entries], 1)
+            o = window_attention(q, table[..., :c], table[..., c:], self.sink, positions, c ** -0.5)
         return self.output(o, x)
 
 
