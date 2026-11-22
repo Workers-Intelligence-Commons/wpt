@@ -2,9 +2,10 @@
 
 WPT is an open language model, trained from scratch only on content whose
 license is clear, and published under copyleft (AGPL-3.0-or-later). It is
-the first project of Workers' Intelligence Commons: intelligence is a means
-of production, and it should stay a common good that anyone can use, host,
-modify and improve. Anyone may serve WPT, for money too; whoever serves a
+one of the projects of Workers' Intelligence Commons, which works on
+artificial intelligence in general, whatever its form: intelligence is a
+means of production, and it should stay a common good that anyone can use,
+host, modify and improve. Anyone may serve WPT, for money too; whoever serves a
 modified version must share it. The principles are in the
 [charter](docs/charter.md).
 
