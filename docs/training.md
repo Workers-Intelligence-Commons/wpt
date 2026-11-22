@@ -429,8 +429,12 @@ corpus larger than memory trains:
 before the step's first update, the shards are checked against their
 token hashes and their tokens written once into one file per part, in the
 store's `scratch/` folder (`<store folder>/scratch/` for a local store,
-the cache for S3). A later run reuses that file when it still matches the
-sha256 recorded when it was written. `scratch/` can be deleted at any time.
+the cache for S3). A later run reuses that file without reading it while
+its size and modification time are those recorded when it was written;
+when either changed, it reuses it only if it still matches the sha256
+recorded then, and builds it again otherwise. A change that keeps both
+the size and the time, such as a fault of the disk, goes unseen.
+`scratch/` can be deleted at any time.
 
 ### Prefix
 

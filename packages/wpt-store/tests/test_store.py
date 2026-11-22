@@ -302,11 +302,15 @@ def test_s3_store_round_trip(tmp_path, monkeypatch):
         assert open_store("s3://wpt-test/some/prefix").read_record("run-4", "events.jsonl") == b"one\ntwo\n"
 
 
-def test_a_token_file_holds_the_shards_tokens_and_is_rebuilt_when_changed(tmp_path):
+def test_a_token_file_holds_the_shards_tokens_and_is_rebuilt_when_changed(tmp_path, monkeypatch):
     # training reads this file instead of the shards, so it must hold exactly
-    # their tokens, and a copy changed on disk must never be used
+    # their tokens, and a copy changed on disk (its size or its time) must
+    # never be used; an unchanged one is reused without reading it again
+    import os
+
     import numpy as np
 
+    from wpt_store import shards as shards_module
     from wpt_store.shards import token_file, write_shard
 
     store = open_store((tmp_path / "store").as_uri())
@@ -319,7 +323,15 @@ def test_a_token_file_holds_the_shards_tokens_and_is_rebuilt_when_changed(tmp_pa
 
     path = token_file(store, shards)
     assert np.fromfile(path, dtype="<u4").tolist() == list(range(1, 10))
+    hashing = shards_module.sha256_file
+    monkeypatch.setattr(shards_module, "sha256_file", lambda _: pytest.fail("an unchanged file was read again"))
+    assert token_file(store, shards) == path
+    monkeypatch.setattr(shards_module, "sha256_file", hashing)
+    written = path.stat().st_mtime_ns
     path.write_bytes(np.arange(9, dtype="<u4").tobytes())
+    os.utime(path, ns=(written + 10**9, written + 10**9))  # a write, whatever the file system's clock grain
+    assert np.fromfile(token_file(store, shards), dtype="<u4").tolist() == list(range(1, 10))
+    os.utime(path, ns=(written + 2 * 10**9, written + 2 * 10**9))  # touched: read again, and reused
     assert np.fromfile(token_file(store, shards), dtype="<u4").tolist() == list(range(1, 10))
 
 

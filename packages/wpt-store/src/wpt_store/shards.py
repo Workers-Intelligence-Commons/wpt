@@ -132,14 +132,21 @@ def token_file(store, shards) -> Path:
 
     It is built from the shards, each checked against its token hash, into
     the store's scratch folder, and named after the shards. A later call
-    reuses it only if it still matches the sha256 recorded when it was built;
-    otherwise it is built again. Raises CorruptFile (leaving no file) when
-    a shard's rows do not match their token hash."""
+    reuses it while its size and modification time are those recorded when
+    it was built, without reading it; when they differ, only if it still
+    matches the sha256 recorded then (and the size and time are recorded
+    again); otherwise it is built again. Raises CorruptFile (leaving no
+    file) when a shard's rows do not match their token hash."""
     key = hashlib.sha256(json.dumps([[s["sha256"], s["token_sha256"]] for s in shards]).encode()).hexdigest()
     folder = store.scratch / "tokens"
     path, mark = folder / f"{key}.u32", folder / f"{key}.sha256"
-    if path.is_file() and mark.is_file() and sha256_file(path) == mark.read_text().strip():
-        return path
+    if path.is_file() and mark.is_file():
+        recorded = mark.read_text().split()  # sha256, then the size and the modification time in nanoseconds
+        if recorded[1:] == _stamp(path):
+            return path
+        if recorded and sha256_file(path) == recorded[0]:
+            _mark(mark, recorded[0], path)
+            return path
     folder.mkdir(parents=True, exist_ok=True)
     partial = folder / f"{key}.{os.getpid()}.partial"
     try:
@@ -154,8 +161,18 @@ def token_file(store, shards) -> Path:
         os.replace(partial, path)
     finally:
         partial.unlink(missing_ok=True)
-    mark.write_text(sha256_file(path) + "\n")
+    _mark(mark, sha256_file(path), path)
     return path
+
+
+def _stamp(path) -> list[str]:
+    """A token file's size and modification time in nanoseconds, as its mark records them."""
+    found = path.stat()
+    return [str(found.st_size), str(found.st_mtime_ns)]
+
+
+def _mark(mark, sha256, path):
+    mark.write_text(" ".join([sha256, *_stamp(path)]) + "\n", encoding="utf-8", newline="\n")
 
 
 class ShardStream:
