@@ -101,10 +101,14 @@ class Options:
     checkpoint_every (write a checkpoint every N updates, 0 never),
     segment (tokens per pass of a longer window, in segments: parts.py; 0
     whole windows), profile_update (the update, numbered in its step from 1,
-    that runs under the profiler: profiling.py; 0 none)."""
+    that runs under the profiler: profiling.py; 0 none), recompute_from
+    (with a model that recomputes its layers, model.recompute, a stage of
+    windows shorter than this many tokens keeps every activation instead;
+    0 every stage recomputes)."""
     checkpoint_every: int = 0
     segment: int = 0
     profile_update: int = 0
+    recompute_from: int = 0
 
 
 @dataclass(frozen=True)
@@ -262,12 +266,15 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
         optimizer = step.start_optimizer(model, run)
         method.begin(model, environment, run, options.segment, strategy)
         wrapped = strategy.wrap(model)
+        recomputes = getattr(model, "recompute", False)  # as asked; options.recompute_from narrows it by stage
         return _loop(model, strategy, step, method, environment, optimizer, wrapped, (seed, number), options,
                      checkpoint, state, signature, log, record, save_last, stages, updates,
-                     BALANCING not in step.locked, start if continued else None, limit, signals)
+                     BALANCING not in step.locked, start if continued else None, limit, signals, recomputes)
     finally:
         for parameter in frozen:
             parameter.requires_grad_(True)
+        if hasattr(model, "recompute"):
+            model.recompute = recomputes
 
 
 def weights(state: dict) -> dict:
@@ -285,7 +292,8 @@ def _freeze(model, names) -> list:
 
 
 def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws, options, checkpoint, state,
-          signature, log, record, save_last, stages, updates, balance, continued=None, limit=None, signals=None):
+          signature, log, record, save_last, stages, updates, balance, continued=None, limit=None, signals=None,
+          recomputes=False):
     first_step, best_val, best_state, best_step, reached, skipped = 1, None, None, None, {}, 0
     if state is not None:
         model.load_state_dict(state["model"])
@@ -381,11 +389,16 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             if update == begin and index:  # longer windows: the best so far is no longer comparable
                 best_val, best_state, best_step = None, None, None
                 optimizer.stage(index + 1, stage.block_size)
+            kept = (recomputes and options.recompute_from and stage.block_size is not None
+                    and stage.block_size < options.recompute_from)
+            if recomputes:
+                model.recompute = not kept
             log(f"{step.name}: "
                 + (f"stage {index + 1} of {len(stages)}: windows of {stage.block_size:,} tokens, "
                    if stage.block_size is not None else "")
                 + f"{stage.batch_size} per update, updates {update} to {end}"
-                + (f" (from {begin})" if update != begin else ""))
+                + (f" (from {begin})" if update != begin else "")
+                + (", every activation kept (shorter than --recompute-from)" if kept else ""))
             environment.stage(index)
             with record.span("training.stage", stage=index + 1, block_size=stage.block_size,
                              batch_size=stage.batch_size, first_step=begin,

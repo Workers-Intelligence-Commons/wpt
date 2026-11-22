@@ -280,6 +280,9 @@ OPTIONS = [
     ("segment", int, 0, "run a window longer than this many tokens as consecutive segments (with --strategy split, "
                         "each process's slice): the same training with less memory, each segment but the last run "
                         "twice (a multiple of 128; 0: whole windows)"),
+    ("recompute-from", int, 0, "with --recompute: only the stages of windows of at least this many tokens run "
+                               "their layers again, and shorter ones keep every activation, faster where memory "
+                               "allows (0: every stage)"),
     ("strategy", str, "single", "how the hardware is used: a built-in name or a .py file"),
     ("processes", int, 1, "start this many processes on this machine, one per GPU (with --strategy ddp or split)"),
     ("max-shard-size", parse_size, None, "split the weights into files of at most this size, e.g. 500MB"),
@@ -346,6 +349,10 @@ def parse_args(argv=None, environ=None):
         parser.error("give the model recipe (or set WPT_RECIPE)")
     if args.stop_after_minutes < 0 or args.stop_after_updates < 0:
         parser.error("--stop-after-minutes and --stop-after-updates: 0 (no limit) or more")
+    if args.recompute_from < 0:
+        parser.error("--recompute-from: 0 (every stage) or a number of tokens")
+    if args.recompute_from and not args.recompute:
+        parser.error("--recompute-from narrows --recompute to the longer windows: give --recompute too")
     if args.profile_update < 0:
         parser.error("--profile-update: 0 (no profile) or an update's number")
     if args.run is not None and not STORE_NAME.fullmatch(args.run):
@@ -1105,7 +1112,8 @@ def _train(args, record, recipe, strategy_file, steps, context, store, telemetry
             "options": {"strategy": args.strategy, "processes": args.processes, "max_restarts": args.max_restarts,
                         "micro_batch": args.micro_batch, "checkpoint_every": args.checkpoint_every,
                         "segment": args.segment, "stream": args.stream, "stream_shards": args.stream_shards,
-                        "recompute": args.recompute, "compile": args.compile, "resume": args.resume,
+                        "recompute": args.recompute, "recompute_from": args.recompute_from,
+                        "compile": args.compile, "resume": args.resume,
                         "scheduler_costs": args.scheduler_costs, "kernels": args.kernels,
                         "stop_after_minutes": args.stop_after_minutes,
                         "stop_after_updates": args.stop_after_updates, "profile_update": args.profile_update}}

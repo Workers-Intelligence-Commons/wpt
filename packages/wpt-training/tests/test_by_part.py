@@ -7,8 +7,8 @@ import torch
 
 from wpt_model import PARTS, WPT, ModelConfig
 from wpt_telemetry import Telemetry
-from wpt_training import (Data, FolderCheckpoint, Interrupted, Limit, PluginError, Run, Strategy, load_state, load_step,
-                          train, weights)
+from wpt_training import (Data, FolderCheckpoint, Interrupted, Limit, Options, PluginError, Run, Strategy, load_state,
+                          load_step, train, weights)
 
 TINY = dict(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
             attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
@@ -129,6 +129,43 @@ def test_a_step_stopped_and_resumed_keeps_the_average_of_its_states(dataset, tmp
             expected = 0.8 * (0.8 * s2[name] + 0.2 * s4[name]) + 0.2 * s6[name]
             assert torch.allclose(value, expected, atol=1e-6), name
             assert torch.allclose(model.state_dict()[name], expected, atol=1e-6), name
+
+
+def test_recompute_from_keeps_every_activation_in_the_shorter_stages_and_trains_the_same(dataset):
+    # docs/training.md, "Recomputing layers": through the runner, with --recompute and --recompute-from 32,
+    # the stage of 16 tokens keeps every activation and the stage of 32 runs its layers again; the weights
+    # are those of a run that recomputes every stage and of one that recomputes none, bit for bit, and the
+    # model recomputes again once the step is over
+    store, record = dataset
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
+                      "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
+                                              {"block_size": 32, "steps": 2, "batch_size": 2}],
+                                   "prefix_tokens": 500}}, PARTS)
+    results = []
+    for recompute, recompute_from in ((False, 0), (True, 0), (True, 32)):
+        torch.manual_seed(1337)
+        model = WPT(ModelConfig(**{**TINY, "block_size": 32}))
+        model.recompute = recompute
+        passes, run_pass = [], model._pass
+
+        def counted(first, idx, *args, model=model, passes=passes, run_pass=run_pass):
+            if torch.is_grad_enabled():
+                passes.append((idx.shape[1], model.recompute))
+            return run_pass(first, idx, *args)
+
+        model._pass = counted
+        environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(),
+                                                  lambda _: None, 1337, 1))
+        try:
+            train(model, CPU, step, step.start_method(), environment, 1337, 1,
+                  options=Options(recompute_from=recompute_from), log=lambda *_: None)
+        finally:
+            environment.close()
+        results.append(({k: v.clone() for k, v in model.state_dict().items()}, sorted(set(passes)), model.recompute))
+    (none, _, _), (every, every_passes, _), (longer, longer_passes, after) = results
+    assert every_passes == [(16, True), (32, True)] and longer_passes == [(16, False), (32, True)] and after
+    for name, value in none.items():
+        assert torch.equal(value, every[name]) and torch.equal(value, longer[name]), name
 
 
 @pytest.mark.parametrize("weight", [

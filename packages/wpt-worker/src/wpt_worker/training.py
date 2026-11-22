@@ -347,7 +347,9 @@ def _train(spec, link, store, work, strategy, telemetry):
                           "run without it")
         log("compile: text windows that run whole train through torch.compile; every other pass runs as it is")
         if options["recompute"]:
-            log("compile: with --recompute, the passes are not recorded as CUDA graphs")
+            log("compile: with --recompute, the passes are not recorded as CUDA graphs"
+                + (f" in the stages of {options['recompute_from']:,} tokens or more" if options["recompute_from"]
+                   else ""))
         else:
             log("compile: each whole pass is recorded as CUDA graphs, which keep a pass's memory between windows; "
                 "when the GPU runs out of memory, add --recompute, which runs without the graphs")
@@ -401,7 +403,7 @@ def _train(spec, link, store, work, strategy, telemetry):
                         try:
                             trained = train(model, strategy, step, method, environment, seed, draws[number - 1],
                                             Options(options["checkpoint_every"], options["segment"],
-                                                    options["profile_update"]),
+                                                    options["profile_update"], options["recompute_from"]),
                                             checkpoint=checkpoint, resume=resume, identity=mark,
                                             done=marks[:number - 1], log=log, telemetry=telemetry,
                                             save_last=True,  # its result is kept from the checkpoint

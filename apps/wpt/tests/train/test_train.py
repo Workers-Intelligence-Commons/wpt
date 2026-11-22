@@ -1152,3 +1152,17 @@ def test_a_plain_recipe_trains_on_the_first_total_tokens_of_its_corpus(built, tm
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["learned"]["plain"] == 3000 < corpora.find(built.store, built.corpus_id)["total_tokens"]
+
+
+def test_recompute_from_narrows_recompute_and_is_refused_alone(capsys):
+    # docs/training.md, "Recomputing layers": --recompute-from (or WPT_RECOMPUTE_FROM) goes with --recompute
+    from wpt.train import parse_args
+
+    assert parse_args(["r", "--recompute", "--recompute-from", "8192"], environ={}).recompute_from == 8192
+    assert parse_args(["r", "--recompute"], environ={"WPT_RECOMPUTE_FROM": "4096"}).recompute_from == 4096
+    assert parse_args(["r"], environ={}).recompute_from == 0
+    for refused in (["r", "--recompute-from", "8192"], ["r", "--recompute", "--recompute-from", "-1"]):
+        with pytest.raises(SystemExit):
+            parse_args(refused, environ={})
+    said = capsys.readouterr().err
+    assert "give --recompute too" in said and "0 (every stage) or a number of tokens" in said

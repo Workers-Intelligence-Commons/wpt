@@ -567,6 +567,14 @@ again (FP32; a GPU keeps most of it in BF16). The result is the same bit
 for bit on the CPU; memory drops and each update takes longer. Its memory
 and time on a GPU are not measured.
 
+`--recompute-from N` (or `WPT_RECOMPUTE_FROM`), with `--recompute`, runs
+the layers again only in the stages whose windows hold at least `N`
+tokens: a shorter stage keeps every activation, and takes less time where
+its windows fit the GPU's memory whole. A stage of a step that reads no
+text windows recomputes as `--recompute` says. The log says which stages
+keep every activation. Like `--recompute`, it is an option of the hardware
+and changes nothing in the training: a run may resume with another `N`.
+
 On an integrated Radeon 860M (gfx1152, which ROCm supports only through
 `HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz steps on the
 32-expert recipes crash the process (a segmentation fault in the GPU
