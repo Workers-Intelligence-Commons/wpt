@@ -1,20 +1,34 @@
 # Knowledge
 
-This folder holds what the project knows about sizing a model and writing a
-recipe: one file per question, each with the answer the evidence supports
-and the evidence itself, from published sources and from measures made with
-WPT. It serves two readers: someone who writes a recipe and wants the rule
-to apply, and someone who wants to know what is settled, what is disputed
-and what nobody has measured.
+This folder holds the reasons behind WPT's choices and how sure each one
+is: why the model has the parts it has, why a recipe is written the way it
+is, why a number has one value and not another. One file per question, each
+with the answer the evidence supports and the evidence itself, from
+published sources and from measures made with WPT.
+
+A question belongs here when its answer decides something in the model, in
+training or in a recipe. Among them:
+
+- the architecture: why a part is in the model, what it costs, and at which
+  sizes it pays;
+- the shape of a model: its width, its depth, its vocabulary, its experts,
+  its loops;
+- training: how many tokens, in which windows, with which settings;
+- what a trained model can do, and how that is measured.
+
+It serves two readers: someone who writes a recipe or changes the model and
+wants the rule to apply, and someone who wants to know what is settled,
+what is disputed and what nobody has measured.
 
 The other documents of `docs/` say what WPT is and does. A file here says
-why a number of a recipe should have one value and not another, and how
-sure that is. A document that takes a decision from a question names the
-file instead of repeating its reasons.
+why, and how sure that is. A document that takes a decision from a question
+names the file instead of repeating its reasons.
 
 A question stays here whether it is answered or open. An open question says
 what a measure would have to show to close it, so that it can be taken up
-as an experiment.
+as an experiment. A question nobody has studied yet is worth a file as soon
+as it is asked: the file then holds the question, the working assumption
+and the measure that would answer it.
 
 ## The shape of a file
 
@@ -53,3 +67,4 @@ source. A rule never rests on an unchecked figure alone without saying so.
 - [How should parameters be split between depth and width?](depth-and-width.md)
 - [How large a model for how many training tokens?](size-and-tokens.md)
 - [What does a model's shape cost in training speed?](shape-and-speed.md)
+- [At small sizes, are parameters better spent on experts or compute on loops?](experts-and-loops.md)
