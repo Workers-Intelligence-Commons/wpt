@@ -191,7 +191,7 @@ class Drafter(nn.Module):
         visible = torch.cat([seen.new_ones(R, count, count), seen], -1)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=anchors.is_cuda):
             fused = self.fuse_norm(self.fuse(context))
-            x = torch.cat([F.embedding(anchors, model.embedding.weight.detach())[:, None],
+            x = torch.cat([model.embedding(anchors).detach()[:, None],
                            self.mask.expand(R, count - 1, -1).to(model.embedding.weight.dtype)], 1)
             ids = torch.cat([anchors[:, None], anchors.new_zeros(R, count - 1)], 1)
             sources = self.residuals.start(x)

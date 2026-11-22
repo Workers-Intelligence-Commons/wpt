@@ -368,3 +368,25 @@ def test_a_failed_import_of_the_fused_head_and_loss_keeps_its_reason(monkeypatch
     loss.head_loss = object()
     monkeypatch.setitem(sys.modules, "wpt_model.head_loss", loss)
     assert _fused_loss() is loss.head_loss and fused_loss_failure() is None
+
+
+def test_a_model_with_one_vocabulary_table_reads_its_embeddings_from_the_output_head():
+    # tied_tables: the embedding is the output head's rows times a fixed scale, so the model holds one
+    # table, in the output head's part, which a loss reaches through both of its uses
+    torch.manual_seed(0)
+    tied, plain = WPT(ModelConfig(**TINY, tied_tables=True)), WPT(ModelConfig(**TINY))
+    assert sum(p.numel() for p in plain.parameters()) - sum(p.numel() for p in tied.parameters()) == 50 * 16
+    assert "embedding.weight" not in tied.state_dict() and "head.weight" in tied.state_dict()
+    parts = tied.parts()
+    assert parts["embedding"] == [] and [id(p) for p in parts["output-head"]] == [id(tied.head.weight)]
+    assert [role for name, _, role, _ in tied.optimizer_roles() if name == "head.weight"] == ["vector"]
+    ids = torch.randint(50, (2, 16))
+    assert torch.equal(tied.embedding(ids), tied.head.weight[ids] * 48 ** 0.5)
+    # the layers' input keeps the scale an untied model's embedding has
+    assert 0.8 < tied.embedding(torch.arange(50)).std() < 1.2 and 0.8 < plain.embedding.weight.std() < 1.2
+    tied.embedding(ids).sum().backward()
+    as_input = tied.head.weight.grad.clone()
+    assert as_input.abs().sum() > 0
+    tied.zero_grad()
+    F.cross_entropy(tied(ids).flatten(0, 1), ids.flatten()).backward()
+    assert torch.isfinite(tied.head.weight.grad).all() and tied.head.weight.grad.abs().sum() > 0

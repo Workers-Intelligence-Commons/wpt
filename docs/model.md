@@ -358,6 +358,25 @@ sources above and the cache's rule (Generation, below) are open to review.
 A size of a series computes `loops + 1` times the work per token of one
 pass ("Model series").
 
+## One vocabulary table
+
+A model has two vocabulary tables, the embedding and the output head, each
+of the vocabulary's size times the width. A recipe number, `tied_tables`,
+makes them one: the output head keeps its table, and a token's embedding is
+its row of that table times a fixed number, the square root of 3 times the
+width. The head starts as it does with two tables, and that number gives
+the layers an input of the scale a separate embedding has.
+
+- Every reader of the embedding reads the same rows: the first pass, the
+  multi-token prediction block, In-Place TTT's targets and the drafter.
+- The table is in the part `output-head` ("Parts", below); the part
+  `embedding` then holds nothing.
+- The model has one table's parameters fewer, and its compute per token
+  does not change.
+
+Why, and how sure: [knowledge/vocabulary-tables.md](knowledge/vocabulary-tables.md).
+No recipe sets it.
+
 ## Engram memory
 
 [Engram][engram] (DeepSeek) adds a lookup that costs almost no compute: embeddings of
@@ -736,7 +755,8 @@ A training step locks parts of the model by name ([training.md](training.md),
 "Locked parts"). The model gives its parts these names (`wpt_model.PARTS`),
 and every parameter belongs to exactly one of them (`WPT.parts`):
 
-- `embedding`: the token embedding;
+- `embedding`: the token embedding (nothing with `tied_tables`, "One
+  vocabulary table");
 - `attention`: every layer's attention (window, exact or sparse, with its
   norm);
 - `routers`: the routers of the experts layers;
@@ -846,7 +866,8 @@ repository ("Model series", below). A model recipe holds:
   and head width, expert counts and widths, top `k`, latent width,
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
-  "Loops"; every recipe sets 0);
+  "Loops"; every recipe sets 0), and optionally one vocabulary table in
+  place of two (`tied_tables`, "One vocabulary table");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
   file's, its optimizer and that optimizer's settings, its settings and
@@ -930,9 +951,9 @@ each size's model recipe (`wpt_recipes.series`):
   smallest prime at or above this one), which is the reference's own size
   at the reference's width. A width at which one
   of the widths is not a whole number is refused.
-- the parameters, counted as `wpt_model` builds the model: without the two
-  vocabulary tables (the embedding and the output head), the usual
-  scaling-law convention, and with them.
+- the parameters, counted as `wpt_model` builds the model: without the
+  vocabulary tables (the embedding and the output head, or the one table of
+  `tied_tables`), the usual scaling-law convention, and with them.
 - the training, from the series' `laws`, which are [DeepSeek LLM][llm]'s
   (its equations 1 and 4): `eta_opt = 0.3118 C^-0.1250`,
   `B_opt = 0.2920 C^0.3271` tokens, `M_opt = 0.1715 C^0.5243` and

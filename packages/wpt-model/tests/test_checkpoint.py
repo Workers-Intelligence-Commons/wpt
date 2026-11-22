@@ -32,6 +32,16 @@ def test_split_model_loads_back_identical(tmp_path):
     assert tokenizer_identity(tmp_path) == ("test version 1", hashlib.sha256(VOCABULARY).hexdigest())  # in every shard
 
 
+def test_a_model_with_one_vocabulary_table_loads_back_with_one(tmp_path):
+    model = WPT(ModelConfig(**TINY, tied_tables=True))
+    save_model(model, tmp_path, VOCABULARY, "test version 1")
+    with_drafter(model, tmp_path)
+    loaded = load_model(tmp_path)
+    assert loaded.config.tied_tables and "embedding.weight" not in loaded.state_dict()
+    ids = torch.arange(50)[None]
+    assert torch.equal(loaded.embedding(ids), model.embedding(ids))
+
+
 def with_drafter(model, folder):
     """An untrained drafter, named as trained against the folder's weights."""
     save_drafter(Drafter(model.config, DrafterConfig.for_model(model.config)), folder, *tokenizer_identity(folder),

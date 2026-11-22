@@ -46,11 +46,12 @@ class ModelConfig:
     residual_groups: int    # groups of sublayers whose outputs Attention Residuals sums into one source;
                             # 2 * n_layer (every attention and every experts sublayer its own) is the full form
     loops: int = 0          # extra passes of the text through every layer, with the same weights; 0: one pass
+    tied_tables: bool = False  # one vocabulary table: the embedding reads the output head's rows (TiedEmbedding)
 
     def __post_init__(self):
         object.__setattr__(self, "engram_layers", tuple(self.engram_layers))
         problems = [f"{f.name} must be at least 1" for f in fields(self)
-                    if f.name not in ("engram_layers", "loops") and getattr(self, f.name) < 1]
+                    if f.name not in ("engram_layers", "loops", "tied_tables") and getattr(self, f.name) < 1]
         if self.loops < 0:
             problems.append("loops must be at least 0")
         if self.block_size < 2:

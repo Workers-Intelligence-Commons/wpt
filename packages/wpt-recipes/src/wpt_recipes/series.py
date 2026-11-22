@@ -13,9 +13,10 @@ functions of the series document:
                   has the same layers), Engram's table size in proportion
                   to the cube of the width (the nearest prime)
     parameters    counted as wpt_model builds them, without and with the
-                  two vocabulary tables (the embedding and the output head)
+                  vocabulary tables (the embedding and the output head, or
+                  the one table of `tied_tables`)
     active_parameters
-                  the parameters one token uses: without the two vocabulary
+                  the parameters one token uses: without the vocabulary
                   tables, with only the top_k routed experts of each layer,
                   and without Engram's lookup tables
     plan          the size's training from the series' `laws` (DeepSeek
@@ -83,7 +84,7 @@ BRANCH, LEARNING_RATE = "branch-", "lr-"  # the names of a size's other runs, SE
 
 @dataclass(frozen=True)
 class Plan:
-    """One size's numbers. parameters: without the two vocabulary tables;
+    """One size's numbers. parameters: without the vocabulary tables;
     total_parameters: with them. flops_per_token: M; compute: C; tokens:
     D; batch_tokens: the law's batch, before rounding; learning_rate:
     AdamW's, rounded to 4 significant digits; batch_size: windows per
@@ -183,11 +184,12 @@ def _nearest_prime(target: Fraction) -> int:
 
 
 def parameters(model: dict, vocab_size: int) -> tuple[int, int]:
-    """(parameters without the two vocabulary tables, every parameter) of
-    the model wpt_model builds from these numbers (a model recipe's
-    `model`)."""
+    """(parameters without the vocabulary tables, every parameter) of the
+    model wpt_model builds from these numbers (a model recipe's `model`):
+    two tables, the embedding and the output head, or one with
+    `tied_tables`."""
     count = _count(model, active=False)
-    return count, count + 2 * vocab_size * model["d_model"]
+    return count, count + (1 if model.get("tied_tables") else 2) * vocab_size * model["d_model"]
 
 
 def active_parameters(model: dict) -> int:

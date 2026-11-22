@@ -36,6 +36,11 @@ def test_the_series_counts_the_parameters_of_the_model_it_derives():
         everything = sum(p.numel() for p in built.parameters())
         assert series.parameters(model, 32768) == (everything - tables, everything), size
         assert tuple(series.layer_kinds(model)) == config.kinds and series.layer_count(model) == config.n_layer
+        with torch.device("meta"):
+            tied = WPT(ModelConfig(vocab_size=32768, block_size=32768, **model, tied_tables=True))
+        one_table = sum(p.numel() for p in tied.parameters())
+        assert series.parameters({**model, "tied_tables": True}, 32768) == (everything - tables, one_table), size
+        assert one_table == everything - tables // 2, size
 
 
 def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives_has_them():

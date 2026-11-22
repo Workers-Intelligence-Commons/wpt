@@ -7,8 +7,9 @@ in [README.md](README.md).
 
 ## Answer
 
-The question is open for WPT: no model with one shared table has been
-trained.
+The question is open for WPT: a recipe can ask for one shared table
+(`tied_tables`, docs/model.md, "One vocabulary table"), and no model has
+been trained with it.
 
 - The two tables are the largest part of a small model: 33.5M of 74.5M
   parameters at a width of 256 with a vocabulary of 65,536, 67.1M of 191.1M
@@ -90,8 +91,8 @@ exists under the id or address given.
 ### Measured with WPT
 
 Parameters counted from the model's code, 11 layers, vocabulary 65,536. The
-model's code makes two tables, `embedding` and `head`, and no option shares
-them.
+model makes two tables, `embedding` and `head`, unless the recipe sets
+`tied_tables`.
 
 | Width | Body | The two tables | Share of the model |
 | --- | --- | --- | --- |

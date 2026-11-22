@@ -161,6 +161,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "extra passes of the text through every layer with the same weights, at every size (docs/model.md, \"Loops\"); 0: one pass"
+        },
+        "tied_tables": {
+          "type": "boolean",
+          "description": "one vocabulary table at every size: the embedding reads the output head's rows, times a fixed scale (docs/model.md, \"One vocabulary table\"); absent or false: two tables"
         }
       }
     },

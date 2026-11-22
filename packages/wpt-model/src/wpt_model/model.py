@@ -254,17 +254,41 @@ class MultiTokenPrediction(nn.Module):
         return self.final_norm(h)
 
 
+class TiedEmbedding(nn.Module):
+    """The embedding of a model with one vocabulary table
+    (ModelConfig.tied_tables): the output head's row of each token, times a
+    fixed scale. The head starts as an untied one does, each number of
+    standard deviation 1 / sqrt(3 * d_model); the scale, sqrt(3 * d_model),
+    gives the layers an input of standard deviation 1, as nn.Embedding's.
+    It holds no parameter of its own: the table is the head's, in the
+    output head's part."""
+
+    def __init__(self, head: nn.Linear):
+        super().__init__()
+        object.__setattr__(self, "head", head)  # read, not owned: the table has one name, head.weight
+        self.scale = (3 * head.in_features) ** 0.5
+
+    @property
+    def weight(self):
+        """The table the rows come from, for its device and its type; its rows are not the embeddings."""
+        return self.head.weight
+
+    def forward(self, ids):
+        return F.embedding(ids, self.head.weight) * self.scale
+
+
 class WPT(nn.Module):
     PART = WINDOW  # a segment or a slice of a window holds a multiple of this many tokens
 
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.layers = nn.ModuleList(Layer(config, number) for number in range(1, config.n_layer + 1))
         self.residuals = Residuals(config.d_model, 2 * config.n_layer, config.residual_groups)
         self.final_norm = nn.RMSNorm(config.d_model, eps=EPS)
         self.head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        self.embedding = (TiedEmbedding(self.head) if config.tied_tables
+                          else nn.Embedding(config.vocab_size, config.d_model))
         self.mtp = MultiTokenPrediction(config)
         # Engram's canonical id of each token id, from the vocabulary (engram.canonical_ids); saved with the weights
         self.register_buffer("canonical", torch.arange(config.vocab_size))

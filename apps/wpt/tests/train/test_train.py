@@ -75,6 +75,15 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     assert [s["token_sha256"] for s in provenance["shards"]] == [s["token_sha256"] for s in record["shards"]["plain"]]
 
 
+def test_a_recipe_with_one_vocabulary_table_trains_a_model_and_its_drafter(built, tmp_path):
+    # tied_tables in the recipe's model: the run, its drafter (which reads the model's embedding and head)
+    # and the saved folder hold one table
+    main([built.recipe("tied", model={"tied_tables": True}), built.corpus_id, "--out", "tied"])
+    model = load_model(tmp_path / "tied")
+    assert model.config.tied_tables and "embedding.weight" not in model.state_dict()
+    load_drafter(tmp_path / "tied")
+
+
 def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built, tmp_path, capsys):
     # afterwards one must know exactly what happened, from the store alone:
     # the corpus read, each step's loss, the evaluations, the files written

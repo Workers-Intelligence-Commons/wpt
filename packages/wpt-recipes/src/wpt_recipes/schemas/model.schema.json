@@ -51,7 +51,9 @@
         "residual_groups": {"type": "integer", "minimum": 1,
                             "description": "groups of consecutive sublayers (each layer's attention, then its experts) whose outputs Attention Residuals sums into one source; at most 2 x the layers, which is the full form, every sublayer's output a source of its own"},
         "loops": {"type": "integer", "minimum": 0,
-                  "description": "extra passes of the text through every layer with the same weights (docs/model.md, \"Loops\"); 0: one pass, nothing of the loop in the weights or the cost"}
+                  "description": "extra passes of the text through every layer with the same weights (docs/model.md, \"Loops\"); 0: one pass, nothing of the loop in the weights or the cost"},
+        "tied_tables": {"type": "boolean",
+                        "description": "one vocabulary table: the embedding reads the output head's rows, times a fixed scale (docs/model.md, \"One vocabulary table\"); absent or false: two tables"}
       }
     },
     "seed": {"type": "integer", "minimum": 0, "description": "the initial weights and every step's draws (text windows, the order of conversations and tasks, the tools offered, the sampled tokens) come from it, each step mixing its number in the list into it, and every step's fingerprint names it (docs/training.md, \"Steps\")"},
