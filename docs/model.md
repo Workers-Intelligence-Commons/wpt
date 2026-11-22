@@ -110,7 +110,10 @@ so its memory grows with the text and never with its square, and its
 backward pass is written out. Two GPU forms keep the same contract:
 **TileLang** (`tilelang_kernels.py`), on an NVIDIA GPU under Linux with
 TileLang and the CUDA compiler `nvcc`, and **Triton** (`triton_kernels.py`),
-on an NVIDIA or AMD GPU where Triton is installed. Both GPU forms run the
+on an NVIDIA or AMD GPU where Triton is installed. TileLang builds its
+kernels at head widths 64, 128 and 256 only, so it computes at the head
+width padded with zero columns to the next of those, as Triton pads it to
+a power of 2: the results are those of the head width itself. Both GPU forms run the
 exact layer as flash attention whose tiles stack a block of queries' heads
 as rows, so a few heads still fill the matrix units, followed by a kernel
 that picks each query's top 1,024 from the scores and the forward pass's

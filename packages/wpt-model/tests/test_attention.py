@@ -2,13 +2,17 @@
 HySparse2's formulas, one token at a time."""
 
 import copy
+import importlib
+import importlib.util
+import sys
 
 import pytest
 import torch
 
 from wpt_model import WPT, ModelConfig
 from wpt_model import attention
-from wpt_model.kernels import kernels
+from wpt_model import kernels as dispatch
+from wpt_model.kernels import nvcc
 from wpt_utils.device import select_device
 from wpt_model.attention import ROPE_DIMS, WINDOW, ExactAttention, SparseAttention, WindowAttention
 
@@ -82,15 +86,31 @@ def test_a_window_layer_gives_the_formula_s_result():
         assert torch.allclose(layer(x)[0], torch.stack(expected), atol=1e-5)
 
 
-@pytest.mark.skipif(select_device().type != "cuda", reason="needs a GPU")
-def test_a_window_layer_through_the_kernels_is_as_close_to_the_exact_result_as_its_pytorch_form(monkeypatch):
-    # a window layer on a GPU runs as sparse attention with no chosen rows: a whole pass of 300 tokens and
-    # the same text as two segments (the second reading the 127 entries before it), in BF16 under
-    # autocast; against the layer in FP64, its output and every gradient are within twice the distance of
-    # its PyTorch form under the same autocast, plus 1e-3 of the norm: the rounding that form makes
+def gpu_form(name):
+    """The kernel module of form name (kernels.FORMS) if it runs on this GPU, else skips the test."""
     device = select_device()
-    if kernels(device) is None:
-        pytest.skip("the PyTorch form computes the attention on this GPU")
+    if device.type != "cuda":
+        pytest.skip("needs a GPU")
+    if name == "tilelang" and not (sys.platform == "linux" and torch.version.cuda and nvcc()
+                                   and importlib.util.find_spec("tilelang")):
+        pytest.skip("TileLang runs on an NVIDIA GPU under Linux with nvcc")
+    try:
+        return importlib.import_module(f"wpt_model.{name}_kernels")
+    except ImportError as error:
+        pytest.skip(f"{name} does not import: {error}")
+
+
+@pytest.mark.parametrize("form", ["tilelang", "triton"])
+def test_a_window_layer_through_the_kernels_is_as_close_to_the_exact_result_as_its_pytorch_form(monkeypatch, form):
+    # a window layer on a GPU runs as sparse attention with no chosen rows, through either GPU form: a whole
+    # pass of 300 tokens and the same text as two segments (the second reading the 127 entries before it),
+    # in BF16 under autocast, at the head width 80 of CONFIG; against the layer in FP64, its output and every
+    # gradient are within twice the distance of its PyTorch form under the same autocast, plus 1e-3 of the
+    # norm: the rounding that form makes
+    module = gpu_form(form)
+    device = select_device()
+    monkeypatch.setattr(attention, "kernels", lambda device, form=None: module)
+    monkeypatch.setattr(dispatch, "kernels", lambda device, form=None: module)
     torch.manual_seed(0)
     layer = randomized(WindowAttention(CONFIG)).to(device)
     x = torch.randn(2, 384, CONFIG.d_model, device=device)

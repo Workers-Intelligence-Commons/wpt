@@ -4,7 +4,7 @@ model, and how fast.
 
 Usage:
     uv run scripts/compare_training.py --base REV [--out FOLDER] [--tiny]
-        [--budget-minutes M] [--parts checks,sameness,speed,compiled,chain]
+        [--budget-minutes M] [--parts checks,sameness,speed,compiled,tilelang,chain]
 
 Run it from a checkout where `uv run scripts/setup.py` installed PyTorch;
 the working tree is the revision measured, committed or not. The files of
@@ -33,6 +33,9 @@ in this order:
               32,768 tokens (32,768 / window windows)
     compiled  the same with --compile's passes (WPT.compile_training), on
               a CUDA device only
+    tilelang  the working tree's uncompiled speed through the TileLang
+              kernels, on a CUDA device only; every other part names the
+              Triton kernels, and each measure records the form that ran
     chain     the same speed for every commit between REV and HEAD, at
               width 512 and 8,192 tokens, with and without recomputation:
               what each change brings (REV and the last revision are the
@@ -75,8 +78,10 @@ SOURCES = ["apps/wpt/src", *[f"packages/{name}/src" for name in (
     "wpt-model", "wpt-training", "wpt-utils", "wpt-store", "wpt-telemetry", "wpt-recipes", "wpt-tokenizer",
     "wpt-inference", "wpt-depot", "wpt-worker", "wpt-agent")]]
 CHECKS = ["packages/wpt-model/tests/test_kernels.py", "packages/wpt-model/tests/test_triton_kernels.py",
+          "packages/wpt-model/tests/test_tilelang_kernels.py",
           "packages/wpt-model/tests/test_residuals.py", "packages/wpt-model/tests/test_model.py",
           "packages/wpt-model/tests/test_attention.py"]
+PARTS = ("checks", "sameness", "speed", "compiled", "tilelang", "chain")
 WIDTHS = (256, 512)
 WINDOWS = (2048, 8192, 32768)
 PASS_TOKENS = 32768
@@ -112,9 +117,10 @@ def child(spec):
     from wpt_utils.device import select_device, train_in_tf32
     device = select_device()
     train_in_tf32(device)
+    form = "PyTorch"
     if device.type == "cuda":
         from wpt_model.kernels import kernels
-        kernels(device, spec.get("kernels", "triton"))
+        form = getattr(kernels(device, spec.get("kernels", "triton")), "NAME", form)
     torch.manual_seed(0)
     model = WPT(ModelConfig(**spec["model"])).to(device).train()
     if spec["compile"]:
@@ -159,11 +165,11 @@ def child(spec):
                 model.train()
         weights = {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()}
         torch.save({"weights": weights, "validation": validation, "losses": losses}, spec["out"])
-        return {"device": str(device)}
+        return {"device": str(device), "kernels": form}
 
     recompute = spec["recompute"] == "on"
     for batch, length in spec["measures"]:
-        measured = {"device": str(device), "window": length, "batch": batch}
+        measured = {"device": str(device), "kernels": form, "window": length, "batch": batch}
         try:
             if device.type == "cuda":
                 measured["gpu"] = torch.cuda.get_device_name(device)
@@ -367,7 +373,7 @@ class Battery:
                           parent=previous, recompute=recompute, compiled=compiled)
                 previous = revision
 
-    def speed(self, kind, compiled, revisions, widths, windows, recomputes):
+    def speed(self, kind, compiled, revisions, widths, windows, recomputes, form="triton"):
         if compiled and not self.gpu():
             say("compiled measures need a CUDA device: none here", WARNING)
             return
@@ -378,12 +384,12 @@ class Battery:
             for recompute in recomputes:
                 for revision in revisions:
                     labels = [f"{named(revision)} | width {width} | window {window} | recompute {recompute} | "
-                              + ("compiled" if compiled else "uncompiled") for window in windows]
+                              + ("compiled" if compiled else "uncompiled") + f" | {form}" for window in windows]
                     about = [dict(revision=revision or "working tree", width=width, window=window,
-                                  recompute=recompute, compiled=compiled) for window in windows]
-                    self.measures(kind, revision, model, recompute, compiled, windows, tokens, labels, about)
+                                  recompute=recompute, compiled=compiled, form=form) for window in windows]
+                    self.measures(kind, revision, model, recompute, compiled, windows, tokens, labels, about, form)
 
-    def measures(self, kind, revision, model, recompute, compiled, windows, tokens, labels, about):
+    def measures(self, kind, revision, model, recompute, compiled, windows, tokens, labels, about, form):
         """The windows' measures in one child, shortest first; after a child that died, the rest in a new one."""
         left = list(range(len(windows)))
         while left:
@@ -392,7 +398,7 @@ class Battery:
                 continue
             say(f"{kind} {labels[left[0]]} ... (and {len(left) - 1} longer windows in the same process)")
             started = time.monotonic()
-            spec = {"kind": "speed", "model": model, "recompute": recompute, "compile": compiled,
+            spec = {"kind": "speed", "model": model, "recompute": recompute, "compile": compiled, "kernels": form,
                     "measures": [(max(1, tokens // windows[i]), windows[i]) for i in left],
                     "warmup": WARMUP, "timed": 1 if self.args.tiny else TIMED}
             lines, error = self.run_child(revision, spec, timeout=600 * len(left))
@@ -436,6 +442,11 @@ class Battery:
                     self.speed("speed", False, ends, widths, windows, ("off", "on"))
                 elif part == "compiled":
                     self.speed("speed", True, ends, widths, windows, ("off", "on"))
+                elif part == "tilelang":
+                    if self.gpu():
+                        self.speed("speed", False, [None], widths, windows, ("off", "on"), "tilelang")
+                    else:
+                        say("TileLang measures need a CUDA device: none here", WARNING)
                 elif part == "chain":
                     between = self.commits()
                     if "speed" in parts:
@@ -443,7 +454,7 @@ class Battery:
                     self.speed("chain", False, between, widths[-1:], windows[1:2] if not tiny else windows[:1],
                                ("off", "on"))
                 else:
-                    say(f"no part {part!r}: checks, sameness, speed, compiled, chain", ERROR)
+                    say(f"no part {part!r}: {', '.join(PARTS)}", ERROR)
                     self.record({"kind": part, "label": "no such part", "status": "failed",
                                  "error": f"no part {part!r}"})
         finally:
@@ -479,7 +490,8 @@ def table(items):
     for item in items:
         result = item.get("result") or {}
         if item["kind"] in ("speed", "chain") and "tokens_per_second" in result:
-            text = (f"{result['tokens_per_second']:,.0f} tok/s, first update {result['first_update_seconds']:.1f} s"
+            text = (f"{result.get('kernels', '?')}: {result['tokens_per_second']:,.0f} tok/s, first update "
+                    f"{result['first_update_seconds']:.1f} s"
                     + (f", peak {result['peak_gib']:.2f} GiB (first update {result['first_update_peak_gib']:.2f})"
                        if "peak_gib" in result else ""))
         elif item["kind"] == "sameness" and "difference" in result:
@@ -501,7 +513,7 @@ def main():
     parser.add_argument("--out", help="the folder the results go into (default: compare-<time>)")
     parser.add_argument("--tiny", action="store_true", help="a tiny model and short windows: checks this script")
     parser.add_argument("--budget-minutes", type=float, default=50, help="no item starts after this (default 50)")
-    parser.add_argument("--parts", default="checks,sameness,speed,compiled,chain", help="the parts to run, in order")
+    parser.add_argument("--parts", default=",".join(PARTS), help="the parts to run, in order (default: all)")
     args = parser.parse_args()
     if args.child:
         try:

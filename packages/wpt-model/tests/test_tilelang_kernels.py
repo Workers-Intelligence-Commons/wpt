@@ -8,8 +8,9 @@ compares them with the PyTorch form on the recipes' shapes.
   on what the recipes' shapes leave out: a pass after earlier tokens, a
   generation's padding query past the table, a head count that does not
   fill the matrix units' rows, 2 heads, whose selection blocks hold the
-  most tokens and so the most shared memory, and fewer columns of chosen
-  rows than top_k.
+  most tokens and so the most shared memory, fewer columns of chosen
+  rows than top_k, a head width of 80, which the kernels compute padded
+  to 128, and a window layer's attention, with no chosen rows.
 - The choice of rows among many equal scores."""
 
 import importlib.util
@@ -71,16 +72,18 @@ def relative_error(got, expected):
 
 
 @pytest.mark.skipif(not runs_here(), reason="TileLang runs on an NVIDIA GPU under Linux with nvcc")
-@pytest.mark.parametrize("heads, top_k, padding", [(3, 64, 0), (2, 64, 0), (4, 1024, 2)])
-def test_the_kernels_give_the_pytorch_result_after_earlier_tokens(heads, top_k, padding):
+@pytest.mark.parametrize("heads, top_k, padding, c", [(3, 64, 0, 128), (2, 64, 0, 128), (4, 1024, 2, 128),
+                                                      (4, 64, 0, 80), (2, 64, 0, 80)])
+def test_the_kernels_give_the_pytorch_result_after_earlier_tokens(heads, top_k, padding, c):
     # 200 queries after 500 earlier tokens, the last `padding` of them a
     # generation cache's padding past the table's last row; top_k 1,024
-    # leaves fewer candidates than columns, so the column count is theirs
+    # leaves fewer candidates than columns, so the column count is theirs;
+    # heads of 80, padded to 128 inside
     from wpt_model import tilelang_kernels as tl
 
     device = select_device()
     generator = torch.Generator().manual_seed(0)
-    B, T, N, c, window = 2, 200, 700, 128, 128
+    B, T, N, window = 2, 200, 700, 128
 
     def leaf(*shape, dtype=torch.bfloat16):
         return torch.randn(*shape, generator=generator).to(device, dtype).requires_grad_()
@@ -134,3 +137,38 @@ def test_rows_of_equal_scores_are_chosen_as_many_as_wanted(monkeypatch, candidat
     for row in rows[0]:
         kept = row[row >= 0]
         assert len(set(kept.tolist())) == len(kept)
+
+
+@pytest.mark.skipif(not runs_here(), reason="TileLang runs on an NVIDIA GPU under Linux with nvcc")
+@pytest.mark.parametrize("heads, c", [(4, 80), (2, 80), (4, 128)])
+def test_the_sparse_kernels_with_no_chosen_rows_give_the_pytorch_result(heads, c):
+    # a window layer's attention (attention.py): no chosen rows, only each
+    # query's last 128, after 127 earlier rows; with 2 heads, the key
+    # gradients take the lists' path
+    from wpt_model import tilelang_kernels as tl
+
+    device = select_device()
+    generator = torch.Generator().manual_seed(0)
+    B, T, window = 2, 300, 128
+    N = T + window - 1
+
+    def leaf(*shape, dtype=torch.bfloat16):
+        return torch.randn(*shape, generator=generator).to(device, dtype).requires_grad_()
+
+    q, k, v, sink = leaf(B, T, heads, c), leaf(B, N, c), leaf(B, N, c), leaf(heads, dtype=torch.float32)
+    rows = (window - 1 + torch.arange(T)).expand(B, T).to(device)
+    none = torch.empty(B, T, 0, dtype=torch.long, device=device)
+    weights = torch.randn(B, T, heads, c, generator=generator).to(device)
+    out = tl.sparse_attention(q, k, v, sink, none, rows, c ** -0.5, window)
+    expected = pytorch_kernels.sparse_attention(q, k, v, sink, none, rows, c ** -0.5, window)
+    got = torch.autograd.grad((out.float() * weights).sum(), (q, k, v, sink))
+    want = torch.autograd.grad((expected.float() * weights).sum(), (q, k, v, sink))
+    assert relative_error(out, expected) < 1e-2 and all(relative_error(a, b) < 1e-2 for a, b in zip(got, want))
+
+
+@needs_tilelang
+def test_every_head_width_is_computed_at_one_the_kernels_build_for():
+    # TileLang 0.1.8 builds them at 64, 128 and 256 only (the module's docstring)
+    from wpt_model import tilelang_kernels as tl
+
+    assert [tl._width(c) for c in (64, 66, 80, 128, 130, 256)] == [64, 128, 128, 128, 256, 256]

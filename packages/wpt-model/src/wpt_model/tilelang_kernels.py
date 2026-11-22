@@ -92,7 +92,12 @@ review.
 Inputs: q (B, T, H, c), and k and v (B, N, c), which the kernels read as one
 table (B, N, 2c) with the keys first, as the exact layer hands them on
 (attention.py); separate k and v are put side by side first. H is at most
-64, and c a multiple of 16 of at most 256.
+64, and c at most 256. TileLang 0.1.8 builds these kernels at head widths
+64, 128 and 256 only (at 80, for one, a product's rows split unevenly
+between the warps), so the kernels compute at c padded with zero columns
+to the next of those (_width), as the Triton form pads it to a power of 2:
+a zero column adds nothing to a score, and its outputs and gradients are
+dropped. The scale is the caller's, of c itself.
 """
 
 import functools
@@ -826,20 +831,34 @@ def sparse_keys_backward_kernel(H: int, c: int, scale: float, rows_per_step: int
 
 def _check(q):
     B, T_, H, c = q.shape
-    if not (H <= 64 and c % 16 == 0 and c <= 256):
-        raise ValueError(f"the TileLang kernels take at most 64 heads and a head width that is a multiple of 16 of "
-                         f"at most 256, not {H} heads of {c}")
+    if not (H <= 64 and c <= 256):
+        raise ValueError(f"the TileLang kernels take at most 64 heads and a head width of at most 256, not {H} heads "
+                         f"of {c}")
 
 
-def _table(k, v):
-    """k and v (B, N, c) as one BF16 table (B, N, 2c), keys first: a view
-    when they are the two halves of such a table already."""
+def _width(c):
+    """The head width the kernels compute at: c padded to the next of 64,
+    128 and 256 (the module's docstring)."""
+    return max(64, 1 << (c - 1).bit_length())
+
+
+def _padded(x, width):
+    """x (..., c) in BF16 with zero columns up to width, contiguous."""
+    x = x.to(torch.bfloat16)
+    return (x if x.shape[-1] == width else torch.nn.functional.pad(x, (0, width - x.shape[-1]))).contiguous()
+
+
+def _table(k, v, width):
+    """k and v (B, N, c) as one BF16 table (B, N, 2 width), keys first, each
+    padded to width: a view when they are the two halves of such a table
+    already."""
     B, N, c = k.shape
-    halves = (k.dtype == v.dtype == torch.bfloat16 and k.stride() == v.stride() and k.stride()[1:] == (2 * c, 1)
-              and (B == 1 or k.stride(0) == N * 2 * c) and v.data_ptr() == k.data_ptr() + c * k.element_size())
+    halves = (c == width and k.dtype == v.dtype == torch.bfloat16 and k.stride() == v.stride()
+              and k.stride()[1:] == (2 * c, 1) and (B == 1 or k.stride(0) == N * 2 * c)
+              and v.data_ptr() == k.data_ptr() + c * k.element_size())
     if halves:
         return k.as_strided((B, N, 2 * c), (N * 2 * c, 2 * c, 1))
-    return torch.cat([k, v], -1).to(torch.bfloat16).contiguous()
+    return torch.cat([_padded(k, width), _padded(v, width)], -1)
 
 
 def _block_max(values, size, fill):
@@ -853,11 +872,12 @@ class _Exact(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, positions, scale, top_k, window):
         _check(q)
-        B, T_, H, c = q.shape
+        B, T_, H, given = q.shape
+        c = _width(given)
         N = k.shape[1]
         chosen_tiles = tiles(q.device)
-        qb = q.to(torch.bfloat16).contiguous().view(B, T_ * H, c)
-        table = _table(k, v)
+        qb = _padded(q, c).view(B, T_ * H, c)
+        table = _table(k, v, c)
         pos = positions.to(torch.int32).contiguous()
         seen = (positions + 1).clamp(max=N)  # (B, T): the rows each query sees
         o = torch.empty_like(qb)
@@ -880,16 +900,16 @@ class _Exact(torch.autograd.Function):
             rank_kernel(CANDIDATES, chosen_tiles.threads)(bins, state, chosen)
             chosen = chosen.sort(-1).values
         ctx.save_for_backward(qb, table, pos, o, lse)
-        ctx.shape, ctx.scale, ctx.dtypes = (B, T_, H, c, N), scale, (q.dtype, k.dtype, v.dtype)
+        ctx.shape, ctx.scale, ctx.dtypes = (B, T_, H, c, N, given), scale, (q.dtype, k.dtype, v.dtype)
         ctx.mark_non_differentiable(chosen)
-        return o.view(B, T_, H, c).to(q.dtype), chosen
+        return o.view(B, T_, H, c)[..., :given].to(q.dtype), chosen
 
     @staticmethod
     def backward(ctx, d_out, _d_chosen):
         qb, table, pos, o, lse = ctx.saved_tensors
-        B, T_, H, c, N = ctx.shape
+        B, T_, H, c, N, given = ctx.shape
         chosen_tiles = tiles(qb.device)
-        d_out = d_out.to(torch.bfloat16).contiguous().view(B, T_ * H, c)
+        d_out = _padded(d_out, c).view(B, T_ * H, c)
         delta = (d_out.float() * o.float()).sum(-1)
         dq = torch.zeros(B, T_ * H, c, dtype=torch.float32, device=qb.device)
         dkv = torch.empty(B, N, 2 * c, dtype=torch.bfloat16, device=qb.device)
@@ -901,8 +921,8 @@ class _Exact(torch.autograd.Function):
         exact_backward_kernel(H, c, ctx.scale, M, BN, chosen_tiles.stages, chosen_tiles.threads)(
             qb, table, d_out, lse, delta, pos, start, dq, dkv)
         q_dtype, k_dtype, v_dtype = ctx.dtypes
-        return (dq.view(B, T_, H, c).to(q_dtype), dkv[..., :c].to(k_dtype), dkv[..., c:].to(v_dtype),
-                None, None, None, None)
+        return (dq.view(B, T_, H, c)[..., :given].to(q_dtype), dkv[..., :given].to(k_dtype),
+                dkv[..., c:c + given].to(v_dtype), None, None, None, None)
 
 
 def exact_attention(q, k, v, positions, scale, top_k, window):
@@ -915,10 +935,11 @@ class _Sparse(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, sink, idx, positions, scale, window):
         _check(q)
-        B, T_, H, c = q.shape
+        B, T_, H, given = q.shape
+        c = _width(given)
         chosen_tiles = tiles(q.device)
-        qb = q.to(torch.bfloat16).contiguous()
-        table = _table(k, v)
+        qb = _padded(q, c)
+        table = _table(k, v, c)
         pos = positions.to(torch.int32).contiguous()
         idx = idx.contiguous() if idx.shape[-1] else idx.new_full((B, T_, 1), -1)  # no rows chosen yet
         o = torch.empty_like(qb)
@@ -926,15 +947,16 @@ class _Sparse(torch.autograd.Function):
         sparse_forward_kernel(H, c, scale, window, chosen_tiles.sparse_forward_block)(
             qb, table, sink.float().contiguous(), idx, pos, o, lse)
         ctx.save_for_backward(qb, table, sink, idx, pos, o, lse)
-        ctx.scale, ctx.window, ctx.dtypes = scale, window, (q.dtype, k.dtype, v.dtype)
-        return o.to(q.dtype)
+        ctx.scale, ctx.window, ctx.dtypes, ctx.given = scale, window, (q.dtype, k.dtype, v.dtype), given
+        return o[..., :given].to(q.dtype)
 
     @staticmethod
     def backward(ctx, d_out):
         qb, table, sink, idx, pos, o, lse = ctx.saved_tensors
         B, T_, H, c = qb.shape
+        given = ctx.given
         chosen_tiles = tiles(qb.device)
-        d_out = d_out.to(torch.bfloat16).contiguous()
+        d_out = _padded(d_out, c)
         delta = (d_out.float() * o.float()).sum(-1)  # (B, T, H)
         dq = torch.empty_like(qb)
         scatter = H > GATHER_HEADS
@@ -950,8 +972,8 @@ class _Sparse(torch.autograd.Function):
                 qb.view(-1, c), table, d_out.view(-1, c), lse.view(-1), delta.view(-1), starts, choosers, dkv)
         d_sink = -((sink.float() - lse).exp() * delta).sum((0, 1))  # the sink carries no value
         q_dtype, k_dtype, v_dtype = ctx.dtypes
-        return (dq.to(q_dtype), dkv[..., :c].to(k_dtype), dkv[..., c:].to(v_dtype), d_sink.to(sink.dtype),
-                None, None, None, None)
+        return (dq[..., :given].to(q_dtype), dkv[..., :given].to(k_dtype), dkv[..., c:c + given].to(v_dtype),
+                d_sink.to(sink.dtype), None, None, None, None)
 
 
 def _choosers(idx, pos, N, window, chosen_tiles):
