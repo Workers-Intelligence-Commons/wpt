@@ -470,11 +470,11 @@ class Depot:
 
     @classmethod
     def upgrade(cls, address: str, to: str | None = None, upstream: str | None = None,
-                records: list[dict] | None = None, public: str | None = None) -> tuple["Depot", int]:
+                records: list[dict] | None = None, public: str | None = None, checked=None) -> tuple["Depot", int]:
         """(the depot at address brought up to this code's format, the
         format it had), as wpt_depot.upgrade.upgrade does."""
         from .upgrade import upgrade
-        return upgrade(address, to, upstream, records=records, public=public)
+        return upgrade(address, to, upstream, records=records, public=public, checked=checked)
 
     def format(self) -> int:
         """The format of the depot's layout (wpt_depot.schema): its current about row's."""

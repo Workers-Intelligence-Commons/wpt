@@ -248,22 +248,36 @@ To update, `git pull --recurse-submodules`, then `docker compose up -d
 files needs step 4 again. A new depot format needs the upgrade first, the
 app stopped, since the app refuses a depot of another format. One run
 brings the depot up through every format between, so a depot of format 11
-goes to 12 and then to 13. The first command only reads: it says what the
-upgrade does (each locked library and each dataset revision models were
+goes to 12 and then to 13. The check, `--check`, only reads: it says what
+the upgrade does (each locked library and each dataset revision models were
 trained on made a snapshot, the open libraries left as they are), what it
 costs (time, WAL, disk, the full copy the next backup sends) and what to
-check before, and writes nothing. Back the depot up right before the
-upgrade (`wpt depot backup`); only the wpt of the old format opens that
-backup, so restoring it means checking out that wpt first. `--yes` runs
-the check again and upgrades only when it passes; a failed check writes
-nothing. Upgrade this depot before the depots that clone it, since a clone
-of the new format refuses an upstream of the old one:
+check before, and writes nothing in the depot; it saves what it measured
+beside the depot's file, in `wpt-depot.sqlite.upgrade-check.json`. It runs
+while the app keeps serving, from the new code's image: it holds one read
+transaction to its end, so the WAL keeps every page the app writes until
+then (`wpt-depot.sqlite-wal` grows by what the app writes, and goes back
+to its usual size at the next checkpoint after the check), and its reads
+take disk time from the app, so run it when the site is quiet. Then stop
+the app and back the depot up right before the upgrade (`wpt depot
+backup`, which writes nothing in the depot's tables); only the wpt of the
+old format opens that backup, so restoring it means checking out that wpt
+first. `--yes` runs the check again, taking what the saved check measured
+when nothing was written in the depot since it read it (it says so, and
+reads every library again otherwise), and upgrades only when it passes; a
+failed check writes nothing. Both sort the depot's tables in SQLite's
+temporary folder, which `SQLITE_TMPDIR` names; inside the container it
+would default to `/var/tmp`, in the container's own layer, so the commands
+point it at the depot's folder, which needs the free disk the check says on
+top of the disk the upgrade adds. Upgrade this depot before the depots that
+clone it, since a clone of the new format refuses an upstream of the old
+one:
 
 ```sh
+docker compose run --rm --build -e SQLITE_TMPDIR=/depot app wpt depot upgrade --check
 docker compose stop app
-docker compose run --rm --build app wpt depot upgrade --check
 docker compose run --rm app wpt depot backup
-docker compose run --rm app wpt depot upgrade --yes
+docker compose run --rm -e SQLITE_TMPDIR=/depot app wpt depot upgrade --yes
 docker compose up -d --build
 ```
 

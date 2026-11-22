@@ -44,13 +44,29 @@ that differ and names the first EXAMPLES. The summary and the totals are
 those of the snapshot read, each text counted once; the digest is
 snapshots.digest_of's.
 
-Every part is read in pages of PAGE texts, each one statement, so a check
-on a depot in use never holds a long read transaction.
+How it is read (measure_all): every planned snapshot at once, in one
+sorted merge of four sequential scans (SCANS), each sorted by text id by
+SQLite in its temporary folder: every revision of every text, every
+content version, the pins of the locked libraries read and the
+memberships of the open ones, each sort holding only the columns the
+merge needs. The revisions the snapshots read are kept in a table of the
+connection's temporary database (CHOSEN_TABLE), then read back in the
+order of their rowids with their tags and licenses (CHOSEN), a forward
+read of texts_revisions that reads each of its pages once. Each table is
+read in the order of the file, whatever how many snapshots and parts, and
+no row is looked up at random through an index: on a file far bigger than
+the memory, each lookup is a random read of the disk, and a read by
+lookups takes one for each revision of each text of each part. The read
+holds one read transaction for its whole length, so a depot in use
+meanwhile keeps in its WAL what is written until it ends. The sorts and
+the table take about SORTED bytes of temporary files for each revision
+and each content version.
 """
 
 import json
 import re
 import time
+from array import array
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -61,22 +77,38 @@ from .depot import _bounds
 from .kinds import PLAIN
 from .snapshots import LARGEST, digest_of
 
-PAGE = 50_000  # texts of one part a statement reads
 EXAMPLES = 10  # texts whose revisions differ that measure names
-TEXTS_KEY = "sqlite_autoindex_texts_revisions_1"
-MEMBERSHIPS_KEY = "sqlite_autoindex_memberships_1"
-PINS_KEY = "sqlite_autoindex_pins_1"
-# the revision of the text h.text a library held at the change it is read at, {bound} the change of its owner's
-# rows it held then (_bound): the legacy read's own expression (wpt_depot.legacy.REVISION_THEN) with the bound
-# written out instead of looked up in a JSON object for each revision row
-LEGACY_THEN = (f"(SELECT max(r.revision) FROM texts_revisions r INDEXED BY {TEXTS_KEY} WHERE r.id = h.text "
-               "AND r.change <= {bound})")
-# the revision a snapshot reads of the text {col}: its highest revision at or below its owner's bound {bound}
-SNAPSHOT_THEN = (f"(SELECT max(s.revision) FROM texts_revisions s INDEXED BY {TEXTS_KEY} WHERE s.id = {{col}} "
-                 "AND s.change <= {bound})")
-# a pinned revision, when the depot still holds it
-PINNED = f"(SELECT p.revision FROM texts_revisions p INDEXED BY {TEXTS_KEY} WHERE p.id = h.text AND p.revision = h.revision)"
-OPEN_THEN = "h.joined_change <= :change{k} AND (h.left_change IS NULL OR h.left_change > :change{k})"
+# the four sequential scans measure merges, each sorted by text id by SQLite in its temporary folder: every revision
+# of every text, every content version, the pins of the locked libraries read and the memberships of the open ones
+# (their ids a JSON array as the parameter); NOT INDEXED and the unary plus keep SQLite from reading a table through
+# an index, whose order is not the file's
+SCANS = ("SELECT id, revision, change, content_version, rowid FROM texts_revisions NOT INDEXED "
+         "ORDER BY +id, +revision",
+         "SELECT id, version, kind, length, bytes FROM content_lists NOT INDEXED ORDER BY +id, +version",
+         "SELECT text, library, revision FROM pins NOT INDEXED WHERE library IN (SELECT value FROM json_each(?)) "
+         "ORDER BY +text, +library",
+         "SELECT text, library, joined_change, left_change FROM memberships NOT INDEXED WHERE library IN "
+         "(SELECT value FROM json_each(?)) ORDER BY +text, +library, +joined_change")
+# the revisions the snapshots read, kept in a table of the connection's temporary database while the merge runs: the
+# rowid of the revision, the snapshots that read it (an index into a list the merge keeps), the kind, length and bytes
+# of its content version; then read back in the order of the rowids with each revision's text, tags and licenses,
+# which the sort of SCANS leaves out (a forward read of texts_revisions, each page once)
+CHOSEN_TABLE = ("CREATE TEMP TABLE measure_chosen (revision INTEGER NOT NULL, snapshots INTEGER NOT NULL, "
+                "kind TEXT NOT NULL, length INTEGER NOT NULL, bytes INTEGER NOT NULL)")
+CHOSEN = ("WITH c AS MATERIALIZED (SELECT * FROM temp.measure_chosen ORDER BY revision) "
+          "SELECT c.snapshots, c.kind, c.length, c.bytes, t.id, t.tags, t.licenses FROM c "
+          "CROSS JOIN texts_revisions t ON t.rowid = c.revision")
+CHOSEN_BATCH = 100_000  # rows of measure_chosen written at once
+# bytes of the temporary files the sorts of SCANS and the table of the revisions read take at once for each revision
+# of a text and each content version, about (bench/large.py's depot: 1.38 GB at most for 18,322,341 revisions and
+# 4,624,673 content versions)
+SORTED = 70
+# the pragmas of the connection while measure reads: a page cache of 64 MiB, which each of the four sorts also takes
+# as the most memory a run it sorts holds before it writes it to a temporary file (about 256 MiB in all), and no
+# thread to help the sorts, whose merges would then write their runs to temporary files once more (bench/large.py's
+# depot: 2.4 GB of temporary files written with no thread, 5.5 GB with one, for 6 seconds more out of 70)
+MEASURE_PRAGMAS = (("cache_size", -(64 << 10)), ("threads", 0))
+SAY_EVERY = 30  # seconds between two lines of progress
 NAME_MARKS = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -236,111 +268,189 @@ def _has(con, table: str) -> bool:
     return bool(con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchall())
 
 
-def _bound(part: Part, col: str) -> str:
-    """The change of the part's bounds for the owner of the text {col}
-    (null for an owner it has no bound for), as SQL: a CASE over the
-    owners, the numbers written out."""
-    if not part.bounds:
-        return "NULL"
-    whens = " ".join(f"WHEN '{owner.replace(chr(39), chr(39) * 2)}' THEN {int(change)}"
-                     for owner, change in sorted(part.bounds.items()))
-    return f"(CASE {ids.owner_sql(col)} {whens} END)"
+def key_of(planned: Planned):
+    """The key a planned snapshot's measure is known by: its library's id, or (dataset id, revision)."""
+    origin = planned.origin
+    return origin["library"] if origin["kind"] == "library" else (origin["dataset"], origin["revision"])
 
 
-def _source(part: Part, k: int) -> str:
-    """The rows (text, o, n, legacy, snapshot) of the part's library
-    after :after, in the order of their ids, the first :page: o and n the
-    text's owner and number, legacy the revision the legacy read gives
-    (null when it gives none), snapshot the one a snapshot read gives."""
-    snapshot = SNAPSHOT_THEN.format(bound=_bound(part, "h.text"), col="h.text")
-    text = f"h.text AS text, {ids.owner_sql('h.text')} AS o, {ids.number_sql('h.text')} AS n"
-    if part.locked:
-        return (f"SELECT {text}, {PINNED} AS legacy, {snapshot} AS snapshot FROM pins h INDEXED BY {PINS_KEY} "
-                f"WHERE h.library = :library{k} AND h.text > :after ORDER BY h.text LIMIT :page")
-    legacy = LEGACY_THEN.format(bound=_bound(part, "h.text"))
-    return (f"SELECT {text}, {legacy} AS legacy, {snapshot} AS snapshot FROM memberships h "
-            f"INDEXED BY {MEMBERSHIPS_KEY} WHERE h.library = :library{k} AND h.text > :after AND "
-            f"{OPEN_THEN.format(k=k)} ORDER BY h.text LIMIT :page")
-
-
-def _held(part: Part, k: int, col: str) -> str:
-    """Whether the part's set holds the text {col}, as SQL."""
-    if part.locked:
-        return (f"EXISTS (SELECT 1 FROM pins h INDEXED BY {PINS_KEY} WHERE h.library = :library{k} AND h.text = {col} "
-                f"AND {PINNED} IS NOT NULL)")
-    return (f"EXISTS (SELECT 1 FROM memberships h INDEXED BY {MEMBERSHIPS_KEY} WHERE h.library = :library{k} "
-            f"AND h.text = {col} AND {OPEN_THEN.format(k=k)} AND {LEGACY_THEN.format(bound=_bound(part, 'h.text'))} "
-            "IS NOT NULL)")
-
-
-def _page_sql(parts: list[Part], k: int) -> str:
-    earlier = " OR ".join(_held(parts[at], at, "x.text") for at in range(k)) or "0"
-    return (f"WITH x AS MATERIALIZED ({_source(parts[k], k)}) "
-            f"SELECT x.o, x.legacy IS NOT NULL AS held, ({earlier}) AS first_elsewhere, "
-            f"coalesce(c.kind, '{PLAIN}') AS kind, t.tags, t.licenses, "
-            "group_concat(CASE WHEN x.legacy IS NOT NULL THEN x.n END, ','), count(*), "
-            "count(CASE WHEN x.legacy IS NOT NULL THEN x.n END), "
-            "sum(x.legacy IS NOT x.snapshot), group_concat(CASE WHEN x.legacy IS NOT x.snapshot THEN x.text || ': legacy "
-            "revision ' || coalesce(x.legacy, 'none') || ', snapshot revision ' || coalesce(x.snapshot, 'none') END, "
-            "char(10)), count(t.id), coalesce(sum(c.length), 0), coalesce(sum(c.bytes), 0), max(x.text) "
-            f"FROM x LEFT JOIN texts_revisions t INDEXED BY {TEXTS_KEY} ON t.id = x.text AND t.revision = x.snapshot "
-            "LEFT JOIN content_lists c ON c.id = t.id AND c.version = t.content_version GROUP BY 1, 2, 3, 4, 5, 6")
-
-
-def measure(con, planned: Planned, page: int = PAGE) -> Measured:
-    """What the planned snapshot holds, read through con (the module says how)."""
-    began = time.monotonic()
-    params = {}
-    for k, part in enumerate(planned.parts):
-        params |= {f"library{k}": part.library, f"change{k}": part.change}
-    sets, groups, rows, differ, examples, described = [], {}, 0, 0, [], []
+def measure_all(con, planned: list[Planned], log=None) -> dict:
+    """What each planned snapshot holds, read through con in one sorted
+    merge of the four scans of SCANS, whatever how many snapshots and parts:
+    {key_of(planned): Measured}. log, when given, is told the progress every
+    SAY_EVERY seconds. Its seconds are the merge's, shared out among the
+    snapshots by the rows each part read."""
+    began = said = time.monotonic()
+    parts, index = [], {}  # each distinct part read once: (library, locked, change, bounds)
+    for one in planned:
+        for part in one.parts:
+            index.setdefault((part.library, part.locked, part.change, tuple(sorted(part.bounds.items()))),
+                             len(index))
+            if len(parts) < len(index):
+                parts.append(part)
+    reads = [[index[(part.library, part.locked, part.change, tuple(sorted(part.bounds.items())))]
+              for part in one.parts] for one in planned]
+    locked = sorted({part.library for part in parts if part.locked})
+    opened = sorted({part.library for part in parts if not part.locked})
+    by_library = {}
+    for at, part in enumerate(parts):
+        by_library.setdefault((part.library, part.locked), []).append(at)
+    # what each part read: rows, texts held, revisions that differ, examples, numbers by owner
+    rows, held_count, differ, examples = [0] * len(parts), [0] * len(parts), [0] * len(parts), [[] for _ in parts]
+    numbers: list[dict[str, array]] = [{} for _ in parts]
+    groups = [{} for _ in planned]  # each snapshot's sums by (owner, kind, tags, licenses)
     sets_of = {}  # a JSON array as text: its distinct values in order (_distinct)
-    for k, part in enumerate(planned.parts):
-        numbers: dict[str, list[np.ndarray]] = {}
-        after, part_texts, part_differ = "", 0, 0
-        statement = _page_sql(planned.parts, k)
-        while True:
-            found = con.execute(statement, params | {"after": after, "page": page}).fetchall()
-            read = 0
-            for (owner, held, elsewhere, kind, tagset, licenses, joined, count, numbered, wrong, named, contents,
-                 characters, size, last) in found:
-                read += count
-                after = max(after, last)
-                part_differ += wrong
-                if named and len(examples) < EXAMPLES:
-                    examples += named.split("\n")[:EXAMPLES - len(examples)]
-                if not held:
-                    continue
-                values = np.fromstring(joined, dtype=np.int64, sep=",") if joined else np.zeros(0, np.int64)
-                if numbered != count or values.size != count:
-                    raise ValueError(f"a text of {owner} that the library {part.library} holds has no number")
-                if values.size and values.max() > LARGEST:
-                    raise ValueError(f"the text {owner}-{int(values.max())} has a number above {LARGEST}, which no "
-                                     "snapshot holds")
-                numbers.setdefault(owner, []).append(values)
-                part_texts += count
-                if not elsewhere and contents:
-                    key = (owner, kind, _distinct(tagset, sets_of), _distinct(licenses, sets_of))
-                    sums = groups.setdefault(key, [0, 0, 0])
-                    sums[0] += contents
-                    sums[1] += characters
-                    sums[2] += size
-            rows += read
-            if read < page:
-                break
-        for owner in sorted(numbers, key=str.encode):
-            bitmap = BitMap(np.concatenate(numbers[owner]).astype(np.uint32))
-            bitmap.run_optimize()
-            sets.append((k, owner, part.bounds[owner], bitmap))
-        differ += part_differ
-        described.append({"library": part.library, "locked": part.locked, "change": part.change,
-                          "texts": part_texts, "differ": part_differ})
-    summary = _summary(groups)
-    texts = sum(sizes[0] for sizes in summary["kinds"].values())
-    characters = sum(sizes[1] for sizes in summary["kinds"].values())
-    size = sum(sizes[2] for sizes in summary["kinds"].values())
-    return Measured(sets, summary, texts, characters, size, digest_of(sets, planned.at_change), rows, differ,
-                    examples, time.monotonic() - began, described)
+    saved, cursors = {}, []
+    sets_at, chosen = {}, []  # each list of snapshots that read a revision: its index; rows for measure_chosen
+    for pragma, value in MEASURE_PRAGMAS:
+        saved[pragma] = con.execute(f"PRAGMA {pragma}").fetchall()[0][0]
+        con.execute(f"PRAGMA {pragma} = {value}")
+    try:
+        con.execute("DROP TABLE IF EXISTS temp.measure_chosen")
+        con.execute(CHOSEN_TABLE)
+        cursors = [con.cursor() for _ in SCANS]
+        revisions = cursors[0].execute(SCANS[0])
+        contents = cursors[1].execute(SCANS[1])
+        pins = cursors[2].execute(SCANS[2], (json.dumps(locked),))
+        members = cursors[3].execute(SCANS[3], (json.dumps(opened),))
+        revision_row, content_row = next(revisions, None), next(contents, None)
+        pin_row, member_row = next(pins, None), next(members, None)
+        if log is not None:
+            log(f"the four scans read and sorted in {time.monotonic() - began:.0f} seconds; merging them")
+        done = 0
+        while pin_row is not None or member_row is not None:
+            text = (member_row[0] if pin_row is None else pin_row[0] if member_row is None
+                    else min(pin_row[0], member_row[0]))
+            pinned, joined = {}, {}
+            while pin_row is not None and pin_row[0] == text:
+                pinned[pin_row[1]] = pin_row[2]
+                pin_row = next(pins, None)
+            while member_row is not None and member_row[0] == text:
+                joined.setdefault(member_row[1], []).append(member_row[2:])
+                member_row = next(members, None)
+            while revision_row is not None and revision_row[0] < text:
+                revision_row = next(revisions, None)
+            held_revisions = []  # (revision, change, content version, rowid), by revision
+            while revision_row is not None and revision_row[0] == text:
+                held_revisions.append(revision_row[1:])
+                revision_row = next(revisions, None)
+            while content_row is not None and content_row[0] < text:
+                content_row = next(contents, None)
+            versions = {}
+            while content_row is not None and content_row[0] == text:
+                versions[content_row[1]] = content_row[2:]
+                content_row = next(contents, None)
+            owner, number = ids.owner(text), ids.number(text)
+            latest = {}  # bound: the revision at or below it (the row), None for none
+
+            def at(bound):
+                if bound is None:
+                    return None
+                if bound not in latest:
+                    latest[bound] = next((one for one in reversed(held_revisions) if one[1] <= bound), None)
+                return latest[bound]
+
+            found = {}  # part: [(legacy revision, the snapshot's revision row)] of each row it read of the text
+            for library, revision in pinned.items():
+                legacy = revision if any(one[0] == revision for one in held_revisions) else None
+                for part_at in by_library.get((library, True), ()):
+                    found[part_at] = [(legacy, at(parts[part_at].bounds.get(owner)))]
+            for library, spans in joined.items():
+                for part_at in by_library.get((library, False), ()):
+                    change = parts[part_at].change
+                    row = at(parts[part_at].bounds.get(owner))
+                    found[part_at] = [(None if row is None else row[0], row) for start, end in spans
+                                      if start <= change and (end is None or end > change)]
+            for part_at, read in found.items():
+                part = parts[part_at]
+                rows[part_at] += len(read)
+                for legacy, row in read:
+                    snapshot = None if row is None else row[0]
+                    if legacy != snapshot:
+                        differ[part_at] += 1
+                        if len(examples[part_at]) < EXAMPLES:
+                            examples[part_at].append(f"{text}: legacy revision {legacy or 'none'}, snapshot revision "
+                                                     f"{snapshot or 'none'}")
+                    if legacy is None:
+                        continue
+                    if number is None:
+                        raise ValueError(f"a text of {owner} that the library {part.library} holds has no number")
+                    if number > LARGEST:
+                        raise ValueError(f"the text {owner}-{number} has a number above {LARGEST}, which no snapshot "
+                                         "holds")
+                    numbers[part_at].setdefault(owner, array("q")).append(number)
+                    held_count[part_at] += 1
+            readers = {}  # the rowid of each revision the snapshots read: the snapshots that read it, each once a row
+            for one, read_parts in enumerate(reads):
+                for part_at in read_parts:
+                    read = found.get(part_at)
+                    if not read:
+                        continue
+                    kept = [row for legacy, row in read if legacy is not None]
+                    for row in kept:
+                        if row is not None:
+                            readers.setdefault(row, []).append(one)
+                    if kept:
+                        break  # a text several parts hold is read in the first of them
+            for row, which in readers.items():
+                content = versions.get(row[2])
+                kind = PLAIN if content is None or content[0] is None else content[0]
+                key = tuple(which)
+                if key not in sets_at:
+                    sets_at[key] = len(sets_at)
+                chosen.append((row[3], sets_at[key], kind, 0 if content is None else content[1] or 0,
+                               0 if content is None else content[2] or 0))
+            if len(chosen) >= CHOSEN_BATCH:
+                con.executemany("INSERT INTO temp.measure_chosen VALUES (?, ?, ?, ?, ?)", chosen)
+                chosen.clear()
+            done += 1
+            if log is not None and time.monotonic() - said >= SAY_EVERY:
+                said = time.monotonic()
+                log(f"{done:,} texts of the libraries read, the last {text}, {done / max(said - began, 1e-9):,.0f} "
+                    f"texts a second, {said - began:.0f} seconds")
+        for cursor in cursors:
+            cursor.close(force=True)
+        cursors = []
+        con.executemany("INSERT INTO temp.measure_chosen VALUES (?, ?, ?, ?, ?)", chosen)
+        chosen.clear()
+        if log is not None:
+            log(f"the texts merged in {time.monotonic() - began:.0f} seconds; reading the tags and licenses of the "
+                "revisions the snapshots read, in the order of the file")
+        snapshots_of = list(sets_at)
+        for at_set, kind, length, size, text, tags, licenses in con.execute(CHOSEN):
+            key = (ids.owner(text), kind, _distinct(tags, sets_of), _distinct(licenses, sets_of))
+            for one in snapshots_of[at_set]:
+                sums = groups[one].setdefault(key, [0, 0, 0])
+                sums[0] += 1
+                sums[1] += length
+                sums[2] += size
+    finally:
+        for cursor in cursors:  # the scans not read to their end, whose read would stay open
+            cursor.close(force=True)
+        con.execute("DROP TABLE IF EXISTS temp.measure_chosen")
+        for pragma, value in saved.items():
+            con.execute(f"PRAGMA {pragma} = {value}")
+    seconds = time.monotonic() - began
+    total = max(1, sum(rows[part_at] for read_parts in reads for part_at in read_parts))
+    measured = {}
+    for one, (planned_one, read_parts) in enumerate(zip(planned, reads)):
+        sets, described, said_examples = [], [], []
+        for k, (part, part_at) in enumerate(zip(planned_one.parts, read_parts)):
+            for owner in sorted(numbers[part_at], key=str.encode):
+                bitmap = BitMap(np.frombuffer(numbers[part_at][owner], dtype=np.int64).astype(np.uint32))
+                bitmap.run_optimize()
+                sets.append((k, owner, part.bounds[owner], bitmap))
+            said_examples += examples[part_at][:EXAMPLES - len(said_examples)]
+            described.append({"library": part.library, "locked": part.locked, "change": part.change,
+                              "texts": held_count[part_at], "differ": differ[part_at]})
+        summary = _summary(groups[one])
+        read = sum(rows[part_at] for part_at in read_parts)
+        measured[key_of(planned_one)] = Measured(
+            sets, summary, sum(sizes[0] for sizes in summary["kinds"].values()),
+            sum(sizes[1] for sizes in summary["kinds"].values()), sum(sizes[2] for sizes in summary["kinds"].values()),
+            digest_of(sets, planned_one.at_change), read, sum(differ[part_at] for part_at in read_parts), said_examples,
+            seconds * read / total, described)
+    return measured
 
 
 def _distinct(listed: str | None, known: dict) -> tuple[str, ...]:

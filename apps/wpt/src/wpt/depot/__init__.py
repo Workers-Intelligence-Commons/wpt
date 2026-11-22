@@ -310,7 +310,7 @@ def cmd_upgrade(args):
     except StoreSettingError:
         records = None  # the check says only the current dataset revisions convert
     public = public_url()
-    found = upgrade.check(address, records, public)
+    found = upgrade.check(address, records, public, log=say, save=not args.yes)
     for line in found.lines:
         say(line)
     if not found.needed:
@@ -321,7 +321,7 @@ def cmd_upgrade(args):
     if not args.yes:
         say("Nothing was written: run `wpt depot upgrade --yes` to upgrade, which runs this check again first.")
         return 0
-    depot, start = Depot.upgrade(address, args.to, args.upstream, records=records, public=public)
+    depot, start = Depot.upgrade(address, args.to, args.upstream, records=records, public=public, checked=found)
     say(f"{depot.address}: format {start} of {address} brought up to format {FORMAT}, at its change "
         f"{depot.change()}; set WPT_DEPOT to {depot.address}")
     return 0

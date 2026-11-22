@@ -119,16 +119,20 @@ content_lists_long, whose condition names the kind, adds the row plain to
 the table kinds (PLAIN_12), writes the conversation schema, deletes the
 counts of what each library holds by kind but those of its plain texts,
 which stay right (GROUPS_12), and makes the table quotes and its index
-quotes_text, empty (QUOTES_12). Then it writes the kind plain on every
-content version of no kind, in rowid order, BATCH rowids of content_lists
-a transaction, and in the same transaction adds to the counts what the
-current content versions of the other kinds among those rowids give each
-library that holds their text, by kind (KINDS_12: each looked up through
-the index of the current revisions and memberships_held, and few, since
-nearly every text is plain), and writes the rows of quotes of the
-conversations among those rowids, each read from its parts (_quotes_12);
-each transaction records the last rowid in upgrade_under_way, so a run
-after a stop goes on after it, the counts and quotes it added kept; it
+quotes_text, empty (QUOTES_12). Then, in one transaction, it adds to the
+counts what the current content versions of the other kinds give each
+library that holds their text, by kind (ITEMS_TABLE_12: the items copied
+from one sequential scan of content_lists, then found among the current
+revisions and the memberships that have not ended by one sequential scan
+of each, SCANNED_12, or, when they are few, ITEMS_SHARE_12, each looked up
+through their indexes, LOOKED_UP_12). Then it writes the kind plain on
+every content version of no kind, in rowid order, BATCH rowids of
+content_lists a transaction, and the rows of quotes of the conversations
+among those rowids, each read from its parts (_quotes_12, a lookup in
+parts for each conversation); each transaction records the last rowid in
+upgrade_under_way, so a run after a stop goes on after it, the quotes it
+added kept (a run of the code that counted each batch's kinds with
+KINDS_12, stopped half way, goes on counting them that way); it
 says how many rows a second it writes every SAY_EVERY seconds. Each batch
 rewrites the rows it changes, and only those: no index of content_lists
 but content_lists_long names the column kind. Its last transaction checks
@@ -160,36 +164,51 @@ the columns content_kind, content_length, content_bytes and current_tags of
 texts_revisions (SIZES_13), null until the stage sizes fills them, and
 counts from every current text what the texts of each status hold by kind
 and by plain tag set, and the characters and bytes of each tag's and
-license's split (COUNTS_13), their rows before deleted. Its stage
-taggings turns the tags every revision of a text holds into rows of
-taggings (TAGGINGS_13: a tag joined at the change of the revision that
-first holds it, after one that lacks it, and left at the change of the
-next revision that lacks it), reading the revisions in rowid order, BATCH
-rowids a transaction, each revision read with the one before it and those
-after it of its own text alone, so no batch needs another; each
-transaction records the last rowid in upgrade_under_way, so a run after a
-stop goes on after it, and a row written twice is ignored. The revisions
-keep their column tags, which nothing of format 13 reads but wpt_depot.legacy;
-the counts of tags, read from the revisions before this stage, stay right.
-Its stage sizes copies onto every revision of a text the kind, length and
-bytes of the content version it reads, from content_lists, and writes onto
-each current revision the tags it holds in the order of their names, each
-once, as the copy of its text's tags (current_tags; FILL_SIZES_13),
-reading the revisions in rowid order, BATCH rowids a transaction, each
-recording the last rowid in upgrade_under_way, so a run after a stop goes
-on after it. Its stage locked
-makes a snapshot of each locked library the depot owns, and its stage
-datasets one of each dataset revision a corpus names and of each dataset's
-current revision, or names for a revision that read one locked library
-alone that library's snapshot, in legacy_snapshot_of
-(wpt_depot.conversion says what each holds, how it is named and how it is
-checked); each snapshot is read, checked and then written in a transaction
-of its own, under the step's change, and a run after a stop skips those
-written. A text the snapshot would read at another revision than the
-library read it stops the stage (Refused), the snapshot unwritten: `wpt
-depot upgrade --check` (check) finds it before anything is written. The
-stage datasets then says the recipe data section that builds each
-converted revision. Open libraries are not converted. Its stage counts, in
+license's split (COUNTS_13), their rows before deleted. It reads them from
+tables of the writer's temporary database, filled by one sequential scan
+each: the kind, length and bytes of every content version
+(SIZES_TABLE_13), the texts locked libraries hold (LOCKED_TABLE_13) and
+what the counts read of every current text (CURRENT_TABLE_13), so no row
+of the file is looked up through an index. Every stage reads that way: on
+a file far bigger than the memory, each lookup is a random read of the
+disk. Its stage taggings turns the tags every revision of a text holds
+into rows of taggings (_tagged_13: a tag joined at the change of the
+revision that first holds it, after one that lacks it, and left at the
+change of the next revision that lacks it), reading the revisions copied,
+in one sequential scan sorted by text id, into a table of the writer's
+temporary database (TAGGED_TABLE_13, COPY_TAGGED_13), in SQLite's
+temporary folder (SQLITE_TMPDIR, else /var/tmp, /usr/tmp or /tmp), about
+TAGGINGS_SORTED_13 bytes a revision; the rows of the texts of about BATCH
+revisions are written in a transaction that records the last text's id in
+upgrade_under_way, so a run after a stop copies only the texts after it,
+and a row written twice is ignored; no read of the file stays open across
+a commit, so the WAL is cut back after each. The revisions keep their column
+tags, which nothing of format 13 reads but wpt_depot.legacy; the counts of
+tags, read from the revisions before this stage, stay right. Its stage
+sizes copies onto every revision of a text the kind, length and bytes of
+the content version it reads, looked up in the temporary table of the
+sizes (SIZES_TABLE_13, made again when the stage tables ran in another
+run), and writes onto each current revision the tags it holds in the order
+of their names, each once, as the copy of its text's tags (current_tags;
+FILL_SIZES_13), reading the revisions in rowid order, BATCH rowids a
+transaction, each recording the last rowid in upgrade_under_way, so a run
+after a stop goes on after it. Its stage locked makes a snapshot of each
+locked library the depot owns, and its stage datasets one of each dataset
+revision a corpus names and of each dataset's current revision, or names
+for a revision that read one locked library alone that library's
+snapshot, in legacy_snapshot_of (wpt_depot.conversion says what each
+holds, how it is named, how it is checked and how it is read: every
+snapshot at once, in one sorted merge of sequential scans). The first of
+the two stages that runs measures every snapshot both have left in that
+one merge (_measured_13), or takes what the check right before measured
+when the depot did not change since (Check.state, _state_13: `wpt depot
+upgrade --yes` runs the check, then the upgrade, which then reads no
+library again); each snapshot is then written in a transaction of its own,
+under the step's change, and a run after a stop skips those written. A
+text the snapshot would read at another revision than the library read it
+stops the stage (Refused), the snapshot unwritten: `wpt depot upgrade
+--check` (check) finds it before anything is written. The stage datasets
+then says the recipe data section that builds each converted revision. Open libraries are not converted. Its stage counts, in
 one transaction that reads only the table counts, deletes the counts of
 what libraries hold (LIBRARY_FACETS_13) and folds the rows of the facets
 split by status and by whether a locked library held the text (SPLIT_13)
@@ -202,14 +221,27 @@ them any more, and nothing is dropped nor vacuumed.
 The check (check) opens the file read-only and writes nothing: for a depot
 of format 11 it checks what the step to format 12 checks before it ends,
 then, for one of format 11 or 12, it works out and reads every snapshot
-the step to format 13 would make, checks every revision each reads, and
-says the names it gives, the recipe data sections, the cost of every step
-left together (seconds from the rates RATE_12, RATE_13_TABLES,
-RATE_13_TAGGINGS and RATE_13_SIZES measured
-by bench/upgrade.py and the time its own reads took, the WAL at its
-largest, the disk added, the full copy the next backup sends) and what to
-do before (RUNBOOK). `wpt depot upgrade --yes` runs it again and upgrades
-only when it passes.
+the step to format 13 would make, checks every revision each reads (in
+the one sorted merge wpt_depot.conversion.measure_all makes, which only
+reads, its sorts in SQLite's temporary folder), and says the names it
+gives, the recipe data sections, the cost of every step left together
+(seconds from the rates RATE_12, RATE_13_TABLES, RATE_13_TAGGINGS and
+RATE_13_SIZES, the last three measured on bench/large.py's file, bigger than the memory,
+and the time its own reads took, the free disk the temporary folder needs,
+the WAL at its largest, the disk added, the full copy the next backup
+sends) and what to do before (RUNBOOK). `wpt depot upgrade --yes` runs it
+again and upgrades only when it passes, handing the upgrade what it
+measured (Check.measured) with the depot's state when it read it
+(Check.state). `wpt depot upgrade --check` saves what it measured with
+that state beside the depot's file (saved_check_path, _save_check), and a
+later check takes it while the depot's state is the same (_saved_check),
+so the check can run while the web app serves and `--yes` reads no
+library again; the upgrade deletes the file when it ends.
+
+An SQLite file is put in WAL mode before its first step (_in_place), as
+Database.create makes every depot file: the steps to formats 9 and 13
+write what a sorted scan found in transactions of their own while the scan
+is still open, which a file in another journal mode would keep waiting.
 
 A file written from a folder is made with the code's tables, so the
 content versions of no kind it copies are written of kind plain at once,
@@ -563,6 +595,38 @@ KINDS_12 = (f"INSERT INTO counts (facet, name, texts, characters, bytes) SELECT 
             "WHERE c.rowid > ? AND c.rowid <= ? AND c.kind <> 'plain' GROUP BY m.library, c.kind "
             "ON CONFLICT (facet, name) DO UPDATE SET texts = texts + excluded.texts, "
             "characters = characters + excluded.characters, bytes = bytes + excluded.bytes")
+# format 12: the same, for every content version at once, read without a lookup per row of the file when there are
+# many: the content versions of a kind (every one but plain, of no kind in format 11) copied into a table of the
+# writer's temporary database in one sequential scan of content_lists (ITEMS_TABLE_12); then, when they are more than
+# one revision of a text in ITEMS_SHARE_12, those a text's current revision reads among them found in one sequential
+# scan of texts_revisions and the memberships that have not ended in one of memberships (each looking rows up in the
+# temporary tables only; SCANNED_12), else each looked up through the index of the current revisions and
+# memberships_held (LOOKED_UP_12), which reads fewer pages; what the counts of a library's kinds add up to is KINDS_12's
+# over every batch
+ITEMS_TABLE_12 = ("CREATE TEMP TABLE upgrade_items (id TEXT NOT NULL, version INTEGER NOT NULL, kind TEXT NOT NULL, "
+                  "length INTEGER, bytes INTEGER, PRIMARY KEY (id, version)) WITHOUT ROWID",
+                  "INSERT INTO temp.upgrade_items (id, version, kind, length, bytes) SELECT id, version, kind, length, "
+                  "bytes FROM content_lists NOT INDEXED WHERE kind IS NOT NULL AND kind <> 'plain' "
+                  "ORDER BY +id, +version",
+                  "CREATE TEMP TABLE upgrade_current_items (id TEXT NOT NULL PRIMARY KEY, kind TEXT NOT NULL, "
+                  "length INTEGER, bytes INTEGER) WITHOUT ROWID")
+ITEMS_SHARE_12 = 40  # bench/large.py's depot: 86 microseconds an item looked up, 2.2 a revision scanned
+_ITEM_COUNTS_12 = (f"INSERT INTO counts (facet, name, texts, characters, bytes) SELECT '{LIBRARY_KIND_9}', "
+                   "m.library || ' ' || c.kind, count(*), sum(c.length), sum(c.bytes) FROM {joined} "
+                   "WHERE m.left_change IS NULL GROUP BY m.library, c.kind ON CONFLICT (facet, name) DO UPDATE SET "
+                   "texts = texts + excluded.texts, characters = characters + excluded.characters, "
+                   "bytes = bytes + excluded.bytes")
+SCANNED_12 = ("INSERT INTO temp.upgrade_current_items (id, kind, length, bytes) SELECT t.id, i.kind, i.length, "
+              "i.bytes FROM texts_revisions t NOT INDEXED CROSS JOIN temp.upgrade_items i ON i.id = t.id "
+              "AND i.version = t.content_version WHERE t.latest",
+              _ITEM_COUNTS_12.format(joined="memberships m NOT INDEXED CROSS JOIN temp.upgrade_current_items c "
+                                            "ON c.id = m.text"))
+LOOKED_UP_12 = ("INSERT INTO temp.upgrade_current_items (id, kind, length, bytes) SELECT i.id, i.kind, i.length, "
+                "i.bytes FROM temp.upgrade_items i CROSS JOIN texts_revisions t ON t.id = i.id AND t.latest "
+                "AND t.content_version = i.version",
+                _ITEM_COUNTS_12.format(joined="temp.upgrade_current_items c CROSS JOIN memberships m INDEXED BY "
+                                              "memberships_held ON m.text = c.id"))
+ITEMS_DROPPED_12 = ("DROP TABLE temp.upgrade_current_items", "DROP TABLE temp.upgrade_items")
 # format 12: the table of the texts each content version of a conversation quotes, and its index by quoted text
 QUOTES_12 = ("CREATE TABLE IF NOT EXISTS quotes (conversation TEXT NOT NULL, version INTEGER NOT NULL, "
              "text TEXT NOT NULL, PRIMARY KEY (conversation, version, text)) WITHOUT ROWID",
@@ -581,7 +645,7 @@ _ID = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*-[0-9]+)"')
 
 
 def upgrade(address: str, to: str | None = None, upstream: str | None = None, log=say,
-            records: list[dict] | None = None, public: str | None = None):
+            records: list[dict] | None = None, public: str | None = None, checked: "Check | None" = None):
     """(the depot at address brought up to this code's format, the format it
     had). A depot of the code's format is left as it is. upstream: the web
     address of the upstream's web app, for a clone. log: where a step says
@@ -589,7 +653,9 @@ def upgrade(address: str, to: str | None = None, upstream: str | None = None, lo
     (wpt_depot.corpora.records), whose dataset revisions the step to format
     13 makes snapshots of; public: the depot's public address, which the
     recipe data sections that step says name. `wpt depot upgrade` runs check
-    first and acts only when it passes. OtherFormat for a newer format, which no code brings down;
+    first and acts only when it passes; checked: that check, whose measures
+    of the snapshots the step to format 13 writes as they are when the depot
+    did not change since (_to_13). OtherFormat for a newer format, which no code brings down;
     Refused for a folder whose journal holds a change never finished, for a
     clone without upstream and for upstream given to a depot that follows
     none; DepotExists when the new file's path holds a file already."""
@@ -611,7 +677,8 @@ def upgrade(address: str, to: str | None = None, upstream: str | None = None, lo
             _alone(path)
     else:
         path = _from_folder(path, to, upstream)
-    _in_place(path, log, records, public)
+    _in_place(path, log, records, public, checked)
+    saved_check_path(path).unlink(missing_ok=True)
     return Depot.open(str(path)), start
 
 
@@ -665,15 +732,24 @@ def _from_folder(path: Path, to: str | None, upstream: str | None) -> Path:
     return target
 
 
-def _in_place(path: Path, log, records: list[dict] | None = None, public: str | None = None):
-    """The SQLite file at path brought up to the code's format, a step at a time, as the module says."""
+def _in_place(path: Path, log, records: list[dict] | None = None, public: str | None = None,
+              checked: "Check | None" = None):
+    """The SQLite file at path brought up to the code's format, a step at a time, as the module says. The file is
+    put in WAL mode first, as Database.create makes every depot file (a copy made by another tool may not be): a step
+    reads one scan while it writes what it found in transactions of its own, which a file in another journal mode
+    would keep waiting."""
+    wal = apsw.Connection(str(path))
+    try:
+        wal.execute("PRAGMA journal_mode = WAL").fetchall()
+    finally:
+        wal.close()
     db = Database(path)
     try:
         while (reached := _format(db)) < FORMAT:
             db.settle()
             db.mark_full_copy()
             if reached == 12:
-                FILE_STEPS[reached](db, log, records, public)
+                FILE_STEPS[reached](db, log, records, public, checked)
             else:
                 FILE_STEPS[reached](db, log)
     finally:
@@ -1111,6 +1187,7 @@ def _to_12(db: Database, log):
         with db.bulk() as con:
             con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
             con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('contents', 0)")
+            con.execute(f"INSERT INTO {UNDER_WAY} (stage, after) VALUES ('kinds', 0)")
             con.execute("DROP INDEX IF EXISTS content_lists_long")
             con.execute("INSERT OR IGNORE INTO kinds (id, meaning, schema) VALUES (?, ?, ?)", PLAIN_12)
             con.execute("UPDATE kinds SET schema = ? WHERE id = 'conversation'", (CONVERSATION_12,))
@@ -1121,17 +1198,37 @@ def _to_12(db: Database, log):
     con = db.reader()
     after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'contents'").fetchall()[0][0]
     last = con.execute("SELECT coalesce(max(rowid), 0) FROM content_lists").fetchall()[0][0]
-    log(f"{db.path}: writing the kind plain on every content version of no kind, counting what each library "
-        f"holds of each other kind and writing the texts each conversation quotes, rows {after:,} to {last:,} of content_lists, {BATCH:,} rowids a transaction"
+    # a run of the code before ITEMS_12 stopped half way counts the kinds of each batch as it goes on (KINDS_12)
+    each_batch = not con.execute(f"SELECT 1 FROM {UNDER_WAY} WHERE stage = 'kinds'").fetchall() and after > 0
+    started = began = said = time.monotonic()
+    if con.execute(f"SELECT 1 FROM {UNDER_WAY} WHERE stage = 'kinds'").fetchall():
+        log(f"{db.path}: counting what each library holds of each kind but plain, in one transaction that reads "
+            "content_lists, texts_revisions and memberships once each, in the order of the file; run again after a "
+            "stop, it does it again")
+        with db.bulk() as written:
+            for statement in ITEMS_TABLE_12:
+                written.execute(statement)
+            items = written.execute("SELECT count(*) FROM temp.upgrade_items").fetchall()[0][0]
+            revisions = written.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+            for statement in SCANNED_12 if items * ITEMS_SHARE_12 > revisions else LOOKED_UP_12:
+                written.execute(statement)
+            for statement in ITEMS_DROPPED_12:
+                written.execute(statement)
+            written.execute(f"DELETE FROM {UNDER_WAY} WHERE stage = 'kinds'")
+        log(f"{db.path}: the kinds counted in {time.monotonic() - began:.0f} seconds")
+    started, began = began, time.monotonic()
+    said = began
+    log(f"{db.path}: writing the kind plain on every content version of no kind and the texts each conversation "
+        f"quotes, rows {after:,} to {last:,} of content_lists, {BATCH:,} rowids a transaction"
         + ("" if after == 0 else "; going on after the last transaction the last run wrote"))
-    began = said = time.monotonic()
     first = after
     while after < last:
         upto = min(after + BATCH, last)
         with db.bulk() as written:
             written.execute(f"UPDATE content_lists SET kind = '{PLAIN_12[0]}' WHERE rowid > ? AND rowid <= ? "
                             "AND kind IS NULL", (after, upto))
-            written.execute(KINDS_12, (after, upto))
+            if each_batch:
+                written.execute(KINDS_12, (after, upto))
             _quotes_12(written, after, upto)
             written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'contents'", (upto,))
         after = upto
@@ -1168,7 +1265,7 @@ def _to_12(db: Database, log):
         written.execute(f"DROP TABLE {UNDER_WAY}")
     log(f"{db.path}: the kinds took {finished - began:.0f} seconds and the last transaction "
         f"{time.monotonic() - finished:.0f}; {figured[0]:,} of {figured[1]:,} libraries with figures keep them; the "
-        f"depot is at format 12, in {time.monotonic() - began:.0f} seconds")
+        f"depot is at format 12, in {time.monotonic() - started:.0f} seconds")
 
 
 def _quotes_12(con, after: int, upto: int):
@@ -1263,19 +1360,20 @@ TABLES_13 = (
     "CREATE TABLE IF NOT EXISTS taggings (text TEXT NOT NULL, tag TEXT NOT NULL, joined_change INTEGER NOT NULL, "
     "left_change INTEGER, change INTEGER NOT NULL, PRIMARY KEY (text, tag, joined_change)) WITHOUT ROWID",
     "CREATE INDEX IF NOT EXISTS taggings_change ON taggings (change)")
-# format 13: the rows of taggings the revisions of rowids in (?, ?] of texts_revisions start, each revision read on
-# its own, so a batch needs no other: one for each tag a revision r holds that the revision of its text just before
-# it lacks (or that its text's first revision holds), joined at r's change and left at the change of the first later
-# revision of its text that lacks it (null when none does), that later change, or else r's, the row's change
-TAGGINGS_13 = (
-    "WITH s AS (SELECT r.id, j.value AS tag, r.change, (SELECT min(n.change) FROM texts_revisions n WHERE n.id = r.id "
-    "AND n.revision > r.revision AND NOT EXISTS (SELECT 1 FROM json_each(n.tags) m WHERE m.value = j.value)) AS gone "
-    "FROM texts_revisions r, json_each(r.tags) j WHERE r.rowid > ? AND r.rowid <= ? AND NOT EXISTS ("
-    "SELECT 1 FROM texts_revisions p, json_each(p.tags) q WHERE p.id = r.id AND p.revision = ("
-    "SELECT max(o.revision) FROM texts_revisions o WHERE o.id = r.id AND o.revision < r.revision) "
-    "AND q.value = j.value)) "
-    "INSERT OR IGNORE INTO taggings (text, tag, joined_change, left_change, change) "
-    "SELECT id, tag, change, gone, coalesce(gone, change) FROM s WHERE true")
+# format 13: every revision of the texts after the text ?, with its tags, copied into a table of the writer's
+# temporary database in one sequential scan sorted by text id then revision, which the stage taggings then reads a
+# batch at a time and turns into rows of taggings (_tagged_13): a scan of the file left open while the stage commits
+# would keep every page it writes in the WAL until the end. NOT INDEXED and the unary plus keep SQLite from reading
+# the table through an index, whose order is not the file's. The bytes of temporary files the sort and the table take
+# for each revision, about
+TAGGED_TABLE_13 = ("CREATE TEMP TABLE upgrade_tagged (id TEXT NOT NULL, revision INTEGER NOT NULL, "
+                   "change INTEGER NOT NULL, tags TEXT NOT NULL, PRIMARY KEY (id, revision)) WITHOUT ROWID")
+COPY_TAGGED_13 = ("INSERT INTO temp.upgrade_tagged (id, revision, change, tags) SELECT id, revision, change, tags "
+                  "FROM texts_revisions NOT INDEXED WHERE id > ? ORDER BY +id, +revision")
+TAGGED_13 = "SELECT id, revision, change, tags FROM temp.upgrade_tagged WHERE id > ? ORDER BY id, revision LIMIT ?"
+TAGGED_REST_13 = ("SELECT id, revision, change, tags FROM temp.upgrade_tagged WHERE id = ? AND revision > ? "
+                  "ORDER BY revision")
+TAGGINGS_SORTED_13 = 120
 # format 13: what the name of a row of upgrade_under_way that records a dataset revision a corpus names begins with
 # (then the dataset's id, a space and the corpus's id; its after holds the revision)
 NAMED_13 = "named "
@@ -1290,8 +1388,16 @@ SAMPLE_13 = "ALTER TABLE tokenizers_revisions ADD COLUMN sample TEXT"
 # order of their names, each once, as its copy (the rows of taggings the stage taggings made from them)
 SIZES_13 = (("content_kind", "TEXT"), ("content_length", "INTEGER"), ("content_bytes", "INTEGER"),
             ("current_tags", "TEXT"))
+# the kind, length and bytes of every content version, copied in one sequential scan of content_lists into a table
+# of the writer's temporary database, in the order of its key, which the statement looks them up in: a lookup in
+# content_lists itself would read its pages in the order of the revisions, one random read each on a file bigger
+# than the memory
+SIZES_TABLE_13 = ("CREATE TEMP TABLE upgrade_sizes (id TEXT NOT NULL, version INTEGER NOT NULL, kind TEXT, "
+                  "length INTEGER, bytes INTEGER, PRIMARY KEY (id, version)) WITHOUT ROWID")
+COPY_SIZES_13 = ("INSERT INTO temp.upgrade_sizes (id, version, kind, length, bytes) SELECT id, version, kind, length, "
+                 "bytes FROM content_lists NOT INDEXED ORDER BY +id, +version")
 FILL_SIZES_13 = ("UPDATE texts_revisions SET (content_kind, content_length, content_bytes) = (SELECT c.kind, c.length, "
-                 "c.bytes FROM content_lists c WHERE c.id = texts_revisions.id AND "
+                 "c.bytes FROM temp.upgrade_sizes c WHERE c.id = texts_revisions.id AND "
                  "c.version = texts_revisions.content_version), current_tags = CASE WHEN latest THEN (SELECT "
                  "json_group_array(g.value ORDER BY g.value) FROM (SELECT DISTINCT value FROM json_each(tags)) g) END "
                  "WHERE rowid > ? AND rowid <= ?")
@@ -1299,30 +1405,53 @@ FILL_SIZES_13 = ("UPDATE texts_revisions SET (content_kind, content_length, cont
 # locked library held the text, whose locked part is folded away
 LIBRARY_FACETS_13 = ("library", "pinned newer", "library kind", "library tag", "library split")
 SPLIT_13 = ("texts split", "tag split", "license split")
+# format 13: what the counts of COUNTS_13 read of every current text, copied into a table of the writer's temporary
+# database in one sequential scan of texts_revisions (each lookup in the temporary tables, which the memory holds):
+# its status, the kind, length and bytes of its content version (has: whether there is one), its tags and licenses,
+# and whether a locked library holds it (locked, 1 or 0, as LOCKED_10 says), the texts locked libraries hold copied
+# first from one sequential scan of memberships
+LOCKED_TABLE_13 = ("CREATE TEMP TABLE upgrade_locked (text TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID",
+                   "INSERT OR IGNORE INTO temp.upgrade_locked (text) SELECT text FROM memberships NOT INDEXED "
+                   "WHERE left_change IS NULL AND library IN (SELECT id FROM libraries_revisions WHERE latest "
+                   "AND locked_at IS NOT NULL) ORDER BY +text")
+CURRENT_TABLE_13 = ("CREATE TEMP TABLE upgrade_current (status TEXT, has INTEGER, kind TEXT, length INTEGER, "
+                    "bytes INTEGER, tags TEXT, licenses TEXT, locked INTEGER)",
+                    "INSERT INTO temp.upgrade_current (status, has, kind, length, bytes, tags, licenses, locked) "
+                    "SELECT t.status, c.id IS NOT NULL, c.kind, c.length, c.bytes, t.tags, t.licenses, "
+                    "EXISTS (SELECT 1 FROM temp.upgrade_locked k WHERE k.text = t.id) FROM texts_revisions t "
+                    "NOT INDEXED LEFT JOIN temp.upgrade_sizes c ON c.id = t.id AND c.version = t.content_version "
+                    "WHERE t.latest")
 # format 13: the counts of what the current texts of each status hold, by kind and by plain tag set, and the splits
-# of each tag and license with their characters and bytes, each made from every current text; the facets they make
+# of each tag and license with their characters and bytes, each made from every current text (CURRENT_TABLE_13);
+# the facets they make
 SUMS_13 = "count(*), coalesce(sum(c.length), 0), coalesce(sum(c.bytes), 0)"
-CURRENT_13 = "texts_revisions t {join} content_lists c ON c.id = t.id AND c.version = t.content_version"
+CURRENT_13 = "temp.upgrade_current c"
 COUNTS_13 = (
-    ("kind", f"SELECT t.status || ' ' || c.kind, {SUMS_13} FROM {CURRENT_13.format(join='JOIN')} WHERE t.latest "
-             "GROUP BY 1"),
-    ("plain tagset", "SELECT t.status || ' ' || (SELECT json_group_array(g.value ORDER BY g.value) FROM "
-                     f"(SELECT DISTINCT value FROM json_each(t.tags)) g), {SUMS_13} "
-                     f"FROM {CURRENT_13.format(join='JOIN')} WHERE t.latest AND c.kind = 'plain' GROUP BY 1"),
-    ("tag split", f"SELECT {SPLIT_NAME_10}j.value, {SUMS_13} FROM {CURRENT_13.format(join='LEFT JOIN')}, "
-                  "json_each(t.tags) j WHERE t.latest GROUP BY 1"),
-    ("license split", f"SELECT {SPLIT_NAME_10}j.value, {SUMS_13} FROM {CURRENT_13.format(join='LEFT JOIN')}, "
-                      "json_each(t.licenses) j WHERE t.latest GROUP BY 1"))
+    ("kind", f"SELECT c.status || ' ' || c.kind, {SUMS_13} FROM {CURRENT_13} WHERE c.has GROUP BY 1"),
+    ("plain tagset", "SELECT c.status || ' ' || (SELECT json_group_array(g.value ORDER BY g.value) FROM "
+                     f"(SELECT DISTINCT value FROM json_each(c.tags)) g), {SUMS_13} "
+                     f"FROM {CURRENT_13} WHERE c.has AND c.kind = 'plain' GROUP BY 1"),
+    ("tag split", f"SELECT c.status || ' ' || c.locked || ' ' || j.value, {SUMS_13} FROM {CURRENT_13}, "
+                  "json_each(c.tags) j GROUP BY 1"),
+    ("license split", f"SELECT c.status || ' ' || c.locked || ' ' || j.value, {SUMS_13} FROM {CURRENT_13}, "
+                      "json_each(c.licenses) j GROUP BY 1"))
 
 
-def _to_13(db: Database, log, records: list[dict] | None = None, public: str | None = None):
+def _to_13(db: Database, log, records: list[dict] | None = None, public: str | None = None,
+           checked: "Check | None" = None):
     """Format 12 to 13, as the module says: the depot marked half upgraded
     with a row of upgrade_under_way for each stage of STAGES_13 and one for
     each dataset revision a corpus record of records names (NAMED_13), then
     each stage whose row is left, each deleting its row as it ends, then the
     mark dropped. public: the depot's public address, which the recipe data
-    sections it says name (its name without one)."""
+    sections it says name (its name without one). checked: the check that
+    ran right before (check), whose measures of the snapshots the stages
+    locked and datasets write when the depot did not change since it read
+    them (_state_13)."""
     from .depot import half_upgraded
+    known = {}
+    if checked is not None and checked.state is not None and checked.state == _state_13(db.reader()):
+        known = dict(checked.measured)
     if not half_upgraded(db.reader()):
         own = _owner_13(db.reader())
         with db.bulk() as con:
@@ -1337,7 +1466,9 @@ def _to_13(db: Database, log, records: list[dict] | None = None, public: str | N
     for name, stage in STAGES_13.items():
         if db.reader().execute(f"SELECT 1 FROM {UNDER_WAY} WHERE stage = ?", (name,)).fetchall():
             if name == "datasets":
-                stage(db, log, public)
+                stage(db, log, known, public)
+            elif name == "locked":
+                stage(db, log, known)
             else:
                 stage(db, log)
     with db.bulk() as con:
@@ -1418,51 +1549,106 @@ def _origin_label(origin: dict) -> str:
     return f"revision {origin['revision']} of the dataset {origin['name']}, {origin['dataset']}"
 
 
-def _locked_13(db: Database, log):
-    """The stage locked of the step to format 13: each locked library the
-    depot owns made a snapshot of one part (wpt_depot.conversion), each in
-    a transaction of its own after its texts were read and checked, those
-    a run before wrote skipped."""
+def _state_13(con) -> tuple:
+    """What tells whether the depot changed since a check read it: its
+    latest change and the largest rowid of each table a conversion reads
+    (STATE_13), the upgrade's own changes and the revisions of the about
+    row they make left out: the step to format 12 between a check and the
+    step to format 13 writes only the kind plain on content versions of no
+    kind, which a conversion reads as plain already."""
+    upgrades = "SELECT id FROM changes WHERE kind = 'upgrade'"
+    return tuple(con.execute(
+        f"SELECT (SELECT coalesce(max(id), 0) FROM changes WHERE id NOT IN ({upgrades})), "
+        f"(SELECT coalesce(max(revision), 0) FROM about_revisions WHERE change NOT IN ({upgrades})), "
+        + ", ".join(f"(SELECT coalesce(max(rowid), 0) FROM {table})" for table in STATE_13
+                    if table != "about_revisions")).fetchall()[0])
+
+
+def _measured_13(db: Database, log, known: dict) -> tuple[list, list, list, set]:
+    """What the stages locked and datasets have to write: (the locked
+    libraries' snapshots left, every dataset revision's snapshot, why each
+    dataset revision left out is, the keys of the snapshots written), as
+    wpt_depot.conversion.plan plans them, with the measure of each left in
+    known ({conversion.key_of: Measured}): those known lacks are measured
+    in one sorted merge (conversion.measure_all)."""
     from . import conversion
     con = db.reader()
-    libraries, _, _ = conversion.plan(con, {}, _reads_here(db.path))
+    libraries, datasets, left = conversion.plan(con, _named_13(con), _reads_here(db.path))
     done = {json.loads(origin).get("library") for (origin,) in con.execute(
         "SELECT origin FROM snapshots WHERE origin ->> 'kind' = 'library'")}
-    left = [one for one in libraries if one.origin["library"] not in done]
-    log(f"{db.path}: making a snapshot of each of its {len(libraries)} locked libraries, {len(left)} left, each from "
-        "its pins read at the change that locked it, checked against them")
-    change = _upgrade_change(con)
-    for planned in left:
-        measured = conversion.measure(con, planned)
+    done |= set(con.execute("SELECT dataset, revision FROM legacy_snapshot_of").fetchall())
+    libraries = [one for one in libraries if conversion.key_of(one) not in done]
+    wanted = [one for one in [*libraries, *datasets] if one.reuses is None and conversion.key_of(one) not in done]
+    missing = [one for one in wanted if not _fits(one, known)]
+    if missing:
+        log(f"{db.path}: reading what the {len(missing)} snapshots left hold and checking each revision they read "
+            f"against what the libraries read, in one sorted merge (wpt_depot.conversion); SQLite sorts its scans in "
+            f"its temporary folder (SQLITE_TMPDIR, else /var/tmp, /usr/tmp or /tmp), about "
+            f"{_size(_sorted_bytes(con))} of free disk")
+        known.update(conversion.measure_all(con, missing, lambda line: log(f"{db.path}: {line}")))
+    elif wanted:
+        log(f"{db.path}: the {len(wanted)} snapshots left are those the check right before read and checked, the "
+            "depot unchanged since: each is written as the check read it")
+    return libraries, datasets, left, done
+
+
+def _fits(planned, known: dict) -> bool:
+    """Whether known holds a measure of the planned snapshot, of the same parts."""
+    from . import conversion
+    found = known.get(conversion.key_of(planned))
+    return found is not None and [(one["library"], one["locked"], one["change"]) for one in found.parts] == [
+        (part.library, part.locked, part.change) for part in planned.parts]
+
+
+def _sorted_bytes(con) -> int:
+    """About the bytes of temporary files conversion.measure_all's sorts take on the depot of con."""
+    from . import conversion
+    rows = con.execute("SELECT (SELECT coalesce(max(rowid), 0) FROM texts_revisions) + "
+                       "(SELECT coalesce(max(rowid), 0) FROM content_lists)").fetchall()[0][0]
+    return rows * conversion.SORTED
+
+
+def _locked_13(db: Database, log, known: dict):
+    """The stage locked of the step to format 13: each locked library the
+    depot owns made a snapshot of one part (wpt_depot.conversion), each in
+    a transaction of its own, from its measure (_measured_13), stopping on
+    a revision the snapshot would read otherwise, those a run before wrote
+    skipped."""
+    from . import conversion
+    libraries, _, _, _ = _measured_13(db, log, known)
+    log(f"{db.path}: making a snapshot of each locked library it owns, {len(libraries)} left, each from its pins "
+        "read at the change that locked it, checked against them")
+    change = _upgrade_change(db.reader())
+    for planned in libraries:
+        measured = known[conversion.key_of(planned)]
         if measured.differ:
             raise _differ_refused(planned, measured)
         with db.bulk() as written:
             _write_snapshot(written, planned, measured, change)
         log(f"{db.path}: the snapshot {planned.name} of the locked library {planned.origin['name']}: "
-            f"{measured.texts:,} texts, {measured.rows:,} pins read in {measured.seconds:.1f} seconds")
+            f"{measured.texts:,} texts, {measured.rows:,} pins read")
     with db.bulk() as written:
         written.execute(f"DELETE FROM {UNDER_WAY} WHERE stage = 'locked'")
 
 
-def _datasets_13(db: Database, log, public: str | None = None):
+def _datasets_13(db: Database, log, known: dict, public: str | None = None):
     """The stage datasets of the step to format 13: each dataset revision a
     corpus names and each dataset's current revision made a snapshot with a
-    part for each library it reads (wpt_depot.conversion), or given the
-    snapshot of the locked library it reads alone, recorded in
-    legacy_snapshot_of, each in a transaction of its own, those a run
-    before wrote skipped; then the recipe data section that builds each
-    one said."""
+    part for each library it reads (wpt_depot.conversion), from its measure
+    (_measured_13), or given the snapshot of the locked library it reads
+    alone, recorded in legacy_snapshot_of, each in a transaction of its
+    own, stopping on a revision the snapshot would read otherwise, those a
+    run before wrote skipped; then the recipe data section that builds
+    each one said."""
     from . import conversion
+    _, datasets, left, done = _measured_13(db, log, known)
     con = db.reader()
-    _, datasets, left = conversion.plan(con, _named_13(con), _reads_here(db.path))
-    done = {(dataset, revision) for dataset, revision in con.execute(
-        "SELECT dataset, revision FROM legacy_snapshot_of")}
     log(f"{db.path}: making a snapshot of each of {len(datasets)} dataset revisions, "
-        f"{sum((one.origin['dataset'], one.origin['revision']) not in done for one in datasets)} left"
+        f"{sum(conversion.key_of(one) not in done for one in datasets)} left"
         + "".join(f"; not converted: {one}" for one in left))
     change = _upgrade_change(con)
     for planned in datasets:
-        key = (planned.origin["dataset"], planned.origin["revision"])
+        key = conversion.key_of(planned)
         if key in done:
             continue
         if planned.reuses is not None:
@@ -1474,7 +1660,7 @@ def _datasets_13(db: Database, log, public: str | None = None):
             log(f"{db.path}: {_origin_label(planned.origin)} reads the locked library {planned.reuses} alone: it is "
                 f"the snapshot {planned.name}")
             continue
-        measured = conversion.measure(con, planned)
+        measured = known[key]
         if measured.differ:
             raise _differ_refused(planned, measured)
         with db.bulk() as written:
@@ -1482,7 +1668,7 @@ def _datasets_13(db: Database, log, public: str | None = None):
             written.execute("INSERT INTO legacy_snapshot_of (dataset, revision, snapshot) VALUES (?, ?, ?)",
                             (*key, snapshot))
         log(f"{db.path}: the snapshot {planned.name} of {_origin_label(planned.origin)}: {measured.texts:,} texts, "
-            f"{measured.rows:,} rows of its libraries read in {measured.seconds:.1f} seconds")
+            f"{measured.rows:,} rows of its libraries read")
     for planned in datasets:
         found = con.execute("SELECT s.digest FROM legacy_snapshot_of l JOIN snapshots s ON s.id = l.snapshot "
                             "WHERE l.dataset = ? AND l.revision = ?",
@@ -1508,11 +1694,15 @@ def _tables_13(db: Database, log):
     tables snapshots and snapshot_sets, the index snapshots_name and the
     table taggings, empty (TABLES_13), the column sample of
     tokenizers_revisions and the columns of SIZES_13 of texts_revisions,
-    empty (the stage sizes fills them), and the counts of COUNTS_13 made again from every current
-    text, their rows before deleted."""
-    log(f"{db.path}: making the tables of the snapshots and of the tags and counting what the texts of each status hold by kind, by "
-        "set of tags and by tag and license in characters and bytes, in one transaction that reads every current "
-        "text three times; run again after a stop, it does it again")
+    empty (the stage sizes fills them), and the counts of COUNTS_13 made
+    again from every current text, their rows before deleted, read from
+    the tables of the writer's temporary database that one sequential scan
+    of content_lists, of memberships and of texts_revisions fill
+    (SIZES_TABLE_13, LOCKED_TABLE_13, CURRENT_TABLE_13)."""
+    log(f"{db.path}: making the tables of the snapshots and of the tags and counting what the texts of each status "
+        "hold by kind, by set of tags and by tag and license in characters and bytes, in one transaction that reads "
+        "content_lists, memberships and texts_revisions once each, in the order of the file; run again after a "
+        "stop, it does it again")
     began = time.monotonic()
     with db.bulk() as con:
         for statement in TABLES_13:
@@ -1523,12 +1713,26 @@ def _tables_13(db: Database, log):
         for column, kind in SIZES_13:
             if column not in held:
                 con.execute(f"ALTER TABLE texts_revisions ADD COLUMN {column} {kind}")
+        _sizes_copied(con)
+        for statement in (*LOCKED_TABLE_13, *CURRENT_TABLE_13):
+            con.execute(statement)
         for facet, query in COUNTS_13:
             con.execute("DELETE FROM counts WHERE facet = ?", (facet,))
             con.execute(f"INSERT INTO counts (facet, name, texts, characters, bytes) SELECT '{facet}', * FROM "
                         f"({query})")
+        con.execute("DROP TABLE temp.upgrade_current")
+        con.execute("DROP TABLE temp.upgrade_locked")
         con.execute(f"DELETE FROM {UNDER_WAY} WHERE stage = 'tables'")
     log(f"{db.path}: the stage tables took {time.monotonic() - began:.0f} seconds")
+
+
+def _sizes_copied(con):
+    """The kind, length and bytes of every content version in the table upgrade_sizes of the temporary database of
+    con, the writer, copied once (SIZES_TABLE_13, COPY_SIZES_13) for the stages tables and sizes, in con's
+    transaction."""
+    if not con.execute("SELECT 1 FROM temp.sqlite_master WHERE name = 'upgrade_sizes'").fetchall():
+        con.execute(SIZES_TABLE_13)
+        con.execute(COPY_SIZES_13)
 
 
 def _counts_13(db: Database, log):
@@ -1576,37 +1780,104 @@ def _views_13(db: Database, log):
 
 def _taggings_13(db: Database, log):
     """The stage taggings of the step to format 13: the tags every revision
-    of a text holds become rows of taggings (TAGGINGS_13), the revisions read
-    in rowid order, BATCH rowids a transaction, the row of upgrade_under_way
-    recording the last rowid each transaction ended at, so a run after a stop
-    goes on after it. The revisions keep their column tags as it is."""
+    of a text holds become rows of taggings (_tagged_13), the revisions
+    copied, in one sequential scan sorted by text id, into a table of the
+    writer's temporary database (TAGGED_TABLE_13, COPY_TAGGED_13), then read
+    from it about BATCH revisions at a time, whole texts, the rows of each
+    batch written in a transaction that records the last text's id in
+    upgrade_under_way (0 before the first), so a run after a stop copies
+    only the texts after it. No read of the file stays open across a
+    commit, so the WAL is cut back after each. The revisions keep their
+    column tags as it is."""
     con = db.reader()
     after = con.execute(f"SELECT after FROM {UNDER_WAY} WHERE stage = 'taggings'").fetchall()[0][0]
-    last = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
-    log(f"{db.path}: writing the tags of every revision of the texts as rows of taggings, rows {after:,} to "
-        f"{last:,} of texts_revisions, {BATCH:,} rowids a transaction"
-        + ("" if after == 0 else "; going on after the last transaction the last run wrote"))
+    total = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+    log(f"{db.path}: writing the tags of every revision of the texts as rows of taggings, the {total:,} revisions "
+        "copied in one sequential scan sorted by text id into SQLite's temporary folder (SQLITE_TMPDIR, else "
+        f"/var/tmp, /usr/tmp or /tmp), about {_size(total * TAGGINGS_SORTED_13)} of free disk"
+        + ("" if after == 0 else f"; going on after the text {after}, where the last run stopped"))
     began = said = time.monotonic()
-    first = after
-    while after < last:
-        upto = min(after + BATCH, last)
-        with db.bulk() as written:
-            written.execute(TAGGINGS_13, (after, upto))
-            written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'taggings'", (upto,))
-        after = upto
-        if time.monotonic() - said >= SAY_EVERY or after == last:
-            said = time.monotonic()
-            log(f"{db.path}: revision row {after:,} of {last:,}, {(after - first) / max(said - began, 1e-9):,.0f} "
-                f"rows a second, {said - began:.0f} seconds")
+    after = "" if after == 0 else after
     with db.bulk() as written:
+        written.execute("DROP TABLE IF EXISTS temp.upgrade_tagged")
+        written.execute(TAGGED_TABLE_13)
+        written.execute(COPY_TAGGED_13, (after,))
+    log(f"{db.path}: the revisions copied and sorted in {time.monotonic() - began:.0f} seconds")
+    read = 0
+    while True:
+        with db.bulk() as written:
+            batch = written.execute(TAGGED_13, (after, BATCH)).fetchall()
+            if not batch:
+                break
+            if len(batch) == BATCH:  # the rest of the last text
+                batch += written.execute(TAGGED_REST_13, (batch[-1][0], batch[-1][1])).fetchall()
+            for rows, last, revisions in _tagged_13(batch):
+                written.executemany("INSERT OR IGNORE INTO taggings (text, tag, joined_change, left_change, change) "
+                                    "VALUES (?, ?, ?, ?, ?)", rows)
+                read += revisions
+            after = batch[-1][0]
+            written.execute(f"UPDATE {UNDER_WAY} SET after = ? WHERE stage = 'taggings'", (after,))
+        if time.monotonic() - said >= SAY_EVERY:
+            said = time.monotonic()
+            log(f"{db.path}: the tags of {read:,} revisions written, the last text {after}, "
+                f"{read / max(said - began, 1e-9):,.0f} revisions a second, {said - began:.0f} seconds")
+    with db.bulk() as written:
+        written.execute("DROP TABLE IF EXISTS temp.upgrade_tagged")
         written.execute(f"DELETE FROM {UNDER_WAY} WHERE stage = 'taggings'")
     log(f"{db.path}: the stage taggings took {time.monotonic() - began:.0f} seconds")
+
+
+def _tagged_13(revisions):
+    """The rows of taggings (text, tag, joined_change, left_change, change)
+    of the revisions (id, revision, change, tags as JSON text) in the order
+    of their ids, then of their revisions: for each tag a revision holds
+    that the revision before it of its text lacks (or with none before it),
+    a row joined at its change and left at the lowest change of the later
+    revisions of its text that lack the tag (null for none), its change
+    that one, else the change it joined at. It gives (rows, the last text's
+    id, the revisions read) each time the rows of about BATCH revisions are
+    made, at the end of a text, then the rest."""
+    rows, count, held, seen = [], 0, [], None
+    parsed = {}  # a JSON array as text: its values, in order, and as a set
+
+    def tags_of(listed):
+        found = parsed.get(listed)
+        if found is None:
+            values = json.loads(listed)
+            found = parsed[listed] = (values, set(values))
+            if len(parsed) > 1_000_000:
+                parsed.clear()
+        return found
+
+    def flush():
+        for at, (_, change, (values, _)) in enumerate(held):
+            before = held[at - 1][2][1] if at else ()
+            for tag in values:
+                if tag in before:
+                    continue
+                gone = min((later[1] for later in held[at + 1:] if tag not in later[2][1]), default=None)
+                rows.append((seen, tag, change, gone, change if gone is None else gone))
+
+    for text, revision, change, tags in revisions:
+        if text != seen:
+            if seen is not None:
+                flush()
+                if count >= BATCH:
+                    yield rows, seen, count
+                    rows, count = [], 0
+            seen, held = text, []
+        held.append((revision, change, tags_of(tags)))
+        count += 1
+    if seen is not None:
+        flush()
+        yield rows, seen, count
 
 
 def _sizes_13(db: Database, log):
     """The stage sizes of the step to format 13: every revision of a text
     keeps the kind, length and bytes of the content version it reads, copied
-    from content_lists, and each current revision a copy of its text's tags
+    from content_lists through the temporary table of the sizes
+    (_sizes_copied), and each current revision a copy of its text's tags
     (FILL_SIZES_13), the revisions read in rowid order,
     BATCH rowids a transaction, the row of upgrade_under_way recording the
     last rowid each transaction ended at, so a run after a stop goes on
@@ -1619,6 +1890,9 @@ def _sizes_13(db: Database, log):
         + ("" if after == 0 else "; going on after the last transaction the last run wrote"))
     began = said = time.monotonic()
     first = after
+    if after < last:
+        with db.bulk() as written:
+            _sizes_copied(written)
     while after < last:
         upto = min(after + BATCH, last)
         with db.bulk() as written:
@@ -1631,9 +1905,14 @@ def _sizes_13(db: Database, log):
                 f"rows a second, {said - began:.0f} seconds")
     with db.bulk() as written:
         written.execute(f"DELETE FROM {UNDER_WAY} WHERE stage = 'sizes'")
+        written.execute("DROP TABLE IF EXISTS temp.upgrade_sizes")
     log(f"{db.path}: the stage sizes took {time.monotonic() - began:.0f} seconds")
 
 
+# the tables whose largest rowid, with the latest change, tells whether the depot changed since a check (_state_13):
+# what the conversions read
+STATE_13 = ("texts_revisions", "content_lists", "pins", "memberships", "libraries_revisions", "datasets_revisions",
+            "pulls", "about_revisions")
 # the stages of the step to format 13, in order, by the name of their row of upgrade_under_way
 STAGES_13 = {"tables": _tables_13, "taggings": _taggings_13, "sizes": _sizes_13, "locked": _locked_13,
              "datasets": _datasets_13, "counts": _counts_13, "views": _views_13}
@@ -1642,18 +1921,22 @@ STAGES_13 = {"tables": _tables_13, "taggings": _taggings_13, "sizes": _sizes_13,
 FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11, 11: _to_12, 12: _to_13}
 
 
-# what `wpt depot upgrade --check` takes for the time of what it does not read itself, measured cold on disk by
-# packages/wpt-depot/bench/upgrade.py on 2,000,000 synthetic texts: rows of content_lists the step to format 12 writes
-# a second, its last transaction included, and current texts a second the stage tables of the step to format 13 counts
-RATE_12, RATE_13_TABLES = 70_000, 140_000
-# the same for the stage taggings of the step to format 13: revisions it reads a second (bench/upgrade.py measures
-# 377,000 on its 2,000,000 texts, cold; bench/tags.py 215,000), and the bytes of the file a row of taggings takes,
-# its index's entry included (3,508,771 rows in 218 MB there)
-RATE_13_TAGGINGS, TAGGING_BYTES = 200_000, 62
-# the same for the stage sizes: revisions it writes a second (bench/upgrade.py measures 876,000 on its 2,000,000
-# texts after the stage tables, 175,000 with the file dropped from the page cache right before), and the bytes of the
-# file each revision grows by (20 there)
-RATE_13_SIZES, SIZE_BYTES = 150_000, 20
+# what `wpt depot upgrade --check` takes for the time of what it does not read itself, measured on bench/large.py's
+# depot (2,500,000 texts, 18,322,341 revisions, 4,624,673 content versions, 8% of them items and 6% conversations,
+# 21 GB, with 1.5 GB of memory): rows of content_lists the step to format 12 writes a second, its last transaction
+# included (4,624,673 in 66 seconds, the quotes of its conversations read from their parts included), revisions a
+# second its count of the items' kinds reads at most (18,322,341 in 40 seconds when it scans texts_revisions; the
+# 370,000 items looked up one by one took 32), and revisions a second the stage tables of the step to format 13 reads
+# and counts (280,000 and 330,000 in two runs)
+RATE_12, RATE_12_KINDS, RATE_13_TABLES = 70_000, 450_000, 250_000
+# the same for the stage taggings: revisions it copies, sorts and turns into rows a second (230,000 there), and the
+# bytes of the file a row of taggings takes, its index's entry included, besides twice its text's and tag's names
+# (_sampled_taggings: 11,512,394 rows in 999 MB on bench/large.py's depot, 3,508,771 in 218 MB on bench/upgrade.py's)
+RATE_13_TAGGINGS, TAGGING_ROW_BYTES = 200_000, 30
+# the same for the stage sizes: revisions it writes a second (240,000 and 280,000 on bench/large.py's depot), and
+# the bytes of the file each revision grows by, the pages its rows no longer fit in split included (43 on
+# bench/large.py's depot, whose texts_revisions grew from 4,407 MB to 5,193; 20 on bench/upgrade.py's)
+RATE_13_SIZES, SIZE_BYTES = 200_000, 43
 # the bytes of the file the copy of a text's tags on its current revision takes (current_tags): for each current
 # text, and for each tag it has (bench/upgrade.py measures 5.4 on the three-letter tags of its synthetic depot, whose
 # texts_revisions grows by 31.6 bytes a revision with SIZE_BYTES; longer names take more)
@@ -1662,6 +1945,8 @@ REVISION_BYTES = 200  # bytes of the file a revision of a text takes, about: wha
 SAMPLED = 2_000  # rows the check reads to measure what it does not read whole (content rows' size, tag sets)
 COUNT_ROW_BYTES = 64  # bytes a row of counts takes besides its name, about
 KIND_BYTES = 6  # bytes the kind plain adds to a content version of no kind
+# what the check's file beside the depot's file adds to its name (saved_check_path)
+SAVED_CHECK = ".upgrade-check.json"
 # how long the upgrade waits for every other connection to the depot file to close before it refuses (_alone)
 ALONE_WAIT_MS = 1000
 RUNBOOK = (
@@ -1669,8 +1954,10 @@ RUNBOOK = (
     "format now, since this wpt (format 13) cannot open a depot of format 12 or older.",
     "Order: upgrade the server first, then each clone: a clone of format 13 refuses an upstream of format 12.",
     "Stop: stop every process that has the depot open (`wpt depot web`, its jobs, a backup, any other `wpt depot` "
-    "command) first; the upgrade refuses while one still has the file open, since the code of the old format "
-    "checks the format only when it opens the depot and would go on writing into the half-upgraded file.")
+    "command) before `--yes`; the upgrade refuses while one still has the file open, since the code of the old "
+    "format checks the format only when it opens the depot and would go on writing into the half-upgraded file. "
+    "`--check` may run while the web app serves: `--yes` takes what it saved if nothing was written since, and "
+    "the WAL keeps what the app writes until the check ends.")
 
 
 @dataclass
@@ -1679,16 +1966,73 @@ class Check:
     (passed), what it says (lines), the snapshots the step to format 13
     would make ({name, origin, at_change, digest, texts, reuses}), what
     would stop it (failures), its cost ({seconds, wal, added, backup},
-    seconds by step) and whether there is anything to upgrade (needed)."""
+    seconds by step), whether there is anything to upgrade (needed), what
+    it measured of each snapshot ({conversion.key_of: Measured}) and the
+    depot's state when it read them (_state_13), which the upgrade right
+    after writes when the state is the same."""
     passed: bool
     lines: list[str]
     snapshots: list[dict] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     cost: dict = field(default_factory=dict)
     needed: bool = True
+    measured: dict = field(default_factory=dict)
+    state: tuple | None = None
 
 
-def check(address: str, records: list[dict] | None = None, public: str | None = None) -> Check:
+def saved_check_path(path: Path) -> Path:
+    """The file beside the depot's file where the check saves what it measured (SAVED_CHECK)."""
+    return path.with_name(path.name + SAVED_CHECK)
+
+
+def _save_check(path: Path, state: tuple, measured: dict):
+    """What the check measured of each snapshot and the depot's state when it read them, written beside the
+    depot's file (saved_check_path) through a temporary file and a rename."""
+    import base64
+    found = []
+    for key, one in measured.items():
+        found.append({"key": list(key) if isinstance(key, tuple) else key,
+                      "sets": [[k, owner, bound, base64.b64encode(bitmap.serialize()).decode("ascii")]
+                               for k, owner, bound, bitmap in one.sets],
+                      "summary": one.summary, "texts": one.texts, "characters": one.characters, "bytes": one.bytes,
+                      "digest": one.digest, "rows": one.rows, "differ": one.differ, "examples": one.examples,
+                      "seconds": one.seconds, "parts": one.parts})
+    target = saved_check_path(path)
+    temporary = target.with_name(target.name + ".part")
+    temporary.write_text(json.dumps({"format": FORMAT, "state": list(state), "saved_at": now(), "measured": found}),
+                         encoding="utf-8", newline="\n")
+    temporary.replace(target)
+
+
+def _saved_check(path: Path, state: tuple) -> tuple[dict, str]:
+    """({conversion.key_of: Measured} the saved check holds when it was made by this code's format on the depot in
+    the state given, else {}; what to say of it, '' when there is none)."""
+    import base64
+    from pyroaring import BitMap
+    from . import conversion
+    target = saved_check_path(path)
+    if not target.is_file():
+        return {}, ""
+    try:
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        if saved.get("format") != FORMAT or tuple(saved["state"]) != tuple(state):
+            return {}, (f"the check saved in {target} at {saved.get('saved_at')} read the depot in another state "
+                        "(a change written since, or another format): every snapshot is measured again")
+        known = {}
+        for one in saved["measured"]:
+            key = tuple(one["key"]) if isinstance(one["key"], list) else one["key"]
+            known[key] = conversion.Measured(
+                [(k, owner, bound, BitMap.deserialize(base64.b64decode(bitmap))) for k, owner, bound, bitmap
+                 in one["sets"]], one["summary"], one["texts"], one["characters"], one["bytes"], one["digest"],
+                one["rows"], one["differ"], one["examples"], one["seconds"], one["parts"])
+    except (ValueError, KeyError, TypeError) as error:
+        return {}, f"the check saved in {target} cannot be read ({error}): every snapshot is measured again"
+    return known, (f"the check saved in {target} at {saved['saved_at']} read the depot as it is now: its measures "
+                   "are taken, and only a snapshot it lacks is measured")
+
+
+def check(address: str, records: list[dict] | None = None, public: str | None = None, log=None,
+          save: bool = False) -> Check:
     """What upgrading the depot at address would do, read through a
     connection that opens its file read-only, so nothing is written: the
     steps left; for a depot of format 11, the check the step to format 12
@@ -1704,6 +2048,10 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
     runbook (RUNBOOK) and the command that runs it. A depot older than
     format 11 or a folder gets the steps alone: each stage of the step to
     format 13 checks its conversions itself and stops on a difference.
+    It reads in one read transaction. A check saved beside the depot's file
+    (saved_check_path) of the depot in the same state (_state_13) gives the
+    measures it holds, and save writes what this one measured there, so a
+    check run while the depot is in use spares `--yes` its reads.
     OtherFormat for a newer format."""
     from . import conversion
     from .depot import format_of, half_upgraded, location, other_format
@@ -1716,6 +2064,7 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
                             "step to format 13 checks the snapshots it makes and stops on a difference", *RUNBOOK,
                             f"Run: {command}"])
     db = Database(path, readonly=True)
+    con = None
     try:
         con = db.reader()
         start, half = _format(db), half_upgraded(con)
@@ -1731,6 +2080,7 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
                          "stops on a difference, writing nothing of the snapshot it was making.")
             return Check(True, [*lines, *RUNBOOK, f"Run: {command}"])
         failures = []
+        con.execute("BEGIN")  # one read transaction: the plan, the state and the measures of one depot
         if start == 11:
             statement = con.execute("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'content_lists'"
                                     ).fetchall()[0][0]
@@ -1748,10 +2098,31 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
             lines.append("No store given: only each dataset's current revision converts, not the revisions corpora "
                          "were built from (set WPT_STORE to the store that holds them).")
         libraries, datasets, left = conversion.plan(con, named, _reads_here(path))
-        measured, made = {}, []
+        state = _state_13(con)
+        wanted = [*libraries, *(one for one in datasets if one.reuses is None)]
+        known, said = _saved_check(path, state)
+        measured = {conversion.key_of(one): known[conversion.key_of(one)] for one in wanted if _fits(one, known)}
+        if said:
+            lines.append(f"Saved check: {said}.")
+            if log is not None:
+                log(f"{path}: {said}")
+        missing = [one for one in wanted if conversion.key_of(one) not in measured]
+        if missing:
+            if log is not None:
+                log(f"{path}: reading what each snapshot the step to format 13 would make holds and checking each "
+                    "revision it reads against what the libraries read, in one sorted merge (wpt_depot.conversion); "
+                    "SQLite sorts its scans in its temporary folder (SQLITE_TMPDIR, else /var/tmp, /usr/tmp or "
+                    f"/tmp), about {_size(_sorted_bytes(con))} of free disk")
+            measured.update(conversion.measure_all(con, missing,
+                                                   None if log is None else lambda line: log(f"{path}: {line}")))
+        if save:
+            _save_check(path, state, measured)
+            lines.append(f"Saved: what this check measured, in {saved_check_path(path)}; `wpt depot upgrade --yes` "
+                         "takes it while the depot stays as it is now, and measures again after any change.")
+        made = []
         lines.append("What converts (step 12 to 13):")
         for planned in libraries:
-            found = measured[planned.origin["library"]] = conversion.measure(con, planned)
+            found = measured[planned.origin["library"]]
             made.append(_made(planned, found))
             lines.append(f"  {_origin_label(planned.origin)} -> snapshot {planned.name}: {found.texts:,} texts, "
                          f"digest {found.digest}")
@@ -1762,7 +2133,7 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
                 lines.append(f"  {_origin_label(planned.origin)} ({planned.why}) reads the locked library "
                              f"{planned.reuses} alone -> the snapshot {planned.name}, no second one")
                 continue
-            found = measured[(planned.origin["dataset"], planned.origin["revision"])] = conversion.measure(con, planned)
+            found = measured[(planned.origin["dataset"], planned.origin["revision"])]
             made.append(_made(planned, found))
             parts = ", ".join(f"{part.library} ({'pins at ' if part.locked else 'members at '}{part.change})"
                               for part in planned.parts)
@@ -1803,6 +2174,8 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
         cost = _cost(con, path, start, half, [measured[key] for key in measured], libraries, datasets)
         lines += cost.pop("lines")
     finally:
+        if con is not None and not con.getautocommit():
+            con.execute("ROLLBACK")
         db.close()
     if failures:
         lines.append("The check FAILED: the upgrade would stop at what is named above. Nothing was written. Send these "
@@ -1810,7 +2183,7 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
         lines += [f"  {one}" for one in failures]
     else:
         lines += [*RUNBOOK, f"Run: {command}"]
-    return Check(not failures, lines, made, failures, cost)
+    return Check(not failures, lines, made, failures, cost, measured=measured, state=state)
 
 
 def _made(planned, measured) -> dict:
@@ -1829,35 +2202,45 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
     contents = max(0, rows - after) if start == 11 else 0
     step = max(1, rows // SAMPLED)
     row_bytes = _sampled_row_bytes(con, rows, step)
-    current = con.execute("SELECT count(*) FROM texts_revisions INDEXED BY texts_latest WHERE latest").fetchall()[0][0]
+    # from the counts, which every write keeps: counting an index would read its pages in the order of its keys
+    current = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'status'").fetchall()[0][0]
     revisions = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
     tagged = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'tag'").fetchall()[0][0]
     tagsets = _tagsets(con, current)
+    taggings, tagging_bytes = _sampled_taggings(con, current)
     converted = list(measured)
     snapshot_bytes = [conversion.set_bytes(one) + len(_json(one.summary).encode()) + 200 for one in converted]
-    seconds = {"11 to 12": contents / RATE_12, "12 to 13, tables": current / RATE_13_TABLES,
+    # the stages locked and datasets write what this check measured, when the upgrade runs right after it
+    again = sum(one.seconds for one in converted)
+    seconds = {"11 to 12": contents / RATE_12 + (revisions / RATE_12_KINDS if start == 11 else 0),
+               "12 to 13, tables": revisions / RATE_13_TABLES,
                "12 to 13, taggings": revisions / RATE_13_TAGGINGS, "12 to 13, sizes": revisions / RATE_13_SIZES,
-               "12 to 13, locked and datasets": sum(one.seconds for one in converted), "12 to 13, counts and views": 0.0}
-    again = seconds["12 to 13, locked and datasets"]
+               "12 to 13, locked and datasets": 0.0 if start == 12 else again, "12 to 13, counts and views": 0.0}
+    temporary = max(_sorted_bytes(con), revisions * TAGGINGS_SORTED_13)
     added = (contents * KIND_BYTES + sum(snapshot_bytes) + 50 * len(datasets)
-             + COUNT_ROW_BYTES * (tagsets + 50) + tagged * TAGGING_BYTES + revisions * SIZE_BYTES
+             + COUNT_ROW_BYTES * (tagsets + 50) + tagging_bytes + revisions * SIZE_BYTES
              + current * COPY_BYTES + tagged * COPY_TAG_BYTES)
     wal = max([int(min(contents, BATCH) * row_bytes * 1.1), *(int(one * 1.1) for one in snapshot_bytes),
-               COUNT_ROW_BYTES * (tagsets + 50) * 2, int(min(revisions, BATCH) * 3 * TAGGING_BYTES * 1.1),
+               COUNT_ROW_BYTES * (tagsets + 50) * 2, int(min(revisions, BATCH) * 3 * tagging_bytes / max(1, taggings) * 1.1),
                int(min(revisions, BATCH) * REVISION_BYTES * 1.1), 1 << 20])
     size = path.stat().st_size
     total = sum(seconds.values())
     lines = ["Cost of the steps left together:",
              *(f"  {name}: about {value:,.0f} seconds" for name, value in seconds.items() if start == 11
                or name != "11 to 12"),
-             f"  in all about {total:,.0f} seconds ({total / 60:,.1f} minutes); `--yes` runs this check again first, "
-             f"about {again:,.0f} seconds more (this check read {sum(one.rows for one in converted):,} rows of the "
-             f"libraries in {again:,.1f} seconds)",
+             f"  in all about {total:,.0f} seconds ({total / 60:,.1f} minutes); `--yes` runs this check again first: "
+             "it takes what `wpt depot upgrade --check` saved while the depot stays as it was then, and otherwise "
+             f"reads again, about {again:,.0f} seconds more (the libraries' {sum(one.rows for one in converted):,} "
+             f"rows read and every revision they read checked in {again:,.1f} seconds); the stages locked and "
+             "datasets then write the snapshots it measured, the depot unchanged since but for the upgrade's own steps",
+             f"  temporary folder: SQLite sorts in it (SQLITE_TMPDIR, else /var/tmp, /usr/tmp or /tmp), about "
+             f"{_size(temporary)} of free disk at most, for this check and for the upgrade; its files are deleted "
+             "as they are made, so nothing stays after a stop",
              f"  disk added: about {_size(added)} ({_size(sum(snapshot_bytes))} of snapshots"
              + (f", {_size(contents * KIND_BYTES)} of kinds on {contents:,} content versions" if contents else "")
-             + f", about {tagsets:,} rows of counts of plain tag sets, {_size(tagged * TAGGING_BYTES)} of "
-               f"taggings, at least {tagged:,} rows, one for each tag a text has and one more for each tag an older "
-               f"revision held, {_size(revisions * SIZE_BYTES)} of the kind, length and bytes kept on "
+             + f", about {tagsets:,} rows of counts of plain tag sets, {_size(tagging_bytes)} of "
+               f"taggings, about {taggings:,} rows, one for each tag a text has and one more for each tag an older "
+               f"revision held (from the revisions of a sample of texts), {_size(revisions * SIZE_BYTES)} of the kind, length and bytes kept on "
                f"{revisions:,} revisions, {_size(current * COPY_BYTES + tagged * COPY_TAG_BYTES)} of the copy of "
                f"each current text's tags"
              + "); the tables of libraries and datasets stay, nothing is freed",
@@ -1866,7 +2249,7 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
              f"  backup: the next `wpt depot backup` sends a full copy of the file, about {_size(size + added)}, "
              "into the store (each step marks the file for a full copy, since change files record no layout)"]
     return {"seconds": seconds, "again": again, "added": added, "wal": wal, "backup": size + added,
-            "tagsets": tagsets, "lines": lines}
+            "tagsets": tagsets, "temporary": temporary, "lines": lines}
 
 
 def _sampled_row_bytes(con, rows: int, step: int) -> float:
@@ -1874,6 +2257,30 @@ def _sampled_row_bytes(con, rows: int, step: int) -> float:
         "SELECT length(CAST(parts AS BLOB)) + 40 FROM content_lists WHERE rowid IN (SELECT value FROM json_each(?))",
         (_json([at * step + 1 for at in range(SAMPLED + 1) if at * step + 1 <= rows]),))]
     return sum(found) / len(found) if found else 0.0
+
+
+def _sampled_taggings(con, texts: int) -> tuple[int, int]:
+    """About (the rows of taggings, their bytes) the stage taggings writes for the texts, from the revisions of the
+    texts of SAMPLED revisions spread over texts_revisions by rowid, each text weighed by one over its revisions,
+    since a text of many revisions is picked more often; a row's bytes, its index entry's included, about twice its
+    text's and tag's names and TAGGING_ROW_BYTES."""
+    last = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+    step = max(1, last // SAMPLED)
+    picked = {text for (text,) in con.execute(
+        "SELECT id FROM texts_revisions WHERE rowid IN (SELECT value FROM json_each(?))",
+        (_json(list(range(1, last + 1, step))[:SAMPLED + 1]),))}
+    weights = rows = size = 0.0
+    for text in picked:
+        revisions = con.execute("SELECT id, revision, change, tags FROM texts_revisions WHERE id = ? "
+                                "ORDER BY revision", (text,)).fetchall()
+        made = [row for found, _, _ in _tagged_13(revisions) for row in found]
+        weight = 1 / max(1, len(revisions))
+        weights += weight
+        rows += weight * len(made)
+        size += weight * sum(2 * (len(text.encode()) + len(tag.encode())) + TAGGING_ROW_BYTES for _, tag, *_ in made)
+    if not weights:
+        return 0, 0
+    return int(texts * rows / weights), int(texts * size / weights)
 
 
 def _tagsets(con, current: int) -> int:

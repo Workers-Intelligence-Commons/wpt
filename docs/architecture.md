@@ -398,13 +398,17 @@ the depot half upgraded, drops `content_lists_long`, whose condition names
 the kind, adds the row `plain` to `kinds`, writes the conversation schema,
 makes the empty table `quotes` and its index, and deletes the counts of
 what libraries hold by kind but those of their plain texts, which stay
-right. It then writes the kind `plain` on the content versions with none,
-in rowid order, a batch of 250,000 rowids a transaction, and in the same
-transaction counts, for each library that holds their text, the current
-content versions of the other kinds among those rowids, by kind (few rows,
-each looked up through an index, so the step needs no recount), and writes
-the rows of `quotes` of the conversations among those rowids, each read
-from its parts. Each transaction records the last rowid it reached and the
+right. Its next transaction counts, for each library that holds their
+text, the current content versions of the other kinds, by kind, so the
+step needs no recount: the items are copied from one sequential scan of
+`content_lists`, then found among the current revisions and the
+memberships that have not ended by one sequential scan of each, or, when
+they are fewer than one revision in 40, each looked up through an index,
+which then reads fewer pages. It then writes the kind `plain` on the
+content versions with none, in rowid order, a batch of 250,000 rowids a
+transaction, and writes the rows of `quotes` of the conversations among
+those rowids, each read from its parts, one lookup in `parts` for each
+conversation. Each transaction records the last rowid it reached and the
 step says how many rows a second it writes; run again after a stop, it
 goes on after the last batch it wrote. Its last transaction checks that no
 content version is left without a kind, declares the column `kind` of
@@ -417,9 +421,12 @@ revisions' figures a count of each kind (a library's figures that hold no
 item become its plain texts and every other kind at 0, those that hold
 items, of a library the depot owns, are read again from the counts when
 the counts prove them exact, and are unknown otherwise) and drops the
-mark. It reads `content_lists` three times and writes again each page that
-holds a content version of no kind; how long it takes on a large file has
-not been measured, and the step says its pace as it goes.
+mark. It reads `content_lists` four times and writes again each page that
+holds a content version of no kind. On the synthetic depot of format 11 of
+`packages/wpt-depot/bench/large.py` (4,624,673 content versions, 8% of them
+items and 6% conversations, 18,322,341 revisions, 21 GB, with 1.5 GB of
+memory) it took 99 to 107 seconds: 32 to 41 to count the kinds, 48 to 55
+for the batches and 11 to 12 for the last transaction.
 The step to format 13 turns the libraries and datasets into snapshots and
 the tags of the revisions into rows of `taggings`. It
 runs in stages, each recorded in the table that marks the depot half
@@ -436,14 +443,21 @@ texts of each status hold by kind and by plain tag set, and the characters
 and bytes of the splits of each tag and license. Its stage `taggings`
 writes each tag a text's revisions held as a row of `taggings`, joined at
 the change of the revision that first holds it and left at the change of
-the next one that lacks it, a batch of revisions at a time, each batch in
+the next one that lacks it, a batch of texts at a time, each batch in
 its own transaction recording how far it went, so a run after a stop goes on
-after the last batch written; on a synthetic depot of 2,000,000 texts it
-took 5 seconds, started cold, and added 218 MB. Its stage `sizes` copies
+after the last batch written. Its stage `sizes` copies
 onto every revision of a text the kind, length and bytes of the content
 version it reads, and onto each current one the copy of its text's tags,
-the same way, a batch of revisions in each transaction; there it took 11
-seconds with the file out of the page cache and added 32 bytes a revision. Its stage `locked` makes
+the same way, a batch of revisions in each transaction. No stage looks a
+row up through an index: on a file far bigger than the memory each lookup
+is a random read of the disk. Each reads the tables it needs in sequential
+scans, sorted by text id where it must, into tables of SQLite's temporary
+database or straight into a merge, so SQLite's temporary folder
+(`SQLITE_TMPDIR`) needs free disk, up to about 120 bytes a revision of a
+text, which the check says. On a synthetic depot of 18,322,341
+revisions, 21 GB, with 1.5 GB of memory (`packages/wpt-depot/bench/large.py`),
+the stage `tables` took 50 to 65 seconds, `taggings` 75 to 82 and `sizes` 66 to
+76, and the upgrade added 1.8 GB. Its stage `locked` makes
 a snapshot of each locked library the depot owns: the texts it pinned,
 read at the change that locked it, with the bounds of every depot's
 numbering the depot held then. Its stage `datasets` makes one of each
@@ -468,7 +482,7 @@ and `datasets` an older file may hold and deletes the strip reader's
 folder beside the file. The tables of libraries and datasets stay in the
 file, unwritten; nothing is dropped and the file is not vacuumed.
 
-`wpt depot upgrade` alone, or with `--check`, writes nothing: it opens the
+`wpt depot upgrade` alone, or with `--check`, writes nothing in the depot: it opens the
 file read-only and says what the upgrade would do. For a depot of format
 11 it checks what the step to format 12 checks before it ends; for one of
 format 11 or 12 it makes in memory every snapshot the step to format 13
@@ -477,8 +491,24 @@ found before anything is written. It says the names each library and
 dataset would take, the recipe data sections, the open libraries left as
 they are, what is not converted and why, and the cost of every step left
 together: the seconds (from the rates `packages/wpt-depot/bench/upgrade.py`
-measures, plus the time its own reads took), the WAL at its largest, the
-disk added and the full copy the next backup sends. It ends with what to
+and `packages/wpt-depot/bench/large.py` measure, plus the time its own
+reads took), the free disk SQLite's temporary folder needs, the WAL at its
+largest, the disk added and the full copy the next backup sends. It reads
+every snapshot at once in one merge of four sequential scans sorted by text
+id (`wpt_depot.conversion`), each sort holding only the columns the merge
+needs, then the tags and licenses of the revisions the snapshots read, in
+the order of the file, all in one read transaction; on the synthetic depot
+above it took 86 to 87 seconds and 1.4 GB of temporary files. It saves
+what it measured beside the depot's file, in
+`<depot file>.upgrade-check.json`, with the depot's state: its latest
+change, the upgrade's own aside, and the largest rowid of each table it
+reads. A later check, `--yes`'s included, takes those measures while the
+state is the same, and reads again otherwise, so the check can run while
+the web app serves and `--yes` then reads no library. A check that runs
+beside the web app holds its read transaction to the end: a checkpoint
+cannot copy into the file what the app writes meanwhile, so the WAL keeps
+every page the app writes until the check ends, and the check's reads
+take disk time and page cache from the app. It ends with what to
 do before: run `wpt depot backup` right before the upgrade, knowing that
 only the wpt of the depot's old format opens that backup, upgrade the
 upstream before its clones, and stop every process that has the depot open
@@ -486,7 +516,10 @@ first (`wpt depot web`, its jobs, a backup): the code of the old format
 checks the format only when it opens a depot, so a web app left running
 would go on writing into the half-upgraded file. `wpt depot upgrade --yes`
 runs the check again and upgrades only when it passes, and refuses while
-another connection still has the file open.
+another connection still has the file open; the upgrade then writes the
+snapshots that check measured, without reading the libraries again, when
+the depot did not change in between, and deletes the saved check when it
+ends. The upgrade puts a file that is not in WAL mode in it first.
 
 Every change to the depot's layout raises `FORMAT` and adds the upgrade
 step from the format before, with its test. So does a change of the schema

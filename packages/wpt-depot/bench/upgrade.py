@@ -2,10 +2,13 @@
 in one run) on a synthetic depot (bench/common.py): the check
 (upgrade.check) and then the upgrade, each started cold, the time of each
 step and stage, the rates the check takes for what it does not read itself
-(upgrade.RATE_12, RATE_13_TABLES, RATE_13_TAGGINGS, TAGGING_BYTES, RATE_13_SIZES, SIZE_BYTES, COPY_BYTES and COPY_TAG_BYTES), the rate of each conversion of the
-step to format 13 (pins or memberships read a second, its revisions
-checked), and how far the check's estimate of the time was from the time
-measured; each projected to PROJECTED texts. It prints a Markdown report,
+(upgrade.RATE_12, RATE_13_TABLES, RATE_13_TAGGINGS, TAGGING_ROW_BYTES,
+RATE_13_SIZES, SIZE_BYTES, COPY_BYTES and COPY_TAG_BYTES), the rows each
+snapshot of the step to format 13 read in the check's one merge
+(conversion.measure_all), and how far the check's estimate of the time was from the time
+measured; each projected to PROJECTED texts. The page cache holds this
+depot whole, so it measures no random read of the disk: bench/large.py
+makes the depot that does. It prints a Markdown report,
 and writes it to --out when given.
 
 The base is of format 12 (made by common.make_base). The benchmark copies
@@ -73,8 +76,8 @@ def _table_bytes(con, table: str) -> int:
 
 def timed_stages(spent: dict, measured: list):
     """Wrap the step to format 12 and each stage of the step to format 13 so their seconds land in spent, and
-    conversion.measure so each conversion's rows and seconds land in measured; the function that undoes it."""
-    real_12, real_stages, real_measure = upgrade.FILE_STEPS[11], dict(upgrade.STAGES_13), conversion.measure
+    conversion.measure_all so each conversion's rows and seconds land in measured; the function that undoes it."""
+    real_12, real_stages, real_measure = upgrade.FILE_STEPS[11], dict(upgrade.STAGES_13), conversion.measure_all
 
     def wrap(name, function):
         def run(*args, **kwargs):
@@ -85,20 +88,22 @@ def timed_stages(spent: dict, measured: list):
                 spent[name] = time.perf_counter() - start
         return run
 
-    def measure(con, planned, *args, **kwargs):
+    def measure_all(con, planned, *args, **kwargs):
         found = real_measure(con, planned, *args, **kwargs)
-        measured.append((planned.name, planned.origin["kind"], found.rows, found.texts, found.seconds))
+        for one in planned:
+            got = found[conversion.key_of(one)]
+            measured.append((one.name, one.origin["kind"], got.rows, got.texts, got.seconds))
         return found
 
     upgrade.FILE_STEPS[11] = wrap("11 to 12", real_12)
     for name, stage in real_stages.items():
         upgrade.STAGES_13[name] = wrap(f"12 to 13, {name}", stage)
-    conversion.measure = measure
+    conversion.measure_all = measure_all
 
     def undo():
         upgrade.FILE_STEPS[11] = real_12
         upgrade.STAGES_13.update(real_stages)
-        conversion.measure = real_measure
+        conversion.measure_all = real_measure
     return undo
 
 
@@ -131,20 +136,20 @@ def main():
         con.close()
         size = work.stat().st_size
 
-        common.drop_cache(work)
-        dropped = common.cached_share(work)
-        start = time.perf_counter()
-        checked = upgrade.check(str(work))
-        check_seconds = time.perf_counter() - start
-        for line in checked.lines:
-            say(f"  | {line}")
-
         spent, measured = {}, []
         undo = timed_stages(spent, measured)
-        common.drop_cache(work)
-        start = time.perf_counter()
         try:
-            upgrade.upgrade(str(work), log=lambda line: say(f"  {line}"))[0].db.close()
+            common.drop_cache(work)
+            dropped = common.cached_share(work)
+            start = time.perf_counter()
+            checked = upgrade.check(str(work))
+            check_seconds = time.perf_counter() - start
+            for line in checked.lines:
+                say(f"  | {line}")
+            common.drop_cache(work)
+            start = time.perf_counter()
+            # as `wpt depot upgrade --yes`: the upgrade writes the snapshots the check measured
+            upgrade.upgrade(str(work), log=lambda line: say(f"  {line}"), checked=checked)[0].db.close()
         finally:
             undo()
         total = time.perf_counter() - start
@@ -163,7 +168,7 @@ def main():
 
     scale = PROJECTED / texts
     rate_12 = contents / spent["11 to 12"]
-    rate_tables = current / spent["12 to 13, tables"]
+    rate_tables = revisions / spent["12 to 13, tables"]
     rate_taggings = revisions / spent["12 to 13, taggings"]
     rate_sizes = revisions / spent["12 to 13, sizes"]
     rows = [f"| `--check`, cold | {check_seconds:,.1f} | {check_seconds * scale:,.0f} | the check's own estimate of "
@@ -171,11 +176,11 @@ def main():
             *(f"| {name} | {seconds:,.1f} | {seconds * scale:,.0f} | |" for name, seconds in spent.items()),
             f"| whole upgrade, cold | {total:,.1f} | {total * scale:,.0f} | |"]
     figures = [f"| content rows the step to 12 writes a second (RATE_12) | {rate_12:,.0f} | {contents:,} rows |",
-               f"| current texts the stage tables counts a second (RATE_13_TABLES) | {rate_tables:,.0f} | "
-               f"{current:,} texts |",
+               f"| revisions the stage tables reads a second (RATE_13_TABLES) | {rate_tables:,.0f} | "
+               f"{revisions:,} revisions, {current:,} current |",
                f"| revisions the stage taggings reads a second (RATE_13_TAGGINGS) | {rate_taggings:,.0f} | "
                f"{revisions:,} revisions |",
-               f"| bytes of a row of taggings, its index's entry included (TAGGING_BYTES) | "
+               f"| bytes of a row of taggings, its index's entry included (compare with _sampled_taggings and TAGGING_ROW_BYTES) | "
                f"{tagging_bytes / max(tagged, 1):,.0f} | {tagged:,} rows in {tagging_bytes / 1e6:,.0f} MB |",
                f"| revisions the stage sizes writes a second (RATE_13_SIZES) | {rate_sizes:,.0f} | "
                f"{revisions:,} revisions |",
@@ -187,8 +192,8 @@ def main():
                f"for the text) | {(copy_bytes - current * 2) / max(current_tags, 1):,.1f} | {copy_bytes / 1e6:,.1f} MB "
                f"of JSON for {current:,} texts and {current_tags:,} of their tags |"]
     for name, kind, read, held, seconds in measured:
-        figures.append(f"| {kind} {name}: rows read and checked a second | {read / max(seconds, 1e-9):,.0f} | "
-                       f"{read:,} rows, {held:,} texts, {seconds:,.2f} s (target >= 200,000) |")
+        figures.append(f"| {kind} {name}: rows read and checked | {read:,} | {held:,} texts, its share of the "
+                       f"merge {seconds:,.2f} s |")
     figures += [f"| disk added | {added / 1e6:,.1f} MB | the check said {checked.cost['added'] / 1e6:,.1f} MB |",
                 f"| WAL at its largest, as the check says | {checked.cost['wal'] / 1e6:,.1f} MB | |"]
     text = "\n".join([

@@ -153,6 +153,74 @@ def test_a_depot_of_format_11_is_brought_to_13_in_one_run_as_the_check_said(tmp_
                          "'%\"kinds\"%'")[0][0] > 0
 
 
+@pytest.mark.parametrize("format_", [11, 12])
+def test_the_upgrade_writes_what_the_check_right_before_measured_and_measures_again_after_a_change(
+        tmp_path, monkeypatch, format_):
+    alone, found = copied(tmp_path, format_, "alone")
+    upgrade.upgrade(str(alone), records=found, public=PUBLIC)[0].db.close()
+    path, _ = copied(tmp_path, format_)
+    checked = upgrade.check(str(path), found, PUBLIC)
+    real = conversion.measure_all
+
+    def refused(*args, **kwargs):
+        raise AssertionError("measured again")
+    monkeypatch.setattr(conversion, "measure_all", refused)
+
+    upgrade.upgrade(str(path), records=found, public=PUBLIC, checked=checked)[0].db.close()
+
+    assert every_row(path, KEYS) == every_row(alone, KEYS)
+    # a change written between the check and the upgrade: the upgrade measures again
+    changed, _ = copied(tmp_path, format_, "changed")
+    monkeypatch.setattr(conversion, "measure_all", real)
+    checked = upgrade.check(str(changed), found, PUBLIC)
+    con = apsw.Connection(str(changed))
+    con.execute("INSERT INTO changes SELECT id + 1, 'decision', made_at FROM changes ORDER BY id DESC LIMIT 1")
+    con.close()
+    calls = []
+    monkeypatch.setattr(conversion, "measure_all", lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs))
+
+    upgrade.upgrade(str(changed), records=found, public=PUBLIC, checked=checked)[0].db.close()
+
+    assert calls == [1]
+
+
+def test_the_step_to_12_counts_the_kinds_alike_whether_it_scans_the_tables_or_looks_the_items_up(
+        tmp_path, monkeypatch):
+    rows = []
+    for share in (0, 10 ** 9):  # never scanned, always scanned
+        monkeypatch.setattr(upgrade, "ITEMS_SHARE_12", share)
+        path, found = copied(tmp_path, 11, f"share-{share}")
+        upgrade.upgrade(str(path), records=found, public=PUBLIC)[0].db.close()
+        rows.append(every_row(path, KEYS))
+    assert rows[0] == rows[1]
+
+
+def test_a_saved_check_spares_the_next_check_its_reads_until_the_depot_changes(tmp_path, monkeypatch):
+    path, found = copied(tmp_path, 12)
+    first = upgrade.check(str(path), found, PUBLIC, save=True)
+    saved = upgrade.saved_check_path(path)
+    assert saved.is_file() and first.passed
+    real, calls = conversion.measure_all, []
+    monkeypatch.setattr(conversion, "measure_all", lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs))
+
+    again = upgrade.check(str(path), found, PUBLIC)
+
+    assert calls == [] and again.snapshots == first.snapshots and again.state == first.state
+    assert any(line.startswith("Saved check: ") for line in again.lines)
+    # a change written since: measured again; a file that cannot be read: measured again
+    con = apsw.Connection(str(path))
+    con.execute("INSERT INTO changes SELECT id + 1, 'decision', made_at FROM changes ORDER BY id DESC LIMIT 1")
+    con.close()
+    changed = upgrade.check(str(path), found, PUBLIC)
+    assert calls == [1] and "another state" in next(line for line in changed.lines if line.startswith("Saved check"))
+    saved.write_text("{", encoding="utf-8")
+    upgrade.check(str(path), found, PUBLIC)
+    assert calls == [1, 1]
+    upgrade.check(str(path), found, PUBLIC, save=True)
+    upgrade.upgrade(str(path), records=found, public=PUBLIC)[0].db.close()
+    assert not saved.exists()
+
+
 def test_a_locked_library_becomes_a_snapshot_of_its_pins_read_at_the_change_that_locked_it(tmp_path):
     path, found = copied(tmp_path, 12)
     libraries = {name: library_id(path, name) for name in ("lib-a", "lib-b")}
@@ -271,7 +339,7 @@ def test_an_upgrade_stopped_in_any_stage_goes_on_when_run_again_and_writes_what_
     log = lambda line: None  # noqa: E731
 
     def stops_after_a_transaction(line):  # the stage logs each transaction once it is written
-        if " of texts_revisions" not in line and "revision row " in line:
+        if (" of texts_revisions" not in line and "revision row " in line) or " revisions written, the last text " in line:
             raise OSError("the machine stopped")
 
     in_sizes = []
@@ -293,9 +361,12 @@ def test_an_upgrade_stopped_in_any_stage_goes_on_when_run_again_and_writes_what_
             patch.setattr(upgrade, "_write_snapshot", stops_at(2 if stop == "in locked" else 4))
         with pytest.raises(OSError):
             upgrade.upgrade(str(path), log=log, records=found)
-    if stop in ("in taggings", "in sizes"):
-        stage = stop.removeprefix("in ")
-        assert rows_of(path, f"SELECT after FROM {upgrade.UNDER_WAY} WHERE stage = ?", (stage,)) == [(50,)]
+    if stop == "in sizes":
+        assert rows_of(path, f"SELECT after FROM {upgrade.UNDER_WAY} WHERE stage = 'sizes'") == [(50,)]
+    if stop == "in taggings":  # the texts of about 50 revisions written, in the order of their ids, the last recorded
+        [(last,)] = rows_of(path, f"SELECT after FROM {upgrade.UNDER_WAY} WHERE stage = 'taggings'")
+        assert rows_of(path, "SELECT count(*) > 0, count(*) FILTER (WHERE text > ?) FROM taggings", (last,)) == [(1, 0)]
+        assert 50 <= rows_of(path, "SELECT count(*) FROM texts_revisions WHERE id <= ?", (last,))[0][0] < 60
     for way_in in (Depot.view, Depot.open):
         with pytest.raises((HalfUpgraded, OtherFormat), match="wpt depot upgrade"):
             way_in(str(path))

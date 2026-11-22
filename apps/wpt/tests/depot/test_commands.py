@@ -628,15 +628,23 @@ def test_the_upgrade_says_what_it_would_do_and_writes_nothing_until_yes(older_de
     assert checked.strip().splitlines()[-2:] == [
         "Run: wpt depot upgrade --yes",
         "Nothing was written: run `wpt depot upgrade --yes` to upgrade, which runs this check again first."]
-    assert depot_command("upgrade") == 0  # the check is what it does by default
-    timeless = [line for line in checked.splitlines() if "seconds" not in line]  # what it measured as it read
-    assert [line for line in bare(capsys.readouterr().out).splitlines() if "seconds" not in line] == timeless
+    saved = older_depot.with_name(older_depot.name + ".upgrade-check.json")
+    assert saved.is_file()  # beside the depot's file, which stays as it was
+    assert depot_command("upgrade") == 0  # the check is what it does by default, taking what the first one saved
+    again = bare(capsys.readouterr().out)
+    assert "Saved check: the check saved in " in again and "reading what each snapshot" not in again
+
+    def timeless(said):  # what it measured as it read, the lines of the saved check aside
+        return [line for line in said.splitlines() if "seconds" not in line and "saved" not in line.lower()
+                and "reading what each snapshot" not in line]
+    assert timeless(again) == timeless(checked)
     assert hashlib.sha256(older_depot.read_bytes()).hexdigest() == before
 
     assert depot_command("upgrade", "--yes") == 0
 
     said = bare(capsys.readouterr().out)
     assert "What converts" in said and f"brought up to format {FORMAT}" in said
+    assert "those the check right before read" in said and not saved.exists()
     depot = Depot.open(str(older_depot))
     assert sorted(one["name"] for one in depot.snapshots()) == ["ds-mixed", "ds-two", "ds-two-r2", "lib-a", "lib-b"]
 
