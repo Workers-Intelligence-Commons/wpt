@@ -224,13 +224,14 @@ def _first_run_collects(feed, sequence, record, replay, loop):
     return run
 
 
-def _kept(parameter, grad):
+def _kept(model, parameter, grad):
     """A parameter's gradient as the backward pass hands it over: a copy
-    when the parameter holds none yet, which it would otherwise keep as it
-    is. In a compiled pass the gradient is an output of a recorded CUDA
-    graph, whose memory the graph's next replay writes over, while the
-    parameter adds the later windows' gradients of the update to it."""
-    return grad.clone() if parameter.grad is None else grad
+    when the pass replayed recorded CUDA graphs and the parameter holds
+    none yet, which it would otherwise keep as it is. The gradient is then
+    an output of a recorded graph, whose memory the graph's next replay
+    writes over, while the parameter adds the later windows' gradients of
+    the update to it. Any other pass's gradient is the parameter's own."""
+    return grad.clone() if model.replayed and parameter.grad is None else grad
 
 
 class MultiTokenPrediction(nn.Module):
@@ -299,6 +300,7 @@ class WPT(nn.Module):
         self.compiled = {}  # each module compile_training compiled: a plain dict, so no name of the weights changes
         self._graph_hooks = []  # compile_training's hooks on the parameters' gradients (_kept)
         self.graphs = None  # compile_training's recorded passes over whole windows (graphs.py)
+        self.replayed = False  # whether the last forward pass replayed the recorded graphs (_kept)
 
     def compile_training(self, on=True):
         """Whether training passes over whole windows run through
@@ -309,7 +311,8 @@ class WPT(nn.Module):
         self._graph_hooks = []
         if on:
             torch._dynamo.config.recompile_limit = COMPILED_FORMS
-            self._graph_hooks = [p.register_hook(partial(_kept, p)) for p in self.parameters() if p.requires_grad]
+            self._graph_hooks = [p.register_hook(partial(_kept, self, p)) for p in self.parameters()
+                                 if p.requires_grad]
             self.compiled = {self.mtp: torch.compile(self.mtp, dynamic=False)}
             for layer in self.layers:
                 self.compiled[layer] = (torch.compile(layer.attend, dynamic=False),
@@ -360,9 +363,10 @@ class WPT(nn.Module):
         sequence = WHOLE if sequence is None else sequence
         if targets is not None and next_tokens is None and len(targets) > 1:
             raise ValueError("targets after next need next_tokens")
-        if (targets is not None and len(targets) > 1 and self.graphs is not None and idx.is_cuda
-                and self._whole(sequence) and record is None and replay is None and not features
-                and not self.recompute):
+        self.replayed = (targets is not None and len(targets) > 1 and self.graphs is not None and idx.is_cuda
+                         and self._whole(sequence) and record is None and replay is None and not features
+                         and not self.recompute)
+        if self.replayed:
             return self.graphs.losses(idx, next_tokens, targets)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=idx.is_cuda):
             hidden, found = self._hidden(idx, record, replay, sequence, features)
