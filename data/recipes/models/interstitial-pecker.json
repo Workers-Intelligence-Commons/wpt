@@ -1,8 +1,19 @@
 {
   "data": {
     "depot": "https://depot.workers-intelligence-commons.org",
-    "dataset": "wic-1",
-    "total_tokens": 2925565920
+    "snapshot": "test1",
+    "change": 30019,
+    "digest": "d21d5edd07aff55c750233785445146fc2173582c1ce10d7a7c2481fa0d34927",
+    "kinds": [
+      "conversation",
+      "plain",
+      "task"
+    ],
+    "total_tokens": 2925565920,
+    "vocabulary": {
+      "sha256": "4e264a0d04d6f9d9d8348a135b273b1640217d65049b278cb304ad0fb56fa5eb",
+      "size": 32768
+    }
   },
   "model": {
     "window_layers": 4,

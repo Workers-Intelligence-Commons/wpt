@@ -89,12 +89,12 @@ def test_the_batch_is_whole_windows_at_least_one_and_the_warm_up_a_share_of_the_
 
 
 def test_each_size_is_a_model_recipe_and_every_size_shares_the_data_of_the_largest(repo, ladder):
-    # eldest-titmouse names a dataset: the legacy shape, which still derives every size
+    # eldest-titmouse names a snapshot: every size takes its data with the largest size's total tokens
     plans = repo.series_plans(SERIES, VOCABULARY)
     largest = max(plans, key=lambda plan: plan.parameters)
     assert largest.size == "768x15"
     data = {**ladder["data"], "total_tokens": largest.prefix_tokens}
-    assert set(data) == {"depot", "dataset", "total_tokens"}
+    assert set(data) == {"depot", "snapshot", "change", "digest", "kinds", "total_tokens", "vocabulary"}
     assert repo.data_part(f"{SERIES}:{largest.size}") == data
     for plan in plans:
         recipe = repo.model_recipe(f"{SERIES}:{plan.size}", VOCABULARY)

@@ -1,8 +1,41 @@
 {
   "data": {
     "depot": "https://depot.workers-intelligence-commons.org",
-    "dataset": "wic-2",
-    "total_tokens": 1179648000
+    "snapshot": "balanced",
+    "change": 32118,
+    "digest": "1c4c1fe17abcfe8c3741fe35d87efed839b83ff8e462c8d3617db184decc0a01",
+    "kinds": [
+      "conversation",
+      "plain",
+      "task"
+    ],
+    "shares": [
+      {
+        "tag": "research-paper",
+        "share": 0.35
+      },
+      {
+        "tag": "books",
+        "share": 0.15
+      },
+      {
+        "tag": "government",
+        "share": 0.05
+      },
+      {
+        "tag": "code",
+        "share": 0.05
+      },
+      {
+        "tag": "encyclopedia",
+        "share": 0.4
+      }
+    ],
+    "total_tokens": 1179648000,
+    "vocabulary": {
+      "sha256": "312d8d3fcd38b2312422956e4e476aa5f94ca1bac4e1dc9629030df468ed34bc",
+      "size": 65536
+    }
   },
   "model": {
     "window_layers": 4,
