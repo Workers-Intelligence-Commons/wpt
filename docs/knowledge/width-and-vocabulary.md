@@ -11,6 +11,10 @@ defined in [README.md](README.md).
 - No published formula gives the floor. The working rule is at most 50
   vocabulary entries per dimension of width: a vocabulary of 65,536 asks for
   a width of about 1,300, one of 16,384 for about 330. **hypothesis**
+- A width of 256 copies a repeated sequence with a vocabulary of 65,536,
+  256 entries per dimension, once it has read 15.8 tokens per parameter; a
+  width of 128 does not after 39. The floor for copying lies between the
+  two at this vocabulary. **measured here**
 - Full quality of the output asks for a width of about 1,000 or more with a
   vocabulary of 30,000 to 50,000. **published, one source**
 - A model that must be narrow takes a small vocabulary: every narrow model
@@ -92,6 +96,15 @@ All figures from published sources in this section are **unchecked**.
   tokens per parameter, so the measure does not separate the floor of width
   from a lack of training
   ([size-and-tokens.md](size-and-tokens.md)). (Same machine and commit.)
+  **measured here**
+- A model of width 256 and 11 layers (41.0M parameters without the tables,
+  74.5M with them), the same vocabulary and corpus, 256 entries per
+  dimension, trained on 1.18B tokens in 8,990 updates, validation loss
+  2.79: it writes 43% of the tokens of a repeated sequence of 8 words, where
+  the two models above write none, and chooses a stated word among four 68%
+  of the time ([size-and-tokens.md](size-and-tokens.md)). A width of 256
+  copies with this vocabulary: the working rule of 50 entries per dimension
+  is too strict as a floor for copying. (Same machine and commit.)
   **measured here**
 
 ## Open

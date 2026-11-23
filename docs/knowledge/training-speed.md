@@ -120,8 +120,12 @@ on the longer windows. On the GPU, the same comparison gives differences of
   the GPU left free. Both numbers come from one GPU. A measure of foreseen
   against peak memory on a second GPU, and on Windows, where the driver
   spills into system memory rather than refusing, would settle them.
-- **The drafter phase.** It writes its answers one token at a time. Its
-  share of a run's time is not measured.
+- **The drafter phase.** It writes its answers one token at a time. On a
+  run of 12 hours at width 256 (RTX 5080 Laptop GPU, commit d0d454b22b) it
+  takes 55 minutes, 43 of them to write the 256 answers: 7% of the run, and
+  a fixed time that weighs more on a short run. Writing the answers in
+  batches would change the drafter's random draws, so it is not a change
+  that leaves the drafter the same.
 - **A larger GPU.** Whether 80 GiB buys speed beyond what 32 GiB gives
   depends on the passes that do not fit 32 GiB without recomputation; at
   width 512 and 32,768 tokens per pass, every pass fits.
