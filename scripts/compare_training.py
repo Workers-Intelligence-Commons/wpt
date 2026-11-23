@@ -482,6 +482,7 @@ class Battery:
         if self.args.widths:
             widths = tuple(int(width) for width in self.args.widths.split(","))
         ends = [self.args.base, None]
+        both = tuple(self.args.recomputes.split(","))
         try:
             for part in parts:
                 if part == "checks":
@@ -489,12 +490,12 @@ class Battery:
                 elif part == "sameness":
                     self.sameness()
                 elif part == "speed":
-                    self.speed("speed", False, ends, widths, windows, ("off", "on"))
+                    self.speed("speed", False, ends, widths, windows, both)
                 elif part == "compiled":
-                    self.speed("speed", True, ends, widths, windows, ("off", "on"))
+                    self.speed("speed", True, ends, widths, windows, both)
                 elif part == "tilelang":
                     if self.gpu():
-                        self.speed("speed", False, [None], widths, windows, ("off", "on"), "tilelang")
+                        self.speed("speed", False, [None], widths, windows, both, "tilelang")
                     else:
                         say("TileLang measures need a CUDA device: none here", WARNING)
                 elif part == "memory":
@@ -505,7 +506,7 @@ class Battery:
                     if "speed" in parts:
                         between = between[:-1]  # the last one is the speed part's
                     self.speed("chain", False, between, widths[-1:], windows[1:2] if not tiny else windows[:1],
-                               ("off", "on"))
+                               both)
                 else:
                     say(f"no part {part!r}: {', '.join(PARTS)}", ERROR)
                     self.record({"kind": part, "label": "no such part", "status": "failed",
@@ -573,6 +574,9 @@ def main():
     parser.add_argument("--out", help="the folder the results go into (default: compare-<time>)")
     parser.add_argument("--tiny", action="store_true", help="a tiny model and short windows: checks this script")
     parser.add_argument("--budget-minutes", type=float, default=50, help="no item starts after this (default 50)")
+    parser.add_argument("--recomputes", default="off,on",
+                        help="the speed, compiled, tilelang and chain parts measure with recomputation off, on, "
+                             "or both (default off,on)")
     parser.add_argument("--widths", help="the widths the speed and memory parts measure (default 256,512)")
     parser.add_argument("--parts", default=",".join(PARTS), help="the parts to run, in order (default: all)")
     args = parser.parse_args()
