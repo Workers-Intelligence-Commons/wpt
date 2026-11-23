@@ -235,8 +235,8 @@ def fake_kernels(fails):
 
 
 def test_installed_kernels_that_cannot_work_stop_instead_of_falling_back(monkeypatch):
-    # docs/model.md: which form runs is decided once; TileLang installed
-    # without nvcc, or kernels that do not run on this GPU, are an error
+    # docs/model.md: which form runs is decided once, Triton before TileLang;
+    # TileLang installed without nvcc, or kernels that do not run on this GPU, are an error
     # with its reason, and neither TileLang nor Triton installed means
     # PyTorch. Stand-ins play the installed packages and an NVIDIA GPU
     # under Linux, whatever runs the test: neither the real import nor a GPU
@@ -245,12 +245,12 @@ def test_installed_kernels_that_cannot_work_stop_instead_of_falling_back(monkeyp
     monkeypatch.setattr(dispatch, "_kernels", dispatch._UNDECIDED)
     monkeypatch.setattr(torch.version, "cuda", "13.0")
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(dispatch, "_installed", lambda name: True)
+    monkeypatch.setattr(dispatch, "_installed", lambda name: name == "tilelang")
     monkeypatch.setattr(dispatch, "nvcc", lambda: None)
     with pytest.raises(KernelUnavailable, match="nvcc"):
         kernels(gpu)
 
-    monkeypatch.setattr(dispatch, "_installed", lambda name: name == "triton")
+    monkeypatch.setattr(dispatch, "_installed", lambda name: True)  # both installed: Triton, the faster, is chosen
     monkeypatch.setitem(sys.modules, "wpt_model.triton_kernels", fake_kernels(RuntimeError("no image")))
     monkeypatch.delattr(wpt_model, "triton_kernels", raising=False)
     monkeypatch.setattr(dispatch, "_try", lambda chosen, device: chosen.exact_attention())

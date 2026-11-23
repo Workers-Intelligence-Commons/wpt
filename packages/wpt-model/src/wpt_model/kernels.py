@@ -17,8 +17,9 @@ forms compute them, each a module with that contract:
 
 Which form runs is decided once per process, at the first GPU pass (or
 before, by wpt train, wpt eval and wpt chat, which may name it: FORMS).
-Unnamed, the form is the first of TileLang and Triton installed for this
-GPU, else PyTorch; a later call that names another form is
+Unnamed, the form is Triton where it is installed, the faster of the two
+(docs/knowledge/training-speed.md), else TileLang where it is installed for
+this GPU, else PyTorch; a later call that names another form is
 KernelUnavailable. A kernel form, named or installed, that cannot work (not
 installed when named, TileLang off an NVIDIA GPU under Linux or without its
 CUDA compiler, no GPU, an import that fails, a kernel that does not compile
@@ -74,8 +75,9 @@ def kernels(device, form=None):
             raise KernelUnavailable(f"{_NAMES[form]} kernels run on a GPU, and this process runs on {device.type}")
         return None
     if _kernels is _UNDECIDED:
-        form = form or ("tilelang" if torch.version.cuda and sys.platform == "linux" and _installed("tilelang")
-                        else "triton" if _installed("triton") else "pytorch")
+        form = form or ("triton" if _installed("triton")
+                        else "tilelang" if torch.version.cuda and sys.platform == "linux" and _installed("tilelang")
+                        else "pytorch")
         _kernels, _form = _decide(device, form), form
     elif form not in (None, _form):
         raise KernelUnavailable(f"the attention's form is {_form} in this process, decided at its first GPU "
