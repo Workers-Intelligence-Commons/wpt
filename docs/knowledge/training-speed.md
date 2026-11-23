@@ -101,6 +101,35 @@ on the longer windows. On the GPU, the same comparison gives differences of
 0.011 to 0.035 between a commit and the one before it, where two runs of the
 "before" code differ by 0.013 to 0.032. The spread comes from two runs.
 
+A second machine: RTX 5080 Laptop GPU with 16 GiB, Windows, Triton
+kernels, the same script, "after" at commit 6822661b68. Tokens per second
+with recomputation:
+
+| Width | Code | Compiled | 2,048 | 8,192 | 32,768 |
+| --- | --- | --- | --- | --- | --- |
+| 256 | before | no | 34,487 | 32,267 | 27,219 |
+| 256 | after | no | 50,349 | 46,104 | 37,671 |
+| 256 | after | yes | 57,919 | 52,492 | 41,707 |
+| 512 | before | no | 18,195 | 16,901 | 14,335 |
+| 512 | after | no | 26,788 | 24,804 | 19,891 |
+| 512 | after | yes | 31,230 | 28,660 | 23,399 |
+
+The same options on both sides multiply the speed by 1.38 to 1.47; with
+compilation, by 1.53 to 1.72. The RTX 5090 reads 3.1 times the tokens of
+this laptop GPU with the same code and options. Compilation works unasked
+in the Visual Studio build tools shell and takes 64 to 127 seconds at the
+first update of each window length. A real run of the width 256 on this
+machine, before, read 27,300 tokens per second on windows of 2,048 and
+24,100 on windows of 32,768: about 0.8 of what the script measures.
+
+The rule that chooses recomputation, on the two machines. It foresees the
+peak of a pass of 32,768 tokens without recomputation at 15.3 to 21.0 GiB
+at width 256 and 32.1 to 32.2 GiB at width 512; the RTX 5090 measured 11.5
+to 13.3 GiB and 21.8 to 25.0 GiB. The rule is 15% to 65% above the peak,
+most at windows of 32,768 tokens. On the laptop's 13.1 GiB usable it
+recomputes every pass, which is right; on the RTX 5090 it would recompute
+at width 512, where the pass fits.
+
 ### What the measure does not cover
 
 - The optimizer of the recipes (`by-part`), the evaluations, the
@@ -117,9 +146,11 @@ on the longer windows. On the GPU, the same comparison gives differences of
   It would turn the ratios above from a hypothesis into a measure.
 - **The rule that chooses recomputation.** It foresees the memory of a pass
   from two short probe passes, with a margin of 30% per token and 10% of
-  the GPU left free. Both numbers come from one GPU. A measure of foreseen
-  against peak memory on a second GPU, and on Windows, where the driver
-  spills into system memory rather than refusing, would settle them.
+  the GPU left free. It foresees too much at long windows, and so
+  recomputes at width 512 on 32 GiB where the pass fits: a rule that
+  follows the window length would give that speed back. No pass that the
+  rule lets through has yet been run on Windows, where the driver spills
+  into system memory rather than refusing.
 - **The drafter phase.** It writes its answers one token at a time. On a
   run of 12 hours at width 256 (RTX 5080 Laptop GPU, commit d0d454b22b) it
   takes 55 minutes, 43 of them to write the 256 answers: 7% of the run, and
