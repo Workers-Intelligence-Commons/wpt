@@ -149,14 +149,34 @@ setting, it foresaw 32.2 GiB at width 512 and recomputed on 32 GiB a pass
 that fits. On the laptop's 13.1 GiB usable it recomputes every pass of
 32,768 tokens, which is right.
 
+A third machine, RTX 4090 with 24 GiB, Linux, commit 05851e7d81, with the
+rule at 5% more per token. At width 256 the rule foresees 14.1 to 16.8 GiB
+for 19.9 usable and keeps every activation; the pass peaks at 11.4 to 12.7
+GiB allocated and 11.6 to 13.3 GiB held by PyTorch's allocator. At width
+512 it foresees 24.5 to 26.6 GiB and recomputes, on a GPU the pass would
+not fit. The rule is 17% to 26% above what the allocator held.
+
+A compiled pass without recomputation shows 2.4 GiB allocated after its
+first update where the allocator holds 12.1 GiB: the memory of the recorded
+graphs is not in the allocated count. The allocator's count is the one to
+read.
+
+On the same RTX 4090, with recomputation, uncompiled, tokens per second by
+kernel form at width 512: Triton 50,978, 47,493 and 39,169 for windows of
+2,048, 8,192 and 32,768 tokens; TileLang 35,199, 30,141 and 23,923. Triton
+is 1.45 to 1.64 times faster there.
+
 ### What the measure does not cover
 
 - The optimizer of the recipes (`by-part`), the evaluations, the
   checkpoints and the drafter phase are not in these speeds.
-- The peak memory of a compiled pass without recomputation reads 2.45 GiB
-  at width 256 and 5.77 GiB at width 512 after the first update. The memory
-  the compiled graphs hold is probably not counted in it.
-- The TileLang kernels were not timed: every speed above is Triton's.
+- The TileLang kernels are timed on one GPU and one width.
+- One check fails on the RTX 4090 and passes on the RTX 5090 and the RTX
+  5080 laptop GPU: the grouped products of the experts against a loop over
+  the experts
+  (`test_grouped_experts_equal_each_expert_on_its_own_tokens_with_an_expert_that_has_none`),
+  59 of 1,752 values apart, by up to 0.16. Whether "before" fails the same
+  way on that GPU is not measured.
 
 ## Open
 
