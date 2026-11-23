@@ -37,12 +37,14 @@ in this order:
     tilelang  the working tree's uncompiled speed through the TileLang
               kernels, on a CUDA device only; every other part names the
               Triton kernels, and each measure records the form that ran
-    memory    the working tree's speed without recomputation, compiled
-              (on a CUDA device) and not, each measure first foreseen by
-              wpt train's choice of recomputation (wpt_training.memory):
-              its foreseen peak and the memory it counts as usable, next
-              to the peaks measured (allocated, reserved by PyTorch, and
-              in use on the device), so the margin can be judged
+    memory    the working tree's speed as wpt train's choice of
+              recomputation (wpt_training.memory) runs it, compiled (on a
+              CUDA device) and not: each measure records the peak the
+              choice foresees and the memory it counts as usable, runs
+              without recomputation when the choice says it fits and with
+              it otherwise, and records the peaks measured (allocated,
+              reserved by PyTorch, and in use on the device), so the
+              margin can be judged
     chain     the same speed for every commit between REV and HEAD, at
               width 512 and 8,192 tokens, with and without recomputation:
               what each change brings (REV and the last revision are the
@@ -209,6 +211,9 @@ def child(spec):
                 measured.update(foreseen_gib=choice.foreseen / 2**30, usable_gib=choice.usable / 2**30,
                                 would_recompute=choice.recompute, fixed_gib=choice.fixed / 2**30,
                                 per_token_kib=choice.per_token / 2**10, state_gib=choice.state / 2**30)
+                if choice.recompute:  # as wpt train does: a pass foreseen not to fit never runs whole
+                    recompute = True
+            measured["recomputed"] = recompute
             if device.type == "cuda":
                 measured["gpu"] = torch.cuda.get_device_name(device)
                 torch.cuda.reset_peak_memory_stats(device)
@@ -474,6 +479,8 @@ class Battery:
         parts = self.args.parts.split(",")
         tiny = self.args.tiny
         widths, windows = ((256,), (256, 512)) if tiny else (WIDTHS, WINDOWS)
+        if self.args.widths:
+            widths = tuple(int(width) for width in self.args.widths.split(","))
         ends = [self.args.base, None]
         try:
             for part in parts:
@@ -566,6 +573,7 @@ def main():
     parser.add_argument("--out", help="the folder the results go into (default: compare-<time>)")
     parser.add_argument("--tiny", action="store_true", help="a tiny model and short windows: checks this script")
     parser.add_argument("--budget-minutes", type=float, default=50, help="no item starts after this (default 50)")
+    parser.add_argument("--widths", help="the widths the speed and memory parts measure (default 256,512)")
     parser.add_argument("--parts", default=",".join(PARTS), help="the parts to run, in order (default: all)")
     args = parser.parse_args()
     if args.child:
