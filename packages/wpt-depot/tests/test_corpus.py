@@ -993,6 +993,41 @@ def test_a_piece_is_cut_at_a_line_start_without_a_file_in_reach_and_at_its_place
             assert starts == [pieces.LENGTH, 2 * pieces.LENGTH]
 
 
+def test_a_text_of_more_pieces_than_a_16_bit_number_holds_comes_as_every_one_of_its_pieces(make_depot, me, tmp_path,
+                                                                                           monkeypatch):
+    # pieces of 16 characters cut a text a little over schema.LONG long into more than 32,767 pieces, as pieces
+    # of pieces.LENGTH cut a text of more than 32 billion characters
+    depot = make_depot()
+    content = "a line\n" * 160_000
+    [text] = depot.add([NewText(text=content, licenses=("CC0-1.0",))], me)
+    depot.decide("admitted", "true", me)
+    monkeypatch.setattr(pieces, "LENGTH", 16)
+    count = pieces.count(len(content))
+    assert count > 1 << 16
+    snapshot = snapshot_of(depot)
+
+    made = order.of(depot, snapshot["id"])
+
+    assert sorted(made.piece.tolist()) == list(range(count))
+    assert [made.place(at) for at in range(len(made))] == sorted(made.place(at) for at in range(len(made)))
+    # a walk goes on right after the place of a piece numbered past any 16-bit number
+    at = made.piece.tolist().index(count - 1)
+    assert made.start(list(made.place(at)[:1]) + ["depot", *made.place(at)[2:]]) == at + 1
+    store = open_store((tmp_path / "store").as_uri())
+    record = make(depot, store, total_tokens=20_000)  # the first pieces of the order, most numbered past 32,767
+    taken = documents(store, record)
+    numbers = [int(name.rpartition("#")[2]) for name in taken]
+    assert record["pieces"] == len(taken) and max(numbers) > 1 << 15
+    assert taken == sorted(taken, key=export_key)
+    table = {one["piece"] for one in read_table(store, record, "texts").to_pylist()}
+    assert table == set(numbers)
+    held = Parted(depot.reader(), text, depot.listed_text(text, 1)["parts"])
+    rows = {document: list(tokens) for shard in record["shards"]["plain"]
+            for tokens, _, document, _, _ in read_verified(store, shard)}
+    for name, number in zip(taken[:50], numbers):
+        assert rows[name] == [*TOKENIZER.encode(pieces.read(held, number).encode()), END]
+
+
 def test_a_text_long_at_the_snapshot_s_bound_comes_as_pieces_even_once_it_is_short(make_depot, me, tmp_path):
     # the order reads each text as of its bound: a text edited short after the snapshot still comes as its pieces
     depot = make_depot()

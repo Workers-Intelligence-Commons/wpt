@@ -19,8 +19,14 @@ sort holds one int64 an entry: the key's high bits over the entry's
 position in its low ones, sorted in place; entries whose high bits are the
 same (a few hundred pairs among 22 million) are then put in the order of
 their whole key, owner, number and piece. Once sorted, an Order holds 8
-bytes an entry (number, 4; set and piece, 2 each; a text has fewer than
-32,768 pieces) and no key: a walk works out each
+bytes an entry (number, 4; set and piece, 2 each) and no key, 10 when a
+text has more than 32,768 pieces (more than 34 billion characters), whose
+numbers take 4 bytes each: an int32 holds the number of any piece of any
+text a depot holds, since a content version's list of parts is one SQLite
+value (schema.SQL_STRING bytes, about 90 a part) and a part holds at most
+parts.SIZES.maximum bytes, so a text holds fewer than 8 × 10^14 characters,
+fewer than 800 million pieces. The type changes no place of the order. A
+walk works out each
 entry's key as it reads it, and a place in the order is found by a binary
 search over keys worked out the same way. While it is made, an entry costs
 16 bytes at most, beside a few megabytes for the keys of CHUNK entries.
@@ -228,7 +234,7 @@ def of(depot, snapshot: str) -> Order:
     ranks = _ranks([owner for owner, _ in sets])
     extra_numbers = np.array([number for _, number, _, _ in extra], np.uint32)
     extra_sets = np.array([index for _, _, index, _ in extra], np.int16 if len(sets) < (1 << 15) else np.int32)
-    extra_pieces = np.array([n for _, _, _, n in extra], np.int16)
+    extra_pieces = np.array([n for _, _, _, n in extra], _piece_type(long))
     bounds = np.array(starts[1:], np.int64)
 
     def entry(position: int) -> tuple:
@@ -254,17 +260,23 @@ def of(depot, snapshot: str) -> Order:
         sorted_numbers[start:end] = chunk
     numbers = None  # its memory freed before the sets and pieces take theirs
     owner_sets = np.empty(kept, extra_sets.dtype)
-    piece = np.empty(kept, np.int16)
+    piece = np.empty(kept, extra_pieces.dtype)
     for start, end, positions in _positions(keyed, low_mask, dropped):
         inside = positions < base
         chunk_sets = np.empty(len(positions), extra_sets.dtype)
         chunk_sets[inside] = np.searchsorted(bounds, positions[inside], "right")
         chunk_sets[~inside] = extra_sets[positions[~inside] - base]
         owner_sets[start:end] = chunk_sets
-        chunk_piece = np.full(len(positions), WHOLE, np.int16)
+        chunk_piece = np.full(len(positions), WHOLE, extra_pieces.dtype)
         chunk_piece[~inside] = extra_pieces[positions[~inside] - base]
         piece[start:end] = chunk_piece
     return Order(depot, sets, sorted_numbers, owner_sets, piece, long)
+
+
+def _piece_type(long: dict) -> type:
+    """The type of the pieces' numbers of an order whose long texts are long ({(set, number): Long}), as the
+    module says: int16 while every text has at most 32,768 pieces, else int32."""
+    return np.int16 if max((one.count for one in long.values()), default=0) <= 1 << 15 else np.int32
 
 
 def _ties(keyed: np.ndarray, bits: int) -> Iterator[tuple[int, int]]:
