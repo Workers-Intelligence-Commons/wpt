@@ -17,8 +17,11 @@ refuses a tokenizer.json that does not match (TokenizerMismatch).
 A model and its drafter are one unit, with separate weights: load_model
 refuses a folder whose drafter is missing, or whose drafter's provenance
 names other weights than the folder's (their sha256, weight_hashes), as
-DrafterMismatch. No option skips it: wpt train writes the drafter with
-the weights it was trained against.
+DrafterMismatch: wpt train writes the drafter with the weights it was
+trained against. The one folder without a drafter that loads is one that
+says it has none: wpt train --no-drafter writes `"drafter": false` among
+the options of its provenance.json (saved_without_drafter); the model then
+writes alone, without speculative decoding.
 """
 
 import hashlib
@@ -109,12 +112,25 @@ def load_model(directory, device="cpu") -> WPT:
     return model.to(device)
 
 
-def check_drafter(directory):
-    """DrafterMismatch unless the folder holds a drafter (drafter/) whose
-    provenance names the folder's weights, by their sha256, as those it was
-    trained against."""
+def saved_without_drafter(directory) -> bool:
+    """Whether wpt train saved the folder without a drafter (--no-drafter),
+    as its provenance.json says."""
+    try:
+        provenance = json.loads((Path(directory) / "provenance.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return False
+    return isinstance(provenance, dict) and (provenance.get("options") or {}).get("drafter") is False
+
+
+def check_drafter(directory) -> bool:
+    """True when the folder holds a drafter (drafter/) whose provenance
+    names the folder's weights, by their sha256, as those it was trained
+    against; False when it holds none and says so
+    (saved_without_drafter); DrafterMismatch otherwise."""
     directory = Path(directory)
     drafter = directory / DRAFTER_NAME
+    if not drafter.exists() and saved_without_drafter(directory):
+        return False
     try:
         provenance = json.loads((drafter / "provenance.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -127,6 +143,7 @@ def check_drafter(directory):
     if trained != weights:
         raise DrafterMismatch(f"{directory}: its drafter was trained against weights {trained}, the folder holds "
                               f"{weights}; train the model again to train its drafter")
+    return True
 
 
 def tokenizer_identity(directory) -> tuple[str, str]:

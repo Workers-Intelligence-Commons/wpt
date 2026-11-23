@@ -522,8 +522,16 @@ def drafter_shards(spec, steps) -> list:
 
 def _finish(spec, link, store, work, model, model_config, drafter_config, drafting, setup, plan, steps, strategy,
             telemetry):
-    """The drafter, the scheduler's pass times and a sample, sent to the manager."""
+    """The drafter, the scheduler's pass times and a sample, sent to the
+    manager; with --no-drafter, the sample alone."""
     end, im_end = spec["tokens"]["end"], spec["tokens"]["im_end"]
+    if not spec["options"]["drafter"]:
+        telemetry.log("drafter: none (--no-drafter); the same command without it trains one from the steps the "
+                      "store keeps")
+        model.eval()  # a sample, so the manager shows at once what it learned
+        sample = list(sample_tokens(model, [end], max_new_tokens=120))
+        call(link, "finished", json.dumps({"sample": sample}).encode())
+        return
     # a model that trained on turns ends its answers with <|im_end|> as well as the end of a document
     turns = any(step.reads != WINDOWS for step in steps)
     stops = (end, im_end) if turns else (end,)

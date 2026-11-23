@@ -164,7 +164,7 @@ def open_context(folder, store, telemetry=None) -> Context:
                         "this wpt eval reads; train it again")
     try:
         tokenizer = Tokenizer.from_bytes(load_tokenizer(folder))
-        check_drafter(folder)  # refuses a folder whose drafter is missing or of other weights
+        check_drafter(folder)  # refuses a folder whose drafter is missing or of other weights; none may be asked
     # ValueError: a vocabulary of another tokenizer version; DrafterMismatch is one too
     except (TokenizerMismatch, DrafterMismatch, ValueError) as error:
         raise EvalError(str(error)) from None

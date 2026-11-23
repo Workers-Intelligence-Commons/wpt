@@ -124,8 +124,8 @@ Everything the job writes goes back to the manager:
   ([observability.md](observability.md));
 - the checkpoints, as `WPT_LINK_CHECKPOINTS` says (below);
 - each step's end, which the manager keeps as the step's result;
-- the drafter and the sample's token ids, from which the manager writes the
-  model folder.
+- the drafter (none with `--no-drafter`) and the sample's token ids, from
+  which the manager writes the model folder.
 
 An environment that needs the manager, such as `agent-tasks`, which plays
 attempts in sandboxes, has a part on the manager that the job calls; that

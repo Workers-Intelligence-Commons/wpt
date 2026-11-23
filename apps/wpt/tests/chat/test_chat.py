@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 
@@ -9,7 +10,7 @@ import torch
 from wpt_inference import COSTS_FILE, costs_file, costs_setup
 from wpt_store import LocalStore
 
-from wpt_model import (WPT, Drafter, DrafterConfig, ModelConfig, load_drafter, load_model, save_drafter, save_model,
+from wpt_model import (WPT, Drafter, DrafterConfig, DrafterMismatch, ModelConfig, load_drafter, load_model, save_drafter, save_model,
                        tokenizer_identity, weight_hashes)
 from wpt_tokenizer import Tokenizer
 
@@ -49,6 +50,23 @@ def test_a_folder_whose_drafter_is_missing_or_of_other_weights_is_refused(tmp_pa
     provenance.unlink()
     with pytest.raises(SystemExit, match="DrafterMismatch: .*no drafter"):
         main([str(folder)])
+
+
+def test_a_folder_saved_without_a_drafter_says_so_and_writes_with_the_model_alone(tmp_path, monkeypatch, capsys):
+    # wpt train --no-drafter: the folder's provenance.json says it has none
+    folder = model_folder(tmp_path / "model")
+    shutil.rmtree(folder / "drafter")
+    (folder / "provenance.json").write_text(json.dumps({"options": {"drafter": False}}))
+    monkeypatch.setattr("wpt.chat.measure_costs", lambda *args: pytest.fail("no drafter: nothing is scheduled"))
+    answers = iter(["the", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    main([str(folder), "--max-new-tokens", "3"])
+    out = capsys.readouterr().out
+    assert "without a drafter, saved by wpt train --no-drafter: it writes alone, slower" in out and "\nthe" in out
+    with pytest.raises(SystemExit, match="--scheduler-costs: .*saved without a drafter"):
+        main([str(folder), "--scheduler-costs", "run"])
+    with pytest.raises(DrafterMismatch, match="saved without a drafter .*without --no-drafter trains one"):
+        load_drafter(folder)
 
 
 def test_about_prints_the_folder_notice(tmp_path, capsys):

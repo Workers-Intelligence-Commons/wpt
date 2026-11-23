@@ -18,7 +18,7 @@ answers are the same for every worker, and only the run's main process
                       step ends)
     step.done         a step ended: its result kept (the checkpoint's state, or the state the
                       job sent with it), the checkpoint removed
-    finished          the drafter and the sample's token ids, once every step is done
+    finished          the drafter (none with --no-drafter) and the sample's token ids, once every step is done
     file.range, upload.*   the files offered and sent (wpt_worker.manager.Files)
 
 wpt_worker.writing.RemoteWriter is the writer an environment's manager
@@ -218,5 +218,6 @@ class Training:
         return {"result": sha}, b""
 
     def _finished(self, header, body):
-        self.finished = {**json.loads(body), "drafter": self.files.received(header["drafter"])}
+        sent = header.get("drafter")  # none with --no-drafter
+        self.finished = {**json.loads(body), "drafter": self.files.received(sent) if sent is not None else None}
 

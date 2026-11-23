@@ -15,12 +15,13 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 from wpt_inference import COSTS_FILE, DRAFT, costs_setup, replayed_costs
-from wpt_model import load_drafter, load_model, load_tokenizer, tokenizer_identity, weight_hashes
+from wpt_model import DrafterMismatch, load_drafter, load_model, load_tokenizer, tokenizer_identity, weight_hashes
 import wpt_telemetry
 from wpt_store import LocalStore, StoreError
 from wpt_telemetry import FLUSH_THREAD
 from wpt_tokenizer import Tokenizer
 from wpt_utils.device import select_device
+from wpt.eval import open_context
 from wpt.train import InputError, StoreCheckpoint, check_record, main
 from wpt_training import load_state
 from wpt_utils.lines import bare
@@ -170,6 +171,49 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
         assert refused.value.code == 2 and not (tmp_path / "never").exists()
         assert why in capsys.readouterr().err
         assert not [e for e in built.records("wpt train")[-1].events if e.get("name") == "training.step"]
+
+
+def test_a_run_without_its_drafter_saves_the_same_weights_and_the_same_command_trains_the_drafter_later(
+        built, tmp_path, capsys):
+    # docs/training.md, "The drafter": --no-drafter ends the run once the last step's result is kept; the
+    # weights are those of a run that trains the drafter, bit for bit; the folder says it has none, loads,
+    # and the same command without the option reuses every step and trains only the drafter
+    recipe = built.recipe("three", training=one_stage(3))
+    main([recipe, built.corpus_id, "--out", "with"])
+    forget_steps(built.store)  # trained again from the start, not reused
+    main([recipe, built.corpus_id, "--out", "without", "--no-drafter"])
+    with_drafter, without = tmp_path / "with", tmp_path / "without"
+    same = lambda: all(torch.equal(value, weights(with_drafter)[name]) for name, value in weights(without).items())
+    assert same() and weights(without).keys() == weights(with_drafter).keys()  # bit for bit
+    assert not (without / "drafter").exists()
+    assert json.loads((without / "provenance.json").read_text())["options"]["drafter"] is False
+    assert load_model(without).config == load_model(with_drafter).config
+    with pytest.raises(DrafterMismatch, match="saved without a drafter"):
+        load_drafter(without)
+    assert "`wpt train --no-drafter` saved the model without one" in (without / "README.md").read_text()
+    open_context(without, built.store)  # wpt eval reads it
+    run = built.records("wpt train")[-1]
+    assert [e["attributes"]["step"] for e in run.events if e.get("name") == "training.step"] == [1, 2, 3]
+    assert not [e for e in run.events if e.get("name", "").startswith("drafter")]
+    assert run.ids["outputs"]["drafter"] is None
+    with pytest.raises(Exception):
+        built.store.read_record(run.folder, COSTS_FILE)  # nothing is measured for a scheduler
+    assert "drafter: none (--no-drafter)" in capsys.readouterr().out
+
+    main([recipe, built.corpus_id, "--out", "without", "--resume"])
+    again = built.records("wpt train")[-1]
+    assert not [e for e in again.events if e.get("name") == "training.step"]
+    assert [e["attributes"]["step"] for e in again.events if e.get("name") == "training.step_reused"] == ["read-text"]
+    assert same()
+    assert load_drafter(without).provenance["target"] == {"weights": weight_hashes(without)}
+
+    from wpt.train import parse_args
+    assert [parse_args(["r", *given], environ=environ).drafter for given, environ in (
+        ([], {}), (["--no-drafter"], {}), ([], {"WPT_DRAFTER": "0"}), (["--drafter"], {"WPT_DRAFTER": "0"}))] == [
+        True, False, False, True]
+    with pytest.raises(SystemExit):
+        parse_args(["r", "--no-drafter", "--scheduler-costs", "some-run"], environ={})
+    assert "--no-drafter trains no drafter" in capsys.readouterr().err
 
 
 def test_drafter_feature_layers_the_model_does_not_have_are_refused_before_training(built, tmp_path, capsys):

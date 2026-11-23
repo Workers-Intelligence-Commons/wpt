@@ -128,7 +128,7 @@ def card(config, provenance, evals, drafter=None) -> str:
         f"- Every input and tool version: [provenance.json](provenance.json)", "",
         "The steps, in order, each on the weights the one before it left:", "",
         *(f"{number}. {_step(step)}" for number, step in enumerate(provenance["steps"], start=1)), "",
-        *_drafter(drafter),
+        *_drafter(drafter, provenance),
         "## Texts", "",
         f"{provenance['texts']:,} texts; each one, with its authors and its credit: [NOTICE](NOTICE).", "",
         "## Evaluations", "",
@@ -149,8 +149,12 @@ def _eval_code(result) -> str:
     return f"code {code_name(result['code'])}" if "code" in result else f"wpt eval {result['wpt_eval']}"
 
 
-def _drafter(drafter):
+def _drafter(drafter, provenance):
     if drafter is None:
+        if (provenance.get("options") or {}).get("drafter") is False:
+            return ["## Drafter", "",
+                    "None: `wpt train --no-drafter` saved the model without one, so it writes alone, without "
+                    "speculative decoding. The same `wpt train` command without that option trains one.", ""]
         return []
     config, provenance = drafter["config"], drafter["provenance"]
     lines = ["## Drafter", "",

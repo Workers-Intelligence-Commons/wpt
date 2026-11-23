@@ -159,16 +159,20 @@ drafter"): its prompts are the beginnings of the plain texts the steps
 read, and the model alone writes the answers, which stop at the end
 of a text and, when a step trained on conversations or tasks, at
 <|im_end|>, the end of a turn (the manager sends both tokens' ids). A
-model and its drafter are one unit: no option skips it, and a drafter that cannot be trained refuses the run
-(code 2) and writes nothing; every step's result is kept, so the same
-command trains the drafter again without training. Drafter settings no
+drafter that cannot be trained refuses the run (code 2) and writes nothing;
+every step's result is kept, so the same command trains the drafter again
+without training. --no-drafter (WPT_DRAFTER=0) saves the model without a
+drafter, its weights the same: its provenance.json says so (options), and
+the same command without --no-drafter later trains the drafter from the
+steps the store keeps, without training them. Drafter settings no
 drafter can have (feature layers the model does not have, an unknown
 setting) are refused before training starts. Then it measures the
 scheduler's pass times once (wpt_inference.measure_costs) and writes them
 into the run's record as scheduler-costs.json, with the setup they were
 measured on (the model's config, the drafter's block, the device);
 --scheduler-costs FOLDER replays those an earlier run recorded instead,
-refused before training when they were measured on another setup.
+refused before training when they were measured on another setup. With
+--no-drafter, nothing is measured.
 
 Exit codes: 0 done, 2 refused (bad input, other settings than the
 checkpoint's, a step that failed, a drafter that could not be trained;
@@ -186,8 +190,9 @@ store.
 
 The model folder gets config.json, the weights (their headers name the
 licenses), tokenizer.json (the corpus's vocabulary, for wpt chat), the
-drafter (drafter/: config.json, model.safetensors, and provenance.json,
-which names the sha256 of the weights it was trained against),
+drafter unless --no-drafter (drafter/: config.json, model.safetensors, and
+provenance.json, which names the sha256 of the weights it was trained
+against),
 provenance.json (what produced it: the depot, the snapshot with its
 change and digest, the recipe, the code's commit, the corpus's id and
 build key, each step, its fingerprint and result, and what of the corpus
@@ -358,6 +363,12 @@ def parse_args(argv=None, environ=None):
                              "wherever they can (a CUDA device with Triton and a C++ compiler) and run uncompiled "
                              "elsewhere, which the log says; --compile stops the run where they cannot, "
                              "--no-compile runs them uncompiled (WPT_COMPILE=1 or 0)")
+    parser.add_argument("--drafter", action=argparse.BooleanOptionalAction,
+                        default=switch(parser, environ, "WPT_DRAFTER") is not False,
+                        help="end the run by training the model's drafter for speculative decoding (the default); "
+                             "--no-drafter saves the model without one, its weights the same, and the same command "
+                             "without it later trains the drafter from the steps the store keeps (WPT_DRAFTER=1 or "
+                             "0)")
     parser.add_argument("--resume", action="store_true", default=environ.get("WPT_RESUME", "") in ("1", "true", "yes"),
                         help="continue the step that stopped from its checkpoint: the model folder's, or with --run "
                              "the store's (WPT_RESUME)")
@@ -372,6 +383,9 @@ def parse_args(argv=None, environ=None):
         parser.error("--recompute-from narrows --recompute to the longer windows: give --recompute too")
     if args.profile_update < 0:
         parser.error("--profile-update: 0 (no profile) or an update's number")
+    if args.scheduler_costs and not args.drafter:
+        parser.error("--scheduler-costs replays the pass times of the drafter's scheduler, and --no-drafter trains "
+                     "no drafter")
     if args.run is not None and not STORE_NAME.fullmatch(args.run):
         parser.error(f"--run {args.run!r}: use letters, digits, '.', '_' and '-' only")
     return args
@@ -773,7 +787,8 @@ def provenance(args, recipe, record, model_config, n_params, worker, strategy_fi
         "texts": texts,
         "vocabulary": record["tokenizer"]["vocabulary"],
         "shards": [{name: s[name] for name in SHARD_FIELDS} for s in record["shards"][PLAIN]],
-        "options": {k: v for k, v in vars(args).items() if k not in ("recipe", "corpus")},  # how the hardware ran it
+        # how the hardware ran it, and whether a drafter was trained (drafter: false with --no-drafter)
+        "options": {k: v for k, v in vars(args).items() if k not in ("recipe", "corpus")},
         "strategy": {"name": strategy_file.name, "file": strategy_file.file, "file_sha256": strategy_file.sha256,
                      "processes": processes},
         # each step in order: what it is, its fingerprint and kept result, whether this run reused it, what it
@@ -1130,7 +1145,7 @@ def _train(args, record, recipe, strategy_file, steps, context, store, telemetry
                         "micro_batch": args.micro_batch, "checkpoint_every": args.checkpoint_every,
                         "segment": args.segment, "stream": args.stream, "stream_shards": args.stream_shards,
                         "recompute": args.recompute, "recompute_from": args.recompute_from,
-                        "compile": args.compile, "resume": args.resume,
+                        "compile": args.compile, "resume": args.resume, "drafter": args.drafter,
                         "scheduler_costs": args.scheduler_costs, "kernels": args.kernels,
                         "stop_after_minutes": args.stop_after_minutes,
                         "stop_after_updates": args.stop_after_updates, "profile_update": args.profile_update}}
@@ -1190,20 +1205,22 @@ def _lost(error, telemetry) -> int:
 def _finish(args, recipe, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
             telemetry, log):
     """The model folder, from the last step's kept state and what the gpu
-    worker sent at the end (the drafter, a sample's token ids)."""
+    worker sent at the end (the drafter, none with --no-drafter, and a
+    sample's token ids)."""
     with telemetry.span("model.load", state=answers.last_state):
         model = WPT(model_config)  # on this machine's CPU: only written to the folder
         state = load_state(store.path(answers.last_state), only=("model", "best_model"))
         model.load_state_dict(weights(state))
         del state
         store.release(answers.last_state)
-        found = load_state(answers.finished["drafter"])
-        drafter = Drafter(model_config, drafter_config)
-        drafter.load_state_dict(found["state"])
-        drafter.provenance = found["provenance"]
-        answers.finished["drafter"].unlink()
-    drafter.provenance = {**drafter.provenance, "trained_by": {"command": "wpt train", "recipe_name": args.recipe},
-                          "corpus": record["id"]}
+        drafter = None
+        if answers.finished["drafter"] is not None:
+            found = load_state(answers.finished["drafter"])
+            drafter = Drafter(model_config, drafter_config)
+            drafter.load_state_dict(found["state"])
+            drafter.provenance = {**found["provenance"], "corpus": record["id"],
+                                  "trained_by": {"command": "wpt train", "recipe_name": args.recipe}}
+            answers.finished["drafter"].unlink()
     n_params = sum(p.numel() for p in model.parameters())
     done = answers.done
     named = record["tokenizer"]
@@ -1219,9 +1236,10 @@ def _finish(args, recipe, record, model_config, drafter_config, answers, tokeniz
                                                     if named.get("recipe_version") is not None else "")
                 save_model(model, staging, vocabulary, tokenizer_name, max_shard_bytes=args.max_shard_size,
                            metadata=WEIGHT_METADATA)
-                save_drafter(drafter, staging, tokenizer_name, hashlib.sha256(vocabulary).hexdigest(),
-                             metadata=WEIGHT_METADATA,
-                             provenance={**drafter.provenance, "target": {"weights": weight_hashes(staging)}})
+                if drafter is not None:
+                    save_drafter(drafter, staging, tokenizer_name, hashlib.sha256(vocabulary).hexdigest(),
+                                 metadata=WEIGHT_METADATA,
+                                 provenance={**drafter.provenance, "target": {"weights": weight_hashes(staging)}})
             with telemetry.span("model.notice") as span:  # every text learned from, NOTICE, LICENSE, the model card
                 credits = model_notice(store, record, learned(done))
                 (staging / CREDITS_NAME).write_text(credits, encoding="utf-8", newline="\n")
@@ -1237,7 +1255,7 @@ def _finish(args, recipe, record, model_config, drafter_config, answers, tokeniz
             telemetry.event("model.files", files=files)
             # recorded before the folder appears: a record that cannot be written leaves the target as it was
             telemetry.output(model_folder=str(out), weights={name: files[name] for name in weight_files(staging)},
-                             provenance=files["provenance.json"], drafter=files["drafter/model.safetensors"])
+                             provenance=files["provenance.json"], drafter=files.get("drafter/model.safetensors"))
             # the run is complete; recorded before the checkpoint goes (a FolderCheckpoint goes with the old folder)
             telemetry.event("training.checkpoint_removed", checkpoint=str(checkpoint))
             telemetry.irreversible("model.folder_replaced", folder=str(out))

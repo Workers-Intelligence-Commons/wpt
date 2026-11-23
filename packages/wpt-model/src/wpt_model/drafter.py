@@ -56,7 +56,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from .attention import WINDOW, WindowAttention, dense_attention
-from .checkpoint import TokenizerMismatch, check_drafter, tokenizer_identity
+from .checkpoint import DrafterMismatch, TokenizerMismatch, check_drafter, tokenizer_identity
 from .config import ModelConfig
 from .experts import Experts
 from .layers import EPS
@@ -360,12 +360,15 @@ def save_drafter(drafter: Drafter, folder, tokenizer_name: str, tokenizer_sha256
 def load_drafter(folder, device="cpu") -> Drafter:
     """The drafter saved in a model folder, on device, with its provenance
     (drafter.provenance). Raises checkpoint.DrafterMismatch when the folder
-    has none or it was trained against other weights than the folder's,
+    has none (one saved without a drafter says so, and the command that
+    trains it) or it was trained against other weights than the folder's,
     and checkpoint.TokenizerMismatch when its weights name another
     tokenizer than the model's."""
     folder = Path(folder)
     directory = folder / DRAFTER_NAME
-    check_drafter(folder)
+    if not check_drafter(folder):
+        raise DrafterMismatch(f"{folder}: saved without a drafter (wpt train --no-drafter); the same wpt train "
+                              "command without --no-drafter trains one, reusing the steps the store keeps")
     with safe_open(directory / WEIGHTS_NAME, framework="pt") as weights:
         header = weights.metadata() or {}
     expected = tokenizer_identity(folder)

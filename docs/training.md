@@ -976,8 +976,9 @@ rented ([machines.md](machines.md), "A lost gpu worker").
 
 After the last step, the gpu worker's main process trains the model's drafter
 ([model.md](model.md), "The drafter"): a model and its drafter are one
-unit, so every run trains one, against the final weights, the model frozen,
-with the recipe's `drafter` section. Its prompts are the beginnings of the
+unit, so a run trains one, against the final weights, the model frozen,
+with the recipe's `drafter` section, unless `--no-drafter` says otherwise
+(below). Its prompts are the beginnings of the
 documents of the training shards the run's steps read: when every step that
 reads text windows reads a prefix, the shards that hold the longest prefix,
 never a shard past it, so the drafter fetches nothing the model never
@@ -985,7 +986,7 @@ trained on (a step that reads every training token, or a run with no such
 step, leaves every shard). The model alone writes the answers, each
 up to the end of a document and, when a step trained on conversations or
 tasks, `<|im_end|>`, the end of a turn: no text people wrote as an answer,
-and no conversation of a step, reaches it. No option skips it. A drafter
+and no conversation of a step, reaches it. A drafter
 that cannot be trained (too few prompts, a loss that is not finite, no
 draft verified) refuses the run (exit code 2) and writes no model folder;
 every step's result is kept, so the same command trains the drafter again
@@ -1007,6 +1008,25 @@ recorded in its record folder `FOLDER` instead; times measured on another
 setup are refused before training starts. [model.md](model.md), "The
 drafter", says exactly what a replay guarantees, and
 [observability.md](observability.md) what the file holds.
+
+`--no-drafter` (or `WPT_DRAFTER=0`) ends the run once the last step's
+result is kept: the model folder is written without `drafter/`, and
+nothing is measured for the scheduler (`--scheduler-costs` is refused with
+it). The weights are the same bit for bit, since the folder's weights come
+from the last step's kept result, which the drafter never changes
+(`test_train.py`). The folder's `provenance.json` says
+`"drafter": false` among its `options`, which is what lets it load
+without a drafter: `wpt chat` then writes with the model alone, slower,
+and says so when it starts; `wpt eval` reads it as any folder, since no
+measure uses the drafter; the model card says it has none; and
+`load_drafter` refuses it with the command that trains one. That command
+is the same `wpt train` without `--no-drafter`: the store keeps every
+step's result, so it reuses them all, trains nothing, and trains only the
+drafter, against the same weights. A run stopped before its last step
+ends resumes with `--resume` with or without the option, which changes
+nothing of the steps (it takes no part in their fingerprints). A run
+stopped during the drafter has no checkpoint left, only its kept steps:
+the same command, with or without `--no-drafter`, finishes it from them.
 
 ## The model folder
 
@@ -1036,7 +1056,9 @@ The model folder holds:
   the corpus, the sha256 of every weight file it was trained against, its
   settings, its losses, the calibration and the measure: `load_model`
   refuses a folder without it or whose drafter names other weights
-  ([model.md](model.md), "The drafter");
+  ([model.md](model.md), "The drafter"), except one whose `provenance.json`
+  says it was saved without a drafter (`--no-drafter`, "The drafter",
+  above);
 - `evals/`, results written by `wpt eval` (see [evaluation.md](evaluation.md)),
   shown in the model card.
 
@@ -1083,7 +1105,9 @@ model's thinking and tool calls with their tags, without running the
 calls. It measures the drafter scheduler's pass times when it loads the
 model; `--scheduler-costs FOLDER` reads instead those a run recorded in its
 record folder `FOLDER` of the store, refused when they were measured on
-another setup ([model.md](model.md), "The drafter").
+another setup ([model.md](model.md), "The drafter"). A folder saved with
+`--no-drafter` writes with the model alone, slower, which the start line
+says.
 
 ### What a model records
 

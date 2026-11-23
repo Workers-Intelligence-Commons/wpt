@@ -590,10 +590,14 @@ with separate weights:
 - `wpt train` trains a drafter at the end of every run, after the
   recipe's last step, against the final weights, the model frozen
   (training.md, "The drafter"). The drafter is not a training step.
+  `--no-drafter` saves the model without one, the weights the same.
 - The drafter's `provenance.json` names the sha256 of every weight file it
   was trained against (`target.weights`). `wpt_model.load_model` refuses a
   folder whose drafter is missing, was not saved whole, or names other
-  weights (`DrafterMismatch`), and no option skips the check.
+  weights (`DrafterMismatch`). The one folder without a drafter it loads
+  says it has none: its `provenance.json` holds `"drafter": false` among
+  its `options`, which `wpt train --no-drafter` writes. Such a model writes
+  alone, without speculative decoding: the same text, slower.
 - A drafter that cannot be trained (too few prompts, a loss that is not
   finite, no draft verified) fails the run, which writes nothing.
 - The prompts are the beginnings of the training documents the run read

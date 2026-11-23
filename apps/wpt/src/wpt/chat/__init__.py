@@ -15,7 +15,10 @@ scheduler's pass times are measured once, when the model is loaded;
 --scheduler-costs RECORD_FOLDER reads instead those a run recorded
 (scheduler-costs.json in that record folder of the store WPT_STORE
 names, environment or .env), refused when they were measured on another
-setup (the model's config, the drafter's block, the device).
+setup (the model's config, the drafter's block, the device). A folder
+that wpt train --no-drafter saved has no drafter and says so: the model
+writes alone, slower, the start line says so, and --scheduler-costs is
+refused.
 
 --kernels FORM (WPT_KERNELS: tilelang, triton or pytorch) names what computes
 the model's attention on the GPU, as for wpt train (docs/model.md,
@@ -40,7 +43,7 @@ import sys
 from pathlib import Path
 
 from wpt_inference import COSTS_FILE, costs_setup, measure_costs, next_message, replayed_costs, sample_tokens
-from wpt_model import TokenizerMismatch, load_drafter, load_model, load_tokenizer
+from wpt_model import TokenizerMismatch, check_drafter, load_drafter, load_model, load_tokenizer
 from wpt_model.kernels import FORMS, KernelUnavailable, kernels, named_form
 from wpt_model.notice import LICENSE, NOTICE_NAME, OUTPUT_LICENSE, REPOSITORY
 from wpt_store import StoreError, store_from_settings
@@ -134,12 +137,17 @@ def main(argv=None):
     try:
         tokenizer = Tokenizer.from_bytes(load_tokenizer(args.model))
         model = load_model(args.model, device)  # refuses a folder whose drafter is missing or of other weights
-        drafter = load_drafter(args.model, device)
+        drafter = load_drafter(args.model, device) if check_drafter(args.model) else None  # None: --no-drafter
     # ValueError: a vocabulary of another tokenizer version, or a DrafterMismatch
     except (TokenizerMismatch, ValueError) as error:
         sys.exit(f"{type(error).__name__}: {error}")
     model.eval()
-    if args.scheduler_costs:  # a run's recorded pass times, on this setup only
+    if drafter is None:
+        if args.scheduler_costs:
+            sys.exit(f"--scheduler-costs: {args.model} was saved without a drafter (wpt train --no-drafter), so no "
+                     "drafts are scheduled")
+        costs = None
+    elif args.scheduler_costs:  # a run's recorded pass times, on this setup only
         try:
             env_file = Path.cwd() / ".env"
             store = store_from_settings(env_file)
@@ -150,7 +158,9 @@ def main(argv=None):
     else:
         costs = measure_costs(model, 1, drafter.block)  # this machine's pass times, once
     what = "type a message" if args.chat else "type text to continue"
-    say(f"model loaded ({tokenizer.vocab_size} tokens, with its drafter) on {describe(device)}. {what}, "
+    drafting = ("with its drafter" if drafter is not None else
+                "without a drafter, saved by wpt train --no-drafter: it writes alone, slower")
+    say(f"model loaded ({tokenizer.vocab_size} tokens, {drafting}) on {describe(device)}. {what}, "
         "an empty line or the end of the input quits.")
     say(licenses_line(args.model))
     conversation = {"messages": []}  # docs/chat-format.md
