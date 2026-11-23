@@ -730,6 +730,16 @@ Details DSpark leaves open, and WPT's choice for each:
   confidence projection has a bias.
 - The drafts' distribution: the writer's temperature and top `k` applied to
   the drafter's scores, so it follows what the model samples.
+- The answers: written side by side, up to 32 prompts per pass of the
+  model and at most 2,048 prompt tokens in a batch's first pass, which
+  bounds its scores to 512 MiB at a vocabulary of 65,536. Each prompt has
+  its own random stream, seeded from the drafter's `seed` and the prompt's
+  place, so each answer is what the model writes for that prompt alone
+  with that stream: token for token on the CPU (`test_drafting.py`),
+  within rounding on a GPU. A row leaves the batch at its stop token or
+  its last allowed token. The calibration still drafts for one held-out
+  prompt at a time: batching it needs a stream per row in the drafter's
+  draws and in the rule that keeps or rejects them.
 - Calibration: on real outcomes. On the held-out prompts, the drafter
   drafts for the model, every draft verified, its temperatures at 1, and
   each round records each draft's confidence and whether the model kept it

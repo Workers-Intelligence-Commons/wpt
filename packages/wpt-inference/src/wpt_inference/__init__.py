@@ -171,12 +171,7 @@ class Writer:
         return scores[torch.arange(len(rows), device=self.device), ends]
 
     def _probabilities(self, scores):
-        scores = scores.float() / self.temperature
-        if self.top_k is not None:
-            k = min(self.top_k, scores.size(-1))
-            v, _ = torch.topk(scores, k)
-            scores = scores.masked_fill(scores < v[..., [-1]], float("-inf"))
-        return F.softmax(scores, dim=-1)
+        return probabilities(scores, self.temperature, self.top_k)
 
     def _sample(self, scores):
         return torch.multinomial(self._probabilities(scores), 1, generator=self.generator)[:, 0]
@@ -231,6 +226,19 @@ class Writer:
         self.model.undo(self.cache, kept)
         self._remember(read, kept)
         return written
+
+
+def probabilities(scores, temperature, top_k):
+    """The distribution a writer samples from, over the last dimension of
+    scores: the scores divided by temperature, only the top_k highest kept
+    (None: all). Each row's own: a row's distribution never depends on the
+    others'."""
+    scores = scores.float() / temperature
+    if top_k is not None:
+        k = min(top_k, scores.size(-1))
+        v, _ = torch.topk(scores, k)
+        scores = scores.masked_fill(scores < v[..., [-1]], float("-inf"))
+    return F.softmax(scores, dim=-1)
 
 
 def schedule(confidences, caps, costs):

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import random
 from contextlib import contextmanager
 
 import pytest
@@ -71,11 +72,11 @@ def test_written_answers_never_reach_the_drafter_s_training(monkeypatch):
     # what the model wrote after it
     texts = documents()
     answers, learned, calibrated = [], [], []
-    answer, blocks, outcomes = drafting._answer, drafting._blocks, drafting._outcomes
+    answer, blocks, outcomes = drafting._answers, drafting._blocks, drafting._outcomes
 
-    def answering(model, prompt, *args):
-        written = answer(model, prompt, *args)
-        answers.append(written)
+    def answering(model, prompts, *args):
+        written = answer(model, prompts, *args)
+        answers.extend(written)
         return written
 
     def learning(model, drafter, ids, start, *args):
@@ -86,7 +87,7 @@ def test_written_answers_never_reach_the_drafter_s_training(monkeypatch):
         calibrated.extend(prompts)
         return outcomes(model, drafter, prompts, *args)
 
-    monkeypatch.setattr(drafting, "_answer", answering)
+    monkeypatch.setattr(drafting, "_answers", answering)
     monkeypatch.setattr(drafting, "_blocks", learning)
     monkeypatch.setattr(drafting, "_outcomes", calibrating)
     target = model()
@@ -108,6 +109,29 @@ def test_written_answers_never_reach_the_drafter_s_training(monkeypatch):
     assert drafter.provenance["prompts"] == {"count": 4, "training": 3, "held_out": 1,
                                              "answer_tokens": sum(len(ids) - start for ids, start in answers)}
     assert drafter.provenance["acceptance"]["verified"] > 0
+
+
+@pytest.mark.parametrize("top_k", [None, 5])
+def test_answers_written_side_by_side_are_those_each_prompt_gets_alone_with_its_stream(top_k):
+    # module docstring of wpt_inference.drafting: prompts of different lengths, rows that stop early (a stop
+    # token or answer_tokens) and leave the batch; each row's tokens are those its prompt gets written alone
+    # by a Writer with its own stream, token for token on the CPU
+    target = model()
+    settings = dataclasses.replace(SMALL, answer_tokens=40, top_k=top_k)
+    draw = random.Random(1)
+    prompts = [[END] + [draw.randrange(1, CONFIG.vocab_size) for _ in range(draw.randrange(1, 9))]
+               for _ in range(12)]
+    stops = (END, 7)
+    alone = [drafting._answer(target, prompt, settings, stops, stream)
+             for prompt, stream in zip(prompts, drafting.streams(settings, len(prompts), "cpu"))]
+    together = drafting._answers(target, prompts, settings, stops, drafting.streams(settings, len(prompts), "cpu"))
+    assert together == alone
+    lengths = {len(ids) - start for ids, start in together}
+    assert settings.answer_tokens in lengths and min(lengths) < settings.answer_tokens  # some rows left early
+    # the streams follow the seed and the place, never the batch
+    assert [s.initial_seed() for s in drafting.streams(settings, 3, "cpu")] == \
+        [s.initial_seed() for s in drafting.streams(settings, 12, "cpu")][:3]
+    assert drafting.rows(settings) == 32 and drafting.rows(dataclasses.replace(SMALL, prompt_tokens=1024)) == 2
 
 
 def test_the_drafter_s_update_is_the_same_one_block_at_a_time(monkeypatch):

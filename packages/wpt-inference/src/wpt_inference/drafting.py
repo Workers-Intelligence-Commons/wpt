@@ -13,6 +13,22 @@ wrote, is never kept, and the drafter learns to propose what the model
 writes (DSpark's and DFlash's regenerated responses). A share of the
 prompts (`held_out`, at least one) is kept apart.
 
+The answers are written side by side, `rows` prompts per pass of the
+model (_answers), each prompt with its own random stream, seeded from
+`seed` and the prompt's place: each answer is then what the model writes
+for its prompt alone with that stream (_answer), token for token on the
+CPU (test_drafting.py), and within rounding on a GPU, whose passes over
+several rows may round otherwise than over one. A row reads its prompt
+in the first pass, then one token per pass, and leaves the batch once it
+wrote a stop token or `answer_tokens` tokens. `rows` is fixed rather than
+measured: at most ROWS, and at most PROMPT_READ tokens of prompts read
+in one pass, so the batch's largest pass, its prompts' first, reads at
+most PROMPT_READ tokens without gradients, and its scores, (rows, prompt
+tokens, vocabulary) in FP32, take at most PROMPT_READ x vocabulary x 4
+bytes: 512 MiB at a vocabulary of 65,536. Every later pass reads one
+token per row, and the cache holds each row's keys and values of its
+exact layers, a few MiB.
+
 Each answer is read whole by the model, which gives its hidden states at
 the drafter's feature layers and its distribution of each next token. From
 random anchors in the answer (`anchors` at most per answer, drawn again
@@ -48,9 +64,11 @@ import torch
 from wpt_model import NorMuonAdamW
 from wpt_model.drafter import Drafter, DrafterConfig, calibrate, temperature_grid, training_blocks
 
-from . import Writer
+from . import Writer, probabilities
 
 CHUNK_SCORES = 2 ** 26  # the most scores (blocks x places x vocabulary) one pass of the drafter's loss holds
+ROWS = 32  # the most answers written side by side
+PROMPT_READ = 2048  # the most prompt tokens the first pass of a batch of answers reads
 
 
 class DrafterFailed(Exception):
@@ -141,16 +159,31 @@ def train_drafter(model, documents, config: DrafterConfig, settings: Settings, *
         model.train(training_mode)
 
 
+def rows(settings) -> int:
+    """How many answers are written side by side (module docstring)."""
+    return max(1, min(ROWS, PROMPT_READ // settings.prompt_tokens))
+
+
+def streams(settings, count, device) -> list:
+    """The random stream of each of count prompts, in their order: a
+    generator on device seeded from the settings' seed and the prompt's
+    place."""
+    draw = random.Random(f"answers {settings.seed}")
+    return [torch.Generator(device=device).manual_seed(draw.getrandbits(63)) for _ in range(count)]
+
+
 def _train(model, prompts, held, config, settings, stops, device, telemetry):
-    sampling = torch.Generator(device=device).manual_seed(settings.seed)
+    together = rows(settings)
     telemetry.log(f"drafter: the model writes its answers to {len(prompts)} document beginnings, at most "
-                  f"{settings.answer_tokens} tokens each, for its drafter to learn from")
-    with telemetry.span("drafter.answers", prompts=len(prompts)):
-        answers = []
-        for prompt in prompts:
-            answers.append(_answer(model, prompt, settings, stops, sampling))
-            if len(answers) % max(1, len(prompts) // 4) == 0 and len(answers) < len(prompts):
+                  f"{settings.answer_tokens} tokens each and {together} side by side, for its drafter to learn from")
+    with telemetry.span("drafter.answers", prompts=len(prompts), rows=together):
+        answers, drawn = [], streams(settings, len(prompts), device)
+        for first in range(0, len(prompts), together):
+            answers += _answers(model, prompts[first:first + together], settings, stops,
+                                drawn[first:first + together])
+            if len(answers) < len(prompts):
                 telemetry.log(f"drafter: {len(answers)} of {len(prompts)} answers written")
+    sampling = torch.Generator(device=device).manual_seed(settings.seed)  # the calibration's drafts
     training, held_out = answers[held:], answers[:held]
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(settings.seed)
@@ -221,13 +254,50 @@ def _train(model, prompts, held, config, settings, stops, device, telemetry):
 
 def _answer(model, prompt, settings, stops, generator):
     """(the prompt and the model's answer to it, where the answer starts):
-    the model alone writes it, until a stop token or answer_tokens."""
+    the model alone writes it, until a stop token or answer_tokens. What
+    each row of _answers gives, one prompt at a time."""
     writer = Writer(model, prompt, temperature=settings.temperature, top_k=settings.top_k, generator=generator,
                     stops=stops)
     answer = []
     while len(answer) < settings.answer_tokens and not (answer and answer[-1] in stops):
         answer += writer.write({}, {0: settings.answer_tokens - len(answer)})[0]
     return prompt + answer, len(prompt)
+
+
+@torch.no_grad()
+def _answers(model, prompts, settings, stops, generators):
+    """_answer for each of prompts, with generators[i] for prompts[i], the
+    rows written side by side through one generation cache: each row reads
+    what _answer's writer reads, in the same passes (its prompt but its
+    last token, then one token per pass), and draws from its own
+    generator; a row that wrote a stop token or answer_tokens leaves the
+    cache."""
+    device = next(model.parameters()).device
+    cache = model.new_cache(len(prompts))
+    heads = [prompt[:-1] for prompt in prompts]
+    width = max(len(head) for head in heads)
+    if width:
+        model.extend(torch.tensor([head + [0] * (width - len(head)) for head in heads], device=device), cache,
+                     [len(head) for head in heads])
+    last = [prompt[-1] for prompt in prompts]
+    written = [[] for _ in prompts]
+    active, stops = list(range(len(prompts))), set(stops)
+    while active:
+        scores = model.extend(torch.tensor([[last[row]] for row in active], device=device), cache)[0][:, -1]
+        p = probabilities(scores, settings.temperature, settings.top_k)
+        drawn = torch.cat([torch.multinomial(p[i:i + 1], 1, generator=generators[row])[:, 0]
+                           for i, row in enumerate(active)]).tolist()
+        going = []
+        for i, (row, token) in enumerate(zip(active, drawn)):
+            written[row].append(token)
+            last[row] = token
+            if token not in stops and len(written[row]) < settings.answer_tokens:
+                going.append(i)
+        if len(going) < len(active):
+            active = [active[i] for i in going]
+            if active:
+                cache = cache.select(going)
+    return [(prompt + answer, len(prompt)) for prompt, answer in zip(prompts, written)]
 
 
 @torch.no_grad()
