@@ -18,7 +18,7 @@ TINY = dict(vocab_size=50, block_size=64, window_layers=1, sparse_groups=1, spar
 
 def test_a_pass_is_kept_whole_only_when_its_foreseen_peak_fits_what_is_left_less_the_headroom():
     # 4 GiB held, 1 GiB of optimizer state to come, 0.5 GiB fixed, 16 KiB per token times 32,768 tokens
-    # (0.5 GiB) plus MARGIN: foreseen 6.15 GiB; usable is free plus reserved less HEADROOM of the total
+    # (0.5 GiB) plus MARGIN; usable is free plus reserved less HEADROOM of the total
     per_token, tokens = 16 * 2 ** 10, 32768
     foreseen = 4 * GIB + GIB + GIB / 2 + per_token * tokens * (1 + MARGIN)
     total = 8 * GIB
@@ -26,7 +26,7 @@ def test_a_pass_is_kept_whole_only_when_its_foreseen_peak_fits_what_is_left_less
         choice = choose(4 * GIB, GIB, GIB / 2, per_token, tokens, free, GIB, total)
         assert choice.recompute is recompute and choice.foreseen == pytest.approx(foreseen)
     text = choose(4 * GIB, GIB, GIB / 2, per_token, tokens, 0, 0, total).text()
-    assert text.startswith("recompute the layers: a pass of 32,768 tokens foreseen at 6.2 GiB without recomputing")
+    assert text.startswith("recompute the layers: a pass of 32,768 tokens foreseen at 6.0 GiB without recomputing")
     assert "16 KiB per token measured" in text and "against -0.8 GiB usable" in text
 
 

@@ -122,13 +122,32 @@ first update of each window length. A real run of the width 256 on this
 machine, before, read 27,300 tokens per second on windows of 2,048 and
 24,100 on windows of 32,768: about 0.8 of what the script measures.
 
-The rule that chooses recomputation, on the two machines. It foresees the
-peak of a pass of 32,768 tokens without recomputation at 15.3 to 21.0 GiB
-at width 256 and 32.1 to 32.2 GiB at width 512; the RTX 5090 measured 11.5
-to 13.3 GiB and 21.8 to 25.0 GiB. The rule is 15% to 65% above the peak,
-most at windows of 32,768 tokens. On the laptop's 13.1 GiB usable it
-recomputes every pass, which is right; on the RTX 5090 it would recompute
-at width 512, where the pass fits.
+The memory of a pass without recomputation, above what the model already
+holds, on the laptop GPU (forward and backward, no optimizer step):
+
+| Width | Tokens of the pass | As | GiB |
+| --- | --- | --- | --- |
+| 256 | 2,048 | 1 window of 2,048, or 2 of 1,024 | 1.12 |
+| 256 | 4,096 | 1 window of 4,096, or 2 of 2,048 | 1.98 |
+| 256 | 8,192 | 2 windows of 4,096, or 4 of 2,048 | 3.67 |
+| 512 | 2,048 | 1 window of 2,048, or 2 of 1,024 | 2.03 |
+| 512 | 4,096 | 1 window of 4,096, or 2 of 2,048 | 3.45 |
+
+The memory follows the tokens of the pass, not their split into windows:
+a part that does not grow (0.27 GiB at width 256, 0.61 at width 512) and
+425 KiB per token at width 256, 727 at width 512. One window of 8,192
+tokens at width 256 took 1.84 GiB, half of what the line gives; why is not
+known.
+
+The rule that chooses recomputation extrapolates that line from two probe
+passes of 1,024 and 2,048 tokens. For a pass of 32,768 tokens, the line
+alone, with the model and the optimizer's state, gives 12.0 to 15.3 GiB at
+width 256 and 25.4 to 26.1 GiB at width 512; the RTX 5090 measured peaks
+of 11.5 to 13.3 GiB and 21.8 to 25.0 GiB. The line is 4% to 27% above the
+peak in the six measures. With 30% more per token, the rule's first
+setting, it foresaw 32.2 GiB at width 512 and recomputed on 32 GiB a pass
+that fits. On the laptop's 13.1 GiB usable it recomputes every pass of
+32,768 tokens, which is right.
 
 ### What the measure does not cover
 
@@ -144,13 +163,11 @@ at width 512, where the pass fits.
 - **The gain on a real run.** A run of a recipe on its corpus, before and
   after, on the same machine, with the validation loss at the same update.
   It would turn the ratios above from a hypothesis into a measure.
-- **The rule that chooses recomputation.** It foresees the memory of a pass
-  from two short probe passes, with a margin of 30% per token and 10% of
-  the GPU left free. It foresees too much at long windows, and so
-  recomputes at width 512 on 32 GiB where the pass fits: a rule that
-  follows the window length would give that speed back. No pass that the
-  rule lets through has yet been run on Windows, where the driver spills
-  into system memory rather than refusing.
+- **The rule that chooses recomputation.** It adds 5% per token to the
+  line its probes give and leaves 10% of the GPU free. No pass that the
+  rule lets through has yet run on Windows, where the driver spills into
+  system memory rather than refusing, and the rule is measured on two
+  widths of one shape.
 - **The drafter phase.** It writes its answers one token at a time. On a
   run of 12 hours at width 256 (RTX 5080 Laptop GPU, commit d0d454b22b) it
   takes 55 minutes, 43 of them to write the 256 answers: 7% of the run, and

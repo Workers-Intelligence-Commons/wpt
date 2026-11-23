@@ -10,8 +10,9 @@ recomputation, on one window of PROBE_TOKENS tokens (no longer than the
 stage's windows) and one of half as many, give the memory a pass takes per token and the part that does not
 grow with the tokens (the head's gradient, the loss's buffers). The pass
 of the stage is extrapolated from them, its activations given MARGIN more
-(on an RTX 5090 a pass of the recipes' shapes took up to a fifth more per
-token in windows of 8,192 or 32,768 tokens than in windows of 2,048), the
+(the memory of a pass follows its tokens, whether they come as more
+windows or longer ones, and for the recipes' shapes the extrapolation
+alone stood 4 % to 27 % above the peak of a pass of 32,768 tokens), the
 optimizer's state added while it does not exist yet (two FP32 numbers per
 trained weight, as AdamW keeps), and the whole compared with the memory
 the device has left, free or held by PyTorch, less HEADROOM of the
@@ -31,7 +32,7 @@ from dataclasses import dataclass
 import torch
 
 PROBE_TOKENS = 2048  # the longer probe window; the other holds half as many
-MARGIN = 0.3  # more memory per token than the probes measured, for longer windows
+MARGIN = 0.05  # more memory per token than the probes measured
 HEADROOM = 0.1  # of the device's whole memory, never planned for
 GIB = 2 ** 30
 

@@ -579,8 +579,9 @@ recomputing, over one window of 2,048 tokens and one of 1,024 (no longer
 than the stage's windows), give the memory per token and the part that
 does not grow with the tokens; the stage's pass (its examples per pass, of
 a slice or a segment where the windows run in parts) is extrapolated from
-them, with 30 % more per token, since longer windows took up to a fifth
-more per token than windows of 2,048. The optimizer's state is added while
+them, with 5 % more per token: the memory of a pass follows its tokens,
+whether they come as more windows or longer ones
+([knowledge/training-speed.md](knowledge/training-speed.md)). The optimizer's state is added while
 it does not exist yet, at two FP32 numbers per trained weight, and the sum
 must fit what the GPU has left, free or held by PyTorch, less a tenth of
 its memory. The probes change no weight, gradient, optimizer state,
