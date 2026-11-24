@@ -144,7 +144,7 @@ Which form runs is decided once, before the first use (`wpt train` decides
 it before training and logs it). `wpt train`, `wpt eval` and `wpt chat`
 each take `--kernels` (or `WPT_KERNELS`) to name it: `triton`, `tilelang`
 or `pytorch`. Unnamed, Triton runs where it is installed, since it is the
-faster of the two ([knowledge/training-speed.md](knowledge/training-speed.md)),
+faster of the two (1.45 to 1.64 times on an RTX 4090 at width 512),
 else TileLang where it is installed on an NVIDIA GPU under Linux, else the
 PyTorch form. The
 training and the evaluation `wpt manager` runs on rented machines name

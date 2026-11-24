@@ -1,201 +1,53 @@
-# What makes a training run faster without changing the model it trains?
+# How is a faster training code shown to train the same model?
 
-This file answers one question: which parts of the training code and which
-options of `wpt train` decide how many tokens per second a run reads, when
-the trained model has to stay the same. Its marks are defined in
-[README.md](README.md). What a model's shape costs is in
-[shape-and-speed.md](shape-and-speed.md).
+This file answers one question: what proof a change to the training code
+owes when it claims to make a run faster without changing the model the run
+trains. Its marks are defined in [README.md](README.md). What a model's
+shape costs is in [shape-and-speed.md](shape-and-speed.md).
 
 ## Answer
 
-- The time of a pass goes to memory traffic on the GPU, not to Python and
-  not to loading tokens: one fused kernel in place of a chain of separate
-  operations is where speed is found. **measured here**
-- Three chains carry most of it: the sums of the Attention Residuals
-  (+14%), the attention of the window layers (+13%) and the experts'
-  activation (+9%). **measured here**
-- Recomputation costs 9% to 12% of the speed once the exact and sparse
-  attention are left out of it, and it divides memory by more than two.
-  A stage therefore keeps every activation whenever its pass fits the GPU.
-  **measured here**
-- Compilation adds 5% to 16% and costs 20 to 35 seconds at the first update
-  of each window length. A run therefore compiles whenever the machine can.
-  **measured here**
-- Longer windows are slower per token at an equal number of tokens per
-  pass: about a quarter slower at 32,768 tokens than at 2,048.
-  **measured here**
-- A change is kept only with a proof that the model stays the same, at one
-  of two levels: work removed gives weights identical bit for bit on a CPU;
-  the same mathematics in another order gives gradients equal within
-  rounding on one pass. On a GPU, two runs of the same code already differ,
-  so a GPU comparison is read against that spread.
-- The speeds below come from synthetic tokens and a plain optimizer. They
-  give ratios between two states of the code, not the speed of a recipe.
-  **hypothesis**: the ratios hold on a real run.
+A change belongs to one of two kinds, and each kind has its own proof.
+
+- **Work removed.** The change runs fewer operations and leaves every
+  remaining operation, its inputs and its order as they were: a result
+  computed once instead of twice, a block skipped where nothing reads its
+  output. The same operations on the same numbers in the same order give
+  the same numbers, so the proof is equality bit for bit: on a CPU, the
+  weights after some updates are identical with and without the change.
+  One differing bit refutes the change.
+- **The same mathematics in another order.** The change computes the same
+  expression through other operations or in another order: several
+  operations fused in one, a sum taken in another grouping. Addition and
+  multiplication of floating-point numbers are not associative, so the
+  result may differ in its last bits and bit equality cannot be asked for.
+  The proof is equality within rounding on one pass: the gradients with and
+  without the change agree to the precision of the number format.
+- **A difference is read against the spread of the unchanged code.** Where
+  two runs of the same code already differ, as on a GPU whose operations
+  do not run in a fixed order, a comparison between two codes says nothing
+  below the difference between two runs of one code. That spread is
+  measured first.
+- Equality within rounding on one pass does not bound the difference after
+  many updates: training amplifies small differences. Over a whole run, the
+  two codes are compared as two runs of one code are, by their loss at the
+  same update. **hypothesis**: a change that passes the proof of its kind
+  moves the loss of a whole run by no more than a second run of the
+  unchanged code does.
 
 ## Evidence
 
-### Measured with WPT
-
-One machine: RTX 5090 with 32 GiB, Linux, Triton kernels, PyTorch 2.14.1
-for CUDA 13.0. The script `scripts/compare_training.py` trains on random
-tokens with AdamW, 32,768 tokens per pass (16 windows of 2,048, 4 of 8,192
-or 1 of 32,768), one pass per update. Both models have 11 layers, 32 routed
-experts and a vocabulary of 65,536 tokens. "Before" is commit fdb17c5e61,
-"after" is commit 55eb0e950f.
-
-Tokens per second, width 512:
-
-| Code | Recomputation | Compiled | 2,048 | 8,192 | 32,768 | Peak memory |
-| --- | --- | --- | --- | --- | --- | --- |
-| before | yes | no | 56,558 | 51,817 | 44,418 | 8.0 GiB |
-| after | yes | no | 87,081 | 78,525 | 64,287 | 10.1 GiB |
-| after | no | no | 96,864 | 86,246 | 69,572 | 25.0 GiB |
-| before | yes | yes | 87,418 | 77,371 | 62,314 | 6.9 GiB |
-| after | yes | yes | 101,410 | 91,214 | 75,251 | 9.1 GiB |
-| before | no | yes | 101,994 | 91,715 | 75,700 | 24.4 GiB at the first update |
-| after | no | yes | 110,914 | 98,823 | 80,509 | 21.4 GiB at the first update |
-
-Before, without recomputation and uncompiled, the pass did not fit the
-32 GiB.
-
-Tokens per second, width 256:
-
-| Code | Recomputation | Compiled | 2,048 | 8,192 | 32,768 | Peak memory |
-| --- | --- | --- | --- | --- | --- | --- |
-| before | yes | no | 108,583 | 97,795 | 84,477 | 4.3 GiB |
-| after | yes | no | 159,736 | 141,543 | 119,123 | 5.6 GiB |
-| before | no | no | 125,098 | 113,704 | 100,709 | 17.8 GiB |
-| after | no | no | 172,854 | 151,662 | 126,114 | 13.3 GiB |
-| after | yes | yes | 181,221 | 158,771 | 132,721 | 5.1 GiB |
-| after | no | yes | 192,663 | 168,550 | 139,311 | 12.9 GiB at the first update |
-
-From "before, with recomputation, uncompiled" to "after, without
-recomputation, compiled", the speed is multiplied by 1.81 to 1.96 at width
-512 and by 1.65 to 1.77 at width 256. With the same options on both sides,
-it is multiplied by 1.45 to 1.54 at width 512 and by 1.41 to 1.47 at width
-256.
-
-Commit by commit, width 512, windows of 8,192 tokens, with recomputation,
-uncompiled:
-
-| Change | Tokens per second | Gain |
-| --- | --- | --- |
-| before | 51,817 | |
-| the exact and sparse attention run once under recomputation | 54,555 | +5% |
-| the Attention Residuals sums through their kernels in every pass | 62,443 | +14% |
-| the experts' copies gathered in one step | 62,881 | +1% |
-| the head's chunk gradients in one sum | 63,765 | +1% |
-| the experts' activation in one kernel each way | 69,387 | +9% |
-| the window layers through the sparse kernels | 78,684 | +13% |
-
-Keeping the Triton autotuner's choices on disk takes the first update from
-7.8 seconds to 0.8. Skipping the multi-token prediction block in
-validation, reusing an unchanged token file without hashing it and copying
-a first gradient only after a recorded pass move no speed this measure can
-see: it runs no validation and reads no token file.
-
-Sameness. On a CPU, a model of 11 layers trained for 20 updates has weights
-identical bit for bit at every commit, with recomputation off, on, and only
-on the longer windows. On the GPU, the same comparison gives differences of
-0.011 to 0.035 between a commit and the one before it, where two runs of the
-"before" code differ by 0.013 to 0.032. The spread comes from two runs.
-
-A second machine: RTX 5080 Laptop GPU with 16 GiB, Windows, Triton
-kernels, the same script, "after" at commit 6822661b68. Tokens per second
-with recomputation:
-
-| Width | Code | Compiled | 2,048 | 8,192 | 32,768 |
-| --- | --- | --- | --- | --- | --- |
-| 256 | before | no | 34,487 | 32,267 | 27,219 |
-| 256 | after | no | 50,349 | 46,104 | 37,671 |
-| 256 | after | yes | 57,919 | 52,492 | 41,707 |
-| 512 | before | no | 18,195 | 16,901 | 14,335 |
-| 512 | after | no | 26,788 | 24,804 | 19,891 |
-| 512 | after | yes | 31,230 | 28,660 | 23,399 |
-
-The same options on both sides multiply the speed by 1.38 to 1.47; with
-compilation, by 1.53 to 1.72. The RTX 5090 reads 3.1 times the tokens of
-this laptop GPU with the same code and options. Compilation works unasked
-in the Visual Studio build tools shell and takes 64 to 127 seconds at the
-first update of each window length. A real run of the width 256 on this
-machine, before, read 27,300 tokens per second on windows of 2,048 and
-24,100 on windows of 32,768: about 0.8 of what the script measures.
-
-The memory of a pass without recomputation, above what the model already
-holds, on the laptop GPU (forward and backward, no optimizer step):
-
-| Width | Tokens of the pass | As | GiB |
-| --- | --- | --- | --- |
-| 256 | 2,048 | 1 window of 2,048, or 2 of 1,024 | 1.12 |
-| 256 | 4,096 | 1 window of 4,096, or 2 of 2,048 | 1.98 |
-| 256 | 8,192 | 2 windows of 4,096, or 4 of 2,048 | 3.67 |
-| 512 | 2,048 | 1 window of 2,048, or 2 of 1,024 | 2.03 |
-| 512 | 4,096 | 1 window of 4,096, or 2 of 2,048 | 3.45 |
-
-The memory follows the tokens of the pass, not their split into windows:
-a part that does not grow (0.27 GiB at width 256, 0.61 at width 512) and
-425 KiB per token at width 256, 727 at width 512. One window of 8,192
-tokens at width 256 took 1.84 GiB, half of what the line gives; why is not
-known.
-
-The rule that chooses recomputation extrapolates that line from two probe
-passes of 1,024 and 2,048 tokens. For a pass of 32,768 tokens, the line
-alone, with the model and the optimizer's state, gives 12.0 to 15.3 GiB at
-width 256 and 25.4 to 26.1 GiB at width 512; the RTX 5090 measured peaks
-of 11.5 to 13.3 GiB and 21.8 to 25.0 GiB. The line is 4% to 27% above the
-peak in the six measures. With 30% more per token, the rule's first
-setting, it foresaw 32.2 GiB at width 512 and recomputed on 32 GiB a pass
-that fits. On the laptop's 13.1 GiB usable it recomputes every pass of
-32,768 tokens, which is right.
-
-A third machine, RTX 4090 with 24 GiB, Linux, commit 05851e7d81, with the
-rule at 5% more per token. At width 256 the rule foresees 14.1 to 16.8 GiB
-for 19.9 usable and keeps every activation; the pass peaks at 11.4 to 12.7
-GiB allocated and 11.6 to 13.3 GiB held by PyTorch's allocator. At width
-512 it foresees 24.5 to 26.6 GiB and recomputes, on a GPU the pass would
-not fit. The rule is 17% to 26% above what the allocator held.
-
-A compiled pass without recomputation shows 2.4 GiB allocated after its
-first update where the allocator holds 12.1 GiB: the memory of the recorded
-graphs is not in the allocated count. The allocator's count is the one to
-read.
-
-On the same RTX 4090, with recomputation, uncompiled, tokens per second by
-kernel form at width 512: Triton 50,978, 47,493 and 39,169 for windows of
-2,048, 8,192 and 32,768 tokens; TileLang 35,199, 30,141 and 23,923. Triton
-is 1.45 to 1.64 times faster there.
-
-### What the measure does not cover
-
-- The optimizer of the recipes (`by-part`), the evaluations, the
-  checkpoints and the drafter phase are not in these speeds.
-- The TileLang kernels are timed on one GPU and one width.
-- One check fails on the RTX 4090 and passes on the RTX 5090 and the RTX
-  5080 laptop GPU: the grouped products of the experts against a loop over
-  the experts
-  (`test_grouped_experts_equal_each_expert_on_its_own_tokens_with_an_expert_that_has_none`),
-  59 of 1,752 values apart, by up to 0.16. Whether "before" fails the same
-  way on that GPU is not measured.
+- That floating-point addition is not associative, and that the order of a
+  sum therefore changes its last bits, is a property of the number format
+  (IEEE 754), not a measure.
+- That the same operations on the same inputs in the same order give the
+  same bits holds on one machine with one build of the libraries, on a CPU
+  with a fixed number of threads. It is the condition of the first proof,
+  not a general property of hardware.
 
 ## Open
 
-- **The gain on a real run.** A run of a recipe on its corpus, before and
-  after, on the same machine, with the validation loss at the same update.
-  It would turn the ratios above from a hypothesis into a measure.
-- **The rule that chooses recomputation.** It adds 5% per token to the
-  line its probes give and leaves 10% of the GPU free. No pass that the
-  rule lets through has yet run on Windows, where the driver spills into
-  system memory rather than refusing, and the rule is measured on two
-  widths of one shape.
-- **The drafter phase.** It writes its answers one token at a time. On a
-  run of 12 hours at width 256 (RTX 5080 Laptop GPU, commit d0d454b22b) it
-  takes 55 minutes, 43 of them to write the 256 answers: 7% of the run, and
-  a fixed time that weighs more on a short run. Writing the answers in
-  batches would change the drafter's random draws, so it is not a change
-  that leaves the drafter the same.
-- **A larger GPU.** Whether 80 GiB buys speed beyond what 32 GiB gives
-  depends on the passes that do not fit 32 GiB without recomputation; at
-  width 512 and 32,768 tokens per pass, every pass fits.
-- **Fusing further.** The head still writes its scores to memory, and the
-  routed experts stay outside the compiled passes.
+- **The bound over a whole run.** Nothing here bounds how far two codes
+  equal within rounding on one pass may drift apart over a run. A measure
+  would train the same recipe several times with each code and compare the
+  spread of the final loss within a code with the gap between the codes.
