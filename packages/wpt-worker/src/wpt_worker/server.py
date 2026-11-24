@@ -31,6 +31,10 @@ Settings, from the environment:
     WPT_WORKER_PRIVATE  its private address there: both go into the key it prints (?place=
                         and &private=), which workers of one place use to meet through NCCL
 
+A job's printed lines go to the manager, which prints them; a worker that is not
+--local also writes them on its own standard output and standard error (the job's
+WPT_WORKER_ECHO), which is the console of a rented machine's container.
+
 One manager at a time: a second one is refused while the first is
 connected. What the manager asks (link.py frames without a channel):
 
@@ -353,7 +357,9 @@ class Session:
         paths = [str(src) for root in SOURCES for src in sorted((checkout / root).glob("*/src"))]
         environ = {**os.environ, "PYTHONPATH": python_path(paths), "PYTHONSAFEPATH": "1",
                    "WPT_WORKER_JOB": f"127.0.0.1:{self.jobs.getsockname()[1]}", "WPT_WORKER_JOB_KEY": self.job_key,
-                   "WPT_WORKER_SPEC": str(work / "spec.json"), "WPT_WORKER_WORK": str(work)}
+                   "WPT_WORKER_SPEC": str(work / "spec.json"), "WPT_WORKER_WORK": str(work),
+                   # a local worker's output is a pipe the manager does not read past the key line
+                   "WPT_WORKER_ECHO": "0" if self.server.settings.local else "1"}
         group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
                  else {"process_group": 0})
         self.job = subprocess.Popen([python, "-m", "wpt_worker.job"], cwd=checkout, env=environ, **group)

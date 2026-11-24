@@ -2,6 +2,7 @@
 the manager sends it, and how a job's requests and prints reach the
 manager. The worker runs here on the CPU, on ports the system picks."""
 
+import io
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ import wpt_worker
 from wpt_utils.lines import bare
 from wpt_worker import certificate
 from wpt_worker.link import Connection, Key, LinkError, dial, pin, probe, receive, send, server_context
+from wpt_worker.job import Relay
 from wpt_worker.manager import Worker, checkout, keys, machines, run_jobs
 from wpt_worker.server import python_path
 
@@ -92,6 +94,45 @@ def test_a_job_runs_from_the_checkout_the_manager_sent_and_its_requests_and_prin
     assert found["secrets"] == []
     assert "the gpu worker has no tokenizer" in found["tokenizer"]
     assert "hello from the job" in capfd.readouterr().out
+
+
+class Link:
+    """A link that keeps the prints it is given, or is gone."""
+
+    def __init__(self, gone=False):
+        self.gone, self.told = gone, []
+
+    def tell(self, kind, **fields):
+        if self.gone:
+            raise LinkError("gone")
+        self.told.append((kind, fields))
+
+
+class Broken(io.StringIO):
+    def write(self, text):
+        raise OSError("closed")
+
+
+def test_a_relay_with_echo_writes_to_the_manager_and_the_own_stream_and_a_broken_stream_changes_nothing():
+    link, own = Link(), io.StringIO()
+    relay = Relay(link, "out", own, echo=True)
+    relay.write("one\n")
+    relay.write("two\n")
+    assert link.told == [("print", {"stream": "out", "text": "one\n"}), ("print", {"stream": "out", "text": "two\n"})]
+    assert own.getvalue() == "one\ntwo\n"
+    broken = Link()
+    assert Relay(broken, "err", Broken(), echo=True).write("x") == 1
+    assert broken.told == [("print", {"stream": "err", "text": "x"})]
+
+
+def test_a_relay_whose_link_is_gone_writes_its_own_stream_once_with_echo_or_without():
+    for echo in (True, False):
+        own = io.StringIO()
+        Relay(Link(gone=True), "out", own, echo).write("line\n")
+        assert own.getvalue() == "line\n"
+    quiet = io.StringIO()
+    Relay(Link(), "out", quiet).write("line\n")
+    assert quiet.getvalue() == ""
 
 
 def test_a_worker_refuses_a_link_without_its_token_and_the_manager_refuses_another_certificate(worker):

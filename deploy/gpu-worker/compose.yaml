@@ -2,7 +2,9 @@
 # hand"): on any machine with Docker, the public PyTorch image, with uv
 # installed when it starts, runs `python -m wpt_worker` from the server files
 # below; the libraries its jobs need come from the wpt manager's checkout,
-# installed by uv when a job starts (WPT_WORKER_INSTALL). It prints its key;
+# installed by uv when a job starts (WPT_WORKER_INSTALL). It prints its key,
+# and every line its jobs print also appears in the container's output
+# (`docker compose logs`) as well as on the manager;
 # give it to the manager in WPT_GPU_WORKERS, with this machine's address
 # (one worker per machine).
 #

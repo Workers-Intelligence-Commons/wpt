@@ -118,6 +118,14 @@ the job reads, the manager sends:
 
 Everything the job writes goes back to the manager:
 
+- each line it prints (`update N | train loss ...` of a training run, for
+  one), which the manager prints on its own output, in the order the job
+  wrote them. A worker that is not the manager's local one (a rented
+  machine's container, or one started by hand) also writes each line on its
+  own standard output or standard error, so the provider's console and
+  `docker logs` show them; a failure to write there never stops the job or
+  the lines sent to the manager. The local worker `wpt train` starts does not
+  echo them, as the manager already prints them;
 - each line of the run's record, which goes to the manager's store before
   the job's call returns; the job's flushes are that store's, so on S3 the
   lines it holds back are sent when the job's flush returns

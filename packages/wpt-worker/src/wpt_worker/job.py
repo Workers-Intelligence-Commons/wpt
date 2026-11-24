@@ -2,7 +2,9 @@
 wpt_worker.job`, run by the worker's server from the manager's checkout.
 
 The process connects to the server (link.py, through its channel to the
-manager), sends what it prints to the manager, which prints it, and reads
+manager), sends what it prints to the manager, which prints it (and, when
+the worker is not the manager's local one, prints it in its own output too,
+which is the console of a rented machine's container), and reads
 the job's spec (JSON, the file WPT_WORKER_SPEC names); spec["task"] names
 what it runs (TASKS). The worker has no tokenizer: wpt_tokenizer cannot be
 imported here (NoTokenizer), so nothing on the worker turns text into
@@ -29,6 +31,7 @@ from pathlib import Path
 from .link import PART, Connection, LinkError, RemoteError, receive, send
 
 TOKENIZER = "wpt_tokenizer"
+ECHO = "WPT_WORKER_ECHO"  # 1: the job also writes its lines to the worker's own output (the server sets it)
 TASKS = {"wpt-train": "wpt_worker.training", "wpt-eval": "wpt_worker.evaluation"}  # spec["task"]: the module whose run(spec, link, work) is the job
 
 
@@ -44,10 +47,13 @@ class NoTokenizer(importlib.abc.MetaPathFinder):
 
 class Relay(io.TextIOBase):
     """A text stream whose writes the manager prints (its standard output
-    or error output); when the link is gone, they go to this process's own."""
+    or error output). With echo, they also go to this process's own stream
+    (fallback), so the console of the worker's container shows them; a
+    failure to write there is ignored. Without echo, they go to it only
+    when the link is gone."""
 
-    def __init__(self, link, stream, fallback):
-        self.link, self.stream, self.fallback = link, stream, fallback
+    def __init__(self, link, stream, fallback, echo=False):
+        self.link, self.stream, self.fallback, self.echo = link, stream, fallback, echo
 
     @property
     def encoding(self):
@@ -58,10 +64,17 @@ class Relay(io.TextIOBase):
 
     def write(self, text):
         if text:
+            if self.echo:
+                try:
+                    self.fallback.write(text)
+                    self.fallback.flush()
+                except Exception:
+                    pass
             try:
                 self.link.tell("print", stream=self.stream, text=text)
             except LinkError:
-                self.fallback.write(text)
+                if not self.echo:
+                    self.fallback.write(text)
         return len(text)
 
     def reconfigure(self, **_):
@@ -201,8 +214,9 @@ class LinkStore:
 def main():
     sys.meta_path.insert(0, NoTokenizer())
     link = connect()
-    sys.stdout = Relay(link, "out", sys.__stdout__)
-    sys.stderr = Relay(link, "err", sys.__stderr__)
+    echo = os.environ.get(ECHO) == "1"
+    sys.stdout = Relay(link, "out", sys.__stdout__, echo)
+    sys.stderr = Relay(link, "err", sys.__stderr__, echo)
     spec = json.loads(Path(os.environ["WPT_WORKER_SPEC"]).read_text(encoding="utf-8"))
     module = __import__(TASKS[spec["task"]], fromlist=["run"])
     code = module.run(spec, link, Path(os.environ["WPT_WORKER_WORK"]))
