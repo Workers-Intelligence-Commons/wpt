@@ -370,7 +370,10 @@ system's tokens, fonts and components end up in the built files the
 browser loads; the others build them. lightningcss's
 MPL-2.0 names the AGPL as a Secondary License (its section 1.12).
 bergamot-translator's worker and WebAssembly are copied unchanged into the
-built files, under their own MPL-2.0.
+built files, under their own MPL-2.0. So is Firefox's language detector,
+CLD2 compiled to asm.js, which is not a package: the repository holds a
+copy of it in `apps/wpt/ui/vendor/cld2/`, with its Apache-2.0 license and
+the Firefox commit it comes from.
 
 The translation models that the Texts page uses are Mozilla's, under
 MPL-2.0. WPT does not hold or distribute them: `wpt depot web` fetches each
@@ -407,6 +410,7 @@ through Mark, so its built files hold that drawing.
 | style-mod | 4.1.4 | MIT | through @codemirror/view |
 | w3c-keyname | 2.2.8 | MIT | through @codemirror/view |
 | @browsermt/bergamot-translator | 0.4.9 | MPL-2.0 | in the built files, unchanged (the Texts page's translation engine) |
+| CLD2, as Firefox builds it | Firefox commit 7557821 | Apache-2.0 | `apps/wpt/ui/vendor/cld2/`, in the built files, unchanged (the Texts page's language detector) |
 | vite | 8.3.6 | MIT | builds the interface |
 | rolldown | 1.2.16 | MIT | through vite |
 | @rolldown/binding-* | 1.2.16 | MIT | one per platform (15), through rolldown |

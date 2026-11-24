@@ -93,6 +93,9 @@ export function TextPanel({ id, actions, version, onChanged, onSaved, saver, han
   saver: (s: Saver | null) => void; handle: (h: EditorHandle | null) => void; onShown: (id: string | null) => void; find?: string;
 }) {
   const [shown, setShown] = useState<{ id: string; answer: Answer<Shown> } | null>(null);
+  // a plain text read translated in place of its editor; kept from one text to the next, so moving on translates the
+  // next one too
+  const [translating, setTranslating] = useState(false);
   const asked = useRef(id);
   asked.current = id;
   const load = useCallback((again = false) => {
@@ -107,16 +110,17 @@ export function TextPanel({ id, actions, version, onChanged, onSaved, saver, han
   if (!shown || shown.id !== id) return <div className="text-column"><Skeleton lines={6} label="Reading the text" /></div>;
   if (!shown.answer.ok) return <div className="text-column"><Problems problems={shown.answer.problems} /></div>;
   return <Loaded key={id} actions={actions} shown={shown.answer.data} reload={() => { load(true); onChanged(); }} onSaved={(words) => { forgetText(id); onSaved(words); }}
-    saver={saver} handle={handle} find={find} />;
+    saver={saver} handle={handle} find={find} translating={translating} setTranslating={setTranslating} />;
 }
 
 type Dialogs = "decide" | "relicense" | "credits" | "erase" | "record";
 
 // The open text in two parts: its content, always in view, under one line of facts, and the review panel beside
 // it (panel.tsx), whose menu opens the other actions, each in a dialog.
-function Loaded({ shown, actions, reload, onSaved, saver, handle, find }: {
+function Loaded({ shown, actions, reload, onSaved, saver, handle, find, translating, setTranslating }: {
   shown: Shown; actions: ReactNode; reload: () => void; onSaved: (words: ReactNode) => void;
   saver: (s: Saver | null) => void; handle: (h: EditorHandle | null) => void; find?: string;
+  translating: boolean; setTranslating: (t: boolean) => void;
 }) {
   const row = shown.text;
   const item = row.kind !== PLAIN;
@@ -151,7 +155,7 @@ function Loaded({ shown, actions, reload, onSaved, saver, handle, find }: {
         {said && <p className="done cue content-said" role="status">{said}</p>}
         {theirs ? <><div className="content-line small">{facts}</div><ReadOnly row={row} find={find} /></>
           : <EditContent key={row.id} row={row} status={shown.status} facts={facts} onDone={done} onLeftSaved={onSaved}
-              saver={saver} handle={handle} find={find} />}
+              saver={saver} handle={handle} find={find} translating={translating} setTranslating={setTranslating} />}
       </div>
       <ReviewPanel key={`${row.id}:${row.revision}`} text={row} status={shown.status} decisions={shown.decisions.length} readOnly={theirs}
         actions={actions} more={more} onSaved={onSaved} onRecord={() => setOpen("record")} />
@@ -278,15 +282,15 @@ function Relicense({ row, onDone }: { row: Row; onDone: (words: ReactNode) => vo
 // when the editor closes (the browser's back button, a filter that opens another text) is saved then, and said
 // through onLeftSaved; one that cannot be saved then is said too, and kept in this tab, so the text opens again with
 // it, unsaved; a reload or a closed tab asks first.
-function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, find }: {
+function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, find, translating, setTranslating }: {
   row: Row; status: Status; facts: ReactNode; onDone: (words: ReactNode) => void; onLeftSaved: (words: ReactNode) => void;
   saver: (s: Saver | null) => void; handle: (h: EditorHandle | null) => void; find?: string;
+  translating: boolean; setTranslating: (t: boolean) => void;
 }) {
   const item = row.kind !== PLAIN;
   const original = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
   const conversation = isConversation(original);
   const [editing, setEditing] = useState(!conversation);
-  const [translating, setTranslating] = useState(false); // a plain text read translated in place of its editor
   useEffect(() => {
     if (!conversation || editing) return;
     handle({ focus: () => setEditing(true), openFind: () => {} });
@@ -424,7 +428,7 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
         {!item && <span className="content-tools">
           <span className="aside">{plural(doc ? doc.text.lines : lineCount(start), "line")}</span>
           <Button variant="quiet" disabled={!editor || translating} onClick={() => editor?.openFind()} title='Find and replace in this text (Ctrl+F); tick "regexp" for a regular expression'>Find</Button>
-          <Button variant="quiet" aria-pressed={translating} onClick={() => setTranslating((t) => !t)}
+          <Button variant="quiet" aria-pressed={translating} onClick={() => setTranslating(!translating)}
             title="Read it translated, read only, by Mozilla's models in this browser: nothing of the translation is saved">{translating ? "Back to the text" : "Translate"}</Button>
         </span>}
         {conversation && !editing && <span className="content-tools"><span className="aside">{plural(original.messages.length, "message")}</span>
@@ -445,7 +449,7 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
                 <CodeEditor key={fresh} initial={start} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
               </Suspense>
             </div>
-            {translating && <Translated id={row.id} text={doc?.changed ? doc.text.toString() : start} tags={row.tags} />}
+            {translating && !item && <Translated id={row.id} text={doc?.changed ? doc.text.toString() : start} tags={row.tags} />}
           </>
         )}
       {changed && (

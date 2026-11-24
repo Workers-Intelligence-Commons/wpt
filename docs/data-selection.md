@@ -76,8 +76,9 @@ revision it read. A content that changes nothing writes nothing.
 
 The Texts page can also show a plain text translated, read only, in place
 of its editor, so a person can judge a text in a language they do not
-read. The translation runs in the browser with Mozilla's models, and
-nothing of it is saved: it is never content, data or training material.
+read. The translation runs in the browser with Mozilla's models, from the
+language Firefox's detector finds in the text, else the one a tag names.
+Nothing of it is saved: it is never content, data or training material.
 
 The plain texts of many texts change at once through `wpt depot
 content-file FILE`, or `POST /api/texts/content`
