@@ -54,7 +54,8 @@ REFUSALS = {"400": "the body does not match the route's schema, or a query is no
 class Stream:
     """An answer sent as it is made, chunk by chunk, of the media type kind,
     so an answer of any size never sits whole in memory; with length, its
-    bytes in all (Content-Length), and with headers, more headers to send."""
+    bytes in all (Content-Length), and with headers, more headers to send
+    (Cache-Control among them in place of no-store)."""
     kind: str
     chunks: Iterator[bytes]
     length: int | None = None
@@ -211,7 +212,8 @@ def make_server(routes: list[Route], static: Path, port: int = 0) -> ThreadingHT
             try:
                 self.send_response(status)
                 self.send_header("Content-Type", stream.kind)
-                self.send_header("Cache-Control", "no-store")
+                if "Cache-Control" not in stream.headers:
+                    self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "close")
                 if stream.length is not None:
                     self.send_header("Content-Length", str(stream.length))

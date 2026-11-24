@@ -5,6 +5,7 @@ import { pages, type Page } from "./pages";
 import { RunningJobs } from "./pages/jobs";
 import { href, usePlace } from "./route";
 import { Notice } from "./notice";
+import { textsPlace } from "./texts/place";
 
 // shown in a pane of another page (pages/strip.tsx, TextPane): the page alone, without the bar of pages
 const FRAMED = (() => { try { return window.self !== window.top; } catch { return true; } })();
@@ -34,7 +35,7 @@ export function App() {
             <ul key={label} className="page-group cue" aria-label={label}>
               {pages.filter((p) => p.group === group).map((p) => (
                 <li key={p.path}>
-                  <a href={href([p.path])} aria-current={p === page ? "page" : p.path === under ? "true" : undefined}>{p.title}</a>
+                  <a href={p.path === "texts" ? textsPlace() : href([p.path])} aria-current={p === page ? "page" : p.path === under ? "true" : undefined}>{p.title}</a>
                 </li>
               ))}
             </ul>

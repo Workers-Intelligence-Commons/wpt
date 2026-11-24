@@ -112,6 +112,21 @@ const isRecent = (v: unknown): v is Record<string, number> =>
 export const readRecent = () => kept(RECENT, {}, isRecent);
 export const keepRecent = (name: string, value: number) => keep(RECENT, { ...readRecent(), [name]: value });
 
+// The tags this browser put on a text last, the newest first (localStorage), which take the first of the panel's tag
+// buttons: texts read one after another often come from the same source and take the same tags.
+const RECENT_TAGS = "wpt-depot-recent-tags";
+export const RECENT_TAGS_SHOWN = 4;
+export const readRecentTags = () => kept(RECENT_TAGS, [] as string[], (v): v is string[] => strings(v));
+export const keepRecentTags = (put: string[]) =>
+  keep(RECENT_TAGS, [...new Set([...[...put].reverse(), ...readRecentTags()])].slice(0, RECENT_TAGS_SHOWN));
+
+// The panel's tag buttons: the tags put on a text last, then the depot's most used (used, by how many texts have
+// each), shown at most.
+export function tagButtons(recent: string[], used: { tag: string; texts: number }[], shown: number): string[] {
+  const most = [...used].sort((a, b) => b.texts - a.texts || a.tag.localeCompare(b.tag)).map((t) => t.tag);
+  return [...new Set([...recent.slice(0, RECENT_TAGS_SHOWN), ...most])].slice(0, shown);
+}
+
 // A preset: scores to set and tags to add and take away, in one click.
 export type Preset = { name: string; scores: Record<string, number>; add: string[]; remove: string[] };
 const PRESETS = "wpt-depot-presets";

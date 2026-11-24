@@ -297,7 +297,8 @@ be read as it was at any change number, which a snapshot names.
 
 `wpt depot add FILE` adds one text, under review, with its licenses,
 notice, tags and credits; `wpt depot show ID` shows it with its decisions
-and revisions; `wpt depot sql "SELECT ..."` answers any read query over
+and revisions, and `--from N --characters M` shows one passage of a plain
+text of any size; `wpt depot sql "SELECT ..."` answers any read query over
 the depot's tables. `wpt depot web` does the same as pages
 ([architecture.md](architecture.md), "Two interfaces").
 

@@ -75,6 +75,9 @@ def test_texts_go_from_a_file_through_a_decision_into_a_snapshot(depot, tmp_path
     assert [(one["status"], one["name"], one["email"]) for one in shown["decisions"]] == [
         ("under review", "Ada Lovelace", "ada@example.org"), ("admitted", "Ada Lovelace", "ada@example.org")]
     assert "libraries" not in shown and "pins" not in shown
+    assert depot_command("show", "test-depot-1", "--from", "4", "--characters", "5") == 0
+    assert json.loads(capsys.readouterr().out) == {"id": "test-depot-1", "version": 1, "length": 21, "from": 4,
+                                                    "text": "quick"}
 
     assert depot_command("sql", "SELECT id, kind, status FROM texts ORDER BY id") == 0
     assert printed_rows(capsys) == [{"id": "test-depot-1", "kind": "plain", "status": "admitted"},

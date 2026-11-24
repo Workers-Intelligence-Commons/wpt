@@ -54,7 +54,7 @@ from .builds import builds
 from .legacy import legacy
 from .readers import Readers
 from .translations import ModelsUnreachable, translation_routes
-from .server import Route, Stream
+from .server import Request, Route, Stream
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
 STATUSES = {errors.NotFound: 404, NoRecipe: 404, errors.BadQuery: 400, Busy: 409, TooMany: 429, StoreError: 503,
@@ -84,11 +84,11 @@ PASSAGE_CHARACTERS, MAX_PASSAGE_CHARACTERS = 200_000, 2_000_000
 
 def refusals(handler):
     """The handler, answering each failure of STATUSES with its status and
-    message."""
+    message; a route that takes its Request (Route.request) gets it too."""
     @wraps(handler)
-    def answer(values, body):
+    def answer(values, body, *request):
         try:
-            return handler(values, body)
+            return handler(values, body, *request)
         except tuple(STATUSES) as error:
             status = next(code for kind, code in STATUSES.items() if isinstance(error, kind))
             return status, {"problems": [f"{type(error).__name__}: {error}"]}
@@ -265,7 +265,17 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def show(values, body):
-        return 200, jsonable(depot.show(values["id"]))
+        return 200, jsonable(depot.show(values["id"], MAX_PASSAGE_CHARACTERS))
+
+    @refusals
+    def passage(values, body, request: Request):
+        try:
+            start = int(request.query.get("from", 0))
+            characters = min(int(request.query.get("characters", PASSAGE_CHARACTERS)), MAX_PASSAGE_CHARACTERS)
+            version = int(request.query["version"]) if "version" in request.query else None
+        except ValueError:
+            raise errors.Refused("from, characters and version are whole numbers") from None
+        return 200, depot.passage(values["id"], start, characters, version)
 
     @refusals
     def credits(values, body):
@@ -575,9 +585,17 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                    "address": nullable, "declaration": DECLARATION}}, answer=ID),
         Route("GET", "/api/texts/{id}", show, "one text or item as it is now, with its status, its notice's text, its "
               "decisions, how many revisions and content versions it has, and whether it belongs to the upstream this depot follows, which alone changes it (wpt depot "
-              "show)",
+              f"show); a plain text longer than {MAX_PASSAGE_CHARACTERS:,} characters comes as its first "
+              f"{MAX_PASSAGE_CHARACTERS:,} only, cut true, and GET /api/texts/{{id}}/passage reads the rest",
               answer={"type": "object", "required": ["text", "status", "notice", "decisions", "revisions",
-                                                     "content_versions", "upstream"]}),
+                                                     "content_versions", "upstream", "cut"]}),
+        Route("GET", "/api/texts/{id}/passage", passage, "a passage of a plain text, reading only the parts it "
+              "reaches whatever the text's size: its id, the content version read, its length in characters, from "
+              "and the passage's text (wpt depot show --from --characters)",
+              answer={"type": "object", "required": ["id", "version", "length", "from", "text"]}, request=True,
+              query={"from": "the first character, from 0 (default 0)",
+                     "characters": f"how many (default {PASSAGE_CHARACTERS:,}, at most {MAX_PASSAGE_CHARACTERS:,})",
+                     "version": "the content version (default: the current one)"}),
         Route("POST", "/api/texts/{id}/credits", credits, "change the credits named in the body (title, authors, "
               "tags, address, notice; null clears one) of one text as a new revision, its id kept, tags alone as "
               "rows of taggings and no revision (wpt depot credits): the depot records it as a decision under review "

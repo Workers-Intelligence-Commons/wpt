@@ -618,7 +618,7 @@ class Depot:
         one query that reads. BadQuery for anything else."""
         return person_columns(self.db.person(), query), self.db.person_query(query)
 
-    def show(self, text: str) -> dict:
+    def show(self, text: str, characters: int | None = None) -> dict:
         """{text: its current row, status (wpt_depot.policy), notice: its
         text, decisions: their rows in order, each with `counts`: whether
         the policy counts it (none before the latest license or content
@@ -627,14 +627,18 @@ class Depot:
         revisions: how many revisions it has, content_versions: how
         many content versions it has (its current revision reads the one
         its row's content_version names), upstream: whether the upstream of
-        this clone owns it}. Its text, or an item's content, is read from its
-        parts, whatever its size. NotFound without such a text."""
+        this clone owns it, cut: whether its text is only its start}. Its
+        text, or an item's content, is read from its parts, whole, or for a
+        plain text longer than characters, its first characters only (cut;
+        Depot.passage reads the rest). NotFound without such a text."""
         found = self._rows(f"SELECT {FIELDS} FROM texts WHERE id = ?", (text,))
         if not found:
             raise NotFound(f"no text {text}")
         row = found[0]
-        whole = self.content(text, row["content_version"])
+        parted = self.parted(text, row["content_version"])
         plain = row["kind"] == PLAIN
+        cut = plain and characters is not None and len(parted) > characters
+        whole = parted[:characters] if cut else str(parted)
         row = {**row, "text": whole if plain else None, "content": None if plain else whole}
         notice = None if row["notice"] is None else self._one("SELECT text FROM notices WHERE id = ?", (row["notice"],))
         revisions = self._one("SELECT count(*) FROM texts_revisions WHERE id = ?", (text,))
@@ -647,7 +651,27 @@ class Depot:
                 "decisions": [{**one, "counts": one["id"] in counting, "put_back": policy.put_back(one)}
                               for one in decisions],
                 "revisions": revisions, "content_versions": versions,
-                "upstream": bool(self.upstream_owned([text]))}
+                "upstream": bool(self.upstream_owned([text])), "cut": cut}
+
+    def passage(self, text: str, start: int, characters: int, version: int | None = None) -> dict:
+        """{id, version: the content version read (the current one for
+        None), length: its length in characters, from: where the passage
+        starts, text: at most characters characters of it from start}, of a
+        plain text, reading only the parts the passage reaches, whatever the
+        text's size. Refused for a start or a count below 0 or an item;
+        NotFound without such a text or version."""
+        if start < 0 or characters < 0:
+            raise Refused("a passage starts at 0 or later and holds 0 characters or more")
+        kind = self._one("SELECT kind FROM texts WHERE id = ?", (text,))
+        if kind is None:
+            raise NotFound(f"no text {text}")
+        if kind != PLAIN:
+            raise Refused(f"{text} is an item of kind {kind}: only a plain text is read a passage at a time")
+        if version is None:
+            version = self._one("SELECT content_version FROM texts WHERE id = ?", (text,))
+        parted = self.parted(text, version)
+        return {"id": text, "version": version, "length": len(parted), "from": start,
+                "text": parted[start:start + characters]}
 
     def search(self, where: "Selection", after: Sequence | None = None, before: Sequence | None = None,
                limit: int = 50, order: str = "id", descending: bool = False, at: str | None = None) -> dict:

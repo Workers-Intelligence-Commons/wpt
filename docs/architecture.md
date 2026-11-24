@@ -255,9 +255,12 @@ memory is added from a file read as a stream. An erasure, a clone and a
 pull read and write a text's parts a few at a time, and the corpus build
 reads the parts of all the texts it takes in one pass over `parts`. The corpus build
 reads a piece of a long text from the parts its characters lie in alone,
-and holds the tokens of one text or piece whole in memory while it encodes it, and
-`wpt depot show` and the web pages give a text whole, so they hold it in
-memory.
+and holds the tokens of one text or piece whole in memory while it encodes it.
+`wpt depot show` gives a text whole, so it holds it in memory, and with
+`--from` and `--characters` it reads one passage from the parts that passage
+reaches alone. `GET /api/texts/{id}` gives a plain text of more than
+2,000,000 characters as its start alone, and `GET /api/texts/{id}/passage`
+reads any passage of it, so the web app never holds a long text whole.
 
 **SQL.** Every query is SQLite's SQL. A list column (a text's licenses,
 authors, tags, decisions and scores, a snapshot's summary, and the others
@@ -820,6 +823,7 @@ refused change writes nothing.
 | texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Texts" page |
 | a text or an item, added | `add FILE [--kind KIND]` (`plain` by default) | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the content and review panel of the "Texts" page, with the text's record |
+| a passage of a plain text | `show ID --from N --characters M` | `GET /api/texts/{id}/passage`; the reader of a text too long to edit on the "Texts" page |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
 | a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Texts" page, on ticked texts, on the current text, and by the keys A, R and U |
 | the reason of an admission or a refusal, given afterwards by the person who made it | `reason DECISION REASON` | `POST /api/decisions/{id}/reason`; the reasons the "Texts" page offers after a refusal |
@@ -888,7 +892,8 @@ The review panel at the right holds a row for each score name, its
 choices read from `GET /api/scores/{name}/values`, the scale the depot's
 texts hold (whole grades, 0 to 10 for a person's 0 to 10, each a button),
 a number pad for a value between the grades (kept to 0 to 10 on a scale of whole grades) or, on
-another scale, − and + and the value, the most used tags as toggles, the moves and decisions,
+another scale, − and + and the value, as toggles the tags this browser put on a text last and then the most used,
+a picker of tags and score names that reads the depot's again as words are typed in it, the moves and decisions,
 presets of scores and tags kept in the browser, and the text's facts and
 other actions. Clicks on scores and tags are gathered and saved as one
 change of scores and one of credits a moment after the last, or when

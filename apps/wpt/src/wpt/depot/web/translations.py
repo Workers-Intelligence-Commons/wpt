@@ -11,7 +11,8 @@ Settings with the sha256 of every file. That service lets a page read the
 list, but its file server refuses Chromium browsers, so this server
 fetches a file the first time a page asks for it, checks it against its
 sha256, keeps it in the store (cache/files/<sha256>) and serves it from
-there. It fetches only the files the list names.
+there. It fetches only the files the list names. A file never changes
+under its sha256, so browsers are told to keep it for a year.
 """
 
 import hashlib
@@ -31,6 +32,7 @@ RECORDS = "https://firefox.settings.services.mozilla.com/v1/buckets/main/collect
 ATTACHMENTS = "https://firefox-settings-attachments.cdn.mozilla.net/"
 LISTED_FOR = 3600  # seconds the list of models is kept before it is read again
 TIMEOUT = 120  # seconds one request to Mozilla may take, a model file of about 40 MB included
+KEPT = "public, max-age=31536000, immutable"  # a model file named by its sha256 never changes
 VOCABULARIES = ({"vocab"}, {"srcvocab", "trgvocab"})  # one vocabulary, or one for each side
 VERSION = re.compile(r"(\d+)\.(\d+)(?:a(\d+))?")
 
@@ -120,7 +122,7 @@ def translation_routes(refusals) -> list[Route]:
                     raise ModelsUnreachable(f"the translation model file {sha256} came with other bytes; nothing kept")
                 store.put_bytes(data)
         data = store.get_bytes(sha256)
-        return 200, Stream("application/octet-stream", iter([data]), len(data))
+        return 200, Stream("application/octet-stream", iter([data]), len(data), {"Cache-Control": KEPT})
 
     return [
         Route("GET", "/api/translations", listed_pairs, "the language pairs Firefox's translation models cover, "
@@ -132,5 +134,5 @@ def translation_routes(refusals) -> list[Route]:
                           "type": "object", "required": ["from", "to", "version", "files"]}}}}),
         Route("GET", "/api/translations/files/{sha256}", model_file, "one file of a translation model that "
               "GET /api/translations lists, by its sha256: fetched from Mozilla the first time, checked, then kept "
-              "in the store and served from it", answer={"type": "string", "format": "binary"}),
+              "in the store and served from it, for browsers to keep a year", answer={"type": "string", "format": "binary"}),
     ]

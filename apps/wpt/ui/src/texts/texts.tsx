@@ -15,7 +15,9 @@
 // #/texts/ID?kind=conversation&view=blob, and the order when it is not the
 // order of ids (order=-length: the longest first; "Biggest first" sets it,
 // so the blob reads the texts that take the most room first, from the index
-// of lengths whatever the filter). Ticked texts are acted on through
+// of lengths whatever the filter). That address is kept in this browser, and
+// the Texts link of the top bar leads back to it from any page (place.ts):
+// a new filter or search replaces it. Ticked texts are acted on through
 // the bar at the bottom (bulk.tsx). The ticked texts are those ticked one by
 // one, or, once the box of every text is ticked, every text the filter
 // matches less those unticked since, at the change number the list's page
@@ -70,6 +72,7 @@ import { useSavedFilters } from "../saved-filters";
 import { Blob, textsReader } from "./blob";
 import { Bulk } from "./bulk";
 import { Playlist } from "./playlist";
+import { keepTextsPlace } from "./place";
 import { Sources } from "./sources";
 import { forgetReason, keepReason, USUAL, useOwnReasons } from "./reasons";
 import { decideOne } from "./refuse";
@@ -148,6 +151,8 @@ function TextsPage({ current, query }: { current: string | null; query: URLSearc
   const saved = useSavedFilters();
 
   const address = useCallback((id: string | null, q: Record<string, string | string[] | null>) => href(id ? ["texts", id] : ["texts"], q), []);
+  // the place reached, kept in this browser for the Texts link of the top bar (place.ts)
+  useEffect(() => { keepTextsPlace(window.location.hash); }, [current, queryText]);
   // what a link's named texts are, in words (#/texts?id=...&what=...), shown in place of their number while they stay named
   const what = query.get("what");
   const idsLabel = what && filter.ids ? what : undefined;

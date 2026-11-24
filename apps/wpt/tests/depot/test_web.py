@@ -112,7 +112,12 @@ def test_the_pages_routes_take_texts_through_decisions_tokenizer_recipes_and_era
     assert request("POST", "/api/libraries", {"name": "first model"})[0] == 404
 
     status, shown = request("GET", "/api/texts/test-depot-2")
-    assert status == 200 and json.loads(shown["text"]["content"]) == CONVERSATION
+    assert status == 200 and json.loads(shown["text"]["content"]) == CONVERSATION and not shown["cut"]
+    assert request("GET", "/api/texts/test-depot-1/passage?from=4&characters=3") == (
+        200, {"id": "test-depot-1", "version": 1, "length": 8, "from": 4, "text": "fox"})
+    assert request("GET", "/api/texts/test-depot-1/passage?from=x")[0] == 422
+    assert request("GET", "/api/texts/test-depot-2/passage")[0] == 422  # an item is read whole
+    assert request("GET", "/api/texts/test-depot-9/passage")[0] == 404
     assert [(one["status"], one["reason"]) for one in shown["decisions"]] == [("under review", None),
                                                                           ("admitted", "free and clear")]
     status, found = request("POST", "/api/sql", {"query": "SELECT id, title FROM texts ORDER BY id"})

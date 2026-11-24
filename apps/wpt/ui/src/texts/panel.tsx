@@ -5,8 +5,9 @@
 // 10) has one button per grade and a small "other" that opens a number pad
 // for a value between them; any other score has − and + that step by a
 // twentieth of its range and its value, which opens the pad; the pad opens
-// over the panel, never over the text; the depot's most used tags as fixed toggles, the text's other tags
-// after them with a cross, and a box for a new tag or a new score name; the
+// over the panel, never over the text; as toggles, the tags this browser put on a text last, then the depot's most
+// used, the text's other tags after them with a cross, and a picker for a tag or a score name, the depot's read again
+// as words are typed in it; the
 // moves and decisions the Texts page hands in (actions); the presets, each a
 // set of scores and of tags to add and take away, and one that keeps the
 // text's own as a new preset; then the text's facts, its other actions in a
@@ -25,10 +26,10 @@ import { declared, useDeclarant } from "../declarant";
 import { href } from "../route";
 import { plural, settingsHref, type Status } from "../parts";
 import type { Score } from "../scores";
-import { forgetPreset, forgetScale, isGraded, keepRecent, presetWords, readRecent, round, savePreset, shortValue, usePresets, useScales, type Preset, type Scale } from "./choices";
+import { forgetPreset, forgetScale, isGraded, keepRecent, keepRecentTags, presetWords, readRecent, readRecentTags, round, savePreset, shortValue, tagButtons, usePresets, useScales, type Preset, type Scale } from "./choices";
 
 const WAIT = 2000; // milliseconds after the last click before what changed is sent
-const TAGS_SHOWN = 9; // the depot's most used tags, as toggles
+const TAGS_SHOWN = 9; // tags as toggles: those put on a text last, then the depot's most used
 const SHOWN = 6; // a score's choices beside its name; more take a line of their own under it
 
 export type PanelText = {
@@ -41,6 +42,10 @@ let namesRead: Promise<{ name: string; texts: number }[]> | null = null;
 let tagsRead: Promise<{ tag: string; texts: number }[]> | null = null;
 const scoreNames = () => (namesRead ??= get<{ name: string; texts: number }[]>("/api/scores").then((a) => (a.ok ? a.data : [])));
 const depotTags = () => (tagsRead ??= get<{ tag: string; texts: number }[]>("/api/tags").then((a) => (a.ok ? a.data : [])));
+// read again from the depot: by a picker as words are typed in it, and by the next panel after tags were saved
+const readTagsAgain = () => { tagsRead = null; return depotTags(); };
+const readNamesAgain = () => { namesRead = null; return scoreNames(); };
+const TYPING = 300; // milliseconds after the last key before a picker asks the depot again
 // a name or tag this browser added: the next panels show it at once
 const addedNames = new Set<string>();
 
@@ -72,7 +77,9 @@ export function ReviewPanel({ text, status, decisions, readOnly, actions, more, 
   const allNames = useMemo(() => [...new Set([...names.map((n) => n.name), ...held.scores.map((s) => s.name), ...addedNames, ...extraNames])].sort(),
     [names, held.scores, extraNames]);
   const scales = useScales(allNames);
-  const shownTags = useMemo(() => [...tags].sort((a, b) => b.texts - a.texts || a.tag.localeCompare(b.tag)).slice(0, TAGS_SHOWN).map((t) => t.tag), [tags]);
+  // the tags put on a text last, as the panel opened (the buttons stay in place while it is open), then the most used
+  const [recentTags] = useState(readRecentTags);
+  const shownTags = useMemo(() => tagButtons(recentTags, tags, TAGS_SHOWN), [recentTags, tags]);
 
   const heldScore = (name: string) => held.scores.find((s) => s.name === name)?.value ?? null;
   const scoreNow = (name: string) => (name in waiting.scores ? waiting.scores[name] : heldScore(name));
@@ -116,6 +123,7 @@ export function ReviewPanel({ text, status, decisions, readOnly, actions, more, 
         failed(<>{words.length > 0 && <>Saved {words}; </>}not saved: the tags of {t.id}: {a.problems.join(" ")}</>);
         return;
       }
+      tagsRead = null; // a new tag of the depot shows in the next panel
       const added = tagsTo.filter((x) => !h.tags.includes(x)), gone = h.tags.filter((x) => !tagsTo.includes(x));
       words.push(<span key="t">tags {[...added.map((x) => `+${x}`), ...gone.map((x) => `−${x}`)].join(" ")} (<a href={href(["decisions", a.data.decision])}>{a.data.decision}</a>)</span>);
     }
@@ -142,9 +150,13 @@ export function ReviewPanel({ text, status, decisions, readOnly, actions, more, 
       if (scale && (value < scale.low || value > scale.high)) forgetScale(name);
     }
   };
-  const setTags = (next: string[]) => setWaiting((w) => ({ ...w, tags: next }));
+  const setTags = (next: string[]) => {
+    keepRecentTags(next.filter((t) => !tagsNow.includes(t)));
+    setWaiting((w) => ({ ...w, tags: next }));
+  };
   const toggleTag = (tag: string) => setTags(tagsNow.includes(tag) ? tagsNow.filter((t) => t !== tag) : [...tagsNow, tag]);
   const apply = (p: Preset) => {
+    keepRecentTags(p.add.filter((t) => !tagsNow.includes(t)));
     setWaiting((w) => ({ scores: { ...w.scores, ...p.scores }, tags: [...new Set([...(w.tags ?? held.tags).filter((t) => !p.remove.includes(t)), ...p.add])] }));
     Object.entries(p.scores).forEach(([name, v]) => keepRecent(name, v));
     setRecent(readRecent());
@@ -183,11 +195,13 @@ export function ReviewPanel({ text, status, decisions, readOnly, actions, more, 
           {!readOnly && <>
             <button type="button" className={`link-button wic-focus${typing === "tag" ? " on" : ""}`} aria-expanded={typing === "tag"}
               onClick={() => setTyping(typing === "tag" ? null : "tag")}>+ tag</button>
-            {typing === "score" ? <Typed label="A new score's name" onDone={(n) => { setTyping(null); if (n) { addedNames.add(n); setExtraNames([...extraNames, n]); } }} />
-              : <button type="button" className="link-button wic-focus" onClick={() => setTyping("score")}>+ score</button>}
+            <button type="button" className={`link-button wic-focus${typing === "score" ? " on" : ""}`} aria-expanded={typing === "score"}
+              onClick={() => setTyping(typing === "score" ? null : "score")}>+ score</button>
           </>}
         </div>
-        {typing === "tag" && <TagPicker all={tags} has={tagsNow} onAdd={(t) => { if (!tagsNow.includes(t)) setTags([...tagsNow, t]); }} onDone={() => setTyping(null)} />}
+        {typing === "tag" && <Picker what="tag" read={readTagsAgain} has={tagsNow} onAdd={(t) => { if (!tagsNow.includes(t)) setTags([...tagsNow, t]); }} onDone={() => setTyping(null)} />}
+        {typing === "score" && <Picker what="score" read={() => readNamesAgain().then((all) => all.map((n) => ({ tag: n.name, texts: n.texts })))} has={allNames}
+          onAdd={(n) => { addedNames.add(n); if (!allNames.includes(n)) setExtraNames((now) => [...now, n]); }} onDone={() => setTyping(null)} />}
       </section>
       <section className="panel-actions" aria-label="Move and decide">
         {actions}
@@ -316,19 +330,30 @@ function NumberPad({ name, at, scale, value, onDone }: { name: string; at: { top
   );
 }
 
-// The depot's tags to pick from with a click, most used first, those the text has left out; the box narrows them
-// to the tags holding what is typed, and Enter adds what is typed, a tag the depot has or a new one. It stays open
-// for several tags; Done or Escape closes it.
-function TagPicker({ all, has, onAdd, onDone }: { all: { tag: string; texts: number }[]; has: string[]; onAdd: (tag: string) => void; onDone: () => void }) {
+// The depot's tags, or score names, to pick from with a click, most used first, those the text has left out; read
+// from the depot when it opens and again a moment after each key (TYPING), so what others added shows too. The box
+// narrows them to those holding what is typed, and Enter adds what is typed, one the depot has or a new one. It stays
+// open for several; Done or Escape closes it.
+function Picker({ what, read, has, onAdd, onDone }: {
+  what: "tag" | "score"; read: () => Promise<{ tag: string; texts: number }[]>; has: string[]; onAdd: (name: string) => void; onDone: () => void;
+}) {
   const [typed, setTyped] = useState("");
+  const [all, setAll] = useState<{ tag: string; texts: number }[] | null>(null);
   const words = typed.trim().toLowerCase();
-  const shown = useMemo(() => [...all].sort((a, b) => b.texts - a.texts || a.tag.localeCompare(b.tag))
+  useEffect(() => {
+    let live = true;
+    const wait = window.setTimeout(() => { void read().then((found) => { if (live) setAll(found); }); }, all === null ? 0 : TYPING);
+    return () => { live = false; window.clearTimeout(wait); };
+  }, [words]); // read again only as words are typed
+  const shown = useMemo(() => [...(all ?? [])].sort((a, b) => b.texts - a.texts || a.tag.localeCompare(b.tag))
     .filter((t) => !has.includes(t.tag) && (!words || t.tag.toLowerCase().includes(words))), [all, has, words]);
-  const add = (tag: string) => { onAdd(tag); setTyped(""); };
+  const add = (name: string) => { onAdd(name); setTyped(""); };
+  const counted = (n: number) => `${n.toLocaleString("en")} ${n === 1 ? "text has" : "texts have"} it`;
   return (
-    <div className="tag-picker" role="group" aria-label="Add a tag">
+    <div className="tag-picker" role="group" aria-label={what === "tag" ? "Add a tag" : "Add a score"}>
       <div className="tag-picker-head">
-        <input className="wic-input wic-focus typed" aria-label="Narrow the tags, or type a new one" placeholder="Narrow, or a new tag" value={typed}
+        <input className="wic-input wic-focus typed" autoFocus aria-label={what === "tag" ? "Narrow the tags, or type a new one" : "Narrow the score names, or type a new one"}
+          placeholder={what === "tag" ? "Narrow, or a new tag" : "Narrow, or a new score"} value={typed}
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") { e.preventDefault(); if (typed.trim()) add(typed.trim()); }
@@ -337,11 +362,13 @@ function TagPicker({ all, has, onAdd, onDone }: { all: { tag: string; texts: num
         <button type="button" className="choice wic-focus" onClick={onDone}>Done</button>
       </div>
       <div className="tag-picker-list">
+        {all === null && <span className="aside">Reading the depot's {what === "tag" ? "tags" : "score names"}…</span>}
         {shown.map((t) => (
-          <button key={t.tag} type="button" className="choice wic-focus" title={`Tag it ${t.tag}: ${t.texts.toLocaleString("en")} texts have it`} onClick={() => add(t.tag)}>{t.tag}</button>
+          <button key={t.tag} type="button" className="choice wic-focus" title={`${what === "tag" ? "Tag it" : "Score it"} ${t.tag}: ${counted(t.texts)}`} onClick={() => add(t.tag)}>{t.tag}</button>
         ))}
-        {words && !all.some((t) => t.tag.toLowerCase() === words) && <button type="button" className="choice add-preset wic-focus" onClick={() => add(typed.trim())}>+ new tag “{typed.trim()}”</button>}
-        {!shown.length && !words && <span className="aside">The text has every tag of the depot.</span>}
+        {all !== null && words && !all.some((t) => t.tag.toLowerCase() === words) && !has.some((t) => t.toLowerCase() === words) &&
+          <button type="button" className="choice add-preset wic-focus" onClick={() => add(typed.trim())}>+ new {what} “{typed.trim()}”</button>}
+        {all !== null && !shown.length && !words && <span className="aside">{what === "tag" ? "The text has every tag of the depot." : "Every score name of the depot has its row above."}</span>}
       </div>
     </div>
   );

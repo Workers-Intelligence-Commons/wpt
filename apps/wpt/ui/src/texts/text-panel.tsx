@@ -31,7 +31,7 @@ import { RelicenseForm, relicensed, type Decided, type Relicensed } from "../dec
 import { named, sent } from "../filter";
 import { EraseForm } from "../erase-form";
 import { Confirm, Cut, Facts, Help, Joined, MoreMenu, optional, Outcome, PLAIN, plural, Problems, required, RequiredNote, Section, settingsHref, StatusBadge, textName, type Declaration, type Status } from "../parts";
-import { codePoints, TextViewer } from "../reader";
+import { TextViewer } from "../reader";
 import { useAbout } from "../about";
 import { declared, useDeclarant } from "../declarant";
 import { Correction } from "../pages/decisions";
@@ -46,18 +46,20 @@ import { ConversationEditor, type Conversation } from "../conversation-editor";
 import { tell } from "../notice";
 import { canonical, EditSaves, type Content, type Made, type Saved } from "./edit-saving";
 import { Translated } from "../translation/translated";
+import { LongText } from "./long-text";
 
 // counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
 // put_back: it put the text back under review, a correction of the decisions before it
 type Decision = { id: string; status: Status; name: string; email: string; made_at: string; reason: string | null; counts: boolean; put_back: boolean };
 type Row = {
-  id: string; text: string | null; kind: string; content: string | null; licenses: string[]; notice: string | null;
+  id: string; text: string | null; kind: string; content: string | null; length: number; licenses: string[]; notice: string | null;
   title: string | null; authors: string[] | null; tags: string[]; address: string | null; decisions: string[];
   revision: number; content_version: number; scores: Score[] | null;
 };
-// upstream: it belongs to the upstream this depot follows
+// upstream: it belongs to the upstream this depot follows; cut: a plain text too long to send whole, whose text is its
+// start only, read a passage at a time (long-text.tsx)
 export type Shown = { text: Row; status: Status; notice: string | null; decisions: Decision[]; revisions: number;
-  content_versions: number; upstream: boolean };
+  content_versions: number; upstream: boolean; cut: boolean };
 
 export const showText = (id: string) => get<Shown>(`/api/texts/${encodeURIComponent(id)}`);
 
@@ -136,7 +138,7 @@ function Loaded({ shown, actions, reload, onSaved, saver, handle, find, translat
       <strong className="content-title" title={title}>{title}</strong>
       <StatusBadge status={shown.status} />
       <FixedKind kind={row.kind ?? PLAIN} meaning={kinds?.find((k) => k.id === (row.kind ?? PLAIN))?.meaning} />
-      <span className="ledger aside">v{row.content_version}{!item && <> · {codePoints(row.text ?? "").toLocaleString("en")} chars</>}</span>
+      <span className="ledger aside">v{row.content_version}{!item && <> · {row.length.toLocaleString("en")} chars</>}</span>
       {theirs && <span className="aside" title="Only the upstream this depot follows decides on it, changes its licenses, content or credits, or erases it">the upstream's, read only</span>}
     </>
   );
@@ -153,7 +155,12 @@ function Loaded({ shown, actions, reload, onSaved, saver, handle, find, translat
     <>
       <div className="text-column">
         {said && <p className="done cue content-said" role="status">{said}</p>}
-        {theirs ? <><div className="content-line small">{facts}</div><ReadOnly row={row} find={find} /></>
+        {shown.cut ? <>
+            <div className="content-line small">{facts}<span className="content-tools">
+              <TranslateButton translating={translating} setTranslating={setTranslating} /></span></div>
+            <LongText key={`${row.id}:${row.content_version}`} id={row.id} version={row.content_version} length={row.length} tags={row.tags} translating={translating} />
+          </>
+          : theirs ? <><div className="content-line small">{facts}</div><ReadOnly row={row} find={find} /></>
           : <EditContent key={row.id} row={row} status={shown.status} facts={facts} onDone={done} onLeftSaved={onSaved}
               saver={saver} handle={handle} find={find} translating={translating} setTranslating={setTranslating} />}
       </div>
@@ -198,7 +205,7 @@ function Record({ shown }: { shown: Shown }) {
         <Facts rows={[
           ["revision", <span className="ledger">{row.revision} of {shown.revisions}</span>],
           ["content", <span className="ledger">version {row.content_version} of {shown.content_versions}</span>],
-          ["characters", item ? null : codePoints(row.text ?? "").toLocaleString("en")],
+          ["characters", item ? null : row.length.toLocaleString("en")],
           ["authors", row.authors?.join(", ")],
           ["licenses", row.licenses.length ? <span className="row tight">{row.licenses.map((l) => <a key={l} href={href(["licenses", l])} title={`The license ${l}`}><Badge status="license">{l}</Badge></a>)}</span> : null],
           ["tags", row.tags.length ? <Joined values={row.tags} render={(t) => <a href={href(["tags", t])}>{t}</a>} /> : null],
@@ -428,8 +435,7 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
         {!item && <span className="content-tools">
           <span className="aside">{plural(doc ? doc.text.lines : lineCount(start), "line")}</span>
           <Button variant="quiet" disabled={!editor || translating} onClick={() => editor?.openFind()} title='Find and replace in this text (Ctrl+F); tick "regexp" for a regular expression'>Find</Button>
-          <Button variant="quiet" aria-pressed={translating} onClick={() => setTranslating(!translating)}
-            title="Read it translated, read only, by Mozilla's models in this browser: nothing of the translation is saved">{translating ? "Back to the text" : "Translate"}</Button>
+          <TranslateButton translating={translating} setTranslating={setTranslating} />
         </span>}
         {conversation && !editing && <span className="content-tools"><span className="aside">{plural(original.messages.length, "message")}</span>
           <Button variant="quiet" onClick={() => setEditing(true)} aria-keyshortcuts="E" title="Opens the form of its messages, roles and blocks (E)">Edit</Button></span>}
@@ -472,6 +478,14 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
 }
 
 type Snap = Text | string;
+
+// Read the text translated in place of it, or back to the text.
+function TranslateButton({ translating, setTranslating }: { translating: boolean; setTranslating: (t: boolean) => void }) {
+  return (
+    <Button variant="quiet" aria-pressed={translating} onClick={() => setTranslating(!translating)}
+      title="Read it translated, read only, by Mozilla's models in this browser: nothing of the translation is saved">{translating ? "Back to the text" : "Translate"}</Button>
+  );
+}
 
 // What a save did, in words: the page's line while the editor is open; once it closed (left by a way the page does not
 // guard), the same with the text named, and for an edit it could not save, that the edit is kept in this tab with a

@@ -1,6 +1,6 @@
 // The translation engine: Bergamot (@browsermt/bergamot-translator, MPL-2.0) in one Web Worker of this page, started
-// on the first translation, with Mozilla's models read from GET /api/translations/files/SHA256. Everything runs on
-// this machine: no text leaves the browser. The worker loads its glue and WebAssembly by name beside its own address,
+// on the first translation, with Mozilla's models read from GET /api/translations/files/SHA256 and kept in this
+// browser. Everything runs on this machine: no text leaves the browser. The worker loads its glue and WebAssembly by name beside its own address,
 // so its files are served as they are, from bergamot/ (vite.config.ts), and spoken to directly through its messages
 // ({id, name, args} answered by {id, result} or {id, error}) rather than through the package's translator.js, which
 // expects them beside itself.
@@ -43,12 +43,21 @@ function start(): Promise<Call> {
   return call("initialize", { cacheSize: 0 }).then(() => call);
 }
 
+// Where this browser keeps the model files it read (the Cache API, beside the HTTP cache, which may drop files of
+// tens of MB): a file named by its sha256 never changes, so a page loaded again reads it from there.
+const KEPT = "wpt-translation-models";
+
 async function file(sha256: string): Promise<ArrayBuffer> {
-  const answer = await fetch(`/api/translations/files/${sha256}`);
+  const url = `/api/translations/files/${sha256}`;
+  const kept = await (typeof caches === "undefined" ? Promise.resolve(null) : caches.open(KEPT).catch(() => null));
+  const found = await kept?.match(url).catch(() => undefined);
+  if (found) return found.arrayBuffer();
+  const answer = await fetch(url);
   if (!answer.ok) {
     const problems = await answer.json().then((b) => b.problems as string[]).catch(() => [`HTTP ${answer.status}`]);
     throw new Error(problems.join(" "));
   }
+  if (kept) await kept.put(url, answer.clone()).catch(() => { /* not kept: read again next time */ });
   return answer.arrayBuffer();
 }
 

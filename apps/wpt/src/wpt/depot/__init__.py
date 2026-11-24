@@ -264,6 +264,8 @@ from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_cor
                      corpora_cap, import_tokenizer, jsonable, opened, public_url, pulled, recipe_given,
                      snapshot_named, train_vocabulary, viewed)
 
+PASSAGE_CHARACTERS = 200_000  # the characters wpt depot show --from prints unless told
+
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED, "back-to-review": UNDER_REVIEW}
 BACK = "back-to-review"  # the status of decide that puts texts back under review, never an erasure request
 
@@ -353,7 +355,12 @@ def cmd_add(args):
 
 
 def cmd_show(args):
-    sys.stdout.write(json.dumps(jsonable(opened().show(args.id)), ensure_ascii=False, indent=2) + "\n")
+    if args.start is not None or args.characters is not None:
+        shown = opened().passage(args.id, args.start or 0, args.characters if args.characters is not None
+                                 else PASSAGE_CHARACTERS, args.version)
+    else:
+        shown = opened().show(args.id)
+    sys.stdout.write(json.dumps(jsonable(shown), ensure_ascii=False, indent=2) + "\n")
     return 0
 
 
@@ -731,6 +738,11 @@ def parser() -> argparse.ArgumentParser:
     adding.set_defaults(run=cmd_add)
     showing = commands.add_parser("show", help="one text or item, with its decisions and revisions")
     showing.add_argument("id")
+    showing.add_argument("--from", dest="start", type=int, help="only a passage of a plain text, from this "
+                                                                "character (from 0), reading only the parts it reaches")
+    showing.add_argument("--characters", type=int, help=f"the passage's characters at most (default "
+                                                        f"{PASSAGE_CHARACTERS:,})")
+    showing.add_argument("--version", type=int, help="the passage's content version (default: the current one)")
     showing.set_defaults(run=cmd_show)
     deciding = commands.add_parser("decide", help="one decision on every text a condition matches")
     deciding.add_argument("status", choices=list(STATUSES))

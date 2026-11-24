@@ -2,7 +2,7 @@
 // holds (GET /api/scores/NAME/values): run with `bun test` in apps/wpt/ui.
 
 import { expect, test } from "bun:test";
-import { isGraded, scaleOf, type Values } from "./choices";
+import { isGraded, scaleOf, tagButtons, type Values } from "./choices";
 
 const values = (common: [number, number][], others = 0): Values => {
   const texts = common.reduce((sum, [, n]) => sum + n, 0) + others;
@@ -36,4 +36,12 @@ test("only a scale of whole grades, one button each, keeps the pad to its range"
   expect(isGraded(scaleOf(values([[2, 3], [6, 40], [7, 80], [8, 30], [10, 2]])))).toBe(true);
   expect(isGraded(scaleOf(values([[0, 30], [0.25, 10], [0.5, 10], [0.75, 10], [1, 40]], 20)))).toBe(false);
   expect(isGraded(scaleOf(null))).toBe(false);
+});
+
+test("the tags put on a text last take the first tag buttons, the depot's most used the rest", () => {
+  const used = [{ tag: "book", texts: 50 }, { tag: "en", texts: 90 }, { tag: "poem", texts: 50 }, { tag: "fr", texts: 3 }];
+  expect(tagButtons([], used, 3)).toEqual(["en", "book", "poem"]);
+  expect(tagButtons(["fr", "new-source"], used, 3)).toEqual(["fr", "new-source", "en"]);
+  expect(tagButtons(["en"], used, 3)).toEqual(["en", "book", "poem"]); // shown once
+  expect(tagButtons(["a", "b", "c", "d", "e"], used, 9)).toEqual(["a", "b", "c", "d", "en", "book", "poem", "fr"]);
 });

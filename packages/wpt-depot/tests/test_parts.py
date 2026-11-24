@@ -76,6 +76,14 @@ def test_a_text_bigger_than_a_part_is_added_from_a_file_read_shown_and_built_int
     assert [row["n"] for row in depot.sql(f"SELECT count(*) AS n FROM parts WHERE id = '{one}'")] == [
         len(listed(text, SMALL).parts)] and len(listed(text, SMALL).parts) > 10
     assert depot.passages("true", characters=100)["rows"][0]["passage"] == text[:100]
+    cut = depot.show(one, characters=100)
+    assert cut["cut"] and cut["text"]["text"] == text[:100] and cut["text"]["length"] == len(text)
+    assert not depot.show(one, characters=len(text))["cut"]
+    middle = len(text) // 2
+    assert depot.passage(one, middle, 5000) == {"id": one, "version": 1, "length": len(text), "from": middle,
+                                                 "text": text[middle:middle + 5000]}  # across several parts
+    assert depot.passage(one, len(text) - 10, 5000)["text"] == text[-10:]
+    assert depot.passage(one, len(text) + 10, 5000)["text"] == ""
     depot.decide("admitted", "true", me)
     snapshot = depot.create_snapshot("s1")
     store = open_store((tmp_path / "store").as_uri())

@@ -594,6 +594,10 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .translated { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--gap-hair); }
 .translated-line { display: flex; flex-wrap: wrap; align-items: end; gap: var(--gap-hair) var(--gap-tight); }
 .translated > .viewer { max-height: none; border: 1px solid var(--line-strong); }
+/* a text too long to edit, read a passage at a time (texts/long-text.tsx) */
+.long-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); padding: 0 0 var(--gap-hair); }
+.long-jump { width: 12em; }
+.text-column > .viewer[hidden] { display: none; }
 .code-editor .cm-editor { height: 100%; }
 .save-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-top: var(--gap-hair); padding: var(--gap-hair) var(--gap-tight); border-left: 6px solid var(--ochre); background: color-mix(in srgb, var(--ochre) 14%, var(--paper-raised)); }
 .edited-word { color: var(--ink); }
