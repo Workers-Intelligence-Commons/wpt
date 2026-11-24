@@ -19,6 +19,9 @@ session, which would otherwise end it and lose its output:
 `.\scripts\detach.ps1 uv run wpt train ...` on Windows,
 `scripts/detach.sh uv run wpt train ...` on Linux and macOS. Both write its
 output to `runs/logs/<date-time>.log` and print how to follow and stop it.
+In a container, `scripts/detach.sh` also copies the log's lines to the
+standard output of the container's main process, which is what a rented
+machine's console shows, until the run ends.
 
 `wpt train` takes a model recipe (`data/recipes/models/<name>.json`,
 `SERIES:SIZE`, a size of a model series, or `SERIES:SIZE:RUN`, another run

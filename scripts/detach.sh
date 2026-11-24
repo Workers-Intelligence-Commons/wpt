@@ -9,6 +9,11 @@
 # nohup makes the command ignore it, and the command runs in the background
 # from the repository folder. Output goes to runs/logs/<date-time>.log, as
 # with scripts/detach.ps1 on Windows.
+#
+# Inside a container (Docker, RunPod...), the provider's console shows only
+# what the container's main process (PID 1) writes to its standard output.
+# There, the log's lines are also copied to /proc/1/fd/1 as they are written,
+# until the command ends.
 set -eu
 if [ "$#" -eq 0 ]; then
     echo 'usage: scripts/detach.sh <command> [arguments...]' >&2
@@ -35,6 +40,16 @@ cd "$root"
 trap '' HUP
 PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 nohup "$@" > "$log" 2>&1 < /dev/null &
 pid=$!
+
+# A container has /.dockerenv (Docker), /run/.containerenv (Podman) or the
+# variable `container` (systemd-nspawn, LXC, Podman). The copy needs more than
+# that: PID 1's output must accept a write. Where it does not, nothing changes.
+if { [ -e /.dockerenv ] || [ -e /run/.containerenv ] || [ -n "${container:-}" ]; } &&
+    { : >> /proc/1/fd/1; } 2>/dev/null; then
+    # --pid ends tail when the command ends; -n +1 copies from the first line.
+    nohup tail -n +1 -F --pid="$pid" "$log" >> /proc/1/fd/1 2> /dev/null < /dev/null &
+    echo "console: the log also goes to the container's log"
+fi
 
 echo "started: $*"
 echo "process: $pid"

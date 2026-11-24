@@ -51,6 +51,12 @@ id with how to follow and stop it:
 exits (code 130). `taskkill /F` ends it at once: the steps since the last
 checkpoint (every `--checkpoint-every` steps) are lost.
 
+Inside a container (Docker, RunPod) whose main process's output accepts
+writes (`/proc/1/fd/1`), `scripts/detach.sh` also copies the log's lines to
+that output as they are written and until the run ends, so the provider's
+console shows the run; it prints `console: the log also goes to the
+container's log` then. Elsewhere it does nothing more.
+
 Over SSH, start the run with the script, end the SSH command, and read the
 log in later commands; never keep a run attached to the connection.
 
