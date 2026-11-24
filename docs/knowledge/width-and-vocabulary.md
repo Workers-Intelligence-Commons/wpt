@@ -8,20 +8,24 @@ defined in [README.md](README.md).
 
 - A model has a floor of width, and the floor rises with the size of the
   vocabulary. **published, agreed**
-- No published formula gives the floor. The working rule is at most 50
-  vocabulary entries per dimension of width: a vocabulary of 65,536 asks for
-  a width of about 1,300, one of 16,384 for about 330. **hypothesis**
+- The matrix of the log-probabilities of every token has a rank of at most
+  the width. **proved**
+- No published formula gives the floor, and no one number of vocabulary
+  entries per dimension of width fits the evidence: a width of 256 copies
+  at 256 entries per dimension, and a published test of repetition fails at
+  114 after 41M tokens of training. **hypothesis**
 - A width of 256 copies a repeated sequence with a vocabulary of 65,536,
   256 entries per dimension, once it has read 15.8 tokens per parameter; a
   width of 128 does not after 39. The floor for copying lies between the
-  two at this vocabulary. **measured here**
+  two at this vocabulary. **measured here**, one run at each width, of 11
+  layers at 256 and 21 at 128
 - Full quality of the output asks for a width of about 1,000 or more with a
   vocabulary of 30,000 to 50,000. **published, one source**
 - A model that must be narrow takes a small vocabulary: every narrow model
   that works has one. **published, agreed**
 - Whether a model copies a token from its context is the test of the floor,
   not the loss: a model under the floor still writes grammatical text.
-  **measured here**
+  **measured here**, one run
 
 ## Evidence
 
@@ -31,7 +35,8 @@ All figures from published sources in this section are **unchecked**.
 
 - *Breaking the Softmax Bottleneck* (2017, arXiv 1711.03953). The scores of
   every token are a product of the hidden state and the output table, so the
-  matrix of log-probabilities has a rank of at most the width. The paper
+  matrix of log-probabilities has a rank of at most the width (**proved**,
+  by that product). The paper
   argues that language needs a higher rank, and shows gains from a head of
   higher rank on word vocabularies (10,000 and 100,000) and none on
   characters.
@@ -68,8 +73,8 @@ All figures from published sources in this section are **unchecked**.
 
 ### What speaks against a simple ratio
 
-- Models in use sit above 50 entries per dimension and work: a width of 768
-  with a vocabulary of 50,257 is 65 per dimension.
+- Models in use work at 65 entries per dimension: a width of 768 with a
+  vocabulary of 50,257.
 - The repetition experiment that fails at 114 entries per dimension trains on
   41M tokens. Whether more training closes the gap is not measured.
 - The rank limit concerns the output. A narrow input embedding costs little
@@ -77,35 +82,28 @@ All figures from published sources in this section are **unchecked**.
 
 ### Measured with WPT
 
+Three models on one corpus with a vocabulary of 65,536, one run of each
+(RTX 5080 Laptop GPU, commit d0d454b22b). The figures of copying are in
+[size-and-tokens.md](size-and-tokens.md).
+
 - A model of width 128 and 21 layers (13.7M parameters without the
-  vocabulary's two tables, 30.5M with them), vocabulary 65,536, 512 entries
-  per dimension, trained on 1.18B tokens in 3,000 updates of 12 windows of
-  32,768 tokens, validation loss 3.49: it writes grammatical English and
-  copies nothing from its context. Given a sentence that states a fact and
-  the start of the same sentence, it does not repeat the fact; it does not
-  continue a repeated sequence of four letters. (RTX 5080 Laptop GPU, commit
-  d0d454b22b.) **measured here**
+  vocabulary's two tables, 30.5M with them), 512 entries per dimension,
+  trained on 1.18B tokens in 3,000 updates of 12 windows of 32,768 tokens,
+  validation loss 3.49: it writes grammatical English and copies nothing
+  from its context. Given a sentence that states a fact and the start of
+  the same sentence, it does not repeat the fact, and it writes no token of
+  a repeated sequence of 8 words. **measured here**
 - A model of width 512 and 11 layers (124.0M parameters without the tables,
-  191.1M with them), the same vocabulary and corpus, 128 entries per
-  dimension, trained on 354M tokens in 2,700 updates, validation loss 3.01:
-  given the same 10 prompts, one sample of 24 tokens each, it still does not
-  repeat a fact or a number its context states. It continues `return a +`
-  with `b`, the argument the prompt names, where the narrow model writes
-  `c`, and it continues the four repeated letters with those letters, not in
-  their order. Copying has started and is not there. The model has read 1.9
-  tokens per parameter, so the measure does not separate the floor of width
-  from a lack of training
-  ([size-and-tokens.md](size-and-tokens.md)). (Same machine and commit.)
-  **measured here**
+  191.1M with them), 128 entries per dimension, trained on 354M tokens in
+  2,700 updates, validation loss 3.01: it does not repeat a fact or a
+  number its context states, and writes no token of the repeated sequence.
+  The model has read 1.9 tokens per parameter, so the measure does not
+  separate the floor of width from a lack of training. **measured here**
 - A model of width 256 and 11 layers (41.0M parameters without the tables,
-  74.5M with them), the same vocabulary and corpus, 256 entries per
-  dimension, trained on 1.18B tokens in 8,990 updates, validation loss
-  2.79: it writes 43% of the tokens of a repeated sequence of 8 words, where
-  the two models above write none, and chooses a stated word among four 68%
-  of the time ([size-and-tokens.md](size-and-tokens.md)). A width of 256
-  copies with this vocabulary: the working rule of 50 entries per dimension
-  is too strict as a floor for copying. (Same machine and commit.)
-  **measured here**
+  74.5M with them), 256 entries per dimension, trained on 1.18B tokens in
+  8,990 updates, validation loss 2.79: it writes 43% of the tokens of the
+  repeated sequence and chooses a stated word among four 68% of the time. A
+  width of 256 copies with this vocabulary. **measured here**
 
 ## Open
 

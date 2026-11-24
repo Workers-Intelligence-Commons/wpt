@@ -17,10 +17,9 @@ forms compute them, each a module with that contract:
 
 Which form runs is decided once per process, at the first GPU pass (or
 before, by wpt train, wpt eval and wpt chat, which may name it: FORMS).
-Unnamed, the form is Triton where it is installed, the faster of the two
-(docs/knowledge/training-speed.md), else TileLang where it is installed for
-this GPU, else PyTorch; a later call that names another form is
-KernelUnavailable. A kernel form, named or installed, that cannot work (not
+Unnamed, the form is Triton where it is installed, the faster of the two,
+else TileLang where it is installed for this GPU, else PyTorch; a later
+call that names another form is KernelUnavailable. A kernel form, named or installed, that cannot work (not
 installed when named, TileLang off an NVIDIA GPU under Linux or without its
 CUDA compiler, no GPU, an import that fails, a kernel that does not compile
 or run on this GPU) is KernelUnavailable, which stops the run. A failure

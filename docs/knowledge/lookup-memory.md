@@ -7,8 +7,7 @@ in layers. Its marks are defined in [README.md](README.md).
 
 ## Answer
 
-The question is open at WPT's sizes: every recipe has the same Engram
-tables, and none has been trained without them or with others.
+The question is open at small sizes.
 
 - A table lowers the loss for almost no compute, gains most on facts, and
   works best early in the model. **published, agreed**
@@ -57,13 +56,14 @@ exists under the id or address given.
   arXiv 2305.14625). Perplexity 14.8 to 12.6, and readers do not prefer the
   text.
 
-### Measured with WPT
+### Counted from the model
 
-Every recipe's Engram memory is 16 tables (2 orders, 8 hash heads) of about
-50,021 rows of 16 numbers at layer 2. Counted from the model's code, the
-memory is 13.0M parameters at a width of 256 and 13.1M at 512, 12.8M of
-them the tables, which do not follow the width. That is 32% of the body at
-256 and 11% at 512. No run measures what they bring. **measured here**
+Tables whose number of rows and row size are set apart from the width hold
+the same parameters at every width, so they are a larger share of a
+narrower model. An Engram memory of 16 tables (2 orders, 8 hash heads) of
+about 50,021 rows of 16 numbers is 13.0M parameters at a width of 256 and
+13.1M at 512, 12.8M of them the tables: 32% of the body at 256 and 11% at
+512, for 11 layers and 32 experts. **proved**, by counting
 
 ## Open
 
@@ -72,8 +72,7 @@ them the tables, which do not follow the width. That is 32% of the body at
   with tables 4 times larger, each at the same total of parameters by
   changing the width, and compares the loss, `general_knowledge` and
   `copying` of `wpt eval`.
-- Whether the tables' size should follow the model's width: today it does
-  not.
+- Whether the tables' size should follow the model's width.
 - Tables with loops: whether a looped model reads the table at every pass
   to advantage.
 - Whether the gain in loss shows in generated text.

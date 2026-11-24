@@ -18,9 +18,8 @@ are defined in [README.md](README.md).
   whose layers read earlier layers through more than one residual stream, as
   WPT's Attention Residuals do, keeps gaining with depth. **published, one
   source**
-- Depth costs time, since layers run one after the other, and width costs
-  little on a GPU ([shape-and-speed.md](shape-and-speed.md)). When two
-  shapes are within the flat part, take the wider. **hypothesis**
+- Training time grows about linearly with depth at a fixed size.
+  **published, one source**
 - A learning rate found at one depth does not carry to another depth, so a
   series of sizes that shares its settings keeps one depth. **published,
   one source**
@@ -80,10 +79,8 @@ All figures from published sources in this section are **unchecked**.
   comparison at equal total parameters gives it a larger body.
 - **The residual design**, as *DepthBench* shows.
 
-### Depth costs speed
+### Depth costs training time
 
-- *PanGu-π Pro*: at 1B parameters on one GPU, 40 layers generate 12.8 tokens
-  per second and 9 layers 57.5.
 - *The Impact of Depth*: training time grows about linearly with depth at a
   fixed size.
 

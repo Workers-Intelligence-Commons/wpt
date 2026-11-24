@@ -3,13 +3,15 @@
 This file asks one question in two forms: whether a small model gains from
 imitating a larger model trained on the same corpus, and whether several
 small models, each trained on one domain, can be brought together into one
-general model of the same size. No model from outside may be used: every
-teacher is trained from scratch on WPT's corpus. Its marks are defined in
-[README.md](README.md).
+general model of the same size. Every teacher is trained from scratch on
+the student's corpus: no model from outside is used. Its marks are defined
+in [README.md](README.md).
 
 ## Answer
 
-The question is open: WPT has no code for either form.
+The question is open between 1B and 5B training tokens under 500M
+parameters: published work has 10M words on one side and hundreds of
+billions of tokens on the other.
 
 - On a very small corpus, 10M words, a student that imitates teachers
   trained on the same data beats the same model trained alone on most
@@ -26,12 +28,10 @@ The question is open: WPT has no code for either form.
 - An average of domain specialists that shared the first half of training
   beats one model of equal compute on the domains seen, and loses on unseen
   domains at 125M parameters. **published, one source**
-- The working assumption for one GPU: specialists trained at the same time
-  share the GPU, so they bring no time; the gain can only be in quality.
-  The form worth a measure is a common model trained first, then branches
-  by domain, then one average. A series of sizes already trains a larger
-  model beside each small one, so a teacher costs nothing more there.
-  **hypothesis**
+- The working assumption: the form of specialists worth a measure is a
+  common model trained first, then branches by domain, then one average.
+  A series of sizes trains a larger model beside each small one, so a
+  teacher costs nothing more there. **hypothesis**
 
 ## Evidence
 
@@ -99,14 +99,13 @@ exists under the id or address given.
 ## Open
 
 - **A teacher counted in the cost, on 1B to 5B tokens, under 500M
-  parameters.** Published work has 10M words on one side and hundreds of
-  billions of tokens on the other. A measure trains a small model alone and
-  the same model with the next size of its series as teacher, and compares
-  the loss, the copying test of `wpt eval` and the time.
+  parameters.** A measure trains a small model alone and the same model
+  with the next size of its series as teacher, and compares the loss, the
+  copying test of `wpt eval` and the time.
 - Whether imitation delays or brings forward copying at these sizes.
 - **Specialists of one small size against one model.** A measure trains a
-  common model for half the updates, branches by tag of the snapshot,
-  averages, and compares with one model of equal compute on seen and unseen
+  common model for half the updates, branches by domain, averages, and
+  compares with one model of equal compute on seen and unseen
   domains. No source does it under 125M.
 - Putting specialists trained from scratch back into one model of the same
   size by imitation, against one model of equal compute: not measured.

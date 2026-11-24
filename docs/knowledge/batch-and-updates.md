@@ -7,24 +7,23 @@ defined in [README.md](README.md).
 
 ## Answer
 
-The question is open for WPT: every run so far reads 131,072 tokens per
-update at the lengths of windows it was tried with, or more.
+The question is open: the sources agree on a critical size of update and
+dispute whether the smallest update or a middle one is the best.
 
 - Under a critical size of update nothing is lost per token, and above it
   tokens are wasted. **published, agreed**
 - That size follows the number of training tokens and hardly the model's
   size. **published, agreed**
 - One fit gives the best update as 0.667 times the number of training
-  tokens to the power 0.566: about 90,000 tokens for WPT's 1.18B, by this
-  file's arithmetic. **published, one source**
+  tokens to the power 0.566: about 90,000 tokens for 1.18B training tokens,
+  by this file's arithmetic. **published, one source**
 - Copying from the context comes sooner in tokens with smaller updates: 8
   times fewer tokens per update bring it about 3.7 times sooner.
   **published, one source**
 - Whether the smallest update is the best, or a middle one, is disputed.
-- The working assumption: 131,072 tokens per update is near the best for
-  the loss on WPT's corpus, and a model that does not copy yet is the case
-  where 4 times fewer could pay. The cost is time: small updates use a GPU
-  less well ([shape-and-speed.md](shape-and-speed.md)). **hypothesis**
+- The working assumption: with 1.18B training tokens, 131,072 tokens per
+  update is near the best for the loss, and a model that does not copy yet
+  is the case where 4 times fewer could pay. **hypothesis**
 
 ## Evidence
 
@@ -53,22 +52,12 @@ exists under the id or address given.
 - arXiv 2610.08975 (2026). A loss of 3.27 at 256,000 tokens per update
   against 3.38 at 2M.
 
-### Measured with WPT
-
-- Every stage of the runs made so far reads 131,072 tokens per update: 64
-  windows of 2,048, 16 of 8,192, 4 of 32,768. The narrow model's run read
-  393,216, 12 windows of 32,768. No run compares two sizes of update.
-- `--micro-batch` changes how many windows one pass reads and not the
-  update: 2 windows per pass against 4 costs 15% of the speed at a width of
-  512 ([shape-and-speed.md](shape-and-speed.md)). **measured here**
-
 ## Open
 
 - **A sweep of the update's size on WPT's corpus.** A measure trains one
   small shape on the same tokens with 32,768, 131,072 and 524,288 tokens
   per update, the learning rate chosen for each, and compares the loss, the
   copying test of `wpt eval` at equal tokens, and the time.
-- The time a small update costs on one GPU: no source gives it.
 - Whether the optimizer's settings (`by-part`, docs/training.md) must move
   with the update's size, as the first source above finds for Adam.
 - Whether long windows count as large updates for this question: the last

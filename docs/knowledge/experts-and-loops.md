@@ -7,7 +7,7 @@ defined in [README.md](README.md).
 
 ## Answer
 
-The question is open for WPT's sizes: published sources measure each half
+The question is open at small sizes: published sources measure each half
 of it, and none crosses the number of experts with the number of loops by
 model size. What they say goes half with the idea of fewer experts and more
 loops at small sizes, and half against it.
@@ -25,25 +25,20 @@ loops at small sizes, and half against it.
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or
-  its file, and fails where the limit is training time, which is the limit
-  on one GPU. **hypothesis**
-- The working assumption is the one every recipe uses: 32 routed experts,
-  4 of them per token, and no loop (docs/model.md, "Experts" and "Loops").
-  **hypothesis**
+  its file, and fails where the limit is training time. **hypothesis**
 - The two numbers do not trade the same thing. The number of experts
   changes the parameters and not the work per token, since 4 run whatever
   their number. Loops change the work per token, `loops + 1` times one
   pass, and not the parameters. Fewer experts and more loops is a smaller
-  model that computes more. **measured here** for the parameters, by
-  counting them; the work per token is the model's rule (docs/model.md,
-  "Model series").
+  model that computes more. **proved**, by counting the parameters and the
+  passes of WPT's layers (docs/model.md, "Model series").
 - The routed experts are the largest part of a small model's body, so the
   number of experts is the strongest lever on its size after the
-  vocabulary. **measured here**
+  vocabulary. **proved**, by counting, for the shapes of the table below
 
 ## Evidence
 
-### Measured with WPT
+### Counted from the model
 
 Parameters of the body, without the vocabulary's two tables, for 11 layers
 and 4 experts per token, counted from the model's code:
@@ -54,8 +49,7 @@ and 4 experts per token, counted from the model's code:
 | 256 | 41.0M | 32.3M | 27.9M |
 
 The 32 routed experts are 56% of the body at a width of 512 and 43% at 256.
-No model with fewer than 32 experts, and no model that loops, has been
-trained.
+**proved**, by counting
 
 ### Published
 

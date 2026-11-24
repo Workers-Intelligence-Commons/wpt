@@ -21,10 +21,13 @@ shows a behaviour. Its marks are defined in [README.md](README.md).
 - Copying from the context appears after a number of updates more than after
   a number of tokens, hardly depends on the model's size, and needs at least
   2 layers. Small batches bring it sooner in tokens. **published, agreed**
-- With a vocabulary of 65,536 and 1.18B tokens, a model at 15.8 tokens per
-  parameter (width 256) beats both a model 2.4 times smaller at 39 tokens
-  per parameter and one 2.6 times larger at 1.9: on the validation loss and
-  on copying. The rule holds here, tables counted. **measured here**
+- With a vocabulary of 65,536, a model that reads 15.8 tokens per parameter
+  (width 256, 11 layers, 1.18B tokens) beats, on the validation loss and on
+  copying, a model 2.4 times smaller that reads 39 (width 128, 21 layers,
+  the same tokens) and one 2.6 times larger that reads 1.9 (width 512, 11
+  layers, 354M tokens). This agrees with the rule, tables counted, and does
+  not test it: the three models differ in depth or in tokens read as well
+  as in size. **measured here**, one run of each model
 - Recalling a fact depends on how many times the corpus states it, about
   100 to 1,000 times, and on the model's capacity, about 2 bits of knowledge
   per parameter. A test of facts measures the corpus as much as the model.
@@ -93,19 +96,14 @@ All figures from published sources in this section are **unchecked**.
   128 with a vocabulary of 65,536
   ([width-and-vocabulary.md](width-and-vocabulary.md)): the number of
   updates is not enough when the model is under the floor of width.
-  **measured here**
+  **measured here**, one run
 - On the same corpus, a model of 191.1M parameters (width 512, 11 layers)
   reaches a validation loss of 3.01 after 354M tokens, 1.9 tokens per
-  parameter, in 6.5 hours on one laptop GPU; the model of 30.5M parameters
-  (width 128, 21 layers) reaches 3.49 after 1.18B tokens, 39 tokens per
-  parameter, in 10 hours. Both losses are on windows of 32,768 tokens. The
-  larger model with a tenth of the rule's tokens wins on loss, and neither
-  copies a stated fact. **measured here**
-- The wide model reads windows of 2,048 tokens for 1,620 updates, then 8,192
-  for 675, then 32,768 for 405, each update 131,072 tokens. The validation
-  loss goes from 3.45 to 3.15 over the second stage and to 3.01 over the
-  third; no run with one window length was made to compare. **measured
-  here**
+  parameter; the model of 30.5M parameters (width 128, 21 layers) reaches
+  3.49 after 1.18B tokens, 39 tokens per parameter. Both losses are on
+  windows of 32,768 tokens. The larger model with a tenth of the rule's
+  tokens wins on loss, and neither copies a stated fact. **measured here**,
+  one run of each model
 - Three models on the same corpus, a vocabulary of 65,536, the last stage
   on windows of 32,768 tokens (RTX 5080 Laptop GPU, commit d0d454b22b). The
   copying columns are the test `copying` of `wpt eval`
@@ -121,14 +119,12 @@ All figures from published sources in this section are **unchecked**.
 
   The model of width 256 writes the whole second half for 24% of the
   sequences. None of the three writes a stated word or number: 4% at most.
-  **measured here**
-- The model of width 256, measured every 500 updates on its training
-  weights: the share of sequence tokens written reaches 27% at update 2,500
-  (328M tokens), 38% at update 5,000, falls to 14% at update 6,000, after
-  the windows go from 2,048 to 8,192 tokens at update 5,400, and is 20% at
-  update 8,650. The finished model, whose weights are an average of 10
-  states, writes 43%. The stated number is chosen 71% of the time from
-  update 1,000 on. **measured here**
+  **measured here**, one run of each model
+- In the model of width 256, measured on its training weights, the share of
+  sequence tokens written falls from 38% at update 5,000 to 14% at update
+  6,000, the windows going from 2,048 to 8,192 tokens at update 5,400, and
+  is 20% at update 8,650. The finished model, whose weights are an average
+  of 10 states, writes 43%. **measured here**, one run
 
 ## Open
 
@@ -137,7 +133,6 @@ All figures from published sources in this section are **unchecked**.
 - Whether the model of width 512 copies once it has read 15 tokens per
   parameter: the measure above does not separate its width from its lack
   of training.
-
 - The best size under 1B tokens with a current training method: the one
   study there uses an older architecture and one dataset.
 - Whether the limit of about 16 readings holds for models under 100M

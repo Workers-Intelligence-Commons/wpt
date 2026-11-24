@@ -7,13 +7,11 @@ in [README.md](README.md).
 
 ## Answer
 
-The question is open for WPT: a recipe can ask for one shared table
-(`tied_tables`, docs/model.md, "One vocabulary table"), and no model has
-been trained with it.
+The question is open under 100M parameters.
 
-- The two tables are the largest part of a small model: 33.5M of 74.5M
-  parameters at a width of 256 with a vocabulary of 65,536, 67.1M of 191.1M
-  at 512. **measured here**, by counting
+- Two tables hold twice the vocabulary times the width, and are the largest
+  part of a small model: 33.5M of 74.5M parameters at a width of 256 with a
+  vocabulary of 65,536, 67.1M of 191.1M at 512. **proved**, by counting
 - Sharing one table between the input and the output costs nothing or gains
   a little from 120M to 600M parameters, with 13% to 50% fewer parameters.
   **published, agreed**
@@ -88,11 +86,10 @@ exists under the id or address given.
 - *Over-Tokenized Transformer* (2025, arXiv 2501.16975). A larger output
   vocabulary hurts a model of 2.4M and helps one of 85M.
 
-### Measured with WPT
+### Counted from the model
 
-Parameters counted from the model's code, 11 layers, vocabulary 65,536. The
-model makes two tables, `embedding` and `head`, unless the recipe sets
-`tied_tables`.
+Parameters of a model of 11 layers with a vocabulary of 65,536 and two
+tables. **proved**, by counting
 
 | Width | Body | The two tables | Share of the model |
 | --- | --- | --- | --- |
@@ -105,9 +102,6 @@ model makes two tables, `embedding` and `head`, unless the recipe sets
   measure trains a width of 256 with two tables, and a wider model with one
   table and the same total, on the same tokens, and compares the loss and
   the copying test of `wpt eval`.
-- What sharing changes for the parts that read both tables: the
-  multi-token prediction block, the drafter and the optimizer's groups
-  (docs/model.md).
 - A sweep of vocabularies from 4,096 to 65,536 at an equal total of
   parameters and equal training bytes, with a measure per byte.
 - A head of higher rank at a width of 128 to 384 on real text.

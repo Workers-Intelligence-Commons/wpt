@@ -2,8 +2,7 @@
 
 This file answers one question: what proof a change to the training code
 owes when it claims to make a run faster without changing the model the run
-trains. Its marks are defined in [README.md](README.md). What a model's
-shape costs is in [shape-and-speed.md](shape-and-speed.md).
+trains. Its marks are defined in [README.md](README.md).
 
 ## Answer
 

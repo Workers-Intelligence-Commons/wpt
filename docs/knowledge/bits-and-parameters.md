@@ -8,7 +8,8 @@ are defined in [README.md](README.md).
 
 ## Answer
 
-The question is open: WPT trains weights of full precision only.
+The question is open: the sources measure coarse weights without loops,
+and none trains the two together.
 
 - At an equal number of parameters, a model trained with three-valued
   weights always loses, and loses more the smaller it is: a lot under 100M,
@@ -23,8 +24,9 @@ The question is open: WPT trains weights of full precision only.
   error made where the loop is entered comes back at every pass.
   **published, one source**
 - The vocabulary's tables stay precise in every published model, and they
-  are a third to a half of a small WPT model
-  ([vocabulary-tables.md](vocabulary-tables.md)): the bytes saved are far
+  are a third to a half of a model of width 256 to 512 with a vocabulary
+  of 65,536 ([vocabulary-tables.md](vocabulary-tables.md)): the bytes saved
+  are far
   under what the bits per weight suggest. **hypothesis**
 - The working assumption: under 500M parameters, full precision. A loop
   reads the same coarse weights again, so it repeats their error and does
@@ -80,5 +82,3 @@ exists under the id or address given.
 - Which parts of WPT bear coarse weights: the routed experts are most of
   the body and are read 4 at a time; attention is where published work
   fails.
-- The cost in training time of coarse weights on one GPU: no source gives
-  it.
