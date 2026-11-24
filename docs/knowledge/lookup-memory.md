@@ -40,6 +40,12 @@ The question is open at small sizes.
   tokens, the best being the one with the small table. Nothing here says
   how far two runs of one recipe differ on that test, so these three
   figures do not rank the models. **measured here**, one run each
+- A trained model does not copy through its table. With the table's
+  output set to zero after training, the model with the small table copies
+  as well (74% of the tokens against 69%), and the one with the large
+  table a little less (37% against 44%). What differs between the models
+  is what their layers learned during training, by the table's presence
+  or by chance. **measured here**, one run each
 - The working assumption: a small model that must stay small in bytes
   keeps small tables, and one that must stay small in compute takes large
   ones. Loops bring depth and no knowledge, tables bring knowledge and no
@@ -108,7 +114,11 @@ tokens per parameter, commit b7dca7b2f7, RTX 5090).
 | Stated number, likeliest of four, English and French | 84%, 74% | 84%, 81% | 87%, 78% |
 
 The copying figures are those of the `copying` test of `wpt eval`, on 200
-prompts each. The models differ by their table and, with it, by their
+prompts each. With the weights that turn the table's rows into what it
+adds (W_V) set to zero in the trained model, the same test gives 74% of
+the tokens and 54% of the sequences whole for the small table (69% and 50%
+with it, on the same machine), and 37% and 19% for the large one (44% and
+24% with it). The models differ by their table and, with it, by their
 number of parameters and of tokens per parameter: the comparison says what
 the table adds to this model, not what its parameters would do elsewhere.
 
