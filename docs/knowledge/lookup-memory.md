@@ -19,6 +19,23 @@ The question is open at small sizes.
   measures two small sizes. **published, one source**
 - A lower loss from a lookup does not always give better generated text.
   **published, one source**
+- At a width of 256 with a vocabulary of 65,536, a table of 13.0M
+  parameters, 17% of the model, lowers the validation loss by 0.05, from
+  2.85 to 2.79, with the same training tokens. **measured here**, one run
+  with the table and one without
+- The table does not help the model copy from its context: without it the
+  model copies a repeated sequence as well or better (48% of the tokens
+  against 43%). A table reads the last tokens, not the context, so it can
+  bring what the training text repeats and not what the prompt states.
+  **measured here**, one run each; the direction of the gap is within what
+  one run can tell
+- Whether those 13.0M parameters do more in the table than in layers is not
+  measured: the model without the table is smaller, not wider.
+- With the published law that each 4 times more rows adds one equal step,
+  the first rows of a table are worth the most per parameter. At a small
+  total of parameters, where a table set apart from the width is a large
+  share of the model, the table to try first is therefore a small one.
+  **hypothesis**
 - The working assumption: a small model that must stay small in bytes
   keeps small tables, and one that must stay small in compute takes large
   ones. Loops bring depth and no knowledge, tables bring knowledge and no
@@ -65,6 +82,30 @@ about 50,021 rows of 16 numbers is 13.0M parameters at a width of 256 and
 13.1M at 512, 12.8M of them the tables: 32% of the body at 256 and 11% at
 512, for 11 layers and 32 experts. **proved**, by counting
 
+### Measured with WPT
+
+Two models of width 256, 11 layers, 32 routed experts and a vocabulary of
+65,536, trained once each on the same 1.18B tokens with the same stages
+(windows of 2,048, 8,192 then 32,768 tokens, 8,990 updates of 131,072
+tokens), the same seed and the same optimizer. One has the Engram memory
+counted above at layer 2 (74.5M parameters, 15.8 tokens per parameter,
+commit d0d454b22b, RTX 5080 Laptop GPU), the other has none (61.6M, 19.1
+tokens per parameter, commit b7dca7b2f7, RTX 5090).
+
+| | With the table | Without |
+| --- | --- | --- |
+| Validation loss at update 8,000 | 2.92 | 2.97 |
+| Validation loss at update 8,990 | 2.79 | 2.85 |
+| Repeated sequence, tokens written | 43% | 48% |
+| Repeated sequence, written whole | 24% | 29% |
+| Stated word, likeliest of four, English and French | 68%, 68% | 72%, 66% |
+| Stated number, likeliest of four, English and French | 84%, 74% | 87%, 78% |
+
+The copying figures are those of the `copying` test of `wpt eval`, on 200
+prompts each. The two models differ by their table and, with it, by their
+number of parameters and of tokens per parameter: the comparison says what
+the table adds to this model, not what its parameters would do elsewhere.
+
 ## Open
 
 - **Tables against layers at an equal number of parameters, under 500M.**
@@ -72,6 +113,13 @@ about 50,021 rows of 16 numbers is 13.0M parameters at a width of 256 and
   with tables 4 times larger, each at the same total of parameters by
   changing the width, and compares the loss, `general_knowledge` and
   `copying` of `wpt eval`.
+- **Whether a table pays depends on the total of parameters.** The gain of
+  a table shrinks as the model grows, and so does its share of the model.
+  Which of the two shrinks faster decides at which sizes a table is worth
+  its parameters. A measure repeats the comparison above at two totals at
+  least, with and without the table at an equal total.
+- **A smaller table.** Whether a table 4 or 16 times smaller keeps most of
+  the 0.05, as the logarithmic law says it would.
 - Whether the tables' size should follow the model's width.
 - Tables with loops: whether a looped model reads the table at every pass
   to advantage.
