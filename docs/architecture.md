@@ -738,6 +738,9 @@ A named run's checkpoint lies beside its model: `models/<name>/checkpoint.json`
 is a record that names the state's file, which lies in the same folder
 ([training.md](training.md), "Checkpoints and resuming").
 
+The web app keeps in `cache/files/` the files of Mozilla's translation
+models that its Texts page asked for, each under its sha256.
+
 The store also holds the record of every run of `wpt train`, `wpt eval`
 and `wpt manager`: one folder per run under `runs/`, written by name, each
 file compressed (a local store adds a record file's lines to one plain file
@@ -838,6 +841,7 @@ refused change writes nothing.
 | a corpus, downloaded | none | `GET /api/builds/{key}`, its `files/{name}` and its `everything.tar` |
 | a dataset of a depot of format 12 or older, for models trained before snapshots | none | the frozen routes of `wpt/depot/web/legacy.py`: `GET /api/datasets`, `GET /api/datasets/{id}`, `GET /api/datasets/{name}/remote`, `GET /api/datasets/{id}/download` and its corpora, files and `everything.tar`, `GET /api/datasets/{id}/export` and its parts, `GET /api/datasets/{dataset}/sample`; no page |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
+| a plain text read translated, never saved | none | `GET /api/translations`, the language pairs of Mozilla's translation models, and `GET /api/translations/files/{sha256}`, one model file, fetched from Mozilla the first time and kept in the store; the Translate button of the "Texts" page, whose translation runs in the browser |
 | erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Texts" page asks |
 
 Each row of a list on the pages opens a view of that thing, with its own
@@ -1139,7 +1143,7 @@ One project, `wpt` (`apps/wpt`; the workspace's root project is
   depot, the store and the agent harness are `wpt/depot/`, `wpt/store.py`
   and `wpt/agent.py`; the jobs are the subpackages `wpt.train`, `wpt.eval`, `wpt.chat` and `wpt.manager`.
 - the web server, `wpt depot web` (`wpt/depot/web/`: `server.py`,
-  `routes.py`, `builds.py` for the routes of the tokenizer recipes and the jobs, `snapshots.py` and `recipes.py` for the snapshots, the recipes and their builds, `legacy.py` for the frozen dataset routes, and `ui.py`, which builds the interface of `apps/wpt/ui`
+  `routes.py`, `builds.py` for the routes of the tokenizer recipes and the jobs, `snapshots.py` and `recipes.py` for the snapshots, the recipes and their builds, `legacy.py` for the frozen dataset routes, `translations.py` for the translation models of the Texts page, and `ui.py`, which builds the interface of `apps/wpt/ui`
   with Bun). The root `package.json` makes one Bun workspace of the
   interface and the packages of the organization's design system, the git
   submodule `vendor/wic-design-system`, whose tokens and components the

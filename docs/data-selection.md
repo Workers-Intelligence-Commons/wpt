@@ -74,6 +74,11 @@ the text's decisions over, as a license change does
 again. A snapshot made before keeps reading the content version of the
 revision it read. A content that changes nothing writes nothing.
 
+The Texts page can also show a plain text translated, read only, in place
+of its editor, so a person can judge a text in a language they do not
+read. The translation runs in the browser with Mozilla's models, and
+nothing of it is saved: it is never content, data or training material.
+
 The plain texts of many texts change at once through `wpt depot
 content-file FILE`, or `POST /api/texts/content`
 ([architecture.md](architecture.md), "Two interfaces"). FILE holds one

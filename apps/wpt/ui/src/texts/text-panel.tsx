@@ -1,6 +1,8 @@
 // The open text of the Texts page: its content, always in view and always
 // editable, under one line of facts: a plain text in CodeMirror
-// (code-editor.tsx), with find and replace inside this text, or an item
+// (code-editor.tsx), with find and replace inside this text and a Translate
+// button that shows it translated, read only, in the editor's place
+// (translation/translated.tsx), or an item
 // through the form of its kind's schema, a conversation read first as a
 // transcript and edited as a chat (conversation-editor.tsx), its kind shown in the facts line, fixed. An edit has no
 // button: it is saved when the Texts page moves to another text, before Admit & next admits it, with Ctrl+S, and when
@@ -43,6 +45,7 @@ import { isConversation, Transcript } from "../transcript";
 import { ConversationEditor, type Conversation } from "../conversation-editor";
 import { tell } from "../notice";
 import { canonical, EditSaves, type Content, type Made, type Saved } from "./edit-saving";
+import { Translated } from "../translation/translated";
 
 // counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
 // put_back: it put the text back under review, a correction of the decisions before it
@@ -283,6 +286,7 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
   const original = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
   const conversation = isConversation(original);
   const [editing, setEditing] = useState(!conversation);
+  const [translating, setTranslating] = useState(false); // a plain text read translated in place of its editor
   useEffect(() => {
     if (!conversation || editing) return;
     handle({ focus: () => setEditing(true), openFind: () => {} });
@@ -419,7 +423,9 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
         {changed && <span className={`edited-mark${saving ? " saving" : ""}`} role="status">{saving ? "saving…" : "● edited, not saved"}</span>}
         {!item && <span className="content-tools">
           <span className="aside">{plural(doc ? doc.text.lines : lineCount(start), "line")}</span>
-          <Button variant="quiet" disabled={!editor} onClick={() => editor?.openFind()} title='Find and replace in this text (Ctrl+F); tick "regexp" for a regular expression'>Find</Button>
+          <Button variant="quiet" disabled={!editor || translating} onClick={() => editor?.openFind()} title='Find and replace in this text (Ctrl+F); tick "regexp" for a regular expression'>Find</Button>
+          <Button variant="quiet" aria-pressed={translating} onClick={() => setTranslating((t) => !t)}
+            title="Read it translated, read only, by Mozilla's models in this browser: nothing of the translation is saved">{translating ? "Back to the text" : "Translate"}</Button>
         </span>}
         {conversation && !editing && <span className="content-tools"><span className="aside">{plural(original.messages.length, "message")}</span>
           <Button variant="quiet" onClick={() => setEditing(true)} aria-keyshortcuts="E" title="Opens the form of its messages, roles and blocks (E)">Edit</Button></span>}
@@ -431,9 +437,16 @@ function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, f
             ? <ConversationEditor key={fresh} value={content as Conversation} onChange={setContent} onProblems={setChatProblems} />
             : schema ? <SchemaForm key={fresh} value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />}</div>
         ) : (
-          <Suspense fallback={<Skeleton lines={8} label="Opening the editor" />}>
-            <CodeEditor key={fresh} initial={start} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
-          </Suspense>
+          <>
+            {/* hidden, not closed, while the translation shows: an edit not saved and its undo stay as they were; a
+                browser's own page translation must not rewrite the editor's text, which would then be saved */}
+            <div className="editor-slot" hidden={translating} translate="no">
+              <Suspense fallback={<Skeleton lines={8} label="Opening the editor" />}>
+                <CodeEditor key={fresh} initial={start} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
+              </Suspense>
+            </div>
+            {translating && <Translated id={row.id} text={doc?.changed ? doc.text.toString() : start} tags={row.tags} />}
+          </>
         )}
       {changed && (
         <div className={`save-bar small${status === "admitted" ? " asking" : ""}`} role="status" aria-label="Edit not saved yet">

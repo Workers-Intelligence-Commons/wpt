@@ -43,7 +43,8 @@ REFUSALS = {"400": "the body does not match the route's schema, or a query is no
             "422": "the depot's rules refuse it, or a person's SQL ran past its time or memory, or its answer past its "
                    "size; nothing was written",
             "500": "a failure the routes do not name, whose trace the server prints; nothing was written",
-            "503": "what the route needs is missing on this machine (the store)",
+            "503": "what the route needs is missing on this machine (the store), or Mozilla's translation models "
+                   "cannot be read",
             "409": "a job of the same recipe, snapshot or tokenizer recipe is queued or running already, or an "
                    "estimate changed since it was shown",
             "429": "as many legacy text exports and samples are being sent as the web app sends at once"}

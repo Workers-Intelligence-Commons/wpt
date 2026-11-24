@@ -369,6 +369,14 @@ scheduler, the CodeMirror packages with what they use, and the design
 system's tokens, fonts and components end up in the built files the
 browser loads; the others build them. lightningcss's
 MPL-2.0 names the AGPL as a Secondary License (its section 1.12).
+bergamot-translator's worker and WebAssembly are copied unchanged into the
+built files, under their own MPL-2.0.
+
+The translation models that the Texts page uses are Mozilla's, under
+MPL-2.0. WPT does not hold or distribute them: `wpt depot web` fetches each
+file from Mozilla the first time a page asks for it and keeps it in the
+store. A translation is shown only and never saved, so no output of these
+models enters the data or the training.
 
 The design system's NOTICE gives three licenses. Its tokens, components and
 brand book are under AGPL-3.0-or-later. Its fonts, in
@@ -398,6 +406,7 @@ through Mark, so its built files hold that drawing.
 | crelt | 1.0.7 | MIT | through @codemirror/view and @codemirror/search |
 | style-mod | 4.1.4 | MIT | through @codemirror/view |
 | w3c-keyname | 2.2.8 | MIT | through @codemirror/view |
+| @browsermt/bergamot-translator | 0.4.9 | MPL-2.0 | in the built files, unchanged (the Texts page's translation engine) |
 | vite | 8.3.6 | MIT | builds the interface |
 | rolldown | 1.2.16 | MIT | through vite |
 | @rolldown/binding-* | 1.2.16 | MIT | one per platform (15), through rolldown |

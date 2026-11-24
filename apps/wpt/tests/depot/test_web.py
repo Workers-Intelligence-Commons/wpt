@@ -1,4 +1,7 @@
+import contextlib
+import hashlib
 import http.client
+import io
 import json
 import sys
 import threading
@@ -8,13 +11,15 @@ import pytest
 
 from wpt_depot import About, Declaration, Depot, NewText, clone
 from wpt_depot.schema import FORMAT
+from wpt_store import store_from_settings
 from wpt_utils.lines import bare
 from wpt.depot import main
 from wpt.depot.shared import CONFIRMATION, REQUIREMENTS
-from wpt.depot.web import readers
+from wpt.depot.web import readers, translations
 from wpt.depot.jobs import Jobs, work_folder
 from wpt.depot.web.routes import STATUSES, routes
 from wpt.depot.web.server import Route, make_server
+from wpt.depot.web.translations import ATTACHMENTS, RECORDS, pairs_of
 
 ME = {"name": "Ada Lovelace", "email": "ada@example.org", "accepted": True}
 
@@ -871,3 +876,67 @@ def test_change_times_gives_the_time_of_each_change_the_depot_holds(web):
     assert status == 200 and [one["change"] for one in times] == [now] and times[0]["made_at"]
 
 
+def record(source, target, version, part, data=b"", filtered=""):
+    """A Remote Settings record of one model file holding data."""
+    return {"fromLang": source, "toLang": target, "version": version, "fileType": part,
+            "filter_expression": filtered,
+            "attachment": {"hash": hashlib.sha256(data).hexdigest(), "size": len(data),
+                           "location": f"{source}{target}-{version}-{part}"}}
+
+
+def model(source, target, version, filtered="", vocabularies=("vocab",)):
+    return [record(source, target, version, part, f"{source}{target}{version}{part}".encode(), filtered)
+            for part in ("model", "lex", *vocabularies)]
+
+
+def test_each_pair_gets_its_newest_complete_model_that_every_firefox_gets():
+    records = [*model("de", "en", "1.0"), *model("de", "en", "2.0"),
+               *[one for one in model("de", "en", "2.1") if one["fileType"] != "lex"],  # incomplete
+               *model("en", "fr", "1.0a1"), *model("en", "fr", "2.0", filtered="env.channel == 'nightly'"),
+               *model("ja", "en", "1.0", vocabularies=("srcvocab", "trgvocab"))]
+    found = {(pair["from"], pair["to"]): (pair["version"], sorted(pair["files"])) for pair in pairs_of(records)}
+    assert found == {("de", "en"): ("2.0", ["lex", "model", "vocab"]),
+                     ("en", "fr"): ("1.0a1", ["lex", "model", "vocab"]),
+                     ("ja", "en"): ("1.0", ["lex", "model", "srcvocab", "trgvocab"])}
+
+
+def test_a_model_file_is_fetched_once_checked_kept_in_the_store_and_served_from_it(web, tmp_path, monkeypatch):
+    request, _ = web
+    monkeypatch.chdir(tmp_path)  # no .env: the settings are the test's alone
+    monkeypatch.setenv("WPT_STORE", (tmp_path / "store").as_uri())
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
+    good = record("de", "en", "1.0", "model", b"the model's bytes")
+    lying = record("de", "en", "1.0", "lex", b"the shortlist's bytes")
+    served = {good["attachment"]["location"]: b"the model's bytes",
+              lying["attachment"]["location"]: b"other bytes"}
+    fetched = []
+
+    def mozilla(url, timeout=None):
+        if url == RECORDS:
+            return contextlib.closing(io.BytesIO(json.dumps({"data": [good, lying, record(
+                "de", "en", "1.0", "vocab", b"v")]}).encode()))
+        fetched.append(url)
+        return contextlib.closing(io.BytesIO(served[url.removeprefix(ATTACHMENTS)]))
+    monkeypatch.setattr(translations, "urlopen", mozilla)
+
+    status, listed = request("GET", "/api/translations")
+    assert status == 200 and [(p["from"], p["to"], p["version"]) for p in listed["pairs"]] == [("de", "en", "1.0")]
+    assert listed["pairs"][0]["files"]["model"] == {"sha256": good["attachment"]["hash"], "size": 17}
+
+    model_url = f"/api/translations/files/{good['attachment']['hash']}"
+    assert request("GET", model_url) == (200, b"the model's bytes")
+    assert request("GET", model_url) == (200, b"the model's bytes")
+    assert len(fetched) == 1  # the second answer came from the store
+    assert store_from_settings().get_bytes(good["attachment"]["hash"]) == b"the model's bytes"
+
+    status, refused = request("GET", f"/api/translations/files/{lying['attachment']['hash']}")
+    assert status == 503 and "other bytes" in refused["problems"][0]
+    assert not store_from_settings().has(lying["attachment"]["hash"])
+    assert not store_from_settings().has(hashlib.sha256(b"other bytes").hexdigest())
+
+    assert request("GET", f"/api/translations/files/{'0' * 64}")[0] == 404  # only the files Mozilla lists
+
+    monkeypatch.delenv("WPT_STORE")
+    status, refused = request("GET", model_url)
+    assert status == 503 and "WPT_STORE" in refused["problems"][0]

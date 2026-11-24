@@ -15,6 +15,8 @@ subcommands:
                 operations they queue
     legacy.py   the frozen dataset routes that models trained before
                 snapshots read, over wpt_depot.legacy
+    translations.py  the language pairs and model files behind the
+                Texts page's translation, fetched from Mozilla
 
 A page is one TypeScript file in ui/src/pages/, over the routes.
 """

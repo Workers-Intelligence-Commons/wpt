@@ -7,7 +7,8 @@ contact have no route: they are commands only (docs/architecture.md, "Two
 interfaces"). The routes over tokenizer recipes and jobs are builds.py's,
 those over snapshots snapshots.py's, those over the builds of the recipes
 people hand over and their corpora recipes.py's, and the frozen dataset routes that
-models trained before snapshots read are legacy.py's. The follow routes only read:
+models trained before snapshots read are legacy.py's, and those behind the Texts page's
+translation translations.py's. The follow routes only read:
 they answer a clone or a pull of another depot (wpt_depot.follow), a page
 at a time.
 
@@ -52,11 +53,12 @@ from ..jobs import Busy, Jobs
 from .builds import builds
 from .legacy import legacy
 from .readers import Readers
+from .translations import ModelsUnreachable, translation_routes
 from .server import Route, Stream
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
 STATUSES = {errors.NotFound: 404, NoRecipe: 404, errors.BadQuery: 400, Busy: 409, TooMany: 429, StoreError: 503,
-            errors.DepotError: 422, shared.NoVocabulary: 422, shared.NoSample: 422, shared.BadSetting: 422,
+            ModelsUnreachable: 503, errors.DepotError: 422, shared.NoVocabulary: 422, shared.NoSample: 422, shared.BadSetting: 422,
             TooBig: 422, NoRoom: 422, RecipeError: 422}
 # the costs of a change of tags a confirmation covers, with their slack in their unit
 RETAG_COSTS = {"changed": 10, "written": 50, "bytes": 1 << 20, "seconds": 5}
@@ -530,6 +532,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
     return [
         *builds(depot, jobs, refusals),
         *legacy(depot.address, Downloads(jobs.path), refusals),
+        *translation_routes(refusals),
         Route("GET", "/api/about", about, "the depot's public address (WPT_DEPOT_URL, else its name), "
               "which names it in the corpora it builds, its change number, its current about row, the "
               "words of the confirmation every decision needs, and sorted, how many texts a search matches at most "
