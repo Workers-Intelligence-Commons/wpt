@@ -28,7 +28,7 @@ const PAGES: [string, string][] = [
   ["overview", "Overview"],
   ["texts", "Texts"],
   ["snapshots", "Snapshots, and the recipe composer"],
-  ["recipes", "Recipes"],
+  ["build", "Build"],
   ["tokenizers", "Tokenizers"],
   ["jobs", "Jobs"],
   ["erasures", "Erasures"],
@@ -93,7 +93,7 @@ export function HelpPage() {
         </p>
         <p>
           The path to a model is: texts are <strong>admitted</strong>; a <strong>snapshot</strong> freezes the set of admitted texts at one
-          moment; a <strong>recipe</strong>, a file of the repository, says what to take from a snapshot; a <strong>build</strong> turns the
+          moment; a <strong>recipe</strong>, your file, says what to take from a snapshot; a <strong>build</strong> turns the
           recipe into a corpus; training reads the corpus and records the depot, the snapshot, the recipe and the code. Daily work on texts
           never touches a snapshot, so nothing done today can change a model already published.
         </p>
@@ -121,7 +121,7 @@ export function HelpPage() {
       <Part on="decisions" title="Statuses and decisions">
         <p>Every text, and every erasure request, has one of three statuses: <strong>under review</strong>, <strong>admitted</strong> or <strong>refused</strong>. Only a person changes it, by a decision. A text is admitted only if one of its licenses is on the allowed list.</p>
         <p>A decision records who made it: a legal name, an email and the confirmation that they read the requirements, accept them, and that what they submit meets them. The name and email are public and nobody verifies them. Adding a text, changing its content, licenses, credits, tags or scores, and asking for an erasure are decisions too, under review.</p>
-        <p>A decision is sent only by a click on a button, or a key, that says beside it the confirmation it makes, links to the requirements and shows the name it records; most open a confirming line first, while scores, tags and Admit &amp; next on the Texts page decide at the click. Decisions are appended, never removed: "back to review" is a later decision that undoes an admission or a refusal.</p>
+        <p>A decision is sent only by a click on a button, or a key, that says beside it the confirmation it makes, links to the requirements and shows the name it records; most open a confirming line first, while scores, tags, Admit &amp; next and Refuse on the Texts page decide at the click. Decisions are appended, never removed: "back to review" is a later decision that undoes an admission or a refusal.</p>
         <p>Problems reported on libraries before snapshots took their place stay in the depot as decisions on no text; their pages show them read only.</p>
       </Part>
 
@@ -140,7 +140,7 @@ export function HelpPage() {
       </Part>
 
       <Part on="recipes-explained" title="Recipes">
-        <p>A recipe is a file of the project's repository that says how a model is trained. Its data section names a snapshot (its name, change number and digest), the kinds to take, optional <strong>shares</strong> by tag, a size in tokens and a vocabulary. The web app lists the recipes of the repository checkout the server reads; it never writes one: a recipe is changed as its file, <code>data/recipes/models/NAME.json</code>, in the repository, and committed there. A series of models, <code>data/recipes/series/SERIES.json</code>, is listed as <code>SERIES:</code>: the one corpus every size of the series reads, built at its largest size. The composer on a snapshot's page makes the data section by clicks, then "Download recipe" or "Copy JSON" gives it to commit.</p>
+        <p>A recipe is a JSON file that says how a model is trained; it is yours, kept wherever you keep it. Its data section names a snapshot of this depot (its name, change number and digest), the kinds to take, optional <strong>shares</strong> by tag, a size in tokens and a vocabulary; only that section counts here. A series of models is one file too: its one corpus, which every size of the series reads, is built at its largest size and named after the file with a colon, <code>SERIES:</code>. The composer on a snapshot's page makes a data section by clicks, then "Build it", "Download recipe" or "Copy JSON".</p>
         <ul>
           <li><strong>Shares</strong> split the plain text by tag, each with a proportion: a plain text counts for the first share whose tag it has, and a plain text no share takes is left out. Inside a share, its part splits over the other tags its texts carry, each following the square root of what it holds. Without shares, every plain text of the kinds taken is in.</li>
           <li>Conversations and tasks are never a share: every one is in, and they take their own part, the part of the bytes they hold.</li>
@@ -154,7 +154,7 @@ export function HelpPage() {
       <Part on="builds" title="Builds and corpora">
         <p>A build reads a recipe's snapshot, takes what its data section says, tokenizes it with its vocabulary and writes a corpus: the token files training reads. It runs as a background job that survives a closed browser and a restart of the server.</p>
         <p>A corpus is only a cache. Each recipe's data section has one <strong>build key</strong>; the store keeps one corpus per key, and when it has a size cap, a build deletes the corpus downloaded least recently to make room (the build's cost says which). A deleted corpus is built again from the same snapshot and recipe, with the same texts. An admitted erasure that reaches one of its texts makes a corpus <strong>stale</strong>; "Build again" makes a fresh one.</p>
-        <p>A trained model records the depot's address, the snapshot with its change number and digest, the recipe and the code commits. Anyone who has these and the repository can check what it was trained on.</p>
+        <p>A trained model records the depot's address, the snapshot with its change number and digest, the recipe and the code commits. Anyone who has these and the code can check what it was trained on.</p>
       </Part>
 
       <Part on="costs" title="What things cost">
@@ -192,8 +192,7 @@ export function HelpPage() {
         <ul>
           <li>At the top, the texts admitted, the jobs open (how many in each lane) and the erasures open, each linked.</li>
           <li><strong>Jobs open</strong>: the ones queued or running, while there are some.</li>
-          <li><strong>Snapshots</strong>: the latest ones, with "Make a snapshot".</li>
-          <li><strong>Recipes</strong>: one line per recipe of the repository with its stages and the button of its next step.</li>
+          <li><strong>Snapshots</strong>: the latest ones, with "Make a snapshot" and "Build a recipe".</li>
           <li><strong>Under review</strong>: how many texts wait, counted by tag and by license. Each tag and license opens its view; each number opens those texts.</li>
           <li><strong>Open erasure requests</strong> and <strong>Latest decisions</strong>, each opening its view.</li>
         </ul>
@@ -204,22 +203,24 @@ export function HelpPage() {
         <p><strong>Choosing the texts</strong>, at the top:</p>
         <ul>
           <li>The quick filters: <strong>Under review</strong>, <strong>Not scored</strong> (no score yet; an SQL condition, slower on a large depot), <strong>Newest first</strong> and <strong>All</strong>. A second click takes one away.</li>
-          <li>The filter bar: words of the title, status, tags, licenses and kinds, each a menu of ticks (Kinds lists the kinds the depot has texts of, with their counts, once there are two). "More filters" adds an SQL condition, a search in the texts themselves and whole words.</li>
+          <li>The filter bar: words of the title, status, tags, licenses and kinds, each a menu of ticks (Kinds lists the kinds the depot has texts of, with their counts, once there are two). A tick applies at once, and the words of the title once typing stops: the first text of the new filter opens, with "Reading the first texts of this filter" until it does; when the texts read so far hold no match, it says so and reads on by itself, until a text matches or the count finds none. The Tags and Licenses menus count within the open texts, and say so; until that count is done they show the whole depot's. "More filters" adds an SQL condition, a search in the texts themselves and whole words.</li>
           <li><strong>Open ▾</strong>: every text, each status, each kind, each tag and license with its count, and the filters saved in this browser, with "Save the open filter". Escape or a click outside closes it.</li>
-          <li>Text, Blob and Mono at the right: Blob reads the open texts one after the other as one page; Mono shows them in a fixed-width font.</li>
+          <li><strong>Biggest first</strong>: the open texts as one strip, the longest first, to find what takes the most room. A second click goes back to one text at a time.</li>
+          <li>Text, Blob, Size map and Mono at the right: Blob reads the open texts one after the other as one page, each text's length in characters in the margin with a Refuse button (it refuses at once, then offers Undo); "3 lines" shows three lines of each text (the default with Biggest first), "long" the start of each; a click on a text opens it. Size map shows which tags, kinds and licenses take the most characters, and the biggest texts. Mono shows the texts in a fixed-width font.</li>
         </ul>
-        <p><strong>The list</strong>: rest the mouse against the left edge of the window and the list slides out; it goes back when the mouse leaves it. A click on a text opens it. Each text has a tick, and the box at the top ticks every text the filter matches. The ticked texts get a bar at the bottom: Admit, Refuse, Back to review, <strong>Add a tag</strong>, <strong>Remove a tag</strong> and Score. Each opens the ticked texts for a last look, where unticking one leaves it out. Adding a tag shows the depot's tags as chips, the most used first: click one or more, or type a new one; removing shows the tags the ticked texts have. The cost shows before the confirm, and the confirm records the name and email set in Settings. On a phone, the "Texts" button opens the list.</p>
-        <p><strong>The content</strong> is always editable. A change is saved only by "Save" or Ctrl+S; "Revert" drops it. Saving makes a new content version and puts the text back under review. On an admitted text, Save asks once more. Escape leaves the editor, so the keys below work again.</p>
+        <p>The quick filters and the views make one row, the filter bar the next; a long choice in a menu is cut short, so the bar never changes height when a filter changes.</p>
+        <p><strong>The list</strong>: rest the mouse against the left edge of the window and the list slides out; it goes back when the mouse leaves it. A click on a text opens it. Each text has a tick, and the box at the top ticks every text the filter matches. The ticked texts get a bar at the bottom: Admit, Refuse, Back to review, <strong>Add a tag</strong>, <strong>Remove a tag</strong> and Score. Each opens the ticked texts for a last look, where unticking one leaves it out. Adding a tag shows the depot's tags as chips, the most used first: click one or more, or type a new one; removing shows the tags the ticked texts have. The cost shows before the confirm, and the confirm records the name and email set in Settings. On a phone, the "☰ List" button opens the list.</p>
+        <p><strong>The content</strong> is always editable, with no Save button: a change is saved when you move to another text (Next, ‹, a text of the list, J or K), before a decision on it, with Ctrl+S, and when you leave the text any other way; "Revert" drops it. While a change is not saved, "● edited, not saved" stands beside the title, above the editor, and the bar under the editor says when it will be saved. Saving makes a new content version and puts the text back under review, an admitted one too; Admit &amp; next saves first, then admits the new version. When a save is refused (no name and email, a problem in a conversation), the text stays open and the line at the bottom says why. Escape leaves the editor, so the keys below work again.</p>
         <p><strong>The review panel</strong>, from top to bottom:</p>
         <ul>
-          <li>One row per score the depot knows, with its most used values as buttons, − and + to step, and a number pad.</li>
+          <li>One row per score the depot knows, with buttons that follow the values the depot's texts hold. A score of whole grades has one button per grade, 0 to 10, and "other", which opens a number pad for a value between them (7.5); the pad keeps to 0 to 10 and says so when a value typed is outside. Any other score has − and + to step and its value, which opens the pad. The pad opens over the panel, never over the text.</li>
           <li>The depot's nine most used tags as toggles; the text's other tags with ✕; "+ tag" opens every tag, each added with a click; "+ score" takes the name of a new score.</li>
           <li>The buttons: ‹ (previous), Next ›, Refuse, Admit &amp; next, and "Back to review" on a text already decided.</li>
           <li>The presets: a click sets their scores and adds and removes their tags. "+ preset from this text" keeps this text's scores and tags under a name, in this browser only.</li>
           <li>The text's facts: license, address, decisions and id; then "More on this text": its record, a decision with a reason, its licenses, its credits and asking for an erasure.</li>
         </ul>
-        <p>Clicks on scores and tags are saved together about two seconds after the last one, or at once when another text opens; they keep the text's status. Admit &amp; next decides at once; Refuse, Back to review and admitting a refused text first ask for a confirmation, with an optional public reason.</p>
-        <p><strong>Keys</strong>, outside the editor: J next, K previous, A admit (and next), R refuse, U back to review, X tick the open text, E into the editor, Escape out of it.</p>
+        <p>Clicks on scores and tags are saved together about two seconds after the last one, or at once when another text opens; they keep the text's status. Admit &amp; next and Refuse decide at once. After a refusal, a line at the bottom names the text refused, its id and its decision, with <strong>Undo</strong> first (or the key Z): it puts the text back under review at once, a public decision too, and opens it again. The same line offers reasons as chips: "bad quality", "bad license", "license not compatible" and your own; a click (or the key 1 to 9) makes it that refusal's public reason, another click replaces it, and no reason is fine; the line goes once another decision is made or the filter changes. On a phone it sits above the buttons of the next text. Type another reason and press Enter, or "+ chip" to attach it and keep it as a chip in this browser. Back to review and admitting a refused text first ask for a confirmation, with an optional public reason.</p>
+        <p><strong>Keys</strong>, outside the editor: J next, K previous, A admit (and next), R refuse (and next), 1 to 9 a reason for the refusal just made, Z undo that refusal, U back to review, X tick the open text, E into the editor, Escape out of it.</p>
       </Part>
 
       <Part on="snapshots" title="Snapshots, and the recipe composer" page={["snapshots"]}>
@@ -228,13 +229,14 @@ export function HelpPage() {
           <li>Click "Make a snapshot". The next free name is filled in (the year and month, then with b, c...), with what it costs: the admitted texts, the time, the disk and the change it reads. A note is optional.</li>
           <li>Click the button. The job is followed on the page, and the snapshot's page opens when it ends.</li>
         </ol>
-        <p><strong>One snapshot's page</strong>: its change, its digest (with Copy), its texts by kind and by tag, the erasures carried out since, the recipes of the repository that name it, and its sets to download for anyone who checks the digest.</p>
-        <p><strong>New recipe from this snapshot</strong>, on that page, opens the composer, clicks only: pick kinds as chips (none picked: every kind), pick tags for shares and move each slider, pick a size from the buttons or the slider, and a vocabulary from the list. What the section takes and what its build would cost show a moment after each click. "Download recipe" saves the data section as a file and "Copy JSON" copies it; put it beside a model part in the repository and commit it.</p>
+        <p><strong>One snapshot's page</strong>: its change, its digest (with Copy), its texts by kind and by tag, the erasures carried out since, its sets to download for anyone who checks the digest, and <strong>Recipes</strong>: the recipes built from it here, each opening its build, "Compose a new recipe", and "Build a recipe file", which builds a recipe there as the Build page does.</p>
+        <p><strong>Read it whole</strong>, on that page, shows every text of the snapshot as one strip, the longest first (the switch "Longest first / Shortest first" shows the order and turns it around), three lines of each ("long" shows more), each as the snapshot holds it, its length in characters and a Refuse button in the margin, and "refused now" or "under review now" when it changed since. A click on a text opens it as it is now in a pane at the right, to edit, admit or refuse it; Close or Escape puts the pane away and the strip stays where it was. The first time, the snapshot is ordered by size once for good: the page says so at once and shows how many texts are read, and every other page works meanwhile. <strong>Size map</strong> shows which of its tags, kinds and licenses take the most characters, and its biggest texts, each with a bar and a Refuse button.</p>
+        <p><strong>Compose a new recipe</strong>, in its Recipes block, opens the composer, clicks only: pick kinds as chips (none picked: every kind), pick tags for shares and move each slider, pick a size from the buttons or the slider, and a vocabulary from the list. What the section takes and what its build would cost show a moment after each click. "Build it" opens it on the Build page; "Download recipe" saves the data section as a JSON file and "Copy JSON" copies it, to keep beside a model part.</p>
       </Part>
 
-      <Part on="recipes" title="Recipes" page={["recipes"]}>
-        <p>The model recipes of the repository checkout the server reads, with the commit the checkout is at (its "?" says what it means). Each shows its four stages, snapshot, recipe, vocabulary and corpus, and the button of its next step. When the server has no repository configured, the page says so.</p>
-        <p><strong>One recipe's page</strong>: its stages, its data section (its file in the repository first; the depot, the digest and the vocabulary's sha256 under "More"), what it takes from its snapshot, the estimate of its build, and its corpus with its files and "Download everything". "Build" opens one confirmation with the tokens, the time, the disk and which corpora the store's cap would delete; the build is followed on the page. A corpus already fresh is not built again: download it.</p>
+      <Part on="build" title="Build" page={["build"]}>
+        <p>Click "Choose a recipe file", or drop the file anywhere on the page: a model recipe or a series, its JSON. It is checked at once: its snapshot here with the change and digest it names, its vocabulary held; a vocabulary not trained yet says so in one line beside "Train a vocabulary". Then its four stages, snapshot, recipe, vocabulary and corpus, its data section (the depot, the digest and the vocabulary's sha256 under "More"), what it takes from its snapshot, and its corpus with its files and "Download everything". What a build costs takes a few seconds the first time (a sample is tokenized): the page says it is working on it, with its seconds.</p>
+        <p>"Build" opens one confirmation with the tokens, the time, the disk and which corpora the store's cap would delete; the build is followed on the page. A corpus already fresh is not built again: download it. The recipe stays on the page until "Put it away", a reload included. A corpus job of the <a href={href(["jobs"])}>Jobs</a> page opens its corpus here, by its build key.</p>
       </Part>
 
       <Part on="tokenizers" title="Tokenizers" page={["tokenizers"]}>
@@ -243,11 +245,11 @@ export function HelpPage() {
           <li>The table: each recipe's version, the snapshot and kinds its sample takes, its sizes, and whether it is trained. A recipe written before snapshots names a dataset and trains nothing: "Use snapshot NAME" names in one click the snapshot made of that dataset, which makes its next version.</li>
           <li>"New tokenizer recipe" is clicks only: pick the snapshot (the latest first), the kinds as chips, the sample and vocabulary sizes from preset buttons; the name is filled in.</li>
         </ul>
-        <p><strong>One recipe's page</strong>: where it stands, as stages (its snapshot, the recipe, its vocabulary and the model recipes naming one of its vocabularies, listed under them). "Train its vocabulary" shows the sample and the time, then "Confirm and start the training" queues the job, followed on the page. Each vocabulary has its file to download, the texts it trained on (folded), and "New recipe with this vocabulary", which opens the composer on its snapshot. "Edit the tokenizer recipe" saves a new revision.</p>
+        <p><strong>One recipe's page</strong>: where it stands, as stages (its snapshot, the recipe, its vocabulary and the build of a model recipe naming it). "Train its vocabulary" shows the sample and the time, then "Confirm and start the training" queues the job, followed on the page. Each vocabulary has its file to download, the texts it trained on (folded), and "New recipe with this vocabulary", which opens the composer on its snapshot. "Edit the tokenizer recipe" saves a new revision.</p>
       </Part>
 
       <Part on="jobs" title="Jobs" page={["jobs"]}>
-        <p>The server's queue in its two lanes, read again every few seconds: the jobs waiting or running in the order they run, then the latest that ended. Each row says what the job does, linked to its snapshot, recipe or decision, its state and how long it waited or ran, and what it gave. Below, "Can start next" lists each recipe's next step. While a job waits or runs, a mark in the top bar says how many and links here.</p>
+        <p>The server's queue in its two lanes, read again every few seconds: the jobs waiting or running in the order they run, then the latest that ended. Each row says what the job does, linked to its snapshot, corpus, tokenizer recipe or decision, its state and how long it waited or ran, and what it gave. While a job waits or runs, a mark in the top bar says how many and links here.</p>
       </Part>
 
       <Part on="erasures" title="Erasures" page={["erasures"]}>

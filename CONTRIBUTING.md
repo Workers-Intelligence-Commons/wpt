@@ -152,9 +152,10 @@ selection of texts is a tag. A model recipe of the repository names a
 snapshot (with its change and digest), the kinds it takes and its shares
 by tag. `wpt depot snapshot new` makes a snapshot of the admitted texts;
 `wpt depot tokenizer new` and `train` make a tokenizer recipe on a
-snapshot and its vocabulary; and `wpt depot build RECIPE` builds the
-corpus a model recipe names into the store. The pages "Snapshots" and
-"Recipes" of `wpt depot web` do the same by clicks, each showing its cost
+snapshot and its vocabulary; and `wpt depot build FILE` builds the corpus
+a model recipe's file names into the store, the depot reading no
+repository. The pages "Snapshots" and "Build" of `wpt depot web` do the
+same by clicks, the recipe's file handed over, each showing its cost
 first ([docs/data-selection.md](docs/data-selection.md)).
 
 ## Changing a text

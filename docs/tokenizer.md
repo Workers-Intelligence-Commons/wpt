@@ -69,7 +69,7 @@ chips, the sizes as preset buttons, and the name filled in.
 ### Training it
 
 `wpt depot tokenizer train NAME`, or the button "Train its vocabulary" on
-the recipe's page, trains the vocabulary of the recipe's current version;
+the tokenizer recipe's page, trains the vocabulary of the recipe's current version;
 a corpus build never trains one. The web app shows the training's estimate
 first, the sample's bytes and a time taken in proportion to the one
 training measured, and runs the training as a job of its queue only once

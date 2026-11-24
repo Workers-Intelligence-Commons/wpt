@@ -1,9 +1,11 @@
 // The review panel beside the open text (text-panel.tsx): everything a
 // review clicks, in one column whose buttons never move from one text to the
 // next. From the top: a row per score name the depot knows (GET
-// /api/scores), with its choices (choices.ts), − and + that step by a
-// twentieth of its range, and its value, which opens a number pad beside the
-// panel; the depot's most used tags as fixed toggles, the text's other tags
+// /api/scores), with its choices (choices.ts); a score of whole grades (0 to
+// 10) has one button per grade and a small "other" that opens a number pad
+// for a value between them; any other score has − and + that step by a
+// twentieth of its range and its value, which opens the pad; the pad opens
+// over the panel, never over the text; the depot's most used tags as fixed toggles, the text's other tags
 // after them with a cross, and a box for a new tag or a new score name; the
 // moves and decisions the Texts page hands in (actions); the presets, each a
 // set of scores and of tags to add and take away, and one that keeps the
@@ -23,10 +25,11 @@ import { declared, useDeclarant } from "../declarant";
 import { href } from "../route";
 import { plural, settingsHref, type Status } from "../parts";
 import type { Score } from "../scores";
-import { forgetPreset, forgetScale, keepRecent, presetWords, readRecent, round, savePreset, shortValue, usePresets, useScales, type Preset, type Scale } from "./choices";
+import { forgetPreset, forgetScale, isGraded, keepRecent, presetWords, readRecent, round, savePreset, shortValue, usePresets, useScales, type Preset, type Scale } from "./choices";
 
 const WAIT = 2000; // milliseconds after the last click before what changed is sent
 const TAGS_SHOWN = 9; // the depot's most used tags, as toggles
+const SHOWN = 6; // a score's choices beside its name; more take a line of their own under it
 
 export type PanelText = {
   id: string; tags: string[]; scores: Score[] | null; content_version: number; licenses: string[]; authors: string[] | null;
@@ -162,7 +165,7 @@ export function ReviewPanel({ text, status, decisions, readOnly, actions, more, 
         {allNames.map((name) => (
           <ScoreRow key={name} name={name} value={scoreNow(name)} waiting={name in waiting.scores} recent={recent[name] ?? null} scale={scales.get(name) ?? null}
             readOnly={readOnly} onSet={(v) => setScore(name, v)} padOpen={pad?.name === name}
-            onPad={(el) => { if (pad?.name === name) { setPad(null); return; } const r = el.getBoundingClientRect(); setPad({ name, top: r.top, left: r.left }); }} />
+            onPad={(el) => { if (pad?.name === name) { setPad(null); return; } const r = el.getBoundingClientRect(); setPad({ name, top: r.bottom, left: r.left }); }} />
         ))}
         {!allNames.length && <p className="aside">No score yet: add one below.</p>}
       </section>
@@ -223,7 +226,8 @@ export function ReviewPanel({ text, status, decisions, readOnly, actions, more, 
   );
 }
 
-// One score: its choices, − and +, and its value, which opens the pad. A choice clicked again takes the score away.
+// One score: its choices, then, for a score of whole grades, "other", which opens the pad; for any other score, − and
+// + and its value ("none" when it has none), which opens the pad. A choice clicked again takes the score away.
 function ScoreRow({ name, value, waiting, recent, scale, readOnly, onSet, onPad, padOpen }: {
   name: string; value: number | null; waiting: boolean; recent: number | null; scale: Scale | null; readOnly: boolean;
   onSet: (v: number | null) => void; onPad: (el: HTMLElement) => void; padOpen: boolean;
@@ -233,8 +237,11 @@ function ScoreRow({ name, value, waiting, recent, scale, readOnly, onSet, onPad,
     const from = value ?? recent ?? (by > 0 ? scale.low - scale.step : scale.high + scale.step);
     onSet(round(Math.min(scale.high, Math.max(scale.low, from + by * scale.step))));
   };
+  const graded = scale !== null && isGraded(scale);
+  // a value between the grades (7.5) shows on the "other" button, since no grade is marked
+  const between = graded && value !== null && !scale.values.some((v) => round(v) === round(value));
   return (
-    <div className="score-row">
+    <div className={`score-row${(scale?.values.length ?? 0) > SHOWN ? " many" : ""}`}>
       <span className="score-name" title={name}>{name}</span>
       <span className="score-choices">
         {(scale?.values ?? []).map((v) => (
@@ -243,30 +250,43 @@ function ScoreRow({ name, value, waiting, recent, scale, readOnly, onSet, onPad,
             aria-label={`${name} ${shortValue(v)}`} aria-pressed={value !== null && round(value) === round(v)} onClick={() => onSet(value !== null && round(value) === round(v) ? null : v)}>{shortValue(v)}</button>
         ))}
       </span>
-      <span className="score-nudge">
-        <button type="button" className="choice wic-focus" disabled={readOnly || !scale} aria-label={`${name} down by ${scale ? shortValue(scale.step) : ""}`} onClick={() => step(-1)}>−</button>
-        <button type="button" className={`choice value wic-focus${padOpen ? " on" : ""}${waiting ? " waiting" : ""}`} disabled={readOnly} aria-label={`${name}: ${value === null ? "none" : shortValue(value)}; type a value`}
-          title="Type a value with the pad" onClick={(e) => onPad(e.currentTarget)}>{value === null ? "⌨" : shortValue(value)}</button>
-        <button type="button" className="choice wic-focus" disabled={readOnly || !scale} aria-label={`${name} up by ${scale ? shortValue(scale.step) : ""}`} onClick={() => step(1)}>+</button>
-      </span>
+      {graded ? (
+        <span className="score-nudge">
+          <button type="button" className={`choice other wic-focus${padOpen || between ? " on" : ""}${waiting && between ? " waiting" : ""}`} disabled={readOnly}
+            aria-label={`${name}: ${value === null ? "none" : shortValue(value)}; another value with the pad`} title="Another value, such as 7.5, with the pad"
+            onClick={(e) => onPad(e.currentTarget)}>{between ? shortValue(value!) : "other"}</button>
+        </span>
+      ) : (
+        <span className="score-nudge">
+          <button type="button" className="choice wic-focus" disabled={readOnly || !scale} aria-label={`${name} down by ${scale ? shortValue(scale.step) : ""}`} onClick={() => step(-1)}>−</button>
+          <button type="button" className={`choice value wic-focus${padOpen ? " on" : ""}${waiting ? " waiting" : ""}`} disabled={readOnly} aria-label={`${name}: ${value === null ? "none" : shortValue(value)}; type a value`}
+            title="Type a value with the pad" onClick={(e) => onPad(e.currentTarget)}>{value === null ? "none" : shortValue(value)}</button>
+          <button type="button" className="choice wic-focus" disabled={readOnly || !scale} aria-label={`${name} up by ${scale ? shortValue(scale.step) : ""}`} onClick={() => step(1)}>+</button>
+        </span>
+      )}
     </div>
   );
 }
 
 const KEYS = ["7", "8", "9", "⌫", "4", "5", "6", ".", "1", "2", "3", "✓", "0", "−", "none", "✕"];
 
-// A number pad beside the panel, at the height of the value it types, over the text: nothing in the panel moves.
-// ✓ sets what was typed, "none" takes the score away, ✕ or Escape closes it; the keyboard's digits work too.
+// A number pad over the panel, under the button that opened it, from that button's left edge rightward (moved left
+// only as far as the window needs): nothing in the panel moves and the text stays in view. Its display shows what is typed, else the score's value, else "none". ✓
+// sets what was typed; on a scale of whole grades only a value from its lowest to its highest grade, and the line
+// under the keys says so in the colour of a problem as soon as what is typed is outside; "none" takes the score
+// away, ✕ or Escape closes it; the keyboard's digits work too.
 function NumberPad({ name, at, scale, value, onDone }: { name: string; at: { top: number; left: number }; scale: Scale | null; value: number | null; onDone: (v?: number | null) => void }) {
   const [typed, setShown] = useState("");
   // what was typed so far, kept outside the render so presses quicker than it build on each other
   const now = useRef("");
   const setTyped = (t: string) => { now.current = t; setShown(t); };
+  const range = scale && isGraded(scale) ? scale : null;
+  const outside = (t: string) => range !== null && t !== "" && t !== "-" && Number.isFinite(Number(t)) && (Number(t) < range.low || Number(t) > range.high);
   const press = (k: string) => {
     const t = now.current;
     if (k === "✕") return onDone();
     if (k === "none") return onDone(null);
-    if (k === "✓") return t !== "" && Number.isFinite(Number(t)) ? onDone(Number(t)) : onDone();
+    if (k === "✓") return t !== "" && Number.isFinite(Number(t)) ? (outside(t) ? undefined : onDone(Number(t))) : onDone();
     if (k === "⌫") return setTyped(t.slice(0, -1));
     if (k === "−") return setTyped(t.startsWith("-") ? t.slice(1) : `-${t}`);
     if (k === ".") return setTyped(t.includes(".") ? t : `${t || "0"}.`);
@@ -274,20 +294,24 @@ function NumberPad({ name, at, scale, value, onDone }: { name: string; at: { top
   };
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => { box.current?.focus(); }, []);
-  const outside = typed !== "" && scale && Number.isFinite(Number(typed)) && (Number(typed) < scale.low || Number(typed) > scale.high);
+  const width = 208;
+  const out = outside(typed);
   return (
     <div ref={box} className="number-pad" role="dialog" aria-label={`Type the value of ${name}`} tabIndex={-1}
-      style={{ top: Math.max(8, at.top - 8), left: Math.max(8, at.left - 220) }}
+      style={{ top: Math.max(8, Math.min(at.top + 4, window.innerHeight - 300)), left: Math.max(8, Math.min(at.left, window.innerWidth - width - 8)) }}
       onKeyDown={(e) => {
         const map: Record<string, string> = { Enter: "✓", Escape: "✕", Backspace: "⌫", "-": "−", ",": "." };
         const k = map[e.key] ?? (/^[0-9.]$/.test(e.key) ? e.key : null);
         if (k) { e.preventDefault(); e.stopPropagation(); press(k); }
       }}>
-      <div className="pad-head"><span>{name}</span><span className="ledger">{typed || (value === null ? "…" : shortValue(value))}</span></div>
+      <div className="pad-head"><span>{name}</span><span className={`ledger pad-shown${typed ? " pad-typed" : ""}${out ? " outside" : ""}`} aria-live="polite">
+        {typed || (value === null ? "none" : shortValue(value))}</span></div>
       <div className="pad-keys">
-        {KEYS.map((k) => <button key={k} type="button" className={`choice wic-focus${k === "✓" ? " ok" : ""}`} onClick={() => press(k)}>{k}</button>)}
+        {KEYS.map((k) => <button key={k} type="button" className={`choice wic-focus${k === "✓" ? " ok" : ""}`} disabled={k === "✓" && out} onClick={() => press(k)}>{k}</button>)}
       </div>
-      {scale && <p className={`pad-range${outside ? " act" : ""}`}>{outside ? "Outside " : "From "}{shortValue(scale.low)} to {shortValue(scale.high)}; − and + step {shortValue(scale.step)}</p>}
+      <p className={`pad-range${out ? " outside" : ""}`} role="status">
+        {range ? <>From {shortValue(range.low)} to {shortValue(range.high)}{out && <>: {typed} is outside</>}</>
+          : scale ? <>Any number; − and + step {shortValue(scale.step)}</> : "Any number"}</p>
     </div>
   );
 }

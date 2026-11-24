@@ -19,12 +19,19 @@
 // starts again after a change (its version raised), it carries the last
 // finished counts of the same selection as before, so a page keeps showing
 // them, marked as being counted again, until the new count is done.
-// A first step of a filter the depot's counts answer (every text, or one
-// status, tag or license, or kinds with statuses) comes back at once from
-// them (held): how many texts it matches and their split by status are then
-// final (settled); the parts the counts do not give
-// (by tag, by license, the blocked texts, null in that answer) are counted
-// by steps that skip the depot's counts, and only those parts are added up.
+// A count starts at once, outside the turns of the steps, with POST
+// /api/texts/held, which the depot's counts answer whatever its size when
+// they hold the filter (every text, statuses, one tag or license, or kinds
+// with statuses): how many texts it matches and their split by status are
+// then final (settled), with its tags and licenses too for a filter of
+// statuses alone. A page names the parts it shows besides the statuses
+// (parts: by tag, by license, the blocked texts); those the depot's counts
+// do not give (null in that answer) are counted by steps that skip the
+// depot's counts, and only those parts are added up, so a page that shows
+// the statuses alone never steps through the texts of a filter the counts
+// hold. A filter the counts do not hold is counted by the steps alone, its
+// numbers growing as they answer ("at least"); a held answer refused (by
+// the proxy's rate, or when no reader is free) falls back to the steps.
 
 import { useEffect, useState } from "react";
 import { post } from "./api";
@@ -41,7 +48,8 @@ export type Counts = {
 // before: while not done, the last finished counts of the same selection at an earlier version, else null
 // settled: the statuses are final already, read from the depot's counts, while the rest is counted
 // rest: once settled and while not done, what is still counted, in words ("by tag and license")
-export type Counting = Counts & { counted: number; total: number | null; done: boolean; settled: boolean; rest: string | null; problems: string[] | null; before: Counts | null };
+// known: the parts besides the statuses that are exact once done (the others are left empty)
+export type Counting = Counts & { counted: number; total: number | null; done: boolean; settled: boolean; rest: string | null; problems: string[] | null; before: Counts | null; known: readonly Part[] };
 
 type Step = Omit<Counts, "tags" | "licenses" | "blocked"> & {
   tags: Counts["tags"] | null; licenses: Counts["licenses"] | null; blocked: Counts["blocked"] | null;
@@ -55,12 +63,18 @@ const STEP = 1_000_000; // texts a step goes over at first, the most the server 
 const SMALLEST = 1000; // texts of the smallest step tried after the time limit stopped bigger ones
 const QUICK = 15_000; // milliseconds: a quarter of the server's limit of 60 seconds a request
 
+// the parts of a count besides the statuses, which a page names when it shows them
+export type Part = "tags" | "licenses" | "blocked";
+export const ALL_PARTS: readonly Part[] = ["tags", "licenses", "blocked"];
+export const STATUSES_ONLY: readonly Part[] = [], BY_TAG: readonly Part[] = ["tags"], BY_LICENSE: readonly Part[] = ["licenses"];
+export const BY_TAG_AND_LICENSE: readonly Part[] = ["tags", "licenses"];
+
 type Job = {
-  selection: Selection; start: string | null; size: number; wait: number; users: number;
+  selection: Selection; parts: Part[]; start: string | null; size: number; wait: number; users: number;
   state: Counting; listeners: Set<(c: Counting) => void>;
+  ready: boolean; // the answer of POST /api/texts/held came (or failed): the steps may run
   walk: boolean; // the steps skip the depot's counts (held: false), after their answer left parts to count
   known: { tags: boolean; licenses: boolean; blocked: boolean }; // the parts the depot's counts gave, final, which the steps leave as they are
-
 };
 
 const NOTHING_KNOWN = { tags: false, licenses: false, blocked: false };
@@ -71,7 +85,7 @@ let lastStart = 0;
 
 const EMPTY: Counting = {
   statuses: { "under review": 0, admitted: 0, refused: 0 }, blocked: {}, tags: [], licenses: [],
-  counted: 0, total: null, done: false, settled: false, rest: null, problems: null, before: null,
+  counted: 0, total: null, done: false, settled: false, rest: null, problems: null, before: null, known: [],
 };
 
 // The last finished counts of each selection (whatever its version), for a count of it that starts again.
@@ -92,13 +106,42 @@ function publish(job: Job, state: Counting) {
 
 const pause = (ms: number) => new Promise((done) => window.setTimeout(done, ms));
 
+// What the depot's counts answered at once: the statuses are final, and the parts the job's page shows that they
+// leave out (null) are counted by steps that skip them; the job is done when none is left.
+function settle(job: Job, held: Step) {
+  const missing = job.parts.filter((part) => held[part] === null);
+  job.walk = missing.length > 0;
+  job.start = null;
+  job.known = { tags: held.tags !== null, licenses: held.licenses !== null, blocked: held.blocked !== null };
+  const named = missing.filter((p) => p !== "blocked").map((p) => (p === "tags" ? "tag" : "license"));
+  publish(job, {
+    statuses: held.statuses, tags: held.tags ?? [], licenses: held.licenses ?? [], blocked: held.blocked ?? {},
+    // the steps go over the filter's own listing, whose size their first answer gives
+    counted: job.walk ? 0 : held.texts, total: job.walk ? null : held.total, done: !job.walk, settled: true, problems: null, before: null,
+    known: ALL_PARTS.filter((part) => held[part] !== null || job.parts.includes(part)),
+    rest: !job.walk ? null : [named.length ? `by ${named.join(" and ")}` : null, missing.includes("blocked") ? "the blocked texts" : null].filter(Boolean).join(" and "),
+  });
+}
+
+// The first answer of a new job, at once and beside the steps of other jobs: the depot's counts (POST
+// /api/texts/held), which the proxy counts as a plain read; when they do not hold the filter, or the request is
+// refused, the job's steps start in their turn.
+async function ask(key: string, job: Job) {
+  const a = await post<Step | { held: false }>("/api/texts/held", sent(job.selection));
+  if (jobs.get(key) !== job) return; // it ended while asked: the answer is dropped
+  if (a.ok && a.data.held) settle(job, a.data as Step);
+  else if (a.ok) job.walk = true; // not held: every part is counted by the steps, which skip the depot's counts
+  job.ready = true;
+  if (!job.state.done) run();
+}
+
 // Runs the steps of every job, one at a time, until every job is done or gone.
 async function run() {
   if (running) return;
   running = true;
   try {
     for (;;) {
-      const waiting = [...jobs.entries()].filter(([, job]) => !job.state.done);
+      const waiting = [...jobs.entries()].filter(([, job]) => job.ready && !job.state.done);
       if (waiting.length === 0) return;
       const [key, job] = waiting[turn++ % waiting.length];
       await pause(Math.max(0, lastStart + PACE - Date.now()));
@@ -120,19 +163,7 @@ async function run() {
       }
       if (!a.ok) { publish(job, { ...job.state, done: true, problems: a.problems }); continue; }
       const s = job.state, step = a.data;
-      if (step.held) {
-        // read at once from the depot's counts: what they leave out (null) is counted by steps that skip them
-        const rest = step.tags === null || step.licenses === null || step.blocked === null;
-        job.walk = rest;
-        job.start = null;
-        job.known = { tags: step.tags !== null, licenses: step.licenses !== null, blocked: step.blocked !== null };
-        publish(job, {
-          statuses: step.statuses, tags: step.tags ?? [], licenses: step.licenses ?? [], blocked: step.blocked ?? {},
-          counted: rest ? 0 : step.texts, total: step.total, done: !rest, settled: true, problems: null, before: null,
-          rest: !rest ? null : [step.tags === null || step.licenses === null ? "by tag and license" : null, step.blocked === null ? "the blocked texts" : null].filter(Boolean).join(" and "),
-        });
-        continue;
-      }
+      if (step.held) { settle(job, step); continue; }
       job.start = step.next;
       if (Date.now() - lastStart < QUICK) job.size = Math.min(size * 2, STEP);
       const known = job.known;
@@ -143,6 +174,7 @@ async function run() {
         blocked: known.blocked ? s.blocked : Object.fromEntries([...new Set([...Object.keys(s.blocked), ...Object.keys(step.blocked ?? {})])]
           .map((reason) => [reason, (s.blocked[reason] ?? 0) + (step.blocked?.[reason] ?? 0)])),
         counted: s.counted + step.texts, total: s.total ?? step.total, done: step.next === null, settled: s.settled, rest: s.rest, problems: null, before: null,
+        known: s.settled ? s.known : ALL_PARTS, // steps over every part count each of them
       });
     }
   } finally {
@@ -151,17 +183,22 @@ async function run() {
 }
 
 // The counts of the texts a filter or a selection matches as they grow, null
-// without one; version: raised after a change, so the count starts again.
-export function useCounts(what: TextFilter | Selection | null, version = 0): Counting | null {
+// without one; version: raised after a change, so the count starts again;
+// parts: what the page shows besides the statuses, the only parts counted
+// past what the depot's counts give (every part when not named).
+export function useCounts(what: TextFilter | Selection | null, version = 0, parts: readonly Part[] = ALL_PARTS): Counting | null {
   const selection: Selection | null = what === null ? null : "filter" in what ? what : { filter: what };
-  const key = selection === null ? null : JSON.stringify([selection, version]);
-  const same = selection === null ? null : JSON.stringify(selection);
+  const wanted = ALL_PARTS.filter((p) => parts.includes(p));
+  const key = selection === null ? null : JSON.stringify([selection, version, wanted]);
+  const same = selection === null ? null : JSON.stringify([selection, wanted]);
   const [state, setState] = useState<{ key: string | null; counting: Counting | null }>({ key: null, counting: null });
   useEffect(() => {
     if (key === null) return;
     let job = jobs.get(key);
+    const fresh = !job;
     if (!job) {
-      job = { selection: JSON.parse(key)[0], start: null, size: STEP, wait: WAIT, users: 0, state: EMPTY, listeners: new Set(), walk: false, known: NOTHING_KNOWN };
+      const [chosen, , named] = JSON.parse(key);
+      job = { selection: chosen, parts: named, start: null, size: STEP, wait: WAIT, users: 0, state: EMPTY, listeners: new Set(), ready: false, walk: false, known: NOTHING_KNOWN };
       jobs.set(key, job);
     }
     const mine = job;
@@ -173,7 +210,7 @@ export function useCounts(what: TextFilter | Selection | null, version = 0): Cou
     mine.listeners.add(listen);
     if (mine.state.done && !mine.state.problems && same !== null) finished.set(same, mine.state);
     setState({ key, counting: mine.state });
-    run();
+    if (fresh) ask(key, mine);
     return () => {
       mine.listeners.delete(listen);
       mine.users -= 1;

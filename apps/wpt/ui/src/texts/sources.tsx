@@ -19,7 +19,7 @@
 import { Button, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { get, type Answer } from "../api";
-import { settledCounts, shownCounts, useCounts, type Counting, type Counts } from "../counts";
+import { settledCounts, shownCounts, useCounts, type Counting, type Counts, BY_LICENSE, BY_TAG, STATUSES_ONLY } from "../counts";
 import { EVERY, toQuery, type TextFilter } from "../filter";
 import { PLAIN, Problems, required, STATUSES, StatusBadge, type Status } from "../parts";
 import { href } from "../route";
@@ -56,9 +56,9 @@ export function Sources({ open, version }: { open: TextFilter; version: number }
   const base = (part: Part): TextFilter => (open[part].length ? { ...open, ids: null, [part]: [] } : { ...open, ids: null });
   const countable = (f: TextFilter) => (every(f) ? null : f);
   const counted: Record<Part, Counting | null> = {
-    statuses: useCounts(countable(base("statuses")), version),
-    tags: useCounts(countable(base("tags")), version),
-    licenses: useCounts(countable(base("licenses")), version),
+    statuses: useCounts(countable(base("statuses")), version, STATUSES_ONLY),
+    tags: useCounts(countable(base("tags")), version, BY_TAG),
+    licenses: useCounts(countable(base("licenses")), version, BY_LICENSE),
   };
   // undefined while it is counted
   // whether a part's counts shown are those of before the change, while they are read again

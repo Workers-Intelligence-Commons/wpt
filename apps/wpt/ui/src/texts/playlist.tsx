@@ -7,7 +7,7 @@
 // shown (every open text when there is one page), half ticked while only some
 // rows are; once the page is ticked, a button beside it ticks every open text
 // (naming how many once their count is done). The bar of ticked texts unticks them all. Its head chooses
-// the order (the orders of POST /api/texts/search: id and status at any size,
+// the order (the orders of POST /api/texts/search: id, status and length at any size,
 // the others when the page says its listing is small enough to sort); its
 // foot is the pager, which moves a page after another and shows the count
 // as it grows. A page cut at the server's reading bound (partial) can hold
@@ -33,7 +33,7 @@ const MARKS: Record<Status, string> = { "under review": "○", admitted: "■", 
 const short = (n: number) => n < 1000 ? `${n}` : n < 1e6 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`;
 
 // INDEXED: the orders the depot serves at any size.
-const INDEXED: Order["by"][] = ["id", "status"];
+const INDEXED: Order["by"][] = ["id", "status", "length"];
 
 // isTicked: whether a text is ticked; everyTicked: every open text is, none
 // unticked; total: how many texts are open, once counted.

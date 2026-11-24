@@ -25,8 +25,8 @@ depot through every route, with no login ([architecture.md](architecture.md),
   store settings Compose passes it name the store that holds the corpora
   it builds and serves, with a key that reads and writes it; without
   `WPT_STORE`, it builds and serves no corpus, and an erasure carried out
-  through it marks no corpus stale. Compose gives it no `WPT_REPOSITORY`,
-  so its page "Recipes" lists no recipe and says no repository is set.
+  through it marks no corpus stale. It reads no code repository: a recipe
+  to build is a file a visitor hands over on the page "Build".
 - **nginx**: the reverse proxy, with the limits below. It takes the
   visitor's address from the `CF-Connecting-IP` header of a request that
   comes from one of Cloudflare's address ranges. It answers only for
@@ -50,17 +50,20 @@ A request over its limit gets 429.
 
 | Requests | Rate | Burst |
 | --- | --- | --- |
-| `POST` to `/api/sql`, `/api/texts/search`, `/api/texts/passages`, `/api/texts/counts`, `/api/texts/blocked` and `/api/recipes/compose`, `GET /api/recipes/{name}` (both work out a build's estimate) | 1 a second | 5, delayed |
-| every other `POST` | 1 a second | 10, delayed |
-| every other request | 10 a second | 40, at once |
+| `POST` to `/api/texts/search` and `/api/texts/passages` (a page of a list or of a strip of texts, each bounded whatever the depot's size) | 5 a second | 20, at once |
+| `POST` to `/api/sql`, `/api/texts/counts`, `/api/texts/blocked` and `/api/recipes/estimate` (it works out a build's estimate) | 1 a second | 5, delayed |
+| every other `POST`, except `/api/texts/held`, `/api/recipes/check`, `/api/recipes/compose` and `/api/snapshots/ID/strip` | 1 a second | 10, delayed |
+| every other request, those four included (the first reads only the depot's counts; the next two write nothing and read a snapshot's summary; the last reads a page of a snapshot's order by length, and the page follows the job that makes that order every half second) | 10 a second | 40, at once |
 
-A filter of every text, or of statuses with one tag or license or with
-kinds, gets how many texts it matches and their split by status at once
-from the depot's counts, when those hold them. The
-pages count the rest of it, and every other filter, one step at a time, at most
-one step every two seconds, and send a step refused with 429 or for lack
-of a free reader again after a wait, so counting leaves at least half of the first limit to the other
-requests.
+A page of texts has a limit of its own, so the first page of a filter never
+waits behind a step of a count. A filter of every text, or of statuses with
+one tag or license or with kinds, gets how many texts it matches and their
+split by status at once from the depot's counts (`/api/texts/held`), when
+those hold them, and a filter of statuses alone its tags and licenses too.
+The pages count what those leave out and a page shows, and every other
+filter, one step at a time, at most one step every two seconds, and send a
+step refused with 429 or for lack of a free reader again after a wait, so
+counting leaves at least half of the second limit to the other requests.
 
 An address holds at most 20 connections at a time. A request body holds
 at most 100 MB, and the app has 100 seconds to answer. The files of a
@@ -73,10 +76,14 @@ other request. A build's estimate counts as a heavy read.
 ## Jobs and downloads
 
 The web app runs its long work as jobs, each in a process of its own, in
-two lanes that each run one job at a time. The write lane runs the writes
+three lanes that each run one job at a time. The write lane runs the writes
 over many texts (a decision, a license change, a score, a change of tags);
 the heavy lane runs the making of a snapshot, the training of a tokenizer
-recipe's vocabulary and the build of a recipe's corpus. A heavy job holds
+recipe's vocabulary and the build of a recipe's corpus; the read lane
+orders a snapshot by the length of its texts, once for good, the first
+time its strip or its size map opens (`POST /api/snapshots/{id}/strip`
+queues it and answers its state), and keeps that order in
+`wpt-depot.sqlite.work/sizes/`, about 14 bytes a text of the snapshot. A heavy job holds
 the depot's write lock for one short transaction at most, so a decision
 over many texts never waits behind a build of hours, and a small write runs
 in the request while no write job is open. The queue lives in
@@ -86,7 +93,8 @@ short runs again, a corpus build going on from its last token file (its
 checkpoint is kept by its build key), a snapshot read again from the start,
 so it reads the change current when it finishes. Anyone may start a job.
 Each build key has at most one corpus job open, each snapshot name one
-snapshot job, and each tokenizer recipe one vocabulary job. The page "Jobs"
+snapshot job, each snapshot one order by length, and each tokenizer
+recipe one vocabulary job. The page "Jobs"
 shows the queue, each job's lane and progress. Only `wpt depot jobs cancel
 ID`, run where the depot is, cancels one; `wpt depot jobs` lists them. A
 queue file written by an older app is brought up when the app opens it:
@@ -104,9 +112,9 @@ the new estimate to confirm instead:
 - a snapshot (`GET /api/snapshots/new`: the name offered, the year and
   month, then `2026-11b`, `2026-11c`, ... once taken, with the admitted
   texts now, the seconds and the bytes; `POST /api/snapshots`);
-- a build (`GET /api/recipes/{name}`: tokens, bytes, seconds, from a
+- a build (`POST /api/recipes/estimate`: tokens, bytes, seconds, from a
   sample, what the cap would delete, whether its corpus is built already;
-  `POST /api/recipes/{name}/build`);
+  `POST /api/recipes/build`);
 - a change of tags over a selection (`POST /api/texts/retag/estimate`:
   the texts changed, the rows and bytes written, the seconds;
   `POST /api/texts/retag`, a job of the write lane past 100 texts).
@@ -114,25 +122,30 @@ the new estimate to confirm instead:
 `GET /api/snapshots` lists the snapshots; `GET /api/snapshots/{id}` gives
 one with its summary (by kind, tag, plain tag set, license and owner), how
 many of its texts an erasure carried out after it cut or removed (worked
-out once for each last erasure and kept in the queue's file) and the
-repository's recipes that name it; `GET /api/snapshots/{id}/sets` gives its
+out once for each last erasure and kept in the queue's file);
+`GET /api/snapshots/{id}/sets` gives its
 sets as portable roaring bitmaps in base64 with its digest, so anyone can
 check it without a copy of the depot; `POST /api/snapshots/{id}/texts`
 gives its texts a page at a time, each at its revision then.
 
-The page of recipes lists the model recipes of the repository checkout
-`WPT_REPOSITORY` names on the machine that serves the app, read through
-`wpt_recipes`, with the commit the checkout is at; without the setting the
-page says so. Each series follows as `SERIES:`, read at its largest size:
-the one corpus every size of the series reads. Each recipe shows its state (ready, a recipe of the legacy
-dataset shape, which is never built here, its snapshot not here or not the
-one it names, its vocabulary missing), its measure from its snapshot's summary, its estimate
-and the corpus of its build key. `POST /api/recipes/compose` composes a
-data section from a snapshot, kinds, shares, a size and a vocabulary, with
-its measure and estimate, and writes nothing: the recipe file is committed
-by a person. A corpus downloads by its build key: `GET /api/builds/{key}`
-(its state and files), `.../files/{name}` and `.../everything.tar`, each
-taking a `Range` of bytes.
+The depot lives apart from any code repository, and may serve models of
+other code. A recipe to build is a file a person hands over: on the page
+"Build", or on a snapshot's page, they choose or drop its JSON, a model
+recipe or a series, of which only the data section counts (read through
+`wpt_recipes.data_section`; a series at its largest size, the one corpus
+every size of it reads, named `SERIES:` after its file). `POST
+/api/recipes/check` says at once what it gives here: its state (ready, a
+recipe of the legacy dataset shape, which is never built here, its
+snapshot not here or not the one it names, its vocabulary missing or of
+another size), its measure from its snapshot's summary and the corpus of
+its build key; `POST /api/recipes/estimate` tokenizes a sample for its
+estimate, a request of its own the page shows running. `POST
+/api/recipes/compose` composes a data section from a snapshot, kinds,
+shares, a size and a vocabulary, with its measure, and writes nothing: the
+page offers it to build, to download as JSON or to copy. A corpus
+downloads by its build key: `GET /api/builds/{key}` (its state and files),
+`.../files/{name}` and `.../everything.tar`, each taking a `Range` of
+bytes; the page `#/build?key=KEY` shows it, and a corpus job links there.
 
 A corpus is a cache: the same recipe on the same snapshot builds it again,
 so a model never needs a kept corpus to be checked
@@ -230,7 +243,7 @@ Let's Encrypt's challenges must reach port 80 over plain HTTP.
 
    with `--lock /depot/LOCK.json` to keep the vocabulary a lock file names
    ([tokenizer.md](tokenizer.md), "Importing one"). Without a vocabulary,
-   the recipe's page trains it, its cost shown first.
+   the tokenizer recipe's page trains it, its cost shown first.
 
 7. Name what backs the depot up. Every write leaves a change file in
    `wpt-depot.sqlite.waiting/` until `wpt depot backup` sends it to the

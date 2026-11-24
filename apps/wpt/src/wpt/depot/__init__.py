@@ -69,6 +69,11 @@ erasures.
                                           left out; the optional reason is public, and never starts with
                                           'licenses changed from ', 'content changed from version ' or 'put
                                           back under review', the depot's own records
+    wpt depot reason DECISION REASON DECLARATION
+                                          give the admission or refusal DECISION its public reason, or
+                                          another one in place of the one it has; only the person who made it
+                                          (the same name and email) gives it, and the decision keeps its
+                                          status, texts, name, email and time
     wpt depot relicense ID [...] --license L [...] DECLARATION
                                           change the licenses of the texts ID as a new revision, their ids
                                           kept: the depot records it as a decision under review with the
@@ -139,9 +144,10 @@ erasures.
                                           record; reads the depot only, and leaves items out
     wpt depot score-names                 every name of a score a text has now, with how many texts have it;
                                           one JSON row per line, from the depot's counts
-    wpt depot score-values NAME           the values the score NAME has on the texts changed last (at most the
-                                          200,000 latest revisions, whatever the depot's size): how many have
-                                          it, its smallest and largest, its 12 most frequent; one JSON row
+    wpt depot score-values NAME           the values the score NAME has across every current text, read at
+                                          once from the depot's counts, each to three significant digits: how
+                                          many have it, its smallest and largest, its 24 most frequent; one
+                                          JSON row
     wpt depot credits-file FILE DECLARATION
                                           change the credits of many texts at once, each as a new
                                           revision: FILE (UTF-8) holds one JSON object per line, one line
@@ -187,9 +193,10 @@ erasures.
     wpt depot snapshot show NAME [--owner DEPOT]
                                           one snapshot (of this depot, or of DEPOT, the upstream a clone
                                           follows): its row, its summary and what an erasure did to it since
-    wpt depot build RECIPE                the corpus of the model recipe RECIPE of the repository checkout
-                                          WPT_REPOSITORY names (else the one around the current folder):
-                                          the snapshot its data section names, of this depot or of the
+    wpt depot build FILE                  the corpus of the model recipe in the JSON file FILE, or of the
+                                          series in it at its largest size, the one corpus every size reads
+                                          (its record names it SERIES:); only its data section counts:
+                                          the snapshot it names, of this depot or of the
                                           upstream it follows, checked against the change and digest it
                                           names, its kinds, shares, size and vocabulary (one the depot
                                           holds), built into the store WPT_STORE names under the cap
@@ -246,7 +253,6 @@ from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from wpt_depot.settings import depot_address
 from wpt_depot import corpora, measures, snapshots, upgrade
-from wpt_recipes import Recipes
 from wpt_recipes.errors import RecipeError
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_utils.lines import ERROR, say
@@ -254,9 +260,9 @@ from wpt_utils.programs import code_name
 
 from .downloads import Downloads
 from .jobs import Jobs, jobs_file
-from .shared import (CONFIRMATION, REPOSITORY, BadSetting, NoRepository, NoSample, NoVocabulary, build_corpus,
-                     checkout, decide_erasures, env_file, corpora_cap, import_tokenizer, jsonable, opened, public_url,
-                     pulled, repository, setting, snapshot_named, train_vocabulary, viewed)
+from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_corpus, decide_erasures, env_file,
+                     corpora_cap, import_tokenizer, jsonable, opened, public_url, pulled, recipe_given,
+                     snapshot_named, train_vocabulary, viewed)
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED, "back-to-review": UNDER_REVIEW}
 BACK = "back-to-review"  # the status of decide that puts texts back under review, never an erasure request
@@ -367,6 +373,12 @@ def cmd_decide(args):
                                             progress=_stage)
     say(f"decision {decision}: {'put back under review' if args.status == BACK else STATUSES[args.status]}, on "
         f"{texts:,} texts" + "".join(f"; {count:,} left out, {reason}" for reason, count in left.items()))
+    return 0
+
+
+def cmd_reason(args):
+    opened().give_reason(args.decision, args.reason, _declaration(args))
+    say(f"decision {args.decision}: its reason is now {args.reason.strip()!r}")
     return 0
 
 
@@ -550,23 +562,21 @@ def cmd_snapshot_show(args):
 
 def cmd_build(args):
     depot = opened()
+    path = Path(args.recipe)
     try:
-        recipes = repository()
-    except NoRepository:
-        if setting(REPOSITORY) is not None:
-            raise
-        recipes = Recipes.find()
-    data = recipes.data_part(args.recipe)  # a series (SERIES: or SERIES:SIZE): its data part at its largest size
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise Refused(f"{path} is not JSON: {error}") from None
+    # a series: its data part at its largest size, the one corpus every size reads, named SERIES:
+    name, _, data = recipe_given(document, path.name)
     if "snapshot" not in data:
-        raise Refused(f"the recipe {args.recipe} names a dataset, which no longer exists: give it the snapshot "
+        raise Refused(f"the recipe {path} names a dataset, which no longer exists: give it the snapshot "
                       "shape (docs/model.md, \"Model recipes\")")
     snapshot = snapshot_named(depot, data["depot"], data["snapshot"])
     store = store_from_settings(env_file())
     cap = corpora_cap()
     downloads = Downloads(jobs_file(depot.address))
-    commit = checkout(recipes)["commit"]
-    record = build_corpus(depot, snapshot["id"], data, say, store=store, recipe=args.recipe,
-                          code_commit=code_name() if commit is None else commit,
+    record = build_corpus(depot, snapshot["id"], data, say, store=store, recipe=name, code_commit=code_name(),
                           room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download,
                                                            downloads.busy, say))
     say(f"corpus {record['id']}: build key {record['build_key']}")
@@ -733,6 +743,12 @@ def parser() -> argparse.ArgumentParser:
                                            "a text put back under review")
     _declares(deciding)
     deciding.set_defaults(run=cmd_decide)
+    reasoning = commands.add_parser("reason", help="give an admission or a refusal you made its public reason")
+    reasoning.add_argument("decision", help="the decision's id")
+    reasoning.add_argument("reason", help="why, public; never starting with the forms the depot keeps for its own "
+                                          "records (see decide)")
+    _declares(reasoning)
+    reasoning.set_defaults(run=cmd_reason)
     relicensing = commands.add_parser("relicense", help="change the licenses of texts as a new revision; their "
                                                         "decisions start over")
     relicensing.add_argument("ids", nargs="+", metavar="ID", help="a text or item of the depot")
@@ -816,7 +832,7 @@ def parser() -> argparse.ArgumentParser:
     naming_scores = commands.add_parser("score-names", help="every name of a score a text has, with how many texts "
                                                             "have it")
     naming_scores.set_defaults(run=cmd_score_names)
-    valuing = commands.add_parser("score-values", help="the values a score has on the texts changed last: how many "
+    valuing = commands.add_parser("score-values", help="the values a score has across every current text: how many "
                                                        "have it, its smallest and largest, its most frequent")
     valuing.add_argument("name", help="the score's name")
     valuing.set_defaults(run=cmd_score_values)
@@ -880,9 +896,9 @@ def parser() -> argparse.ArgumentParser:
     showing_snapshot.add_argument("--owner", help="the depot whose snapshot it is (default: this one)")
     showing_snapshot.set_defaults(run=cmd_snapshot_show)
     building = commands.add_parser("build", help="a model recipe's or a series' corpus, built into the store")
-    building.add_argument("recipe", help="the name of a model recipe of the repository (data/recipes/models/), or "
-                                         "SERIES: for a series (data/recipes/series/), whose one corpus every size "
-                                         "reads")
+    building.add_argument("recipe", metavar="FILE", help="a model recipe's JSON file, or a series', whose one corpus "
+                                                         "every size reads (named SERIES:); only its data section "
+                                                         "counts")
     building.set_defaults(run=cmd_build)
     job = commands.add_parser("jobs", help="the web app's jobs: list them, or cancel one")
     job.set_defaults(run=cmd_jobs)
@@ -931,7 +947,7 @@ def main(argv=None) -> int:
             found.error(f"credits takes --clear {both[0]} or a new value for it, not both")
     try:
         return args.run(args)
-    except (DepotError, StoreError, StoreSettingError, NoVocabulary, NoSample, BadSetting, NoRepository, RecipeError,
+    except (DepotError, StoreError, StoreSettingError, NoVocabulary, NoSample, BadSetting, RecipeError,
             corpora.TooBig, corpora.NoRoom, OSError, UnicodeDecodeError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2

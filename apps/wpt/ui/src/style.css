@@ -119,7 +119,7 @@ a.stat:hover { border-color: var(--ink); }
 /* a pipeline: one card per stage, the state marked by a glyph and a word,
    the next stage lit (an ochre frame), the stage of the page shown marked
    (an ink bar under it), the stages still waiting faded; .stages-small is the
-   same cards without their numbers, the strip of a list of recipes */
+   same cards without their numbers */
 .stages { list-style: none; margin: 0 0 var(--gap-block); padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; gap: var(--gap-block); --stage-gap: var(--gap-block); }
 .stages[aria-busy="true"] { min-height: 160px; }
 .stage { position: relative; display: flex; flex-direction: column; gap: 0; padding: var(--gap-tight) var(--gap-group) var(--gap-group); background: var(--paper-raised); border: 1px solid var(--line); border-top: 4px solid var(--ink); min-width: 0; }
@@ -192,28 +192,20 @@ a.stat:hover { border-color: var(--ink); }
   .page-group + .page-group { padding-left: 0; border-left: 0; }
 }
 
-/* a recipe's strip with its next step's button, in a row of the overview: every strip in one column,
-   every button in the next, so the stages line up */
-.chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 12em; align-items: center; gap: var(--gap-tight) var(--gap-group); }
-.chain-row > .wic-btn { justify-self: end; }
-.chain-glyph { font-family: var(--font-gothic); font-weight: 800; }
 /* the tick of a stage done, drawn: a face's "✓" can read as a root sign */
 .check { display: inline-block; width: 0.32em; height: 0.62em; margin: 0 0.15em 0.15em; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); vertical-align: middle; }
-.chain-done .chain-glyph { color: var(--ink-muted); }
-.chain-problem a, .stage-word.chain-problem { color: var(--red-ink); }
-.stage-word { white-space: nowrap; }
-.stage-word.chain-next .chain-glyph { color: var(--ochre); }
-.pipeline-list { gap: var(--gap-tight); }
-.pipeline-list > .pipeline-row { display: grid; grid-template-columns: 8em minmax(0, 1fr); align-items: center; gap: var(--gap-tight) var(--gap-group); padding: var(--gap-tight) 0; border-bottom: 1px solid var(--line); }
-.pipeline-list > .pipeline-row:last-child { border-bottom: 0; }
-.pipeline-list a.pipeline-name { min-width: 8em; font-size: 17px; text-decoration-line: underline; }
-.pipeline-list > .pipeline-heads { padding: 0 0 var(--gap-hair); font-style: italic; }
-/* the stages of a row are links, and look like links */
-.pipeline-list .stage-name a { text-decoration-line: underline; }
+/* where a recipe file is chosen or dropped: a dashed zone, lit while a file is dragged over it (or over the
+   whole Build page) */
+.recipe-drop { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group); margin: 0 0 var(--gap-group); padding: var(--gap-group); border: 2px dashed var(--line); background: var(--paper-raised); }
+.recipe-drop-over { border-color: var(--ink); background: var(--paper); }
+.recipe-drop > .refusal { flex-basis: 100%; }
+/* a running mark inside a line of words */
+p > .running-dot { display: inline-block; vertical-align: middle; }
+.text-column.reading { display: block; }
 
 /* links inside tables and counted lists: the ink of the text, underlined on hover only, so a dense page
    does not underline every cell; links in running text keep their line */
-.ledger-table td a:not(.wic-btn), .ledger-table td .link-button, .counted a, .plain.small li > a, .pipeline-list a { text-decoration-line: none; }
+.ledger-table td a:not(.wic-btn), .ledger-table td .link-button, .counted a, .plain.small li > a { text-decoration-line: none; }
 .ledger-table td a:not(.wic-btn):hover, .ledger-table td .link-button:hover, .counted a:hover, .plain.small li > a:hover, .ledger-table td a:not(.wic-btn):focus-visible { text-decoration-line: underline; }
 /* the first cell's link opens the row's own page: a link that looks like one */
 .ledger-table td:first-child a:not(.wic-btn) { font-weight: 600; text-decoration-line: underline; }
@@ -460,15 +452,21 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
 .wrap.full > .top { margin-bottom: var(--gap-hair); }
 .wrap.full > main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .texts-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.texts-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); padding-bottom: var(--gap-hair); border-bottom: 1px solid var(--line-strong); }
-.texts-top > .filter-bar { flex: 1 1 520px; min-width: 0; margin: 0; gap: var(--gap-hair) var(--gap-tight); }
-.texts-top > .filter-bar > .tick-menu { flex: 0 0 auto; }
+/* two rows whatever the filter: the quick filters and the views, then the filter bar on one line, its menus cut
+   short rather than wrapped, so a filter changed never moves the page under it */
+.texts-top { display: flex; flex-direction: column; gap: var(--gap-hair); padding-bottom: var(--gap-hair); border-bottom: 1px solid var(--line-strong); }
+.texts-top-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--gap-hair) var(--gap-tight); }
+.texts-top > .filter-bar { flex-wrap: nowrap; min-width: 0; margin: 0; gap: var(--gap-hair) var(--gap-tight); }
+.texts-top > .filter-bar > .tick-menu { flex: 0 1 auto; min-width: 0; }
+.texts-top .tick-menu .tick-said { min-width: 0; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .texts-top > .filter-bar > .find { flex: 1 1 140px; }
 .texts-top > .filter-bar > :is(.find, .sql), .texts-top .tick-menu > summary { min-height: 32px; height: 32px; }
 .quick-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair); }
 .quick-filters .wic-btn { height: 32px; padding: 0 var(--gap-tight); }
 .quick-filters .quick.on { background: var(--ink); color: var(--paper); }
 .list-button { display: none; }
+/* the button of the list is no filter: boxed, apart from the quick filters */
+.quick-filters .list-button { border: 1px solid var(--ink); background: var(--paper-raised); margin-right: var(--gap-tight); box-shadow: none; text-decoration: none; }
 .open-menu { position: relative; }
 .open-pop { position: absolute; z-index: 40; top: calc(100% + var(--gap-hair)); left: 0; width: 300px; max-height: 70vh; overflow-y: auto; padding: 0 var(--gap-tight) var(--gap-tight);
   background: var(--paper-raised); border: 1px solid var(--line-strong); box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 20%, transparent); }
@@ -493,13 +491,36 @@ mark { background: var(--red-soft); color: var(--ink); box-shadow: 0 2px 0 var(-
   box-shadow: 6px 0 18px color-mix(in srgb, var(--ink) 20%, transparent); transform: translateX(-105%); transition: transform 0.12s ease-out; }
 .texts-body.list-out > .list-drawer { transform: none; }
 .said-line { flex: none; margin: var(--gap-hair) 0 0; }
+.notice-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin: 0 0 var(--gap-hair); padding: var(--gap-hair) var(--gap-tight); border-left: 6px solid var(--ochre); background: color-mix(in srgb, var(--ochre) 14%, var(--paper-raised)); }
 .texts-frame > .selection-bar { position: static; flex: none; margin-top: var(--gap-hair); }
 .said-line .refusal { margin: 0; }
 /* under the text: the question before a decision and the line of what was done */
 .dock { flex: none; }
 .decide-ask { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-tight) var(--gap-group); padding: var(--gap-tight) var(--gap-group); border-left: 4px solid var(--ink); background: var(--paper-raised); }
-.decide-ask.refusing { border-left-color: var(--red); }
 .decide-reason { flex: 1 1 220px; width: auto; min-width: 0; }
+/* after a refusal: its reasons as chips, a field for another, at the bottom */
+.reason-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); padding: var(--gap-hair) var(--gap-tight); border-left: 4px solid var(--red); background: var(--paper-raised); }
+.reason-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.reason-chips .preset > .choice { flex: none; flex-direction: row; align-items: center; font-family: inherit; padding: 0 var(--gap-tight); }
+.reason-chips .choice .key-hint { margin: 0 0.4em 0 0; color: var(--ink-muted); }
+.reason-chips .choice.on .key-hint { color: inherit; }
+.reason-typed { display: flex; gap: 4px; align-items: center; flex: 1 1 200px; min-width: 0; }
+.reason-typed .wic-input { flex: 1; min-width: 0; }
+.reason-line .undo-button { border: 1px solid var(--ink); background: var(--paper); font-weight: 700; }
+/* a switch among a few places (Switch), and the excerpts' switch: one box, the one on filled */
+.switch { display: inline-flex; }
+.switch > .choice { padding: 0 var(--gap-tight); font-family: inherit; text-decoration: none; }
+.switch > .choice + .choice { border-left-width: 0; }
+.page-meta .switch > .choice { min-height: 26px; }
+.switch > a.choice.on, .page-meta .switch > a.choice[aria-current="page"] { color: var(--paper); font-weight: 400; }
+/* the refusal of one row of a list, at once, then Undo */
+.row-refuse { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; }
+.row-refuse .choice { min-height: 24px; padding: 0 var(--gap-hair); font-family: inherit; }
+.row-refuse .refuse-choice { color: var(--red-ink); border-color: var(--red); }
+.refused-mark { color: var(--red-ink); }
+.built-from { margin-bottom: var(--gap-tight); }
+.recipe-actions { margin-bottom: var(--gap-tight); }
+.no-vocabulary { align-items: center; margin: var(--gap-tight) 0; }
 /* scroll bars wide enough to grab with a flick of the mouse */
 .list-drawer, .content-scroll, .code-editor .cm-scroller, .review-panel, .open-pop, .blob-mode > .blob { scrollbar-width: auto; scrollbar-color: var(--line-strong) var(--paper); }
 .list-drawer::-webkit-scrollbar, .content-scroll::-webkit-scrollbar, .code-editor .cm-scroller::-webkit-scrollbar, .review-panel::-webkit-scrollbar, .blob-mode > .blob::-webkit-scrollbar { width: 16px; height: 16px; }
@@ -568,7 +589,11 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .text-column > .viewer, .text-column > .text-viewer { flex: 1; min-height: 0; overflow-y: auto; }
 .code-editor { flex: 1; min-height: 240px; border: 1px solid var(--line-strong); }
 .code-editor .cm-editor { height: 100%; }
-.save-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-top: var(--gap-hair); padding: var(--gap-hair) var(--gap-tight); border-left: 4px solid var(--ochre); background: var(--paper-raised); }
+.save-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap-hair) var(--gap-tight); margin-top: var(--gap-hair); padding: var(--gap-hair) var(--gap-tight); border-left: 6px solid var(--ochre); background: color-mix(in srgb, var(--ochre) 14%, var(--paper-raised)); }
+.edited-word { color: var(--ink); }
+/* an edit not saved, said in the facts line above the editor, in view while typing */
+.edited-mark { padding: 0 var(--gap-hair); background: var(--ochre); color: var(--on-ochre); font-weight: 700; white-space: nowrap; }
+.edited-mark.saving { background: var(--paper-raised); color: var(--ink); }
 .save-bar.asking { border-left-color: var(--red); }
 .save-bar .save-words { flex-basis: 100%; }
 
@@ -587,6 +612,7 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .score-row { display: grid; grid-template-columns: 4em minmax(0, 1fr) auto; align-items: center; gap: var(--gap-hair); margin: 2px 0; }
 .score-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .score-choices { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; }
+.score-row.many .score-choices { grid-column: 1 / -1; grid-row: 2; }
 .score-nudge { display: flex; gap: 2px; }
 .score-nudge .choice { width: 24px; }
 .score-nudge .choice.value { width: 42px; }
@@ -627,12 +653,42 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .pad-keys .choice { min-height: 38px; font-size: 16px; }
 .pad-keys .choice.ok { background: var(--ink); color: var(--paper); }
 .pad-range { margin: var(--gap-hair) 0 0; color: var(--ink-muted); }
-.pad-range.act { color: var(--red-ink); font-weight: 700; }
+.pad-shown.pad-typed { color: var(--ink); }
+.pad-range.outside, .pad-shown.pad-typed.outside { color: var(--red-ink); }
+.score-nudge .choice.other { width: auto; padding: 0 var(--gap-tight); font-family: inherit; }
 
 /* the blob: every open text one after another, a thin rule naming each */
-.blob { max-width: 60em; }
-.blob-text { margin-bottom: var(--gap-group); }
-.blob-rule { margin: 0 0 var(--gap-hair); border-top: 1px solid var(--line-strong); padding-top: var(--gap-hair); font-weight: 400; }
+.blob { max-width: 66em; }
+/* one rule over each text, its margin (size, status, Refuse) and its body under it, on a phone too */
+.blob-text { margin-bottom: var(--gap-group); display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: var(--gap-tight); border-top: 1px solid var(--line-strong); padding-top: var(--gap-hair); }
+.blob-margin { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+.blob-tools { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: var(--gap-tight); padding: var(--gap-hair) 0; background: var(--paper); }
+/* short excerpts: three lines of each text, so a screen shows many */
+.blob.short .blob-passage { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.blob.short .blob-transcript { max-height: calc(3 * 23px + 2 * var(--gap-tight)); overflow: hidden; }
+.blob.short .blob-text { margin-bottom: var(--gap-tight); }
+.blob-size { font-size: 15px; color: var(--ink); }
+.blob-status { color: var(--red-ink); }
+.blob-body { min-width: 0; }
+@media (max-width: 760px) { .blob-text { grid-template-columns: minmax(0, 1fr); gap: 2px; } .blob-margin { flex-direction: row; flex-wrap: wrap; gap: var(--gap-tight); align-items: center; } }
+/* a snapshot read whole, and the text a strip or the size map opens beside it */
+.order-progress progress { width: min(100%, 30em); }
+.text-pane { position: fixed; top: 0; right: 0; bottom: 0; width: min(100vw, 60em); z-index: 20; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--paper); border-left: 1px solid var(--line-strong); box-shadow: -8px 0 24px rgb(0 0 0 / 0.15); }
+.text-pane-head { display: flex; align-items: center; gap: var(--gap-tight); padding: var(--gap-hair) var(--gap-tight); border-bottom: 1px solid var(--line); }
+.text-pane-head > :last-child { margin-left: auto; }
+.text-pane iframe { width: 100%; height: 100%; border: 0; background: var(--paper); }
+/* the size map: each part's characters as a bar, the biggest texts as a list */
+.size-bars li { padding: 2px 0; display: grid; grid-template-columns: minmax(0, 12em) 7ch 11ch minmax(32px, 1fr); gap: var(--gap-tight); align-items: baseline; }
+.size-bars li > .number { text-align: right; }
+.plain.size-bars li > a { text-decoration: underline; text-underline-offset: 3px; }
+.page-meta a[aria-current="page"] { font-weight: 700; text-decoration: none; color: var(--ink); }
+.size-bars .size-bar { align-self: center; height: 8px; border-radius: 0 4px 4px 0; background: linear-gradient(to right, var(--ochre) var(--share), transparent var(--share)); }
+.biggest li { display: grid; grid-template-columns: minmax(0, 14em) 5ch minmax(32px, 1fr) auto; gap: var(--gap-tight); align-items: center; padding: 2px 0; }
+.biggest .size-bar { height: 8px; border-radius: 0 4px 4px 0; background: linear-gradient(to right, var(--ochre) var(--share), transparent var(--share)); }
+.biggest li > .number { text-align: right; }
+.biggest .blob-status { grid-column: 1 / -1; }
+@media (max-width: 760px) { .size-bars li { grid-template-columns: minmax(0, 1fr) 7ch minmax(32px, 30%); } .size-bars li > .aside { display: none; } }
+.blob-rule { margin: 0 0 var(--gap-hair); font-weight: 400; }
 .blob-name { all: unset; cursor: pointer; display: flex; align-items: baseline; gap: var(--gap-tight); max-width: 100%; font-family: var(--font-serif); font-style: italic; color: var(--ink-muted); }
 .blob-name:hover { color: var(--ink); }
 .blob-name:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
@@ -685,7 +741,6 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .stats.stats-row { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
   .stats.stats-row .stat { padding: var(--gap-tight); }
   .stats.stats-row .stat-value { font-size: 24px; line-height: 30px; }
-  .pipeline-list > .pipeline-heads { display: none; }
   /* a corpus's mix takes the whole row, its names never cut */
   .stats > .stat:has(.mix) { grid-column: 1 / -1; }
   .filter-bar > .find { grid-column: 1 / -1; }
@@ -693,6 +748,9 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
   .filter-bar > .filter-toggle { display: inline-flex; grid-column: 1 / -1; justify-self: start; }
   /* stuck to the bottom of the screen at the end of the page's flow, so it covers nothing at the page's end */
   .dock { position: sticky; z-index: 30; bottom: 0; margin: 0 calc(-1 * var(--gap-group)); padding: 0 var(--gap-group); background: var(--paper); }
+  /* above the moves and decisions fixed at the bottom, so a refusal's reasons never hide the buttons of the next text */
+  .texts-frame:has(.panel-buttons) > .dock { bottom: calc(2 * 40px + 3px + 2 * var(--gap-hair) + 1px); }
+  .texts-frame:has(.panel-buttons .review-button) > .dock { bottom: calc(2 * 40px + 32px + 2 * 3px + 2 * var(--gap-hair) + 1px); }
   /* no line numbers on a phone: its narrow lines wrap, and the gutter would be measured only once in view */
   .texts-body .code-editor .cm-gutters { display: none; }
   /* a wrapped line hangs under its own start, so a wrap never reads as a line of its own */
@@ -731,8 +789,6 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 /* a page with nothing in it yet: one line and its actions */
 .empty-state { display: grid; justify-items: start; gap: var(--gap-group); padding: var(--gap-block); background: var(--paper-raised); border: 1px solid var(--line); }
 .empty-state p { margin: 0; }
-.next-steps li { display: flex; align-items: center; gap: var(--gap-group); }
-.next-steps .cue { min-width: 8em; }
 /* a short table: as wide as its columns, so a number stays near its label */
 .ledger-table.fit { width: auto; min-width: min(100%, 560px); }
 /* a dialog starts clear of the page's head and its rule */
@@ -769,10 +825,7 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 /* a figure in a table that is a quantity in words ("about 5.4 million"): the body face with even digits, never the typewriter */
 .ledger-table td.figure { font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* a text's title with its id beside it, so the line of facts under it keeps to its facts */
-@media (max-width: 760px) {
-  .pipeline-list > .pipeline-row, .chain-row { grid-template-columns: minmax(0, 1fr); }
-  .chain-row > .wic-btn { justify-self: start; }
-}
+
 
 /* the open text's scores: each one a row, its value editable, then the line that adds one */
 .scores-table { margin-bottom: var(--gap-tight); }

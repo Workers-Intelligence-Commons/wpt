@@ -438,7 +438,8 @@ step its own command:
    dataset shape, the one last built for its depot and dataset, which no
    build makes again); the manager
    neither downloads nor builds, so the corpus is built first (Build on the
-   recipe page of the depot's web app), and a run without one is refused,
+   Build page of the depot's web app, the recipe's file handed over there),
+   and a run without one is refused,
    saying so; then `wpt agent build-image
    NAME` for each image the corpus's tasks name, where `DOCKER_HOST`
    reaches Docker (nothing without tasks);

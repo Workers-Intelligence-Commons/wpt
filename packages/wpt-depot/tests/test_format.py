@@ -47,9 +47,11 @@ CONVERTED = ("snapshots", "snapshot_sets", "legacy_snapshot_of")  # what the ste
 
 
 def kept(rows: dict[str, list[tuple]]) -> dict[str, list[tuple]]:
-    """The rows (table_rows) an upgrade keeps as they were: every table's but the about revisions, the changes, and
-    the snapshots the step to format 13 makes of the libraries and datasets with their counter."""
-    return {table: [row for row in found if not (table == "numbers" and row[0] == "snapshots")]
+    """The rows (table_rows) an upgrade keeps as they were: every table's but the about revisions, the changes, the
+    snapshots the step to format 13 makes of the libraries and datasets with their counter, and the counts of the
+    values of scores the step to format 14 makes."""
+    return {table: [row for row in found if not (table == "numbers" and row[0] == "snapshots")
+                    and not (table == "counts" and row[0] == "score value")]
             for table, found in rows.items() if table not in ("about_revisions", "changes", *CONVERTED)}
 
 
@@ -90,7 +92,7 @@ def test_an_upgrade_of_a_format_3_folder_writes_a_new_file_holding_what_the_fold
     assert [(one["id"], one["revision"]) for one in depot.snapshot_texts(snapshot["id"])["texts"]] == [("old-1", 2)]
     assert depot.sql("SELECT id, revision FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE value = "
                      "'book')") == [{"id": "old-1", "revision": 2}]
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     assert depot.erasures()[0]["needles"][0]["text"] == "old-2"
     # the ids go on from the highest number of each kind the folder held
     assert depot.add([NewText(text="new", licenses=("CC0-1.0",))], me) == ["old-3"]
@@ -147,8 +149,8 @@ def test_an_upgrade_stopped_once_its_file_is_whole_only_renames_it_when_run_agai
 
     depot, _ = Depot.upgrade(str(folder))
 
-    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 10
-    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert [one["kind"] for one in depot.sql("SELECT kind FROM changes WHERE kind = 'upgrade'")] == ["upgrade"] * 11
+    assert [one["format"] for one in depot.sql("SELECT format FROM about_revisions ORDER BY revision")] == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
 
 def test_the_upgrade_of_a_clone_takes_its_upstream_s_web_address(make_legacy):
@@ -240,7 +242,8 @@ def tags_on_revisions(depot):
 
 
 def made_older(depot, format_: int):
-    """The depot as a depot of format_ (4 to 12) holds what it holds: each revision of a text holding the tags the
+    """The depot as a depot of format_ (4 to 13) holds what it holds: no index texts_length and no counts of the
+    values of scores; for 12 and older each revision of a text holding the tags the
     text had while it was its current one, and no table taggings (its rows before, taggings_of what the revisions then
     hold); no tables snapshots, snapshot_sets and
     legacy_snapshot_of nor the index snapshots_name, no column sample of the tokenizer recipes, no columns of the
@@ -266,6 +269,16 @@ def made_older(depot, format_: int):
     status, text_decisions, counts, tokenizer recipes, vocabularies or max_tokens; for 4 also no index texts_order.
     Its rows before (table_rows), with the status of the revisions that are not current, which no format records,
     left out."""
+    with depot.db.bulk() as con:
+        con.execute("DROP INDEX texts_length")
+        con.execute("DELETE FROM counts WHERE facet = 'score value'")
+        if format_ == 13:
+            con.execute("UPDATE about_revisions SET format = 13")
+    if format_ == 13:
+        before = table_rows(depot.address)
+        depot.db.close()
+        (depot.db.waiting / FULL_COPY_NEXT).unlink(missing_ok=True)
+        return before
     tags_on_revisions(depot)
     with depot.db.bulk() as con:
         con.execute("UPDATE texts_revisions SET status = NULL WHERE NOT latest")
@@ -442,7 +455,7 @@ def test_an_upgrade_of_a_format_4_file_builds_its_indexes_tables_and_statuses_in
     assert start == 4 and upgraded.format() == FORMAT and upgraded.address == depot.address
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9, 10, 11, 12, 13] and after["changes"][-1][1] == "upgrade"
+    assert [one[-1] for one in after["about_revisions"]] == [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] and after["changes"][-1][1] == "upgrade"
     assert kept(after) == kept(before)
     assert (depot.db.waiting / FULL_COPY_NEXT).exists()  # the change files hold no change of layout
     assert "texts_order" in said[0] and "12 current texts" in said[0]
@@ -477,7 +490,7 @@ def test_an_upgrade_to_format_6_cut_short_marks_the_depot_and_goes_on_when_run_a
 
     assert start == 5 and upgraded.format() == FORMAT
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     assert kept(after) == kept(before)
     assert any("at format 6" in line for line in said)
 
@@ -517,7 +530,7 @@ def test_an_upgrade_to_format_7_writes_every_export_key_goes_on_from_its_last_ba
     assert len(made) == 6 + 3 + 4  # the 3 memberships left, then the 4 pins
     assert any("rows a second" in line for line in said)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9, 10, 11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [6, 7, 8, 9, 10, 11, 12, 13, 14]
     assert kept(after) == kept(before)
     for table, count in (("memberships", 8), ("pins", 4)):
         keys = upgraded.rows(f"SELECT text, export_key FROM {table}")
@@ -546,7 +559,7 @@ def test_an_upgrade_to_format_8_stopped_while_it_builds_the_decision_index_build
     assert start == 7 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9, 10, 11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [7, 8, 9, 10, 11, 12, 13, 14]
     assert kept(after) == kept(before)
     assert "text_decisions_decision" in said[0] and any("at format 8" in line for line in said)
 
@@ -599,7 +612,7 @@ def test_an_upgrade_to_format_9_fills_what_libraries_hold_exactly_and_goes_on_af
     upgraded, start = upgrade.upgrade(depot.address, log=said.append)
     assert start == 9 and upgraded.format() == FORMAT
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [8, 9, 10, 11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [8, 9, 10, 11, 12, 13, 14]
     assert kept(after) == kept(before)
 
 
@@ -695,7 +708,7 @@ def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_
     assert "rows 3 to" in said[0] and "going on after the last transaction" in said[0]
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [9, 10, 11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [9, 10, 11, 12, 13, 14]
     assert kept(after) == kept(before)
     assert title_index(upgraded) == indexed and indexed["terms"] and indexed["unfound"] == []
     assert [one["id"] for one in upgraded.search(Filter(search="number 1"))["rows"]] == ["depot-2", "depot-12"]
@@ -725,7 +738,7 @@ def test_an_upgrade_to_format_11_stopped_while_it_builds_the_long_content_index_
     assert start == 10 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [10, 11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [10, 11, 12, 13, 14]
     assert kept(after) == kept(before)
     assert "content_lists_long" in said[0] and any("at format 11" in line for line in said)
 
@@ -786,7 +799,7 @@ def test_an_upgrade_to_format_12_gives_every_text_a_kind_goes_on_after_a_stop_an
     [(written,)] = upgraded.db.reader().execute("SELECT schema FROM kinds WHERE id = 'conversation'").fetchall()
     [(fresh,)] = new.db.reader().execute("SELECT schema FROM kinds WHERE id = 'conversation'").fetchall()
     assert written == upgrade.CONVERSATION_12 == fresh
-    assert [one[-1] for one in after["about_revisions"]] == [11, 12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [11, 12, 13, 14]
     assert kept(after) == kept(before)
     kinds = upgraded.sql("SELECT kind, count(*) AS n FROM content_lists GROUP BY kind ORDER BY kind")
     assert [one["kind"] for one in kinds] == ["conversation", "plain", "probe"]
@@ -815,7 +828,6 @@ def test_an_upgrade_to_format_13_makes_the_snapshot_tables_and_counts_and_goes_o
     # the server runs the steps to 12 and 13 in one upgrade: a stop in the step to 13 must leave a depot only the
     # upgrade opens, and the run after it must leave the tables and counts a new depot of format 13 has, made from
     # the texts, so the first snapshot's summary is right
-    assert FORMAT == 13
     new = make_depot("new")
     depot = decided(make_depot(), me, legacy_rows)
     items = depot.add([NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",),
@@ -837,12 +849,12 @@ def test_an_upgrade_to_format_13_makes_the_snapshot_tables_and_counts_and_goes_o
 
     upgraded, start = upgrade.upgrade(depot.address, log=said.append)
 
-    assert start == 12 and upgraded.format() == 13
+    assert start == 12 and upgraded.format() == FORMAT
     assert schema_of(depot.address) == schema_of(new.address)
     after = table_rows(depot.address)
-    assert [one[-1] for one in after["about_revisions"]] == [12, 13]
+    assert [one[-1] for one in after["about_revisions"]] == [12, 13, 14]
     assert kept(after) == kept(before)
-    assert any("tables of the snapshots" in line for line in said) and "at format 13" in said[-1]
+    assert any("tables of the snapshots" in line for line in said) and any("at format 13" in line for line in said)
     kinds = dict((name, texts) for name, texts in upgraded.db.reader().execute(
         "SELECT name, texts FROM counts WHERE facet = 'kind'"))
     assert kinds == {"admitted conversation": 1, "admitted plain": 4, "refused plain": 2, "under review plain": 6}
@@ -850,7 +862,49 @@ def test_an_upgrade_to_format_13_makes_the_snapshot_tables_and_counts_and_goes_o
     assert made["texts"] == 5 and {tags: sized[0] for tags, sized in made["summary"]["plain_tagsets"].items()} == {
         "": 2, "a": 2}
     assert {tag: sized[0] for tag, sized in made["summary"]["tags"].items()} == {"a": 3, "b": 1}
-    assert upgrade.upgrade(depot.address, log=lambda line: None)[1] == 13
+    assert upgrade.upgrade(depot.address, log=lambda line: None)[1] == FORMAT
+
+
+def test_an_upgrade_to_format_14_builds_the_length_index_and_builds_it_again_after_a_stop(make_depot, me, monkeypatch):
+    # the strip of the biggest texts reads the index texts_length, and the review's choices of a score read the
+    # counts of its values: an upgraded depot must hold both as a new one does, and a stop during its build, which
+    # reads every current text, must leave a depot only the upgrade opens; the check says what the step costs before
+    # it runs
+    new = make_depot("new")
+    depot = make_depot()
+    texts = depot.add([NewText(text="x" * n, licenses=("CC0-1.0",)) for n in (3, 1, 2)], me)
+    depot.decide("admitted", texts[:2], me)
+    depot.edit_scores([{"id": one, "scores": [{"name": "quality", "value": value, "content_version": 1}]}
+                       for one, value in zip(texts, (7, 9, 7))], me)
+    depot.edit_scores([{"id": texts[1], "scores": [{"name": "quality", "value": 10, "content_version": 1}]}], me)
+    values = depot.score_values("quality")
+    before = made_older(depot, 13)
+    with pytest.raises(OtherFormat):
+        Depot.open(depot.address)
+    checked = upgrade.check(depot.address)
+    assert checked.passed and checked.cost["seconds"]["13 to 14"] >= 0 and checked.cost["added"] > 0
+    assert any("texts_length" in line for line in checked.lines) and table_rows(depot.address) == before
+    with monkeypatch.context() as patch:
+        patch.setattr(upgrade, "LENGTH_14", "CREATE INDEX texts_length ON no_table (x)")
+        with pytest.raises(apsw.SQLError):
+            upgrade.upgrade(depot.address, log=lambda line: None)
+    for way_in in (Depot.view, Depot.open):
+        with pytest.raises((HalfUpgraded, OtherFormat), match="wpt depot upgrade"):
+            way_in(depot.address)
+    said = []
+
+    upgraded, start = upgrade.upgrade(depot.address, log=said.append)
+
+    assert start == 13 and upgraded.format() == FORMAT == 14
+    assert schema_of(depot.address) == schema_of(new.address)
+    after = table_rows(depot.address)
+    assert [one[-1] for one in after["about_revisions"]] == [13, 14]
+    assert kept(after) == kept(before)
+    assert "scores" in said[0] and "at format 14" in said[-1]
+    assert upgraded.score_values("quality") == values == {
+        "name": "quality", "texts": 3, "low": 7.0, "high": 10.0,
+        "common": [{"value": 7.0, "texts": 2}, {"value": 10.0, "texts": 1}]}
+    assert [one["id"] for one in upgraded.search("true", order="length", descending=True)["rows"]] == [texts[0], texts[2], texts[1]]
 
 
 def upgraded_tables(path) -> bool:

@@ -5,7 +5,7 @@ twice as large; one that reads a listing's window, an index range or the rows of
 
 import apsw
 
-from wpt_depot import NewText, follow
+from wpt_depot import NewText, follow, sizes
 from wpt_depot import depot as depots
 from wpt_depot.legacy import Export, Legacy
 from wpt_depot.filters import Filter
@@ -46,7 +46,8 @@ def holding(make_depot, me, legacy_rows, texts: int, name: str):
     some_ids = depot.add([NewText(text=f"some {n}", licenses=("CC0-1.0",)) for n in range(SOME)], me)
     decision = depot.decide("admitted", some_ids, me)[0]
     dataset = legacy_rows.dataset(depot, "every", [every])
-    return depot, {"ids": ids, "rare": rare, "every": every, "some_ids": some_ids, "decision": decision,
+    snapshot = depot.create_snapshot("every")["id"]
+    return depot, {"order": sizes.build(depot, snapshot), "ids": ids, "rare": rare, "every": every, "some_ids": some_ids, "decision": decision,
                    "dataset": dataset}
 
 
@@ -81,6 +82,11 @@ def routes(depot, me, held) -> dict:
     return {
         "page of every text": lambda: far_page(Filter()),
         "page of every text by status": lambda: far_page(Filter(), order="status"),
+        "page of every text by length": lambda: far_page(Filter(), order="length", descending=True),
+        "page of a common tag by length": lambda: far_page(Filter(tags=("common",)), order="length"),
+        "passages of a status by length": lambda: depot.passages(Filter(statuses=("admitted",)), limit=10,
+                                                                 order="length", descending=True),
+        "page of a snapshot's strip": lambda: sizes.page(depot, held_["order"], 100, limit=10),
         "page of a common tag": lambda: far_page(Filter(tags=("common",))),
         "page of a rare tag": lambda: far_page(Filter(tags=("rare",))),
         "page of a rare tag by title": lambda: far_page(Filter(tags=("rare",)), order="title"),
@@ -117,7 +123,7 @@ def routes(depot, me, held) -> dict:
 def test_each_page_count_and_write_of_one_text_reads_as_much_on_a_depot_twice_as_large(make_depot, me, monkeypatch,
                                                                                         legacy_rows):
     # the public depot holds 166 million texts: a route whose reads grow with the depot times out there
-    for constant in ("WINDOW", "TEXT_WINDOW", "SORTED", "SCORE_READ"):
+    for constant in ("WINDOW", "TEXT_WINDOW", "SORTED"):
         monkeypatch.setattr(depots, constant, BOUND)
     small, held_small = holding(make_depot, me, legacy_rows, 400, "small")
     large, held_large = holding(make_depot, me, legacy_rows, 800, "large")

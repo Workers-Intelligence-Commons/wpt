@@ -12,7 +12,7 @@ from wpt_utils.lines import bare
 from wpt.depot import main
 from wpt.depot.shared import CONFIRMATION, REQUIREMENTS
 from wpt.depot.web import readers
-from wpt.depot.jobs import Jobs
+from wpt.depot.jobs import Jobs, work_folder
 from wpt.depot.web.routes import STATUSES, routes
 from wpt.depot.web.server import Route, make_server
 
@@ -364,6 +364,13 @@ def test_a_review_takes_the_texts_a_filter_matched_at_its_change_and_never_one_c
     status, tagged = request("POST", "/api/texts/counts", {"filter": {"tags": ["en"]}})
     assert tagged["held"] is True and tagged["statuses"] == {
         status: sum(one["statuses"][status] for one in steps) for status in tagged["statuses"]}
+    # the counts alone answer on a route of their own, the tags and licenses of a filter of statuses included, and
+    # say so when they cannot answer a filter
+    assert request("POST", "/api/texts/held", {"filter": {"tags": ["en"]}}) == (200, tagged)
+    status, reviewed = request("POST", "/api/texts/held", {"filter": {"statuses": ["under review"]}})
+    status, walked = request("POST", "/api/texts/counts", {"filter": {"statuses": ["under review"]}, "held": False})
+    assert reviewed["held"] is True and (reviewed["tags"], reviewed["licenses"]) == (walked["tags"], walked["licenses"])
+    assert request("POST", "/api/texts/held", {"filter": {"tags": ["en", "fr"]}}) == (200, {"held": False})
     status, given = request("POST", "/api/texts/counts", {"filter": {"ids": ["test-depot-2", "test-depot-9"]}})
     assert (given["texts"], given["total"], given["next"], given["statuses"]["under review"]) == (1, 1, None, 1)
 
@@ -425,7 +432,77 @@ def test_passages_give_the_texts_a_filter_matches_with_their_text_a_page_bounded
                                                               "characters": 100})
     assert [one["id"] for one in longest["rows"]] == ["test-depot-1", "test-depot-3", "test-depot-2", "test-depot-4",
                                                       "test-depot-5"] and longest["next"] is None
+    status, starts = request("POST", "/api/texts/passages", {"filter": {}, "order": "length", "descending": True,
+                                                             "characters": 7, "each": 3})
+    assert [one["passage"] for one in starts["rows"]] == ["aaa", "ccc"] and starts["next"] is not None
     assert request("POST", "/api/texts/passages", {"filter": tagged, "characters": 0})[0] == 400
+
+
+def test_a_snapshot_read_whole_queues_its_order_by_length_once_then_pages_its_texts_the_longest_first(web):
+    # a snapshot of the public depot holds 22 million texts: its strip never sorts them at a request, it reads the order
+    # a job of the read lane made once, and the first request says at once that the job was taken
+    request, depot = web
+    lengths = [4, 9, 1, 6]
+    texts = depot.add([NewText(text=c * n, licenses=("CC0-1.0",), tags=("t",) if n > 3 else ())
+                       for c, n in zip("abcd", lengths)], Declaration(**ME))
+    depot.decide("admitted", texts, Declaration(**ME))
+    made = depot.create_snapshot("first")
+    depot.decide("refused", [texts[1]], Declaration(**ME))
+
+    status, first = request("POST", f"/api/snapshots/{made['id']}/strip", {})
+    assert status == 200 and first["ready"] is False and first["texts"] == 4
+    assert first["job"]["kind"] == "sizes" and first["job"]["lane"] == "read"
+    status, again = request("POST", f"/api/snapshots/{made['id']}/strip", {})  # the same job, never a second one
+    assert again["ready"] or again["job"]["id"] == first["job"]["id"]
+    deadline = time.monotonic() + 120
+    while not (found := request("POST", f"/api/snapshots/{made['id']}/strip", {"limit": 2, "characters": 100})[1])[
+            "ready"]:
+        assert found["job"]["state"] in ("queued", "running") and time.monotonic() < deadline
+        time.sleep(0.05)
+    assert [(one["id"], one["passage"], one["status"]) for one in found["rows"]] == [
+        (texts[1], "b" * 9, "refused"), (texts[3], "d" * 6, "admitted")] and found["total"] == 4
+    status, rest = request("POST", f"/api/snapshots/{made['id']}/strip", {"after": found["next"]})
+    assert [one["id"] for one in rest["rows"]] == [texts[0], texts[2]] and rest["next"] is None
+    status, starts = request("POST", f"/api/snapshots/{made['id']}/strip", {"each": 2, "limit": 2})
+    assert [one["passage"] for one in starts["rows"]] == ["bb", "dd"]
+    status, bare_rows = request("POST", f"/api/snapshots/{made['id']}/strip", {"descending": False, "passages": False})
+    assert [one["id"] for one in bare_rows["rows"]] == [texts[2], texts[0], texts[3], texts[1]]
+    assert "passage" not in bare_rows["rows"][0]
+    assert request("GET", "/api/jobs/" + first["job"]["id"])[1]["answer"] == {"texts": 4}
+
+    status, held = request("GET", "/api/counts/admitted")
+    assert status == 200 and held["tags"] == {"t": [2, 10, 10]} and held["kinds"] == {"plain": [3, 11, 11]}
+    assert request("GET", "/api/counts/nothing")[0] == 404
+
+
+def test_a_snapshot_order_that_failed_is_answered_until_asked_again_never_queued_at_every_reading(web):
+    # the page reads the order's state every half second: a job that failed must reach it, not a new job each time
+    request, depot = web
+    texts = depot.add([NewText(text=c * n, licenses=("CC0-1.0",)) for c, n in zip("ab", [3, 5])], Declaration(**ME))
+    depot.decide("admitted", texts, Declaration(**ME))
+    made = depot.create_snapshot("first")
+    blocker = work_folder(depot.address) / "sizes"  # a file where the order's folder goes: keeping it fails
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    blocker.write_text("in the way")
+    target = f"/api/snapshots/{made['id']}/strip"
+
+    status, first = request("POST", target, {})
+    deadline = time.monotonic() + 120
+    while (found := request("POST", target, {})[1])["job"]["state"] in ("queued", "running"):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert found["ready"] is False and found["job"]["id"] == first["job"]["id"]
+    assert found["job"]["state"] in ("failed", "refused") and found["job"]["problem"]
+    assert request("POST", target, {})[1]["job"]["id"] == first["job"]["id"]  # still that one, nothing queued
+    assert [one["id"] for one in request("GET", "/api/jobs")[1] if one["kind"] == "sizes"] == [first["job"]["id"]]
+
+    blocker.unlink()
+    status, again = request("POST", target, {"again": True})
+    assert again["ready"] or again["job"]["id"] != first["job"]["id"]
+    while not (found := request("POST", target, {})[1])["ready"]:
+        assert found["job"]["state"] in ("queued", "running") and time.monotonic() < deadline
+        time.sleep(0.05)
+    assert [one["id"] for one in found["rows"]] == [texts[1], texts[0]]
 
 
 def test_the_review_of_an_admission_gets_the_texts_it_cannot_cover_with_their_reasons(web):
@@ -574,7 +651,7 @@ def test_one_score_set_on_a_selection_from_the_pages_is_one_decision_and_its_nam
         {"name": "rank", "value": 3.0, "content_version": 1}]
     assert request("GET", "/api/scores") == (200, [{"name": "rank", "texts": 3}])
     assert request("GET", "/api/scores/rank/values") == (200, {
-        "name": "rank", "read": 6, "texts": 3, "low": 3.0, "high": 3.0, "common": [{"value": 3.0, "texts": 3}]})
+        "name": "rank", "texts": 3, "low": 3.0, "high": 3.0, "common": [{"value": 3.0, "texts": 3}]})
     assert wrote(request, "/api/texts/score", {"selection": named(["test-depot-1"]), "name": "rank", "remove": True,
                                                "declaration": ME})[1]["changed"] == 1
     assert request("GET", "/api/scores") == (200, [{"name": "rank", "texts": 2}])
@@ -582,6 +659,26 @@ def test_one_score_set_on_a_selection_from_the_pages_is_one_decision_and_its_nam
     for wrong in ({"value": 1, "remove": True}, {}, {"remove": False}):
         assert request("POST", "/api/texts/score", {"selection": selection, "name": "rank", **wrong,
                                                     "declaration": ME})[0] == 400
+
+
+def test_a_refusal_made_from_the_pages_takes_its_reason_afterwards_from_its_maker_only(web):
+    # the Texts page refuses at one key, then offers reasons: the reason chosen must be that refusal's public reason
+    request, depot = web
+    request("POST", "/api/texts", {"text": "one", "licenses": ["CC0-1.0"], "declaration": ME})
+    _, made = wrote(request, "/api/decisions", {"status": "refused", "selection": named(["test-depot-1"]),
+                                                "declaration": ME})
+
+    status, row = request("POST", f"/api/decisions/{made['decision']}/reason", {"reason": "bad quality",
+                                                                                "declaration": ME})
+
+    assert status == 200 and (row["id"], row["status"], row["reason"], row["name"]) == (
+        made["decision"], "refused", "bad quality", ME["name"])
+    assert [(one["status"], one["reason"]) for one in request("GET", "/api/texts/test-depot-1")[1]["decisions"]][-1] \
+        == ("refused", "bad quality")
+    other = {**ME, "name": "Grace Hopper"}
+    assert request("POST", f"/api/decisions/{made['decision']}/reason", {"reason": "mine", "declaration": other})[0] \
+        == 422
+    assert request("POST", f"/api/decisions/{made['decision']}/reason", {"reason": "", "declaration": ME})[0] == 400
 
 
 def test_credits_of_many_texts_change_under_one_decision_from_the_route(web):

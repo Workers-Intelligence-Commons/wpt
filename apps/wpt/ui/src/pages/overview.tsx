@@ -1,7 +1,6 @@
 // What needs the maintainer: the texts admitted, the jobs open (by lane),
-// the latest snapshots with "Make a snapshot", each model recipe's stages in
-// one line with its next step (pipeline.tsx), the next step of the first
-// recipe that has one the page's main button, the jobs queued or running (only while there are some),
+// the latest snapshots with "Make a snapshot" and "Build" (a recipe file
+// handed over on the Build page), the jobs queued or running (only while there are some),
 // the number of texts under review (the depot's own counts, GET
 // /api/counts), those texts counted by tag and by license (a count made in
 // steps, which grows as it goes, counts.tsx), each tag and license linked to
@@ -11,12 +10,12 @@
 import { ButtonLink, Notice, Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState } from "react";
 import { get, waiting as queued, type Answer } from "../api";
-import { CountingNote, matched, useCounts } from "../counts";
+import { CountingNote, matched, useCounts, BY_TAG_AND_LICENSE } from "../counts";
 import { declared, useDeclarant } from "../declarant";
 import { EVERY, type TextFilter } from "../filter";
 import { Cut, PageHead, plural, Problems, Section, settingsHref, Stat, type Status } from "../parts";
 import { href } from "../route";
-import { Chain, snapshotHref, standing, useRecipes, useSnapshots } from "../pipeline";
+import { snapshotHref, useSnapshots } from "../pipeline";
 import { bytes } from "../sizes";
 import { DecisionTable, type Latest } from "./decisions";
 import type { Page } from "./index";
@@ -34,12 +33,11 @@ const LATEST = 3; // the snapshots the overview shows, the latest first
 
 function Overview() {
   const who = useDeclarant();
-  const waiting = useCounts(WAITING); // by tag and by license
+  const waiting = useCounts(WAITING, 0, BY_TAG_AND_LICENSE); // by tag and by license
   const [counts, setCounts] = useState<Answer<DepotCounts> | null>(null);
   const [latest, setLatest] = useState<Answer<Latest[]> | null>(null);
   const [erasures, setErasures] = useState<Answer<Erasure[]> | null>(null);
   const { answer: snapshots } = useSnapshots();
-  const { answer: recipes } = useRecipes();
   const jobs = useJobs(MARK_SECONDS);
   const open = jobs?.ok ? jobs.data.filter((j) => queued(j.state)) : [];
   const now = useNow(open.length > 0);
@@ -50,9 +48,6 @@ function Overview() {
     get<Erasure[]>("/api/erasures").then(setErasures);
   }, []);
   const openErasures = erasures?.ok ? erasures.data.filter((e) => e.status === REVIEW) : [];
-  const rows = recipes?.ok ? recipes.data.recipes : [];
-  // the one main button of the page: the next step of the first recipe that has one
-  const firstNext = rows.find((r) => standing(r).next)?.name;
   const shownSnapshots = snapshots?.ok ? [...snapshots.data].reverse().slice(0, LATEST) : [];
 
   return (
@@ -67,7 +62,7 @@ function Overview() {
         {erasures?.ok && openErasures.length === 0 && <Stat href={href(["erasures"])} value="0" label="erasures open" />}
       </div>
       <div className="board">
-        <Section className={open.length === 0 ? "span-2" : undefined} title={<a href={href(["snapshots"])}>Latest snapshots</a>} tools={<ButtonLink variant={snapshots?.ok && snapshots.data.length === 0 ? "primary" : "quiet"} href={href(["snapshots"], { new: "1" })}>Make a snapshot</ButtonLink>}>
+        <Section className={open.length === 0 ? "span-2" : undefined} title={<a href={href(["snapshots"])}>Latest snapshots</a>} tools={<><ButtonLink variant={snapshots?.ok && snapshots.data.length === 0 ? "primary" : "quiet"} href={href(["snapshots"], { new: "1" })}>Make a snapshot</ButtonLink>{snapshots?.ok && snapshots.data.length > 0 && <ButtonLink variant="quiet" href={href(["build"])}>Build a recipe</ButtonLink>}</>}>
           {!snapshots && <Skeleton lines={2} />}
           {snapshots && !snapshots.ok && <Problems problems={snapshots.problems} />}
           {snapshots?.ok && (shownSnapshots.length === 0 ? <p className="small aside">None yet.</p> : (
@@ -86,20 +81,6 @@ function Overview() {
           </Section>
         )}
       </div>
-      {recipes?.ok && (rows.length > 0 || recipes.data.problem) && (
-        <Section title={<a href={href(["recipes"])}>Recipes</a>}>
-          {recipes.data.problem ? <p className="small aside">No repository here: {recipes.data.problem}</p> : (
-            <ul className="plain pipeline-list">
-              {rows.map((r) => (
-                <li key={r.name} className="pipeline-row">
-                  <a className="pipeline-name cue" href={href(["recipes", r.name])}>{r.name}</a>
-                  <Chain recipe={r} at={standing(r)} action={r.name === firstNext ? "primary" : "quiet"} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
-      )}
       <div className="board">
         <Section className={erasures?.ok && openErasures.length === 0 ? "span-2" : "tall"} title={<>Under review{known && <>: <a href={href(["texts"], { status: REVIEW })}>{plural(known.statuses[REVIEW], "text")}</a></>}</>}>
           {counts && !counts.ok && <Problems problems={counts.problems} />}

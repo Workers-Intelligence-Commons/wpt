@@ -163,7 +163,13 @@ rows past a change without reading a whole table (wpt_depot.follow). The
 partial index content_lists_long holds the content versions of kind
 plain longer than LONG characters, those a corpus build cuts into pieces
 (wpt_depot.pieces), so a build finds the long texts it reads from them
-without reading every text (wpt_depot.order, wpt_depot.legacy). The table quotes holds,
+without reading every text (wpt_depot.order, wpt_depot.legacy). The partial
+index texts_length holds the current texts by status, then by the length in
+characters of the content version each reads (content_length), then in the
+numeric order of their ids, so a page of texts ordered by length, the
+longest first or last, reads only its own rows whatever the depot's size
+(Depot.search), and so do the texts of a snapshot read by length
+(wpt_depot.sizes). The table quotes holds,
 for each content version of a conversation, the ids of the texts its
 excerpts quote (wpt_depot.quotes), written with the version itself by
 every change that writes one (an add, a change of content, an erasure's
@@ -201,7 +207,7 @@ brings it up (wpt_depot.upgrade).
 from . import ids, titles
 from .kinds import PLAIN
 
-FORMAT = 13  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 14  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds
@@ -277,10 +283,14 @@ KEYS = {"about_revisions": ("revision",), "changes": ("id",), "numbers": ("name"
 # the tables stored in the order of their key alone (SQLite's WITHOUT ROWID): small rows read by their key
 WITHOUT_ROWID = frozenset({"text_decisions", "counts", "vocabulary_texts", "library_moves", "text_tags",
                            "text_licenses", "quotes", "taggings"})
+# the current texts by status, then length, then id (format 14)
+LENGTH_INDEX = (f"CREATE INDEX texts_length ON texts_revisions (status, content_length, {ids.order_sql()}) "
+                "WHERE latest")
 INDEXES = (
     "CREATE UNIQUE INDEX texts_latest ON texts_revisions (id) WHERE latest",
     f"CREATE INDEX texts_order ON texts_revisions ({ids.order_sql()}) WHERE latest",
     f"CREATE INDEX texts_status ON texts_revisions (status, {ids.order_sql()}) WHERE latest",
+    LENGTH_INDEX,
     "CREATE UNIQUE INDEX libraries_latest ON libraries_revisions (id) WHERE latest",
     "CREATE UNIQUE INDEX erasures_latest ON erasures_revisions (id) WHERE latest",
     "CREATE UNIQUE INDEX datasets_latest ON datasets_revisions (id) WHERE latest",

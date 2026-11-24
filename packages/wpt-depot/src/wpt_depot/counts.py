@@ -24,8 +24,11 @@ A row is (facet, name, texts, characters, bytes): facet TEXTS with the name
 '' (every current text), STATUS with a status (wpt_depot.policy), TAG with
 a tag, LICENSE with a license id a text names, DECISION with a decision id
 (its rows of text_decisions) and SCORE with a score name, whose characters
-and bytes stay 0; the facets of SPLIT, which split the texts of TEXTS, TAG
-and LICENSE by status (split_name): SPLIT_TEXTS, SPLIT_TAG and
+and bytes stay 0; SCORE_VALUE with the name `[<score name>, <value>]` (a
+JSON array, value_name), the texts whose score of that name has that value
+to three significant digits (VALUE_SQL), so the values a score takes across
+the whole depot are read from one range of rows (score_values); the facets
+of SPLIT, which split the texts of TEXTS, TAG and LICENSE by status (split_name): SPLIT_TEXTS, SPLIT_TAG and
 SPLIT_LICENSE with the name `<status> <name>`, name the facet's own (''
 for every text), so a filter of one status and one tag or license is
 counted from a few rows read by their key (split), the rows of SPLIT_TAG
@@ -58,6 +61,12 @@ from .schema import ADMITTED, REFUSED, UNDER_REVIEW, sizes_sql, tags_sql
 
 TEXTS, STATUS, TAG, LICENSE, DECISION, SCORE = "texts", "status", "tag", "license", "decision", "score"
 KIND, PLAIN_TAGSET = "kind", "plain tagset"
+SCORE_VALUE = "score value"
+# a score's value as the name of its row of SCORE_VALUE says it, an SQL expression over the score s of json_each:
+# three significant digits (7, 7.5, 0.734, 1.23e+03), so a score of a few grades keeps one row a grade, and one of
+# measures over a range keeps a few thousand rows at most
+VALUE_SQL = "printf('%.3g', CAST(s.value ->> 'value' AS REAL))"
+_VALUE_NAME = f"json_array(s.value ->> 'name', {VALUE_SQL})"
 COUNTED = (TEXTS, STATUS, TAG, LICENSE, DECISION, SCORE)  # the facets of counts of texts alone (read)
 SPLIT_TEXTS, SPLIT_TAG, SPLIT_LICENSE = "texts split", "tag split", "license split"
 SPLITS = {TEXTS: SPLIT_TEXTS, TAG: SPLIT_TAG, LICENSE: SPLIT_LICENSE}  # each facet's split
@@ -66,7 +75,8 @@ STATUSED = (KIND, PLAIN_TAGSET)  # what the texts of each status hold by kind an
 BY_STATUS = (*SPLIT, *STATUSED)  # every facet whose rows move when a text's status does
 # the facets with characters and bytes of the texts themselves, which move when a text's content version does
 TEXT_SIZED = (*STATUSED, SPLIT_TAG, SPLIT_LICENSE)
-FACETS = (*COUNTED, *SPLIT, *STATUSED)
+FACETS = (*COUNTED, SCORE_VALUE, *SPLIT, *STATUSED)
+SCORED = (SCORE, SCORE_VALUE)  # the facets a change of scores moves
 COLUMNS = ("texts", "characters", "bytes")
 
 # what each facet adds of the texts of a table of ids `{chosen}` (column id): (facet name, count) rows; each reads
@@ -83,6 +93,8 @@ _MEASURES = {
               "GROUP BY l.decision",
     SCORE: "SELECT s.value ->> 'name', count(*) FROM {chosen} c CROSS JOIN texts_revisions t ON t.id = c.id "
            "AND t.latest, json_each(t.scores) s GROUP BY 1",
+    SCORE_VALUE: f"SELECT {_VALUE_NAME}, count(*) FROM {{chosen}} c CROSS JOIN texts_revisions t ON t.id = c.id "
+                 "AND t.latest, json_each(t.scores) s GROUP BY 1",
     SPLIT_TEXTS: "SELECT t.status || ' ', count(*) FROM {chosen} c CROSS JOIN texts_revisions t "
                  "ON t.id = c.id AND t.latest GROUP BY 1",
 }
@@ -104,6 +116,8 @@ _WHOLE = {
              "GROUP BY j.value",
     DECISION: "SELECT decision, count(*) FROM text_decisions GROUP BY decision",
     SCORE: "SELECT s.value ->> 'name', count(*) FROM texts_revisions t, json_each(t.scores) s WHERE t.latest GROUP BY 1",
+    SCORE_VALUE: f"SELECT {_VALUE_NAME}, count(*) FROM texts_revisions t, json_each(t.scores) s WHERE t.latest "
+                 "GROUP BY 1",
     SPLIT_TEXTS: "SELECT t.status || ' ', count(*) FROM texts_revisions t WHERE t.latest GROUP BY 1",
 }
 # the same for the facets of TEXT_SIZED, with characters and bytes (SUMS), from the current revisions alone
@@ -221,6 +235,35 @@ def split(con, facet: str, name: str) -> dict[str, int]:
     return {keys[one]: count for one, count in con.execute(
         "SELECT name, texts FROM counts WHERE facet = ? AND name IN (SELECT value FROM json_each(?))",
         (SPLITS[facet], json.dumps(list(keys))))}
+
+
+def split_among(con, facet: str, statuses: Iterable[str]) -> dict[str, int]:
+    """{name: how many current texts of one of the statuses have it} of
+    the tags (TAG) or licenses (LICENSE), from the rows of their split
+    facet, each status's rows one range of names (`<status> `) read by
+    their key; a name no such text has is left out."""
+    found = Counter()
+    for status in dict.fromkeys(statuses):
+        low, high = f"{status} ", f"{status}!"  # every name that begins with the status and a space
+        for name, count in con.execute("SELECT name, texts FROM counts WHERE facet = ? AND name >= ? AND name < ?",
+                                       (SPLITS[facet], low, high)):
+            found[name[len(low):]] += count
+    return {name: count for name, count in found.items() if count}
+
+
+def value_name(score: str, value: str) -> str:
+    """The name of the row of SCORE_VALUE of a score name and a value as VALUE_SQL writes it: the JSON array SQLite's
+    json_array makes of them."""
+    return json.dumps([score, value], ensure_ascii=False, separators=(",", ":"))
+
+
+def score_values(con, score: str) -> list[tuple[float, int]]:
+    """[(value, how many current texts have it)] of the score name across the whole depot, each value to three
+    significant digits (VALUE_SQL), by value: one range of the rows of SCORE_VALUE, read by their key."""
+    low = value_name(score, "")[:-3]  # `["<score>",`, which begins the name of each of its values
+    found = [(float(json.loads(name)[1]), texts) for name, texts in con.execute(
+        "SELECT name, texts FROM counts WHERE facet = ? AND name > ? AND name < ?", (SCORE_VALUE, low, low + "#"))]
+    return sorted(found)
 
 
 def of_kinds(con, statuses: Iterable[str], kinds: Iterable[str]) -> dict[str, int]:

@@ -34,6 +34,16 @@ export function PageHead({ title, meta, chain, actions, note }: { title: ReactNo
   );
 }
 
+// A choice among a few places, as one control: each a link, the one shown filled, so it reads as a switch and says
+// which is on.
+export function Switch({ label, options }: { label: string; options: { label: ReactNode; href: string; on: boolean; title?: string }[] }) {
+  return (
+    <span className="switch" role="group" aria-label={label}>
+      {options.map((o) => <a key={o.href} href={o.href} className={`choice wic-focus${o.on ? " on" : ""}`} aria-current={o.on ? "page" : undefined} title={o.title}>{o.label}</a>)}
+    </span>
+  );
+}
+
 // A block of a page: its title, the explanation behind a "?" beside it
 // (help), optional tools beside the title (what acts on the whole block),
 // then its body. Without a title it is only the block that sets the body

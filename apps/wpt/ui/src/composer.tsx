@@ -5,22 +5,24 @@
 // the size as preset buttons plus a slider, the vocabulary picked in the list
 // of those the depot holds (GET /api/vocabularies). Each change asks the
 // server, a moment after the last click, what the section gives (POST
-// /api/recipes/compose, which writes nothing): its measure from the summary
-// and its estimate from a sample (tokens, disk, time, what the store's cap
-// would delete). "Download recipe" saves the data section as a file and
-// "Copy JSON" copies it: the recipe is a file of the repository, the
-// person's to commit beside its model part.
+// /api/recipes/compose, which writes nothing, at once: its measure from the
+// summary), then its estimate from a sample (POST /api/recipes/estimate:
+// tokens, disk, time, what the store's cap would delete), shown running
+// until it comes. "Download recipe" saves the data section as a JSON file
+// and "Copy JSON" copies it: the recipe is the person's file, beside its
+// model part wherever they keep it. "Build it" hands it to the Build page.
 
 import { Button, ButtonLink, Picker, Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { post, type Answer } from "./api";
+import { keepHanded } from "./recipe-build";
 import { MixBar, whole, type Mixed } from "./mix";
 import { Facts, Help, plural, Problems, Section } from "./parts";
 import { useRecipesAndVocabularies, vocabularyName, type DataSection, type SnapshotShown } from "./pipeline";
 import { href } from "./route";
 import { bytes, duration, tokensShort } from "./sizes";
 
-// What POST /api/recipes/compose and GET /api/recipes/NAME give of a recipe.
+// What POST /api/recipes/check and /api/recipes/compose give of what a recipe takes, and /api/recipes/estimate its cost.
 export type Measure = {
   shares: { tag: string | null; share: number; texts: number; bytes: number }[]; plain: { texts: number; bytes: number };
   items: { texts: number; bytes: number }; no_share: number; other: number; kinds: Record<string, { texts: number; bytes: number }>;
@@ -32,12 +34,12 @@ export type BuildEstimate = {
   evicted: { corpus: string; bytes: number }[] | null; fits: boolean; built: { id: string; fresh: boolean } | null; store: string | null;
   sample: { texts: number; tokenized: number; bytes: number; seconds: number };
 };
-type Composed = { recipe: { data: DataSection }; build_key: string; vocabulary: { sha256: string; size: number }; measure: Measure; estimate: BuildEstimate };
+type Composed = { recipe: { data: DataSection }; build_key: string; vocabulary: { sha256: string; size: number }; measure: Measure };
 
 export const PRESETS = [1e6, 1e7, 1e8, 1e9, 1e10];
 const LOW = 5, HIGH = 11; // the slider's ends, as powers of ten of tokens
 const STEPS = 60; // the slider's positions between them
-const WAIT = 700; // milliseconds after the last click before the server is asked
+const WAIT = 150; // milliseconds after the last click before the server is asked: a slider's moves come as one
 const DEFAULT_SHARE = 50;
 
 const toSlider = (tokens: number) => Math.round(((Math.log10(tokens) - LOW) / (HIGH - LOW)) * STEPS);
@@ -100,7 +102,9 @@ export function Composer({ snapshot, vocabulary: givenVocabulary, onClose }: { s
   const [tokens, setTokens] = useState(1e8);
   const [vocabulary, setVocabulary] = useState<string | null>(givenVocabulary);
   const [composed, setComposed] = useState<Answer<Composed> | null>(null);
+  const [estimate, setEstimate] = useState<Answer<BuildEstimate> | null>(null);
   const [asking, setAsking] = useState(false);
+  const [estimating, setEstimating] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const asked = useRef(0);
   // the latest vocabulary first, picked when none is
@@ -113,8 +117,15 @@ export function Composer({ snapshot, vocabulary: givenVocabulary, onClose }: { s
     if (!body) return;
     const at = ++asked.current;
     setAsking(true);
+    setEstimating(true);
     const timer = window.setTimeout(() => {
-      post<Composed>("/api/recipes/compose", body).then((a) => { if (at === asked.current) { setComposed(a); setAsking(false); } });
+      post<Composed>("/api/recipes/compose", body).then((a) => {
+        if (at !== asked.current) return;
+        setComposed(a);
+        setAsking(false);
+        if (!a.ok) { setEstimating(false); return; }
+        post<BuildEstimate>("/api/recipes/estimate", { recipe: a.data.recipe }).then((e) => { if (at === asked.current) { setEstimate(e); setEstimating(false); } });
+      });
     }, WAIT);
     return () => window.clearTimeout(timer);
   }, [key]);
@@ -132,12 +143,13 @@ export function Composer({ snapshot, vocabulary: givenVocabulary, onClose }: { s
     link.click();
     URL.revokeObjectURL(link.href);
   };
+  const buildIt = () => { if (composed?.ok) { keepHanded({ file: fileName, recipe: { data: composed.data.recipe.data } }); window.location.hash = href(["build"]); } };
   const copy = async () => { if (!json) return; try { await navigator.clipboard.writeText(json); setCopied("Copied"); } catch { setCopied("Could not copy: the browser refused"); } };
   const options = vocabularies.map((v) => ({ value: v.sha256, label: `${vocabularyName(v)}`, group: v.name ?? v.recipe, slug: v.sha256.slice(0, 12) }));
 
   return (
     <Section className="composer" title={`New recipe from ${snapshot.name}`} tools={<Button variant="quiet" onClick={onClose}>Close</Button>}
-      help="A recipe's data section, made of clicks. Nothing is written: download it or copy it, then put it in a recipe file of the repository beside its model part and commit it.">
+      help="A recipe's data section, made of clicks. Nothing is written: build it here, or download it or copy it into a recipe file beside its model part.">
       <div className="composer-grid">
         <div className="composer-controls">
           <fieldset className="chips-field">
@@ -188,11 +200,16 @@ export function Composer({ snapshot, vocabulary: givenVocabulary, onClose }: { s
               <h3 className="aside">What it takes{asking && " (measuring again)"}</h3>
               <MixBar m={measureMix(composed.data.measure)} />
               <MeasureWords m={composed.data.measure} />
-              <h3 className="aside">What the build costs</h3>
-              <BuildCost estimate={composed.data.estimate} />
-              {composed.data.estimate.tokens < tokens * 0.99 && <p className="small act">The snapshot gives less than the {tokensShort(tokens)} tokens asked: the build takes all it has.</p>}
-              {composed.data.estimate.warnings.length > 0 && <ul className="small act">{composed.data.estimate.warnings.map((w) => <li key={w}>{w}</li>)}</ul>}
+              <h3 className="aside">What the build costs{estimating && estimate && " (working it out again)"}</h3>
+              {estimating && !estimate && <p className="small" role="status"><span className="running-dot" aria-hidden="true" /> Working it out: tokenizing a sample, a few seconds the first time.</p>}
+              {estimate && !estimate.ok && <Problems problems={estimate.problems} />}
+              {estimate?.ok && <>
+                <BuildCost estimate={estimate.data} />
+                {estimate.data.tokens < tokens * 0.99 && <p className="small act">The snapshot gives less than the {tokensShort(tokens)} tokens asked: the build takes all it has.</p>}
+                {estimate.data.warnings.length > 0 && <ul className="small act">{estimate.data.warnings.map((w) => <li key={w}>{w}</li>)}</ul>}
+              </>}
               <div className="row tight">
+                <Button variant="primary" onClick={buildIt}>Build it</Button>
                 <Button variant="ink" onClick={download}>Download recipe</Button>
                 <Button variant="quiet" onClick={copy}>Copy JSON</Button>
                 {copied && <span className="small aside" role="status">{copied}</span>}

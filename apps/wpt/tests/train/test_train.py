@@ -870,7 +870,7 @@ def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_build_key(built, 
         main([recipe, "--out", "model"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and f"no fresh corpus of snapshot later of the depot fox with the vocabulary " \
-        f"{built.vocabulary} at the size {size:,}" in said and "press Build on the recipe page" in said
+        f"{built.vocabulary} at the size {size:,}" in said and "press Build on the Build page" in said
 
     sized = built.sized("later", size)["id"]
     main([recipe, "--out", "model"])
@@ -908,7 +908,7 @@ def test_a_recipe_whose_only_corpus_lists_its_token_files_in_one_list_is_told_th
     built.store.put_json(f"{corpora.folder_of(record)}/{corpora.RECORD}",
                          {**record, "shards": corpora.token_files(record)})
 
-    with pytest.raises(InputError, match=r"does not list its token files by kind.*press Build on the recipe page"):
+    with pytest.raises(InputError, match=r"does not list its token files by kind.*press Build on the Build page"):
         find_corpus(built.store, None, data)
 
 
@@ -955,7 +955,7 @@ def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_snapshot_through_t
 
     assert record["id"] == public["id"] and record["depot"] == address and asked == ["/api/about", "/api/snapshots"]
     load_corpus(built.store, record, {"data": data})
-    with pytest.raises(InputError, match="press Build on the recipe page"):
+    with pytest.raises(InputError, match="press Build on the Build page"):
         find_corpus(built.store, None, {**data, "total_tokens": size - 1})  # that size is not built
     answers["/api/about"] = {"about": {**built.depot.about(), "name": "other"}}  # another depot's snapshots
     with pytest.raises(InputError, match="no snapshot 'd' of the depot 'https://depot.example.org' \\(other\\)"):
@@ -1136,7 +1136,7 @@ def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, caps
 
     said = refusal(capsys, [built.recipe("stale"), built.corpus_id, "--out", "model"])
     assert "is stale" in said
-    assert "press Build on the recipe page" in said
+    assert "press Build on the Build page" in said
     assert not (tmp_path / "model").exists()
 
 
@@ -1147,7 +1147,7 @@ def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the
               "total_tokens": 10}
 
     with pytest.raises(InputError, match=r"does not list its token files by kind.*no build makes a corpus of a "
-                                         r"dataset.*press Build on the recipe page"):
+                                         r"dataset.*press Build on the Build page"):
         check_record(record, {"data": {"total_tokens": 10}})
 
 

@@ -141,9 +141,15 @@ they read already, as fast as when a revision held them.
 
 **Status and counts.** The current revision of each text stores the status
 its decisions make, and the index `texts_status` holds the current texts by
-status, then in the numeric order of their ids. The table `counts` holds
+status, then in the numeric order of their ids. The index `texts_length`
+holds them by status, then by the length in characters of the content
+version each reads, then by id, so the texts of any filter can be read the
+longest first, a page at a time. The table `counts` holds
 how many current texts the depot has, and how many have each status, each
-tag, each license and each score name and each decision is on. It splits
+tag, each license and each score name and each decision is on, and, for
+each score name, how many have each of its values, to three significant
+digits, so the review's choices follow the scale the whole depot holds,
+read from one range of its rows. It splits
 every text, and the texts of each tag and each license, by status. The
 tables `text_tags` and `text_licenses` list
 the current texts of each tag and of each license, in the numeric order of
@@ -482,6 +488,17 @@ and `datasets` an older file may hold and deletes the strip reader's
 folder beside the file. The tables of libraries and datasets stay in the
 file, unwritten; nothing is dropped and the file is not vacuumed.
 
+The step to format 14 counts the values of every score of the current
+texts into `counts`, in one statement that reads every revision once, then
+builds the index `texts_length` in one statement,
+which reads every current text's row once and sorts the entries in
+SQLite's temporary folder, between a transaction that marks the depot
+half upgraded and one that drops the mark. On the synthetic depot of
+`packages/wpt-depot/bench/large.py`, 1,500,000 current texts in a 17.7 GB
+file, it took 6 seconds and added 102 MB, about 70 bytes a text; the check
+of a depot of format 13 says the seconds, the disk and the full copy the
+next backup sends.
+
 `wpt depot upgrade` alone, or with `--check`, writes nothing in the depot: it opens the
 file read-only and says what the upgrade would do. For a depot of format
 11 it checks what the step to format 12 checks before it ends; for one of
@@ -741,7 +758,9 @@ check adds the rules across files: a series derives every size, and an
 image's pool takes no built-in tool's name. A recipe's data part has the snapshot shape
 or the legacy dataset shape ([model.md](model.md), "Model recipes"); the check refuses
 shares that name a tag twice or sum above 1. A recipe whose depot, snapshot, digest,
-vocabulary or dataset is still empty reads, and the check names it for a person to fill in. People edit the
+vocabulary or dataset is still empty reads, and the check names it for a person to fill in. A recipe a person
+hands over as JSON, never read from `data/` (a depot's build), is read through its `data_section`, which checks
+its data section (a series whole) and gives its data part. People edit the
 recipes and `tools.json` as files; `Recipes` writes only the generated
 files (an image's `lock.json` and `licenses.json`), for the command that makes them, after their schema,
 through a temporary file and a rename.
@@ -794,12 +813,13 @@ refused change writes nothing.
 | a decision, shown | `sql QUERY` | `GET /api/decisions/{id}`, with the texts it is on or the erasure requests it decides; the view of a decision |
 | a tag, shown | `sql QUERY` | `POST /api/texts/search` and `POST /api/texts/counts` with the tag; the view of a tag |
 | texts found by a filter, a page at a time | `sql QUERY` | `POST /api/texts/search`, with `GET /api/tags`; the list of the "Texts" page |
-| the texts a filter matches, counted one slice of the depot at a time, or at once from the depot's counts when they hold the answer | `sql QUERY` | `POST /api/texts/counts`; the counts of the "Texts" page, its list and its review, of the "Overview" and of the views of a tag, a license and a decision |
+| the texts a filter matches, counted one slice of the depot at a time, or at once from the depot's counts when they hold the answer | `sql QUERY` | `POST /api/texts/held`, then `POST /api/texts/counts` for what the depot's counts do not give; the counts of the "Texts" page, its list and its review, of the "Overview" and of the views of a tag, a license and a decision |
 | texts found by a filter, with their text, a page at a time | `sql QUERY` | `POST /api/texts/passages`, each page bounded by a count of texts and by characters; the blob of the "Texts" page |
 | a text or an item, added | `add FILE [--kind KIND]` (`plain` by default) | `POST /api/texts`, with `/api/kinds` and `/api/licenses`; the "Add a text" button |
 | a text or an item, shown | `show ID` | `GET /api/texts/{id}`; the content and review panel of the "Texts" page, with the text's record |
 | a license | `license add ID NAME FILE` | `/api/licenses`, `GET /api/licenses/{id}`; page "Licenses" with the view of each license, and the license picker of the "Add a text" page, of a license change and of the review of an admission for a missing one |
 | a decision on texts | `decide admit\|refuse\|back-to-review WHERE` | `POST /api/decisions`, on a selection, and `POST /api/texts/blocked`, which texts of a selection a decision cannot cover and why; the "Texts" page, on ticked texts, on the current text, and by the keys A, R and U |
+| the reason of an admission or a refusal, given afterwards by the person who made it | `reason DECISION REASON` | `POST /api/decisions/{id}/reason`; the reasons the "Texts" page offers after a refusal |
 | a change of texts' licenses | `relicense ID ... --license L ...` | `POST /api/texts/licenses`, on a selection; the review of an admission, for texts with no allowed license, and the current text of the "Texts" page |
 | a change of a text's content | `content ID FILE [--kind KIND]` (a kind other than the text's refused) | `POST /api/texts/{id}/content`; saving the content on the "Texts" page |
 | a change of the plain texts of many texts | `content-file FILE` | `POST /api/texts/content` |
@@ -808,13 +828,13 @@ refused change writes nothing.
 | a change of the scores of many texts | `scores FILE` | `POST /api/texts/scores`; the score rows of the review panel of the "Texts" page |
 | one score set on, or removed from, texts | `score NAME (--value V \| --remove) WHERE` | `POST /api/texts/score`, on a selection; the "Texts" page, on ticked texts |
 | the names of the scores | `score-names` | `GET /api/scores` |
-| the values a score has on the texts changed last | `score-values NAME` | `GET /api/scores/{name}/values`: how many have it, its smallest and largest, its most frequent, over at most `SCORE_READ` revisions (`wpt_depot/depot.py`); the choices of the score rows of the review panel of the "Texts" page |
+| the values a score has across every current text | `score-values NAME` | `GET /api/scores/{name}/values`: how many have it, its smallest and largest, its `SCORE_VALUES` most frequent (`wpt_depot/depot.py`), each to three significant digits, read from the counts; the choices of the score rows of the review panel of the "Texts" page |
 | a change of tags over a selection | `retag WHERE [--add T ...] [--remove T ...]`, its cost, then the change with `--yes` | `POST /api/texts/retag/estimate`, its cost (texts changed, rows and bytes written, seconds), then `POST /api/texts/retag` with the estimate it showed; the bulk bar of the "Texts" page |
 | the times of changes | `sql QUERY` | `POST /api/changes/times` |
 | tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
 | a tokenizer's vocabulary | `tokenizer train NAME` | `GET /api/tokenizers/{name}/estimate`, then `POST /api/tokenizers/{name}/train`, confirmed, a job; `GET /api/vocabularies`; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
-| a snapshot | `snapshot new NAME [--note TEXT]`, `snapshot list`, `snapshot show NAME [--owner DEPOT]` | `GET /api/snapshots/new` (the next free name and the cost of making one now), then `POST /api/snapshots` with the estimate it showed, a job; `GET /api/snapshots`, `GET /api/snapshots/{id}` (its summary, the texts erased since and the recipes that name it), `GET /api/snapshots/{id}/sets` (its bounds and bitmaps, base64, and its digest), `POST /api/snapshots/{id}/texts` (a page of its texts at their revision then); page "Snapshots" |
-| a recipe's corpus | `build RECIPE`, run in the command | `GET /api/recipes` (the repository's model recipes, with their build state), `GET /api/recipes/{name}` (its data section, what it takes and the cost of its build), then `POST /api/recipes/{name}/build` with the estimate it showed, a job; `POST /api/recipes/compose`, a data section's measure, cost and JSON, which writes nothing; page "Recipes" and the composer of a snapshot's page |
+| a snapshot | `snapshot new NAME [--note TEXT]`, `snapshot list`, `snapshot show NAME [--owner DEPOT]` | `GET /api/snapshots/new` (the next free name and the cost of making one now), then `POST /api/snapshots` with the estimate it showed, a job; `GET /api/snapshots`, `GET /api/snapshots/{id}` (its summary and the texts erased since), `GET /api/snapshots/{id}/sets` (its bounds and bitmaps, base64, and its digest), `POST /api/snapshots/{id}/texts` (a page of its texts at their revision then); page "Snapshots" |
+| a recipe's corpus | `build FILE` (a model recipe's or a series' JSON file), run in the command | `POST /api/recipes/check` (a recipe handed over as JSON: its state, what it takes and its build state), `POST /api/recipes/estimate` (the cost of its build), then `POST /api/recipes/build` with the estimate it showed, a job; `POST /api/recipes/compose`, a data section's measure and JSON, which writes nothing; page "Build", where a recipe file is chosen or dropped, the same on a snapshot's page, and the composer of a snapshot's page |
 | a corpus, downloaded | none | `GET /api/builds/{key}`, its `files/{name}` and its `everything.tar` |
 | a dataset of a depot of format 12 or older, for models trained before snapshots | none | the frozen routes of `wpt/depot/web/legacy.py`: `GET /api/datasets`, `GET /api/datasets/{id}`, `GET /api/datasets/{name}/remote`, `GET /api/datasets/{id}/download` and its corpora, files and `everything.tar`, `GET /api/datasets/{id}/export` and its parts, `GET /api/datasets/{dataset}/sample`; no page |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
@@ -822,8 +842,8 @@ refused change writes nothing.
 
 Each row of a list on the pages opens a view of that thing, with its own
 address in the page's hash so it can be linked: a text (`#/texts/ID`, the
-Texts page with that text open), a snapshot (`#/snapshots/ID`), a recipe
-(`#/recipes/NAME`), a license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
+Texts page with that text open), a snapshot (`#/snapshots/ID`), a corpus
+by its build key (`#/build?key=KEY`), a license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
 decision (`#/decisions/ID`) and a tag (`#/tags/TAG`).
 
 Every decision, an added text's, an erasure request's, a change of
@@ -847,26 +867,57 @@ texts, a page at a time, hides at the left edge and comes out while the
 pointer rests there, or after a button on a phone.
 
 The content of the current text fills the middle and is always editable.
-An edit is saved only by its button or Ctrl+S, as a content change: the
-text goes back under review, and an admitted text asks once more first.
+An edit has no button: it is saved as a content change when the page
+moves to another text, before a decision on the text (so Admit & next
+admits the version just saved), with Ctrl+S, and when the text is left any
+other way; the text goes back under review, an admitted one too, and a
+save refused keeps the text open and says why. Words typed while a save
+is on its way are sent before that save ends, and the editor keeps them.
+Back to review on an edited text records its decision first, with its
+reason, then saves the edit. An edit that cannot be saved when the text
+is left by a way the page does not guard (the browser's back button) is
+said in a line every page shows, and kept in the tab, so the text opens
+again with it. A reload or a closed tab with an edit not saved asks
+first.
 
 The review panel at the right holds a row for each score name, its
-choices read from `GET /api/scores/{name}/values` with a number pad for
-any other value, the most used tags as toggles, the moves and decisions,
+choices read from `GET /api/scores/{name}/values`, the scale the depot's
+texts hold (whole grades, 0 to 10 for a person's 0 to 10, each a button),
+a number pad for a value between the grades (kept to 0 to 10 on a scale of whole grades) or, on
+another scale, − and + and the value, the most used tags as toggles, the moves and decisions,
 presets of scores and tags kept in the browser, and the text's facts and
 other actions. Clicks on scores and tags are gathered and saved as one
 change of scores and one of credits a moment after the last, or when
-another text opens. Admit & next decides at once; a refusal, a return to
-review and the admission of a refused text ask first, in a line at the
-bottom that holds the confirmation and the name the decision records. A
-line names the text and the decision after each one.
+another text opens. Admit & next and Refuse decide at once; after a
+refusal, a line at the bottom names the text and its decision, offers
+Undo, which puts it back under review at once and opens it again, and its reasons as chips (the usual ones,
+then those kept in the browser, each added by a click from a reason typed
+once) and a field for another: the one picked becomes that refusal's
+public reason (`POST /api/decisions/{id}/reason`), and none is needed. A
+return to review and the admission of a refused text ask first, in a line
+at the bottom that holds the confirmation and the name the decision
+records. A line names the text and the decision after each one.
 
 Keys outside the editor do the same: J and K move, A and R admit or
-refuse and open the next text, U puts the text back under review and X
-ticks it. Escape leaves the editor.
+refuse and open the next text, 1 to 9 pick a refusal's reason, Z undoes
+it, U puts the
+text back under review and X ticks it. Escape leaves the editor.
 Without a name or an email, a decision asks for them and decides nothing.
 The blob mode shows the open texts as one continuous text, read a page at
-a time as it scrolls; a click on a passage opens that text.
+a time as it scrolls (a first page of 20 texts, then 50), each text's length in characters in the margin
+with a Refuse button that decides at once and then offers Undo, three lines of each text or a longer start; a
+click on a passage opens that text. "Biggest first" reads them the longest
+first, to find what takes the most room. A snapshot reads whole the same
+way, its longest texts first, each as the snapshot holds it, a click
+opening the text as it is now in a pane beside the strip, to edit, admit
+or refuse it: its order by length is made once by a job of the read lane
+(`wpt_depot.sizes`), which the page follows until it ends; a job that
+ended without the order is shown with its problem and a "Try again"
+button, and no other is queued until it is pressed. The size map
+shows which tags, kinds and licenses of the texts of one status, or of a
+snapshot, take the most characters, from the counts or the snapshot's
+summary, with the biggest texts beside them, each with a bar and a Refuse button; each part opens its texts as a
+strip, the longest first.
 
 The "Help" page, last in the top bar, says how the depot works and what
 each page does.
@@ -889,12 +940,28 @@ tests each candidate against the rest of the filter. In the numeric order
 of ids it reads at most `WINDOW` candidates after its place (`TEXT_WINDOW`
 with a search in the texts themselves), in that order, and stops at the
 page's last match, so a first page of every text reads about its own rows;
-in the order of statuses it reads at most that many from `texts_status`.
+in the order of statuses it reads at most that many from `texts_status`,
+and in the order of lengths at most that many from `texts_length`, the
+range of each status merged, so a page of the longest texts of 22 million
+admitted ones reads about its own rows; past `SORTED` texts in its listing
+each candidate is tested on the whole filter. A listing of at most `SORTED`
+texts in the order of lengths walks `texts_length` too when its first
+window is expected to fill the page, its texts lying evenly among the
+lengths: it reads the listing's keys once through the listing's own index,
+then at most `KEPT_WINDOW` entries of `texts_length` (shared among the
+statuses it reads), keeps those the listing holds and looks up only the
+texts of the page, about 130 ms for a tag of 48,000 among 1.2 million
+admitted texts with the file out of memory. Otherwise (a few texts among
+many) it is sorted on the lengths alone, read through `texts_latest`,
+before any text is read; that costs one lookup a text of the listing,
+about 2 seconds for 20,000 texts with the file out of memory.
 So a page is bounded whatever the
 depot's size and however few texts match. A page cut at that bound is
 partial: it can hold fewer rows than asked, or none, and the next page
-reads on from its last candidate. The list and the blob say so and
-read on when asked. No index serves the other orders, which sort every
+reads on from its last candidate. The list and the blob say so; the
+Texts page reads on by itself while no text of the filter is open yet,
+until a text matches, the filter's texts end or its count finds none. No index serves the other orders (title, kind, tags,
+licenses), which sort every
 candidate, so the server gives them only when the listing holds at most
 `SORTED` texts and refuses them past it; a page says whether its listing
 allows them, and the list offers them only then. The counts of a filter
@@ -903,10 +970,18 @@ a million texts of the page's listing, in its order, so each one stays well
 under the time limit of a reader. A filter that names its texts is counted
 in one step over those texts. A filter of statuses and of at most one tag
 or license, or of statuses and kinds, is counted at once from the depot's
-counts, with no step. The pages run one step at a time, the counts
+counts (`POST /api/texts/held`), with no step: how many texts it matches
+and their split by status, and for a filter of statuses alone its tags and
+licenses too, from the split of each tag and license by status. A page asks
+that answer the moment its filter changes, beside any step running, and
+names the parts it shows besides the statuses (by tag, by license, the
+blocked texts): only those the depot's counts leave out are counted by
+steps, so the Texts page, which shows the statuses, steps through texts
+only for a filter the counts do not hold, or while its Tags or Licenses
+menu counts within the open texts. The pages run one step at a time, the counts
 open on a page taking turns, and add the steps up. The numbers grow as the
-steps answer, with how many texts are counted out of the listing's texts, a
-number `counts` gives. A count
+steps answer ("at least"), with how many texts are counted out of the
+listing's texts, a number `counts` gives. A count
 ends when its page leaves it or its filter changes, and it starts again
 after a change of the depot made from the page. A step starts at least two
 seconds after the one before it. A step refused by a proxy's rate limit
@@ -931,14 +1006,16 @@ where a person types it. The commands and the web reach the same SQL in `wpt_dep
 
 The server runs its long work as jobs (`wpt/depot/jobs.py`): a write over
 a selection, the making of a snapshot, the training
-of a vocabulary and the build of a recipe's corpus. The queue is a SQLite
+of a vocabulary, the build of a recipe's corpus and the order by length of
+a snapshot. The queue is a SQLite
 file beside the depot, `<depot file>.jobs`, which nothing backs up. Jobs
-run in two lanes, one at a time in each, each job in a process of its own,
+run in three lanes, one at a time in each, each job in a process of its own,
 which runs the same `wpt_depot` operation as one change and sends the name
 of each stage it starts and its progress: the write lane runs the writes,
-and the heavy lane the snapshots, vocabularies and corpora, which hold the
+the heavy lane the snapshots, vocabularies and corpora, which hold the
 depot's write lock for one short transaction at most, so a write never
-waits behind them. A write over at most `INLINE` texts runs in the request
+waits behind them, and the read lane the orders by length of the snapshots
+read whole, which write nothing in the depot. A write over at most `INLINE` texts runs in the request
 instead, while no job of the write lane is queued or running: a selection
 whose filter names at most `INLINE` ids, or a change of tags that changes
 at most `INLINE` texts. Otherwise every such write is a job, since it waits for the running
@@ -1021,8 +1098,9 @@ at an address a client gives. Some routes reach past the depot. `POST
 /api/erasures/decisions`, once it carries out an erasure, marks stale the
 store's corpora that hold a text it cut, in the background, and sends no
 corpus until that ends. The build of a recipe's corpus writes it into the
-store, and the downloads read it from there. The recipes page reads the
-repository checkout `WPT_REPOSITORY` names, and says so when none is set.
+store, and the downloads read it from there. No route reads a code
+repository: the depot lives apart from any, and a recipe to build is a
+file a client hands over, of which only the data section counts.
 A legacy dataset's export reads its texts from the depot, never from the
 store.
 

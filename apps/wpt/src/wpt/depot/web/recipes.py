@@ -1,36 +1,36 @@
-"""The routes of `wpt depot web` over the repository's model recipes and
-the corpora they build: the recipes of the checkout WPT_REPOSITORY names
-(read through wpt_recipes.Recipes, the only reader of data/), and its
-series, each named SERIES: and read at its largest size, whose one corpus
-every size of the series reads (recipe_names), each with
-its snapshot, its measure, its estimate and the corpus of its build key; a
-build as a job; a recipe's data section composed from clicks, nothing
-written; and the downloads of a corpus by its build key.
+"""The routes of `wpt depot web` over the builds of model recipes and the
+corpora they give. The depot reads no repository: a person hands a recipe
+over as JSON (a model recipe or a series, of which only the data section
+counts, wpt.depot.shared.recipe_given; a series is read at its largest
+size, whose one corpus every size of the series reads, and named SERIES:
+after its file), and the routes check it, measure it, estimate its build
+and build it as a job; a recipe's data section is composed from clicks,
+nothing written; and a corpus downloads by its build key.
 
-A recipe reads here when its data section has the snapshot shape and names
+A recipe builds here when its data section has the snapshot shape and names
 this depot by its public address (or the upstream it follows, whose
 snapshots a clone holds), a snapshot of it by name whose change and digest
 are the ones it names, and a vocabulary the depot holds (by sha256, of the
 size it names). Its build key (wpt_depot.corpus.build_key) never holds the
 address the request came from, so a clone and its upstream key the same
-corpus. A recipe of the dataset shape of before snapshots is listed and not
+corpus. A recipe of the dataset shape of before snapshots is read and not
 built (state "dataset").
 
-The measure comes from the snapshot's summary alone
-(wpt_depot.corpus.census); the estimate tokenizes a sample
-(wpt_depot.estimate, a few seconds, one at a time, kept by build key since
-a snapshot never changes), and says what the store's cap would delete for
-it (wpt_depot.corpora.Room.evicted). A build starts only once confirmed
-(confirmed: true) with the estimate the recipe's page showed, and only
-while it still holds (wpt.depot.shared.unchanged: refused with 409 and the
-new estimate otherwise; a build that would delete a corpus the shown
-estimate did not name counts as changed). It runs as a corpus job of the
-heavy lane, keyed by the build key, its checkpoint kept by that key, so a
+The check and the measure come from the snapshot's summary alone
+(wpt_depot.corpus.census) and answer at once; the estimate is a request
+of its own, since it tokenizes a sample (wpt_depot.estimate, a few
+seconds, one at a time, kept by build key since a snapshot never
+changes), and says what the store's cap would delete for it
+(wpt_depot.corpora.Room.evicted). A build starts only once confirmed
+(confirmed: true) with the estimate the page showed, and only while it
+still holds (wpt.depot.shared.unchanged: refused with 409 and the new
+estimate otherwise; a build that would delete a corpus the shown estimate
+did not name counts as changed). It runs as a corpus job of the heavy
+lane, keyed by the build key, its checkpoint kept by that key, so a
 restart of the web app goes on from its last token file.
 
     build_job(depot, snapshot, data, vocabulary, corpus, recipe, code_commit, progress=..., job=...)
     recipe_routes(depot, jobs, refusals, wrapped)   the routes
-    recipes_naming(depot)                            what the snapshot page lists as the recipes naming one
 """
 
 import hashlib
@@ -43,8 +43,6 @@ from datetime import datetime
 from wpt_depot import Depot, corpora, errors, snapshots
 from wpt_depot.corpus import build_key, canonical, census
 from wpt_depot.estimate import estimate
-from wpt_recipes import SIZE_OF
-from wpt_recipes.errors import RecipeError
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_store.names import File
 from wpt_utils.lines import say
@@ -70,7 +68,8 @@ def build_job(depot: Depot, snapshot: str | None, data: dict | None, vocabulary:
               job: Job) -> dict:
     """Build the corpus of the snapshot of that id with the data section
     data and the vocabulary of that sha256 (the model recipe named recipe's,
-    the code at code_commit), or, with corpus, the deleted corpus of that id
+    the code at code_commit, else the code this job runs, worked out here
+    rather than in the request since it hashes the checkout), or, with corpus, the deleted corpus of that id
     again, into the store WPT_STORE names, under the cap WPT_CORPORA_CAP
     sets, going on from the checkpoint of the job's build key: {corpus,
     build_key, texts (every text and item it took), conversations, tasks,
@@ -85,6 +84,8 @@ def build_job(depot: Depot, snapshot: str | None, data: dict | None, vocabulary:
         if record is None:
             raise errors.NotFound(f"no corpus {corpus} in the store")
     work = job.work / "corpus" / (job.key or "corpus")
+    if corpus is None and code_commit is None:
+        code_commit = code_name()
     built = shared.build_corpus(
         depot, snapshot, data, say, vocabulary=vocabulary, store=store, record=record, work=work,
         checkpoint=job.checkpoint(), save=job.save, progress=progress, recipe=recipe, code_commit=code_commit,
@@ -95,46 +96,6 @@ def build_job(depot: Depot, snapshot: str | None, data: dict | None, vocabulary:
             "conversations": built.get("conversations", 0), "tasks": (built.get("tasks") or {}).get("count", 0),
             "tokens": built["total_tokens"], "item_tokens": built.get("items_tokens") or 0,
             "left_out": built.get("left_out") or {}, "changed": built.get("changed")}
-
-
-def recipe_names(recipes) -> list[str]:
-    """The names the recipes page lists: each model recipe's, then each
-    series' as SERIES: (wpt_recipes.SIZE_OF), whose one corpus every size of
-    the series reads (the series' data part at its largest size,
-    wpt_recipes.series.data_part)."""
-    return [*recipes.names("model"), *(f"{name}{SIZE_OF}" for name in recipes.names("series"))]
-
-
-def file_of(recipes, name: str) -> str:
-    """The repository file of the model recipe or series (SERIES:) of that name."""
-    series, separated, _ = name.partition(SIZE_OF)
-    return recipes.relative("series", series) if separated else recipes.relative("model", name)
-
-
-def recipes_naming(depot: Depot):
-    """naming(row): the model recipes and series (recipe_names) of the
-    repository whose data section names the snapshot (its row): [{name,
-    matches: whether the change and digest it names are the snapshot's}];
-    [] without a repository."""
-    def naming(row: dict) -> list[dict]:
-        try:
-            recipes = shared.repository()
-        except shared.NoRepository:
-            return []
-        found = []
-        for name in recipe_names(recipes):
-            try:
-                data = recipes.data_part(name)
-            except RecipeError:
-                continue
-            if "snapshot" not in data or data["snapshot"] != row["name"]:
-                continue
-            if snapshots.owner_named(depot, data["depot"], shared.public_url()) != row["owner"]:
-                continue
-            found.append({"name": name, "matches": data.get("change") == row["at_change"]
-                          and data.get("digest") == row["digest"]})
-        return found
-    return naming
 
 
 def measure_of(summary: dict, data: dict) -> dict:
@@ -157,23 +118,28 @@ def measure_of(summary: dict, data: dict) -> dict:
 
 
 def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
-    """The routes over the repository's recipes and the corpora of build
-    keys; refusals wraps a handler so that it answers each failure with its
-    status, wrapped one that gets the Request too."""
+    """The routes over the builds of the recipes people hand over and the
+    corpora of build keys; refusals wraps a handler so that it answers each
+    failure with its status, wrapped one that gets the Request too."""
     downloads = Downloads(jobs.path)
     kept: dict[str, dict] = {}  # {build key: its estimate}, the KEPT_ESTIMATES made last
     estimating = threading.Lock()  # one estimate at a time: each tokenizes on one core of the web app
+    tokenizers: dict[str, tuple] = {}  # {sha256: what vocabulary_by_sha256 gave}: a vocabulary never changes
 
     def opened_store():
         return store_from_settings(shared.env_file())
 
     def vocabulary_of(data: dict) -> tuple[dict, object]:
         """({sha256, size, recipe, version} of the vocabulary data names, its tokenizer). NoVocabulary without it."""
-        sha256 = (data.get("vocabulary") or {}).get("sha256")
-        recipe, version, tokenizer = shared.vocabulary_by_sha256(depot, sha256 or "")
+        sha256 = (data.get("vocabulary") or {}).get("sha256") or ""
+        if sha256 not in tokenizers:
+            tokenizers[sha256] = shared.vocabulary_by_sha256(depot, sha256)
+            while len(tokenizers) > KEPT_ESTIMATES:
+                tokenizers.pop(next(iter(tokenizers)))
+        recipe, version, tokenizer = tokenizers[sha256]
         return {"sha256": sha256, "size": tokenizer.vocab_size, "recipe": recipe["name"], "version": version}, tokenizer
 
-    def plan(name: str, data: dict) -> dict:
+    def plan(name: str | None, data: dict) -> dict:
         """What the recipe named so (data, its data section) gives here:
         {name, data, shape, state, why, snapshot (its row with its summary),
         vocabulary, tokenizer, build_key}: state "ready" with each, or
@@ -205,8 +171,11 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
                            f"recipe says {data['vocabulary'].get('size')}"}
         return {**found, "build_key": build_key(row, data, vocabulary["sha256"])}
 
-    def read_recipe(name: str) -> dict:
-        return plan(name, shared.repository().data_part(name))
+    def given(body: dict) -> tuple[str, dict]:
+        """(the kind, the plan) of the recipe a body hands over: recipe, the
+        JSON document, and file, the name of the file it came from."""
+        name, kind, data = shared.recipe_given(body["recipe"], body.get("file"))
+        return kind, plan(name, data)
 
     def built(key: str | None) -> dict | None:
         """The summary of the corpus of the build key the store holds, None without one (or without a store)."""
@@ -256,45 +225,27 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
                 "fits": problem is None and evicted is not None, "built": built(key), "store": problem}
 
     @refusals
-    def listed(values, body):
-        try:
-            recipes = shared.repository()
-        except shared.NoRepository as error:
-            return 200, {"repository": None, "problem": str(error), "recipes": []}
-        found = []
-        for name in recipe_names(recipes):
-            try:
-                one = read_recipe(name)
-            except RecipeError as error:
-                found.append({"name": name, "file": file_of(recipes, name), "state": "invalid", "why": str(error)})
-                continue
-            found.append({**shown(one), "file": file_of(recipes, name), "corpus": built(one["build_key"]),
-                          "job": jobs.open_job("corpus", key=one["build_key"]) if one["build_key"] else None})
-        return 200, {"repository": shared.checkout(recipes), "problem": None, "recipes": found}
-
-    @refusals
-    def one(values, body):
-        recipes = shared.repository()
-        found = read_recipe(values["name"])
-        series, separated, _ = values["name"].partition(SIZE_OF)
-        answer = {**shown(found), "file": file_of(recipes, values["name"]), "repository": shared.checkout(recipes),
-                  "problems": recipes.problems("series", series) if separated
-                  else recipes.problems("model", values["name"]), "measure": None, "estimate": None,
-                  "job": None}
+    def check(values, body):
+        kind, found = given(body)
+        answer = {**shown(found), "kind": kind, "measure": None, "corpus": built(found["build_key"]),
+                  "job": jobs.open_job("corpus", key=found["build_key"]) if found["build_key"] else None}
         if found["snapshot"] is not None and found["state"] in ("ready", "no vocabulary", "vocabulary differs"):
             answer["measure"] = measure_of(found["snapshot"]["summary"], found["data"])
-        if found["state"] == "ready":
-            answer["estimate"] = costed(found)
-            answer["job"] = jobs.open_job("corpus", key=found["build_key"])
         return 200, answer
+
+    def ready(found: dict) -> dict:
+        if found["state"] != "ready":
+            named = f"the recipe {found['name']}" if found["name"] else "this recipe"
+            raise errors.Refused(f"{named} cannot be built here ({found['state']}): {found['why']}")
+        return found
+
+    @refusals
+    def estimated(values, body):
+        return 200, costed(ready(given(body)[1]))
 
     @refusals
     def build(values, body):
-        recipes = shared.repository()
-        found = read_recipe(values["name"])
-        if found["state"] != "ready":
-            raise errors.Refused(f"the recipe {values['name']} cannot be built here ({found['state']}): "
-                                 f"{found['why']}")
+        found = ready(given(body)[1])
         if body.get("confirmed") is not True:
             raise errors.Refused("a build starts only once confirmed (confirmed: true), after its estimate: nothing "
                                  "was queued")
@@ -313,18 +264,20 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
             return 409, {"problems": [f"the estimate changed since it was shown ({'; '.join(changed)}): confirm "
                                       "the new one"], "estimate": now}
         if now["built"] is not None and now["built"]["fresh"]:
-            raise errors.Refused(f"the corpus of the recipe {values['name']} is built already: download it")
+            raise errors.Refused("its corpus is built already: download it")
         if now["evicted"] is None:
             raise errors.Refused(now["store"] or "the corpus does not fit the store's cap, even once every other "
                                  "corpus it may delete is deleted: nothing was queued")
-        commit = shared.checkout(recipes)["commit"]
+        name = found["name"]
+        size = "every token" if found["data"].get("total_tokens") is None else \
+            format(found["data"]["total_tokens"], ",") + " tokens"
         return 200, jobs.add(
-            "corpus", f"build the corpus of the recipe {values['name']} (snapshot {found['snapshot']['name']}, "
-                      f"{'every token' if found['data'].get('total_tokens') is None else format(found['data']['total_tokens'], ',') + ' tokens'})",
-            build_job, found["snapshot"]["id"], found["data"], found["vocabulary"]["sha256"], None, values["name"],
-            code_name() if commit is None else commit, key=found["build_key"], recipe=values["name"],
+            "corpus", f"build the corpus of {'the recipe ' + name if name else 'a recipe'} (snapshot "
+                      f"{found['snapshot']['name']}, {size})",
+            build_job, found["snapshot"]["id"], found["data"], found["vocabulary"]["sha256"], None, name,
+            key=found["build_key"], recipe=name,
             target={"build_key": found["build_key"], "snapshot": found["snapshot"]["name"],
-                    "recipe_commit": commit, "estimate": {key: now[key] for key in ("tokens", "bytes", "seconds")}})
+                    "estimate": {key: now[key] for key in ("tokens", "bytes", "seconds")}})
 
     @refusals
     def compose(values, body):
@@ -337,14 +290,11 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
         data = {"depot": address, "snapshot": row["name"], "change": row["at_change"], "digest": row["digest"],
                 "kinds": body.get("kinds") or [], "shares": body.get("shares") or [],
                 "total_tokens": body["total_tokens"], "vocabulary": {"sha256": body["vocabulary"], "size": None}}
-        vocabulary, tokenizer = vocabulary_of(data)
+        vocabulary, _ = vocabulary_of(data)
         data["vocabulary"]["size"] = vocabulary["size"]
         canonical(data)
-        found = {"name": None, "data": data, "shape": "snapshot", "state": "ready", "why": None, "snapshot": row,
-                 "vocabulary": vocabulary, "tokenizer": tokenizer, "build_key": build_key(row, data,
-                                                                                          vocabulary["sha256"])}
-        return 200, {"recipe": {"data": data}, "build_key": found["build_key"], "vocabulary": vocabulary,
-                     "measure": measure_of(row["summary"], data), "estimate": costed(found)}
+        return 200, {"recipe": {"data": data}, "build_key": build_key(row, data, vocabulary["sha256"]),
+                     "vocabulary": vocabulary, "measure": measure_of(row["summary"], data)}
 
     # Downloads of the corpus of a build key
 
@@ -357,7 +307,7 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
                                  "stale: no corpus is sent until that ends")
         record = corpora.of_key(opened_store(), key)
         if record is None or not corpora.fresh(record):
-            raise errors.NotFound(f"no corpus of the build {key} to download now: see its recipe's page")
+            raise errors.NotFound(f"no corpus of the build {key} to download now: see its page, #/build?key={key}")
         return record
 
     def file_name(record: dict, one: dict) -> str:
@@ -488,23 +438,47 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
         return status, Stream("application/x-tar", Guarded(archive.span(whole["pieces"], start, end, read_piece,
                                                                          CHUNK), guard), end - start, headers)
 
-    estimate_body = {"type": "object", "description": "the estimate the recipe's page showed, as it gave it"}
+    estimate_body = {"type": "object", "description": "the estimate the page showed, as it gave it"}
+    given_body = {"type": "object", "required": ["recipe"],
+                  "properties": {"recipe": {"type": "object", "description": "the recipe's JSON: a model recipe or "
+                                            "a series, of which only the data section counts"},
+                                 "file": {"type": ["string", "null"], "maxLength": 255,
+                                          "description": "the name of the recipe's file, which names it"}}}
     share = {"type": "object", "required": ["tag", "share"], "additionalProperties": False,
              "properties": {"tag": {"type": "string", "minLength": 1},
                             "share": {"type": "number", "minimum": 0, "maximum": 1}}}
     return [
-        Route("GET", "/api/recipes", listed, "the model recipes of the repository checkout WPT_REPOSITORY names, "
-              "then its series, each named SERIES: and read at its largest size, the one corpus every size reads, "
-              "with the checkout's commit and whether it has changes not committed (repository: null and problem "
-              "when it is not set): each recipe's name, its file, data section, shape (snapshot, or dataset for a "
-              "recipe of before snapshots), state (ready, dataset, snapshot not here, snapshot differs, no vocabulary, "
-              "vocabulary differs, invalid) and why, its snapshot, vocabulary and build key, the corpus of its "
-              "key the store holds and its corpus job queued or running",
-              answer={"type": "object", "required": ["repository", "problem", "recipes"]}),
+        Route("POST", "/api/recipes/check", check, "what a recipe handed over as JSON gives here, at once and "
+              "writing nothing: recipe, a model recipe or a series (read at its largest size, the one corpus every "
+              "size reads), of which only the data section counts, and file, the name of its file, which names it "
+              "(a series SERIES:); its name, kind (model or series), data section, shape (snapshot, or dataset for "
+              "a recipe of before snapshots), state (ready, dataset, snapshot not here, snapshot differs, no "
+              "vocabulary, vocabulary differs) and why, its snapshot, vocabulary and build key, its measure (from "
+              "the snapshot's summary: the plain texts and bytes each share takes, the items, what no share "
+              "takes), the corpus of its key the store holds and its corpus job; 422 for a document that is no "
+              "recipe",
+              body=given_body,
+              answer={"type": "object", "required": ["name", "kind", "state", "data", "measure", "corpus", "job"]}),
+        Route("POST", "/api/recipes/estimate", estimated, "the estimate of the build of a recipe handed over as "
+              "POST /api/recipes/check takes it, once it can be built here: tokens, bytes, seconds, from a sample "
+              "it tokenizes (a few seconds the first time, then kept by build key), with what the store's cap "
+              "would delete for it (evicted, null when it cannot fit; fits) and the corpus of its build key "
+              "(built); nothing is written", body=given_body, answer={"type": "object", "required": ["build_key"]}),
+        Route("POST", "/api/recipes/build", build, "queue the build of the corpus of a recipe handed over as POST "
+              "/api/recipes/check takes it, as a job of the heavy lane keyed by its build key (the job already "
+              "open, when one is), only with confirmed: true and the estimate POST /api/recipes/estimate gave "
+              f"(409 with the new estimate when the build key changed, it now costs more than {shared.TOLERANCE:.0%} "
+              "beyond it, or the cap now deletes another corpus); refused when its corpus is built already or "
+              "cannot fit",
+              body={**given_body, "required": [*given_body["required"], "confirmed", "estimate"],
+                    "properties": {**given_body["properties"], "confirmed": {"type": "boolean"},
+                                   "estimate": estimate_body}},
+              answer={"type": "object", "required": ["id", "kind", "state"]}),
         Route("POST", "/api/recipes/compose", compose, "a recipe's data section composed from a snapshot (its id), "
               "kinds, shares by tag, total_tokens and a vocabulary the depot holds (its sha256), with its build "
-              "key, its measure (from the snapshot's summary) and its estimate, as GET /api/recipes/{name} gives "
-              "them; nothing is written: the recipe file is the person's to commit",
+              "key and its measure (from the snapshot's summary), at once; its estimate is POST "
+              "/api/recipes/estimate's with {recipe: {data}}; nothing is written: the recipe is the person's "
+              "file",
               body={"type": "object", "required": ["snapshot", "total_tokens", "vocabulary"],
                     "properties": {"snapshot": {"type": "string", "minLength": 1},
                                    "kinds": {"type": "array", "items": {"type": "string", "minLength": 1},
@@ -512,23 +486,7 @@ def recipe_routes(depot: Depot, jobs: Jobs, refusals, wrapped) -> list[Route]:
                                    "shares": {"type": "array", "items": share},
                                    "total_tokens": {"type": "integer", "minimum": 1},
                                    "vocabulary": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
-              answer={"type": "object", "required": ["recipe", "build_key", "measure", "estimate"]}),
-        Route("GET", "/api/recipes/{name}", one, "one model recipe or series (SERIES:), as GET /api/recipes lists "
-              "it, with the "
-              "repository's commit, what the repository's check finds in it (problems), its measure (from its "
-              "snapshot's summary: the plain texts and bytes each share takes, the items, what no share takes) "
-              "and, when it can be built here, its estimate (tokens, bytes, seconds, from a sample) with what "
-              "the store's cap would delete for it (evicted, null when it cannot fit; fits), the corpus of its "
-              "build key (built) and its corpus job",
-              answer={"type": "object", "required": ["name", "state", "data", "measure", "estimate", "job"]}),
-        Route("POST", "/api/recipes/{name}/build", build, "queue the build of the recipe's corpus as a job of the "
-              "heavy lane keyed by its build key (the job already open, when one is), only with confirmed: true "
-              "and the estimate GET /api/recipes/{name} gave (409 with the new estimate when the build key "
-              f"changed, it now costs more than {shared.TOLERANCE:.0%} beyond it, or the cap now deletes another "
-              "corpus); refused when its corpus is built already or cannot fit",
-              body={"type": "object", "required": ["confirmed", "estimate"],
-                    "properties": {"confirmed": {"type": "boolean"}, "estimate": estimate_body}},
-              answer={"type": "object", "required": ["id", "kind", "state"]}),
+              answer={"type": "object", "required": ["recipe", "build_key", "measure"]}),
         Route("GET", "/api/builds/{key}", build_shown, "the corpus of a build key: its state (built, being built, "
               "not built, stale, deleted, checking an erasure, no store), its record's summary and, built, each "
               "file (name, download name, bytes, sha256, role, tokens) and the archive of them all",

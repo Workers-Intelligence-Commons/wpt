@@ -9,17 +9,22 @@
 // shown; 409 with the new one when it changed meanwhile), followed to its
 // end, then its page opens.
 //
-// #/snapshots/ID is one snapshot (GET /api/snapshots/ID): its facts and
+// #/snapshots/ID is one snapshot (GET /api/snapshots/ID): "Read it whole"
+// (#/snapshots/ID/strip, strip.tsx) and "Size map" (#/sizes?snapshot=ID,
+// sizes.tsx) at its head, its facts and
 // digest, its texts by kind and by tag (from its summary, which never
-// changes), what erasures carried out since did to it, the repository's
-// recipes that name it, its sets for anyone to check the digest, and the
-// recipe composer (composer.tsx; ?compose=1 opens it, &vocabulary=SHA256
-// picks that vocabulary).
+// changes), what erasures carried out since did to it, its sets for anyone
+// to check the digest, and one "Recipes" block: the recipes built from it
+// here (the corpus jobs of the queue that name it, each opening its build),
+// a button that opens the recipe composer (composer.tsx; ?compose=1 opens
+// it, &vocabulary=SHA256 picks that vocabulary), and the drop zone of a
+// recipe file to build (recipe-build.tsx).
 
-import { Button, Dialog, Question, Skeleton, TextInput } from "@workers-intelligence-commons/components";
-import { useCallback, useEffect, useState } from "react";
+import { Button, ButtonLink, Dialog, Question, Skeleton, TextInput } from "@workers-intelligence-commons/components";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { get, part, post, type Answer, type Job } from "../api";
 import { Composer } from "../composer";
+import { keepHanded, RecipeBuild, RecipeDrop, type Handed } from "../recipe-build";
 import { whole } from "../mix";
 import { Facts, Help, optional, PageHead, plural, Problems, Section } from "../parts";
 import { pipelineChanged, snapshotHref, useSnapshots, type Sized, type SnapshotEstimate, type SnapshotOffer, type SnapshotShown } from "../pipeline";
@@ -27,6 +32,7 @@ import { href } from "../route";
 import { bytes, duration } from "../sizes";
 import type { Page } from "./index";
 import { JobLine, useJobs } from "./jobs";
+import { SnapshotStrip } from "./strip";
 
 export const madeWhen = (at: string) => at.replace("T", " ").slice(0, 16);
 // What a snapshot was made from, in words: nothing for one made from the texts admitted then.
@@ -110,7 +116,7 @@ function Snapshots({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Snapshots"
-        chain={<>A snapshot is a name on a change of the depot with the texts admitted then. A <a href={href(["recipes"])}>recipe</a> names one, and every build of it reads each text as it was at that change, so a model trained on it can be checked later. Daily work on the texts never changes a snapshot.</>}
+        chain={<>A snapshot is a name on a change of the depot with the texts admitted then. A recipe names one, and every build of it reads each text as it was at that change, so a model trained on it can be checked later. Daily work on the texts never changes a snapshot.</>}
         actions={<Button variant={rows?.ok && rows.data.length === 0 ? "primary" : "quiet"} onClick={() => setMaking(true)}>Make a snapshot</Button>} />
       {open.map((j) => <JobLine key={j.id} job={j} onEnded={() => { pipelineChanged(); reload(); }} />)}
       {!rows && <Skeleton lines={4} />}
@@ -157,7 +163,12 @@ function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
   const [shown, setShown] = useState<Answer<SnapshotShown> | null>(null);
   const [composing, setComposing] = useState(query.get("compose") === "1");
   const [copied, setCopied] = useState(false);
+  const [handed, setHanded] = useState<Handed | null>(null); // a recipe file dropped or chosen here
+  const take = useCallback((h: Handed) => { keepHanded(h); setHanded(h); }, []);
   useEffect(() => { get<SnapshotShown>(`/api/snapshots/${part(id)}`).then(setShown); }, [id]);
+  const jobs = useJobs();
+  const composer = useRef<HTMLDivElement>(null);
+  const compose = () => { setComposing(true); window.setTimeout(() => composer.current?.scrollIntoView({ block: "start", behavior: "smooth" }), 0); };
   if (!shown) return <Skeleton lines={6} label="Reading the snapshot" />;
   if (!shown.ok) return <><PageHead title={id} meta={<a href={href(["snapshots"])}>snapshots</a>} /><Problems problems={shown.problems} /></>;
   const s = shown.data;
@@ -167,7 +178,9 @@ function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
       <PageHead title={s.name}
         meta={<><a href={href(["snapshots"])}>snapshots</a><span>change {s.at_change.toLocaleString("en")}</span><span>{plural(s.texts, "text")}</span><span>{bytes(s.bytes)}</span><span className="ledger">{s.owner}</span></>}
         chain={<>The texts admitted at change {s.at_change.toLocaleString("en")} of {s.owner}, each read as it was then. It never changes; an erasure carried out later still cuts what it names.</>}
-        actions={!composing && <Button variant="primary" onClick={() => setComposing(true)}>New recipe from this snapshot</Button>} />
+        actions={<>
+          <ButtonLink variant="quiet" href={href(["snapshots", s.id, "strip"])} title="Every text of it as one strip, the longest first, its size in the margin">Read it whole</ButtonLink>
+          <ButtonLink variant="quiet" href={href(["sizes"], { snapshot: s.id })} title="Which tags and texts of it weigh the most">Size map</ButtonLink></>} />
       <Facts rows={[
         ["made", `${madeWhen(s.made_at)} UTC`],
         ["made from", madeFrom(s.origin)],
@@ -176,7 +189,7 @@ function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
           <Help label="the digest">A sha256 of the text numbers it holds and the change it reads them at. Anyone can work it out again from its sets, without a copy of the depot.</Help></>],
         ["sets", <a href={`/api/snapshots/${part(s.id)}/sets`} download={`${s.name}-sets.json`}>Download its sets</a>],
       ]} />
-      {composing && <Composer snapshot={s} vocabulary={query.get("vocabulary")} onClose={() => setComposing(false)} />}
+      <div ref={composer}>{composing && <Composer snapshot={s} vocabulary={query.get("vocabulary")} onClose={() => setComposing(false)} />}</div>
       <div className="board">
         <Section title="By kind">
           <Counted parts={s.summary.kinds} label="kind" share link={(k) => href(["texts"], { kind: k })} />
@@ -190,19 +203,39 @@ function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
             <p className="small">{plural(s.erased_since.texts, "text")} of it cut or removed by {s.erased_since.erasures.map((e, i) => <span key={e}>{i ? ", " : ""}<a className="ledger" href={href(["erasures"], { request: e })}>{e}</a></span>)}. A build leaves out what they erased.</p>
           )}
         </Section>
-        <Section title={<>Recipes naming it{s.recipes.length ? `: ${s.recipes.length}` : ""}</>}>
-          {s.recipes.length === 0 ? <p className="small aside">No recipe of the repository names it yet.</p> : (
-            <ul className="plain linked">
-              {s.recipes.map((r) => <li key={r.name}><a href={href(["recipes", r.name])}>{r.name}</a>{!r.matches && <span className="not-allowed"> its change or digest differs</span>}</li>)}
-            </ul>
-          )}
+        <Section title="Recipes" help="The recipes built from this snapshot by this depot's queue, each opening its build. The depot reads no repository, so a recipe that names the snapshot but was never built here is not listed. A new one is composed by clicks here; a recipe file, a model recipe or a series, is built from its data section.">
+          <BuiltFrom jobs={jobs?.ok ? jobs.data : null} snapshot={s.name} />
+          <div className="row tight recipe-actions">
+            <Button variant={composing ? "quiet" : "primary"} onClick={compose} disabled={composing}>{composing ? "Composing above" : "Compose a new recipe"}</Button>
+          </div>
+          <RecipeDrop onHanded={take} primary={false} label="Build a recipe file" />
         </Section>
       </div>
+      {handed && <RecipeBuild key={JSON.stringify(handed)} handed={handed} onClear={() => setHanded(null)} />}
     </>
+  );
+}
+
+// The recipes built from a snapshot here: one line per build key, the latest job of each, newest first.
+function BuiltFrom({ jobs, snapshot }: { jobs: Job<unknown>[] | null; snapshot: string }) {
+  if (!jobs) return <p className="small aside">Reading the queue…</p>;
+  const latest = new Map<string, Job<unknown>>();
+  for (const j of [...jobs].sort((a, b) => b.created - a.created))
+    if (j.kind === "corpus" && j.key && j.target?.snapshot === snapshot && !latest.has(j.key)) latest.set(j.key, j);
+  if (!latest.size) return <p className="small aside">No recipe built from it here yet.</p>;
+  return (
+    <ul className="plain small built-from">
+      {[...latest.values()].map((j) => (
+        <li key={j.key}><a href={href(["build"], { key: j.key! })}>{j.recipe ?? "a composed recipe"}</a>{" "}
+          <span className={j.state === "failed" || j.state === "refused" ? "not-allowed" : "aside"}>{j.state === "done" ? "built" : j.state}</span>{" "}
+          <span className="ledger aside">{madeWhen(new Date(j.created * 1000).toISOString())} UTC</span></li>
+      ))}
+    </ul>
   );
 }
 
 export const snapshots: Page = {
   path: "snapshots", title: "Snapshots", group: "data",
-  Component: ({ rest, query }) => (rest[0] ? <OneSnapshot key={rest[0]} id={rest[0]} query={query} /> : <Snapshots query={query} />),
+  Component: ({ rest, query }) => (rest[1] === "strip" ? <SnapshotStrip key={rest[0]} id={rest[0]} query={query} />
+    : rest[0] ? <OneSnapshot key={rest[0]} id={rest[0]} query={query} /> : <Snapshots query={query} />),
 };

@@ -74,7 +74,7 @@ def test_a_recipe_whose_corpus_is_not_built_stops_the_run_before_anything_starts
     with pytest.raises(SystemExit) as refused:
         main([])
     err = capsys.readouterr().err
-    assert refused.value.code == 2 and "no fresh corpus of snapshot d" in err and "press Build on the recipe page" in err
+    assert refused.value.code == 2 and "no fresh corpus of snapshot d" in err and "press Build on the Build page" in err
     [run] = built.records("wpt manager")
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
         "manager.corpus"]

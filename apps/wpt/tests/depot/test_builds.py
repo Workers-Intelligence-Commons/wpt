@@ -3,11 +3,9 @@ import hashlib
 import http.client
 import io
 import json
-import os
 import pickle
 import socket
 import sqlite3
-import subprocess
 import tarfile
 import threading
 import time
@@ -32,6 +30,7 @@ from wpt.depot.jobs import DATASETS_GONE, WRITES_BEFORE, Jobs, connected
 from wpt.depot.web.recipes import build_job
 from wpt.depot.web.routes import STATUSES, routes
 from wpt.depot.web.server import make_server
+from wpt_utils.programs import code_name
 
 ME = Declaration("Ada Lovelace", "ada@example.org", True)
 TEXTS = ["the quick brown fox jumps over the lazy dog", "pack my box with five dozen liquor jugs",
@@ -286,28 +285,15 @@ def test_a_vocabulary_lists_a_long_text_once_whatever_pieces_of_it_its_sample_to
 REPOSITORY = Path(__file__).parents[4]  # this checkout, whose recipes give a model part that passes its schema
 
 
-def checkout(tmp_path, recipes: dict[str, dict], series: dict[str, dict] = {}) -> Path:
-    """A checkout of a repository holding the model recipes {name: data section}, each with the model part of a
-    recipe of this checkout, and the series {name: data section}, each with the rest of a series of this checkout,
-    committed: its folder."""
-    model = Recipes(REPOSITORY).recipe("model", Recipes(REPOSITORY).names("model")[0])
-    folder = tmp_path / "repository"
-    (folder / "data" / "recipes" / "models").mkdir(parents=True)
-    for name, data in recipes.items():
-        (folder / "data" / "recipes" / "models" / f"{name}.json").write_text(json.dumps({**model, "data": data}),
-                                                                            encoding="utf-8")
-    if series:
-        whole = Recipes(REPOSITORY).recipe("series", Recipes(REPOSITORY).names("series")[0])
-        (folder / "data" / "recipes" / "series").mkdir(parents=True)
-        for name, data in series.items():
-            (folder / "data" / "recipes" / "series" / f"{name}.json").write_text(
-                json.dumps({**whole, "data": data}), encoding="utf-8")
-    git = ["git", "-C", str(folder), "-c", "user.name=Test", "-c", "user.email=test@example.org"]
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-    subprocess.run([*git, "init", "-q"], check=True, env=env)
-    subprocess.run([*git, "add", "."], check=True, env=env)
-    subprocess.run([*git, "commit", "-q", "-m", "recipes"], check=True, env=env)
-    return folder
+def model_recipe(data: dict) -> dict:
+    """A model recipe with that data section and the rest of a recipe of this checkout, as a person hands it
+    over."""
+    return {**Recipes(REPOSITORY).recipe("model", Recipes(REPOSITORY).names("model")[0]), "data": data}
+
+
+def series_recipe(data: dict) -> dict:
+    """A series with that data section and the rest of a series of this checkout."""
+    return {**Recipes(REPOSITORY).recipe("series", Recipes(REPOSITORY).names("series")[0]), "data": data}
 
 
 def data_of(held, vocabulary: str, size: int | None, total_tokens=1000, **changes) -> dict:
@@ -353,7 +339,7 @@ def test_a_snapshot_s_page_gives_its_summary_what_erasures_did_since_and_sets_an
     row = depot.snapshot("s1")
 
     status, _, page = call("GET", f"/api/snapshots/{row['id']}")
-    assert status == 200 and page["summary"]["kinds"]["plain"][0] == len(TEXTS) and page["recipes"] == []
+    assert status == 200 and page["summary"]["kinds"]["plain"][0] == len(TEXTS) and "recipes" not in page
     assert page["erased_since"] == {"texts": 0, "erasures": []}
     status, _, found = call("GET", f"/api/snapshots/{row['id']}/sets")
     sets = [(one["part"], one["owner"], one["bound"], BitMap.deserialize(base64.b64decode(one["bitmap"])))
@@ -374,63 +360,59 @@ def test_a_snapshot_s_page_gives_its_summary_what_erasures_did_since_and_sets_an
                                                                                            "erasures": [erasure]}
 
 
-def test_recipes_are_listed_from_the_checkout_wpt_repository_names_with_its_commit(served, tmp_path, monkeypatch):
+def test_a_recipe_handed_over_is_checked_at_once_against_this_depot_and_named_by_its_file(served, tmp_path):
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
-    monkeypatch.delenv(shared.REPOSITORY, raising=False)
-    status, _, listed = call("GET", "/api/recipes")
-    assert status == 200 and listed["repository"] is None and shared.REPOSITORY in listed["problem"]
-    assert call("GET", "/api/recipes/one")[0] == 422  # no repository: said, not a crash
-
     vocabulary = trained(call, depot)
     size = shared.vocabulary_by_sha256(depot, vocabulary)[2].vocab_size
-    folder = checkout(tmp_path, {
+    given = {
         "ready": data_of(depot, vocabulary, size),
         "elsewhere": data_of(depot, vocabulary, size, depot="https://other.example"),
         "moved": data_of(depot, vocabulary, size, change=0),
         "untrained": data_of(depot, "0" * 64, size),
-        "old": {"depot": PUBLIC, "dataset": "first", "total_tokens": 1000}})
-    monkeypatch.setenv(shared.REPOSITORY, str(folder))
-    commit = subprocess.run(["git", "-C", str(folder), "rev-parse", "HEAD"], capture_output=True,
-                            check=True).stdout.decode().strip()
+        "old": {"depot": PUBLIC, "dataset": "first", "total_tokens": 1000}}
 
-    status, _, listed = call("GET", "/api/recipes")
+    checked = {name: call("POST", "/api/recipes/check", {"file": f"{name}.json", "recipe": model_recipe(data)})
+               for name, data in given.items()}
 
-    assert status == 200 and listed["repository"] == {"commit": commit, "dirty": False}
-    states = {one["name"]: one["state"] for one in listed["recipes"]}
-    assert states == {"ready": "ready", "elsewhere": "snapshot not here", "moved": "snapshot differs",
-                      "untrained": "no vocabulary", "old": "dataset"}
-    ready = next(one for one in listed["recipes"] if one["name"] == "ready")
+    assert {name: (one[0], one[2]["state"]) for name, one in checked.items()} == {
+        "ready": (200, "ready"), "elsewhere": (200, "snapshot not here"), "moved": (200, "snapshot differs"),
+        "untrained": (200, "no vocabulary"), "old": (200, "dataset")}
+    ready = checked["ready"][2]
     snapshot = depot.snapshot("s1")
-    assert ready["build_key"] == corpora_key(snapshot, ready["data"], vocabulary) and ready["corpus"] is None
-    assert call("GET", f"/api/snapshots/{snapshot['id']}")[2]["recipes"] == [
-        {"name": "moved", "matches": False}, {"name": "ready", "matches": True},
-        {"name": "untrained", "matches": True}]
-    assert call("GET", "/api/recipes/nothing")[0] == 404
+    assert (ready["name"], ready["kind"], ready["corpus"], ready["job"]) == ("ready", "model", None, None)
+    assert ready["build_key"] == corpora_key(snapshot, ready["data"], vocabulary)
+    assert ready["measure"]["plain"]["texts"] == len(TEXTS) and ready["measure"]["shares"][0]["tag"] is None
+    # only the data section counts: a document of it alone reads the same, named by no file
+    alone = call("POST", "/api/recipes/check", {"recipe": {"data": given["ready"]}})[2]
+    assert (alone["name"], alone["build_key"]) == (None, ready["build_key"])
+    assert call("POST", "/api/recipes/check", {"file": "x.json", "recipe": {"model": {}}})[0] == 422  # no data
+    assert call("POST", "/api/recipes/check", {"recipe": {"data": {**given["ready"], "kinds": 3}}})[0] == 422
+    assert call("POST", "/api/recipes/estimate", {"recipe": model_recipe(given["moved"])})[0] == 422
+    assert call("GET", "/api/recipes")[0] == 404  # the depot reads no repository
 
 
-def test_a_series_is_listed_as_series_colon_with_the_build_key_every_size_of_it_trains_from(served, tmp_path,
-                                                                                            monkeypatch):
+def test_a_series_is_named_series_colon_with_the_build_key_every_size_of_it_trains_from(served, tmp_path):
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
     vocabulary = trained(call, depot)
     size = shared.vocabulary_by_sha256(depot, vocabulary)[2].vocab_size
     section = {key: value for key, value in data_of(depot, vocabulary, size).items() if key != "total_tokens"}
-    folder = checkout(tmp_path, {}, {"tiny": section})
-    monkeypatch.setenv(shared.REPOSITORY, str(folder))
+    document = series_recipe(section)
 
-    [listed] = call("GET", "/api/recipes")[2]["recipes"]
+    status, _, checked = call("POST", "/api/recipes/check", {"file": "tiny.json", "recipe": document})
 
-    assert (listed["name"], listed["file"], listed["state"]) == ("tiny:", "data/recipes/series/tiny.json", "ready")
-    whole = Recipes(folder).data_part("tiny:")  # the series' data part at its largest size
-    assert whole["total_tokens"] > 0
-    size_name = f"tiny:{next(iter(Recipes(folder).recipe('series', 'tiny')['sizes']))['name']}"
-    assert Recipes(folder).data_part(size_name) == whole  # what wpt train SERIES:SIZE keys its corpus by
-    assert listed["build_key"] == corpora_key(depot.snapshot("s1"), whole, vocabulary)
-    status, _, page = call("GET", "/api/recipes/tiny:")
-    assert status == 200 and page["state"] == "ready" and page["problems"] == [] and page["estimate"] is not None
-    assert call("GET", f"/api/snapshots/{depot.snapshot('s1')['id']}")[2]["recipes"] == [
-        {"name": "tiny:", "matches": True}]
+    assert (status, checked["name"], checked["kind"], checked["state"]) == (200, "tiny:", "series", "ready")
+    folder = tmp_path / "repository" / "data" / "recipes" / "series"  # the same series in a repository
+    folder.mkdir(parents=True)
+    (folder / "tiny.json").write_text(json.dumps(document), encoding="utf-8")
+    whole = Recipes(tmp_path / "repository").data_part("tiny:")  # the series' data part at its largest size
+    assert whole["total_tokens"] > 0 and checked["data"] == whole
+    size_name = f"tiny:{document['sizes'][0]['name']}"
+    assert Recipes(tmp_path / "repository").data_part(size_name) == whole  # what wpt train SERIES:SIZE keys by
+    assert checked["build_key"] == corpora_key(depot.snapshot("s1"), whole, vocabulary)
+    status, _, estimate = call("POST", "/api/recipes/estimate", {"file": "tiny.json", "recipe": document})
+    assert status == 200 and estimate["build_key"] == checked["build_key"] and estimate["tokens"] > 0
 
 
 def test_a_corpus_record_names_the_depot_the_recipe_names_not_the_one_that_builds_it(served, tmp_path):
@@ -453,39 +435,39 @@ def corpora_key(snapshot, data, vocabulary):
 
 
 def test_a_recipe_builds_only_once_confirmed_with_its_estimate_and_its_corpus_downloads_by_build_key(
-        served, tmp_path, monkeypatch):
+        served, tmp_path):
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
     vocabulary = trained(call, depot)
     size = shared.vocabulary_by_sha256(depot, vocabulary)[2].vocab_size
-    monkeypatch.setenv(shared.REPOSITORY, str(checkout(tmp_path, {"ready": data_of(depot, vocabulary, size)})))
+    given = {"file": "ready.json", "recipe": model_recipe(data_of(depot, vocabulary, size))}
 
-    status, _, page = call("GET", "/api/recipes/ready")
+    status, _, page = call("POST", "/api/recipes/check", given)
+    status, _, shown = call("POST", "/api/recipes/estimate", given)
 
     assert status == 200 and page["state"] == "ready" and page["job"] is None
-    assert page["measure"]["plain"]["texts"] == len(TEXTS) and page["measure"]["shares"][0]["tag"] is None
-    shown = page["estimate"]
     assert shown["build_key"] == page["build_key"] and shown["tokens"] > 0 and shown["bytes"] > 0
     assert (shown["cap"], shown["evicted"], shown["fits"], shown["built"]) == (None, [], True, None)
-    assert call("POST", "/api/recipes/ready/build", {"confirmed": True})[0] == 400
-    assert call("POST", "/api/recipes/ready/build", {"confirmed": False, "estimate": shown})[0] == 422
-    assert call("POST", "/api/recipes/ready/build", {"confirmed": True,
-                                                     "estimate": {**shown, "build_key": "0" * 64}})[0] == 409
-    status, _, refused = call("POST", "/api/recipes/ready/build", {"confirmed": True,
-                                                                   "estimate": {**shown, "bytes": -10**9}})
+    assert call("POST", "/api/recipes/build", {**given, "confirmed": True})[0] == 400
+    assert call("POST", "/api/recipes/build", {**given, "confirmed": False, "estimate": shown})[0] == 422
+    assert call("POST", "/api/recipes/build", {**given, "confirmed": True,
+                                               "estimate": {**shown, "build_key": "0" * 64}})[0] == 409
+    status, _, refused = call("POST", "/api/recipes/build", {**given, "confirmed": True,
+                                                             "estimate": {**shown, "bytes": -10**9}})
     assert status == 409 and refused["estimate"]["bytes"] == shown["bytes"]  # the new estimate, to confirm
     assert call("GET", "/api/jobs")[2][0]["kind"] == "vocabulary"  # only the training: nothing was queued
 
-    status, _, job = call("POST", "/api/recipes/ready/build", {"confirmed": True, "estimate": shown})
+    status, _, job = call("POST", "/api/recipes/build", {**given, "confirmed": True, "estimate": shown})
     assert (status, job["kind"], job["lane"], job["key"], job["recipe"]) == (200, "corpus", "heavy",
                                                                               page["build_key"], "ready")
     state = ended(call, job["id"])
     assert state["state"] == "done", state
     record = corpora.of_key(store_from_settings(), page["build_key"])
     assert record["id"] == state["answer"]["corpus"] and record["recipe"] == "ready" and record["depot"] == PUBLIC
-    assert record["code_commit"] == call("GET", "/api/recipes")[2]["repository"]["commit"]
-    assert call("POST", "/api/recipes/ready/build", {"confirmed": True, "estimate": call(
-        "GET", "/api/recipes/ready")[2]["estimate"]})[0] == 422  # built already
+    assert record["code_commit"] == code_name()  # the code that built it: the depot reads no repository
+    assert call("POST", "/api/recipes/check", given)[2]["corpus"]["id"] == record["id"]
+    assert call("POST", "/api/recipes/build", {**given, "confirmed": True, "estimate": call(
+        "POST", "/api/recipes/estimate", given)[2]})[0] == 422  # built already
 
     status, _, built = call("GET", f"/api/builds/{page['build_key']}")
     assert status == 200 and built["state"] == "built" and built["corpus"]["id"] == record["id"]
@@ -643,7 +625,9 @@ def test_a_recipe_is_composed_from_clicks_with_its_measure_and_estimate_and_noth
                                                                                  snapshot["digest"])
     assert data["vocabulary"]["sha256"] == vocabulary and data["total_tokens"] == 500
     assert [(one["tag"], one["texts"]) for one in composed["measure"]["shares"]] == [("a", 2), ("b", 1)]
-    assert composed["measure"]["no_share"] == 1 and composed["estimate"]["build_key"] == composed["build_key"]
+    assert composed["measure"]["no_share"] == 1 and "estimate" not in composed  # at once: no sample tokenized
+    status, _, estimate = call("POST", "/api/recipes/estimate", {"recipe": composed["recipe"]})
+    assert status == 200 and estimate["build_key"] == composed["build_key"]
     assert depot.change() == change and len(call("GET", "/api/jobs")[2]) == 1  # the training alone
     assert call("POST", "/api/recipes/compose", {"snapshot": snapshot["id"], "total_tokens": 500,
                                                  "vocabulary": "0" * 64})[0] == 422

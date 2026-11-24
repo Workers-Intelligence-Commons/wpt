@@ -13,7 +13,7 @@
 import { Button, TextInput } from "@workers-intelligence-commons/components";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post, type Answer } from "../api";
-import { shownCounts, useCounts } from "../counts";
+import { shownCounts, useCounts, BY_TAG } from "../counts";
 import { leftOut, useWrite, WriteProgress, type Left } from "../decide-forms";
 import { sent, type Selection } from "../filter";
 import { Confirm, Help, plural, Problems, type Declaration } from "../parts";
@@ -66,7 +66,7 @@ export function RetagForm({ selection, size, removing, onDone }: {
   const { send, job, busy } = useWrite();
   useEffect(() => { get<Tag[]>("/api/tags").then((a) => setTags(a.ok ? a.data : [])); }, []);
   // for a removal, the tags the ticked texts have, the most held first, once counted
-  const counting = useCounts(removing ? selection : null);
+  const counting = useCounts(removing ? selection : null, 0, BY_TAG);
   const held = removing ? shownCounts(counting)?.tags ?? null : null;
   const offered: Tag[] = (held ?? tags ?? []).slice().sort((a, b) => b.texts - a.texts || a.tag.localeCompare(b.tag));
   const shown = more ? offered : offered.slice(0, CHIPS);

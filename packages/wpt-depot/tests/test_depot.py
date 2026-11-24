@@ -848,25 +848,33 @@ def test_one_scores_change_is_one_decision_on_many_texts_which_keep_their_status
         {"id": first, "names": '["machine-made"]'}, {"id": second, "names": '["machine-made","source-rank"]'}]
 
 
-def test_the_values_of_a_score_are_those_of_the_current_texts_changed_last_most_frequent_first_kept(
+def test_the_values_of_a_score_are_those_of_every_current_text_however_long_ago_it_was_scored(
         make_depot, me, monkeypatch):
+    # a person scores quality from 0 to 10 by hand, while later writes (other scores, other texts) pile up: the
+    # review's choices must still follow the scale the depot holds, not the few texts changed last
     depot = make_depot()
-    ids = depot.add([plain(f"text {n}") for n in range(6)], me)
-    assert depot.score_values("quality") == {"name": "quality", "read": 6, "texts": 0, "low": None, "high": None,
-                                             "common": []}
+    ids = depot.add([plain(f"text {n}") for n in range(8)], me)
+    assert depot.score_values("quality") == {"name": "quality", "texts": 0, "low": None, "high": None, "common": []}
     scores_of(depot, [{"id": one, "scores": [score("quality", value)]}
-                      for one, value in zip(ids, (4, 4, 2, 4, 2, 5))], me)
-    scores_of(depot, [{"id": ids[5], "scores": [score("quality", 1)]}], me)  # its earlier 5 no longer counts
+                      for one, value in zip(ids, (0, 4, 4, 2, 10, 4, 2, 5))], me)
+    scores_of(depot, [{"id": ids[7], "scores": [score("quality", 1)]}], me)  # its earlier 5 no longer counts
+    for round_ in range(3):  # later changes that hold no quality
+        scores_of(depot, [{"id": one, "scores": [score("symbols", 0.0137 * n + 0.1 * round_)]} for n, one in enumerate(ids)], me)
+        depot.add([plain("one more")], me)
+    depot.edit_scores([{"id": ids[0], "remove": ["quality"]}], me)
 
     found = depot.score_values(" quality ")
 
-    assert (found["name"], found["texts"], found["low"], found["high"]) == ("quality", 6, 1.0, 4.0)
-    assert found["common"] == [{"value": 1.0, "texts": 1}, {"value": 2.0, "texts": 2}, {"value": 4.0, "texts": 3}]
-    # only the most frequent are given, by value, and only the revisions of the latest changes are read
+    assert found == {"name": "quality", "texts": 7, "low": 1.0, "high": 10.0,
+                     "common": [{"value": 1.0, "texts": 1}, {"value": 2.0, "texts": 2}, {"value": 4.0, "texts": 3},
+                                {"value": 10.0, "texts": 1}]}
+    # only the most frequent are given, by value; a measure's values are kept to three significant digits
     monkeypatch.setattr(depots, "SCORE_VALUES", 2)
     assert depot.score_values("quality")["common"] == [{"value": 2.0, "texts": 2}, {"value": 4.0, "texts": 3}]
-    monkeypatch.setattr(depots, "SCORE_READ", 1)
-    assert (depot.score_values("quality")["read"], depot.score_values("quality")["texts"]) == (1, 1)
+    assert depot.score_values("symbols")["high"] == 0.296
+    # an erased text takes its values with it
+    depot.decide_erasure(depot.ask_erasure("all of it", [(ids[4], None, None)], me), "admitted", me)
+    assert depot.score_values("quality")["high"] == 4.0
 
 
 def test_a_score_set_again_replaces_it_one_is_removed_by_name_and_an_unchanged_text_is_left_out(make_depot, me):
@@ -925,6 +933,10 @@ def test_the_depot_s_counts_answer_a_filter_of_statuses_and_one_value_as_the_ste
         key: stepped[key] for key in ("blocked", "tags", "licenses")}
     assert (depot.held_count(Filter(tags=("en",)))["tags"], depot.held_count(Filter(tags=("none",)))["tags"]) == (
         None, [])
+    # a filter of statuses alone gives its tags and licenses too, from the split of each by status
+    for statuses in (("refused",), ("admitted",), ("admitted", "under review"), ("under review",)):
+        held, stepped = depot.held_count(Filter(statuses=statuses)), depot.count(Filter(statuses=statuses))
+        assert (held["tags"], held["licenses"]) == (stepped["tags"], stepped["licenses"]), statuses
     # anything else is counted by steps
     for other_shape in (Filter(tags=("en", "fr")), Filter(tags=("en",), licenses=("CC0-1.0",)), Filter(search="one"),
                         Filter(ids=("depot-1",)), Filter(change=depot.change() - 1), Filter(decision="depot-1")):
@@ -1482,9 +1494,10 @@ def counted_again(depot, title_index) -> tuple[dict, dict]:
             "SELECT name, texts FROM counts WHERE facet = ? ORDER BY name", (facet,))} for facet in counts.SPLIT}
         sized = depot.rows("SELECT facet, name, texts, characters, bytes FROM counts WHERE facet IN "
                            f"{counts.TEXT_SIZED} ORDER BY 1, 2")
+        values = depot.rows("SELECT name, texts FROM counts WHERE facet = ? ORDER BY name", (counts.SCORE_VALUE,))
         return {**depot.counts(), **split, **{table: depot.rows(f"SELECT * FROM {table} ORDER BY 1, 2")
                                               for table, _ in counts.LISTINGS.values()},
-                "titles": title_index(depot), "sized": sized}
+                "titles": title_index(depot), "sized": sized, "values": values}
     kept = stored()
     depot.recount()
     return kept, stored()
@@ -1543,7 +1556,7 @@ def test_every_write_keeps_the_counts_and_statuses_equal_to_what_the_rows_make(m
         stored, ruled = stored_and_ruled(depot)
         assert stored == ruled
     assert made["texts"] == {"": 7} and made["tag"] == {"a": 3, "b": 1, "c": 1, "d": 1, "e": 2}
-    assert made["score"] == {"length": 1}
+    assert made["score"] == {"length": 1} and made["values"] == [{"name": '["length","2"]', "texts": 1}]
     assert made["license"] == {"CC0-1.0": 6, "MIT": 2} and len(made["text_licenses"]) == 8
     assert made["titles"]["terms"] and made["titles"]["unfound"] == []
     assert [one["id"] for one in depot.search(Filter(search="title"))["rows"]] == texts[2:6]
@@ -1676,6 +1689,42 @@ def test_a_pull_brings_the_upstream_s_decisions_as_rows_and_keeps_the_clone_s_st
     assert kept_counts == made and follower.held_count(Filter(statuses=("admitted",)))["statuses"]["admitted"] == 2
 
 
+def test_a_refusal_takes_its_reason_afterwards_from_the_person_who_made_it_and_a_pull_brings_it(
+        serve, make_depot, me, tmp_path):
+    # the Texts page refuses with one key and offers reasons after it: the reason must become that refusal's own,
+    # public, without changing who decided, and a clone must hold the same record
+    upstream, follower, (refused, kept) = upstream_and_clone_holding(serve, make_depot, me, tmp_path)
+    decision, _, _ = upstream.decide("refused", [refused], me)
+    before = upstream.decision(decision)["decision"]
+    pull(follower)
+
+    upstream.give_reason(decision, " bad license ", me)
+    upstream.give_reason(decision, "license not compatible", me)  # another click replaces it
+
+    after = upstream.decision(decision)["decision"]
+    assert after["reason"] == "license not compatible"
+    assert {key: after[key] for key in ("status", "name", "email", "made_at")} == {
+        key: before[key] for key in ("status", "name", "email", "made_at")}
+    assert upstream.show(refused)["status"] == "refused" and upstream.decision(decision)["texts"] == 1
+    pull(follower)
+    assert follower.decision(decision)["decision"]["reason"] == "license not compatible"
+    # another person, a decision under review, a reason of the depot's own form, and the upstream's decision from
+    # the clone are refused, and nothing is written
+    other = Declaration("Grace Hopper", "grace@example.org", True)
+    again, _, _ = upstream.decide("under review", [refused], me)
+    change = upstream.change()
+    for wrong in (lambda: upstream.give_reason(decision, "mine", other),
+                  lambda: upstream.give_reason(again, "why", me),
+                  lambda: upstream.give_reason(decision, "put back under review", me)):
+        with pytest.raises(Refused):
+            wrong()
+    with pytest.raises(NotFound):
+        upstream.give_reason("upstream-999", "why", me)
+    with pytest.raises(BelongsToUpstream):
+        follower.give_reason(decision, "why", me)
+    assert upstream.change() == change
+
+
 def test_an_operation_on_a_filter_read_at_a_change_leaves_out_the_texts_changed_since_and_says_how_many(
         make_depot, me):
     # what a page showed at a change is what a bulk action takes: never a text changed or added after it
@@ -1757,6 +1806,71 @@ def test_a_page_in_an_order_no_index_serves_is_refused_past_sorted_matches_with_
             read("true", order="title")
         assert len(read("true", order="id")["rows"]) == 2
         assert len(read(Filter(ids=(first,)), order="title")["rows"]) == 1
+
+
+def test_a_page_by_length_reads_the_length_index_past_sorted_matches_and_their_lengths_alone_within(
+        make_depot, me, monkeypatch):
+    # the strip of the biggest texts reads every admitted text of the public depot, 22 million, by length: a page must
+    # read its own rows from the index texts_length, never sort every match, and keep every other part of the filter
+    from wpt_depot.filters import Filter
+    depot = make_depot()
+    lengths = [5, 30, 12, 30, 1, 44, 7, 30, 19, 2, 44, 8]
+    ids = depot.add([plain("x" * n, *(("big",) if n > 10 else ())) for n in lengths], me)
+    depot.decide("admitted", ids[:8], me)
+    depot.decide("refused", ids[8:10], me)
+    monkeypatch.setattr(depots, "SORTED", 1)
+    monkeypatch.setattr(depots, "WINDOW", 3)
+    key = {one: at for at, one in enumerate(ids)}
+
+    def walked(selection, descending, read=depot.search):
+        found, rows, place = None, [], None
+        while found is None or found["next"] is not None:
+            found = read(selection, **({"after": place} if place else {}), limit=2, order="length",
+                         descending=descending)
+            rows += [one["id"] for one in found["rows"]]
+            place = found["next"]
+        return rows
+
+    # past SORTED, from the index of lengths; within it, the listing sorted on its lengths alone
+    for most in (1, 100):
+        monkeypatch.setattr(depots, "SORTED", most)
+        for selection, matched in ((Filter(), ids), (Filter(statuses=("admitted",)), ids[:8]),
+                                   (Filter(tags=("big",)), [one for one, n in zip(ids, lengths) if n > 10]),
+                                   (Filter(tags=("big",), statuses=("admitted", "refused")),
+                                    [one for one, n in zip(ids[:10], lengths) if n > 10])):
+            for descending in (True, False):
+                expected = sorted(matched, key=lambda one: (lengths[key[one]], key[one]), reverse=descending)
+                assert walked(selection, descending) == expected, (most, selection, descending)
+                assert walked(selection, descending, depot.passages) == expected, (most, selection, descending)
+                first = depot.search(selection, limit=2, order="length", descending=descending)
+                second = depot.search(selection, after=first["next"], limit=2, order="length", descending=descending)
+                back = depot.search(selection, before=second["previous"], limit=2, order="length",
+                                    descending=descending)
+                assert back["rows"] == first["rows"], (most, selection, descending)
+    # within SORTED, a walk of the index of lengths that keeps the entries the listing holds gives the same pages,
+    # each window at most KEPT_WINDOW entries (shared among the statuses), the next page reading on
+    monkeypatch.setattr(depots, "SORTED", 100)
+    monkeypatch.setattr(depots, "KEPT_WINDOW", 6)
+    monkeypatch.setattr(depots, "_walks", lambda plan, limit: True)
+    for selection, matched in ((Filter(tags=("big",)), [one for one, n in zip(ids, lengths) if n > 10]),
+                               (Filter(tags=("big",), statuses=("admitted",)),
+                                [one for one, n in zip(ids[:8], lengths) if n > 10])):
+        for descending in (True, False):
+            expected = sorted(matched, key=lambda one: (lengths[key[one]], key[one]), reverse=descending)
+            assert walked(selection, descending) == expected, (selection, descending)
+            assert walked(selection, descending, depot.passages) == expected, (selection, descending)
+    monkeypatch.undo()
+    # a listing a page is expected to fill from one window walks; a few texts among many are sorted
+    plan = depot._plan(Filter(tags=("big",), statuses=("admitted",)))
+    assert depots._walks(plan, 2) and not depots._walks(plan, 100)
+    monkeypatch.setattr(depots, "SORTED", 1)
+    page = depot.search(Filter(), limit=2, order="length", descending=True)
+    plans = [one[3] for one in depot.db.reader().execute(
+        "EXPLAIN QUERY PLAN SELECT 1 FROM texts_revisions t INDEXED BY texts_length WHERE t.latest AND "
+        "t.status = 'admitted' AND (t.content_length, " + __import__("wpt_depot").ids.order_sql("t.id") + ") < (?, ?) "
+        "ORDER BY t.content_length DESC", (30, page["next"][1]))]
+    assert any("texts_length (status=? AND" in one for one in plans), plans
+    assert not any("TEMP B-TREE" in one for one in plans), plans
 
 
 def recipe_depot(make_depot, me):

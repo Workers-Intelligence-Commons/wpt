@@ -3,7 +3,7 @@ order of a snapshot's texts by export key (wpt_depot.order.of), its time and
 the memory it holds, projected to PROJECTED texts; a build of the snapshot
 cut at TOKENS tokens (about the tokens of the small dataset the baseline
 built), in tokens per second, warm, into a new store each run; the estimate
-a recipe page would show for that build; and, to compare with the
+the Build page would show for that build; and, to compare with the
 baseline's dataset build, the whole corpus of a snapshot of the small
 library's texts alone (every other admitted text of the work copy refused
 first). It prints a Markdown

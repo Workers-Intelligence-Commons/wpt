@@ -4,6 +4,10 @@ import { useAbout } from "./about";
 import { pages, type Page } from "./pages";
 import { RunningJobs } from "./pages/jobs";
 import { href, usePlace } from "./route";
+import { Notice } from "./notice";
+
+// shown in a pane of another page (pages/strip.tsx, TextPane): the page alone, without the bar of pages
+const FRAMED = (() => { try { return window.self !== window.top; } catch { return true; } })();
 
 const GROUPS: { group: Page["group"]; label: string }[] = [{ group: "data", label: "Data" }, { group: "setup", label: "Setup" }, { group: "help", label: "Help" }];
 
@@ -11,6 +15,7 @@ export function App() {
   const place = usePlace();
   const { about } = useAbout();
   const page = pages.find((p) => p.path === (place.parts[0] ?? "")) ?? pages[0];
+  const under = typeof page.under === "function" ? page.under(place.query) : page.under;
   // on a phone the navigation is one line that scrolls sideways: the current page is brought into it
   const nav = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -18,8 +23,8 @@ export function App() {
     if (at && nav.current && nav.current.scrollWidth > nav.current.clientWidth) nav.current.scrollLeft = at.offsetLeft - nav.current.offsetLeft - 16;
   }, [page]);
   return (
-    <div className={`wrap${page.full ? " full" : ""}`}>
-      <header className="top">
+    <div className={`wrap${page.full ? " full" : ""}${FRAMED ? " framed" : ""}`}>
+      {!FRAMED && <header className="top">
         <a className="home wic-focus" href={href([])} aria-label="Overview of the depot" aria-current={page.path === "" ? "page" : undefined}>
           <Mark name="wpt" height={24} />
           <span className="cue">{about ? about.about.name : "depot"}</span>
@@ -29,7 +34,7 @@ export function App() {
             <ul key={label} className="page-group cue" aria-label={label}>
               {pages.filter((p) => p.group === group).map((p) => (
                 <li key={p.path}>
-                  <a href={href([p.path])} aria-current={p === page ? "page" : p.path === page.under ? "true" : undefined}>{p.title}</a>
+                  <a href={href([p.path])} aria-current={p === page ? "page" : p.path === under ? "true" : undefined}>{p.title}</a>
                 </li>
               ))}
             </ul>
@@ -37,8 +42,9 @@ export function App() {
         </nav>
         <RunningJobs />
         <ButtonLink variant="quiet" href={href(["add"])}>Add a text</ButtonLink>
-      </header>
+      </header>}
       <main>
+        <Notice />
         <page.Component rest={place.parts.slice(1)} query={place.query} />
       </main>
     </div>

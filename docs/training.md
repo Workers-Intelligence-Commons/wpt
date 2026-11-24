@@ -24,10 +24,10 @@ output to `runs/logs/<date-time>.log` and print how to follow and stop it.
 `SERIES:SIZE`, a size of a model series, or `SERIES:SIZE:RUN`, another run
 of that size; see [model.md](model.md), "Model recipes") and the id of a
 corpus in the store, or a start of it, and never builds: `wpt depot build
-RECIPE`, or the Build button of the recipe's page in `wpt depot web`, builds
-the corpus of a recipe (of a series, `wpt depot build SERIES:` and the
-series' row `SERIES:` on the Recipes page: the one corpus every size reads),
-on the machine that holds the depot
+FILE` on the recipe's file, or the Build button of the Build page of `wpt
+depot web` once the file is handed over there, builds the corpus of a
+recipe (of a series, from the series' file: the one corpus every size
+reads), on the machine that holds the depot, which reads no repository
 ([data-selection.md](data-selection.md), "Corpora"). Without an id, it reads the corpus of the
 recipe's build key: the snapshot its data part names, that data part (kinds,
 shares, `data.total_tokens` as the size, for a series the total tokens of its
@@ -41,7 +41,7 @@ address (its name from `GET /api/about`, its snapshots from
 `GET /api/snapshots`). The snapshot is the one of the recipe's name that the
 depot of that address owns, and it must read the recipe's change and digest,
 or the run is refused, naming both. With no fresh corpus of that key in the
-store, the run is refused, saying to press Build on the recipe page, and
+store, the run is refused, saying to press Build on the Build page, and
 nothing is built or queued. So without an id (`WPT_CORPUS` or the corpus
 option) the depot must be readable where training runs. A corpus given by
 its id must be built from the recipe's snapshot (its name, change and
@@ -464,7 +464,7 @@ than it asks for. `wpt train` refuses a corpus that holds fewer tokens of
 plain text than `total_tokens` and was built at another size, and a corpus
 that is stale (an admitted erasure reached a text it was built from,
 [erasure.md](erasure.md), "What it covers") until it is built again (Build
-on the recipe page). A stale corpus of a legacy dataset is never built
+on the Build page). A stale corpus of a legacy dataset is never built
 again.
 
 ### Streaming: a corpus larger than the disk

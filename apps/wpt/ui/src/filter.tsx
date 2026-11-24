@@ -9,7 +9,7 @@
 // read one after another, forward or back, never by their number.
 
 import { Button } from "@workers-intelligence-commons/components";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { get, post, type Answer } from "./api";
 import { STATUSES, type Status } from "./parts";
 import { TickMenu } from "./ticks";
@@ -106,10 +106,10 @@ export function toQuery(f: TextFilter): Record<string, string | string[] | null>
 // filter's first answer comes, and pending is true while a newer page or a
 // reload is asked. next and previous move by one page when the answer says
 // there is one; open starts a page at a text's place in the order.
-export function useSearch(filter: TextFilter, initialLimit = 50) {
+export function useSearch(filter: TextFilter, initialLimit = 50, initialOrder: Order = BY_ID) {
   const [at, setAt] = useState<At>({});
   const [limit, setLimitState] = useState(initialLimit);
-  const [order, setOrderState] = useState<Order>(BY_ID);
+  const [order, setOrderState] = useState<Order>(initialOrder);
   const [got, setGot] = useState<{ key: string; asked: number; answer: Answer<Found> } | null>(null);
   const [asked, setAsked] = useState(0);
   const filterKey = JSON.stringify(filter);
@@ -134,30 +134,36 @@ export function useSearch(filter: TextFilter, initialLimit = 50) {
   const first = () => setAt({});
   const open = useCallback((id: string) => setAt({ at: id }), []);
   const setLimit = (n: number) => { setLimitState(n); setAt({}); };
-  const setOrder = (o: Order) => { setOrderState(o); setAt({}); };
+  const setOrder = useCallback((o: Order) => {
+    setOrderState((was) => (was.by === o.by && was.descending === o.descending ? was : o));
+    setAt({});
+  }, []);
   return { answer, pending, next, previous, first, open, limit, setLimit, order, setOrder, reload };
 }
 
 type Tag = { tag: string; texts: number };
 type License = { id: string; name: string; texts: number };
 
-const PAUSE = 400; // milliseconds after the last change before a filter applies
+const PAUSE = 400; // milliseconds after the last key typed in the search before it applies; a click applies at once
 
 // The filter's fields in one compact bar, each named inside its control
 // ("Status: any"; Kinds lists only the kinds the depot has texts of, with
-// their counts from GET /api/counts, and shows once there are two). A menu, a chip or
-// the plain search applies after a short pause, with no button. The SQL
+// their counts from GET /api/counts, and shows once there are two). A menu or a chip
+// applies at once, and the plain search after a short pause once typing stops, with
+// no button. The SQL
 // condition applies only on Enter, so a key pressed in it never runs a
 // half-typed condition; Enter, or Escape (which puts back the condition that
 // applies), hands the keys back to the playlist (leave). The Tags and
 // Licenses menus count the texts of the depot, or, given within, the open
-// texts. The parts a link sets and no menu edits (the texts named, the
+// texts; onCounts is called when the Tags or Licenses menu opens, so the page
+// counts the open texts by tag and license. The parts a link sets and no menu edits (the texts named, the
 // decision they are on) show as chips, each removed by its cross. The SQL
 // condition and the two ways of searching (in the texts too, whole words)
 // show after "More filters", or at once while one of them is set. On a
 // phone, only the search shows, and a button opens the rest.
-export function FilterBar({ value, onApply, onLeave, idsLabel, within }: {
-  value: TextFilter; onApply: (f: TextFilter) => void; onLeave?: () => void;
+export function FilterBar({ value, onApply, onLeave, idsLabel, within, onCounts, countsNote }: {
+  value: TextFilter; onApply: (f: TextFilter) => void; onLeave?: () => void; onCounts?: () => void;
+  countsNote?: ReactNode; // what the counts of the Tags and Licenses menus are, shown in them
   idsLabel?: string; // what the texts named are, in words ("the 2 texts added just now")
   // the counts of the open texts once done: the Tags and Licenses menus then count within them, not over the depot
   within?: { tags: { tag: string; texts: number }[]; licenses: { license: string; texts: number }[] } | null;
@@ -177,13 +183,33 @@ export function FilterBar({ value, onApply, onLeave, idsLabel, within }: {
     get<License[]>("/api/licenses").then((a) => a.ok && setLicenses(a.data));
     get<{ kinds?: Record<string, number> }>("/api/counts").then((a) => a.ok && setKinds(a.data.kinds ?? {}));
   }, []);
+  const typing = useRef(false); // the last change was a key typed in the search, which waits for the next key
   useEffect(() => {
     const key = JSON.stringify(draft);
     if (key === applied.current) return;
-    const timer = window.setTimeout(() => { applied.current = key; onApply(draft); }, PAUSE);
+    const go = () => { applied.current = key; onApply(draft); };
+    if (!typing.current) { go(); return; }
+    const timer = window.setTimeout(go, PAUSE);
     return () => window.clearTimeout(timer);
   }, [draft, onApply]);
-  const change = (part: Partial<TextFilter>) => setDraft({ ...draft, ...part });
+  const change = (part: Partial<TextFilter>, typed = false) => { typing.current = typed; setDraft({ ...draft, ...part }); };
+  // the Tags or Licenses menu opened: the page counts the open texts by tag and license (toggle does not bubble)
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bar.current;
+    if (!el || !onCounts) return;
+    const toggled = (e: Event) => {
+      const menu = e.target instanceof HTMLDetailsElement ? e.target : null;
+      if (menu?.open && /^(Tags|Licenses)\b/.test(menu.querySelector("summary")?.textContent?.trim() ?? "")) onCounts();
+    };
+    el.addEventListener("toggle", toggled, true);
+    return () => el.removeEventListener("toggle", toggled, true);
+  }, [onCounts]);
+  // and when the filter changes while one of them is open
+  useEffect(() => {
+    const open = [...(bar.current?.querySelectorAll("details[open] > summary") ?? [])].some((s) => /^(Tags|Licenses)\b/.test(s.textContent?.trim() ?? ""));
+    if (open) onCounts?.();
+  }, [valueKey, onCounts]);
   const tagsWithin = within ? new Map(within.tags.map((t) => [t.tag, t.texts])) : null;
   const licensesWithin = within ? new Map(within.licenses.map((l) => [l.license, l.texts])) : null;
   const tagCount = (t: Tag) => (tagsWithin ? tagsWithin.get(t.tag) ?? 0 : t.texts);
@@ -202,12 +228,12 @@ export function FilterBar({ value, onApply, onLeave, idsLabel, within }: {
     ...(draft.decision ? [[`on the decision ${draft.decision}`, { decision: null }] as [string, Partial<TextFilter>]] : []),
   ];
   return (
-    <div className={`filter-bar${shown ? " shown" : ""}`} role="search" aria-label="Filter the texts">
+    <div ref={bar} className={`filter-bar${shown ? " shown" : ""}`} role="search" aria-label="Filter the texts">
       <Button variant="quiet" className="filter-toggle" aria-expanded={shown} onClick={() => setShown(!shown)}>{shown ? "Hide the filters" : narrowed ? "Filters (on)" : "Filters"}</Button>
       <input className="wic-input wic-focus find" type="search" value={draft.search} aria-label={draft.inText ? "Search titles, ids and the texts themselves" : "Search titles and ids"}
         placeholder={draft.inText ? "Search titles and texts" : "Search titles"}
         title={`Words ${draft.inText ? "the title or the text itself" : "the title of a text"} holds, each one, in any case, or its exact id. Enter or Escape goes back to the list, where J and K move.`}
-        onChange={(e) => change({ search: e.target.value })}
+        onChange={(e) => change({ search: e.target.value }, true)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); leave(e.currentTarget); } }} />
       {(extra || draft.inText || draft.wholeWords) && <label className="tick small in-text" title="Look for the words inside each text as well as in its title. It reads every text the other filters leave, so it is slower on a big depot.">
         <input type="checkbox" className="wic-check-box wic-focus" checked={draft.inText} onChange={(e) => change({ inText: e.target.checked })} />
@@ -220,15 +246,15 @@ export function FilterBar({ value, onApply, onLeave, idsLabel, within }: {
       <TickMenu label="Status" options={STATUSES.map((s) => ({ value: s, label: s }))} chosen={draft.statuses}
         onChange={(statuses) => change({ statuses: statuses as Status[] })} />
       <TickMenu label="Tags" search options={tags.map((t) => ({ value: t.tag, label: t.tag, count: tagCount(t) })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))} chosen={draft.tags}
-        onChange={(tags) => change({ tags })} />
+        onChange={(tags) => change({ tags })} hint={countsNote} />
       <TickMenu label="Licenses" search options={licenses.map((l) => ({ value: l.id, label: l.id, words: `${l.id} ${l.name}`, count: licenseCount(l) })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))}
-        chosen={draft.licenses} onChange={(licenses) => change({ licenses })} />
+        chosen={draft.licenses} onChange={(licenses) => change({ licenses })} hint={countsNote} />
       {(kindsHeld.length > 1 || draft.kinds.length > 0) && (
         <TickMenu label="Kinds" options={kindsHeld.map(([k, n]) => ({ value: k, label: k, count: n })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))}
           chosen={draft.kinds} onChange={(kinds) => change({ kinds })} />
       )}
       {(JSON.stringify(draft) !== JSON.stringify(cleared) || typedWhere !== "") && (
-        <button type="button" className="forget wic-focus clear-filter" aria-label="Clear the filter" title="Clear the filter: every text again" onClick={() => { setDraft(cleared); setTypedWhere(""); }}>✕</button>
+        <button type="button" className="forget wic-focus clear-filter" aria-label="Clear the filter" title="Clear the filter: every text again" onClick={() => { typing.current = false; setDraft(cleared); setTypedWhere(""); }}>✕</button>
       )}
       {chips.map(([label, removed]) => (
         <span key={label} className="chip small">{label}

@@ -1,8 +1,8 @@
 """The routes of `wpt depot web` over the depot's tokenizer recipes and
 their vocabularies, and the jobs' queue (wpt.depot.jobs). The snapshots
-are wpt.depot.web.snapshots', the repository's recipes and the corpora
-they build wpt.depot.web.recipes', and the frozen dataset routes, a
-dataset's corpora and export included, wpt.depot.web.legacy's.
+are wpt.depot.web.snapshots', the builds of the recipes people hand over
+and the corpora they give wpt.depot.web.recipes', and the frozen dataset
+routes, a dataset's corpora and export included, wpt.depot.web.legacy's.
 
 Anyone may queue a vocabulary training, only with an explicit
 confirmation (confirmed: true in its body), after the pages show the
@@ -23,7 +23,7 @@ from wpt_utils.lines import say
 from .. import shared
 from ..downloads import Downloads
 from ..jobs import Job, Jobs
-from .recipes import recipe_routes, recipes_naming
+from .recipes import recipe_routes
 from .server import Request, Route, Stream
 from .snapshots import snapshot_routes
 
@@ -43,7 +43,7 @@ def train_job(depot: Depot, name: str, *, progress, job: Job) -> dict:
 
 def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     """The routes over depot's tokenizer recipes and jobs, then those of
-    its snapshots and of the repository's recipes and their corpora;
+    its snapshots and of the builds of recipes and their corpora;
     refusals wraps a handler so that it answers each failure with its
     status (wpt.depot.web.routes.refusals)."""
     downloads = Downloads(jobs.path)
@@ -245,6 +245,6 @@ def builds(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               "corpus job's build key, a snapshot job's name), its state, its progress and its answer or problem; "
               "only `wpt depot jobs cancel` cancels one", answer={"type": "array"}),
         Route("GET", "/api/jobs/{id}", job_state, "one job's state", answer=job_answer),
-        *snapshot_routes(depot, jobs, refusals, recipes_naming(depot)),
+        *snapshot_routes(depot, jobs, refusals),
         *recipe_routes(depot, jobs, refusals, wrapped),
     ]

@@ -8,7 +8,7 @@
 
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { type ReactNode } from "react";
-import { MatchedCount, useCounts } from "./counts";
+import { MatchedCount, useCounts, STATUSES_ONLY } from "./counts";
 import { useSearch, type Order, type Row, type TextFilter } from "./filter";
 import { PLAIN, PlacePager, Problems, StatusBadge, textName } from "./parts";
 import { href } from "./route";
@@ -39,7 +39,7 @@ function Links({ values, part }: { values: string[]; part: string }) {
 // as it grows; empty: what to say when none does.
 export function MatchedTexts({ filter, label, empty }: { filter: TextFilter; label: string; empty: string }) {
   const { answer, pending, next, previous, first, limit, setLimit, order, setOrder } = useSearch(filter, 25);
-  const counting = useCounts(filter);
+  const counting = useCounts(filter, 0, STATUSES_ONLY); // the statuses alone
   if (!answer) return <Skeleton lines={4} label={`Reading ${label.toLowerCase()}`} />;
   if (!answer.ok) return <Problems problems={answer.problems} />;
   if (answer.data.rows.length === 0 && !previous) return <p className="small">{empty}</p>;

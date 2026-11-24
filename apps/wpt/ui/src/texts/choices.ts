@@ -1,6 +1,7 @@
 // What the review panel offers without typing (panel.tsx): for each score
 // name the depot knows, its choices, read once a page from GET
-// /api/scores/NAME/values (the values on the texts changed last); the
+// /api/scores/NAME/values (the values it has across every current text,
+// from the depot's counts); the
 // value each score was last set to from this browser; and the presets,
 // named sets of scores and of tags to add and take away, that this browser
 // keeps. Recent values and presets live in localStorage and never reach the
@@ -14,23 +15,40 @@ import { get, type Answer } from "../api";
 // largest, the range they span, and the step of − and +, a twentieth of it
 // (at least 1 for a score of whole numbers).
 export type Scale = { values: number[]; low: number; high: number; step: number };
-type Values = { name: string; read: number; texts: number; low: number | null; high: number | null; common: { value: number; texts: number }[] };
+export type Values = { name: string; texts: number; low: number | null; high: number | null; common: { value: number; texts: number }[] };
 
-const SHOWN = 6; // buttons a score's row has room for
+const SHOWN = 6; // buttons a score's row has room for beside its name
+const GRADES = 10; // the widest span of whole numbers offered one button each, on a line of their own (0 to 10)
 
 // A number cut to what a person reads: at most 4 significant digits, no trailing zeros.
 export const round = (n: number) => Number(n.toPrecision(4));
 // A value as a button shows it: .25 for 0.25, -1.5, 4.
 export const shortValue = (n: number) => String(round(n)).replace(/^(-?)0\./, "$1.");
 
-// The scale of a score from its values: the common values themselves when
-// few enough cover most of the texts seen (a scale of a few grades), else
+// The scale of a score from its values across the depot: a scale of whole
+// grades when most of its texts (80 %) hold whole values, of three grades
+// at least or every text whole, within GRADES of each other, every whole number of it, from 0 when they are all from 0 to
+// GRADES (a person's 0 to 10, even when no text holds 0 yet, and whatever
+// values of another kind a few texts hold); else the common values
+// themselves when few enough cover most of the texts seen, else
 // SHOWN values evenly spread over the range: whole numbers when every value
 // seen is whole, else over the range widened to round numbers (0 to 0.3 for
 // values from 0.013 to 0.29), so each button reads at a glance.
 // With no value seen, 0 to 1; with one, 0 to it, or it to 0 when negative.
 export function scaleOf(found: Values | null): Scale {
   const common = found?.common ?? [];
+  const grades = common.filter((one) => Number.isInteger(one.value));
+  const wholeTexts = grades.reduce((sum, one) => sum + one.texts, 0);
+  // most texts hold whole values, of several grades, or every text does (a measure whose share is often exactly 0
+  // or 1 keeps its decimals)
+  if (found && grades.length && wholeTexts >= 0.8 * found.texts && (grades.length >= 3 || wholeTexts === found.texts)) {
+    let first = Math.min(...grades.map((one) => one.value)), last = Math.max(...grades.map((one) => one.value));
+    if (first > 0 && last <= GRADES) first = 0;
+    if (last - first <= GRADES) {
+      if (first === last) last = first + 1;
+      return { values: Array.from({ length: last - first + 1 }, (_, i) => first + i), low: first, high: last, step: 1 };
+    }
+  }
   const covered = common.reduce((sum, one) => sum + one.texts, 0);
   let low = found?.low ?? 0, high = found?.high ?? 1;
   if (low === high) [low, high] = low > 0 ? [0, low] : low < 0 ? [low, 0] : [0, 1];
@@ -49,6 +67,10 @@ export function scaleOf(found: Values | null): Scale {
   high = round(Math.ceil(high / unit) * unit);
   return { values: Array.from({ length: SHOWN }, (_, i) => round(low + ((high - low) * i) / (SHOWN - 1))), low, high, step: round((high - low) / 20) };
 }
+
+// A scale of whole grades with one button each, more than fit beside the score's name (0 to 10): the review panel
+// offers its grades alone, with a pad kept to them for a value between two.
+export const isGraded = (scale: Scale) => scale.step === 1 && scale.values.length === scale.high - scale.low + 1 && scale.values.length > SHOWN;
 
 // One read per score name and page, its answer kept for every later panel.
 const read = new Map<string, Promise<Answer<Values>>>();

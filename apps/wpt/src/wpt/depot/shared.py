@@ -1,16 +1,15 @@
 """What the two controllers of `wpt depot`, its subcommands and its web
 routes, share: the depot WPT_DEPOT names, the words of the confirmation a
 decision needs, rows made fit for JSON, the store and its cap for corpora,
-the repository checkout WPT_REPOSITORY names, whose model recipes the web
-app builds, a vocabulary trained from the depot's tokenizer recipes, a
-corpus built from a snapshot, the check that an estimate a person confirmed
-still holds, a recipe imported from a file, and an erasure carried out with
-the corpora it makes stale."""
+the data part of a model recipe or series a person hands over as JSON (the
+depot reads no repository), a vocabulary trained from the depot's
+tokenizer recipes, a corpus built from a snapshot, the check that an
+estimate a person confirmed still holds, a tokenizer recipe imported from
+a file, and an erasure carried out with the corpora it makes stale."""
 
 import json
 import os
 import re
-import subprocess
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -20,8 +19,7 @@ from pathlib import Path
 from wpt_depot import Declaration, Depot, corpora, pull, snapshots
 from wpt_depot.corpus import build, sample
 from wpt_depot.errors import NotFound, Refused
-from wpt_recipes import NotFound as NoRecipes, Recipes
-from wpt_utils.programs import MissingTool, program
+from wpt_recipes import SIZE_OF, data_section
 from wpt_depot.schema import ADMITTED
 from wpt_depot.settings import depot_address, depot_url
 from wpt_store import StoreSettingError, read_env_file, store_from_settings
@@ -35,7 +33,6 @@ REQUIREMENTS = "https://github.com/Workers-Intelligence-Commons/wpt/blob/main/do
 CAP = "WPT_CORPORA_CAP"  # the setting of the bytes the store's corpora may take together
 UNITS = {"": 1, "B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12}
 RECIPE_FIELDS = ("sample_bytes", "vocab_size")  # what a recipe file gives that the depot's recipe keeps as it is
-REPOSITORY = "WPT_REPOSITORY"  # the setting of the repository checkout whose recipes the web app lists and builds
 # how far a cost may pass the one a person confirmed and still hold (unchanged): its share, then its unit of slack
 TOLERANCE = 0.1
 
@@ -52,11 +49,6 @@ class NoSample(Exception):
 
 class BadSetting(Exception):
     """A setting holds what it cannot: nothing was done."""
-
-
-class NoRepository(Exception):
-    """WPT_REPOSITORY names no repository checkout holding data/recipes:
-    no recipe can be read."""
 
 
 def env_file() -> Path:
@@ -82,36 +74,19 @@ def corpora_cap() -> int | None:
     return int(float(match[1]) * UNITS[match[2]])
 
 
-def repository() -> Recipes:
-    """The recipes of the repository checkout WPT_REPOSITORY names (its
-    root folder). NoRepository when it is not set, or names no folder
-    holding data/recipes."""
-    found = setting(REPOSITORY)
-    if found is None:
-        raise NoRepository(f"{REPOSITORY} is not set: set it to the folder of a checkout of the WPT repository to "
-                           "list its recipes")
-    root = Path(found).expanduser().resolve()
-    try:
-        recipes = Recipes.find(root)
-    except NoRecipes:
-        recipes = None
-    if recipes is None or recipes.root != root:
-        raise NoRepository(f"{REPOSITORY} names no checkout of the WPT repository (no data/recipes in it)")
-    return recipes
-
-
-def checkout(recipes: Recipes) -> dict:
-    """{commit: the commit the checkout of recipes is at, None when git
-    cannot tell; dirty: whether it has changes not committed, None then}."""
-    try:
-        git = program("git")
-        commit = subprocess.run([git, "-C", str(recipes.root), "rev-parse", "HEAD"], capture_output=True,
-                                check=True).stdout.decode().strip()
-        dirty = subprocess.run([git, "-C", str(recipes.root), "status", "--porcelain"], capture_output=True,
-                               check=True).stdout.strip() != b""
-    except (MissingTool, OSError, subprocess.CalledProcessError):
-        return {"commit": None, "dirty": None}
-    return {"commit": commit or None, "dirty": dirty if commit else None}
+def recipe_given(document, file: str | None) -> tuple[str | None, str, dict]:
+    """(the name, the kind and the data part) of a recipe a person hands
+    over as JSON, read from no repository (wpt_recipes.data_section): a
+    model recipe, or a series read at its largest size, the one corpus
+    every size of it reads; only its data section counts. The name is the
+    file's, without its folder and .json, and a series' ends with SERIES:
+    as wpt train names its sizes (wpt_recipes.SIZE_OF); None without a
+    file. InvalidRecipe when it is neither."""
+    stem = None if not file else re.sub(r"\.json$", "", re.split(r"[\\/]", file)[-1], flags=re.IGNORECASE)
+    kind, data = data_section(document, file or "the recipe")
+    if stem is not None and kind == "series":
+        stem += SIZE_OF
+    return stem or None, kind, data
 
 
 def snapshot_named(depot: Depot, address: str, name: str) -> dict:

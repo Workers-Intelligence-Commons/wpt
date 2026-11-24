@@ -118,13 +118,13 @@ function Fold({ label, said, title, children }: { label: string; said: string; t
 }
 
 // A TickList folded into a menu ("Tags: any", "Tags: 3 ticked").
-export function TickMenu({ label, options, chosen, onChange, search }: { label: string; options: Option[]; chosen: string[]; onChange: (values: string[]) => void; search?: boolean }) {
+export function TickMenu({ label, options, chosen, onChange, search, hint }: { label: string; options: Option[]; chosen: string[]; onChange: (values: string[]) => void; search?: boolean; hint?: ReactNode }) {
   // each chosen value by its label when the label is words (a name, not an id)
   const named = (value: string) => { const o = options.find((one) => one.value === value); return typeof o?.label === "string" ? o.label : value; };
   const said = chosen.length === 0 ? "any" : chosen.length === 1 ? named(chosen[0]) : `${chosen.length} ticked`;
   return (
     <Fold label={label} said={said} title={chosen.map(named).join(", ") || said}>
-      <TickList label={label} options={options} chosen={chosen} onChange={onChange} search={search} />
+      <TickList label={label} options={options} chosen={chosen} onChange={onChange} search={search} hint={hint} />
     </Fold>
   );
 }

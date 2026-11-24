@@ -242,8 +242,8 @@ decision under review on every text it changes. `wpt depot score-names`,
 or `GET /api/scores`, lists every name of a score a text has, with how
 many texts have it, read from the depot's counts at once.
 `wpt depot score-values NAME`, or `GET /api/scores/{name}/values`, gives
-the values the score has on the current texts among the latest revisions,
-at most `SCORE_READ` of them (`wpt_depot/depot.py`): how many have it,
+the values the score has across every current text, read at once from
+the depot's counts, each to three significant digits: how many have it,
 its smallest and largest value, and its most frequent values. The review
 panel of the Texts page offers them as its choices.
 
@@ -488,13 +488,13 @@ every kind), its shares, its size (`total_tokens`) and its vocabulary (its
 sha256 and size). It never picks single texts: a hand-picked selection is
 a tag, which a share names.
 
-Recipes are files of the repository, and a person commits them. The
+Recipes are files a person keeps; the depot reads no code repository. The
 composer on a snapshot's page builds a data section by clicks: kind chips
 and tag chips from the snapshot's summary, a slider for each share, the
 size from preset buttons or a slider, and the vocabulary from a list of
 the depot's. It shows what the section takes and what its build costs as
-the clicks change it, and gives the section to download or copy, writing
-nothing (`POST /api/recipes/compose`).
+the clicks change it, and gives the section to build, to download as JSON
+or to copy, writing nothing (`POST /api/recipes/compose`).
 
 ### Shares
 
@@ -596,11 +596,11 @@ every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
-`wpt depot build RECIPE`, or the Build button of the recipe's page in
-`wpt depot web` ([depot-web.md](depot-web.md), "Jobs and downloads"),
-builds the corpus of a model recipe of the repository (the checkout
-`WPT_REPOSITORY` names, else the one around the current folder) into the
-store (`WPT_STORE`): what training reads. The recipe names this depot, or
+`wpt depot build FILE`, or the Build button of the page "Build" in `wpt
+depot web` once the recipe's file is handed over there ([depot-web.md](depot-web.md),
+"Jobs and downloads"), builds the corpus of a model recipe, or of a series
+at its largest size (its record names it `SERIES:`), into the store
+(`WPT_STORE`): what training reads. Only the file's data section counts. The recipe names this depot, or
 the upstream it follows, by its public address, and a snapshot of it by
 name. It runs on the machine that holds the depot. A rented GPU machine only reads
 the corpus and trains ([machines.md](machines.md)). What a build takes is
@@ -746,7 +746,7 @@ and deletes no other corpus.
 `wpt train` reads the corpus it is given, or else the corpus of the
 recipe's build key, after checking the snapshot's change and digest
 against the recipe; without one it refuses and says to press Build on the
-recipe's page ([training.md](training.md), "Training"). Training never
+Build page ([training.md](training.md), "Training"). Training never
 builds or queues anything. A corpus is a cache: building the same recipe
 on the same snapshot gives it again, so a model's reproducibility rests on
 the depot's address, the snapshot and the recipe, never on a kept corpus.

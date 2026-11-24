@@ -14,7 +14,7 @@ import { type Answer } from "../api";
 import type { Deciding } from "../blocked";
 import { DecideForm, leftOut } from "../decide-forms";
 import { type Selection } from "../filter";
-import { matched, useCounts } from "../counts";
+import { matched, useCounts, STATUSES_ONLY } from "../counts";
 import { Outcome, plural } from "../parts";
 import { href } from "../route";
 import { Review } from "../review";
@@ -44,7 +44,7 @@ export function Bulk({ selection, count, admittedHere, onUntick, onDone }: {
   };
   const start = (a: Action) => () => { setFailed(null); setAction(a); };
   // the main button follows what is ticked: once every ticked text is admitted, admitting them does nothing
-  const counting = useCounts(selection);
+  const counting = useCounts(selection, 0, STATUSES_ONLY); // the statuses alone
   const allAdmitted = Boolean((counting?.done || counting?.settled) && !counting.problems && matched(counting) > 0 && counting.statuses.admitted === matched(counting));
   // and once every ticked text is under review, putting them back under review does nothing
   const allUnderReview = Boolean((counting?.done || counting?.settled) && !counting.problems && matched(counting) > 0 && counting.statuses["under review"] === matched(counting));

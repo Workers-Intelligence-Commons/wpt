@@ -13,12 +13,14 @@ size's model recipe from it, for the vocabulary's size. A task image
 in, its lock, its packages' licenses and its shared pool of tools.
 
 Recipes (recipes.py) is the only code that opens these files; guard.py
-refuses any other (docs/architecture.md, "The service layer").
+refuses any other (docs/architecture.md, "The service layer"). A recipe
+a person hands over as JSON, read elsewhere (a depot's build), is read
+through data_section, which gives its data part.
 """
 
 from . import series
 from .errors import InvalidRecipe, NotFound, RecipeError
-from .recipes import ASK, BUILT_IN_TOOLS, SIZE_OF, Recipes, dump_json, validate
+from .recipes import ASK, BUILT_IN_TOOLS, SIZE_OF, Recipes, data_section, dump_json, validate
 
-__all__ = ["ASK", "BUILT_IN_TOOLS", "SIZE_OF", "InvalidRecipe", "NotFound", "RecipeError", "Recipes", "dump_json",
-           "series", "validate"]
+__all__ = ["ASK", "BUILT_IN_TOOLS", "SIZE_OF", "InvalidRecipe", "NotFound", "RecipeError", "Recipes", "data_section",
+           "dump_json", "series", "validate"]

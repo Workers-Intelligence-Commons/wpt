@@ -1,21 +1,25 @@
 """The queue of a depot's jobs: the long work the web app runs for anyone
 (making a snapshot, training a tokenizer recipe's vocabulary, building a
-recipe's corpus, a write over a selection of texts), each in a process of
+recipe's corpus, a write over a selection of texts, ordering a snapshot by
+length), each in a process of
 its own, so the web app keeps the other cores and answers while a job runs.
 
-The jobs run in two lanes, one job at a time in each (LANES): the write
+The jobs run in three lanes, one job at a time in each (LANES): the write
 lane runs the writes over many texts (decisions, licenses, scores, tags),
 short and each holding the depot's write lock while it writes; the heavy
 lane runs the long work (snapshot, vocabulary, corpus), which holds the
 write lock never (a vocabulary training, a corpus build) or for one short
-transaction at its end (a snapshot). So a multi-hour build never holds back
-a decision over many texts, and a write run in the request waits only for
-the write lane (writing).
+transaction at its end (a snapshot); the read lane runs the reads that make
+what a page shows, kept in the jobs' folder and written nowhere in the depot
+(a snapshot's order by length, wpt.depot.web.snapshots). So a multi-hour
+build never holds back a decision over many texts nor the strip of a
+snapshot, and a write run in the request waits only for the write lane
+(writing).
 
 The queue is a small SQLite file beside the depot, <depot file>.jobs,
 which nothing backs up: it holds each job's kind and lane, what it does in
 words, what it is for (its key: a corpus job's build key, a snapshot job's
-snapshot name; its recipe: a vocabulary job's tokenizer recipe or a corpus
+snapshot name, a sizes job's snapshot id; its recipe: a vocabulary job's tokenizer recipe or a corpus
 job's model recipe; its target: what it makes), the operation it runs and
 its arguments, its state, its progress and its answer, the checkpoints of
 the corpus builds by build key, and the jobs' other state
@@ -26,8 +30,8 @@ A job's state is queued, running, done (its answer), refused (the failure that s
 it, with its HTTP status; what it is refused writes nothing), failed (the
 process ended without an answer, or with a failure the routes do not name)
 or cancelled. Each build key has at most one corpus job queued or running,
-each snapshot name one snapshot job, and each tokenizer recipe one
-vocabulary job (Busy otherwise). Only the command line cancels a job (wpt
+each snapshot name one snapshot job, each snapshot id one sizes job, and
+each tokenizer recipe one vocabulary job (Busy otherwise). Only the command line cancels a job (wpt
 depot jobs cancel): a queued one never runs, and a running one's process
 is stopped.
 
@@ -71,7 +75,7 @@ RESTARTS = 3  # restarts of the web app a running job lives through before it fa
 KEPT = 1000  # jobs that ended the queue keeps; the older ones go
 POLL = 0.5  # seconds between two looks of the runner at the queue and at a running job
 PROGRESS_EVERY = 1.0  # seconds between two writes of a job's progress
-LANES = {"write": "write", "snapshot": "heavy", "vocabulary": "heavy", "corpus": "heavy"}  # each kind's lane
+LANES = {"write": "write", "snapshot": "heavy", "vocabulary": "heavy", "corpus": "heavy", "sizes": "read"}  # by kind
 KINDS = tuple(LANES)
 OPEN = ("queued", "running")
 ENDED = ("done", "refused", "failed", "cancelled")
@@ -307,11 +311,12 @@ class Jobs:
             raise ValueError(f"no kind of job {kind!r}")
         job = secrets.token_hex(8)
         with connected(self.path, write=True) as con:
-            if kind in ("corpus", "snapshot") and con.execute(
+            if kind in ("corpus", "snapshot", "sizes") and con.execute(
                     "SELECT 1 FROM jobs WHERE kind = ? AND key = ? AND state IN ('queued', 'running')",
                     (kind, key)).fetchone():
                 raise Busy(f"the build {key} has a corpus job queued or running already: see the jobs page"
-                           if kind == "corpus" else f"the snapshot {key} is being made already: see the jobs page")
+                           if kind == "corpus" else f"the snapshot {key} is being made already: see the jobs page"
+                           if kind == "snapshot" else f"the snapshot {key} is being ordered by length already")
             if kind == "vocabulary" and con.execute("SELECT 1 FROM jobs WHERE kind = 'vocabulary' AND recipe = ? AND "
                                                     "state IN ('queued', 'running')", (recipe,)).fetchone():
                 raise Busy(f"the tokenizer recipe {recipe} has a vocabulary job queued or running already")
@@ -325,12 +330,20 @@ class Jobs:
         return self.state(job)
 
     def open_job(self, kind: str, key: str | None = None, recipe: str | None = None) -> dict | None:
-        """The job of that kind queued or running for the key (a corpus or a
-        snapshot job) or the recipe (a vocabulary job), None without one."""
-        column, value = ("key", key) if kind in ("corpus", "snapshot") else ("recipe", recipe)
+        """The job of that kind queued or running for the key (a corpus, a
+        snapshot or a sizes job) or the recipe (a vocabulary job), None without one."""
+        column, value = ("key", key) if kind in ("corpus", "snapshot", "sizes") else ("recipe", recipe)
         with connected(self.path) as con:
             row = con.execute(f"SELECT * FROM jobs WHERE kind = ? AND {column} = ? AND state IN ('queued', 'running') "
                               "ORDER BY number LIMIT 1", (kind, value)).fetchone()
+        return None if row is None else _shown(row)
+
+    def last_ended(self, kind: str, key: str) -> dict | None:
+        """The latest job of that kind for the key (a corpus, a snapshot or
+        a sizes job) that ended, whatever its state, None without one."""
+        with connected(self.path) as con:
+            row = con.execute("SELECT * FROM jobs WHERE kind = ? AND key = ? AND state NOT IN ('queued', 'running') "
+                              "ORDER BY number DESC LIMIT 1", (kind, key)).fetchone()
         return None if row is None else _shown(row)
 
     def record(self, kind: str, title: str, depot: Depot, operation, *args) -> dict:

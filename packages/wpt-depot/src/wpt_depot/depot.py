@@ -194,7 +194,8 @@ ALREADY_UNDER_REVIEW = "already under review"
 ALREADY = {ADMITTED: "already admitted", REFUSED: "already refused"}
 # how many ids a refusal of upstream rows names before it gives the count of the rest
 NAMED = 20
-SINGULAR = {"texts": "text", "erasure requests": "erasure request", "tokenizer recipes": "tokenizer recipe"}
+SINGULAR = {"texts": "text", "erasure requests": "erasure request", "tokenizer recipes": "tokenizer recipe",
+            "decisions": "decision"}
 # the credits of a text that change as a new revision (Depot.edit_credits), in the order its reason names them
 CREDITS = crediting.CREDITS
 # what the rows of a search can be ordered by: each the SQL expressions over the searched rows it orders by, in turn,
@@ -202,9 +203,10 @@ CREDITS = crediting.CREDITS
 ORDERS = {"id": [], "title": ["title IS NOT NULL", "coalesce(title, '')"],
           "kind": ["kind"], "status": ["status"], "tags": ["tags"], "licenses": ["licenses"],
           "length": ["length"]}
-# the orders an index of the depot serves (schema.INDEXES), so a page in them reads only its own rows; a page in any
-# other order sorts every match, so it is given only when a search matches at most SORTED texts
-INDEXED = ("id", "status")
+# the orders an index of the depot serves (schema.INDEXES: texts_order, texts_status, texts_length), so a page in them
+# reads only its own rows; a page in any other order sorts every match, so it is given only when a search matches at
+# most SORTED texts
+INDEXED = ("id", "status", "length")
 SORTED = 100_000
 # a tokenizer recipe's name
 TOKENIZER_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
@@ -230,8 +232,12 @@ COUNT_STEP = 1_000_000
 # how many candidates a page reads at most (Depot.search), and with a search in the texts themselves, which reads
 # each candidate's text
 WINDOW, TEXT_WINDOW = 10_000, 200
-# how many revisions, the latest changes first, Depot.score_values goes over at most, and how many values it gives
-SCORE_READ, SCORE_VALUES = 200_000, 12
+# how many entries of the index of lengths a page in the order of length reads at most when it walks that index for a
+# listing of at most SORTED texts (Depot._page): it tests each entry's key against the listing's keys, read once, so
+# it looks up only the texts the listing holds
+KEPT_WINDOW = 100_000
+# how many values Depot.score_values gives at most, the most frequent
+SCORE_VALUES = 24
 # the columns of the texts view but those that hold a text: what a query reads that never reads a text's parts
 FIELDS = ("id, revision, change, kind, content_version, length, licenses, notice, title, authors, tags, address, "
           "decisions, scores, status")
@@ -275,12 +281,15 @@ class _Plan:
     other); in_text, whether its plain search reads the texts
     themselves; within, the condition a row of the listing must meet, where
     without what the listing holds already (the tag of a listing of one
-    tag's texts), None when it is where itself."""
+    tag's texts), None when it is where itself; walked, how many texts the
+    index of lengths holds for the plan's statuses (its one status, else
+    every current text), 0 when unknown."""
     where: str
     listing: _Listing
     status: str | None = None
     in_text: bool = False
     within: str | None = None
+    walked: int = 0
 
     @property
     def candidates(self) -> str:
@@ -331,6 +340,29 @@ def _tag_change(add: Sequence[str], remove: Sequence[str]) -> tuple[list[str], l
     if both:
         raise Refused(f"a tag is added or removed, not both: {', '.join(both)}")
     return added, removed
+
+
+def _walks(plan: _Plan, limit: int) -> bool:
+    """Whether a page in the order of length walks the index of lengths
+    rather than sorting its listing of at most SORTED texts. Sorting looks
+    up the length of every text of the listing, one lookup each. The walk
+    reads the listing's keys once through its own index, then the entries
+    of the index of lengths in order, keeping those the listing holds, and
+    looks up only the texts of the page: it reads about (limit + 1) *
+    walked / listing.texts entries when the listing's texts lie evenly
+    among the lengths, and walks only when that fits in KEPT_WINDOW (past
+    it, the page stops at its reading bound and the next one reads on),
+    shared among the statuses it reads (_kept_window)."""
+    texts = plan.listing.texts
+    return texts > limit and plan.walked > 0 and (limit + 1) * plan.walked / texts <= _kept_window(plan)
+
+
+def _kept_window(plan: _Plan) -> int:
+    """The entries of the index of lengths a walk for a listing of at most
+    SORTED texts reads at most: KEPT_WINDOW, shared among the statuses it
+    reads, one range of the index each (the page's window, merged from
+    them, holds no more than each of them)."""
+    return KEPT_WINDOW if plan.status is not None else KEPT_WINDOW // len((UNDER_REVIEW, ADMITTED, REFUSED))
 
 
 def _window(listing: _Listing, compare: str | None, direction: str, size: int) -> tuple[str, int]:
@@ -644,8 +676,14 @@ class Depot:
         its place, and tests each on the rest of the selection, so a page
         is bounded whatever the depot's size and however few texts match:
         a page with fewer than limit rows and a next place is partial. In
-        the order status, the same over the index of statuses, unless the
-        listing is at most SORTED texts. In another order it sorts every
+        the order status, the same over the index of statuses, and in the
+        order length over the index of lengths (each status's texts by
+        length, then id, merged), unless the listing is at most SORTED
+        texts; each candidate is then tested on the whole selection. A
+        listing of at most SORTED texts in the order length is sorted on
+        the lengths alone, read through texts_latest, and its texts are then
+        looked up in that order up to the page's last match. In
+        another order it sorts every
         candidate, so it is given only when the listing holds at most SORTED
         texts.
 
@@ -695,7 +733,8 @@ class Depot:
                 "sortable": plan.listing.always or plan.listing.texts <= SORTED, "change": change}
 
     def passages(self, where: "Selection", after: Sequence | None = None, limit: int = 50,
-                 characters: int = 200_000, order: str = "id", descending: bool = False) -> dict:
+                 characters: int = 200_000, order: str = "id", descending: bool = False,
+                 each: int | None = None) -> dict:
         """The texts a selection matches with their text, a page at a time,
         in the order of search and read as search reads them: {rows: after
         the place after (from the first text when None), at most limit texts
@@ -705,17 +744,19 @@ class Depot:
         first text longer than that}, next: the place where the next page
         starts, None when the page ends the texts matched; partial: as
         search says}. A later text that does not fit whole starts the next
-        page. BadQuery for a condition that is not one; Refused as search
-        is, and for a bound below 1."""
-        if limit < 1 or characters < 1:
+        page. each: the most characters a text shows (its start), so a page
+        of long texts shows many of them. BadQuery for a condition that is
+        not one; Refused as search is, and for a bound below 1."""
+        if limit < 1 or characters < 1 or (each is not None and each < 1):
             raise Refused("a page holds at least one text and one character")
         found, edge = self._page(self._plan(where), "id, kind, title, length", order, descending, after, False,
                                  limit)
         page, left = [], characters
         for one in found[:limit]:
-            if page and one["length"] > left:
+            wanted = one["length"] if each is None else min(one["length"], each)
+            if page and wanted > left:
                 break
-            page.append({**one, "shown": min(one["length"], left)})
+            page.append({**one, "shown": min(wanted, left)})
             left -= page[-1]["shown"]
         listed_parts = {one["id"]: one["parts"] for one in self._rows(
             f"SELECT c.id, c.parts FROM texts_revisions t {CONTENT_JOIN} WHERE t.latest "
@@ -766,7 +807,8 @@ class Depot:
         # a row of one tag's listing has that tag: its rows of taggings are not read again to test it
         within = None if listing.tag is None else self.condition(
             replace(found, tags=tuple(one for one in found.tags if one != listing.tag)), latest)
-        return _Plan(self.condition(found, latest), listing, status, found.in_text, within)
+        walked = held[counts.STATUS].get(status, 0) if status is not None else options[0].texts
+        return _Plan(self.condition(found, latest), listing, status, found.in_text, within, walked)
 
     def _titled(self, searched: list[str], rival: int) -> "_Listing | None":
         """The listing of the texts a plain search's words may match in their
@@ -824,10 +866,34 @@ class Depot:
         compare = f"{'<' if down else '>'}{'=' if inclusive else ''}"
         direction = " DESC" if down else ""
         params: tuple = ()
+        kept = ""  # a test on the window's keys before any text is looked up
         if order == "id":
             window, uses = _window(listing, None if place is None else compare, direction, size)
             params = (place[0],) * uses if place is not None else ()
             last = f"SELECT json_array(key) FROM ({window}) ORDER BY key{' ASC' if down else ' DESC'} LIMIT 1"
+        elif order == "length" and not listing.always and (listing.texts > SORTED or _walks(plan, limit)):
+            # one window per status, each a range of the index texts_length (status, length, then id order), merged
+            # in the order of length, then id; also for a listing of at most SORTED texts when its first window is
+            # expected to fill the page (_walks), which then reads up to KEPT_WINDOW entries of the index
+            size = _kept_window(plan) if listing.texts <= SORTED else size
+            parts = []
+            for one in [plan.status] if plan.status is not None else [UNDER_REVIEW, ADMITTED, REFUSED]:
+                after = ""
+                if place is not None:
+                    after = f" AND (t.content_length, {ids.order_sql('t.id')}) {compare} (?, ?)"
+                    params += (place[0], place[1])
+                parts.append(f"SELECT * FROM (SELECT t.content_length AS size, {ids.order_sql('t.id')} AS key "
+                             f"FROM texts_revisions t INDEXED BY texts_length WHERE t.latest AND "
+                             f"t.status = {literal(one)}{after} "
+                             f"ORDER BY t.content_length{direction}, key{direction} LIMIT {size})")
+            window = (f"SELECT size, key FROM ({' UNION ALL '.join(parts)}) ORDER BY size{direction}, "
+                      f"key{direction} LIMIT {size}")
+            back = " ASC" if down else " DESC"
+            last = f"SELECT json_array(size, key) FROM ({window}) ORDER BY size{back}, key{back} LIMIT 1"
+            if listing.texts <= SORTED:
+                # the keys of a listing of at most SORTED texts, read once through its own index, so only the texts
+                # of the window it holds are looked up
+                kept = f" WHERE key IN (SELECT key FROM ({listing.rows}))"
         elif order == "status" and listing.texts > SORTED and not listing.always:
             # one window per status, each a range of the index texts_status (status, then id order), joined in order
             statuses = sorted([plan.status] if plan.status is not None else [UNDER_REVIEW, ADMITTED, REFUSED],
@@ -846,6 +912,17 @@ class Depot:
                       f" ORDER BY status{direction}, key{direction} LIMIT {size}")
             last = (f"SELECT json_array(status, key) FROM ({window}) ORDER BY status{' ASC' if down else ' DESC'}, "
                     f"key{' ASC' if down else ' DESC'} LIMIT 1")
+        elif order == "length":
+            # the listing's texts, at most SORTED, sorted by their lengths alone, read through texts_latest, before
+            # any text is looked up; the page then looks up the texts in that order up to its last match
+            after = ""
+            if place is not None:
+                after = f" WHERE (size, key) {compare} (?, ?)"
+                params += (place[0], place[1])
+            window = (f"SELECT size, key FROM (SELECT t.content_length AS size, l.key AS key FROM ({listing.rows}) l "
+                      f"CROSS JOIN texts_revisions t INDEXED BY texts_latest ON t.id = {ids.key_id_sql('l.key')} "
+                      f"AND t.latest){after} ORDER BY size{direction}, key{direction} LIMIT -1")
+            last = None
         else:
             if listing.texts > SORTED and not listing.always:
                 raise Refused(f"a page ordered by {order} sorts every text it reads, so it is given only when the "
@@ -853,25 +930,36 @@ class Depot:
                               f"decision, and this one names more: narrow the filter, or order by "
                               f"{' or '.join(INDEXED)}")
             window, last = f"SELECT key FROM ({listing.rows})", None
-        compared = ("" if place is None else
+        compared = ("" if place is None or order == "length" else
                     f"WHERE ({', '.join(keys)}) {compare} ({', '.join('?' * len(keys))})")
+        # a window read from an index of every text, not from the listing, is tested on the whole condition: the
+        # listing's own part of it (a tag's) holds there for none of its rows
+        candidates = plan.candidates if order == "id" or last is None else plan.where
         if order == "id":
             # the window's keys, read through its index in the order of the page, are the outer loop and the page
             # is ordered by them (each the key of its text's id), so SQLite sorts nothing and looks up only the
             # texts of the window up to the page's last match, not every text of the window
             matched = (f"SELECT {FIELDS}, w.key AS window_key FROM ({window}) w CROSS JOIN texts "
-                       f"ON texts.id = {ids.key_id_sql('w.key')} WHERE ({plan.candidates})")
+                       f"ON texts.id = {ids.key_id_sql('w.key')} WHERE ({candidates})")
             sql = (f"SELECT {columns}, json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} "
                    f"ORDER BY window_key{direction} LIMIT {int(limit) + 1}")
+        elif order == "length":
+            # the same over the window of lengths, ordered by its lengths and keys, which are each text's own (the
+            # length a revision keeps is its content version's); the window's place test is its own
+            matched = (f"SELECT {FIELDS}, w.size AS window_length, w.key AS window_key FROM "
+                       f"(SELECT size, key FROM ({window}){kept}) w "
+                       f"CROSS JOIN texts ON texts.id = {ids.key_id_sql('w.key')} WHERE ({candidates})")
+            sql = (f"SELECT {columns}, json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} "
+                   f"ORDER BY window_length{direction}, window_key{direction} LIMIT {int(limit) + 1}")
         else:
             # the window is read on its own (MATERIALIZED), in the order of its index, before any text is looked up
             matched = (f"SELECT {FIELDS} FROM w CROSS JOIN texts "
-                       f"ON texts.id = {ids.key_id_sql('w.key')} WHERE ({plan.candidates})")
+                       f"ON texts.id = {ids.key_id_sql('w.key')} WHERE ({candidates})")
             by = ", ".join(f"{one}{direction}" for one in keys)
             sql = (f"WITH w AS MATERIALIZED (SELECT key FROM ({window})) SELECT {columns}, "
                    f"json_array({', '.join(keys)}) AS place FROM ({matched}) {compared} ORDER BY {by} "
                    f"LIMIT {int(limit) + 1}")
-        found = self.db.person_rows(sql, params + (tuple(place) if place is not None else ()))
+        found = self.db.person_rows(sql, params + (tuple(place) if compared else ()))
         edge = None
         if last is not None and len(found) <= limit:
             read = self.db.person_rows(f"SELECT count(*) AS n FROM ({window})", params)[0]["n"]
@@ -955,9 +1043,11 @@ class Depot:
         (no ids, search, SQL, decision, unticked texts, two tags or
         licenses, kinds with either, nor a change number older than the
         depot's). tags, licenses and blocked are None where the counts do
-        not give them: they do when the filter matches every text or none,
-        and blocked also when no upstream is followed and every license a
-        text names is allowed (every text names one). held: True."""
+        not give them: tags and licenses when the filter names statuses
+        alone (the split of each tag and license by status, summed over
+        those statuses), or matches every text or none, and blocked when it
+        matches none, or no upstream is followed and every license a text
+        names is allowed (every text names one). held: True."""
         named_parts = [(facet, values) for facet, values in ((counts.TAG, found.tags), (counts.LICENSE, found.licenses))
                        if values]
         if (found.ids is not None or found.unticked or found.decision
@@ -973,13 +1063,17 @@ class Depot:
             held = counts.read(con)
             facet, value = (named_parts[0][0], named_parts[0][1][0]) if named_parts else (counts.TEXTS, "")
             parts = (counts.of_kinds(con, wanted, found.kinds) if found.kinds else counts.split(con, facet, value))
+            by_status = None if named_parts or found.kinds else {
+                one: counts.split_among(con, one, wanted) for one in (counts.TAG, counts.LICENSE)}
         every = held[counts.TEXTS].get("", 0)
         statuses = {status: parts.get(status, 0) if status in wanted else 0
                     for status in (UNDER_REVIEW, ADMITTED, REFUSED)}
         matched = sum(statuses.values())
         whole = matched == every  # the filter matches every text, or the depot holds none
-        named = {facet: sorted(([name, n] for name, n in held[facet].items()), key=lambda one: (-one[1], one[0]))
-                 for facet in (counts.TAG, counts.LICENSE)}
+        among = {facet: held[facet] if by_status is None else by_status[facet] for facet in (counts.TAG, counts.LICENSE)}
+        named = {facet: sorted(([name, n] for name, n in among[facet].items()), key=lambda one: (-one[1], one[0]))
+                 for facet in among}
+        given = matched > 0 and (whole or by_status is not None)  # the tags and licenses of the matches are known
         allowed = {one for (one,) in self.db.reader().execute("SELECT id FROM licenses") if licenses.allowed(one)}
         unlicensed_none = all(one in allowed for one in held[counts.LICENSE]) or (
             facet == counts.LICENSE and value in allowed)
@@ -990,9 +1084,9 @@ class Depot:
             blocked = {BELONGS_TO_UPSTREAM: 0, NO_ALLOWED_LICENSE: 0}
         return {"texts": every, "total": every, "next": None, "held": True, "statuses": statuses,
                 "blocked": blocked,
-                "tags": [{"tag": name, "texts": n} for name, n in named[counts.TAG]] if whole and matched
+                "tags": [{"tag": name, "texts": n} for name, n in named[counts.TAG]] if given
                 else [] if matched == 0 else None,
-                "licenses": [{"license": name, "texts": n} for name, n in named[counts.LICENSE]] if whole and matched
+                "licenses": [{"license": name, "texts": n} for name, n in named[counts.LICENSE]] if given
                 else [] if matched == 0 else None}
 
     def tags(self) -> list[dict]:
@@ -1013,6 +1107,34 @@ class Depot:
         one change that writes nothing else."""
         with self._write("recount") as (con, _):
             counts.recount(con)
+
+    def give_reason(self, decision: str, reason: str, declaration: Declaration):
+        """Give an admission or a refusal its public reason, or another
+        one in place of the one it has: the reason a person attaches to the
+        decision they made just before (the Texts page's refusal, then its
+        reason). Only the person who made it gives it: the declaration's
+        name and email are the decision's own, its confirmation given, so
+        who decided stays as recorded. The decision keeps its id, status,
+        name, email, time and texts; its row takes this change's number, so
+        a backup and a clone's pull carry the new reason. NotFound without
+        such a decision; BelongsToUpstream for one of the upstream; Refused
+        for a decision under review (its reason may be the depot's own
+        record), for another person's declaration, and for a reason the
+        depot keeps for its own records (_check_declaration)."""
+        _check_declaration(declaration, reason)
+        found = self._rows("SELECT id, status, name, email FROM decisions WHERE id = ?", (decision,))
+        if not found:
+            raise NotFound(f"no decision {decision}")
+        self._refuse_upstream("decisions", [decision])
+        row = found[0]
+        if row["status"] not in (ADMITTED, REFUSED):
+            raise Refused(f"the decision {decision} puts texts under review, and only an admission or a refusal "
+                          "takes a reason afterwards: nothing was written")
+        if (row["name"], row["email"]) != (declaration.name.strip(), declaration.email.strip()):
+            raise Refused(f"the decision {decision} was made by {row['name']} ({row['email']}): only they give it "
+                          "its reason, so nothing was written")
+        with self._write("reason") as (con, number):
+            con.execute("UPDATE decisions SET reason = ?, change = ? WHERE id = ?", (reason.strip(), number, decision))
 
     def latest_decisions(self, limit: int = 10) -> list[dict]:
         """The latest decisions, the newest first, each with how many texts
@@ -1626,7 +1748,7 @@ class Depot:
                 decision = self._decision(con, number, UNDER_REVIEW, declaration, reason, checked=False)
                 con.execute("CREATE TEMP TABLE scored_ids (id TEXT PRIMARY KEY)")
                 con.execute("INSERT INTO temp.scored_ids SELECT id FROM temp.scored")
-                with counts.changing(con, "temp.scored_ids", (counts.SCORE,)):
+                with counts.changing(con, "temp.scored_ids", counts.SCORED):
                     self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
                                  {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
                 self._link(con, decision, number, "scored_ids")
@@ -1687,7 +1809,7 @@ class Depot:
                                           policy.scores_change(set_names, removed), checked=False)
                 con.execute("CREATE TEMP TABLE scored_ids (id TEXT PRIMARY KEY)")
                 con.execute("INSERT INTO temp.scored_ids SELECT id FROM temp.scored")
-                with counts.changing(con, "temp.scored_ids", (counts.SCORE,)):
+                with counts.changing(con, "temp.scored_ids", counts.SCORED):
                     self._revise(con, "texts_revisions", "SELECT id FROM temp.scored_ids", number,
                                  {"scores": "(SELECT s.scores FROM temp.scored s WHERE s.id = t.id)"})
                 self._link(con, decision, number, "scored_ids")
@@ -1812,27 +1934,20 @@ class Depot:
         return self._rows(f"SELECT name, texts FROM counts WHERE facet = '{counts.SCORE}' ORDER BY name")
 
     def score_values(self, name: str) -> dict:
-        """The values the score name has on the texts changed last, which
-        a review offers as its choices: {name, read, texts, low, high,
-        common}. It goes over the SCORE_READ revisions of the latest
-        changes at most, newest first (a score set makes a revision, so
-        the texts scored last come first), whatever the depot's size; read
-        is how many it went over, texts how many of them are current and
-        have the score, low and high its smallest and largest value there
-        (null without one), common its SCORE_VALUES most frequent values,
-        [{value, texts}], by value."""
+        """The values the score name has across every current text of the
+        depot, which a review offers as its choices: {name, texts, low,
+        high, common}, read from the depot's counts (wpt_depot.counts,
+        SCORE_VALUE) at once whatever the depot's size, each value to three
+        significant digits; texts is how many current texts have the
+        score, low and high its smallest and largest value (null without
+        one), common its SCORE_VALUES most frequent values, [{value,
+        texts}], by value."""
         _filled(name=name)
-        found = self.db.query(
-            "WITH walked AS (SELECT latest, scores FROM texts_revisions ORDER BY change DESC LIMIT ?), "
-            "seen AS (SELECT CAST(s.value ->> 'value' AS REAL) AS value FROM walked, json_each(walked.scores) s "
-            "WHERE walked.latest AND walked.scores IS NOT NULL AND s.value ->> 'name' = ?) "
-            "SELECT (SELECT count(*) FROM walked) AS read, (SELECT count(*) FROM seen) AS texts, "
-            "(SELECT min(value) FROM seen) AS low, (SELECT max(value) FROM seen) AS high, "
-            "(SELECT json_group_array(json_object('value', value, 'texts', n)) FROM (SELECT value, n FROM "
-            "(SELECT value, count(*) AS n FROM seen GROUP BY value ORDER BY n DESC, value LIMIT ?) ORDER BY value)) "
-            "AS common", (SCORE_READ, name.strip(), SCORE_VALUES))[0]
-        return {"name": name.strip(), "read": found["read"], "texts": found["texts"], "low": found["low"],
-                "high": found["high"], "common": json.loads(found["common"])}
+        found = counts.score_values(self.db.reader(), name.strip())
+        common = sorted(sorted(found, key=lambda one: (-one[1], one[0]))[:SCORE_VALUES])
+        return {"name": name.strip(), "texts": sum(texts for _, texts in found),
+                "low": found[0][0] if found else None, "high": found[-1][0] if found else None,
+                "common": [{"value": value, "texts": texts} for value, texts in common]}
 
     # Erasures
 

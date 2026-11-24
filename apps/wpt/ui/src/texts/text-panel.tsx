@@ -2,11 +2,12 @@
 // editable, under one line of facts: a plain text in CodeMirror
 // (code-editor.tsx), with find and replace inside this text, or an item
 // through the form of its kind's schema, a conversation read first as a
-// transcript and edited as a chat (conversation-editor.tsx), its kind shown in the facts line, fixed. Saving is save only, with Save or Ctrl+S, a new content
-// version through POST /api/texts/ID/content, which the depot records as a
-// public decision under review, so the text goes back under review (a
-// snapshot made before keeps the revision it holds); an admitted text asks
-// once more. Beside it, the review panel (panel.tsx): its scores, its
+// transcript and edited as a chat (conversation-editor.tsx), its kind shown in the facts line, fixed. An edit has no
+// button: it is saved when the Texts page moves to another text, before Admit & next admits it, with Ctrl+S, and when
+// the text is left any other way, as a new content version through POST /api/texts/ID/content, which the depot
+// records as a public decision under review, so the text goes back under review (a snapshot made before keeps the
+// revision it holds); an edit that cannot be saved when the text is left that way is said, and kept in this tab
+// until the text opens again; a reload or a closed tab with an edit not saved asks first. Beside it, the review panel (panel.tsx): its scores, its
 // tags, the moves and decisions, the presets, its facts and the menu of its
 // other actions, each opening its form in a dialog: its record (credits,
 // revision and content version and how many it has of each, every decision
@@ -40,6 +41,8 @@ import { type Score } from "../scores";
 import { ReviewPanel } from "./panel";
 import { isConversation, Transcript } from "../transcript";
 import { ConversationEditor, type Conversation } from "../conversation-editor";
+import { tell } from "../notice";
+import { canonical, EditSaves, type Content, type Made, type Saved } from "./edit-saving";
 
 // counts: whether the policy counts it (none made before the text's latest license or content change, or its latest putting back under review)
 // put_back: it put the text back under review, a correction of the decisions before it
@@ -71,16 +74,20 @@ const forgetText = (id: string) => [...read.keys()].filter((key) => key.endsWith
 // Ask for texts before they are opened (the Texts page asks for the next ones).
 export const prefetch = (ids: string[], version: number) => ids.forEach((id) => readAt(id, version));
 
+// What the Texts page asks of the editor before it leaves the text or decides on it: whether it holds an edit not
+// saved, and the save of that edit, which answers whether it was saved (words: what happened, said on the page).
+export type SaveResult = { ok: boolean; words: ReactNode };
+export type Saver = { dirty: () => boolean; save: () => Promise<SaveResult> };
+
 // id: the text; actions: the moves and decisions of the Texts page, which the panel shows under the tags; version:
 // raised by the Texts page whenever the text may have changed elsewhere (a key decided on it); onChanged: after any
-// change made here but scores and tags; onSaved: after scores or tags were saved, or failed to be, with what happened; onDirty:
-// whether its editor holds unsaved changes; handle: the editor's; onShown: the id of the text it shows now, or null
+// change made here but scores and tags; onSaved: after scores or tags were saved, or failed to be, with what happened; saver: the editor's save, for the page (Saver); handle: the editor's; onShown: the id of the text it shows now, or null
 // while it shows none (the keys act only on the text shown); find: the words the search looked for inside the
 // texts, marked in it, the first one scrolled to. Only the answer for the id asked last is kept, so a text read
 // slowly never replaces the one asked after it.
-export function TextPanel({ id, actions, version, onChanged, onSaved, onDirty, handle, onShown, find }: {
-  id: string; actions: ReactNode; version: number; onChanged: () => void; onSaved: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
-  handle: (h: EditorHandle | null) => void; onShown: (id: string | null) => void; find?: string;
+export function TextPanel({ id, actions, version, onChanged, onSaved, saver, handle, onShown, find }: {
+  id: string; actions: ReactNode; version: number; onChanged: () => void; onSaved: (words: ReactNode) => void;
+  saver: (s: Saver | null) => void; handle: (h: EditorHandle | null) => void; onShown: (id: string | null) => void; find?: string;
 }) {
   const [shown, setShown] = useState<{ id: string; answer: Answer<Shown> } | null>(null);
   const asked = useRef(id);
@@ -96,16 +103,17 @@ export function TextPanel({ id, actions, version, onChanged, onSaved, onDirty, h
   useEffect(() => () => onShown(null), [onShown]);
   if (!shown || shown.id !== id) return <div className="text-column"><Skeleton lines={6} label="Reading the text" /></div>;
   if (!shown.answer.ok) return <div className="text-column"><Problems problems={shown.answer.problems} /></div>;
-  return <Loaded key={id} actions={actions} shown={shown.answer.data} reload={() => { load(true); onChanged(); }} onSaved={(words) => { forgetText(id); onSaved(words); }} onDirty={onDirty} handle={handle} find={find} />;
+  return <Loaded key={id} actions={actions} shown={shown.answer.data} reload={() => { load(true); onChanged(); }} onSaved={(words) => { forgetText(id); onSaved(words); }}
+    saver={saver} handle={handle} find={find} />;
 }
 
 type Dialogs = "decide" | "relicense" | "credits" | "erase" | "record";
 
 // The open text in two parts: its content, always in view, under one line of facts, and the review panel beside
 // it (panel.tsx), whose menu opens the other actions, each in a dialog.
-function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
-  shown: Shown; actions: ReactNode; reload: () => void; onSaved: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
-  handle: (h: EditorHandle | null) => void; find?: string;
+function Loaded({ shown, actions, reload, onSaved, saver, handle, find }: {
+  shown: Shown; actions: ReactNode; reload: () => void; onSaved: (words: ReactNode) => void;
+  saver: (s: Saver | null) => void; handle: (h: EditorHandle | null) => void; find?: string;
 }) {
   const row = shown.text;
   const item = row.kind !== PLAIN;
@@ -139,7 +147,8 @@ function Loaded({ shown, actions, reload, onSaved, onDirty, handle, find }: {
       <div className="text-column">
         {said && <p className="done cue content-said" role="status">{said}</p>}
         {theirs ? <><div className="content-line small">{facts}</div><ReadOnly row={row} find={find} /></>
-          : <EditContent key={`${row.id}:${row.content_version}`} row={row} status={shown.status} facts={facts} onDone={done} onDirty={onDirty} handle={handle} find={find} />}
+          : <EditContent key={row.id} row={row} status={shown.status} facts={facts} onDone={done} onLeftSaved={onSaved}
+              saver={saver} handle={handle} find={find} />}
       </div>
       <ReviewPanel key={`${row.id}:${row.revision}`} text={row} status={shown.status} decisions={shown.decisions.length} readOnly={theirs}
         actions={actions} more={more} onSaved={onSaved} onRecord={() => setOpen("record")} />
@@ -256,12 +265,19 @@ function Relicense({ row, onDone }: { row: Row; onDone: (words: ReactNode) => vo
 // The text in the editor, always editable, or an item's content through the form of its kind's schema,
 // prefilled; a conversation is read as a transcript first, and its form opens on "Edit" or the E key (the
 // handle's focus). Above it, the facts line, with its kind (kind-picker.tsx) greyed since a text keeps the
-// kind it was added with, "Find" and its count of lines. Once it differs, a bar under it
-// saves (Save, or Ctrl+S) or reverts: saving makes a new content version, a public decision under review, so
-// the text goes back under review; an admitted text asks once more before that.
-function EditContent({ row, status, facts, onDone, onDirty, handle, find }: {
-  row: Row; status: Status; facts: ReactNode; onDone: (words: ReactNode) => void; onDirty: (dirty: boolean) => void;
-  handle: (h: EditorHandle | null) => void; find?: string;
+// kind it was added with, "Find" and its count of lines. Once it differs, a mark in the facts line, above the
+// editor and so in view while typing on a phone too, says it is not saved yet, and a bar under it, in the same
+// colour, says when it is saved (Saver: on the next move or decision of the Texts page, or Ctrl+S) and offers Revert;
+// saving makes a new content version, a public decision under review, so the text goes back under review, an
+// admitted one too. What that decision records and confirms is said in full the first time this browser shows the
+// bar (SEEN), then in one line with a "?" that opens it. The saves (edit-saving.ts) send what was typed while a save
+// was on its way too, and the editor keeps it when the text is read again after its own save. An edit still waiting
+// when the editor closes (the browser's back button, a filter that opens another text) is saved then, and said
+// through onLeftSaved; one that cannot be saved then is said too, and kept in this tab, so the text opens again with
+// it, unsaved; a reload or a closed tab asks first.
+function EditContent({ row, status, facts, onDone, onLeftSaved, saver, handle, find }: {
+  row: Row; status: Status; facts: ReactNode; onDone: (words: ReactNode) => void; onLeftSaved: (words: ReactNode) => void;
+  saver: (s: Saver | null) => void; handle: (h: EditorHandle | null) => void; find?: string;
 }) {
   const item = row.kind !== PLAIN;
   const original = useMemo(() => (item ? JSON.parse(row.content ?? "null") : null), [item, row.content]);
@@ -272,53 +288,137 @@ function EditContent({ row, status, facts, onDone, onDirty, handle, find }: {
     handle({ focus: () => setEditing(true), openFind: () => {} });
     return () => handle(null);
   }, [conversation, editing, handle]);
+  // an edit this tab could not save when the editor closed, kept to start from when the text opens again unchanged
+  const [restored] = useState(() => {
+    const one = unsaved.get(row.id);
+    unsaved.delete(row.id);
+    return one && one.version === row.content_version ? one : null;
+  });
+  useEffect(() => { if (restored) tell(null); }, [restored]); // the edit the line said was kept is in view again
+  // what the plain editor starts from: the text, or the edit kept; again on Revert and when the text changed elsewhere
+  const [start, setStart] = useState<string>(() => (restored && !item ? restored.text! : row.text ?? ""));
   const [doc, setDoc] = useState<{ text: Text; changed: boolean } | null>(null); // the editor's, once edited
-  const [content, setContent] = useState<unknown>(original);
-  const [answer, setAnswer] = useState<Answer<{ decision: string | null; version: number | null }> | null>(null);
+  const [content, setContent] = useState<unknown>(() => (restored && item ? JSON.parse(restored.text!) : original));
   const [editor, setEditor] = useState<EditorHandle | null>(null);
   const [fresh, setFresh] = useState(0); // raised by Revert: the editor starts again from the text as saved
-  const [asking, setAsking] = useState(false); // an admitted text's save, asked once more
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<ReactNode>(null); // why the last save saved nothing
   const [chatProblems, setChatProblems] = useState<string[]>([]); // what the depot would refuse in the conversation edited
   const kinds = useKinds();
   const schema = (item && kinds?.find((k) => k.id === row.kind)?.schema) || null;
-  const changed = item ? JSON.stringify(content) !== JSON.stringify(original) : Boolean(doc?.changed);
-  useEffect(() => { onDirty(changed); if (!changed) setAsking(false); }, [changed, onDirty]);
-  useEffect(() => () => onDirty(false), [onDirty]);
   const handed = useCallback((h: EditorHandle | null) => { setEditor(h); handle(h); }, [handle]);
   const who = useDeclarant();
   const { about } = useAbout();
-  const ready = declared(who) && about !== null && !(conversation && chatProblems.length);
-  const save = () => {
-    if (!changed || !ready) return;
-    if (status === "admitted" && !asking) { setAsking(true); return; }
-    send({ name: who.name.trim(), email: who.email.trim(), accepted: true });
+  // what a save sends and needs, read when it runs, so the page's saver, a save on its way and the save on closing see
+  // the latest edit; snap: the content compared with what the depot holds, a plain text's document by identity
+  // (the editor's own Text, or start while it holds start), an item as JSON with its keys in order
+  const snapOf = (): Content<Snap> => item ? { snap: canonical(content), body: { content } }
+    : { snap: doc?.changed ? doc.text : start, body: { text: doc?.changed ? doc.text.toString() : start } };
+  const title = textName(row);
+  const latest = useRef({ snapOf, who, about, chatProblems, conversation, title });
+  latest.current = { snapOf, who, about, chatProblems, conversation, title };
+  const told = useRef({ onDone, onLeftSaved }); // the latest callbacks, so the saves keep one identity
+  told.current = { onDone, onLeftSaved };
+  const mounted = useRef(true);
+  const saves = useRef<EditSaves<Snap> | null>(null);
+  if (!saves.current) {
+    saves.current = new EditSaves<Snap>(item ? canonical(original) : row.text ?? "", {
+      now: () => latest.current.snapOf(),
+      same: (a, b) => a === b,
+      refusal: () => {
+        const now = latest.current;
+        if (now.conversation && now.chatProblems.length) return now.chatProblems[0];
+        if (!declared(now.who)) return "set a name and email in Settings to save the edit.";
+        if (!now.about) return "the depot's requirements are not read yet; try again in a moment.";
+        return null;
+      },
+      send: (body) => {
+        const who = latest.current.who;
+        return post<{ decision: string | null; version: number | null }>(`/api/texts/${encodeURIComponent(row.id)}/content`,
+          { ...body, declaration: { name: who.name.trim(), email: who.email.trim(), accepted: true } satisfies Declaration })
+          .then((a) => (a.ok ? { ok: true as const, ...a.data } : a));
+      },
+      onStart: () => { if (mounted.current) { setSaving(true); setProblem(null); } },
+      onEnd: (saved) => {
+        const words = savedWords(saved, mounted.current, latest.current.title, row.id);
+        if (mounted.current) {
+          setSaving(false);
+          if (!saved.ok) setProblem(words);
+          if (saved.sent) told.current.onDone(saved.ok ? words : <>{madeWords(saved.made)} {words}</>);
+        } else {
+          // one not saved is said on whatever page is open now, which may not be the Texts page
+          if (!saved.ok) { keepUnsaved(row.id, saves.current!.version ?? row.content_version, latest.current.snapOf()); tell(words); }
+          if (saved.sent) told.current.onLeftSaved(saved.ok ? words : madeWords(saved.made));
+        }
+      },
+    });
+  }
+  const changed = saves.current.dirty();
+  const save = useCallback(async (): Promise<SaveResult> => {
+    const saved = await saves.current!.save();
+    return { ok: saved.ok, words: saved.ok && !saved.sent ? null : savedWords(saved, true, title, row.id) };
+  }, [title, row.id]);
+  useEffect(() => {
+    saver({ dirty: () => saves.current!.dirty(), save });
+    return () => saver(null);
+  }, [saver, save]);
+  // the text read again: when its content version is one these saves made (or older, a read that left before the
+  // save answered), the editor keeps what it holds, words typed since the save left included; when it changed
+  // elsewhere, the editor starts over from it
+  const seenVersion = useRef(row.content_version);
+  useEffect(() => {
+    if (seenVersion.current === row.content_version) return;
+    seenVersion.current = row.content_version;
+    const mine = saves.current!.version;
+    if (saves.current!.saving() || (mine !== null && row.content_version <= mine)) return;
+    saves.current!.restart(item ? canonical(original) : row.text ?? "");
+    setStart(row.text ?? ""); setDoc(null); setContent(original); setFresh((n) => n + 1);
+  }, [row.content_version, row.text, item, original]);
+  // an edit still waiting when the editor closes is saved then, or kept in this tab when it cannot be, and said
+  // either way through onLeftSaved; a reload or a closed tab asks first
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const saves_ = saves.current!;
+      if (saves_.dirty() || saves_.saving()) void saves_.save();
+    };
+  }, []);
+  useEffect(() => {
+    if (!changed) return;
+    const leaving = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", leaving);
+    return () => window.removeEventListener("beforeunload", leaving);
+  }, [changed]);
+  // back to what the depot holds as this editor knows it: the text as opened, or as its last save left it
+  const revert = () => {
+    const held = saves.current!.held;
+    if (item) setContent(JSON.parse(held as string));
+    else setStart(typeof held === "string" ? held : held.toString());
+    if (!item) saves.current!.restart(typeof held === "string" ? held : held.toString());
+    setDoc(null); setProblem(null); setFresh((n) => n + 1);
   };
-  const revert = () => { setDoc(null); setContent(original); setFresh((n) => n + 1); setAsking(false); };
-  // Ctrl+S (Cmd+S) saves as the button does
+  // Ctrl+S (Cmd+S) saves at once, the text staying open
   useEffect(() => {
     const press = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "s") return;
       e.preventDefault();
-      save();
+      void save();
     };
     window.addEventListener("keydown", press);
     return () => window.removeEventListener("keydown", press);
-  });
-  const send = async (declaration: Declaration) => {
-    setAsking(false);
-    const a = await post<{ decision: string | null; version: number | null }>(`/api/texts/${encodeURIComponent(row.id)}/content`, { ...(item ? { content } : { text: doc!.text.toString() }), declaration });
-    setAnswer(a);
-    if (!a.ok) return;
-    onDirty(false);
-    if (a.data.decision === null) onDone("Nothing changed: its content is this already.");
-    else onDone(<>Saved as content version {a.data.version} (<a href={href(["decisions", a.data.decision])}>{a.data.decision}</a>): under review again.</>);
-  };
+  }, [save]);
+  const ready = declared(who) && about !== null && !(conversation && chatProblems.length);
+  // the whole of what a saved edit records, said in full once in this browser, then behind a "?"
+  const [seenBefore] = useState(readSeen);
+  useEffect(() => { if (changed && ready) keepSeen(); }, [changed, ready]);
   return (
     <div className="edit-content">
       <div className="content-line small">
         {facts}
+        {changed && <span className={`edited-mark${saving ? " saving" : ""}`} role="status">{saving ? "saving…" : "● edited, not saved"}</span>}
         {!item && <span className="content-tools">
-          <span className="aside">{plural(doc ? doc.text.lines : lineCount(row.text ?? ""), "line")}</span>
+          <span className="aside">{plural(doc ? doc.text.lines : lineCount(start), "line")}</span>
           <Button variant="quiet" disabled={!editor} onClick={() => editor?.openFind()} title='Find and replace in this text (Ctrl+F); tick "regexp" for a regular expression'>Find</Button>
         </span>}
         {conversation && !editing && <span className="content-tools"><span className="aside">{plural(original.messages.length, "message")}</span>
@@ -332,25 +432,61 @@ function EditContent({ row, status, facts, onDone, onDirty, handle, find }: {
             : schema ? <SchemaForm key={fresh} value={content} schema={schema} root={schema} name={row.kind!} words={KIND_WORDS[row.kind!]} need="required" onChange={setContent} /> : <Skeleton lines={4} label="Reading the kind's schema" />}</div>
         ) : (
           <Suspense fallback={<Skeleton lines={8} label="Opening the editor" />}>
-            <CodeEditor key={fresh} initial={row.text ?? ""} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
+            <CodeEditor key={fresh} initial={start} onChange={(text, edited) => setDoc({ text, changed: edited })} label={`The text of ${row.title ?? row.id}`} handle={handed} find={find} />
           </Suspense>
         )}
       {changed && (
-        <div className={`save-bar small${asking ? " asking" : ""}`} role="group" aria-label="Unsaved changes">
-          {asking ? <span className="act">It is admitted: saving puts it back under review.</span>
-            : <span>Edited, not saved.</span>}
-          <Button variant="primary" disabled={!ready} onClick={save}>{asking ? "Save anyway" : "Save"}<span className="key-hint">(Ctrl S)</span></Button>
-          <Button variant="quiet" onClick={asking ? () => setAsking(false) : revert}>{asking ? "Keep editing" : "Revert"}</Button>
+        <div className={`save-bar small${status === "admitted" ? " asking" : ""}`} role="status" aria-label="Edit not saved yet">
+          <span className={saving ? "act" : undefined}>{saving ? "Saving the edit…" : <><strong className="edited-word">Not saved yet:</strong> saved when you move on (Next, ‹, Admit &amp; next) or with Ctrl+S.</>}
+            {status === "admitted" && !saving && <> It is admitted: saving puts it back under review, and Admit &amp; next admits the new version.</>}</span>
+          <Button variant="quiet" disabled={saving} onClick={revert}>Revert</Button>
           <span className="aside save-words">{conversation && chatProblems.length ? <>{chatProblems[0]}</>
+            : ready && seenBefore
+            ? <>A public decision as {who.name}, the text back under review.<Help label="what saving records">Content version {row.content_version + 1}, the text back under review; a snapshot made before keeps the version it holds. It confirms: <q>{about!.confirmation}</q> <a href={about!.requirements} target="_blank" rel="noreferrer">The requirements</a>.</Help></>
             : ready
             ? <>A public decision as {who.name}: content version {row.content_version + 1}, the text back under review; a snapshot made before keeps the version it holds. It confirms: <q>{about!.confirmation}</q> <a href={about!.requirements} target="_blank" rel="noreferrer">The requirements</a>.</>
             : declared(who) ? <>Reading the depot's requirements before it can save…</>
             : <>Set a name and email in <a href={settingsHref()}>Settings</a> to save.</>}</span>
         </div>
       )}
-      <Outcome answer={answer} done={() => ""} />
+      {problem && changed && <p className="act small" role="alert">{problem}</p>}
     </div>
   );
+}
+
+type Snap = Text | string;
+
+// What a save did, in words: the page's line while the editor is open; once it closed (left by a way the page does not
+// guard), the same with the text named, and for an edit it could not save, that the edit is kept in this tab with a
+// link back to the text, where it opens again unsaved.
+function savedWords(saved: Saved, open: boolean, title: string, id: string): ReactNode {
+  const name = <a href={href(["texts", id])}>{title}</a>;
+  if (!saved.ok) {
+    const why = saved.before && saved.problems[0].startsWith("set a name and email")
+      ? <>set a name and email in <a href={settingsHref()}>Settings</a> to save the edit.</> : saved.problems.join(" ");
+    return open ? <>Not saved, so it stays open: {why}</>
+      : <>The edit of {name} was not saved: {why} It is kept in this tab: open {name} again to save it.</>;
+  }
+  const done = saved.made ? madeWords(saved.made) : <>Nothing to save: its content is this already.</>;
+  return open ? done : <>{name}: {done}</>;
+}
+const madeWords = (made: Made | null): ReactNode => made
+  ? <>Edit saved as content version {made.version} (<a href={href(["decisions", made.decision])}>{made.decision}</a>): under review again.</> : null;
+
+// The edits this tab could not save when their editor closed, by text: the content version they were made on and the
+// edit (a plain text, or an item's JSON), taken back when the text opens again at that version; in memory only.
+const unsaved = new Map<string, { version: number; text: string }>();
+function keepUnsaved(id: string, version: number, now: Content<Snap>) {
+  unsaved.set(id, { version, text: "content" in now.body ? JSON.stringify(now.body.content) : String(now.body.text) });
+}
+
+// Whether this browser showed in full what a saved edit records (localStorage; none kept: shown in full each time).
+const SEEN = "wpt-depot-edit-terms-seen";
+function readSeen(): boolean {
+  try { return window.localStorage.getItem(SEEN) === "yes"; } catch { return false; }
+}
+function keepSeen() {
+  try { window.localStorage.setItem(SEEN, "yes"); } catch { /* not kept: said in full again next time */ }
 }
 
 // The lines of a text, as the editor counts them: one more than its line breaks.

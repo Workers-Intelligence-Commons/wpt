@@ -217,6 +217,15 @@ libraries and datasets an older file may hold and deletes the strip
 reader's folder of format 12 beside the file (STRIPS_13). The tables of the
 libraries and datasets stay as they are, rows included; no write touches
 them any more, and nothing is dropped nor vacuumed.
+The step to format 14 builds the index texts_length (LENGTH_14: the
+current texts by status, then by the length of the content version each
+reads, then by id) in one statement, which reads every current text's row
+once, sorts in SQLite's temporary folder and rewrites no table, and makes
+the rows of counts of each score's values (SCORE_VALUES_14, the facet
+`score value` of wpt_depot.counts) in one statement that reads every
+revision's row once, between a first transaction that marks the depot half
+upgraded and a last one that drops the mark, as the step to format 11
+does; it says what it does before it starts and how long it took.
 
 The check (check) opens the file read-only and writes nothing: for a depot
 of format 11 it checks what the step to format 12 checks before it ends,
@@ -1917,8 +1926,52 @@ STATE_13 = ("texts_revisions", "content_lists", "pins", "memberships", "librarie
 STAGES_13 = {"tables": _tables_13, "taggings": _taggings_13, "sizes": _sizes_13, "locked": _locked_13,
              "datasets": _datasets_13, "counts": _counts_13, "views": _views_13}
 
+# format 14: the index of the current texts by status, then the length of the content version each reads, then id
+LENGTH_14 = (f"CREATE INDEX IF NOT EXISTS texts_length ON texts_revisions (status, content_length, {ORDER}) "
+             "WHERE latest")
+
+
+# format 14: the rows of counts of the values each score takes on the current texts, each value to three significant
+# digits, named by the JSON array of the score's name and that value
+SCORE_VALUES_14 = (
+    "INSERT INTO counts (facet, name, texts) SELECT 'score value', json_array(s.value ->> 'name', "
+    "printf('%.3g', CAST(s.value ->> 'value' AS REAL))), count(*) FROM texts_revisions t, json_each(t.scores) s "
+    "WHERE t.latest GROUP BY 2")
+
+
+def _to_14(db: Database, log):
+    """Format 13 to 14, as the module says: the rows of counts of the
+    scores' values, then the index texts_length, built while the depot is
+    marked half upgraded."""
+    from .depot import half_upgraded
+    if not half_upgraded(db.reader()):
+        with db.bulk() as con:
+            con.execute(f"CREATE TABLE {UNDER_WAY} (stage TEXT NOT NULL PRIMARY KEY, after INTEGER NOT NULL)")
+            _new_format(con, 14)
+    texts = db.reader().execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'status'").fetchall()[0][0]
+    revisions = db.reader().execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+    log(f"{db.path}: counting the values of the scores of its {texts:,} current texts, in one statement that reads "
+        f"each of its {revisions:,} revisions once and writes a few rows of counts; run again after a stop, it counts "
+        "them again")
+    began = time.monotonic()
+    with db.bulk() as con:
+        con.execute("DELETE FROM counts WHERE facet = 'score value'")
+        con.execute(SCORE_VALUES_14)
+    log(f"{db.path}: the values of the scores are counted, in {time.monotonic() - began:.0f} seconds")
+    log(f"{db.path}: building the index texts_length of its {texts:,} current texts by status and length, in one "
+        "statement that reads each of their rows once, sorts them in SQLite's temporary folder (SQLITE_TMPDIR, else "
+        "/var/tmp, /usr/tmp or /tmp) and writes no row of a table; run again after a stop, it builds it again")
+    began = time.monotonic()
+    with db.bulk() as con:
+        con.execute(LENGTH_14)
+        con.execute(f"DROP TABLE {UNDER_WAY}")
+    log(f"{db.path}: the index texts_length is built, in {time.monotonic() - began:.0f} seconds; the depot is at "
+        "format 14")
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
-FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11, 11: _to_12, 12: _to_13}
+FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11, 11: _to_12, 12: _to_13,
+              13: _to_14}
 
 
 # what `wpt depot upgrade --check` takes for the time of what it does not read itself, measured on bench/large.py's
@@ -1941,6 +1994,13 @@ RATE_13_SIZES, SIZE_BYTES = 200_000, 43
 # text, and for each tag it has (bench/upgrade.py measures 5.4 on the three-letter tags of its synthetic depot, whose
 # texts_revisions grows by 31.6 bytes a revision with SIZE_BYTES; longer names take more)
 COPY_BYTES, COPY_TAG_BYTES = 3, 8
+# the same for the step to format 14: current texts a second whose entry it adds to the index texts_length (1,500,000
+# in 6 seconds on bench/large.py's depot of 17.7 GB, the file partly in the page cache; taken lower, for a file read
+# from the disk), and the bytes of the file an entry takes (101,588,992 bytes for those 1,500,000)
+RATE_14, LENGTH_ENTRY_14 = 200_000, 70
+# and the revisions a second its count of the scores' values reads (SCORE_VALUES_14: 11,247,035 in 12 seconds on
+# bench/large.py's depot, read from the disk, its texts holding 3 million scores; taken lower, for texts of more scores)
+RATE_14_SCORES = 400_000
 REVISION_BYTES = 200  # bytes of the file a revision of a text takes, about: what the stage sizes rewrites of it
 SAMPLED = 2_000  # rows the check reads to measure what it does not read whole (content rows' size, tag sets)
 COUNT_ROW_BYTES = 64  # bytes a row of counts takes besides its name, about
@@ -1951,8 +2011,9 @@ SAVED_CHECK = ".upgrade-check.json"
 ALONE_WAIT_MS = 1000
 RUNBOOK = (
     "Before: run `wpt depot backup` right before the upgrade; restoring that backup needs the wpt of the depot's "
-    "format now, since this wpt (format 13) cannot open a depot of format 12 or older.",
-    "Order: upgrade the server first, then each clone: a clone of format 13 refuses an upstream of format 12.",
+    f"format now, since this wpt (format {FORMAT}) cannot open a depot of format {FORMAT - 1} or older.",
+    f"Order: upgrade the server first, then each clone: a clone of format {FORMAT} refuses an upstream of format "
+    f"{FORMAT - 1}.",
     "Stop: stop every process that has the depot open (`wpt depot web`, its jobs, a backup, any other `wpt depot` "
     "command) before `--yes`; the upgrade refuses while one still has the file open, since the code of the old "
     "format checks the format only when it opens the depot and would go on writing into the half-upgraded file. "
@@ -2047,7 +2108,8 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
     next backup sends, the WAL at its largest, the disk added), then the
     runbook (RUNBOOK) and the command that runs it. A depot older than
     format 11 or a folder gets the steps alone: each stage of the step to
-    format 13 checks its conversions itself and stops on a difference.
+    format 13 checks its conversions itself and stops on a difference; a
+    depot of format 13 gets the cost of the step to format 14 alone.
     It reads in one read transaction. A check saved beside the depot's file
     (saved_check_path) of the depot in the same state (_state_13) gives the
     measures it holds, and save writes what this one measured there, so a
@@ -2060,7 +2122,7 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
     if path.is_dir():
         start = format_of(address)
         return Check(True, [f"{path}: a folder of format {start}: the upgrade runs each step up to format 3 in it, then "
-                            "writes a new depot file from it and brings that file up to format 13; each stage of the "
+                            f"writes a new depot file from it and brings that file up to format {FORMAT}; each stage of the "
                             "step to format 13 checks the snapshots it makes and stops on a difference", *RUNBOOK,
                             f"Run: {command}"])
     db = Database(path, readonly=True)
@@ -2074,6 +2136,9 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
             return Check(True, [f"{path}: at format {FORMAT} already, nothing to upgrade"], needed=False)
         lines = [f"{path}: format {start}" + (f", an upgrade to format {start + 1} not ended" if half else "")
                  + f"; the upgrade runs the steps {', '.join(f'{one} to {one + 1}' for one in range(start, FORMAT))}"]
+        if start == 13:
+            cost = _cost_14(con, path)
+            return Check(True, [*lines, *cost.pop("lines"), *RUNBOOK, f"Run: {command}"], cost=cost)
         if start < 11:
             lines.append("The libraries and datasets are converted by the step to format 13, after the steps before it: "
                          "this check reads a depot of format 11 or 12, so each stage checks its conversions itself and "
@@ -2215,9 +2280,10 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
     seconds = {"11 to 12": contents / RATE_12 + (revisions / RATE_12_KINDS if start == 11 else 0),
                "12 to 13, tables": revisions / RATE_13_TABLES,
                "12 to 13, taggings": revisions / RATE_13_TAGGINGS, "12 to 13, sizes": revisions / RATE_13_SIZES,
-               "12 to 13, locked and datasets": 0.0 if start == 12 else again, "12 to 13, counts and views": 0.0}
+               "12 to 13, locked and datasets": 0.0 if start == 12 else again, "12 to 13, counts and views": 0.0,
+               "13 to 14": current / RATE_14 + revisions / RATE_14_SCORES}
     temporary = max(_sorted_bytes(con), revisions * TAGGINGS_SORTED_13)
-    added = (contents * KIND_BYTES + sum(snapshot_bytes) + 50 * len(datasets)
+    added = (current * LENGTH_ENTRY_14 + contents * KIND_BYTES + sum(snapshot_bytes) + 50 * len(datasets)
              + COUNT_ROW_BYTES * (tagsets + 50) + tagging_bytes + revisions * SIZE_BYTES
              + current * COPY_BYTES + tagged * COPY_TAG_BYTES)
     wal = max([int(min(contents, BATCH) * row_bytes * 1.1), *(int(one * 1.1) for one in snapshot_bytes),
@@ -2242,7 +2308,7 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
                f"taggings, about {taggings:,} rows, one for each tag a text has and one more for each tag an older "
                f"revision held (from the revisions of a sample of texts), {_size(revisions * SIZE_BYTES)} of the kind, length and bytes kept on "
                f"{revisions:,} revisions, {_size(current * COPY_BYTES + tagged * COPY_TAG_BYTES)} of the copy of "
-               f"each current text's tags"
+               f"each current text's tags, {_size(current * LENGTH_ENTRY_14)} of the index texts_length"
              + "); the tables of libraries and datasets stay, nothing is freed",
              f"  WAL at its largest: about {_size(wal)}, cut back to {_size(JOURNAL_LIMIT)} after each "
              "transaction",
@@ -2250,6 +2316,29 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
              "into the store (each step marks the file for a full copy, since change files record no layout)"]
     return {"seconds": seconds, "again": again, "added": added, "wal": wal, "backup": size + added,
             "tagsets": tagsets, "temporary": temporary, "lines": lines}
+
+
+def _cost_14(con, path: Path) -> dict:
+    """The cost of the step to format 14 alone (Check.cost) and its lines, from the counts of the current texts."""
+    current = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'status'").fetchall()[0][0]
+    revisions = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
+    counting, building = revisions / RATE_14_SCORES, current / RATE_14
+    seconds, added = {"13 to 14": counting + building}, current * LENGTH_ENTRY_14
+    size = path.stat().st_size
+    lines = ["Cost of the step 13 to 14:",
+             f"  counting the values of the scores over {revisions:,} revisions: about {counting:,.0f} seconds "
+             f"({counting / 60:,.1f} minutes)",
+             f"  building the index texts_length of {current:,} current texts: about {building:,.0f} "
+             f"seconds ({building / 60:,.1f} minutes)",
+             f"  temporary folder: SQLite sorts the index's entries in it (SQLITE_TMPDIR, else /var/tmp, /usr/tmp or "
+             f"/tmp), about {_size(added)} of free disk",
+             f"  disk added: about {_size(added)}, the index",
+             f"  WAL at its largest: about {_size(added)}, the index's pages, cut back to {_size(JOURNAL_LIMIT)} "
+             "after the step",
+             f"  backup: the next `wpt depot backup` sends a full copy of the file, about {_size(size + added)}, "
+             "into the store (the step marks the file for a full copy, since change files record no layout)"]
+    return {"seconds": seconds, "again": 0.0, "added": added, "wal": added, "backup": size + added,
+            "temporary": added, "lines": lines}
 
 
 def _sampled_row_bytes(con, rows: int, step: int) -> float:

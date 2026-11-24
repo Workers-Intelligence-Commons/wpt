@@ -10,8 +10,8 @@
 // snapshot's summary, the sample and the vocabulary sizes as preset buttons,
 // its name filled in from the snapshot's; once made, its page opens.
 // #/tokenizers/NAME is one recipe: where it stands as a strip of stages
-// (its snapshot, the recipe, its vocabulary, the model recipes of the
-// repository naming one of its vocabularies, listed under it), its vocabularies, each with its file, the
+// (its snapshot, the recipe, its vocabulary, and the build of a model recipe
+// naming it), its vocabularies, each with its file, the
 // texts it trained on (folded, by title, a page at a time) and a link that
 // composes a model recipe with it on its snapshot's page; the training of its
 // version's vocabulary queued as a job once its estimate (GET
@@ -27,7 +27,7 @@ import { get, part, post, put, waiting, type Answer, type Job } from "../api";
 import { EVERY, search } from "../filter";
 import { Help, Outcome, PageHead, Pager, plural, Problems, optional, PLAIN, required, RequiredNote, Section } from "../parts";
 import { href } from "../route";
-import { pipelineChanged, snapshotHref, Stage, StageMark, standing, usePipelineChange, useRecipes, useSnapshots, type Snapshot, type SnapshotShown, type Tokenizer as Recipe } from "../pipeline";
+import { pipelineChanged, snapshotHref, Stage, usePipelineChange, useSnapshots, type Snapshot, type SnapshotShown, type Tokenizer as Recipe } from "../pipeline";
 import { bytes, duration } from "../sizes";
 import { JobLine, JobProgress } from "./jobs";
 import type { Page } from "./index";
@@ -86,7 +86,7 @@ function Tokenizers({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Tokenizers"
-        chain={<>A tokenizer recipe says how a vocabulary trains: on a sample of a <a href={href(["snapshots"])}>snapshot</a>'s texts, up to a number of tokens. Each version's vocabulary is kept in the depot once trained, for good, and a <a href={href(["recipes"])}>model recipe</a> names one of them.</>}
+        chain={<>A tokenizer recipe says how a vocabulary trains: on a sample of a <a href={href(["snapshots"])}>snapshot</a>'s texts, up to a number of tokens. Each version's vocabulary is kept in the depot once trained, for good, and a model recipe names one of them, and the <a href={href(["build"])}>Build</a> page builds its corpus.</>}
         actions={<Button variant={rows?.ok && rows.data.length === 0 ? "primary" : "quiet"} onClick={() => { setAnswer(null); setMaking(true); }}>New tokenizer recipe</Button>} />
       {!making && answer && <Outcome answer={answer} done={() => "Saved: it names the snapshot now, ready to train."} />}
       {!rows && <Skeleton lines={4} />}
@@ -261,7 +261,6 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
   useEffect(load, [load]);
   usePipelineChange(load); // a job that ends, here or in a part of the page, changes what the recipe holds
   const { answer: snapshotsRead } = useSnapshots();
-  const { answer: modelRecipes } = useRecipes();
   const estimated = useCallback(async () => { setAnswer(null); setEstimate(await get<TrainingEstimate>(`/api/tokenizers/${part(name)}/estimate`)); }, [name]);
   const wantsTraining = query.get("train") === "1";
   useEffect(() => {  // ?train=1: the estimate opens at once, when there is something to train
@@ -283,9 +282,8 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
   const composeOn = (sha256: string) => (recipe.sample ? snapshotHref({ id: recipe.sample.snapshot }, { compose: "1", vocabulary: sha256 }) : href(["snapshots"]));
   // the current version's sample came out short of the size asked
   const short = current?.bytes != null && current.bytes < recipe.sample_bytes * SHORT_SAMPLE;
-  // the snapshot its sample reads, and the model recipes of the repository naming one of its vocabularies
+  // the snapshot its sample reads
   const sampled = recipe.sample && snapshotsRead?.ok ? snapshotsRead.data.find((one) => one.id === recipe.sample!.snapshot) ?? null : null;
-  const naming = modelRecipes?.ok ? modelRecipes.data.recipes.filter((r) => r.vocabulary?.recipe === recipe.name) : null;
   return (
     <>
       <PageHead title={recipe.name}
@@ -309,17 +307,10 @@ function OneTokenizer({ name, query }: { name: string; query: URLSearchParams })
         <Stage name="Tokenizer recipe" state="done" mark={false} current value={`v${recipe.version}`} label={`a sample of at most ${bytes(recipe.sample_bytes)}`} />
         <Stage name="Vocabulary" state={trained ? "done" : following ? "waiting" : recipe.needs_snapshot ? "waiting" : "next"} word={trained ? undefined : following ? "training" : recipe.needs_snapshot ? "waiting" : "to train"}
           value={recipe.vocab_size.toLocaleString("en")} label="tokens" />
-        <Stage name="Model recipes" to={href(["recipes"])} state={naming === null ? "unknown" : naming.length ? "done" : "waiting"} word={naming?.length ? undefined : naming ? "none yet" : ""}
-          value={naming === null ? "…" : naming.length.toLocaleString("en")} empty={!naming?.length} label={naming === null ? "" : naming.length === 0 ? "no model recipe names its vocabulary yet" : naming.length === 1 ? "names its vocabulary" : "name its vocabularies"} />
+        <Stage name="Build" to={href(["build"])} state={trained ? "next" : "waiting"} word={trained ? "a recipe file" : "waiting"}
+          value="recipe" empty label="a model recipe naming its vocabulary, handed over on the Build page" />
       </ol>
       {recipe.note && <p className="small aside">{recipe.note}</p>}
-      {naming && naming.length > 0 && (
-        <Section title={<>Model recipes naming it: {naming.length}</>}>
-          <ul className="plain linked">
-            {naming.map((r) => <li key={r.name}><a href={href(["recipes", r.name])}>{r.name}</a> <StageMark at={standing(r)} /></li>)}
-          </ul>
-        </Section>
-      )}
       <Section title="Vocabularies" help={short ? <>Less than the {bytes(recipe.sample_bytes)} asked, and nothing went wrong: the sample takes the texts that fit it, in the snapshot's order, a text longer than about a million characters as pieces of that length, and closes once nearly full or after a thousand texts in a row that do not fit; a snapshot smaller than the sample gives all it has.</> : undefined}>
         {vocabularies.length === 0 ? <p className="small aside">None yet.</p> : vocabularies.map((v) => (
           <div key={v.version} className="vocabulary">

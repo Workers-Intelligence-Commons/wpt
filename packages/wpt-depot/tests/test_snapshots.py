@@ -334,3 +334,44 @@ def test_the_last_erasure_rises_with_an_erasure_revision_pulled_at_a_lower_chang
                     "VALUES ('upstream-1', 1, 1, 1, 'asked upstream', '[]', '[]')")
 
     assert snapshots.last_erasure(depot) > before
+
+
+def test_a_snapshot_read_by_length_gives_each_text_at_its_revision_then_longest_first_a_page_at_a_time(
+        make_depot, me, tmp_path):
+    # the strip of a whole snapshot shows what it holds, the texts that take the most room first: a text changed or
+    # refused after it is read and placed as the snapshot holds it, one an erasure removed is left out, and the order
+    # read from its file pages the same as the one just built
+    from wpt_depot import sizes
+    depot = make_depot()
+    lengths = [5, 30, 12, 30, 1, 44, 7]
+    texts = depot.add([NewText(text=f"{n:02d}" + "x" * (n - 2) if n > 2 else "x" * n, licenses=("CC0-1.0",))
+                       for n in lengths], me)
+    depot.decide("admitted", texts[:6], me)
+    made = depot.create_snapshot("first")
+    depot.change_content(texts[2], "y" * 100, None, me)  # longest now, 12 in the snapshot
+    depot.decide("refused", [texts[1]], me)
+    depot.decide_erasure(depot.ask_erasure("all of it", [(texts[3], None, None)], me), "admitted", me)
+    expected = [texts[5], texts[1], texts[2], texts[0], texts[4]]  # 44, 30, 12, 5, 1; texts[3] erased
+
+    built = sizes.build(depot, made["id"])
+    sizes.save(built, tmp_path / "order.npy")
+    kept = sizes.load(tmp_path / "order.npy")
+
+    assert (kept.snapshot, kept.digest, len(kept)) == (made["id"], made["digest"], 5)
+    for order in (built, kept):
+        for descending in (True, False):
+            rows, after = [], None
+            while True:
+                found = sizes.page(depot, order, after, limit=2, descending=descending)
+                rows += found["rows"]
+                after = found["next"]
+                if after is None:
+                    break
+            assert [one["id"] for one in rows] == (expected if descending else expected[::-1])
+    first = sizes.page(depot, kept, None, limit=10)["rows"]
+    assert [(one["length"], one["status"]) for one in first[1:3]] == [(30, "refused"), (12, "under review")]
+    assert first[2]["passage"] == "12" + "x" * 10 and first[0]["passage"] == "44" + "x" * 42
+    cut = sizes.page(depot, kept, None, limit=10, characters=50)
+    assert [len(one["passage"]) for one in cut["rows"]] == [44] and cut["next"] == 0  # the next text does not fit
+    assert [len(one["passage"]) for one in sizes.page(depot, kept, None, limit=10, characters=20)["rows"]] == [20]
+    assert sizes.load(tmp_path / "missing.npy") is None

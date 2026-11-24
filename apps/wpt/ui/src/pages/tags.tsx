@@ -5,7 +5,7 @@
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { get, type Answer } from "../api";
-import { MatchedCount, useCounts } from "../counts";
+import { MatchedCount, useCounts, STATUSES_ONLY } from "../counts";
 import { EVERY } from "../filter";
 import { PageHead, Problems, Section, Stat, STATUSES } from "../parts";
 import { href } from "../route";
@@ -14,7 +14,7 @@ import type { Page } from "./index";
 
 function OneTag({ tag }: { tag: string }) {
   const filter = useMemo(() => ({ ...EVERY, tags: [tag] }), [tag]);
-  const found = useCounts(filter);
+  const found = useCounts(filter, 0, STATUSES_ONLY); // the statuses alone
   return (
     <>
       <PageHead title={tag}

@@ -32,17 +32,17 @@ export const get = <T,>(path: string) => call<T>("GET", path);
 export const post = <T,>(path: string, body: unknown) => call<T>("POST", path, body);
 
 // A write over a selection of texts, a vocabulary training, a snapshot and a
-// corpus build run as jobs of the server's queue (GET /api/jobs/ID), in two
-// lanes that each run one job at a time: write (the writes over a selection)
-// and heavy (snapshot, vocabulary, corpus), so a long build never holds up a
-// write. A job is queued, running, then done with its answer, or refused,
+// corpus build run as jobs of the server's queue (GET /api/jobs/ID), in three
+// lanes that each run one job at a time: write (the writes over a selection),
+// heavy (snapshot, vocabulary, corpus) and read (a snapshot's order by size,
+// for its strip), so a long build never holds up a write or a strip. A job is queued, running, then done with its answer, or refused,
 // failed or cancelled with its problem and status; stages, each stage a write
 // started, with its time in seconds; progress, what a training, a snapshot
 // or a build says it did so far; key, the snapshot's name or the corpus's
 // build key; recipe, the tokenizer or model recipe it works for.
 export type JobState = "queued" | "running" | "done" | "refused" | "failed" | "cancelled";
-export type JobKind = "write" | "vocabulary" | "corpus" | "snapshot";
-export type Lane = "write" | "heavy";
+export type JobKind = "write" | "vocabulary" | "corpus" | "snapshot" | "sizes";
+export type Lane = "write" | "heavy" | "read";
 export type Job<T> = {
   id: string; kind: JobKind; lane: Lane; title: string; state: JobState; stages: { stage: string; at: number }[];
   progress: Record<string, unknown> | null; key: string | null; recipe: string | null;

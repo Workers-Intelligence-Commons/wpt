@@ -148,6 +148,20 @@ def test_back_to_review_undoes_an_admission_or_a_refusal_and_never_an_erasure_de
         depot_command("decide", "back-to-review", "--erasure", "test-depot-1", *ME)
 
 
+def test_a_refusal_takes_its_reason_afterwards_from_the_reason_command(depot, capsys):
+    [text] = Depot.open(depot).add([NewText(text="one", licenses=("CC0-1.0",))], _declaration())
+    assert depot_command("decide", "refuse", f"id = '{text}'", *ME) == 0
+    decision = Depot.open(depot).show(text)["decisions"][-1]["id"]
+    capsys.readouterr()
+
+    assert depot_command("reason", decision, "bad license", *ME) == 0
+
+    assert bare(capsys.readouterr().out.splitlines()[-1]) == f"decision {decision}: its reason is now 'bad license'"
+    assert Depot.open(depot).show(text)["decisions"][-1]["reason"] == "bad license"
+    assert depot_command("reason", decision, "mine", "--name", "Grace Hopper", "--email", "ada@example.org",
+                         "--accept") == 2  # only its maker
+
+
 def test_a_texts_content_changes_from_a_file_and_it_starts_over_under_review(depot, tmp_path, capsys):
     [text] = Depot.open(depot).add([NewText(text="old words", licenses=("CC0-1.0",))], _declaration())
     (tmp_path / "new.txt").write_text("new words", encoding="utf-8")
@@ -288,8 +302,8 @@ def test_a_backup_and_its_restore_are_made_by_commands_and_read_as_the_depot(dep
 
 def test_a_recipe_file_and_its_lock_are_imported_and_a_model_recipe_builds_with_that_vocabulary(depot, tmp_path,
                                                                                                 monkeypatch, capsys):
-    # the step of a deploy that brings a recipe of the repository, and the vocabulary its lock named, into a depot;
-    # then the corpus of a model recipe of the repository, built from the command line
+    # the step of a deploy that brings a tokenizer recipe, and the vocabulary its lock named, into a depot; then the
+    # corpus of a model recipe's file, built from the command line
     store_folder = tmp_path / "store"
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
@@ -330,21 +344,22 @@ def test_a_recipe_file_and_its_lock_are_imported_and_a_model_recipe_builds_with_
     data = {"depot": "test-depot", "snapshot": "s1", "change": snapshot["at_change"], "digest": snapshot["digest"],
             "total_tokens": 1000, "vocabulary": {"sha256": sha256, "size": tokenizer.vocab_size}}
     model = Recipes(REPOSITORY).recipe("model", Recipes(REPOSITORY).names("model")[0])
-    models = tmp_path / "repository" / "data" / "recipes" / "models"
-    models.mkdir(parents=True)
+    recipes = tmp_path / "recipes"  # anywhere: the depot reads no repository
+    recipes.mkdir()
     for name, given in {"fox": data, "elsewhere": {**data, "depot": "https://other.example"},
                         "untrained": {**data, "vocabulary": {"sha256": "0" * 64, "size": 560}}}.items():
-        (models / f"{name}.json").write_text(json.dumps({**model, "data": given}), encoding="utf-8")
-    monkeypatch.setenv("WPT_REPOSITORY", str(tmp_path / "repository"))
+        (recipes / f"{name}.json").write_text(json.dumps({**model, "data": given}), encoding="utf-8")
+    (recipes / "broken.json").write_text("{", encoding="utf-8")
     capsys.readouterr()
-    assert depot_command("build", "untrained") == 2  # the depot holds no such vocabulary
+    assert depot_command("build", str(recipes / "untrained.json")) == 2  # the depot holds no such vocabulary
     assert "NoVocabulary" in bare(capsys.readouterr().err)
-    assert depot_command("build", "elsewhere") == 2  # neither this depot nor its upstream
-    assert depot_command("build", "nothing") == 2
+    assert depot_command("build", str(recipes / "elsewhere.json")) == 2  # neither this depot nor its upstream
+    assert depot_command("build", str(recipes / "nothing.json")) == 2
+    assert depot_command("build", str(recipes / "broken.json")) == 2
     assert not (store_folder / "corpora").exists() or _corpora(store_folder) == []  # nothing was built
     capsys.readouterr()
 
-    assert depot_command("build", "fox") == 0
+    assert depot_command("build", str(recipes / "fox.json")) == 0
 
     corpus = bare(capsys.readouterr().out).splitlines()[-1].removeprefix("corpus ").split(":")[0]
     [record] = [store.get_json(f"corpora/{folder}/corpus.json") for folder in _corpora(store_folder)]
@@ -353,13 +368,15 @@ def test_a_recipe_file_and_its_lock_are_imported_and_a_model_recipe_builds_with_
     assert record["folder"] == f"corpora/{record['build_key']}"
     assert [(one["id"], one["title"]) for one in read_table(store, record, "texts").to_pylist()] == [("test-depot-1", "Fox")]
 
-    # a series (SERIES:) builds its one corpus, at its largest size, which wpt train SERIES:SIZE then finds
+    # a series' file builds its one corpus, at its largest size, named SERIES:, which wpt train SERIES:SIZE then
+    # finds in a repository holding the same series
     whole = Recipes(REPOSITORY).recipe("series", Recipes(REPOSITORY).names("series")[0])
-    (tmp_path / "repository" / "data" / "recipes" / "series").mkdir()
-    (tmp_path / "repository" / "data" / "recipes" / "series" / "ladder.json").write_text(
-        json.dumps({**whole, "data": {key: value for key, value in data.items() if key != "total_tokens"}}),
-        encoding="utf-8")
-    assert depot_command("build", "ladder:") == 0
+    series_file = json.dumps({**whole, "data": {key: value for key, value in data.items() if key != "total_tokens"}})
+    (recipes / "ladder.json").write_text(series_file, encoding="utf-8")
+    (tmp_path / "repository" / "data" / "recipes" / "series").mkdir(parents=True)
+    (tmp_path / "repository" / "data" / "recipes" / "series" / "ladder.json").write_text(series_file,
+                                                                                       encoding="utf-8")
+    assert depot_command("build", str(recipes / "ladder.json")) == 0
     [series] = [one for one in (store.get_json(f"corpora/{folder}/corpus.json") for folder in _corpora(store_folder))
                 if one["id"] != record["id"]]
     largest = Recipes(tmp_path / "repository").data_part("ladder:")
@@ -419,7 +436,7 @@ def test_the_score_command_sets_one_score_on_the_texts_a_condition_matches_and_s
     assert depot_command("score-names") == 0
     assert printed_rows(capsys) == [{"name": "rank", "texts": 1}]
     assert depot_command("score-values", "rank") == 0
-    assert printed_rows(capsys) == [{"name": "rank", "read": 5, "texts": 1, "low": 4.0, "high": 4.0,
+    assert printed_rows(capsys) == [{"name": "rank", "texts": 1, "low": 4.0, "high": 4.0,
                                      "common": [{"value": 4.0, "texts": 1}]}]
 
 

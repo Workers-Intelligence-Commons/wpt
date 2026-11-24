@@ -23,15 +23,16 @@ context is the last window length of the last step that reads text
 windows. The recipe's data part names a depot by its public address, a
 snapshot of it with the change and digest it reads, its kinds, shares,
 size (total_tokens) and vocabulary; its corpus is built into the store
-named by WPT_STORE (environment or .env) by Build on the recipe page of
-the depot's web app (or `wpt depot build`); a size of a series is
+named by WPT_STORE (environment or .env) by Build on the Build page of
+the depot's web app, the recipe's file handed over there (or `wpt depot
+build FILE`); a size of a series is
 derived for the size of the corpus's vocabulary. CORPUS_ID is what that
 build prints (or a start of it); without it, the corpus of the build's
 key (wpt_depot.corpus.build_key: the snapshot, the data part and the
 vocabulary), once the depot the address names (this depot's file, or a
 clone of it, or its web app: wpt.train.recipe_depot) holds that snapshot
 with the change and digest the recipe says; no fresh corpus of that key
-refuses the run, saying to press Build on the recipe page. A corpus given
+refuses the run, saying to press Build on the Build page. A corpus given
 by its id must be built from that snapshot with the recipe's kinds,
 shares and vocabulary, at any size. A recipe written before snapshots
 names a dataset instead, by id or name: without CORPUS_ID, the latest
@@ -412,8 +413,8 @@ def load_recipe(name, record):
 
 
 # how a recipe of a snapshot gets its corpus
-BUILD = ("press Build on the recipe page of the depot's web app (a series is listed as SERIES:), or run `wpt depot "
-         "build NAME` (SERIES: for a series) where the depot is")
+BUILD = ("press Build on the Build page of the depot's web app, the recipe's file (a series' for SERIES:SIZE) "
+         "handed over there, or run `wpt depot build FILE` where the depot is")
 # how a recipe of the legacy dataset shape gets another corpus: no build makes a corpus of a dataset
 LEGACY_AGAIN = ("no build makes a corpus of a dataset: give the recipe's data part a snapshot of the depot "
                 "(docs/data-selection.md, \"The data section of a model recipe\"), then " + BUILD)
@@ -476,7 +477,7 @@ def find_corpus(store, given, data, log=say) -> dict:
     (recipe_key), once the depot the address names (this depot or the
     upstream it follows) holds the snapshot with the change and digest the
     recipe says (recipe_snapshot). InputError when the store holds no fresh
-    corpus of that key, saying to press Build on the recipe page; nothing
+    corpus of that key, saying to press Build on the Build page; nothing
     is built or queued.
 
     A data part written before snapshots, which names a dataset: the latest
@@ -613,7 +614,7 @@ def check_record(record, recipe):
     and tasks their share of the size, and training reads what it holds),
     or it does not list its token files by kind, which each step reads
     (corpora.by_kind). The message says how to build it again: Build on
-    the recipe page for a corpus of a snapshot; for one of a dataset, a
+    the Build page for a corpus of a snapshot; for one of a dataset, a
     snapshot in the recipe first, since no build makes a corpus of a
     dataset."""
     snapshot = "build_key" in record
