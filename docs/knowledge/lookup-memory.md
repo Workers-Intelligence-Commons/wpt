@@ -31,11 +31,15 @@ The question is open at small sizes.
   one run can tell
 - Whether those 13.0M parameters do more in the table than in layers is not
   measured: the model without the table is smaller, not wider.
-- With the published law that each 4 times more rows adds one equal step,
-  the first rows of a table are worth the most per parameter. At a small
-  total of parameters, where a table set apart from the width is a large
-  share of the model, the table to try first is therefore a small one.
-  **hypothesis**
+- A table 16 times smaller, 0.9M parameters, keeps none of that gain: its
+  loss is that of the model without a table (2.84 against 2.85). The
+  published law, one equal step for each 4 times more rows, would leave
+  part of the gain; it does not describe tables this small. **measured
+  here**, one run
+- The three models copy a repeated sequence at 43%, 48% and 70% of its
+  tokens, the best being the one with the small table. Nothing here says
+  how far two runs of one recipe differ on that test, so these three
+  figures do not rank the models. **measured here**, one run each
 - The working assumption: a small model that must stay small in bytes
   keeps small tables, and one that must stay small in compute takes large
   ones. Loops bring depth and no knowledge, tables bring knowledge and no
@@ -84,25 +88,27 @@ about 50,021 rows of 16 numbers is 13.0M parameters at a width of 256 and
 
 ### Measured with WPT
 
-Two models of width 256, 11 layers, 32 routed experts and a vocabulary of
+Three models of width 256, 11 layers, 32 routed experts and a vocabulary of
 65,536, trained once each on the same 1.18B tokens with the same stages
 (windows of 2,048, 8,192 then 32,768 tokens, 8,990 updates of 131,072
 tokens), the same seed and the same optimizer. One has the Engram memory
 counted above at layer 2 (74.5M parameters, 15.8 tokens per parameter,
-commit d0d454b22b, RTX 5080 Laptop GPU), the other has none (61.6M, 19.1
+commit d0d454b22b, RTX 5080 Laptop GPU), one has the same memory with
+tables of about 3,126 rows, 16 times fewer (62.5M, 18.9 tokens per
+parameter, commit 8777a037b8, RTX 5090), and one has none (61.6M, 19.1
 tokens per parameter, commit b7dca7b2f7, RTX 5090).
 
-| | With the table | Without |
-| --- | --- | --- |
-| Validation loss at update 8,000 | 2.92 | 2.97 |
-| Validation loss at update 8,990 | 2.79 | 2.85 |
-| Repeated sequence, tokens written | 43% | 48% |
-| Repeated sequence, written whole | 24% | 29% |
-| Stated word, likeliest of four, English and French | 68%, 68% | 72%, 66% |
-| Stated number, likeliest of four, English and French | 84%, 74% | 87%, 78% |
+| | Table of 13.0M | Table of 0.9M | No table |
+| --- | --- | --- | --- |
+| Validation loss at update 8,000 | 2.92 | 2.97 | 2.97 |
+| Validation loss at update 8,990 | 2.79 | 2.84 | 2.85 |
+| Repeated sequence, tokens written | 43% | 70% | 48% |
+| Repeated sequence, written whole | 24% | 50% | 29% |
+| Stated word, likeliest of four, English and French | 68%, 68% | 74%, 75% | 72%, 66% |
+| Stated number, likeliest of four, English and French | 84%, 74% | 84%, 81% | 87%, 78% |
 
 The copying figures are those of the `copying` test of `wpt eval`, on 200
-prompts each. The two models differ by their table and, with it, by their
+prompts each. The models differ by their table and, with it, by their
 number of parameters and of tokens per parameter: the comparison says what
 the table adds to this model, not what its parameters would do elsewhere.
 
@@ -118,8 +124,13 @@ the table adds to this model, not what its parameters would do elsewhere.
   Which of the two shrinks faster decides at which sizes a table is worth
   its parameters. A measure repeats the comparison above at two totals at
   least, with and without the table at an equal total.
-- **A smaller table.** Whether a table 4 or 16 times smaller keeps most of
-  the 0.05, as the logarithmic law says it would.
+- **The spread between two runs of one recipe.** The same recipe trained
+  again with another seed says how far the loss and the copying test move
+  by chance. Without it, a gap of 0.05 in loss rests on its being the same
+  at two updates, and the copying figures cannot be compared at all.
+- **Between 0.9M and 13.0M.** Where the gain of the table appears: a table
+  4 times smaller than the larger one would say whether the gain grows
+  step by step or needs a size.
 - Whether the tables' size should follow the model's width.
 - Tables with loops: whether a looped model reads the table at every pass
   to advantage.
