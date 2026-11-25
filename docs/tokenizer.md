@@ -100,6 +100,55 @@ list the texts it read, in that order ([api/freight.md](api/freight.md),
 [api/preparation.md](api/preparation.md), "wpt-vocabulary"). An erasure is
 written into its delivery note and does not make it stale.
 
+### A vocabulary in an order
+
+A model recipe's data section names its vocabulary in one of two forms
+([data-selection.md](data-selection.md), "The data section of a model
+recipe"):
+
+- `{"size": N, "sample_bytes": B}`: a vocabulary of N entries learned on B
+  bytes of the plain texts of the section's own snapshot, chosen with its
+  shares. The recipe never holds its sha256: the vocabulary's delivery note
+  gives it.
+- `{"sha256": S, "size": N}`: the vocabulary of that sha256, which the dock
+  must hold. This is how a recipe keeps the vocabulary of an earlier model.
+
+`wpt build-resources RECIPE` (`SERIES:` for a series) sends the recipe's
+requests to the freight in order: the vocabulary first when the recipe
+learns one, then the corpus, whose request names the vocabulary's delivery
+as its input. It waits for both jobs and prints both delivery notes
+(`wpt.resources`). A vocabulary named by its sha256 makes no request: the
+corpus names the delivery of that vocabulary the dock holds, the adopted
+one (`adopted-<sha256>`) when there is one, else the vocabulary delivery of
+that sha256 whose key comes first. The key of each delivery comes from the
+recipe alone, with the version of the program `wpt-corpus` holds, so `wpt
+train RECIPE` finds both on the dock with no depot and no freight at hand
+([training.md](training.md), "Training").
+
+A delivery is shown by what made it, never by a free name: `vocabulary
+16,384 · snapshot 2026-11-23T02-27-38Z · research-paper 35 / books 15 /
+government 5 / code 5 / encyclopedia 40 · 10,000,000,000 bytes`. That is
+the `tokenizer` a model's weight files name for a vocabulary the freight
+learned (`wpt.resources.label`).
+
+`wpt adopt-vocabularies` puts every vocabulary the depot's tokenizer
+recipes trained on the dock, so a recipe naming one by its sha256 finds it:
+the delivery `adopted-<sha256>`, its file `vocabulary.json`, the result a
+`wpt-vocabulary` delivery gives (`sha256`, `size`, `tokenizer_version`),
+what the depot recorded of it (`adopted`: its recipe's name and version,
+the dataset it named, its sample and sample bytes, its count of texts and
+their bytes), and as its items table the texts it trained on, in the order
+it read them (`depot`, `id`, `change`). It reads the depot without writing
+to it, and a vocabulary the dock holds already stays as it is. The weight
+files of a model trained on it name it as before (`classics version 1`).
+
+An erasure never makes a vocabulary delivery stale, adopted or learned: the
+freight writes it into the delivery's `erasures_since` and the delivery
+stays fresh, so every recipe and model that names the vocabulary keeps
+working and the merges learned from the erased text stay
+([erasure.md](erasure.md)). The corpus that holds the text is stale, and
+`wpt build-resources` makes it again with the same vocabulary.
+
 ### One vocabulary per version
 
 The depot holds at most one vocabulary for each version of a recipe, and
@@ -143,10 +192,14 @@ mean other tokens.
   record names its recipe, its version, its sha256 and the vocabulary's
   file (`{"key", "sha256"}`, in the corpus's folder), and the corpus id
   covers its sha256.
-- Training reads the vocabulary from the corpus, checked against that
-  sha256, and writes it into the model folder as `tokenizer.json`. Every
-  weight file's header names it: `tokenizer` (such as
-  `classics version 1`) and `tokenizer_sha256`.
+- A corpus delivery names its vocabulary's delivery as its input, and its
+  result names the vocabulary's sha256 and size; the delivery key covers
+  the input's key.
+- Training reads the vocabulary from the corpus (a delivery's: the file of
+  the vocabulary delivery it names), checked against that sha256, and
+  writes it into the model folder as `tokenizer.json`. Every weight file's
+  header names it: `tokenizer` (such as `classics version 1`) and
+  `tokenizer_sha256`.
 - `wpt chat` and `wpt eval` load `tokenizer.json` only when its sha256
   is the one in the weights' headers (`TokenizerMismatch` otherwise), so a
   model never runs with another vocabulary.

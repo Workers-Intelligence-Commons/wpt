@@ -19,7 +19,7 @@ can become a route without its callers changing.
     delivery(key), deliveries()             a delivery's note, every note on the dock
     items(key)                              the rows of a delivery's items tables
     check(...)                              mark what the erasures since the last check did to the deliveries
-    adopt(key, files, result, about, ...)   files made elsewhere put on the dock as a delivery
+    adopt(key, files, result, about, ...)   files made elsewhere put on the dock as a delivery, with its items
 """
 
 import os
@@ -172,11 +172,12 @@ def check(*, home: str | None = None, depot: str | None = None, dock: str | None
 
 
 def adopt(key: str, files: dict[str, bytes], result: dict, about: dict, *, on_erasure: str = deliveries.STALE,
-          dock: str | None = None) -> dict:
+          items: list[dict] | None = None, dock: str | None = None) -> dict:
     """Put files made elsewhere ({path under files/: its bytes}) on the dock as the delivery of key, which starts
-    with `adopted-`, an erasure that reaches one of its items doing what on_erasure says ("stale" or "note"): its
-    note (freight.deliveries.adopt)."""
-    return deliveries.adopt(_dock(settings_dock(dock)), key, files, result, about, on_erasure)
+    with `adopted-`, its items table the rows items gives (each with the `depot` and `id` of a text), an erasure
+    that reaches one of its items doing what on_erasure says ("stale" or "note"): its note
+    (freight.deliveries.adopt)."""
+    return deliveries.adopt(_dock(settings_dock(dock)), key, files, result, about, on_erasure, items)
 
 
 def settings_home(home: str | None) -> str:

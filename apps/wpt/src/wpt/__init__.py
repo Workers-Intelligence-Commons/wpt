@@ -1,14 +1,16 @@
 """wpt: every WPT job, each a subcommand with its own options (`wpt
 SUBCOMMAND --help`).
 
-    wpt depot ...     the depot: texts, decisions, snapshots, erasures, corpora, and its web pages
-    wpt store ...     what the store holds, its runs, a kept model copied out
-    wpt agent ...     the images of agentic tasks, locked and built
-    wpt train ...     train a model recipe on the corpus of its depot and dataset
-    wpt eval ...      run tests on a trained model, into its model card
-    wpt chat ...      continue text with a trained model, or chat with one
-    wpt manager       train a model recipe on its corpus in the store, through rented machines
-    wpt doctor        check this machine: what is missing and how to fix it
+    wpt depot ...                the depot: texts, decisions, snapshots, erasures, corpora, and its web pages
+    wpt store ...                what the store holds, its runs, a kept model copied out
+    wpt agent ...                the images of agentic tasks, locked and built
+    wpt build-resources ORDER    ask the freight for an order's vocabulary and corpus
+    wpt adopt-vocabularies       put the depot's vocabularies on the dock
+    wpt train ...                train a model recipe on its corpus
+    wpt eval ...                 run tests on a trained model, into its model card
+    wpt chat ...                 continue text with a trained model, or chat with one
+    wpt manager                  train a model recipe on its corpus in the store, through rented machines
+    wpt doctor                   check this machine: what is missing and how to fix it
 
 The subcommands are controllers over the services, the libraries of
 packages/; `wpt depot web` serves the depot's operations as pages too. A
@@ -24,7 +26,7 @@ from wpt_utils.lines import ERROR, say
 # each subcommand: the module whose main(argv) runs it
 COMMANDS = {"depot": "wpt.depot", "store": "wpt.store", "agent": "wpt.agent", "train": "wpt.train",
             "eval": "wpt.eval", "chat": "wpt.chat", "manager": "wpt.manager",
-            "doctor": "wpt.doctor"}
+            "doctor": "wpt.doctor", "build-resources": "wpt.resources", "adopt-vocabularies": "wpt.adopt"}
 
 
 def main(argv=None):

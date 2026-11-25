@@ -851,18 +851,20 @@ def test_the_update_asked_for_is_profiled_into_the_record_and_training_goes_on(b
 
 
 def test_a_store_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_one_line(built, monkeypatch, capsys):
-    def failing(store, key):
+    from freight import api
+
+    def failing(key, dock=None):
         raise StoreError("the bucket does not answer")
 
-    monkeypatch.setattr(corpora, "of_key", failing)  # the run asks the store for the corpus of its build key
+    monkeypatch.setattr(api, "delivery", failing)  # the run asks the dock for the deliveries the recipe names
     with pytest.raises(SystemExit) as refused:
         main(["d"])
     assert refused.value.code == 2 and bare(capsys.readouterr().err) == "StoreError: the bucket does not answer\n"
 
 
-def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_build_key(built, tmp_path, capsys):
-    # the id goes from the build to the training through the store, not through a person's hands: the recipe's
-    # snapshot, data section and vocabulary make the build's key, which names the corpus's folder
+def test_wpt_train_without_a_corpus_id_reads_the_corpus_the_depot_built_for_its_data_section(built, tmp_path, capsys):
+    # without a corpus delivery of the recipe on the dock, a corpus the depot built from the recipe's snapshot, with
+    # its data section and vocabulary, at its size, is the recipe's: the store holds it, no depot is read
     whole = built.snapshot("later")  # every token
     recipe = built.recipe("three", training=one_stage(3), snapshot="later")  # total_tokens: every token of later
     size = json.loads((tmp_path / "data" / "recipes" / "models" / "three.json").read_text())["data"]["total_tokens"]
@@ -870,7 +872,7 @@ def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_build_key(built, 
         main([recipe, "--out", "model"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and f"no fresh corpus of snapshot later of the depot fox with the vocabulary " \
-        f"{built.vocabulary} at the size {size:,}" in said and "press Build on the Build page" in said
+        f"{built.vocabulary} at the size {size:,}" in said and "run `wpt build-resources ORDER`" in said
 
     sized = built.sized("later", size)["id"]
     main([recipe, "--out", "model"])
@@ -883,21 +885,17 @@ def test_wpt_train_without_a_corpus_id_reads_the_corpus_of_its_build_key(built, 
     assert refused.value.code == 2 and "no corpus 00000000" in capsys.readouterr().err
 
 
-def test_a_recipe_whose_snapshot_reads_another_change_or_digest_or_is_missing_is_refused(built, tmp_path):
-    # the change and the digest prove which texts the snapshot holds: a recipe that says others names other texts
+def test_a_recipe_whose_snapshot_reads_another_change_or_digest_or_is_missing_finds_no_corpus(built, tmp_path):
+    # the change and the digest prove which texts the snapshot holds: a recipe that says others names other texts,
+    # and no corpus built or delivered from them; no depot is read to say so
     from wpt.train import InputError, find_corpus, load_data
     data = load_data(built.recipe("three", training=one_stage(3)))
     built.sized("d", data["total_tokens"])
     assert find_corpus(built.store, None, data)["build_key"]
-    snapshot = built.depot.snapshot("d")
-    for wrong in ({"change": data["change"] + 1}, {"digest": "0" * 64}):
-        with pytest.raises(InputError, match=f"snapshot d of depot fox reads change {snapshot['at_change']} with "
-                                             f"digest {snapshot['digest']}; the recipe says "):
+    for wrong in ({"change": data["change"] + 1}, {"digest": "0" * 64}, {"snapshot": "never"},
+                  {"depot": "elsewhere"}):
+        with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources ORDER`"):
             find_corpus(built.store, None, {**data, **wrong})
-    with pytest.raises(InputError, match="no snapshot 'never' of the depot 'fox'"):
-        find_corpus(built.store, None, {**data, "snapshot": "never"})
-    with pytest.raises(InputError, match="cannot be read"):  # a depot neither WPT_DEPOT nor a web address names
-        find_corpus(built.store, None, {**data, "depot": "elsewhere"})
 
 
 def test_a_recipe_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the_build_that_makes_one(built):
@@ -908,7 +906,7 @@ def test_a_recipe_whose_only_corpus_lists_its_token_files_in_one_list_is_told_th
     built.store.put_json(f"{corpora.folder_of(record)}/{corpora.RECORD}",
                          {**record, "shards": corpora.token_files(record)})
 
-    with pytest.raises(InputError, match=r"does not list its token files by kind.*press Build on the Build page"):
+    with pytest.raises(InputError, match=r"does not list its token files by kind.*wpt build-resources"):
         find_corpus(built.store, None, data)
 
 
@@ -936,30 +934,27 @@ def test_a_recipe_written_before_snapshots_trains_on_its_dataset_s_corpus_and_it
     assert refused.value.code == 2
 
 
-def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_snapshot_through_the_depot_s_web_app(
-        built, monkeypatch):
-    # a machine without the depot's file reads the snapshot from the depot's web app (its own name, GET /api/about,
-    # and its snapshots, GET /api/snapshots), then the corpus of the build key from the store
+def test_a_recipe_naming_its_depot_by_a_web_address_finds_its_corpus_without_reading_the_depot(built, monkeypatch):
+    # a machine without the depot's file finds the corpus of a recipe of a snapshot in the store alone: the corpus
+    # names the depot by the address the recipe gives, and the snapshot by its name, change and digest
     from wpt.train import InputError, find_corpus, load_corpus, recipe_depot
-    address = "https://depot.example.org"
-    answers = {"/api/about": {"about": built.depot.about()},
-               "/api/snapshots": [{**row, "owner": row["owner"]} for row in built.depot.snapshots()]}
-    asked = []
-    monkeypatch.setattr(recipe_depot.WebDepot, "_json", lambda self, route: asked.append(route) or answers[route])
+
+    def unreachable(self, route):
+        raise AssertionError(f"the depot's web app was asked {route}")
+
+    monkeypatch.setattr(recipe_depot.WebDepot, "_json", unreachable)
     monkeypatch.delenv("WPT_DEPOT")
+    address = "https://depot.example.org"
     size = corpora.find(built.store, built.corpus_id)["total_tokens"]
     data = {**built.data("d", size), "depot": address}
     public = built.sized("d", size, url=address)
 
     record = find_corpus(built.store, None, data)
 
-    assert record["id"] == public["id"] and record["depot"] == address and asked == ["/api/about", "/api/snapshots"]
+    assert record["id"] == public["id"] and record["depot"] == address
     load_corpus(built.store, record, {"data": data})
-    with pytest.raises(InputError, match="press Build on the Build page"):
+    with pytest.raises(InputError, match="wpt build-resources"):
         find_corpus(built.store, None, {**data, "total_tokens": size - 1})  # that size is not built
-    answers["/api/about"] = {"about": {**built.depot.about(), "name": "other"}}  # another depot's snapshots
-    with pytest.raises(InputError, match="no snapshot 'd' of the depot 'https://depot.example.org' \\(other\\)"):
-        find_corpus(built.store, None, data)
 
 
 def test_a_stopped_run_saves_its_step_and_continues_on_another_machine(built, tmp_path, monkeypatch):
@@ -1136,7 +1131,7 @@ def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, caps
 
     said = refusal(capsys, [built.recipe("stale"), built.corpus_id, "--out", "model"])
     assert "is stale" in said
-    assert "press Build on the Build page" in said
+    assert "run `wpt build-resources ORDER`" in said
     assert not (tmp_path / "model").exists()
 
 
@@ -1147,7 +1142,7 @@ def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the
               "total_tokens": 10}
 
     with pytest.raises(InputError, match=r"does not list its token files by kind.*no build makes a corpus of a "
-                                         r"dataset.*press Build on the Build page"):
+                                         r"dataset.*wpt build-resources"):
         check_record(record, {"data": {"total_tokens": 10}})
 
 

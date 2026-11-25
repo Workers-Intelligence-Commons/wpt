@@ -19,7 +19,9 @@ guard.py refuses any other code that reaches these files.
 Every read is checked: a recipe against its schema (InvalidRecipe), and
 check() and problems() add the rules across files. A recipe's data part
 has the snapshot shape (a snapshot of a depot, its change and digest, the
-kinds and shares by tag, the size and the vocabulary) or the legacy dataset
+kinds and shares by tag, the size and the vocabulary, named by its sha256
+or learned for the data part from a sample of a number of bytes) or the
+legacy dataset
 shape of the recipes written before snapshots (a dataset of a depot); the
 schema accepts either. A recipe whose depot, snapshot, digest, vocabulary
 or dataset is still empty passes its schema, so it reads, and the check
@@ -126,7 +128,8 @@ def check_declared(where: str, names: list[str]):
 def _empty_data(where: str, data: dict, place: str):
     """InvalidRecipe naming the fields of a data part that a person has not
     filled in yet: in the snapshot shape, the depot's public address, the
-    snapshot's name and digest and the vocabulary's sha256; in the legacy
+    snapshot's name and digest and the sha256 of a vocabulary named by it;
+    in the legacy
     dataset shape, the depot's public address and the dataset's id or name."""
     if "dataset" in data:
         empty = [key for key in ("depot", "dataset") if not data[key]]
@@ -135,11 +138,11 @@ def _empty_data(where: str, data: dict, place: str):
                                 f"the depot's public address and the id or name of its dataset")
         return
     empty = [key for key in ("depot", "snapshot", "digest") if not data[key]]
-    empty += ["vocabulary.sha256"] if not data["vocabulary"]["sha256"] else []
+    empty += ["vocabulary.sha256"] if "sha256" in data["vocabulary"] and not data["vocabulary"]["sha256"] else []
     if empty:
         raise InvalidRecipe(f"{where}: {', '.join(f'{place}{key}' for key in empty)} empty: a person names the "
-                            f"depot's public address and its snapshot, with the snapshot's digest and the sha256 "
-                            f"of the vocabulary")
+                            f"depot's public address and its snapshot, with the snapshot's digest and, for a "
+                            f"vocabulary named by its sha256, that sha256")
 
 
 def _shares(where: str, data: dict, place: str):

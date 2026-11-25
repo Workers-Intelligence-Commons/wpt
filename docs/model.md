@@ -1038,9 +1038,8 @@ each size's model recipe (`wpt_recipes.series`):
   `read-text` step reads only the start of its training tokens
   (`prefix_tokens`: its updates times its batch times the window plus one,
   training.md, "Prefix"), so every size sees the same texts in the same
-  order. `wpt depot build FILE` on the series' file, or the series' file
-  handed over on the Build page of `wpt depot web`, builds that corpus,
-  which its record names `SERIES:`.
+  order. `wpt build-resources SERIES:` asks the freight for that corpus,
+  and its vocabulary when the series learns one.
 
 The seed and the drafter are the series' own, the same at every size. The
 model's provenance holds the size's derived recipe and the name

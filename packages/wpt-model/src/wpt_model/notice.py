@@ -19,8 +19,10 @@ CREDITS, evals/*.json, drafter/config.json and drafter/provenance.json), so
 they cannot disagree with what the folder holds. What they say of the
 corpus comes from wpt_model.provenance, which reads a folder trained on a
 snapshot ("Trained on snapshot S (change N, digest H) of the depot D,
-recipe R, code at commit X") and one written before snapshots ("From
-corpus C, built from dataset T of the depot D") alike. The drafter's weights are
+recipe R, code at commit X"; the model card names the corpus's delivery
+and the vocabulary's, for one trained on deliveries of the freight) and
+one written before snapshots ("From corpus C, built from dataset T of the
+depot D") alike. The drafter's weights are
 the model's, under the same license and header; its prompts are the
 beginnings of the plain texts the model read, so it reads no text the model
 did not.
@@ -38,7 +40,7 @@ from pathlib import Path
 from wpt_utils.programs import code_name
 
 from .config import layer_kinds
-from .provenance import corpus_id, corpus_label, on_snapshot
+from .provenance import corpus_id, corpus_label, deliveries, on_snapshot
 
 LICENSE = "AGPL-3.0-or-later"
 OUTPUT_LICENSE = "CC0-1.0"
@@ -219,6 +221,21 @@ def _learned_from(provenance):
 
 def _corpus_lines(provenance):
     """The model card's lines on the corpus."""
+    delivered = deliveries(provenance)
+    if delivered:
+        size = ((provenance["corpus"].get("request") or {}).get("selection") or {}).get("size") or {}
+        built, wanted = size.get("amount"), (provenance.get("data") or {}).get("total_tokens")
+        again = "the same request to the freight makes it again"
+        if built != wanted:
+            again = (f"made at {_tokens(built)} tokens, not the recipe's {_tokens(wanted)}: the same request to the "
+                     "freight makes it again, `corpus.request` in provenance.json")
+        vocabulary = delivered["vocabulary"]
+        return [f"- Trained on {corpus_label(provenance)}",
+                f"- Corpus: `{corpus_id(provenance)}`, delivery `{delivered['corpus']['key']}` (a cache: {again})",
+                f"- Vocabulary: delivery `{vocabulary['key']}`"
+                + (" (adopted from the depot's tokenizer recipe "
+                   f"{vocabulary['adopted'].get('recipe')} version {vocabulary['adopted'].get('version')})"
+                   if "adopted" in vocabulary else f" (made by {vocabulary['preparation']['name']})")]
     if on_snapshot(provenance):
         built = (provenance["corpus"].get("data") or {}).get("total_tokens")
         wanted = (provenance.get("data") or {}).get("total_tokens")

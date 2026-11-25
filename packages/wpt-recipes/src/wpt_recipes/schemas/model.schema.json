@@ -39,14 +39,27 @@
       }
     },
     "vocabulary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sha256", "size"],
-      "description": "the vocabulary the corpus is tokenized with: the sha256 of its file and its size in tokens",
-      "properties": {
-        "sha256": {"$ref": "#/$defs/hex64"},
-        "size": {"type": "integer", "minimum": 1}
-      }
+      "description": "the vocabulary the corpus is tokenized with, in one of two forms: one the dock holds, named by the sha256 of its file and its size in tokens; or one learned for this data section, its size in tokens and the bytes of its sample, taken from the same snapshot and shares, whose sha256 the vocabulary's delivery note gives (docs/tokenizer.md, \"A vocabulary in an order\")",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "size"],
+          "properties": {
+            "sha256": {"$ref": "#/$defs/hex64"},
+            "size": {"type": "integer", "minimum": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["size", "sample_bytes"],
+          "properties": {
+            "size": {"type": "integer", "minimum": 513, "description": "the vocabulary's size in tokens, at least 513: the 256 bytes, END and the 256 reserved ids"},
+            "sample_bytes": {"type": "integer", "minimum": 1, "description": "the bytes of the plain texts it learns from, chosen in the data section's snapshot with its shares"}
+          }
+        }
+      ]
     },
     "dataset_data": {
       "description": "legacy: the shape of the recipes written before snapshots, a dataset of a depot whose corpus with the vocabulary the dataset publishes, built at the size total_tokens, training takes",

@@ -78,6 +78,19 @@ def test_a_snapshot_data_part_of_the_wrong_shape_is_refused_naming_its_field(rec
     assert recipes.problems("model", "m")[0].startswith(f"data/recipes/models/m.json: at {place}: ")
 
 
+def test_a_vocabulary_is_named_by_its_sha256_or_learned_from_a_sample_of_a_number_of_bytes(recipes):
+    # the second form names no sha256: the vocabulary's delivery note gives it once it is learned
+    write(recipes, "model", "learned", snapshot_model(vocabulary={"size": 4096, "sample_bytes": 10**10}))
+    assert recipes.data_part("learned")["vocabulary"] == {"size": 4096, "sample_bytes": 10**10}
+    assert recipes.check() == []
+    for wrong, message in (({"size": 4096}, "'sha256' is a required property"),
+                           ({"size": 512, "sample_bytes": 10}, "less than the minimum of 513"),
+                           ({"size": 4096, "sample_bytes": 10, "sha256": SHA256}, "Additional properties")):
+        write(recipes, "model", "m", snapshot_model(vocabulary=wrong))
+        with pytest.raises(InvalidRecipe, match=f"at data/vocabulary.*{re.escape(message)}"):
+            recipes.model_recipe("m")
+
+
 def test_a_snapshot_data_part_without_its_vocabulary_is_refused(recipes):
     missing = snapshot_model()
     del missing["data"]["vocabulary"]
@@ -92,7 +105,8 @@ def test_the_check_names_each_field_of_a_snapshot_data_part_a_person_has_not_fil
     assert recipes.model_recipe("m")["data"]["snapshot"] == ""
     assert recipes.check() == [
         "data/recipes/models/m.json: data.snapshot, data.digest, data.vocabulary.sha256 empty: a person names the "
-        "depot's public address and its snapshot, with the snapshot's digest and the sha256 of the vocabulary"]
+        "depot's public address and its snapshot, with the snapshot's digest and, for a vocabulary named by its "
+        "sha256, that sha256"]
 
 
 @pytest.mark.parametrize(("shares", "message"), [

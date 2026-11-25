@@ -3,7 +3,8 @@
 A model recipe (data/recipes/models/<name>.json) says everything that
 changes a model: its data (the address of a depot, a snapshot there with
 its change and digest, the kinds and shares by tag it takes, its total
-tokens and its vocabulary's sha256 and size; recipes written before
+tokens and its vocabulary: its sha256 and size, or its size and the bytes
+of the sample it is learned from; recipes written before
 snapshots name a dataset of the depot instead, whose tokenizer recipe
 gives the vocabulary), its architecture, its seed, its training steps and its
 drafter (docs/model.md). A series (data/recipes/series/<name>.json) holds

@@ -4,15 +4,17 @@
 
 ```sh
 uv run wpt depot snapshot new 2026-11   # the texts admitted now ("Make a snapshot" on the Snapshots page)
-uv run wpt depot build NAME             # the corpus of data/recipes/models/NAME.json (SERIES: for a series); prints its id and build key
+uv run wpt build-resources NAME         # the vocabulary and corpus of data/recipes/models/NAME.json (SERIES: for a series)
 uv run wpt train NAME
 ```
 
 The recipe's data section names the snapshot by its name, change and
-digest. The composer of the snapshot's page in `wpt depot web` makes it by
-clicks, to put beside a model part in `data/recipes/models/NAME.json` and
-commit ([data-selection.md](data-selection.md), "The data section of a
-model recipe").
+digest, and its vocabulary by its sha256 or as one to learn
+([tokenizer.md](tokenizer.md), "A vocabulary in an order"). The composer
+of the snapshot's page in `wpt depot web` makes it by clicks, to put
+beside a model part in `data/recipes/models/NAME.json` and commit
+([data-selection.md](data-selection.md), "The data section of a model
+recipe").
 
 A run takes minutes to days, so start it detached from the terminal or SSH
 session, which would otherwise end it and lose its output:
@@ -26,30 +28,26 @@ machine's console shows, until the run ends.
 `wpt train` takes a model recipe (`data/recipes/models/<name>.json`,
 `SERIES:SIZE`, a size of a model series, or `SERIES:SIZE:RUN`, another run
 of that size; see [model.md](model.md), "Model recipes") and the id of a
-corpus in the store, or a start of it, and never builds: `wpt depot build
-FILE` on the recipe's file, or the Build button of the Build page of `wpt
-depot web` once the file is handed over there, builds the corpus of a
-recipe (of a series, from the series' file: the one corpus every size
-reads), on the machine that holds the depot, which reads no repository
-([data-selection.md](data-selection.md), "Corpora"). Without an id, it reads the corpus of the
-recipe's build key: the snapshot its data part names, that data part (kinds,
-shares, `data.total_tokens` as the size, for a series the total tokens of its
-largest size) and its vocabulary (`wpt_depot.corpus.build_key`), which names
-the corpus's folder in the store. To find the snapshot, it opens the depot the
-recipe names: from its file, when `WPT_DEPOT` names a depot whose own public
-address (`WPT_DEPOT_URL`, else its name) is the recipe's depot, or a clone
-that follows that address as its upstream (a clone holds its upstream's
-snapshots), else through its web app, when the recipe names it by a web
-address (its name from `GET /api/about`, its snapshots from
-`GET /api/snapshots`). The snapshot is the one of the recipe's name that the
-depot of that address owns, and it must read the recipe's change and digest,
-or the run is refused, naming both. With no fresh corpus of that key in the
-store, the run is refused, saying to press Build on the Build page, and
-nothing is built or queued. So without an id (`WPT_CORPUS` or the corpus
-option) the depot must be readable where training runs. A corpus given by
-its id must be built from the recipe's snapshot (its name, change and
-digest) with the recipe's kinds, shares and vocabulary, at any size; any
-other is refused.
+corpus, or a start of it, and never builds. `wpt build-resources RECIPE`
+(`SERIES:` for a series: the one corpus every size reads, at its largest
+size) asks the freight for the recipe's vocabulary, when it learns one,
+then for its corpus, which the freight delivers on the dock, the store
+`WPT_STORE` names ([api/freight.md](api/freight.md)). Without an id,
+`wpt train` reads the corpus delivery whose key the recipe gives: the key
+of the request its data part makes (the snapshot's change and digest, its
+kinds, shares, `data.total_tokens` as the size in tokens, for a series the
+total tokens of its largest size, and the key of its vocabulary's
+delivery), worked out from the recipe alone (`wpt.resources`). It reads no
+depot. Without that delivery, a recipe that names its vocabulary by its
+sha256 reads the latest corpus the depot built into the store's
+`corpora/` from the recipe's snapshot (its name, change and digest), depot,
+kinds, shares and vocabulary, at its size ([data-selection.md](data-selection.md),
+"Corpora"). With neither, or with a stale one, the run is refused, saying
+to run `wpt build-resources`, and nothing is built or queued. A corpus
+given by its id (`WPT_CORPUS` or the corpus option), of a delivery or of
+the store's `corpora/`, must be made from the recipe's snapshot (its name,
+change and digest) with the recipe's kinds, shares and vocabulary, at any
+size; any other is refused.
 
 A recipe of the legacy shape names a dataset of a depot of format 12 or
 older instead, and reads the corpus the store kept of it ("Models trained
@@ -64,7 +62,7 @@ from an environment variable (`WPT_` + the option name in capitals,
 
 The corpus holds everything the steps read: the token files of its plain
 texts and of its conversations, each kind's apart, and its tasks. Its
-record gives a fingerprint (a sha256) of what it holds of each kind,
+record, or its delivery's result, gives a fingerprint (a sha256) of what it holds of each kind,
 `plain`, `conversation` and `task`, which the steps' fingerprints read
 ("Step results and reuse", below). A
 text added to the depot after the build reaches training only once the
@@ -466,8 +464,8 @@ the start, and the run's record says how many it reads when that is fewer
 than it asks for. `wpt train` refuses a corpus that holds fewer tokens of
 plain text than `total_tokens` and was built at another size, and a corpus
 that is stale (an admitted erasure reached a text it was built from,
-[erasure.md](erasure.md), "What it covers") until it is built again (Build
-on the Build page). A stale corpus of a legacy dataset is never built
+[erasure.md](erasure.md), "What it covers") until it is made again (`wpt
+build-resources`). A stale corpus of a legacy dataset is never built
 again.
 
 ### Streaming: a corpus larger than the disk
@@ -1117,20 +1115,29 @@ says.
 ### What a model records
 
 A model trained on a snapshot names, in `provenance.json`, what anyone needs
-to build its corpus again and check it: `data`, the recipe's data section (the
+to make its corpus again and check it: `data`, the recipe's data section (the
 depot's address, the snapshot's name, change and digest, the kinds, shares,
-size and vocabulary); `recipe_name` and `recipe`; `corpus`, the corpus's id,
-build key, rules, the depot address its record names, the snapshot it read
-(id, name, owner, change, digest) and `data`, the data section it was built
-with, whose size can be larger than the recipe's when the corpus was given
-by its id (training then read its first part, and the model card says so);
-and `repository_commit` with
-`repository_dirty`, the code (the commit pins the design-system submodule
-too). `NOTICE` and the model card say it in one line: "Trained on snapshot S
-(change N, digest H) of the depot D, recipe R, code at commit X".
+size and vocabulary); `recipe_name` and `recipe`; and `repository_commit`
+with `repository_dirty`, the code (the commit pins the design-system
+submodule too). A model trained on deliveries of the freight names too
+`deliveries`, the key, id and preparation (for an adopted vocabulary, what
+the depot recorded of it, `adopted`) of its vocabulary's delivery and of
+its corpus's, and in `corpus` the corpus delivery's id, its key
+(`delivery`), rules, the depot address and snapshot (id, name, owner,
+change, digest) it read and `request`, the request that makes it again. A
+model trained on a corpus the depot built names in `corpus` its id, build
+key, rules, depot address, snapshot and `data`, the data section it was
+built with. Either size can be larger than the recipe's when the corpus
+was given by its id (training then read its first part, and the model card
+says so). `NOTICE` and the model card say it in one line: "Trained on
+snapshot S (change N, digest H) of the depot D, recipe R, code at commit
+X"; the card names the corpus's delivery and the vocabulary's.
 
-The corpus is a cache, never kept for this. Whoever holds the depot's
-address, the repository and what ships with the weights checks a model so:
+The corpus is a cache, never kept for this. The same request to a freight
+that reads the depot, or a clone of it, makes the same delivery, its id
+compared with the one `provenance.json` names. Whoever holds the depot's
+address, the repository and what ships with the weights checks a model
+built by the depot so:
 
 ```sh
 git checkout COMMIT                                   # the repository_commit provenance.json names
@@ -1152,8 +1159,8 @@ model's corpus for anyone.
 
 A folder written before snapshots names, in `corpus`, the corpus's id, its
 depot and the name of its dataset, and its recipe's data names that dataset.
-Every reader takes both shapes through `wpt_model.provenance` (`corpus_id`,
-`corpus_label`): `wpt eval` records that corpus as the run's input, and the
+Every reader takes the three shapes through `wpt_model.provenance`
+(`corpus_id`, `corpus_label`, `deliveries`): `wpt eval` records that corpus as the run's input, and the
 `NOTICE` and the model card it writes again say "From corpus C, built from
 dataset T of the depot D". Nothing rewrites such a folder's
 `provenance.json`.

@@ -2235,9 +2235,11 @@ name = "wpt"
 version = "0.1.0"
 source = { editable = "apps/wpt" }
 dependencies = [
+    { name = "freight" },
     { name = "jsonschema" },
     { name = "numpy" },
     { name = "wpt-agent" },
+    { name = "wpt-corpus" },
     { name = "wpt-depot" },
     { name = "wpt-inference" },
     { name = "wpt-model" },
@@ -2252,9 +2254,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "freight", editable = "packages/freight" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "numpy", specifier = ">=2" },
     { name = "wpt-agent", editable = "packages/wpt-agent" },
+    { name = "wpt-corpus", editable = "packages/wpt-corpus" },
     { name = "wpt-depot", editable = "packages/wpt-depot" },
     { name = "wpt-inference", editable = "packages/wpt-inference" },
     { name = "wpt-model", editable = "packages/wpt-model" },

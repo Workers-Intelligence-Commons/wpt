@@ -128,13 +128,20 @@ the last check did ([Erasures](#erasures)): `{mark, erasures, stale,
 noted}`, the depot's mark now, the erasures' ids, and the keys of the
 deliveries marked stale and of those whose note took an erasure in.
 
-`adopt(key, files, result, about, on_erasure=, dock=)` puts files made
-elsewhere on the dock as the delivery of `key`, which starts with
+`adopt(key, files, result, about, on_erasure=, items=, dock=)` puts files
+made elsewhere on the dock as the delivery of `key`, which starts with
 `adopted-`: `files` maps a path under `files/` to its bytes, `result` is
 what a preparation would have answered, `about` what the note says of
-where they come from, `on_erasure` (`"stale"` by default, or `"note"`)
-what an erasure that reaches one of its items does. A fresh delivery of
-that key stays as it is.
+where they come from (`adopted`), `on_erasure` (`"stale"` by default, or
+`"note"`) what an erasure that reaches one of its items does, and `items`
+the rows of its items table in order, each an object with at least the
+`depot` and `id` of a text, which is how an erasure finds it (none by
+default). The rows go into parts of at most a million rows; the note's
+`items` gives their count as `texts`, and its id covers the files and the
+parts. A fresh delivery of that key stays as it is. WPT adopts the
+vocabularies of the depot's tokenizer recipes so (`wpt
+adopt-vocabularies`, [tokenizer.md](../tokenizer.md), "A vocabulary in an
+order").
 
 ## The queue
 

@@ -1147,14 +1147,17 @@ The project `wpt` (`apps/wpt`; the workspace's root project is
 (`apps/freight`) the command `freight`, a controller over `freight.api`
 ([api/freight.md](api/freight.md)). The command `wpt` has:
 
-- the subcommands: `wpt depot`, `wpt store`, `wpt agent`, `wpt train`,
-  `wpt eval`, `wpt chat`, `wpt manager` and `wpt doctor`,
-  each with its own options (`wpt SUBCOMMAND --help`). The module `wpt`
+- the subcommands: `wpt depot`, `wpt store`, `wpt agent`,
+  `wpt build-resources`, `wpt adopt-vocabularies`, `wpt train`, `wpt eval`,
+  `wpt chat`, `wpt manager` and `wpt doctor`, each with its own options
+  (`wpt SUBCOMMAND --help`). The module `wpt`
   (`apps/wpt/src/wpt/__init__.py`) names the module whose `main` runs each
   one and imports it only when it runs, so a light subcommand never loads
   PyTorch; `python -m wpt` is the same command. The controllers of the
   depot, the store and the agent harness are `wpt/depot/`, `wpt/store.py`
-  and `wpt/agent.py`; the jobs are the subpackages `wpt.train`, `wpt.eval`, `wpt.chat` and `wpt.manager`.
+  and `wpt/agent.py`; WPT's side of the freight, the requests a recipe makes and the deliveries training reads,
+  is `wpt/resources.py` (with `wpt/adopt.py`, the depot's vocabularies put on the dock); the jobs are the
+  subpackages `wpt.train`, `wpt.eval`, `wpt.chat` and `wpt.manager`.
 - the web server, `wpt depot web` (`wpt/depot/web/`: `server.py`,
   `routes.py`, `builds.py` for the routes of the tokenizer recipes and the jobs, `snapshots.py` and `recipes.py` for the snapshots, the recipes and their builds, `legacy.py` for the frozen dataset routes, `translations.py` for the translation models of the Texts page, and `ui.py`, which builds the interface of `apps/wpt/ui`
   with Bun). The root `package.json` makes one Bun workspace of the

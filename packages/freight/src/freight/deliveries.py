@@ -40,7 +40,7 @@ one being made, names as an input: their files count, and stay.
     reached(note, erasures)           the note once those erasures reached an item it holds
     mark_reached(dock, texts, erasures)   mark what those erasures did to every delivery that holds one of the texts
     delete(dock, note, why)           delete a delivery's files, its note kept and marked
-    adopt(dock, key, files, result, about, on_erasure)   files made elsewhere put on the dock as a delivery
+    adopt(dock, key, files, result, about, on_erasure, items)   files made elsewhere put on the dock as a delivery
 """
 
 import shutil
@@ -60,6 +60,7 @@ CAPPED = "the dock's cap needed its room"
 ADOPTED = "adopted-"  # the start of the key of a delivery adopted from files made elsewhere
 STALE, NOTED = "stale", "note"  # what an erasure that reaches an item of a delivery does to it (on_erasure)
 ON_ERASURE = (STALE, NOTED)
+ADOPTED_PART = 1_000_000  # the most rows of an adopted delivery's items one part holds
 
 
 class DeliveryError(Exception):
@@ -201,12 +202,16 @@ def mark_deleted(dock, note: dict, why: str, whole: bool = False) -> dict:
                          {**note, "deleted": {"at": at, "why": why, "whole": whole}})
 
 
-def adopt(dock, key: str, made: dict[str, bytes], result: dict, about: dict, on_erasure: str = STALE) -> dict:
+def adopt(dock, key: str, made: dict[str, bytes], result: dict, about: dict, on_erasure: str = STALE,
+          items: list[dict] | None = None) -> dict:
     """Put files made elsewhere on the dock as the delivery of key, which
     starts with ADOPTED: made {path under files/: its bytes}, result the
     JSON a preparation would have answered, about what the note says of
     where they come from (`adopted`), on_erasure what an erasure that
-    reaches one of its items does (ON_ERASURE). The note as stored; the one
+    reaches one of its items does (ON_ERASURE), items the rows of its items
+    table, in order, each with at least the `depot` and `id` of a text,
+    which is how an erasure finds it (none: an empty table). The rows go
+    into parts of at most ADOPTED_PART rows. The note as stored; the one
     already there when it is fresh."""
     if not key.startswith(ADOPTED):
         raise DeliveryError(f"an adopted delivery's key starts with {ADOPTED}: {key}")
@@ -220,9 +225,22 @@ def adopt(dock, key: str, made: dict[str, bytes], result: dict, about: dict, on_
     for path, data in sorted(made.items()):
         file = dock.put_named(f"{folder}/files/{path}", bytes(data))
         listed.append({**file.reference(), "path": path, "bytes": len(data)})
-    note = {"key": key, "id": fingerprint({"key": key, "files": [[one["path"], one["sha256"]] for one in listed]}),
-            "adopted": about, "result": result, "files": listed, "tables": {}, "on_erasure": on_erasure,
-            "made_at": datetime.now(UTC).isoformat()}
+    rows, parts = list(items or []), []
+    if not all(isinstance(row, dict) and isinstance(row.get("depot"), str) and isinstance(row.get("id"), str)
+               for row in rows):
+        raise DeliveryError("each item of an adopted delivery is an object with the depot and the id of a text")
+    for number, start in enumerate(range(0, len(rows), ADOPTED_PART)):
+        chunk = rows[start:start + ADOPTED_PART]
+        sink = pa.BufferOutputStream()
+        pq.write_table(pa.Table.from_pylist(chunk), sink, compression="zstd")
+        data = sink.getvalue().to_pybytes()
+        file = dock.put_named(f"{folder}/items/part-{number:05d}.parquet", data)
+        parts.append({**file.reference(), "bytes": len(data), "rows": len(chunk),
+                      "fingerprint": fingerprint(chunk)})
+    note = {"key": key, "id": fingerprint({"key": key, "files": [[one["path"], one["sha256"]] for one in listed],
+                                           "items": [part["fingerprint"] for part in parts]}),
+            "adopted": about, "result": result, "files": listed, "tables": {"items": parts} if parts else {},
+            "items": {"texts": len(rows)}, "on_erasure": on_erasure, "made_at": datetime.now(UTC).isoformat()}
     return dock.put_json(f"{folder}/{NOTE}", note)
 
 

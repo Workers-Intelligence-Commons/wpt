@@ -1,5 +1,6 @@
 """Shared setup for the app's tests: a corpus built from a snapshot of a
-depot of 16 plain texts, and a tiny model trained on it through wpt train. Test files
+depot of 16 plain texts, and a tiny model trained through wpt train on the
+corpus the freight delivers for the same order. Test files
 reach them as fixtures (they cannot import this file under
 --import-mode=importlib)."""
 
@@ -18,6 +19,8 @@ from wpt_depot.errors import NotFound
 from wpt_depot.corpus import build
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
+from wpt.adopt import main as adopt
+from wpt.resources import main as build_resources
 from wpt.train import main as train
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
@@ -158,11 +161,39 @@ def worker_port():
     return free
 
 
-@pytest.fixture
-def trained(built, tmp_path):
-    """The built corpus plus tmp_path/model, trained by the recipe "d"."""
-    train(["d", built.corpus_id, "--out", "model"])
-    return SimpleNamespace(**vars(built), folder=tmp_path / "model")
+LEARNED = {"size": VOCAB_SIZE, "sample_bytes": 10**6}  # every byte of the 16 stories
+
+
+@pytest.fixture(params=["named"])
+def trained(request, built, tmp_path, monkeypatch):
+    """tmp_path/model, trained by the order "d" on deliveries of the freight
+    (its home FREIGHT_HOME, tmp_path/freight), as a person makes it:
+    `wpt build-resources d`, then `wpt train d`. By default ("named") the
+    order names its vocabulary by its sha256, the test vocabulary, which
+    the depot holds as the vocabulary of its tokenizer recipe TOKENIZER and
+    `wpt adopt-vocabularies` puts on the dock; with the parameter "learned"
+    (indirect), the order learns its vocabulary of VOCAB_SIZE entries from
+    the stories instead (LEARNED). Gives what built gives, folder, notes
+    (the two delivery notes `wpt build-resources` printed) and corpus_id,
+    the corpus delivery's id."""
+    monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
+    printed = request.getfixturevalue("capsys")
+    if request.param == "named":
+        recipe = built.depot.new_tokenizer(TOKENIZER, "d", None, 10**6, VOCAB_SIZE)
+        texts = [("", row["id"]) for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
+        built.depot.add_vocabulary(recipe, 1, built.tokenizer.to_bytes(), texts, None)
+        assert adopt([]) == 0
+    else:
+        path = tmp_path / "data" / "recipes" / "models" / "d.json"
+        order = json.loads(path.read_text())
+        order["data"]["vocabulary"] = LEARNED
+        path.write_text(json.dumps(order))
+    assert build_resources(["d"]) == 0
+    out = printed.readouterr().out
+    notes = json.loads(out[out.index("\n{\n") + 1:])  # printed last, after the lines of the jobs
+    train(["d", "--out", "model"])
+    return SimpleNamespace(**{**vars(built), "corpus_id": notes["corpus"]["id"]}, folder=tmp_path / "model",
+                           notes=notes)
 
 
 @pytest.fixture

@@ -491,9 +491,18 @@ each process.
 A model recipe's data section ([model.md](model.md), "Model recipes")
 says what its corpus takes: the depot by its public address, the snapshot
 by its name with the change and digest it reads, the kinds it takes (none:
-every kind), its shares, its size (`total_tokens`) and its vocabulary (its
-sha256 and size). It never picks single texts: a hand-picked selection is
-a tag, which a share names.
+every kind), its shares, its size (`total_tokens`) and its vocabulary:
+`{"sha256", "size"}`, one the dock holds, or `{"size", "sample_bytes"}`,
+one learned for the section from that many bytes of the plain texts of its
+snapshot, chosen with its shares ([tokenizer.md](tokenizer.md), "A
+vocabulary in an order"). It never picks single texts: a hand-picked
+selection is a tag, which a share names.
+
+`wpt build-resources RECIPE` asks the freight for the section's vocabulary
+and corpus, which the freight chooses by the rules below
+([api/freight.md](api/freight.md)), and `wpt train RECIPE` finds both on
+the dock. The depot's own build, below, takes a vocabulary named by its
+sha256 only.
 
 Recipes are files a person keeps; the depot reads no code repository. The
 composer on a snapshot's page builds a data section by clicks: kind chips
@@ -750,11 +759,11 @@ An erasure carried out while a corpus is built is checked once the build
 ends: when it reached a text the corpus took, the corpus is written stale
 and deletes no other corpus.
 
-`wpt train` reads the corpus it is given, or else the corpus of the
-recipe's build key, after checking the snapshot's change and digest
-against the recipe; without one it refuses and says to press Build on the
-Build page ([training.md](training.md), "Training"). Training never
-builds or queues anything. A corpus is a cache: building the same recipe
+`wpt train` reads the corpus it is given, or else the corpus delivery its
+recipe names on the dock, and without one the latest corpus the depot built
+for the recipe's snapshot, data section and size; with neither it refuses
+and says to run `wpt build-resources` ([training.md](training.md),
+"Training"). Training never builds or queues anything. A corpus is a cache: building the same recipe
 on the same snapshot gives it again, so a model's reproducibility rests on
 the depot's address, the snapshot and the recipe, never on a kept corpus.
 

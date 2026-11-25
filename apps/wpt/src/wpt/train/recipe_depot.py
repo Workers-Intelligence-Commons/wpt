@@ -1,26 +1,19 @@
-"""The depot a recipe's data part names, read without writing to it: the
-data part names the depot by its public address, and either a snapshot of
-it (by name, with the change and digest it reads) or, in a recipe written
-before snapshots, a dataset of it (by id or name).
+"""The depot a recipe of the legacy dataset shape names, read without
+writing to it: the data part names the depot by its public address and a
+dataset of it (by id or name). A recipe of a snapshot reads no depot: its
+corpus is a delivery on the dock (wpt.resources).
 
 The depot is read from its file when WPT_DEPOT (environment or .env) names
-a depot that the address names, else through its web app when the address
+a depot whose dataset's corpora name the address
+(wpt_depot.legacy.depot_name), else through its web app when the address
 is a web address (http:// or https://), with the routes `wpt depot web`
-serves. For a snapshot, the file names it when the address is the depot's
-own public address (WPT_DEPOT_URL, else its name) or the address of the
-upstream it follows (a clone holds its upstream's snapshots); the snapshot
-is then the one of that name whose owner is the depot the address names.
-For a dataset, the file names it when the dataset's corpora name that
-address (wpt_depot.legacy.depot_name).
+serves.
 
-A recipe of a snapshot finds its corpus by the build's key
-(wpt_depot.corpus.build_key), which training works out from the snapshot's
-row; the readers below only give that row (snapshot). A recipe of a
-dataset finds the latest fresh corpus of one dataset, vocabulary and size
-(wpt_depot.corpora.triple), built from any revision of the dataset: a
-FileDepot looks for it in the store; a WebDepot reads it from the listing
-of the dataset's downloads, which names it for each triple (latest_fresh),
-and reads that corpus's record from the store.
+A recipe of a dataset finds the latest fresh corpus of one dataset,
+vocabulary and size (wpt_depot.corpora.triple), built from any revision of
+the dataset: a FileDepot looks for it in the store; a WebDepot reads it
+from the listing of the dataset's downloads, which names it for each
+triple (latest_fresh), and reads that corpus's record from the store.
 
     opened(data)   the depot, as one of the two readers below; Unreadable when neither reads it
     download_page(address, dataset)   the address of the dataset's listing of corpora in the depot's web app
@@ -31,7 +24,7 @@ import urllib.error
 from pathlib import Path
 from urllib.parse import quote
 
-from wpt_depot import Depot, corpora, snapshots
+from wpt_depot import Depot, corpora
 from wpt_depot.legacy import Legacy, depot_name
 from wpt_depot.errors import DepotError, NotFound
 from wpt_depot.settings import depot_address, depot_url
@@ -47,14 +40,14 @@ class Unreadable(Exception):
 
 
 class Missing(Exception):
-    """The depot holds no snapshot, dataset or tokenizer recipe of that id or name."""
+    """The depot holds no dataset or tokenizer recipe of that id or name."""
 
 
 def opened(data: dict, env_file: Path | None = None):
-    """The depot data["depot"] names: a FileDepot when WPT_DEPOT names a
-    depot that address names (for a snapshot: its own address or its
-    upstream's; for a dataset: the one its corpora name it by), else a
-    WebDepot for a web address. Unreadable when neither reads it."""
+    """The depot data["depot"] names, for its dataset data["dataset"]: a
+    FileDepot when WPT_DEPOT names a depot that address names (the one its
+    corpora name it by), else a WebDepot for a web address. Unreadable when
+    neither reads it."""
     try:
         address = depot_address(env_file=env_file)
     except DepotError:
@@ -62,8 +55,7 @@ def opened(data: dict, env_file: Path | None = None):
     if address is not None:
         try:
             local = FileDepot(Depot.view(address), depot_url(env_file=env_file))
-            if (local.owner(data["depot"]) is not None if "snapshot" in data
-                    else local.names(data["depot"], data["dataset"])):
+            if local.names(data["depot"], data["dataset"]):
                 return local
         except (DepotError, OSError):
             pass
@@ -84,23 +76,6 @@ class FileDepot:
 
     def __init__(self, depot: Depot, url: str | None):
         self.depot, self.url = depot, url
-
-    def owner(self, address: str) -> str | None:
-        """The name of the depot whose snapshots address names here: this
-        depot's own for its public address (else its name), its upstream's
-        for the address of the upstream it follows; None for another."""
-        return snapshots.owner_named(self.depot, address, self.url)
-
-    def snapshot(self, address: str, name: str) -> dict:
-        """The row of the snapshot called name of the depot address names
-        ({id, name, owner, at_change, digest, ...}). Missing without one."""
-        owner = self.owner(address)
-        if owner is None:
-            raise Missing(f"the depot {address!r} is neither this one nor the upstream it follows")
-        try:
-            return self.depot.snapshot(name, owner)
-        except NotFound:
-            raise Missing(f"no snapshot {name!r} of the depot {address!r} ({owner})") from None
 
     def names(self, address: str, dataset: str) -> bool:
         """Whether the corpora of the dataset (its id or name) name this
@@ -161,19 +136,6 @@ class WebDepot:
             return json.loads(self._get(route))
         except ValueError as error:
             raise Unreadable(f"{self.url} answered {route} with what is not JSON: {error}") from None
-
-    def snapshot(self, address: str, name: str) -> dict:
-        """As FileDepot.snapshot, through the listing of the snapshots
-        (GET /api/snapshots, each row with its owner) and the depot's own
-        name (GET /api/about): the depot at this web address owns the
-        snapshots address names."""
-        owner = self._json("/api/about")["about"]["name"]
-        listed = self._json("/api/snapshots")
-        rows = listed.get("snapshots", []) if isinstance(listed, dict) else listed
-        found = [row for row in rows if row.get("owner") == owner and row.get("name") == name]
-        if not found:
-            raise Missing(f"no snapshot {name!r} of the depot {address!r} ({owner}) at {self.url}")
-        return found[0]
 
     def dataset(self, dataset: str) -> dict:
         """The current row of the dataset of that id or name. Missing without one."""

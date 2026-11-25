@@ -441,13 +441,12 @@ through a short-lived container with no network
 `wpt manager` trains a recipe on a corpus the store already holds, each
 step its own command:
 
-1. the corpus: `WPT_CORPUS`, or the one of the recipe's build key (its
-   snapshot, data section and vocabulary; for a recipe of the legacy
-   dataset shape, the one last built for its depot and dataset, which no
-   build makes again); the manager
-   neither downloads nor builds, so the corpus is built first (Build on the
-   Build page of the depot's web app, the recipe's file handed over there),
-   and a run without one is refused,
+1. the corpus: `WPT_CORPUS`, or the recipe's, as `wpt train` finds it
+   (the corpus delivery its data section names on the dock; for a recipe
+   of the legacy dataset shape, the one last built for its depot and
+   dataset, which no build makes again); the manager neither downloads nor
+   builds, so the corpus is made first (`wpt build-resources RECIPE`), and
+   a run without one is refused,
    saying so; then `wpt agent build-image
    NAME` for each image the corpus's tasks name, where `DOCKER_HOST`
    reaches Docker (nothing without tasks);
