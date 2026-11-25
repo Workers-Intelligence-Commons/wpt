@@ -22,7 +22,8 @@ holds (docs/training.md, "Prefix"), so such a corpus is read
 whole.
 
 Each process takes --micro-batch windows per pass (default: all of its
-share of the batch) and adds passes up until the batch is complete: pass a
+share of the batch, or in a stage the runner chose a number for, per_pass,
+that number) and adds passes up until the batch is complete: pass a
 of process r is slice (a * world_size + r) of the batch, so the batch
 holds the same windows whatever the number of processes; with split
 windows, every process takes every window and trains its slice of each.
@@ -99,15 +100,15 @@ def _windows(tokens, block_size, count, *seed_parts):
     return torch.from_numpy(np.stack([np.asarray(tokens[s:s + block_size + 1], dtype=np.int64) for s in starts]))
 
 
-def batching(stages, micro_batch, sharing) -> list[dict]:
+def batching(stages, micro_batch, sharing, first=1) -> list[dict]:
     """How each stage's batch splits, in order: its windows (the stage's
     batch_size), micro_batch (windows per pass in one process: the
     option's, or the process's whole share) and accumulation (passes each
     process adds up before an update). sharing: the processes that share out
-    the windows (1 when each splits every window). ValueError when a batch
-    does not split evenly."""
+    the windows (1 when each splits every window). first: the first
+    stage's number. ValueError when a batch does not split evenly."""
     found = []
-    for number, stage in enumerate(stages, 1):
+    for number, stage in enumerate(stages, first):
         micro = micro_batch or stage.batch_size // sharing
         if not micro or stage.batch_size % (micro * sharing):
             raise ValueError(f"stage {number}'s batch of {stage.batch_size} windows does not split into micro-batches "
@@ -122,7 +123,8 @@ class TextWindows(Environment):
         self.settings, self.data, strategy = settings, data, data.strategy
         self.stage_list = tuple(Stage(stage["steps"], stage["batch_size"], stage["block_size"])
                                 for stage in settings["stages"])
-        self.batches = batching(self.stage_list, data.micro_batch, 1 if strategy.splits_windows else strategy.world_size)
+        self.sharing = 1 if strategy.splits_windows else strategy.world_size
+        self.batches = batching(self.stage_list, data.micro_batch, self.sharing)
         self.prefix = settings["prefix_tokens"] or None
         self.train_tokens = _token_array(data.store, shards(data.record, data.kinds), strategy, data.stream_shards,
                                          self.prefix)
@@ -141,6 +143,12 @@ class TextWindows(Environment):
 
     def stage(self, index):
         self.index = index
+
+    def per_pass(self, index, windows):
+        """Stage index (from 0) takes `windows` windows per pass in each
+        process: the runner's choice for it (wpt_training.memory).
+        ValueError when the stage's batch does not split so."""
+        self.batches[index] = batching(self.stage_list[index:index + 1], windows, self.sharing, index + 1)[0]
 
     def _tokens_at(self, tokens, step):
         """The tokens update `step` draws its windows from: the array itself,

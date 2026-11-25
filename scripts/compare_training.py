@@ -207,7 +207,7 @@ def child(spec):
             if spec.get("estimate"):  # what wpt train's choice foresees for this pass, before it runs
                 from wpt_training import memory
                 found = memory.reader(device) or Nothing()
-                choice = memory.measure(model, optimizer, batch * length, length, found)
+                choice = memory.measure(model, optimizer, batch, length, found, windows=batch)
                 measured.update(foreseen_gib=choice.foreseen / 2**30, usable_gib=choice.usable / 2**30,
                                 would_recompute=choice.recompute, fixed_gib=choice.fixed / 2**30,
                                 per_token_kib=choice.per_token / 2**10, state_gib=choice.state / 2**30)

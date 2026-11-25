@@ -1,3 +1,4 @@
+import contextlib
 import json
 import math
 from pathlib import Path
@@ -168,12 +169,17 @@ def test_recompute_from_keeps_every_activation_in_the_shorter_stages_and_trains_
         assert torch.equal(value, every[name]) and torch.equal(value, longer[name]), name
 
 
-class FakeMemory:
-    """A device's memory as wpt_training.memory reads it, its numbers given: nothing held, no probe's peak
-    above it, and (free, reserved, total) left."""
+GIB = 2 ** 30
 
-    def __init__(self, left):
-        self.numbers = left
+
+class FakeMemory:
+    """A device's memory as wpt_training.memory reads it, its numbers given: nothing held, (free, reserved,
+    total) left, and every probe pass at the peak given for its way, (every activation kept, recomputed),
+    whatever its tokens: a probe's longer window is a stage's window when it is short, so each window of a
+    pass is foreseen at that peak, and 5 % more."""
+
+    def __init__(self, left, model=None, peaks=(0, 0)):
+        self.numbers, self.model, self.peaks = left, model, peaks
 
     def allocated(self):
         return 0
@@ -182,18 +188,49 @@ class FakeMemory:
         pass
 
     def peak(self):
-        return 0
+        return self.peaks[self.model.recompute] if self.model is not None else 0
 
     def left(self):
         return self.numbers
+
+
+def stages_run(dataset, monkeypatch, stages, usable, automatic=True, micro_batch=0, block_size=32):
+    """Train a read-text step of these stages on a device that foresees 4 GiB for each window of a pass, 2 GiB
+    recomputing, with `usable` GiB left: (the weights, the passes with gradients as (windows, tokens,
+    recomputed), the log's lines)."""
+    from wpt_training import memory
+
+    store, record = dataset
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
+                      "settings": {"stages": [{"block_size": length, "steps": 2, "batch_size": batch}
+                                              for length, batch in stages], "prefix_tokens": 500}}, PARTS)
+    torch.manual_seed(1337)
+    model = WPT(ModelConfig(**{**TINY, "block_size": block_size}))
+    monkeypatch.setattr(memory, "reader", lambda device: FakeMemory((usable * GIB, 0, 0), model, (4 * GIB, 2 * GIB)))
+    passes, run_pass, said = [], model._pass, []
+
+    def counted(first, idx, *args):
+        if torch.is_grad_enabled():
+            passes.append((*idx.shape, model.recompute))
+        return run_pass(first, idx, *args)
+
+    model._pass = counted
+    environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(), lambda _: None,
+                                              1337, 1, micro_batch=micro_batch))
+    try:
+        train(model, CPU, step, step.start_method(), environment, 1337, 1,
+              options=Options(automatic=automatic, micro_batch=micro_batch), log=lambda text, *_: said.append(text))
+    finally:
+        environment.close()
+    return {k: v.clone() for k, v in model.state_dict().items()}, passes, said
 
 
 @pytest.mark.parametrize("fits", [True, False], ids=["fits", "does-not-fit"])
 def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_hand(dataset, monkeypatch, fits):
     # docs/training.md, "Recomputing layers": with nothing asked, each stage of text windows probes its
     # memory (here real probe passes on the CPU, read through faked numbers that make every pass fit, or
-    # none) and keeps every activation or recomputes; the weights are bit for bit those of a run that
-    # recomputes none, and of one that recomputes every stage: the probes leave no trace
+    # only a pass that recomputes) and keeps every activation or recomputes; the weights are bit for bit
+    # those of a run that recomputes none, and of one that recomputes every stage: the probes leave no trace
     from wpt_training import memory
 
     store, record = dataset
@@ -201,13 +238,14 @@ def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_
                       "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
                                               {"block_size": 32, "steps": 2, "batch_size": 2}],
                                    "prefix_tokens": 500}}, PARTS)
-    gib = 2 ** 30
-    monkeypatch.setattr(memory, "reader", lambda device: FakeMemory((16 * gib, 0, 16 * gib) if fits else (0, 0, gib)))
     results = []
     for recompute, automatic in ((False, False), (True, False), (False, True)):
         torch.manual_seed(1337)
         model = WPT(ModelConfig(**{**TINY, "block_size": 32}))
         model.recompute = recompute
+        # a pass of 2 windows is foreseen at 8.4 GiB, and at 4.2 GiB recomputing
+        monkeypatch.setattr(memory, "reader", lambda device, model=model: FakeMemory(
+            ((16 if fits else 5) * GIB, 0, 0), model, (4 * GIB, 2 * GIB)))
         passes, run_pass, said = [], model._pass, []
 
         def counted(first, idx, *args, model=model, passes=passes, run_pass=run_pass):
@@ -225,14 +263,131 @@ def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_
             environment.close()
         results.append(({k: v.clone() for k, v in model.state_dict().items()}, set(passes), said))
     (none, _, _), (every, _, _), (chosen, chosen_passes, said) = results
-    probes = {(8, False), (16, False), (32, False)}  # half a window and a window, of each stage
+    # half a window and a window, of each stage, each way
+    probes = {(length, recompute) for length in (8, 16, 32) for recompute in (False, True)}
     assert chosen_passes == probes | ({(16, True), (32, True)} if not fits else set())
     choices = [line for line in said if "foreseen" in line]
-    assert len(choices) == 2 and all(("every activation kept" if fits else "recompute the layers") in line
+    assert len(choices) == 2 and all(("every activation kept: " if fits else "recompute the layers: ") in line
                                      for line in choices)
     assert "stage 1: " in choices[0] and "a pass of 32 tokens" in choices[0]  # 2 windows of 16
     for name, value in none.items():
         assert torch.equal(value, every[name]) and torch.equal(value, chosen[name]), name
+
+
+@pytest.mark.parametrize("usable, windows", [(5, (2, 2)), (3, (1, 1))], ids=["two-windows", "one-window"])
+def test_a_stage_whose_pass_does_not_fit_takes_fewer_windows_per_pass_and_trains_the_same(dataset, monkeypatch,
+                                                                                         usable, windows):
+    # docs/training.md, "Recomputing layers": a stage of 4 windows per update then one of 2, each window
+    # foreseen at 2.1 GiB recomputing: with 5 GiB the first stage takes 2 windows per pass and the second
+    # its whole pass, with 3 GiB each takes 1; the passes add up to the update of the whole batch, within
+    # rounding
+    stages = [(16, 4), (32, 2)]
+    whole, _, _ = stages_run(dataset, monkeypatch, stages, usable, automatic=False)
+    fewer, passes, said = stages_run(dataset, monkeypatch, stages, usable)
+    # each update's passes, and where a pass holds 1 window, the probes of as many tokens that recompute
+    first, second = windows
+    assert passes.count((first, 16, True)) == 2 * 4 // first + (2 if first == 1 else 0)
+    assert passes.count((second, 32, True)) == 2 * 2 // second + (1 if second == 1 else 0)
+    assert {one[0] for one in passes} == {1, *windows}
+    choices = [line for line in said if "foreseen" in line]
+    assert f"stage 1: recompute the layers, {windows[0]} window{'s' if windows[0] > 1 else ''} per pass: " in choices[0]
+    assert "a pass of 64 tokens" in choices[0] and f"a pass of {windows[0] * 16} tokens foreseen at" in choices[0]
+    assert all(torch.allclose(value, fewer[name], atol=1e-4) for name, value in whole.items())
+
+
+def test_a_stage_whose_window_does_not_fit_runs_in_segments_and_one_no_segment_fits_is_refused(dataset, monkeypatch):
+    # one window of 256 tokens per update, foreseen at 2.1 GiB recomputing: with 1.5 GiB it runs in segments
+    # of 128 tokens, and with 1 GiB no pass fits, which stops the step before the stage starts
+    _, passes, said = stages_run(dataset, monkeypatch, [(256, 1)], 1.5, block_size=256)
+    assert {one for one in passes if one[1] not in (128, 256)} == set()
+    assert (1, 128, True) in passes and (1, 256, True) in passes  # the stage's segments, and a probe
+    assert passes.count((1, 128, True)) == 1 + 2 * 2  # a probe, then 2 segments in each of 2 updates
+    assert any("stage 1: recompute the layers, 1 window per pass in segments of 128 tokens: " in line for line in said)
+    with pytest.raises(ValueError, match="stage 1: no pass fits the device's memory, down to 1 window per pass in "
+                                         "segments of 128 tokens: a pass of 256 tokens .* nothing was started"):
+        stages_run(dataset, monkeypatch, [(256, 1)], 1, block_size=256)
+
+
+def test_the_windows_per_pass_the_options_ask_for_are_kept(dataset, monkeypatch):
+    # --micro-batch 2 of a batch of 4: with 5 GiB the pass of 2 windows recomputes (4.2 GiB); with 3 GiB it
+    # does not fit, and the stage is refused instead of taking 1 window per pass
+    _, passes, said = stages_run(dataset, monkeypatch, [(16, 4)], 5, micro_batch=2)
+    assert {one for one in passes if one[0] != 1} == {(2, 16, True)}
+    assert any("stage 1: recompute the layers: a pass of 32 tokens" in line for line in said)
+    with pytest.raises(ValueError, match="stage 1: no pass fits the device's memory: a pass of 32 tokens"):
+        stages_run(dataset, monkeypatch, [(16, 4)], 3, micro_batch=2)
+
+
+def test_every_process_runs_a_stage_as_the_one_with_the_least_memory_left(monkeypatch):
+    # 2 processes share a batch of 8 windows of 256 tokens, 4 each; this one has 9 GiB and foresees its pass
+    # of 4 windows at 8.4 GiB recomputing; the other's choice, as the processes exchange it, is taken where
+    # it is more careful: fewer windows, segments, or a refusal
+    from types import SimpleNamespace
+
+    from wpt_training import Stage, memory, runner
+
+    class Two(Strategy):
+        def __init__(self, other):
+            super().__init__(torch.device("cpu"), 0, 2)
+            self.other = other
+
+        def reduce(self, tensor, op="sum"):
+            assert op == "max"
+            return torch.maximum(tensor, torch.tensor(self.other))
+
+    torch.manual_seed(0)
+    model = WPT(ModelConfig(**{**TINY, "block_size": 256})).train()
+    monkeypatch.setattr(memory, "reader", lambda device: FakeMemory((9 * GIB, 0, 0), model, (4 * GIB, 2 * GIB)))
+
+    def chosen(*other):
+        return runner._automatic(model, read_text().start_method(), SimpleNamespace(per_pass=None),
+                                 SimpleNamespace(optimizer=torch.optim.AdamW(model.parameters())), Stage(1, 8, 256),
+                                 0, Options(automatic=True), Two([float(value) for value in other]),
+                                 runner._Unbroken(Telemetry.off()))
+
+    recompute, windows, segment, said = chosen(0, -4, -256, 0)  # the other keeps every activation of its 4 windows
+    assert (recompute, windows, segment) == (True, 0, 0) and "another process" not in said
+    recompute, windows, segment, said = chosen(1, -2, -256, 0)
+    assert (recompute, windows, segment) == (True, 2, 0) and "recompute the layers, 2 windows per pass: " in said
+    assert said.endswith("another process has less memory left, and every process runs the same way")
+    assert chosen(1, -1, -128, 0)[:3] == (True, 1, 128)
+    with pytest.raises(ValueError, match="stage 1: no pass fits the device's memory, down to 1 window per pass in "
+                                         "segments of 128 tokens"):
+        chosen(1, -1, -128, 1)
+
+
+def test_fewer_windows_per_pass_add_up_to_the_gradient_of_the_whole_pass(dataset):
+    # docs/training.md, "The batch is the same on any hardware": a stage's batch of 4 windows in passes of
+    # 4, 2 or 1 windows (TextWindows.per_pass, the runner's choice) holds the same windows in the same
+    # order, and the passes' gradients add up to the whole pass's within rounding
+    store, record = dataset
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01}},
+                      "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}],
+                                   "prefix_tokens": 500}}, PARTS)
+    torch.manual_seed(0)
+    model = WPT(ModelConfig(**TINY)).train()
+    method = step.start_method()
+    environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(), lambda _: None,
+                                              1337, 1))
+    try:
+        found = []
+        for windows in (4, 2, 1):
+            environment.per_pass(0, windows)
+            passes = environment.batch(1, model, CPU)
+            assert [len(x) for x, _ in passes] == [windows] * (4 // windows)
+            model.zero_grad()
+            for examples in passes:
+                method.learn(model, model, examples, len(passes), CPU, 0, lambda final: contextlib.nullcontext())
+            found.append((torch.cat([x for x, _ in passes]),
+                          {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}))
+        with pytest.raises(ValueError, match="stage 1's batch of 4 windows does not split into micro-batches of 3"):
+            environment.per_pass(0, 3)
+    finally:
+        environment.close()
+    (batch, whole), *others = found
+    for windows, grads in others:
+        assert torch.equal(windows, batch) and grads.keys() == whole.keys()
+        assert all(torch.allclose(grads[name], value, atol=1e-6) for name, value in whole.items())
 
 
 @pytest.mark.parametrize("weight", [

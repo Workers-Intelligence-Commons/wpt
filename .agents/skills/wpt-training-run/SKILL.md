@@ -81,10 +81,13 @@ an unfinished run is never overwritten by mistake.
 
 ## Long windows
 
-A recipe's stages grow the window (docs/training.md, "Stages"); a stage
-whose window does not fit the GPU, even with `--recompute --micro-batch
-1`, needs one of these options, which change nothing in the training
-(docs/training.md, "Long windows"):
+A recipe's stages grow the window (docs/training.md, "Stages"). Without
+`--recompute`, `--no-recompute`, `--micro-batch` and `--segment`, each
+stage chooses its windows per pass and, when one window does not fit the
+GPU, its segments (docs/training.md, "Recomputing layers"). Otherwise a
+stage whose window does not fit the GPU, even with `--recompute
+--micro-batch 1`, needs one of these options, which change nothing in the
+training (docs/training.md, "Long windows"):
 
 - one GPU: `--segment N`, with N a multiple of 128 that fits (the memory
   of an N-token window, plus about 31 KiB per token of the window for
