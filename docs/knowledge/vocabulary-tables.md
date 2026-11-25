@@ -7,7 +7,8 @@ in [README.md](README.md).
 
 ## Answer
 
-The question is open under 100M parameters.
+Under 100M parameters one measure made here favours one shared table; it
+is one run of each model.
 
 - Two tables hold twice the vocabulary times the width, and are the largest
   part of a small model: 33.5M of 74.5M parameters at a width of 256 with a
@@ -18,6 +19,14 @@ The question is open under 100M parameters.
 - Under 100M parameters no source compares the two at an equal number of
   parameters, and one source finds sharing harmful at a width of 64.
   **published, one source**
+- At a width of 256 with a vocabulary of 65,536, the model with one shared
+  table, 44.8M parameters, beats the same model with two, 61.6M, trained
+  on the same 1.18B tokens: validation loss 2.79 against 2.85, and 95% of
+  the tokens of a repeated sequence copied against 48%. The gap in loss is
+  there at every update compared. **measured here**, one run each
+- Sharing changes two things at once, the number of parameters and the
+  tie between reading a token and predicting it; the measure does not
+  say which of the two gives the gain.
 - A narrower table written as a product of two smaller ones loses quality
   for every parameter it saves. **published, agreed**
 - A head of higher rank than the width, such as a mixture of softmaxes,
@@ -104,12 +113,41 @@ tables. **proved**, by counting
 | 256 | 41.0M | 33.5M | 45% |
 | 512 | 124.0M | 67.1M | 35% |
 
+### Measured with WPT
+
+Two models of width 256, 11 layers, 32 routed experts, a vocabulary of
+65,536 and no Engram memory, trained once each on the same 1.18B tokens
+with the same stages (windows of 2,048, 8,192 then 32,768 tokens, 8,990
+updates of 131,072 tokens), the same seed and the same optimizer, at
+commit b7dca7b2f7. One has two tables (61.6M parameters, 19.1 tokens per
+parameter, RTX 5090), the other one shared table (44.8M, 26.3 tokens per
+parameter, RTX 5080 Laptop GPU).
+
+| | Two tables | One table |
+| --- | --- | --- |
+| Validation loss at update 5,400 | 3.40 | 3.32 |
+| Validation loss at update 8,000 | 2.97 | 2.92 |
+| Validation loss at update 8,990 | 2.85 | 2.79 |
+| Repeated sequence, tokens written | 48% | 95% |
+| Repeated sequence, written whole | 29% | 89% |
+| Stated word, likeliest of four, English and French | 72%, 66% | 77%, 80% |
+| Stated number, likeliest of four, English and French | 87%, 78% | 92%, 86% |
+
+The copying figures are those of the `copying` test of `wpt eval`, on 200
+prompts each. Other models of this shape copy 43% to 70% of the tokens
+from one run to another ([lookup-memory.md](lookup-memory.md)), so a gap
+of 47 points is outside what those runs show, and the spread between two
+runs of one recipe is still not measured.
+
 ## Open
 
-- **One table against two at an equal number of parameters, under 100M.** A
-  measure trains a width of 256 with two tables, and a wider model with one
-  table and the same total, on the same tokens, and compares the loss and
-  the copying test of `wpt eval`.
+- **The same measure with another seed**, for each of the two models: the
+  gap in loss, 0.05, is the size of a gap that one run cannot settle.
+- **What gives the gain.** A model with one table made as wide as the
+  model with two is large says whether the freed parameters do more in
+  the body; a model with two tables started equal says whether the tie
+  itself helps.
+
 - A sweep of vocabularies from 4,096 to 65,536 at an equal total of
   parameters and equal training bytes, with a measure per byte.
 - A head of higher rank at a width of 128 to 384 on real text.

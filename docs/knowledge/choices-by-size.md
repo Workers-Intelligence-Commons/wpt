@@ -39,9 +39,10 @@ direction for most choices and a value for few.
   model reads bytes ([learned-chunking.md](learned-chunking.md)).
   **hypothesis**
 - **One table for the input and the output.** Sharing costs nothing from
-  120M to 600M; under 100M it is not measured at an equal total
+  120M to 600M. At 62M it lowers the loss by 0.05 with 27% fewer
+  parameters and the model copies from its context far better
   ([vocabulary-tables.md](vocabulary-tables.md)). **published, agreed**
-  above 120M, open under
+  above 120M; **measured here** at 62M, one run each
 - **Full precision.** Three-valued weights lose more the smaller the
   model, and win per byte only above a few hundred million parameters
   ([bits-and-parameters.md](bits-and-parameters.md)). **published, agreed**
@@ -137,8 +138,8 @@ per parameter at each.
 
 ### On the model as it is, one change at a time
 
-- **One table against two at an equal total of parameters**, at 60M and
-  at one size under it.
+- **One table against two with another seed**, at 60M, then at one size
+  under it and one above.
 - **The first layer's values carried to every layer**, at 60M, then at the
   ends of the series if it gains.
 - **A learning rate that falls to zero**, at 20 tokens per parameter.
