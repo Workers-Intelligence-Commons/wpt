@@ -47,11 +47,12 @@ class ModelConfig:
                             # 2 * n_layer (every attention and every experts sublayer its own) is the full form
     loops: int = 0          # extra passes of the text through every layer, with the same weights; 0: one pass
     tied_tables: bool = False  # one vocabulary table: the embedding reads the output head's rows (TiedEmbedding)
+    loop_gate: bool = False  # each token keeps a learned share of each extra pass's result (model.LoopGate)
 
     def __post_init__(self):
         object.__setattr__(self, "engram_layers", tuple(self.engram_layers))
         problems = [f"{f.name} must be at least 1" for f in fields(self)
-                    if f.name not in ("engram_layers", "loops", "tied_tables") and getattr(self, f.name) < 1]
+                    if f.name not in ("engram_layers", "loops", "tied_tables", "loop_gate") and getattr(self, f.name) < 1]
         if self.loops < 0:
             problems.append("loops must be at least 0")
         if self.block_size < 2:

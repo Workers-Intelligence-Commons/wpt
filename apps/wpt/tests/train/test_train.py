@@ -90,6 +90,20 @@ def test_a_recipe_with_one_vocabulary_table_trains_a_model_and_its_drafter(built
     load_drafter(tmp_path / "tied")
 
 
+def test_a_recipe_with_a_loop_gate_records_the_share_of_each_extra_pass_at_each_evaluation(built, tmp_path, capsys):
+    # loops and loop_gate in the recipe's model: the saved model has the gate, and each evaluation says how
+    # much of each extra pass the tokens kept, in the record and in the log
+    main([built.recipe("gated", model={"loops": 2, "loop_gate": True}, training=one_stage(1)), built.corpus_id,
+          "--out", "gated"])
+    printed = bare(capsys.readouterr().out)
+    model = load_model(tmp_path / "gated")
+    assert model.config.loop_gate and model.loop_gate.weight.shape[0] == 2
+    [run] = built.records("wpt train")
+    [values] = [e["values"] for e in run.events if e.get("name") == "training.evaluation"]
+    assert 0 < values["loop_gate_1"] < 1 and 0 < values["loop_gate_2"] < 1
+    assert f"| loop gate {values['loop_gate_1']:.3f} {values['loop_gate_2']:.3f} |" in printed
+
+
 def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built, tmp_path, capsys):
     # afterwards one must know exactly what happened, from the store alone:
     # the corpus read, each step's loss, the evaluations, the files written

@@ -30,6 +30,9 @@ embedding, and its sums of Attention Residuals cover its own sources only.
 The output head, the multi-token prediction block and the features read
 the last pass. In-Place TTT's targets are the token embeddings in every
 pass. At 0 the model is one pass: no weight and no work of the loop.
+With config.loop_gate, each token keeps a learned share of each extra
+pass's result and the rest of its state before that pass (LoopGate): the
+pass's output is then that mix, for everything that reads it.
 Open to review: the loss reads the last pass only, and no exit gate learns
 when to stop (Ouro's).
 
@@ -101,15 +104,15 @@ COMPILED_FORMS = 256  # torch.compile's forms of one piece of code: kinds of lay
 # belongs to exactly one, and BALANCING is the routers' balancing biases, which change after each update
 EMBEDDING, ATTENTION, ROUTERS, BALANCING = "embedding", "attention", "routers", "balancing"
 EXPERTS, ENGRAM, RESIDUALS, FINAL_NORM = "experts", "engram", "residuals", "final-norm"
-OUTPUT_HEAD, MULTI_TOKEN_PREDICTION = "output-head", "multi-token-prediction"
+OUTPUT_HEAD, MULTI_TOKEN_PREDICTION, LOOP_GATE = "output-head", "multi-token-prediction", "loop-gate"
 PARTS = (EMBEDDING, ATTENTION, ROUTERS, BALANCING, EXPERTS, ENGRAM, RESIDUALS, FINAL_NORM, OUTPUT_HEAD,
-         MULTI_TOKEN_PREDICTION)
+         MULTI_TOKEN_PREDICTION, LOOP_GATE)
 # the first module names of a parameter's name, in order of precedence, and the part they make it
 _PART_OF = ((("mtp",), MULTI_TOKEN_PREDICTION), (("embedding",), EMBEDDING), (("head",), OUTPUT_HEAD),
             (("final_norm",), FINAL_NORM),
             (("attention",), ATTENTION), (("attention_norm",), ATTENTION), (("experts", "router"), ROUTERS),
             (("experts",), EXPERTS), (("experts_norm",), EXPERTS), (("engram",), ENGRAM),
-            (("residuals",), RESIDUALS))
+            (("residuals",), RESIDUALS), (("loop_gate",), LOOP_GATE))
 
 
 def part_of(name: str) -> str:
@@ -300,6 +303,35 @@ class TiedEmbedding(nn.Module):
         return F.embedding(ids, self.head.weight) * self.scale
 
 
+class LoopGate(nn.Module):
+    """The share g of each extra pass's result a token keeps (docs/model.md,
+    "Loops"): after pass p (from 1), its state is g * the pass's result +
+    (1 - g) * its state before the pass, g = sigmoid(w_p . RMSNorm(the
+    state before the pass) + b_p), one number per token. Each extra pass
+    has its own w_p and b_p; the norm has no weight, which w_p would
+    repeat. w_p starts at zero and b_p at START, so every token starts at
+    the same g, near 1: close to the loop without a gate. g is computed in
+    FP32, as the routers' scores. In evaluation mode, shares holds the mean
+    g of each extra pass over the tokens of the last call."""
+
+    START = 4.0  # b_p at the start: g = sigmoid(4), about 0.982
+
+    def __init__(self, width, passes):
+        super().__init__()
+        self.norm = nn.RMSNorm(width, eps=EPS, elementwise_affine=False)
+        self.weight = nn.Parameter(torch.zeros(passes, width))
+        self.bias = nn.Parameter(torch.full((passes,), self.START))
+        self.shares = [None] * passes
+
+    def forward(self, before, result, loop):
+        x = self.norm(before)
+        with torch.autocast(x.device.type, enabled=False):
+            g = torch.sigmoid(F.linear(x.float(), self.weight[loop - 1:loop], self.bias[loop - 1:loop]))
+        if not self.training:
+            self.shares[loop - 1] = g.detach().mean()
+        return before + g.to(result.dtype) * (result - before)
+
+
 class WPT(nn.Module):
     PART = WINDOW  # a segment or a slice of a window holds a multiple of this many tokens
 
@@ -313,6 +345,7 @@ class WPT(nn.Module):
         self.embedding = (TiedEmbedding(self.head) if config.tied_tables
                           else nn.Embedding(config.vocab_size, config.d_model))
         self.mtp = MultiTokenPrediction(config)
+        self.loop_gate = LoopGate(config.d_model, config.loops) if config.loop_gate and config.loops else None
         # Engram's canonical id of each token id, from the vocabulary (engram.canonical_ids); saved with the weights
         self.register_buffer("canonical", torch.arange(config.vocab_size))
         self.recompute = False  # how training uses memory, not part of the model: see the module's docstring
@@ -459,7 +492,10 @@ class WPT(nn.Module):
         return hidden, found
 
     def _pass(self, first, idx, canonical, embedding, record, replay, sequence, loop, features):
-        """One pass through every layer, from its first source: (its output, the features or None)."""
+        """One pass through every layer, from its first source: (its output,
+        the features or None). With a loop gate, the output of a pass after
+        the first is each token's mix of the layers' result and its first
+        source (LoopGate)."""
         sources = self.residuals.start(first, compiled=bool(self.compiled) and self._whole(sequence))
         recompute = self.recompute and self.training and torch.is_grad_enabled()
         found = {}
@@ -489,6 +525,8 @@ class WPT(nn.Module):
                            loop=loop)
             sources.output(j + 1, out)
         hidden = sources.end()
+        if loop and self.loop_gate is not None:
+            hidden = self.loop_gate(first, hidden, loop)
         if len(self.layers) in features:
             found[len(self.layers)] = hidden.float()
         return hidden, torch.cat([found[number] for number in features], -1) if features else None
@@ -569,6 +607,13 @@ class WPT(nn.Module):
             else:
                 layer.experts.histogram = None
 
+    def loop_gate_shares(self) -> list[float]:
+        """The mean share of each extra pass's result the tokens of the last
+        call in evaluation mode kept, one number per extra pass (LoopGate);
+        empty without a loop gate or before such a call."""
+        shares = [] if self.loop_gate is None else self.loop_gate.shares
+        return [] if any(share is None for share in shares) else [float(share) for share in shares]
+
     def parts(self) -> dict[str, list[torch.nn.Parameter]]:
         """{part: its parameters} for every name of PARTS, in the model's
         order (BALANCING has none: its biases are not trained by gradient);
@@ -581,5 +626,7 @@ class WPT(nn.Module):
     def optimizer_roles(self):
         """(name, parameter, role, view) for every parameter, by the rule of
         optimizer.roles, with the embedding and the output head among the
-        "vector" ones (AdamW)."""
-        return roles(self, (self.embedding.weight, self.head.weight))
+        "vector" ones (AdamW), and the loop gate's weight, one row per
+        pass, with them."""
+        gate = () if self.loop_gate is None else (self.loop_gate.weight,)
+        return roles(self, (self.embedding.weight, self.head.weight, *gate))

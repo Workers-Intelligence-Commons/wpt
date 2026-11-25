@@ -377,6 +377,41 @@ sources above and the cache's rule (Generation, below) are open to review.
 A size of a series computes `loops + 1` times the work per token of one
 pass ("Model series").
 
+A recipe switch, `loop_gate`, lets each token choose how much of each
+extra pass it keeps, after [Mixture-of-Recursions][mor], which finds that
+a choice of passes per token brings the gain, more than the loop itself.
+It is off unless a recipe sets it, and with `loops` at 0 it does nothing:
+the model then has no weight of it and computes what it computes without
+it.
+
+- After each pass `p` but the first, a token's state is
+  `g_p x the pass's result + (1 - g_p) x its state before the pass`, with
+  `g_p` between 0 and 1, one number per token. Every token runs
+  every pass: the gate saves no work, where Mixture-of-Recursions stops a
+  token early.
+- `g_p = sigmoid(w_p . RMSNorm(the state before the pass) + b_p)`,
+  computed in FP32 as the routers' scores. Each extra pass has its own
+  `w_p`, as wide as the model, and its own `b_p`: `loops x (d_model + 1)`
+  weights in all. The norm has no weight of its own, which `w_p` would
+  repeat.
+- `w_p` starts at zero and `b_p` at 4, so every token starts at the same
+  `g_p`, about 0.982: training starts close to the loop without a gate.
+- The mix is the pass's output for everything that reads it: the next
+  pass's first source and its gate, the output head, the multi-token
+  prediction block and the last layer among the drafter's features.
+  Inside a pass nothing changes, so what the layers pass on to later
+  tokens, the cache and R3's routes are as without the gate.
+- AdamW trains `w_p` and `b_p` ("Training"), and they are a part of their
+  own, `loop-gate` ("Parts").
+- In evaluation mode the model keeps the mean `g_p` of each extra pass
+  over the tokens of its last call, which training shows at each
+  evaluation ([training.md](training.md), "In-Place TTT and loops in
+  training").
+
+One gate per pass with its own weights, the start at 4, the state before
+the pass as the gate's only input and a soft mix in place of an early
+stop are WPT's own choices, open to review.
+
 ## One vocabulary table
 
 A model has two vocabulary tables, the embedding and the output head, each
@@ -803,7 +838,8 @@ and every parameter belongs to exactly one of them (`WPT.parts`):
 - `residuals`: the queries and norm weights of Attention Residuals;
 - `final-norm`: the last norm;
 - `output-head`: the output head;
-- `multi-token-prediction`: the MTP block.
+- `multi-token-prediction`: the MTP block;
+- `loop-gate`: the loop's gate (nothing without `loop_gate`, "Loops").
 
 ## Training
 
@@ -838,7 +874,7 @@ fitted with, and the epsilon is WPT's own, all open to review.
   (QK-norm), which keeps the scores from exploding.
 - AdamW for the embedding, the output head, RMSNorm weights (DeepSeek-V4's
   split), the queries of Attention Residuals, the convolutions (Engram's
-  and In-Place TTT's), and for the attention
+  and In-Place TTT's), the loop's gate, and for the attention
   sinks (biases and scaling factors take AdamW in
   [DeepSeek-V4.1][v41]); Adam with 5 times the base learning
   rate and no weight decay for Engram tables (DeepSeek's Engram setting).
@@ -917,7 +953,8 @@ repository ("Model series", below). A model recipe holds:
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
   "Loops"; every recipe sets 0), and optionally one vocabulary table in
-  place of two (`tied_tables`, "One vocabulary table");
+  place of two (`tied_tables`, "One vocabulary table") and the loop's
+  gate (`loop_gate`, "Loops");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
   file's, its optimizer and that optimizer's settings, its settings and
@@ -995,8 +1032,8 @@ each size's model recipe (`wpt_recipes.series`):
   Every width inside the model scales with it (attention heads, expert,
   latent and shared widths), and every count stays (the layout of the
   layers, head width, experts and top `k`, Engram's layers, heads, order
-  and row width, the groups of Attention Residuals, the loops), so every
-  size has the reference's layers. Engram's table size grows with the cube of the
+  and row width, the groups of Attention Residuals, the loops and their
+  gate), so every size has the reference's layers. Engram's table size grows with the cube of the
   width: the size is the reference's times
   `(d_model / the reference's d_model)^3`, rounded to the nearest prime
   (the model hashes into tables of prime size and gives each table the
@@ -1144,6 +1181,7 @@ marked as such above.
 - [Attention Residuals](https://arxiv.org/abs/2603.15031)
 - [In-Place Test-Time Training](https://arxiv.org/abs/2604.06169)
 - [Ouro: scaling latent reasoning via looped language models](https://arxiv.org/abs/2510.25741)
+- [Mixture-of-Recursions: a number of passes for each token](https://arxiv.org/abs/2507.10524)
 - [Moonlight: Muon at scale](https://arxiv.org/abs/2502.16982)
 - [NorMuon: neuron-wise normalized Muon](https://arxiv.org/abs/2510.05491)
 - [Cautious weight decay](https://arxiv.org/abs/2510.12402)
@@ -1166,6 +1204,7 @@ marked as such above.
 [attnres]: https://arxiv.org/abs/2603.15031
 [ttt]: https://arxiv.org/abs/2604.06169
 [ouro]: https://arxiv.org/abs/2510.25741
+[mor]: https://arxiv.org/abs/2507.10524
 [moonlight]: https://arxiv.org/abs/2502.16982
 [normuon]: https://arxiv.org/abs/2510.05491
 [cwd]: https://arxiv.org/abs/2510.12402

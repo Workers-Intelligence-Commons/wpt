@@ -9,8 +9,8 @@ functions of the series document:
     shape         the reference model scaled to the size's width: every
                   width inside the model (WIDTHS) in proportion, every count
                   kept (the layout of the layers, the Engram layers, the
-                  groups of Attention Residuals and the loops among them, so every size
-                  has the same layers), Engram's table size in proportion
+                  groups of Attention Residuals, the loops and their gate among
+                  them, so every size has the same layers), Engram's table size in proportion
                   to the cube of the width (the nearest prime)
     parameters    counted as wpt_model builds them, without and with the
                   vocabulary tables (the embedding and the output head, or
@@ -234,8 +234,10 @@ def _count(model: dict, active: bool) -> int:
         count += ttt if _changes(number) else 0
     multi_token = (2 * norm + 2 * D * D + norm + attention["window"] + norm
                    + feed_forward(D, SHARED_EXPERTS * model["shared_width"]) + norm)
+    # the loop gate: a weight as wide as the model and a bias for each extra pass
+    gate = model["loops"] * (D + 1) if model.get("loop_gate") else 0
     # the first sublayer reads the embedding without a sum, and the output head reads one: 2 sums per layer
-    return count + norm + multi_token  # the final norm, the multi-token prediction block
+    return count + norm + multi_token + gate  # the final norm, the multi-token prediction block, the loop gate
 
 
 def _changes(number: int) -> bool:

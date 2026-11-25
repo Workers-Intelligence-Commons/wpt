@@ -399,10 +399,14 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             if verdict.best:
                 best_val, best_step = val_loss, update
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-            record.event("training.evaluation", values={"val_loss": val_loss}, step=update, best=verdict.best,
-                         stop=verdict.stop, note=verdict.note)
+            # a model with a loop gate: the share of each extra pass its tokens kept, in the evaluation's last pass
+            shares = model.loop_gate_shares() if hasattr(model, "loop_gate_shares") else []
+            gates = {f"loop_gate_{number}": share for number, share in enumerate(shares, start=1)}
+            record.event("training.evaluation", values={"val_loss": val_loss, **gates}, step=update,
+                         best=verdict.best, stop=verdict.stop, note=verdict.note)
             log(f"update {update:5d} | train loss {train_loss:.4f} | val loss {val_loss:.4f} | "
-                f"{time.time() - t0:.0f}s{verdict.note}")
+                + (f"loop gate {' '.join(f'{share:.3f}' for share in shares)} | " if shares else "")
+                + f"{time.time() - t0:.0f}s{verdict.note}")
             return verdict.stop
         return False
 

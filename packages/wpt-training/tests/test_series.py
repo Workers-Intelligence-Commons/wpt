@@ -41,6 +41,13 @@ def test_the_series_counts_the_parameters_of_the_model_it_derives():
         one_table = sum(p.numel() for p in tied.parameters())
         assert series.parameters({**model, "tied_tables": True}, 32768) == (everything - tables, one_table), size
         assert one_table == everything - tables // 2, size
+        gated = {**model, "loops": 2, "loop_gate": True}
+        with torch.device("meta"):
+            looped = WPT(ModelConfig(vocab_size=32768, block_size=32768, **gated))
+        gate = sum(p.numel() for p in looped.parts()["loop-gate"])
+        assert gate == 2 * (model["d_model"] + 1), size
+        assert series.parameters(gated, 32768) == (everything - tables + gate, everything + gate), size
+        assert series.active_parameters(gated) == series.active_parameters(model) + gate, size
 
 
 def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives_has_them():

@@ -555,7 +555,9 @@ The sparse layers read their chosen tokens from the first update, at every
 stage (model.md, "Attention").
 
 The log shows, at each evaluation, the update's loss over the whole batch,
-every micro-batch of every process, then the validation loss.
+every micro-batch of every process, then the validation loss, and for a
+model with a loop gate the share of each extra pass its tokens kept ("In-Place
+TTT and loops in training").
 
 ## Recomputing layers: long windows on a small GPU
 
@@ -731,6 +733,15 @@ pass, and the loss reads the last one. Its cost per token is `loops + 1`
 times one pass's, and so is its memory of activations, with `--recompute`
 too. Segments and slices hand on each pass's values apart. R3 records and
 replays each pass's routed experts apart.
+
+A model with a loop gate (model.md, "Loops") mixes each token's state
+after every extra pass, token by token, so segments and slices hand on
+nothing more for it. Each evaluation records the mean share of each extra
+pass's result the tokens kept, `loop_gate_1` for the second pass and so
+on, among the values of its `training.evaluation` event and in the log:
+near 1, the tokens take the pass's result; near 0, they keep their state
+before it. The numbers are those of the evaluation's last pass in the
+process that writes the record, not a mean over every validation window.
 
 ## Comparing routing in tests
 
