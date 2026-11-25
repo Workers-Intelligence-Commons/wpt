@@ -89,6 +89,17 @@ The depot keeps the vocabulary with the list of every text it trained on,
 in the order they were read, by its depot (empty for the depot that holds
 the recipe, the web address for another depot) and its id there.
 
+The freight learns a vocabulary too, outside the depot: a request names a
+snapshot, its shares and a sample in bytes, and the program
+`wpt-vocabulary` learns from the plain texts the freight chooses, read once
+in the order of the snapshot's listing. Each share fills its proportion of
+the sample's bytes, by group, as a corpus fills its shares
+([data-selection.md](data-selection.md), "Shares" and "Filling a part").
+The delivery on the dock holds `vocabulary.json`, and its items tables
+list the texts it read, in that order ([api/freight.md](api/freight.md),
+[api/preparation.md](api/preparation.md), "wpt-vocabulary"). An erasure is
+written into its delivery note and does not make it stale.
+
 ### One vocabulary per version
 
 The depot holds at most one vocabulary for each version of a recipe, and

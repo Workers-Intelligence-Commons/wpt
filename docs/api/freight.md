@@ -59,9 +59,10 @@ can become a route without its callers changing.
   is the upstream's (the depot asked by default).
 - `selection.kinds`: the kinds to take, `[]` or absent for every kind the
   preparation prepares. `shares`: the share of each tag, absent for every
-  text. `size`: `null` for everything the rules take, or an amount in the
-  preparation's unit (`tokens` for WPT's). A size in bytes is refused for
-  now.
+  text. `size`: `null` for everything the rules take, an amount of
+  `bytes`, which the freight measures itself whatever the preparation, or
+  an amount in the preparation's unit (`tokens` for `wpt-tokens`), which
+  only a preparation that weighs can meet.
 - `preparation.inputs` names earlier deliveries by their delivery key. The
   freight fetches their files from the dock and hands the program a
   folder for each.
@@ -74,8 +75,13 @@ The freight chooses as `wpt depot build` chooses
 whose tag a plain text has, the groups of a share weighed by the square
 root of their bytes, a part closed at a thousandth or after a thousand
 texts that do not fit, the items' natural share of a size, a conversation
-only with every passage it quotes, a text once at most. With a size, a
-text is weighed (`weigh`) before it is taken.
+only with every passage it quotes, a text once at most. With a size in the
+preparation's unit, a text is weighed (`weigh`) before it is taken. A size
+in bytes, such as a vocabulary's sample, follows the same rules on the
+bytes the depot's listing gives each text (a piece's: its share of its
+text's bytes, split evenly among its pieces), and nothing is weighed: each
+share fills its proportion of the size, by group, as a delivery without a
+size chooses on bytes.
 
 ## The delivery key
 
@@ -179,8 +185,9 @@ The delivery note holds:
 
 The items tables are the texts table of a corpus (`depot`, `id`,
 `revision`, `kind`, `title`, `authors`, `address`, `licenses`, `tags`,
-`notice`, `scores`, `piece`, `quotes`), followed by the fields of each
-item's `at` and its `weight` in the preparation's unit. They are how an
+`notice`, `scores`, `piece`, `quotes`), then `bytes`, what the listing
+gives the item and a size in bytes counts, the fields of its `at`, and its
+`weight` in the preparation's unit. They are how an
 erasure finds the deliveries that hold a text.
 
 With a cap, a job that would pass it alone is refused before its first

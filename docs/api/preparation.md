@@ -11,8 +11,8 @@ makes.
 The freight finds a program by its name: an executable of that name beside
 the Python the freight runs on (the console scripts installed with it),
 else on the search path (`freight.exchange.find`). WPT's programs,
-`wpt-tokens` and `wpt-count`, are console scripts of the package
-`wpt-corpus` (`wpt_corpus.programs`). A change to these messages changes
+`wpt-vocabulary`, `wpt-tokens` and `wpt-count`, are console scripts of the
+package `wpt-corpus` (`wpt_corpus.vocabulary`, `wpt_corpus.programs`). A change to these messages changes
 this document in the same commit.
 
 ## The format
@@ -89,6 +89,31 @@ the channel is some 15 to 30 microseconds an item, small beside reading
 the texts from the depot, so the freight sends one `weigh` message an
 item, a batch of them at a time (`freight.job`: at most 8 MB or 4,096
 texts), and does not put several items in one message.
+
+## wpt-vocabulary
+
+`wpt-vocabulary` learns a vocabulary. Its one setting, `vocab_size`, is
+the size of the vocabulary, at least 513. It prepares plain texts only and
+takes no input. It weighs nothing (`weighs: false`): its sample is a size
+in bytes, which the freight measures itself
+([freight.md](freight.md), "A request"). Its unit is `bytes`, and each
+`taken` answers the item's UTF-8 bytes as its weight, with no `at`.
+
+- The texts go to the tokenizer's training as they come, read once in the
+  order sent, as `wpt_tokenizer.Tokenizer.train` reads a stream, so the
+  same texts in the same order give the same vocabulary
+  ([tokenizer.md](../tokenizer.md)).
+- At `end` it writes `vocabulary.json`, the canonical vocabulary file,
+  says it, and answers `{"sha256", "size", "tokenizer_version"}`.
+- Its version names the tokenizer's version, so the delivery key changes
+  with it.
+- It learns from every text at once and cannot go on after a stop: it
+  answers a `start` that resumes with `failed`. Since it says its one file
+  at the end, the freight keeps no checkpoint before it, and a job cut
+  short starts over.
+- `on_erasure` is `note`: an erasure that reaches a text it read is
+  written into its delivery note, which stays fresh, and the merges
+  learned from that text stay.
 
 ## wpt-tokens
 

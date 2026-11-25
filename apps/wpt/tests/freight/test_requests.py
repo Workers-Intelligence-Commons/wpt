@@ -1,8 +1,9 @@
 """A corpus asked of the freight, its program wpt-tokens preparing it,
 against the corpus `wpt depot build` builds (wpt_depot.corpus.build) from
 the same snapshot, data section and vocabulary: the same token files, by
-their token hashes, and the same rows of the texts table; and the same
-request with wpt-count, which gives the same weights and writes no file."""
+their token hashes, and the same rows of the texts table (the bytes and
+weight of each beside them); and the same request with wpt-count, which
+gives the same weights and writes no file."""
 
 import base64
 import hashlib
@@ -106,7 +107,8 @@ def same(built, record: dict, note: dict):
             one["token_sha256"] for one in record["shards"][kind]], kind
     built_rows = read_table(store, record, "texts").to_pylist()
     rows = api.items(note["key"], dock=store.root.as_uri())
-    assert [{key: value for key, value in row.items() if key != "weight"} for row in rows] == built_rows
+    # the rows of the corpus's texts table, with the bytes the freight counted each at and its weight beside them
+    assert [{key: value for key, value in row.items() if key not in ("bytes", "weight")} for row in rows] == built_rows
     assert result["total_tokens"] == record["total_tokens"] and result["items_tokens"] == record["items_tokens"]
     assert result["fingerprints"] == record["fingerprints"]
     tasks = next((one for one in note["files"] if one["path"] == "tasks.jsonl"), None)

@@ -1122,7 +1122,7 @@ store.
 | `wpt-recipes` | the model and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results; a kept model folder copied out, checked against its sha256s (`models.py`) |
 | `freight` | reads a request, chooses items in a depot's snapshot as `wpt depot build` chooses, reading the depot only through `wpt_depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the store with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
-| `wpt-corpus` | WPT's preparations, the programs `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`, [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`) |
+| `wpt-corpus` | WPT's preparations, the programs `wpt-vocabulary` (a vocabulary learned from plain texts, `vocabulary.py`), `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`; [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |
 | `wpt-tokenizer` | the byte-level BPE tokenizer, Rust inside |
 | `wpt-model` | the WPT network ([model.md](model.md)) and its drafter, its safetensors model folders, their license documents (`LICENSE`, `NOTICE`, model card), and what a folder's `provenance.json` says of its corpus in either of its shapes (`provenance.py`) |
@@ -1135,7 +1135,7 @@ store.
 | `freight-app` (`apps/freight`) | the `freight` command, a controller over `freight.api` ([api/freight.md](api/freight.md)) |
 
 The packages hold services and no command, with one exception: the
-programs a preparation runs as, `wpt-tokens` and `wpt-count`, are console
+programs a preparation runs as, `wpt-vocabulary`, `wpt-tokens` and `wpt-count`, are console
 scripts of `wpt-corpus`, which the freight starts. Those that run without
 the repository, `wpt-worker` (on a gpu worker's machine), `wpt-model` and
 `wpt-inference` (a model folder and the text it writes), install alone.

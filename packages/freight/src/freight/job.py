@@ -26,6 +26,10 @@ only the texts it reaches:
   the items hold, filled by their weights in the order, as one pool; each
   share then fills its proportion of what the items left, by weight. So a
   text whose pool is open is weighed (`weigh`) before it is taken;
+- a size in bytes (BYTES, a vocabulary's sample) is the freight's own
+  measure, whatever the program's unit: the same rule, every weight the
+  bytes the listing gives the entry (a piece's: its share of its text's),
+  and nothing weighed;
 - without a size, every item is taken, and the plain texts go in order:
   with shares, the scarcest share (the one with the fewest bytes for its
   proportion) takes every text, each other share its proportion of the
@@ -65,7 +69,8 @@ erasures (those the depot had carried out that reached a text of the
 snapshot), on_erasure, made_at, code_commit, rules}. Each row of the items table is a
 text taken, with its revision, its credits, its tags as of the snapshot,
 its scores, `piece` (null for a whole text), `quotes` (a conversation's
-quoted texts), the fields of its `at`, and its `weight`.
+quoted texts), `bytes` (what the listing gives it, which a size in bytes
+counts), the fields of its `at`, and its `weight`.
 
 An erasure carried out while the job ran is checked before the note is
 written and again after: when it reached an item taken, the note is
@@ -93,7 +98,7 @@ from wpt_utils.lines import say
 from . import deliveries, groups
 from .exchange import Preparation, PreparationFailed
 from .fill import Fill
-from .selection import (CONVERSATION, PLAIN, RULES, Refused, canonical, census, delivery_key, excerpts,
+from .selection import (BYTES, CONVERSATION, PLAIN, RULES, Refused, canonical, census, delivery_key, excerpts,
                         fingerprint, items_of, proportions, scarcest_trim, tags_of, walk)
 
 HELD_PAGE = 1000  # conversations the job takes from its work folder at a time once the walk ends
@@ -107,7 +112,8 @@ ITEM_FIELDS = [pa.field("depot", pa.string(), False), pa.field("id", pa.string()
                pa.field("revision", pa.int64(), False), pa.field("kind", pa.string(), False),
                pa.field("title", pa.string()), pa.field("authors", NAMES), pa.field("address", pa.string()),
                pa.field("licenses", NAMES, False), pa.field("tags", NAMES, False), pa.field("notice", pa.string()),
-               pa.field("scores", SCORES), pa.field("piece", pa.int64()), pa.field("quotes", NAMES)]
+               pa.field("scores", SCORES), pa.field("piece", pa.int64()), pa.field("quotes", NAMES),
+               pa.field("bytes", pa.int64(), False)]
 TABLES = {"licenses": pa.schema([pa.field("id", pa.string(), False), pa.field("name", pa.string(), False),
                                  pa.field("text", pa.string(), False)]),
           "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)])}
@@ -211,10 +217,11 @@ class Job:
         self.replaced = known
         size = self.selection["size"]
         self.limit = None if size is None else size["amount"]
-        if size is not None and size["unit"] != self.unit:
-            raise Refused(f"the size is in {size['unit']}, and {name} weighs in {self.unit or 'nothing'}"
-                          + (": a size in bytes comes with the vocabulary's sample" if size["unit"] == "bytes" else ""))
-        if size is not None and not ready.get("weighs"):
+        self.by_bytes = size is not None and size["unit"] == BYTES  # the freight's own measure: nothing to weigh
+        if size is not None and not self.by_bytes and size["unit"] != self.unit:
+            raise Refused(f"the size is in {size['unit']}, and {name} weighs in {self.unit or 'nothing'}: give it "
+                          f"in {self.unit or BYTES}" + (f" or in {BYTES}" if self.unit else ""))
+        if size is not None and not self.by_bytes and not ready.get("weighs"):
             raise Refused(f"{name} weighs nothing, so a size in {size['unit']} cannot be met")
         self.shares = self.selection["shares"] or None
         self.kinds = self.selection["kinds"] or None
@@ -285,7 +292,8 @@ class Job:
                 return limit is None or (last_item is not None and place <= last_item and place not in skipped_items)
 
             if limit is not None:  # the items took their share; the shares split what is left
-                budget, counted = proportions(shares, limit - limited["weight"]), "weights"
+                budget = proportions(shares, limit - limited["weight"])
+                counted = "bytes" if self.by_bytes else "weights"
             elif shares is not None:
                 budget, counted = self._byte_budget(shares), "bytes"
             else:
@@ -317,7 +325,7 @@ class Job:
                 for entry in walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared,
                                   state["after"]):
                     walked += 1
-                    if counted == "weights" and ahead.done() and picker.done() and (
+                    if limit is not None and ahead.done() and picker.done() and (
                             last_item is None or tuple(entry.place()) > last_item):
                         break
                     if not entry.taken or (entry.kind != PLAIN and not item_taken(entry)):
@@ -455,7 +463,8 @@ class Job:
         state["taken"] += 1
         state["last_ref"] = answer["ref"]
         row = {"depot": self.holder, "id": entry.id, "revision": entry.revision, **credit,
-               "tags": json.loads(entry.tags), "piece": entry.piece, **(answer.get("at") or {}), "weight": weight}
+               "tags": json.loads(entry.tags), "piece": entry.piece, "bytes": entry.bytes, **(answer.get("at") or {}),
+               "weight": weight}
         if quotes is not None:
             row["quotes"] = quotes
         self.rows.append(row)
@@ -636,7 +645,8 @@ class Job:
     def _limit_items(self, shares: list[dict] | None) -> dict:
         """The items a job with a size takes: their share of it (the items'
         part of the bytes of the delivery without a size, from the census),
-        filled by their weights in the order, as one pool (Fill). {weight,
+        filled by their weights in the order (their bytes for a size in
+        bytes), as one pool (Fill). {weight,
         texts, bytes: of the items taken, last: the place of the last item
         taken (None: none), skipped: the places of the items before it left
         out}; the walk ends once the pool closes, or at the end of the
@@ -664,9 +674,12 @@ class Job:
 
         done, skipped = 0, []
         for batch in batches():
-            contents = api.contents(self.source, [(entry.id, entry.revision, None) for entry in batch])
-            weights = self.program.weigh([(entry.kind, content) for entry, content in zip(batch, contents)],
-                                         self._refs(len(batch)))
+            if self.by_bytes:
+                weights = [entry.bytes for entry in batch]
+            else:
+                contents = api.contents(self.source, [(entry.id, entry.revision, None) for entry in batch])
+                weights = self.program.weigh([(entry.kind, content) for entry, content in zip(batch, contents)],
+                                             self._refs(len(batch)))
             for entry, weight in zip(batch, weights):
                 if fill.done():
                     break

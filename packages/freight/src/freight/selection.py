@@ -6,9 +6,10 @@ delivery.
 A request's selection names the kinds it takes (none: every kind the
 preparation prepares), its shares by tag ([{tag, share}] in order; none:
 every plain text, in the snapshot's own proportions) and its size (None:
-everything the rules take; {unit, amount}: a number of the preparation's
-unit, which only the preparation can weigh). canonical gives it in the
-form the delivery key covers.
+everything the rules take; {unit, amount}: a number of bytes (unit
+BYTES), which the freight measures on the listing's bytes, or a number of
+the preparation's unit, which only the preparation can weigh). canonical
+gives it in the form the delivery key covers.
 
 A plain text counts for the first share whose tag it has, and a plain
 text that has none of their tags is left out. An item (any other kind) is
@@ -38,6 +39,7 @@ from typing import NamedTuple
 from wpt_depot import api
 
 PLAIN, CONVERSATION = "plain", "conversation"
+BYTES = "bytes"  # the unit of a size the freight measures itself, on the bytes the listing gives each entry
 RULES = 1  # the version of the rules of what a job takes, in the delivery key: raised whenever they change
 INTERNED = 10_000  # different lists of tags kept as their JSON text, at most
 

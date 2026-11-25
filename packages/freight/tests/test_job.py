@@ -2,8 +2,9 @@
 goes on from its checkpoint to the delivery a job that never stopped
 makes; the note keeps the program's file messages apart from the dock's
 references; an erasure makes a delivery stale or is noted in it, as its
-program says; and the dock's cap never deletes what nothing can make
-again or what another delivery needs."""
+program says; the dock's cap never deletes what nothing can make
+again or what another delivery needs; and a size in bytes is measured by
+the freight, whatever the program's unit."""
 
 import pytest
 
@@ -101,3 +102,16 @@ def test_adopted_files_come_as_bytes_and_a_second_adoption_keeps_the_first(freig
     assert api.adopt("adopted-x", {"vocabulary.json": b"[]"}, {}, {}, dock=freight.dock)["id"] == note["id"]
     with pytest.raises(deliveries.DeliveryError):
         api.adopt("x", {}, {}, {}, dock=freight.dock)
+
+
+def test_a_size_in_bytes_is_the_freights_own_measure_whatever_the_programs_unit(freight):
+    # fake weighs a text by its bytes, which are those the listing gives a whole text: the same choice either way
+    weighed = Job(freight.request(), freight.depot.address, freight.store, freight.tmp_path / "a").run()
+    request = freight.request()
+    request["selection"]["size"]["unit"] = "bytes"
+    measured = Job(request, freight.depot.address, freight.store, freight.tmp_path / "b").run()
+    assert measured["key"] != weighed["key"]
+    rows = items(freight.store, measured)
+    assert rows == items(freight.store, weighed) and [row["bytes"] for row in rows] == [row["weight"] for row in rows]
+    assert [share["tag"] for share in measured["shares"]] == ["en", "de"]
+    assert all(0 < share["weight"] <= part for share, part in zip(measured["shares"], (1050, 450)))  # 0.7, 0.3 of 1,500
