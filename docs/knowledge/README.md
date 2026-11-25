@@ -1,7 +1,7 @@
 # Knowledge
 
-This folder holds what is known about building and training a small
-language model, and how sure each piece is. One file per question, each
+This folder holds what is known about building and training language
+models, transformers above all, and how sure each piece is. One file per question, each
 with the answer the evidence supports and the evidence itself.
 
 A statement belongs here when it holds on any machine and with any code. It
@@ -13,6 +13,10 @@ is one of three kinds:
 - WPT measures it, and it is a relation about models and data: how many
   training tokens a model of a size needs, below which width a vocabulary
   of a size cannot be told apart.
+
+A statement names the architecture it was measured on when it may not
+hold on another, and one that holds only for one implementation does not
+belong here.
 
 A statement whose value changes with the GPU or with a commit does not
 belong here: a speed in tokens per second, a memory in GiB, a timing, what
@@ -71,6 +75,7 @@ so.
 - [How wide must a model be for its vocabulary?](width-and-vocabulary.md)
 - [How should parameters be split between depth and width?](depth-and-width.md)
 - [How large a model for how many training tokens?](size-and-tokens.md)
+- [How far do two runs of one recipe differ?](run-to-run-spread.md)
 - [How is a faster training code shown to train the same model?](training-speed.md)
 - [At small sizes, are parameters better spent on experts or compute on loops?](experts-and-loops.md)
 - [Can the vocabulary's two tables shrink without losing precision on the vocabulary?](vocabulary-tables.md)
