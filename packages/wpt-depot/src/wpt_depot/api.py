@@ -23,11 +23,12 @@ listing and make it once.
     texts(depot, snapshot, texts)                     some of its texts, as its listing reads them
     holds(depot, snapshot, texts)                     which texts its sets hold
     content(depot, text, revision, piece, span)       a text's content, a piece or a span, as UTF-8 bytes
+    contents(depot, asked)                            the content of each entry asked, in the order asked
     matched(depot, text, revision, selectors, pieced) where quotes match a text, and the pieces they lie in
     quoted(depot, text, revision)                     the texts a conversation quotes
     credits(depot, texts)                             the credits of texts at given revisions
     licenses(depot, ids), notices(depot, ids)         the licenses and notices those credits name
-    erasures(depot)                                   the erasures carried out, with the texts they reached
+    erasures(depot, since)                            the erasures carried out after a mark, and the mark now
 """
 
 import json
@@ -85,8 +86,9 @@ def _order(view: Depot, snapshot: str) -> order.Order:
 
 
 def _entry(one: order.Entry) -> dict:
-    return {"key": one.key, "owner": one.owner, "number": one.number, "id": one.id, "piece": one.piece,
-            "revision": one.revision, "kind": one.kind, "tags": json.loads(one.tags), "bytes": one.bytes}
+    return {"key": str(one.key), "owner": one.owner, "number": one.number, "id": one.id, "piece": one.piece,
+            "name": one.id if one.piece is None else pieces.name(one.id, one.piece), "revision": one.revision,
+            "kind": one.kind, "tags": json.loads(one.tags), "bytes": one.bytes}
 
 
 def about(depot: str) -> dict:
@@ -113,28 +115,33 @@ def listing(depot: str, snapshot: str, after: Sequence | None = None, spread: in
             ) -> Iterator[dict]:
     """The texts of the snapshot whose id is snapshot, in the depot's order
     (wpt_depot.order), a long plain text as its pieces, without content:
-    for each, {key (its export key), owner, number, id, piece (its number,
-    None for a whole text), revision (as of its bound), kind, tags (as of
-    its bound), bytes (a piece's: its share of its text's)}. after: the
-    place [key, owner, number, piece] of an entry (piece -1 for a whole
-    text) the listing goes on after. spread: at most that many places
-    spread evenly over the listing instead of every one, as an estimate
-    reads it. A text an erasure removed whole is passed by. NotFound
-    without such a snapshot."""
+    for each, {key (its export key, a signed 64-bit integer written in
+    decimal as a string, which a JSON reader of doubles would round),
+    owner, number, id, piece (its number, None for a whole text), name (the
+    text's id, or the piece's name), revision (as of its bound), kind, tags
+    (as of its bound), bytes (a piece's: its share of its text's)}. after:
+    the place [key, owner, number, piece] of an entry (piece -1 for a whole
+    text) the listing goes on after, its key as listing gives it. spread:
+    at most that many places spread evenly over the listing instead of
+    every one, as an estimate reads it. A text an erasure removed whole is
+    passed by. NotFound without such a snapshot."""
     made = _order(_view(depot), snapshot)
     if spread is not None:
         made = made.subset(made.spread(spread))
-    for one in order.walk(made, None, None, after):
+    if after is not None:
+        after = [int(after[0]), *after[1:]]
+    for one in order.walk(made, after):
         yield _entry(one)
 
 
 def listing_size(depot: str, snapshot: str) -> dict:
     """What the listing of the snapshot holds: {entries (its places, a text
     an erasure removed whole since counting), long_texts (the plain texts
-    that come as pieces), pieces (theirs, in all)}."""
+    that come as pieces), pieces (theirs, in all), piece_characters (the
+    length past which a plain text comes as pieces, about each piece's)}."""
     made = _order(_view(depot), snapshot)
     return {"entries": len(made), "long_texts": len(made.long),
-            "pieces": sum(one.count for one in made.long.values())}
+            "pieces": sum(one.count for one in made.long.values()), "piece_characters": pieces.LENGTH}
 
 
 def sampled(depot: str, snapshot: str, points: int) -> Iterator[dict]:
@@ -142,7 +149,7 @@ def sampled(depot: str, snapshot: str, points: int) -> Iterator[dict]:
     numbers and given in the depot's order as listing gives them, the same
     for the same snapshot, without the export key of every text: what an
     estimate reads of a big snapshot (wpt_depot.order.sampled)."""
-    for one in order.walk(order.sampled(_view(depot), snapshot, points), None):
+    for one in order.walk(order.sampled(_view(depot), snapshot, points)):
         yield _entry(one)
 
 
@@ -206,6 +213,17 @@ def content(depot: str, text: str, revision: int, piece: int | None = None,
         yield value.encode("utf-8")
 
 
+def contents(depot: str, asked: Sequence[Sequence]) -> Iterator[bytes]:
+    """For each [id, revision, piece] of asked, in order (piece None for a
+    whole text, as an entry of the listing names it): its content as UTF-8
+    bytes, one value an entry, given as content gives it joined. An entry of
+    the listing is never a whole long plain text, which comes as pieces, so
+    no value holds more than a piece of one. Each is read once the one
+    before it was taken. NotFound when the depot no longer holds one."""
+    for text, revision, piece in asked:
+        yield b"".join(content(depot, text, revision, piece))
+
+
 def matched(depot: str, text: str, revision: int, selectors: list[dict], pieced: bool = False
             ) -> list[list[int] | None]:
     """For each quote selector, in order (wpt_depot.quotes): None when it
@@ -255,9 +273,25 @@ def notices(depot: str, named: Sequence[str]) -> list[dict]:
     return [found[one] for one in named if one in found]
 
 
-def erasures(depot: str) -> list[dict]:
-    """The erasures the depot has carried out, in the order of their ids:
-    {id, texts: the ids of the texts each removed or cut, each once, in the
-    order its request names them}."""
-    return [{"id": row["id"], "texts": list(dict.fromkeys(needle["text"] for needle in row["needles"]))}
-            for row in _view(depot).rows("SELECT id, needles FROM erasures WHERE erased IS NOT NULL ORDER BY id")]
+def erasures(depot: str, since: int = 0) -> dict:
+    """The erasures the depot has carried out after the mark since (0:
+    every one), and the mark to ask from next: {mark, erasures: in the
+    order of their ids, each {id, change (the change number of the revision
+    that carried it out, in the numbering of the depot that owns it),
+    texts (the ids of the texts it removed or cut, each once, in the order
+    its request names them)}}. The mark rises with every erasure revision
+    the depot gains, written here or brought by a pull
+    (wpt_depot.snapshots.last_erasure); an erasure counts after since when
+    the first of its revisions that holds what it erased came after it. A
+    change number cannot be the mark: a pull brings revisions that keep
+    their upstream's change numbers, which can be lower than the ones this
+    depot has given already."""
+    view = _view(depot)
+    mark = snapshots.last_erasure(view)
+    rows = view.rows(
+        "SELECT e.id, c.change, e.needles FROM erasures e JOIN erasures_revisions c ON c.rowid = (SELECT min(r.rowid) "
+        "FROM erasures_revisions r WHERE r.id = e.id AND r.erased IS NOT NULL) "
+        "WHERE e.erased IS NOT NULL AND c.rowid > ? AND c.rowid <= ? ORDER BY e.id", (since, mark))
+    return {"mark": mark, "erasures": [
+        {"id": row["id"], "change": row["change"],
+         "texts": list(dict.fromkeys(needle["text"] for needle in row["needles"]))} for row in rows]}

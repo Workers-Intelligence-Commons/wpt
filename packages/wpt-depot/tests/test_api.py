@@ -31,9 +31,12 @@ def test_every_answer_is_a_value_json_carries_and_the_listing_names_every_text_a
     size = api.listing_size(address, made["id"])
 
     assert row == api.snapshot(address, name="s1") and row["digest"] == made["digest"]
-    assert size == {"entries": len(listed), "long_texts": 1, "pieces": pieces.count(len(long_text))}
-    assert sorted((one["id"], one["piece"]) for one in listed) == sorted(
-        [(short, None)] + [(long, n) for n in range(size["pieces"])])
+    assert size == {"entries": len(listed), "long_texts": 1, "pieces": pieces.count(len(long_text)),
+                    "piece_characters": pieces.LENGTH}
+    assert sorted((one["id"], one["piece"], one["name"]) for one in listed) == sorted(
+        [(short, None, short)] + [(long, n, pieces.name(long, n)) for n in range(size["pieces"])])
+    # a key is a decimal string, which a JSON reader of doubles does not round
+    assert all(isinstance(one["key"], str) and str(int(one["key"])) == one["key"] for one in listed)
     assert all(carried(value) for value in (row, listed, size, api.about(address),
                                             api.credits(address, [[short, 1]]), api.erasures(address)))
     # a walk goes on right after any place
@@ -53,6 +56,8 @@ def test_content_comes_as_bytes_whole_by_piece_or_by_span(make_depot, me):
     assert b"".join(b"".join(api.content(address, long, 1, n)) for n in range(pieces.count(len(long_text)))) == \
         long_text.encode()
     assert b"".join(api.content(address, long, 1, span=[2, 6])) == b"line"
+    asked = [[long, 1, n] for n in reversed(range(pieces.count(len(long_text))))]
+    assert list(api.contents(address, asked)) == [b"".join(api.content(address, *one)) for one in asked]
     with pytest.raises(NotFound):
         list(api.content(address, long, 2))
 
@@ -64,5 +69,14 @@ def test_an_erasure_carried_out_names_the_texts_it_reached_and_the_snapshot_stil
     erased = depot.ask_erasure("a word", [(fox, 4, 9)], me)
     depot.decide_erasure(erased, "admitted", me)
 
-    assert api.erasures(depot.address) == [{"id": erased, "texts": [fox]}]
+    found = api.erasures(depot.address)
+    [carried_out] = depot.rows("SELECT change FROM erasures WHERE id = ?", (erased,))
+    assert found["erasures"] == [{"id": erased, "change": carried_out["change"], "texts": [fox]}]
     assert api.holds(depot.address, made["id"], [dog, fox, "depot-999"]) == [dog, fox]
+    # asked from the mark it gave, nothing new; a later erasure, alone
+    assert api.erasures(depot.address, found["mark"]) == found | {"erasures": []}
+    later = depot.ask_erasure("a word", [(dog, 4, 8)], me)
+    depot.decide_erasure(later, "admitted", me)
+    after = api.erasures(depot.address, found["mark"])
+    assert after["mark"] > found["mark"] and [one["id"] for one in after["erasures"]] == [later]
+    assert [one["id"] for one in api.erasures(depot.address)["erasures"]] == sorted([erased, later])

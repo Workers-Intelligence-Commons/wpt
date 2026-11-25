@@ -2,8 +2,7 @@
 
 `wpt_depot.api` is what code outside the depot asks of it. The corpus
 build, its estimate and the sample that trains a vocabulary
-(`wpt_depot.corpus`, `wpt_depot.estimate`, `wpt_depot.groups`) read the
-depot only through it. A change to the module changes this document in
+(`wpt_depot.corpus`, `wpt_depot.estimate`) read the depot only through it. A change to the module changes this document in
 the same commit.
 
 ## Rules of every call
@@ -48,10 +47,11 @@ the snapshot in the depot's order, without content, one object at a time:
 
 | Field | What it holds |
 | --- | --- |
-| `key` | the export key the order sorts by |
+| `key` | the export key the order sorts by: a signed 64-bit integer, written in decimal as a string, since a JSON reader that reads numbers as doubles would round it |
 | `owner`, `number` | the depot whose numbering the id is in, and the number |
 | `id` | the text's id |
 | `piece` | the piece's number, `null` for a whole text |
+| `name` | the text's id for a whole text, the piece's name (`<id>#<n>`) for a piece |
 | `revision` | the text's revision as of the snapshot's bound |
 | `kind` | the kind of the content version that revision reads |
 | `tags` | the text's tags as of the bound, a list |
@@ -63,8 +63,8 @@ pieces (docs/data-selection.md, "Long texts"). The order and the cutting
 into pieces belong to the depot: the same snapshot gives the same listing
 whatever asks, and an erasure that removed a text whole passes it by.
 
-`after` is the place of an entry, `[key, owner, number, piece]` with `-1`
-for a whole text's piece: the listing goes on right after it, which is how
+`after` is the place of an entry, `[key, owner, number, piece]`, its key
+as the listing gives it and `-1` for a whole text's piece: the listing goes on right after it, which is how
 a build goes on from its last upload. `spread` gives at most that many
 places spread evenly over the listing instead of every one.
 
@@ -72,9 +72,11 @@ The listing of a snapshot is made once from its sets and kept until an
 erasure reaches the depot or another snapshot is listed, so the walks of
 one build read the same listing and make it once.
 
-`listing_size(depot, snapshot)` gives `{entries, long_texts, pieces}`: the
-places of the listing (a text an erasure removed whole since still
-counting), the plain texts that come as pieces, and their pieces in all.
+`listing_size(depot, snapshot)` gives `{entries, long_texts, pieces,
+piece_characters}`: the places of the listing (a text an erasure removed
+whole since still counting), the plain texts that come as pieces, their
+pieces in all, and the length in characters past which a plain text comes
+as pieces, about the length of each.
 
 `sampled(depot, snapshot, points)` gives at most `points` whole texts of
 the snapshot, as `listing` gives them and in its order, spread over the
@@ -99,6 +101,13 @@ whole in memory (a plain text's characters, an item's JSON); with
 `piece`, that piece of a long plain text; with `span`, `[start, end]`,
 its characters from `start` to `end`, excluded.
 
+`contents(depot, asked)` takes entries of the listing, `[[id, revision,
+piece], ...]` with `piece` `null` for a whole text, and gives the content
+of each as UTF-8 bytes, one value an entry, in the order asked. An entry
+of the listing is never a whole long plain text, which comes as its
+pieces, so no value holds more than a piece. As a route, each value comes
+after a line that gives its length in bytes.
+
 `matched(depot, text, revision, selectors, pieced=False)` says where quote
 selectors (docs/chat-format.md, "Excerpts") match the content version a
 text's revision reads, reading it once for all of them: for each selector,
@@ -111,9 +120,20 @@ quotes at that revision.
 
 ### Erasures
 
-`erasures(depot)` gives the erasures the depot has carried out, in the
-order of their ids: `{id, texts}`, the texts each removed or cut, each
-once, in the order its request names them.
+`erasures(depot, since=0)` gives the erasures the depot has carried out
+after the mark `since`, and the mark to ask from next: `{mark, erasures}`,
+the erasures in the order of their ids, each `{id, change, texts}`:
+`change`, the change number of the revision that carried it out, in the
+numbering of the depot that owns it, and `texts`, the texts it removed or
+cut, each once, in the order its request names them. `since` 0 gives every
+erasure carried out.
+
+The mark rises with every erasure revision the depot gains, written there
+or brought by a pull. A change number cannot serve as the mark: a pull
+brings revisions that keep their upstream's change numbers, which can be
+lower than the change numbers the depot has given already, so an erasure
+pulled late could fall below a change number a caller already saw. A
+caller keeps the mark of each depot it reads and asks from it next time.
 
 ### Credits
 

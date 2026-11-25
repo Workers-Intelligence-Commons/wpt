@@ -55,13 +55,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import counts, groups, ids, pieces, quotes
-from .corpus import LEFT_OUT, UNMATCHED, _fingerprint, mixed
+from .corpus import LEFT_OUT, TRAINING_KINDS, UNMATCHED, _fingerprint, mixed, pool_of
 from .depot import Depot
 from .errors import NotFound, Refused
 from .fill import Fill
 from .ids import EXPORT_SEED, export_key
 from .kinds import PLAIN
-from .order import TRAINING_KINDS, pool_of
 from .parts import Parted, scan
 from .schema import CONTENT_JOIN, LISTED_COLUMNS, LONG, tags_now
 

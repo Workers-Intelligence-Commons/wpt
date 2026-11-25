@@ -7,7 +7,7 @@ entries come from the caller, a corpus build's walk of the snapshot's
 listing (wpt_depot.api, wpt_depot.corpus.walk) or a legacy dataset's.
 
 A plain text belongs to the first share whose tag it has
-(wpt_depot.order.pool_of). Inside a share, every tag its texts carry other
+(wpt_depot.corpus.pool_of). Inside a share, every tag its texts carry other
 than the share's own is a group, and the texts that carry no other tag are
 one group more, whose tag is None. Nothing here knows a tag's name or
 kind: the groups come from the texts' tags alone. A piece of a long text is

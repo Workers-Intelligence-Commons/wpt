@@ -120,10 +120,10 @@ def measure(bench: Bench, layout: common.Layout):
                lambda d, _: f"{len(d.snapshot_texts(snapshot['id'], limit=1000)['texts']):,} texts")
 
     def walked(d, _):
-        count = sum(1 for _ in itertools.islice(order.walk(order.of(d, snapshot["id"]), ["t00", "t01"]), WALKED))
+        count = sum(1 for _ in itertools.islice(order.walk(order.of(d, snapshot["id"])), WALKED))
         return f"{count:,} entries"
 
-    bench.time(f"order of the snapshot and its walk's first {WALKED:,} entries, shares t00 and t01", walked)
+    bench.time(f"order of the snapshot and its walk's first {WALKED:,} entries", walked)
 
     written(bench, "retag", lambda d: d.retag(admitted.take(TAGGED), ["bench-tag-2"], [], ME))
     written(bench, "credits write", lambda d: credited(d, admitted.take(TAGGED), "bench-tag-3"))

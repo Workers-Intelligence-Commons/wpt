@@ -84,11 +84,10 @@ from wpt_store.shards import SCHEMA as SHARD_SCHEMA
 from wpt_tokenizer import END, Tokenizer, chat
 
 from . import api
-from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, Fill, _proportions, _tags, _tags_text, build_key, canonical,
-                     census, entries, scarcest_trim, task_text, walk)
+from .corpus import (CORPUS_SCHEMAS, IN_PROCESS, Fill, _proportions, _tags, _tags_text, build_key, canonical, census,
+                     entries, pool_of, scarcest_trim, task_text, walk)
 from .depot import Depot
 from .kinds import PLAIN
-from .order import pool_of
 
 POINTS = 1024  # texts sampled from the snapshot, at most
 SAMPLE_BYTES = 4 << 20  # bytes of texts the sample tokenizes, at most
@@ -365,7 +364,7 @@ def _tokenize(source: str, sampled: list[tuple], tokenizer: Tokenizer) -> dict:
         found["bytes"] += size
         if kind != "task":
             shard_rows.append((tokens, name, text, "", 0))
-        credit_rows.append({"depot": name, "id": text, "revision": revision, **{key: row[key] for key in CREDITS},
+        credit_rows.append({"depot": name, "id": text, "revision": revision, **row,
                             "tokens": 0, "piece": None})
     found["seconds"] = time.perf_counter() - started
     found["bytes_per_token"] = _written(_shard_table(shard_rows)) / max(sum(len(one[0]) for one in shard_rows), 1)

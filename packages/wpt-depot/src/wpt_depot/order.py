@@ -1,7 +1,7 @@
 """The order in which a corpus build, the estimate of a build and the
 sample that trains a vocabulary read a snapshot's texts (wpt_depot.snapshots),
 which they are given as its listing (wpt_depot.api.listing, the entries of
-a walk without pool and taken): every text the snapshot holds, by its export key (wpt_depot.ids.export_key),
+a walk): every text the snapshot holds, by its export key (wpt_depot.ids.export_key),
 but for its long plain texts, each of which comes as its pieces
 (wpt_depot.pieces), each piece at the export key of its name. The key is
 made from a text's id alone, or a piece's name, so the order is fixed and
@@ -49,20 +49,14 @@ gave before (after), which is how a build goes on from its last upload.
 
 Each Entry is a text or a piece with its key, owner (the depot whose
 numbering the id is in), number, id, piece (its number, None for a whole
-text), revision, kind (wpt_depot.kinds), pool (with shares: the index of
-the first share whose tag a plain text has, None when it has none; without
-shares, 0 for every plain text; None for an item), bytes (its content's
-UTF-8 bytes; a piece's, its share of its text's bytes, split evenly among
-its pieces, since they are known only once it is read), taken: whether a
-corpus takes it at all, that is, a text of a kind the recipe names (every
-kind when it names none) that is a plain text with a pool or a text of one
-of TRAINING_KINDS, a conversation or a task (a text of any other kind is no
-training data), and tags (its tags as JSON text; a piece's, its text's).
+text), revision, kind (wpt_depot.kinds), bytes (its content's UTF-8 bytes;
+a piece's, its share of its text's bytes, split evenly among its pieces,
+since they are known only once it is read) and tags (its tags as JSON
+text; a piece's, its text's).
 
     of(depot, snapshot)                       the order of a snapshot's texts, as an Order
     sampled(depot, snapshot, points)          some of its texts, spread over its numbers, in order
-    walk(order, shares, kinds, after)         its texts and pieces, in order, as Entry
-    pool_of(kind, tags, shares, kinds)        a text's pool and whether a corpus takes it
+    walk(order, after)                        its texts and pieces, in order, as Entry
 """
 
 import bisect
@@ -78,7 +72,6 @@ from .ids import export_key
 from .kinds import PLAIN
 from .schema import LONG, tags_at
 
-TRAINING_KINDS = ("conversation", "task")  # the kinds beside plain a corpus takes
 PAGE = 2_000  # whole texts a walk reads in one statement
 CHUNK = 1 << 16  # entries whose keys are worked out, or whose sorted place is read, at a time
 LOW_BITS = 1  # the fewest low bits of a sorted int64 that hold an entry's position (tests raise it to force ties)
@@ -104,9 +97,7 @@ class Entry(NamedTuple):
     piece: int | None
     revision: int
     kind: str
-    pool: int | None
     bytes: int
-    taken: bool
     tags: str
 
     def place(self) -> list:
@@ -176,22 +167,6 @@ def _ranks(owners: list[str]) -> list[int]:
     """Each owner's rank among the owners ordered by their UTF-8 bytes."""
     ordered = {owner: at for at, owner in enumerate(sorted(set(owners), key=str.encode))}
     return [ordered[owner] for owner in owners]
-
-
-def pool_of(kind: str, tags: str, shares: Sequence[str] | None, kinds: Sequence[str] | None = None
-            ) -> tuple[int | None, bool]:
-    """(pool, taken) of a text of that kind with tags (JSON text), under
-    the tags of a recipe's shares (None without shares) and the kinds it
-    names (None or empty: every kind), as Entry says."""
-    if kinds and kind not in kinds:
-        return None, False
-    if kind != PLAIN:
-        return None, kind in TRAINING_KINDS
-    if shares is None:
-        return 0, True
-    held = json.loads(tags or "[]")
-    pool = next((at for at, tag in enumerate(shares) if tag in held), None)
-    return pool, pool is not None
 
 
 def of(depot, snapshot: str) -> Order:
@@ -370,13 +345,10 @@ def _long(depot, sets, held, numbers, starts) -> dict:
     return found
 
 
-def walk(order: Order, shares: Sequence[str] | None, kinds: Sequence[str] | None = None,
-         after: Sequence | None = None, skipped: list | None = None) -> Iterator[Entry]:
+def walk(order: Order, after: Sequence | None = None) -> Iterator[Entry]:
     """The texts and pieces of the order, from the place after on (every
-    one without it), each as Entry under the tags of the recipe's shares
-    (None without shares) and the kinds it names (None or empty: every
-    kind). skipped, when given, has its first item raised by one for each
-    number passed by because its text has no row left."""
+    one without it), each as Entry; a number whose text has no row left is
+    passed by."""
     con = order.depot.db.reader()
     for start in range(order.start(after), len(order), PAGE):
         end = min(start + PAGE, len(order))
@@ -395,18 +367,13 @@ def walk(order: Order, shares: Sequence[str] | None, kinds: Sequence[str] | None
             if piece[at] == WHOLE:
                 found = rows.get(at)
                 if found is None:
-                    if skipped is not None:
-                        skipped[0] += 1
                     continue
                 revision, kind, size, tags = found
-                pool, taken = pool_of(kind, tags, shares, kinds)
-                yield Entry(export_key(text), owner, numbers[at], text, None, revision, kind, pool, size, taken,
-                            tags)
+                yield Entry(export_key(text), owner, numbers[at], text, None, revision, kind, size, tags)
             else:
                 one = order.long[sets[at], numbers[at]]
                 number = piece[at]
                 size = one.bytes // one.count + (number < one.bytes % one.count)
-                pool, taken = pool_of(PLAIN, one.tags, shares, kinds)
                 yield Entry(export_key(pieces.name(text, number)), owner, numbers[at], text, number, one.revision,
-                            PLAIN, pool, size, taken, one.tags)
+                            PLAIN, size, one.tags)
 

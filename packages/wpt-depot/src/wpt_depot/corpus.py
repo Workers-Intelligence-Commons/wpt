@@ -223,12 +223,14 @@ cap its estimated size (Room.expect).
     census(summary, shares, kinds)                        what a corpus of the snapshot may take, whatever its size
     walk(source, snapshot, shares, kinds, after, spread)  the snapshot's listing under a data section, as Entry
     entries(listed, shares, kinds)                        a listing given, the same way
+    pool_of(kind, tags, shares, kinds)                    a text's pool and whether a corpus takes it
     sample(depot, snapshot, sample_bytes)                 the plain texts that train a vocabulary, as a stream
     sample_lines(texts, here)                             that stream as a depot's web app sends it
 """
 
 import collections
 import hashlib
+import itertools
 import json
 import tempfile
 from collections.abc import Iterable, Iterator, Sequence
@@ -247,12 +249,11 @@ from wpt_tokenizer import END, Tokenizer, chat
 from wpt_utils.lines import say
 from wpt_utils.parallel import Sizing, in_order, process_pool
 
-from . import api, corpora, counts, groups, pieces, quotes
+from . import api, corpora, counts, groups, quotes
 from .depot import Depot
 from .errors import Refused
 from .fill import Fill
 from .kinds import PLAIN
-from .order import TRAINING_KINDS, pool_of
 
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
 WHITESPACE = b" \t\n\r\x0b\x0c"  # the bytes the tokenizer's chunks treat as whitespace (wpt_tokenizer)
@@ -283,7 +284,7 @@ CORPUS_SCHEMAS = {
 RULES = 8  # the version of the rules of what a build takes, in the build's key: raised whenever they change
 # the kinds a corpus holds as token files, each kind's apart (a task is a line of tasks.jsonl, never tokenized)
 TOKEN_KINDS = (PLAIN, "conversation")
-CREDITS = ("kind", "title", "authors", "address", "licenses", "tags", "notice", "scores")  # what a text's row copies
+TRAINING_KINDS = ("conversation", "task")  # the kinds beside plain a corpus takes
 REBUILT = "built again over its stale record"  # why the files of a record a build replaces are deleted
 
 
@@ -382,18 +383,17 @@ def _erasures(source: str, snapshot: str) -> list[str]:
     erasure of a text it does not hold changes nothing of its corpus. A
     text counts when any part of the snapshot holds it, not only the last
     part of its owner."""
-    found = api.erasures(source)
+    found = api.erasures(source)["erasures"]
     held = set(api.holds(source, snapshot, sorted({text for one in found for text in one["texts"]})))
     return [one["id"] for one in found if any(text in held for text in one["texts"])]
 
 
 class Entry(NamedTuple):
     """A text or a piece of a snapshot's listing (wpt_depot.api.listing)
-    under a data section: its key, owner, number, id, piece (None for a
-    whole text), revision, kind, bytes and tags (as JSON text), and pool
-    and taken (pool_of: with shares, the index of the first share whose tag
-    a plain text has, None when it has none; without shares, 0 for every
-    plain text; None for an item; and whether a corpus takes it at all)."""
+    under a data section: its key (as an int, which orders places), owner,
+    number, id, piece (None for a whole text), revision, kind, bytes, tags
+    (as JSON text) and name (the text's id or the piece's name), and pool
+    and taken (pool_of)."""
     key: int
     owner: str
     number: int
@@ -405,11 +405,33 @@ class Entry(NamedTuple):
     bytes: int
     taken: bool
     tags: str
+    name: str
 
     def place(self) -> list:
         """The entry's place in the listing, [key, owner, number, piece (-1 for a whole text)], what a walk's
         after names."""
         return [self.key, self.owner, self.number, -1 if self.piece is None else self.piece]
+
+
+def pool_of(kind: str, tags: str, shares: Sequence[str] | None, kinds: Sequence[str] | None = None
+            ) -> tuple[int | None, bool]:
+    """(pool, taken) of a text of that kind with tags (JSON text), under
+    the tags of a data section's shares (None without shares) and the kinds
+    it names (None or empty: every kind): pool, with shares, the index of
+    the first share whose tag a plain text has, None when it has none;
+    without shares, 0 for every plain text; None for an item; taken,
+    whether a corpus takes it at all, that is, a text of a kind the section
+    names that is a plain text with a pool or a text of one of
+    TRAINING_KINDS (a text of any other kind is no training data)."""
+    if kinds and kind not in kinds:
+        return None, False
+    if kind != PLAIN:
+        return None, kind in TRAINING_KINDS
+    if shares is None:
+        return 0, True
+    held = json.loads(tags or "[]")
+    pool = next((at for at, tag in enumerate(shares) if tag in held), None)
+    return pool, pool is not None
 
 
 _TAGS_TEXT = {}  # a list of tags as a tuple: its JSON text, a few kept
@@ -434,8 +456,8 @@ def entries(listed: Iterable[dict], shares: Sequence[str] | None, kinds: Sequenc
     for one in listed:
         tags = _tags_text(one["tags"])
         pool, taken = pool_of(one["kind"], tags, shares, kinds)
-        yield Entry(one["key"], one["owner"], one["number"], one["id"], one["piece"], one["revision"], one["kind"],
-                    pool, one["bytes"], taken, tags)
+        yield Entry(int(one["key"]), one["owner"], one["number"], one["id"], one["piece"], one["revision"],
+                    one["kind"], pool, one["bytes"], taken, tags, one["name"])
 
 
 def walk(source: str, snapshot: str, shares: Sequence[str] | None, kinds: Sequence[str] | None = None,
@@ -443,6 +465,8 @@ def walk(source: str, snapshot: str, shares: Sequence[str] | None, kinds: Sequen
     """The listing of the snapshot whose id is snapshot of the depot at the
     address source, from the place after on, as entries (Entry); spread:
     only that many places of it, spread evenly (wpt_depot.api.listing)."""
+    if after is not None:
+        after = [str(after[0]), *after[1:]]
     return entries(api.listing(source, snapshot, after, spread), shares, kinds)
 
 
@@ -598,24 +622,35 @@ def _tokenized(batch: list[tuple]) -> list[tuple]:
     order; a piece (its number, None for a whole text) read and encoded
     alone (wpt_depot.pieces). The depot is read through wpt_depot.api."""
     tokenizer = _HELD["tokenizer"]
+    asked = [(address, text, revision, piece) for address, text, revision, _, read, piece in batch if read]
+    read_ones = _read(asked)
     found = []
-    for address, text, revision, kind, read, piece in batch:
+    for _, _, _, kind, read, _ in batch:
         if not read:
             found.append((None, None))
             continue
-        [row] = api.credits(address, [(text, revision)])
+        row, value = next(read_ones)
         if kind == PLAIN:
             encoder = _Encoder(tokenizer)
-            for value in api.content(address, text, revision, piece):
-                encoder.feed(value)
+            encoder.feed(value)
             data = np.concatenate([encoder.finish(), np.array([END], np.uint32)])
         elif kind == "conversation":
-            data = np.asarray(chat.encode(tokenizer, json.loads(b"".join(api.content(address, text, revision))))[0],
-                              np.uint32)
+            data = np.asarray(chat.encode(tokenizer, json.loads(value))[0], np.uint32)
         else:
-            data = b"".join(api.content(address, text, revision))
-        found.append(({key: row[key] for key in CREDITS}, data))
+            data = value
+        found.append((row, data))
     return found
+
+
+def _read(asked: list[tuple]) -> Iterator[tuple[dict, bytes]]:
+    """For each (its depot's address, id, revision, piece) of asked, in
+    order: (its credits, wpt_depot.api.credits; its content as UTF-8
+    bytes, wpt_depot.api.contents), each depot asked once for the credits
+    and once for the contents of a run of entries of the same address."""
+    for address, run in itertools.groupby(asked, key=lambda one: one[0]):
+        run = [one[1:] for one in run]
+        rows = api.credits(address, [(text, revision) for text, revision, _ in run])
+        yield from zip(rows, api.contents(address, run))
 
 
 def _conversations(batch: list[tuple]) -> list[tuple]:
@@ -623,12 +658,10 @@ def _conversations(batch: list[tuple]) -> list[tuple]:
     (its credits row, its tokens of the chat template, its excerpts as
     (the quoted text's id, the selector), in order), in order."""
     found = []
-    for address, text, revision in batch:
-        [row] = api.credits(address, [(text, revision)])
-        conversation = json.loads(b"".join(api.content(address, text, revision)))
+    for row, value in _read([(address, text, revision, None) for address, text, revision in batch]):
+        conversation = json.loads(value)
         data = np.asarray(chat.encode(_HELD["tokenizer"], conversation)[0], np.uint32)
-        found.append(({key: row[key] for key in CREDITS}, data,
-                      [(block["source"], block["selector"]) for block in quotes.excerpts(conversation)]))
+        found.append((row, data, [(block["source"], block["selector"]) for block in quotes.excerpts(conversation)]))
     return found
 
 
@@ -656,8 +689,9 @@ def _counted(batch: list[tuple]) -> list[int]:
     chat template, a task's tokens of its content as JSON text (task_text)."""
     tokenizer = _HELD["tokenizer"]
     found = []
-    for address, text, revision, kind in batch:
-        content = json.loads(b"".join(api.content(address, text, revision)))
+    for (*_, kind), (_, value) in zip(batch, _read([(address, text, revision, None)
+                                                     for address, text, revision, _ in batch])):
+        content = json.loads(value)
         if kind == "conversation":
             found.append(len(chat.encode(tokenizer, content)[0]))
         else:
@@ -762,7 +796,7 @@ class _Build:
         self.walked = size["entries"]  # what the walk gives, a piece counting once
         if size["long_texts"]:
             self.log(f"{size['long_texts']:,} plain texts of snapshot {self.snapshot['name']} are longer than "
-                     f"{pieces.LENGTH:,} characters: each comes as its pieces, {size['pieces']:,} in all")
+                     f"{size['piece_characters']:,} characters: each comes as its pieces, {size['pieces']:,} in all")
         self.work.mkdir(parents=True, exist_ok=True)
         named = apsw.Connection(str(self.work / "named.sqlite"))
         try:
@@ -983,8 +1017,7 @@ class _Build:
                         if limit is None:  # with a limit, the items' tokens were counted already (_limit_items)
                             state["items_tokens"] += task_tokens(self.tokenizer, content)
                     else:
-                        document = entry.id if entry.piece is None else pieces.name(entry.id, entry.piece)
-                        start = writers[PLAIN].add(data, source_name, document, pool_tag)
+                        start = writers[PLAIN].add(data, source_name, entry.name, pool_tag)
                         state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + len(data)
                         if shares is not None:
                             held = named_groups.get((pool_tag, entry.tags))
@@ -1341,7 +1374,7 @@ class _Build:
         of those not in before that reached a text the corpus holds)."""
         now = _erasures(self.source, self.snapshot["id"])
         new = set(now) - set(before)
-        hit = [one["id"] for one in api.erasures(self.source) if one["id"] in new
+        hit = [one["id"] for one in api.erasures(self.source)["erasures"] if one["id"] in new
                and corpora.holds(self.store, record, set(one["texts"]))]
         return now, sorted(hit)
 
