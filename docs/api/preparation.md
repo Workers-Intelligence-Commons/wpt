@@ -41,9 +41,9 @@ written as the passage it quotes.
 
 | Message | Meaning |
 | --- | --- |
-| `{"type": "ready", "name": "...", "version": "...", "unit": "tokens", "kinds": [...], "weighs": true, "on_erasure": "stale"}` | the answer to `start`; `version` changes whenever the same messages give other files or weights, and the delivery key covers it; `kinds`: the kinds it prepares; `weighs`: whether it answers `weigh`; `on_erasure`, optional: what an erasure that reaches one of the delivery's items does, `stale` (the default) or `note` (the erasure written into the delivery note, which stays fresh; [freight.md](freight.md), "Erasures") |
+| `{"type": "ready", "name": "...", "version": "...", "unit": "tokens", "kinds": [...], "weighs": true, "on_erasure": "stale"}` | the answer to `start`; `version` changes whenever the same messages give other files or weights, and the delivery key covers it; `unit`: what its weights count, `null` for a program that gives none; `kinds`: the kinds it prepares; `weighs`: whether it answers `weigh`, which needs a unit; `on_erasure`, optional: what an erasure that reaches one of the delivery's items does, `stale` (the default) or `note` (the erasure written into the delivery note, which stays fresh; [freight.md](freight.md), "Erasures") |
 | `{"type": "weight", "ref": R, "weight": N}` | the answer to `weigh` |
-| `{"type": "taken", "ref": R, "weight": N, "at": {...}}` | the answer to `take`, in the order of the `take` messages; `at`: where the item lies in the files, each field a whole number copied into its row of the items table |
+| `{"type": "taken", "ref": R, "weight": N, "at": {...}}` | the answer to `take`, in the order of the `take` messages; `weight`: a whole number in its unit, absent or `null` for a program with no unit; `at`: where the item lies in the files, each field a whole number copied into its row of the items table, and named as none of the fields the freight gives that row (`depot`, `id`, `revision`, `kind`, `title`, `authors`, `address`, `licenses`, `tags`, `notice`, `scores`, `piece`, `quotes`, `bytes`, `weight`; [freight.md](freight.md), "A delivery on the dock"): such a name fails the job |
 | `{"type": "file", "path": "...", "items": N, "hash": "...", ...}` | a file under `out` is complete; `items`: the items it holds; `hash`, optional: the hash of its content the delivery id covers in place of the file's sha256, for a file whose bytes may differ where its content does not; any other field is the program's own. The delivery note keeps the whole message apart from the file's place on the dock, and the freight sends it back on a resume |
 | `{"type": "log", "level": "...", "text": "..."}` | a line for the job's log; `level` one of `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `{"type": "done", "result": {...}}` | the answer to `end`, after its last `file` |
@@ -94,10 +94,12 @@ texts), and does not put several items in one message.
 
 `wpt-vocabulary` learns a vocabulary. Its one setting, `vocab_size`, is
 the size of the vocabulary, at least 513. It prepares plain texts only and
-takes no input. It weighs nothing (`weighs: false`): its sample is a size
-in bytes, which the freight measures itself
-([freight.md](freight.md), "A request"). Its unit is `bytes`, and each
-`taken` answers the item's UTF-8 bytes as its weight, with no `at`.
+takes no input. It has no unit and weighs nothing (`unit: null`,
+`weighs: false`): its sample is a size in bytes, which the freight
+measures itself on the bytes its listing gives each text
+([freight.md](freight.md), "A request"). Each `taken` carries no weight
+and no `at`, so the delivery's shares count their texts' `bytes` and
+their `weight` is `null`.
 
 - The texts go to the tokenizer's training as they come, read once in the
   order sent, as `wpt_tokenizer.Tokenizer.train` reads a stream, so the

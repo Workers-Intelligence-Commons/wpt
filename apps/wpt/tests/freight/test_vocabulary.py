@@ -3,7 +3,9 @@ it from a sample given in bytes: each share holds its proportion of the
 sample's bytes within a thousandth, by group; the vocabulary is the one the
 tokenizer learns from the items in the order the delivery lists them; the
 same request gives the same vocabulary again; and without shares the
-sample takes the texts the depot's sample takes (wpt_depot.corpus.sample)."""
+sample takes the plain texts of the listing in order, each that fits what
+is left of the size, until a thousandth of it is left or a thousand texts
+in a row did not fit (docs/data-selection.md, "Filling a part")."""
 
 import hashlib
 import json
@@ -13,7 +15,6 @@ import pytest
 from freight import api
 from wpt_depot import NewText
 from wpt_depot import api as depot_api
-from wpt_depot.corpus import sample
 from wpt_store import open_store
 from wpt_store.names import File
 from wpt_tokenizer import Tokenizer
@@ -79,15 +80,17 @@ def test_each_share_holds_its_proportion_of_the_samples_bytes_and_the_same_reque
         held[next(tag for tag in tags if tag in row["tags"])] += row["bytes"]
     for tag, share in SHARES:
         assert abs(held[tag] / SAMPLE - share) <= 0.001, (tag, held[tag])
+    assert [one["bytes"] for one in note["shares"]] == [held[tag] for tag in tags]
     groups = {one["tag"]: one for one in note["shares"][0]["groups"]}
     assert set(groups) == {None, "fable", "news"} and all(one["texts"] for one in groups.values())
-    assert note["on_erasure"] == "note" and note["preparation"]["unit"] == "bytes"
+    assert sum(one["bytes"] for one in groups.values()) == held["en"]  # each English text is in one group here
+    assert note["on_erasure"] == "note" and note["preparation"]["unit"] is None
+    assert {row["weight"] for row in rows} == {None} and {one["weight"] for one in note["shares"]} == {None}
 
     # the vocabulary the tokenizer learns from the items, read once in the order the delivery lists them
     data = vocabulary_of(tmp_path / "a", note)
     contents = list(depot_api.contents(built.depot.address,
                                        [(row["id"], row["revision"], row["piece"]) for row in rows]))
-    assert [row["weight"] for row in rows] == [len(one) for one in contents]
     assert Tokenizer.train(contents, VOCAB_SIZE).to_bytes() == data
     assert note["result"] == {"sha256": hashlib.sha256(data).hexdigest(), "size": Tokenizer.from_bytes(data).vocab_size,
                               "tokenizer_version": json.loads(data)["tokenizer_version"]}
@@ -98,13 +101,24 @@ def test_each_share_holds_its_proportion_of_the_samples_bytes_and_the_same_reque
     assert vocabulary_of(tmp_path / "b", again) == data
 
 
-def test_without_shares_the_sample_takes_the_texts_the_depots_sample_takes(built, tmp_path):
+def test_without_shares_the_sample_takes_the_first_plain_texts_of_the_listing_that_fit(built, tmp_path):
     built.snapshot("v", texts())
-    snapshot = built.depot.snapshot("v")["id"]
-    note = asked(built, tmp_path, request(built, "v", [], size=SAMPLE // 3))
+    size = SAMPLE // 3
+    note = asked(built, tmp_path, request(built, "v", [], size=size))
     rows = api.items(note["key"], dock=(tmp_path / "dock").as_uri())
-    assert [row["id"] for row in rows] == [text for _, text, _ in sample(built.depot, snapshot, SAMPLE // 3)]
-    assert SAMPLE // 3 * 0.999 <= sum(row["bytes"] for row in rows) <= SAMPLE // 3
+    expected, used, missed = [], 0, 0
+    for entry in depot_api.listing(built.depot.address, built.depot.snapshot("v")["id"]):
+        if size - used <= size // 1000 or missed >= 1000:
+            break
+        if entry["kind"] != "plain":
+            continue
+        if used + entry["bytes"] > size:
+            missed += 1
+            continue
+        expected.append((entry["id"], entry["piece"]))
+        used, missed = used + entry["bytes"], 0
+    assert [(row["id"], row["piece"]) for row in rows] == expected
+    assert size * 0.999 <= sum(row["bytes"] for row in rows) <= size
 
 
 @pytest.mark.parametrize("settings, why", [({}, "vocab_size"), ({"vocab_size": 600, "merges": 3}, "no setting merges")])

@@ -3,12 +3,16 @@ goes on from its checkpoint to the delivery a job that never stopped
 makes; the note keeps the program's file messages apart from the dock's
 references; an erasure makes a delivery stale or is noted in it, as its
 program says; the dock's cap never deletes what nothing can make
-again or what another delivery needs; and a size in bytes is measured by
-the freight, whatever the program's unit."""
+again or what another delivery needs; a size in bytes is measured by
+the freight, whatever the program's unit; the rows of a part wait in local
+files past a bound in memory and give the same part; and a program's `at`
+cannot take the name of a field the freight fills."""
 
 import pytest
 
 from freight import api, deliveries
+from freight import job
+from freight.exchange import PreparationFailed
 from freight.job import Job
 from wpt_store import open_store
 from wpt_store.names import File
@@ -115,3 +119,24 @@ def test_a_size_in_bytes_is_the_freights_own_measure_whatever_the_programs_unit(
     assert rows == items(freight.store, weighed) and [row["bytes"] for row in rows] == [row["weight"] for row in rows]
     assert [share["tag"] for share in measured["shares"]] == ["en", "de"]
     assert all(0 < share["weight"] <= part for share, part in zip(measured["shares"], (1050, 450)))  # 0.7, 0.3 of 1,500
+    assert [share["bytes"] for share in measured["shares"]] == [
+        sum(row["bytes"] for row in rows if "en" in row["tags"]), sum(row["bytes"] for row in rows if "de" in row["tags"])]
+
+
+def test_the_rows_of_a_part_held_in_local_files_past_the_bound_give_the_same_part(freight, monkeypatch):
+    request = freight.request(per_file=100)  # one file, so one part of every row
+    held = Job(request, freight.depot.address, freight.store, freight.tmp_path / "a").run()
+    monkeypatch.setattr(job, "SPILL_ROWS", 2)
+    dock = open_store((freight.tmp_path / "spilled").as_uri())
+    spilled = Job(request, freight.depot.address, dock, freight.tmp_path / "b").run()
+    assert len(held["tables"]["items"]) == 1 and held["tables"]["items"][0]["rows"] > 2
+    assert (spilled["key"], spilled["id"], spilled["tables"]["items"][0]["fingerprint"]) == (
+        held["key"], held["id"], held["tables"]["items"][0]["fingerprint"])
+    assert items(dock, spilled) == items(freight.store, held)
+    assert not list((freight.tmp_path / "b").glob("items-spill-*"))
+
+
+@pytest.mark.parametrize("name", ["bytes", "weight", "id"])
+def test_an_at_field_named_as_a_field_the_freight_fills_fails_the_job(freight, name):
+    with pytest.raises(PreparationFailed, match=f"at fields {name}"):
+        Job(freight.request(at_name=name), freight.depot.address, freight.store, freight.tmp_path / "work").run()

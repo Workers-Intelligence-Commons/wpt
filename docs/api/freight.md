@@ -175,7 +175,7 @@ The delivery note holds:
 | `files` | each file the program said: `path` (under `files/`), its `key`, `sha256` and `bytes` on the dock, and `said`, its `file` message as the program sent it |
 | `tables` | the items parts (`rows`, `text_bytes`, `fingerprint` each), `licenses`, `notices` |
 | `items` | `texts`, `pieces`, and the items taken by kind |
-| `shares` | for each share, its `tag`, its `weight` and its groups (`tag`, `texts`, `weight`); `null` without shares |
+| `shares` | for each share, its `tag`, its `weight` in the preparation's unit (`null` for a preparation with none), its `bytes` (what the listing gives the texts taken, which a size in bytes counts) and its groups (`tag`, `texts`, `weight`, `bytes`); `null` without shares |
 | `left_out` | what was left out and why, as a corpus record counts it |
 | `erasures` | the erasures that had reached the snapshot |
 | `on_erasure` | what an erasure that reaches one of its items does: `stale`, or `note` (the program's `ready` says which) |
@@ -187,8 +187,12 @@ The items tables are the texts table of a corpus (`depot`, `id`,
 `revision`, `kind`, `title`, `authors`, `address`, `licenses`, `tags`,
 `notice`, `scores`, `piece`, `quotes`), then `bytes`, what the listing
 gives the item and a size in bytes counts, the fields of its `at`, and its
-`weight` in the preparation's unit. They are how an
-erasure finds the deliveries that hold a text.
+`weight` in the preparation's unit (`null` for a preparation with none).
+They are how an erasure finds the deliveries that hold a text. A job holds
+a bounded number of the rows of the part it is making in memory and the
+others in local files of its work folder until it writes the part
+(`freight.job.SPILL_ROWS`), so a job whose preparation says its files late
+does not hold every row in memory.
 
 With a cap, a job that would pass it alone is refused before its first
 upload. Otherwise it makes room as it uploads, deleting a file at a time:

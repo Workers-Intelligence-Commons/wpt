@@ -63,14 +63,19 @@ version, unit, settings, inputs}, result (what the program answered),
 files (each {path, key, sha256, bytes} and said, its file message),
 tables {items: [parts], licenses, notices}, items {texts (a text taken as
 pieces counting once), pieces, kinds: {kind: items taken}}, shares (with
-shares: [{tag, weight, groups: [{tag, texts, weight}]}]; a text counts for
-each of its groups, a text with no other tag for the group null), left_out,
+shares: [{tag, weight, bytes, groups: [{tag, texts, weight, bytes}]}], weight
+in the program's unit, null when it has none, bytes those the listing gives
+the texts taken; a text counts for each of its groups, a text with no other
+tag for the group null), left_out,
 erasures (those the depot had carried out that reached a text of the
 snapshot), on_erasure, made_at, code_commit, rules}. Each row of the items table is a
 text taken, with its revision, its credits, its tags as of the snapshot,
 its scores, `piece` (null for a whole text), `quotes` (a conversation's
 quoted texts), `bytes` (what the listing gives it, which a size in bytes
-counts), the fields of its `at`, and its `weight`.
+counts), the fields of its `at` (which take none of those names), and its
+`weight` (null for a program with no unit). A part's rows wait in memory
+SPILL_ROWS at a time, the others in local files, until the part is
+written.
 
 An erasure carried out while the job ran is checked before the note is
 written and again after: when it reached an item taken, the note is
@@ -80,6 +85,7 @@ written stale, or with the erasure in it when the program answered
     Job(request, source, dock, work, ...).run()   the delivery note
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -105,6 +111,7 @@ HELD_PAGE = 1000  # conversations the job takes from its work folder at a time o
 LEFT_OUT, UNMATCHED = "quoted text left out", "quote unmatched"  # why a conversation is left out
 BATCH_BYTES = 8 << 20  # bytes of texts read and sent to the program at a time
 BATCH_TEXTS = 4096  # texts one batch holds at most
+SPILL_ROWS = 16384  # items rows held in memory at most: more go to a local file until the next part is written
 SHARE = 0.75  # the share of the cores the program may use
 NAMES = pa.list_(pa.string())
 SCORES = pa.list_(pa.struct([("name", pa.string()), ("value", pa.float64()), ("content_version", pa.int64())]))
@@ -114,6 +121,7 @@ ITEM_FIELDS = [pa.field("depot", pa.string(), False), pa.field("id", pa.string()
                pa.field("licenses", NAMES, False), pa.field("tags", NAMES, False), pa.field("notice", pa.string()),
                pa.field("scores", SCORES), pa.field("piece", pa.int64()), pa.field("quotes", NAMES),
                pa.field("bytes", pa.int64(), False)]
+RESERVED = frozenset({field.name for field in ITEM_FIELDS} | {"weight"})  # names an `at` field cannot take
 TABLES = {"licenses": pa.schema([pa.field("id", pa.string(), False), pa.field("name", pa.string(), False),
                                  pa.field("text", pa.string(), False)]),
           "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)])}
@@ -221,6 +229,8 @@ class Job:
         if size is not None and not self.by_bytes and size["unit"] != self.unit:
             raise Refused(f"the size is in {size['unit']}, and {name} weighs in {self.unit or 'nothing'}: give it "
                           f"in {self.unit or BYTES}" + (f" or in {BYTES}" if self.unit else ""))
+        if ready.get("weighs") and self.unit is None:
+            raise PreparationFailed(f"{name} says it weighs, and names no unit")
         if size is not None and not self.by_bytes and not ready.get("weighs"):
             raise Refused(f"{name} weighs nothing, so a size in {size['unit']} cannot be met")
         self.shares = self.selection["shares"] or None
@@ -246,7 +256,8 @@ class Job:
 
     def _fresh_state(self) -> dict:
         return {"key": self.key, "erasures": self.erasures, "after": None, "walked": 0, "limited": None,
-                "files": [], "said": [], "parts": [], "ref": 0, "last_ref": None, "pools": {}, "fill": None,
+                "files": [], "said": [], "parts": [], "ref": 0, "last_ref": None, "pools": {}, "pool_bytes": {},
+                "fill": None,
                 "taken": 0, "whole": 0, "pieces": 0, "kinds": {}, "plan": None, "seen": 0, "covered": {},
                 "groups": {}, "resolved": 0, "unquoted": {LEFT_OUT: 0, UNMATCHED: 0},
                 "read": {"plain": 0, "items": 0}, "result": None}
@@ -304,10 +315,10 @@ class Job:
                                                      if pool not in chosen.last}, state["fill"])
             self.fill = fill
             tags = [""] if shares is None else [one["tag"] for one in shares]
-            self.group_counts = {share: {tag: [texts, weight] for tag, texts, weight in found}
+            self.group_counts = {share: {tag: [texts, weight, size] for tag, texts, weight, size in found}
                                  for share, found in state["groups"].items()}
             self.named_groups = {}
-            self.rows, self.named, self.row_bytes = [], set(), 0
+            self.rows, self.named = _Rows(self.work), set()
             self.held_rows, self.taken_rows = [], []
             self.keep_taken = CONVERSATION in items_of(self.prepared, self.kinds) and self.census["items"] > 0
             self.named_file = named_file
@@ -429,10 +440,22 @@ class Job:
         answer = self.program.taken()
         if self.program.files:  # said before this answer: they hold the items answered before it
             self._checkpoint(before=answer)
+        name = self.preparation["name"]
         if answer["ref"] != ref:
-            raise PreparationFailed(f"{self.preparation['name']} answered the take of {answer['ref']} where "
-                                    f"{ref} was due")
-        return answer
+            raise PreparationFailed(f"{name} answered the take of {answer['ref']} where {ref} was due")
+        weight, at = answer.get("weight"), answer.get("at") or {}
+        if self.unit is None and weight is not None:
+            raise PreparationFailed(f"{name} has no unit and answered the take of {ref} with a weight")
+        if self.unit is not None and (not isinstance(weight, int) or isinstance(weight, bool) or weight < 0):
+            raise PreparationFailed(f"{name} answered the take of {ref} with the weight {weight!r}, not a whole "
+                                    "number of at least 0")
+        if not isinstance(at, dict) or any(not isinstance(value, int) or isinstance(value, bool)
+                                           for value in at.values()):
+            raise PreparationFailed(f"{name} answered the take of {ref} with at {at!r}: each field is a whole number")
+        if clash := sorted(set(at) & RESERVED):
+            raise PreparationFailed(f"{name} answered the take of {ref} with the at fields {', '.join(clash)}, "
+                                    "names the freight gives a row of the items table")
+        return {**answer, "weight": weight, "at": at}
 
     def _took(self, entry, answer: dict, credit: dict, tags: list[str], quotes: list[str] | None = None):
         """Count one item taken and add its row."""
@@ -440,7 +463,8 @@ class Job:
         weight = answer["weight"]
         pool_tag = tags[entry.pool] if entry.kind == PLAIN else ""
         if entry.kind == PLAIN:
-            state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + weight
+            state["pools"][pool_tag] = state["pools"].get(pool_tag, 0) + (weight or 0)
+            state["pool_bytes"][pool_tag] = state["pool_bytes"].get(pool_tag, 0) + entry.bytes
             if self.shares is not None:
                 held = self.named_groups.get((pool_tag, entry.tags))
                 if held is None:
@@ -449,9 +473,10 @@ class Job:
                     held = self.named_groups[pool_tag, entry.tags] = groups.groups_of(entry.tags, pool_tag)
                 into = self.group_counts.setdefault(pool_tag, {})
                 for tag in held:
-                    counted_so = into.setdefault(tag, [0, 0])
+                    counted_so = into.setdefault(tag, [0, 0, 0])
                     counted_so[0] += 1
-                    counted_so[1] += weight
+                    counted_so[1] += weight or 0
+                    counted_so[2] += entry.bytes
             if entry.piece is None:
                 state["whole"] += 1
             else:
@@ -463,12 +488,11 @@ class Job:
         state["taken"] += 1
         state["last_ref"] = answer["ref"]
         row = {"depot": self.holder, "id": entry.id, "revision": entry.revision, **credit,
-               "tags": json.loads(entry.tags), "piece": entry.piece, "bytes": entry.bytes, **(answer.get("at") or {}),
+               "tags": json.loads(entry.tags), "piece": entry.piece, "bytes": entry.bytes, **answer["at"],
                "weight": weight}
         if quotes is not None:
             row["quotes"] = quotes
-        self.rows.append(row)
-        self.row_bytes += entry.bytes
+        self.rows.add(row, entry.bytes)
         state["read"]["plain" if entry.kind == PLAIN else "items"] += entry.bytes
         self.named.update(("license", one) for one in credit["licenses"])
         if credit["notice"] is not None:
@@ -571,15 +595,11 @@ class Job:
         # the program names takes the place of the freight's
         ready = [(self.work / "out" / one["path"], f"{self.folder}/files/{one['path']}", state["files"],
                   {"path": one["path"], "said": one}) for one in said]
-        if self.rows:
+        if self.rows.count:
             number = len(state["parts"])
             path = self.work / f"items-{number:05d}.parquet"
-            at = sorted({name for row in self.rows for name in row} - {field.name for field in ITEM_FIELDS} - {"weight"})
-            pq.write_table(pa.Table.from_pylist(self.rows, schema=items_schema(at)), path, compression="zstd")
             ready.append((path, f"{self.folder}/items/part-{number:05d}.parquet", state["parts"],
-                          {"rows": len(self.rows), "text_bytes": self.row_bytes, "fingerprint": fingerprint(self.rows)}))
-            self.rows = []
-            self.row_bytes = 0
+                          self.rows.write(path)))
         if ready and not (state["files"] or state["parts"]):
             self.room.expect(self._estimate(sum(path.stat().st_size for path, *_ in ready), final))
         for path, key, kept, added in ready:
@@ -752,9 +772,11 @@ class Job:
             "items": {"texts": state["taken"] - state["pieces"] + long_taken, "pieces": state["pieces"],
                       "kinds": dict(sorted(state["kinds"].items()))},
             "shares": None if self.shares is None else [
-                {"tag": share["tag"], "weight": state["pools"].get(share["tag"], 0),
-                 "groups": [{"tag": tag, "texts": texts, "weight": weight} for tag, texts, weight in sorted(
-                     state["groups"].get(share["tag"], []), key=lambda one: (one[0] is not None, one[0] or ""))]}
+                {"tag": share["tag"], "weight": self._weight(state["pools"].get(share["tag"], 0)),
+                 "bytes": state["pool_bytes"].get(share["tag"], 0),
+                 "groups": [{"tag": tag, "texts": texts, "weight": self._weight(weight), "bytes": size}
+                            for tag, texts, weight, size in sorted(state["groups"].get(share["tag"], []),
+                                                                   key=lambda one: (one[0] is not None, one[0] or ""))]}
                 for share in self.shares],
             "left_out": left_out, "erasures": self.erasures, "on_erasure": self.on_erasure,
             "made_at": datetime.now(UTC).isoformat(),
@@ -783,6 +805,10 @@ class Job:
                      "carried out while it was made, reached an item it holds; run the request again")
         return note
 
+    def _weight(self, weight: int) -> int | None:
+        """A weight of the note: None for a preparation that has no unit."""
+        return None if self.unit is None else weight
+
     def _drop_replaced(self, note: dict):
         """Delete the files of the note this job replaced (a stale or deleted one) that the new one does not name."""
         if self.replaced is None:
@@ -808,6 +834,63 @@ class Job:
         hit = [one["id"] for one in api.erasures(self.source)["erasures"] if one["id"] in new
                and deliveries.holds(self.dock, note, set(one["texts"]))]
         return now, sorted(hit)
+
+
+class _Rows:
+    """The items rows of the part being made, in order: at most SPILL_ROWS
+    of them in memory, the others in local files of the work folder
+    (items-spill-NNNNN.parquet) until write. Those a former run left are
+    deleted: a job goes on from the items its last part holds. The part's
+    fingerprint is freight.selection.fingerprint of its rows, worked out as
+    they come."""
+
+    def __init__(self, work: Path):
+        self.work = work
+        for old in work.glob("items-spill-*.parquet"):
+            old.unlink()
+        self._reset()
+
+    def _reset(self):
+        self.held, self.spilled, self.at = [], [], set()
+        self.count, self.text_bytes, self.hash = 0, 0, hashlib.sha256(b"[")
+
+    def add(self, row: dict, text_bytes: int):
+        """Add a row, of an item of text_bytes bytes."""
+        self.hash.update((b"," if self.count else b"") + _canonical(row))
+        self.count += 1
+        self.text_bytes += text_bytes
+        self.at.update(set(row) - RESERVED)
+        self.held.append(row)
+        if len(self.held) >= SPILL_ROWS:
+            path = self.work / f"items-spill-{len(self.spilled):05d}.parquet"
+            pq.write_table(pa.Table.from_pylist(self.held, schema=items_schema(sorted(self.at))), path,
+                           compression="zstd")
+            self.spilled.append(path)
+            self.held = []
+
+    def write(self, path: Path) -> dict:
+        """Write every row added since the last write into the parquet file
+        path, one schema for all (the `at` fields of every row, null where a
+        row has none): {rows, text_bytes, fingerprint}."""
+        schema = items_schema(sorted(self.at))
+        with pq.ParquetWriter(path, schema, compression="zstd") as writer:
+            for spill in self.spilled:
+                table = pq.read_table(spill)
+                writer.write_table(pa.Table.from_arrays(
+                    [table.column(field.name) if field.name in table.column_names
+                     else pa.nulls(table.num_rows, field.type) for field in schema], schema=schema))
+                spill.unlink()
+            if self.held:
+                writer.write_table(pa.Table.from_pylist(self.held, schema=schema))
+        self.hash.update(b"]")
+        written = {"rows": self.count, "text_bytes": self.text_bytes, "fingerprint": self.hash.hexdigest()}
+        self._reset()
+        return written
+
+
+def _canonical(value) -> bytes:
+    """value as the canonical JSON freight.selection.fingerprint hashes."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
 
 
 class _Held:

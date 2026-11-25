@@ -121,10 +121,21 @@ def same(built, record: dict, note: dict):
     assert (note["items"]["texts"], note["items"]["pieces"], note["items"]["kinds"].get("conversation", 0)) == (
         record["texts"], record["pieces"], record["conversations"])
     assert note["left_out"] == record["left_out"]
-    assert note["shares"] == (None if record["shares_tokens"] is None else [
-        {"tag": one["tag"], "weight": one["tokens"],
-         "groups": [{"tag": group["tag"], "texts": group["texts"], "weight": group["tokens"]}
-                    for group in one["groups"]]} for one in record["shares_tokens"]])
+    # the shares' weights, with the bytes the freight counted beside them
+    assert (None if note["shares"] is None else [
+        {"tag": one["tag"], "weight": one["weight"],
+         "groups": [{"tag": group["tag"], "texts": group["texts"], "weight": group["weight"]}
+                    for group in one["groups"]]} for one in note["shares"]]) == (
+        None if record["shares_tokens"] is None else [
+            {"tag": one["tag"], "weight": one["tokens"],
+             "groups": [{"tag": group["tag"], "texts": group["texts"], "weight": group["tokens"]}
+                        for group in one["groups"]]} for one in record["shares_tokens"]])
+    if note["shares"] is not None:  # a plain text counts for the first share whose tag it has
+        tags = [one["tag"] for one in note["shares"]]
+        pools = [next(tag for tag in tags if tag in row["tags"]) for row in rows if row["kind"] == "plain"]
+        sizes = [row["bytes"] for row in rows if row["kind"] == "plain"]
+        assert [one["bytes"] for one in note["shares"]] == [
+            sum(size for pool, size in zip(pools, sizes) if pool == tag) for tag in tags]
     assert sum(row["weight"] for row in rows) == result["total_tokens"] + result["items_tokens"]
 
 

@@ -3,11 +3,11 @@ vocabulary (docs/api/preparation.md): it reads the freight's messages on
 its standard input and answers on its standard output.
 
 Its one setting, vocab_size, is the size of the vocabulary it learns. It
-prepares plain texts only and weighs nothing: a vocabulary's sample is a
-size in bytes, which the freight measures itself. Each text or piece it
-takes goes to the tokenizer's training as it comes (wpt_tokenizer.Tokenizer.train,
-which reads its documents once, as a stream, in the order sent), and is
-answered at once with its weight, its UTF-8 bytes. At the end it writes
+prepares plain texts only, has no unit and weighs nothing: a vocabulary's
+sample is a size in bytes, which the freight measures itself. Each text or
+piece it takes goes to the tokenizer's training as it comes
+(wpt_tokenizer.Tokenizer.train, which reads its documents once, as a
+stream, in the order sent), and is answered at once, with no weight. At the end it writes
 vocabulary.json, the canonical vocabulary file, and answers {sha256, size,
 tokenizer_version}. The same texts in the same order give the same file.
 
@@ -55,9 +55,9 @@ def run(stdin, stdout) -> int:
             return 0
         start, _ = first
         vocab_size, folder = _start(start)
-        send({"type": "ready", "name": NAME, "version": VERSION, "unit": "bytes", "kinds": [PLAIN],
+        send({"type": "ready", "name": NAME, "version": VERSION, "unit": None, "kinds": [PLAIN],
               "weighs": False, "on_erasure": "note"})
-        read = {"texts": 0, "bytes": 0, "ended": False}
+        read = {"texts": 0, "ended": False}
 
         def documents():
             while (found := channel.read(stdin, channel.CONTENT)) is not None:
@@ -69,9 +69,8 @@ def run(stdin, stdout) -> int:
                     raise Failed(f"{NAME} weighs nothing and answers no {message['type']} message")
                 if message.get("kind") != PLAIN:
                     raise Failed(f"{NAME} learns from plain texts only, not from an item of kind {message.get('kind')}")
-                send({"type": "taken", "ref": message["ref"], "weight": len(content)})
+                send({"type": "taken", "ref": message["ref"]})
                 read["texts"] += 1
-                read["bytes"] += len(content)
                 yield content
 
         tokenizer = Tokenizer.train(documents(), vocab_size)

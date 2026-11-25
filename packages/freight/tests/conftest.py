@@ -16,7 +16,8 @@ LICENSE = ("MIT", "MIT License", "Copyright (c) 2026 Ada Writer\n\nPermission is
            "any person.\n")
 
 # The program fake: weighs an item by its bytes; writes each item taken as one line of a file part-NNNNN.txt,
-# closing a file once it holds per_file lines (a setting, 3 by default); answers on_erasure as its settings say. Its
+# closing a file once it holds per_file lines (a setting, 3 by default); answers each take with `at` {at_name (a
+# setting, "line" by default): the item's line}; answers on_erasure as its settings say. Its
 # file messages carry `lines` (the lines written so far, which a resume reads back) and fields named as the freight
 # names its own (`bytes`, `key`, `sha256`), which the freight keeps apart from the dock's.
 FAKE = r'''
@@ -41,6 +42,7 @@ def send(message):
 start, _ = read()
 settings = start.get("settings") or {}
 per_file = settings.get("per_file", 3)
+at_name = settings.get("at_name", "line")
 folder = Path(start["out"])
 folder.mkdir(parents=True, exist_ok=True)
 said = (start.get("resume") or {}).get("files") or []
@@ -66,7 +68,7 @@ while (found := read()) is not None:
         send({"type": "weight", "ref": message["ref"], "weight": len(content)})
     elif message["type"] == "take":
         batch.append(f"{message['name']} {message['pool']} ".encode() + content.replace(b"\n", b" ") + b"\n")
-        send({"type": "taken", "ref": message["ref"], "weight": len(content), "at": {"line": lines}})
+        send({"type": "taken", "ref": message["ref"], "weight": len(content), "at": {at_name: lines}})
         lines += 1
         if len(batch) >= per_file:
             close()
