@@ -30,6 +30,12 @@ windows, every process takes every window and trains its slice of each.
 Every eval_every updates, and at the first and last update of each stage,
 the model is evaluated on eval_batches batches of windows of the training
 tokens, at the stage's window length, drawn apart from the training's.
+A stage's evaluation windows are the same at every evaluation, and the
+same for any seed and any step of a recipe: they depend only on the
+training tokens, the window length, the batch size and eval_batches, so
+two runs that read the same tokens through the same stages are measured
+on the same windows. With --stream they are drawn from the shards in use,
+which change as the run goes on.
 """
 
 import hashlib
@@ -152,8 +158,7 @@ class TextWindows(Environment):
     def _passes(self, tokens, step, *seed_parts):
         """This process's passes of one global batch of the current stage."""
         strategy, stage, split = self.data.strategy, self.stage_list[self.index], self.batches[self.index]
-        batch = _windows(self._tokens_at(tokens, step), stage.block_size, stage.batch_size, self.data.seed,
-                         self.data.number, *seed_parts)
+        batch = _windows(self._tokens_at(tokens, step), stage.block_size, stage.batch_size, *seed_parts)
         shared, rank = (1, 0) if strategy.splits_windows else (strategy.world_size, strategy.rank)
         micro, found = split["micro_batch"], []
         for a in range(split["accumulation"]):
@@ -163,16 +168,22 @@ class TextWindows(Environment):
         return found
 
     def batch(self, step, model, strategy):
-        return self._passes(self.train_tokens, step, "train", step)
+        return self._passes(self.train_tokens, step, self.data.seed, self.data.number, "train", step)
 
     def evaluates(self, step, first, last):
         return step % self.settings["eval_every"] == 0 or step in (first, last)
 
+    def evaluation_passes(self, step):
+        """This process's passes of the current stage's evaluation batches:
+        the same windows at every evaluation, for any seed and any step of
+        a recipe."""
+        return [one for i in range(self.settings["eval_batches"])
+                for one in self._passes(self.train_tokens, step, "eval", i)]
+
     @torch.no_grad()
     def evaluate(self, step, method, model, wrapped, strategy, segment):
         losses = [float(windows_in_parts.validation_loss(method, model, wrapped, x, y, strategy, segment))
-                  for i in range(self.settings["eval_batches"])
-                  for x, y in self._passes(self.train_tokens, step, "eval", step, i)]
+                  for x, y in self.evaluation_passes(step)]
         value = strategy.mean(sum(losses) / len(losses))
         return value * (strategy.world_size if strategy.splits_windows else 1)  # split windows: the shares add up
 

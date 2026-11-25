@@ -530,7 +530,10 @@ stage draws batches of its own `batch_size` windows of its own length, so
 a stage puts `batch_size` times `block_size` tokens in each update. A
 stage's `batch_size` is global, over every process together ("The batch is
 the same on any hardware", above), and its evaluations average
-`eval_batches` batches of its own size.
+`eval_batches` batches of its own size. A stage's evaluation windows are
+the same at every evaluation, for any seed and any step of a recipe: two
+runs that read the same training tokens through the same stages are
+measured on the same windows, so their validation losses compare.
 
 Each stage is evaluated at its first and last updates and every
 `eval_every` updates, on windows of its length: a longer window predicts

@@ -203,6 +203,29 @@ def test_two_text_steps_of_one_recipe_draw_other_windows(built):
     assert torch.equal(first_windows(2), first_windows(2))
 
 
+def test_every_run_is_evaluated_on_the_same_windows_whatever_its_seed_step_and_update(built):
+    # the validation losses of two runs compare only on the same windows:
+    # the seed, the step's number and the update change the training's
+    # windows and never the evaluation's
+    record = corpora.find(built.store, built.corpus_id)
+    step = load_step({"step": "read-text", "settings": one_stage(1)}, PARTS)
+    strategy = Strategy(torch.device("cpu"))
+
+    def windows(seed, number, update):
+        data = Data(step.name, built.store, record, None, strategy, Telemetry.off(), lambda _: None, seed, number)
+        environment = step.start_environment(data)
+        try:
+            return (torch.cat([x for x, _ in environment.evaluation_passes(update)]),
+                    torch.cat([x for x, _ in environment.batch(update, None, strategy)]))
+        finally:
+            environment.close()
+
+    (evaluated, trained), (other, other_trained) = windows(1337, 1, 1), windows(2024, 2, 5)
+    assert torch.equal(evaluated, other)
+    assert not torch.equal(trained, other_trained)
+    assert len({tuple(row.tolist()) for row in evaluated}) > 1  # each batch draws its own windows
+
+
 def test_two_identical_steps_of_one_recipe_draw_other_conversations_and_tasks(built, tmp_path):
     # one seed per recipe; each step mixes its number in the list into it, so
     # a second answer-as-assistant or finish-tasks step of the same settings
