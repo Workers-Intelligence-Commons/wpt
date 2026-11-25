@@ -52,7 +52,9 @@ direction for most choices and a value for few.
 - **Loops, if the limit is the number of parameters.** At an equal number
   of parameters a loop gains more the smaller the model; at equal compute
   it loses, and loses more at small budgets
-  ([experts-and-loops.md](experts-and-loops.md)). **published, agreed**
+  ([experts-and-loops.md](experts-and-loops.md)). **published, agreed**.
+  At 45M parameters, 2 loops with a lookup table lower the loss by 0.14
+  for 3 times the compute. **measured here**, one run each
 - **Lookup tables that grow slower than the model.** The gain of a table
   shrinks as the model grows; a table of 13.0M parameters lowers the loss
   of a model of 62M by 0.05, and one 16 times smaller does nothing

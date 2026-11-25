@@ -22,6 +22,12 @@ loops at small sizes, and half against it.
 - A small mixture of experts beats a dense model of equal compute and at
   best ties one of equal parameters, and it needs more training before it
   pays. **published, agreed**
+- At a width of 256 with one shared vocabulary table, adding 2 loops and a
+  lookup table of 13.0M parameters lowers the validation loss by 0.14,
+  from 2.79 to 2.65, on the same 1.18B tokens, for 3 times the compute per
+  token. The model copies from its context less well, 84% of the tokens of
+  a repeated sequence against 95%. The measure does not separate the loops
+  from the table. **measured here**, one run each
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or
@@ -154,7 +160,41 @@ its id, with the subject given here.
 - Whether shared layers with many small experts beat a dense model.
 - Whether the best share of active experts depends on the model's size.
 
+### Measured with WPT
+
+Two models of width 256, 11 layers, 32 routed experts, a vocabulary of
+65,536 and one shared vocabulary table, trained once each on the same
+1.18B tokens with the same stages (windows of 2,048, 8,192 then 32,768
+tokens, 8,990 updates of 131,072 tokens), the same seed and the same
+optimizer, at commit b7dca7b2f7. One has no loop and no Engram memory
+(44.8M parameters, RTX 5080 Laptop GPU). The other runs its layers 3 times
+for each token (2 loops) and has an Engram memory of 13.0M parameters at
+layer 2 (57.7M parameters, RTX 5090).
+
+| | No loop, no table | 2 loops and the table |
+| --- | --- | --- |
+| Validation loss at update 2,400 | 3.51 | 3.41 |
+| Validation loss at update 6,000 | 3.25 | 3.12 |
+| Validation loss at update 8,000 | 2.92 | 2.78 |
+| Validation loss at update 8,990 | 2.79 | 2.65 |
+| Repeated sequence, tokens written | 95% | 84% |
+| Repeated sequence, written whole | 89% | 72% |
+| Stated word, likeliest of four, English and French | 77%, 80% | 76%, 71% |
+| Stated number, likeliest of four, English and French | 92%, 86% | 86%, 76% |
+
+The two models differ by the loops and by the table at once, and by 12.9M
+parameters. With two vocabulary tables and no loop, the same lookup table
+lowered the loss by 0.05 ([lookup-memory.md](lookup-memory.md)); if it
+does the same here, the loops give about 0.09. The copying figures are
+those of the `copying` test of `wpt eval`, on 200 prompts each.
+
 ## Open
+
+- **Loops alone and the table alone on the model with one table**: the
+  measure above gives their sum.
+- **The same loss by a deeper model of equal compute.** A model that runs
+  its layers 3 times costs the compute of one 3 times as deep; the
+  published sources find the deeper one better.
 
 - **The number of experts a small model needs.** A measure trains one shape
   at a width of 256 or 512 with 32, 16 and 8 experts, 4 per token, on the
