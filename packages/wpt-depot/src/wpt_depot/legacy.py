@@ -807,7 +807,7 @@ def sample(legacy: Legacy, name: str, sample_bytes: int) -> Iterator[tuple[str, 
     budget = _proportions(shares, sample_bytes)
     long = _long_texts(libraries)
     chosen = (groups.Plan({}, np.zeros(0, np.int64)) if shares is None
-              else groups.plan(None, tags, budget, walked=_walk(libraries, tags, long)))
+              else groups.plan(_walk(libraries, tags, long), tags, budget))
     picker = chosen.picker()
     fill = Fill({pool: limit for pool, limit in budget.items() if not picker.covers(pool)})
     for entry in _walk(libraries, tags, long):

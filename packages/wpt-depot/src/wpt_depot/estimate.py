@@ -67,7 +67,8 @@ so when the sample holds one that quotes.
 
 So what the estimate reads does not grow with the snapshot: its summary,
 POINTS texts, the whole order of a snapshot of at most FOLLOWED texts, and
-the quoted texts of the sampled conversations.
+the quoted texts of the sampled conversations. It reads the depot only
+through wpt_depot.api.
 
     estimate(depot, snapshot, data, tokenizer, workers)   the estimate, as a dict
 """
@@ -82,13 +83,12 @@ import pyarrow.parquet as pq
 from wpt_store.shards import SCHEMA as SHARD_SCHEMA
 from wpt_tokenizer import END, Tokenizer, chat
 
-from . import ids, order, snapshots
-from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, Fill, _proportions, _tags, build_key, canonical, census,
-                     scarcest_trim, task_text)
+from . import api
+from .corpus import (CORPUS_SCHEMAS, CREDITS, IN_PROCESS, Fill, _proportions, _tags, _tags_text, build_key, canonical,
+                     census, entries, scarcest_trim, task_text, walk)
 from .depot import Depot
 from .kinds import PLAIN
-from .order import AT_BOUND, pool_of, walk
-from .parts import scan
+from .order import pool_of
 
 POINTS = 1024  # texts sampled from the snapshot, at most
 SAMPLE_BYTES = 4 << 20  # bytes of texts the sample tokenizes, at most
@@ -117,38 +117,37 @@ def estimate(depot: Depot, snapshot: str, data: dict, tokenizer: Tokenizer, work
     workers, sample: {texts, tokenized, bytes, seconds}, warnings}.
     Refused for a data section that cannot be built; NotFound without such
     a snapshot."""
-    row = snapshots.snapshot_by_id(depot, snapshot)
+    source = depot.address
+    row = api.snapshot(source, snapshot)
     wanted = canonical(data)
     shares, kinds, max_tokens = wanted["shares"] or None, wanted["kinds"] or None, wanted["total_tokens"]
     tags = _tags(shares)
     pools = [0] if shares is None else list(range(len(shares)))
     counted = census(row["summary"], shares, kinds)
     if row["texts"] <= FOLLOWED:
-        whole = order.of(depot, snapshot)
-        sample_order = whole.subset(whole.spread(POINTS))
-        followed = _followed(whole, tags, kinds)
+        followed = _followed(walk(source, snapshot, tags, kinds))
+        sample_entries = walk(source, snapshot, tags, kinds, spread=POINTS)
     else:
-        sample_order, followed = order.sampled(depot, snapshot, POINTS), None
-    parts = snapshots.sets(depot, snapshot)
+        sample_entries, followed = entries(api.sampled(source, snapshot, POINTS), tags, kinds), None
     sampled = []  # (id, revision, kind, pool, bytes)
     items_seen = {"texts": 0, "bytes": 0, "kept_texts": 0, "kept_bytes": 0}
     quoting = 0  # the sampled conversations that quote texts the snapshot holds, which a size may still leave out
-    for entry in walk(sample_order, tags, kinds):
+    for entry in sample_entries:
         if not entry.taken:
             continue
         if entry.kind != PLAIN:
             items_seen["texts"] += 1
             items_seen["bytes"] += entry.bytes
             if entry.kind == "conversation":
-                quoted = _quoted(depot, entry.id, entry.revision)
-                if not all(_held(depot, parts, one, tags, kinds) for one in quoted):
+                quoted = api.quoted(source, entry.id, entry.revision)
+                if not all(_held(source, snapshot, one, tags, kinds) for one in quoted):
                     continue
                 quoting += bool(quoted)
             items_seen["kept_texts"] += 1
             items_seen["kept_bytes"] += entry.bytes
         sampled.append((entry.id, entry.revision, entry.kind, entry.pool, entry.bytes))
 
-    measured = _tokenize(depot, sampled, tokenizer)
+    measured = _tokenize(source, sampled, tokenizer)
     plain_rate = measured["plain_tokens"] / measured["plain_bytes"] if measured["plain_bytes"] else 0.0
     item_rate = measured["item_tokens"] / measured["item_bytes"] if measured["item_bytes"] else plain_rate
     plain_rate = plain_rate or item_rate
@@ -241,12 +240,11 @@ def _sha256(tokenizer: Tokenizer) -> str:
     return hashlib.sha256(tokenizer.to_bytes()).hexdigest()
 
 
-def _followed(whole, tags: list[str] | None, kinds: list[str] | None) -> dict:
-    """The texts the corpus may take in the whole order of a snapshot
-    (wpt_depot.order.walk), whatever it takes or not: {texts: [(kind, pool,
-    bytes)] in order, whole: True}."""
-    return {"texts": [(entry.kind, entry.pool, entry.bytes) for entry in walk(whole, tags, kinds) if entry.taken],
-            "whole": True}
+def _followed(walked) -> dict:
+    """The texts the corpus may take in the whole order of a snapshot,
+    walked (wpt_depot.corpus.walk), whatever it takes or not: {texts:
+    [(kind, pool, bytes)] in order, whole: True}."""
+    return {"texts": [(entry.kind, entry.pool, entry.bytes) for entry in walked if entry.taken], "whole": True}
 
 
 def _walk(followed: dict, max_tokens: int, item_share: float, shares: list[dict] | None, plain_rate: float,
@@ -326,31 +324,18 @@ def _full_plain(plain: dict[int, float], shares: list[dict] | None) -> float:
     return sum((plain if shares is None else scarcest_trim(plain, shares)).values())
 
 
-def _quoted(depot: Depot, text: str, revision: int) -> list[str]:
-    """The ids of the texts the conversation text quotes at that revision, from the depot's table quotes."""
-    return [one for (one,) in depot.db.reader().execute(
-        "SELECT q.text FROM texts_revisions t JOIN quotes q ON q.conversation = t.id AND q.version = t.content_version "
-        "WHERE t.id = ? AND t.revision = ?", (text, revision)).fetchall()]
-
-
-def _held(depot: Depot, parts: list[tuple], text: str, tags: list[str] | None, kinds: list[str] | None) -> bool:
-    """Whether the snapshot whose sets are parts holds text, at its revision
-    as of the bound of its lowest part, as a plain text a share takes (every
+def _held(source: str, snapshot: str, text: str, tags: list[str] | None, kinds: list[str] | None) -> bool:
+    """Whether the snapshot whose id is snapshot, of the depot at the
+    address source, holds text, at its revision as of the bound of its
+    lowest part (wpt_depot.api.texts), as a plain text a share takes (every
     plain text without shares) and the kinds name, as a corpus reads it."""
-    owner, number = ids.owner(text), ids.number(text)
-    if number is None:
+    found = api.texts(source, snapshot, [text]).get(text)
+    if found is None:
         return False
-    for _, named, bound, bitmap in parts:
-        if named == owner and number in bitmap:
-            found = depot.db.reader().execute(AT_BOUND, (json.dumps([[text, bound]]),)).fetchall()
-            if not found:
-                return False
-            _, _, kind, _, _, held_tags = found[0]
-            return kind == PLAIN and pool_of(kind, held_tags, tags, kinds)[1]
-    return False
+    return found["kind"] == PLAIN and pool_of(found["kind"], _tags_text(found["tags"]), tags, kinds)[1]
 
 
-def _tokenize(depot: Depot, sampled: list[tuple], tokenizer: Tokenizer) -> dict:
+def _tokenize(source: str, sampled: list[tuple], tokenizer: Tokenizer) -> dict:
     """The sample's texts read and tokenized in order as the build does,
     until SAMPLE_BYTES, timed: {texts, bytes, seconds, plain_tokens,
     plain_bytes, item_tokens, item_bytes, bytes_per_token (of the token
@@ -358,17 +343,17 @@ def _tokenize(depot: Depot, sampled: list[tuple], tokenizer: Tokenizer) -> dict:
     table)}."""
     found = {"texts": 0, "bytes": 0, "plain_tokens": 0, "plain_bytes": 0, "item_tokens": 0, "item_bytes": 0}
     shard_rows, credit_rows = [], []
-    name = depot.name()
+    name = api.about(source)["name"]
     started = time.perf_counter()
     for text, revision, kind, pool, size in sampled:
         if size > BIG_TEXT:
             continue
         if found["bytes"] + size > SAMPLE_BYTES:
             break
-        row = depot.listed_text(text, revision)
-        content = "".join(value for _, value in scan(depot.reader(), {text: row["parts"]}) if value is not None)
+        [row] = api.credits(source, [(text, revision)])
+        content = b"".join(api.content(source, text, revision))
         if kind == PLAIN:
-            tokens = np.asarray([*tokenizer.encode(content.encode("utf-8")), END], np.uint32)
+            tokens = np.asarray([*tokenizer.encode(content), END], np.uint32)
         elif kind == "conversation":
             tokens = np.asarray(chat.encode(tokenizer, json.loads(content))[0], np.uint32)
         else:

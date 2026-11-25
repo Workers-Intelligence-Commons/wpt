@@ -144,6 +144,7 @@ settle alone are listed for legal review in
 - [Questions for legal review, in English and French](LEGAL-QUESTIONS.html)
 - [Erasure requests](docs/erasure.md)
 - [Data selection: texts, tags, snapshots, corpora](docs/data-selection.md)
+- [The depot's api: what code outside the depot asks of it](docs/api/depot.md)
 - [Tokenizer](docs/tokenizer.md)
 - [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)

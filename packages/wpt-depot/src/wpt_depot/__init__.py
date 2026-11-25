@@ -23,7 +23,8 @@ the corpus a snapshot builds into the store (wpt_depot.corpus).
     upgrade.py   bringing a depot of an older format up to the code's
     delta.py     a depot of format 3 or older, a folder of Delta Lake tables, which only the upgrade reads
     format3.py   the step of such a folder from format 2 to format 3
-    corpus.py    a snapshot's corpus in the store, under its build key
+    api.py       what code outside the depot asks of it, in values JSON carries (docs/api/depot.md)
+    corpus.py    a snapshot's corpus in the store, under its build key, read through api.py
     order.py     a snapshot's texts in the order of their export keys, each read at its part's bound
     groups.py    how a share splits its budget over the tags its texts carry
     estimate.py  what a corpus build would give, from a small sample

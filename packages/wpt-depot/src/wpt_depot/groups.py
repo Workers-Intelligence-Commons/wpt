@@ -2,18 +2,20 @@
 carry, each tag's part following the square root of what it holds
 (docs/data-selection.md, "Shares"): a first pass over the snapshot's
 order, the choice of texts it makes, and the chosen set a corpus build
-follows as it walks the order again.
+follows as it walks the order again. Nothing here reads a depot: the
+entries come from the caller, a corpus build's walk of the snapshot's
+listing (wpt_depot.api, wpt_depot.corpus.walk) or a legacy dataset's.
 
-A plain text belongs to the first share whose tag it has (wpt_depot.order).
-Inside a share, every tag its texts carry other than the share's own is a
-group, and the texts that carry no other tag are one group more, whose tag
-is None. Nothing here knows a tag's name or kind: the groups come from the
-texts' tags alone. A piece of a long text is an entry of its own in the
-groups of its text's tags.
+A plain text belongs to the first share whose tag it has
+(wpt_depot.order.pool_of). Inside a share, every tag its texts carry other
+than the share's own is a group, and the texts that carry no other tag are
+one group more, whose tag is None. Nothing here knows a tag's name or
+kind: the groups come from the texts' tags alone. A piece of a long text is
+an entry of its own in the groups of its text's tags.
 
-The first pass (plan) walks the whole order of the snapshot once
-(wpt_depot.order), before anything is chosen, and keeps numpy arrays only,
-never an object per text: for each entry of a share's plain texts, its id
+The first pass (plan) walks the whole order of the snapshot once, before
+anything is chosen, and keeps numpy arrays only, never an object per text:
+for each entry of a share's plain texts, its id
 (an id is a depot's name, a hyphen and a number, wpt_depot.ids: the name
 interned and the number kept; an id of another shape is kept apart), its
 revision, its piece, its
@@ -37,8 +39,8 @@ the texts it met in a row did not fit; the share closes once what is left
 of its budget is at most a FULL-th of it, or once every group dropped out.
 
 Sizes are tokens when a count is given (count: the tokens of a list of
-entries, (depot file, id, revision, piece) each, that wpt_depot.corpus
-works out in worker processes, asked for the next texts of every group of
+entries, (the depot's address, id, revision, piece) each, that
+wpt_depot.corpus works out in worker processes, asked for the next texts of every group of
 the share at once, LOOKAHEAD of each at first and twice as many each time
 after, at most LOOKAHEAD_MOST); else bytes. Tokens never depend on what is
 chosen, so the same depot state chooses the same texts.
@@ -48,22 +50,21 @@ an entry's place is its rank among them. The chosen set is the sorted array
 of the places of the entries chosen, so a walk that counts the entries of
 those shares as it meets them knows whether each one is chosen (Picker).
 
-    plan(order, tags, budget, kinds, count, progress, walked)   the texts the shares choose, as a Plan
-    groups_of(tags, share)                                      the groups of a text of a share
+    plan(walked, tags, budget, count, progress, address)   the texts the shares choose, as a Plan
+    groups_of(tags, share)                                 the groups of a text of a share
 """
 
 import array
 import hashlib
 import heapq
 import json
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import numpy as np
 
 from .fill import FULL, SKIPS
 from .kinds import PLAIN
-from .order import walk
 
 LOOKAHEAD = 16  # texts of each group whose tokens are asked for at first, ahead of the group's head
 LOOKAHEAD_MOST = 512  # and at most, the number doubling each time
@@ -144,24 +145,24 @@ class Picker:
         return not self.open
 
 
-def plan(order, tags: list[str], budget: dict, kinds: Sequence[str] | None = None,
-         count: Callable[[list[tuple]], list[int]] | None = None, progress=lambda state: None,
-         walked: Iterable | None = None) -> Plan:
-    """The texts each share of a recipe chooses, as the module says: order
-    the snapshot's (wpt_depot.order.Order), tags the tags of the shares in
-    order, budget {pool: the most it takes, None for no limit}, kinds the
-    kinds the recipe names; count, the tokens of a list of entries, when
-    sizes are tokens (else bytes). progress gets {stage: "choosing", ...}
-    now and then. walked: the entries in order instead of a walk of order
-    (order None), with the fields of wpt_depot.order.Entry the first pass
-    reads: a legacy dataset's sample (wpt_depot.legacy), on bytes."""
+def plan(walked: Iterable, tags: list[str], budget: dict, count: Callable[[list[tuple]], list[int]] | None = None,
+         progress=lambda state: None, address: str | None = None) -> Plan:
+    """The texts each share of a recipe chooses, as the module says: walked
+    the entries of the snapshot's order, every one, with the fields of
+    wpt_depot.corpus.Entry the first pass reads (kind, pool, tags, id,
+    revision, piece, bytes), read only when a share is covered; tags the
+    tags of the shares in order, budget {pool: the most it takes, None for
+    no limit}; count, the tokens of a list of entries, (address, id,
+    revision, piece) each, when sizes are tokens (else bytes); address,
+    the address of the depot the entries come from, which count is given.
+    progress gets {stage: "choosing", ...} now and then."""
     covered = {pool for pool, limit in budget.items() if limit is not None}
     if not covered:
         return Plan({}, np.zeros(0, np.int64))
-    entries = _first_pass(walk(order, tags, kinds) if walked is None else walked, tags, covered, progress)
+    entries = _first_pass(walked, tags, covered, progress)
     if entries is None:
         return Plan({}, np.zeros(0, np.int64))
-    return _choose(entries, budget, None if order is None else order.address, count, progress)
+    return _choose(entries, budget, address, count, progress)
 
 
 class _Entries:

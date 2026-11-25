@@ -1,6 +1,7 @@
 """The order in which a corpus build, the estimate of a build and the
-sample that trains a vocabulary read a snapshot's texts (wpt_depot.snapshots):
-every text the snapshot holds, by its export key (wpt_depot.ids.export_key),
+sample that trains a vocabulary read a snapshot's texts (wpt_depot.snapshots),
+which they are given as its listing (wpt_depot.api.listing, the entries of
+a walk without pool and taken): every text the snapshot holds, by its export key (wpt_depot.ids.export_key),
 but for its long plain texts, each of which comes as its pieces
 (wpt_depot.pieces), each piece at the export key of its name. The key is
 made from a text's id alone, or a piece's name, so the order is fixed and
