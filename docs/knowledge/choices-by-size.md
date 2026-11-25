@@ -98,6 +98,32 @@ direction for most choices and a value for few.
   ([teachers-and-specialists.md](teachers-and-specialists.md)).
   **published, one source**
 
+### How often a parameter works
+
+One reading holds the statements above together. **hypothesis**
+
+- A model has two budgets, its parameters and its compute per token, and
+  what a choice costs depends on which is short.
+- A small model is short of parameters. A parameter that is read for few
+  tokens, or that repeats another, is the costly one: a second vocabulary
+  table, an expert that runs for one token in eight, a lookup row. Compute
+  is what it can add: the same layers run again raise the loss less per
+  parameter than anything else measured here, and the published gain of a
+  loop at an equal number of parameters is largest at the smallest sizes.
+- A large model is short of compute. It adds parameters that cost no
+  compute, many experts of which few run, lookup tables, and avoids
+  running a layer twice: at equal compute a deeper model beats a looped
+  one at every size measured.
+- Inside the layers the rule is the same at every size: a matrix whose
+  numbers are shared or of low rank loses to a whole one
+  ([layer-changes.md](layer-changes.md)). Sharing pays between whole
+  parts that do the same job, two tables or two passes, not inside a
+  part.
+- So the small model is not the one with the most distinct parameters,
+  and the large one is not the one that can afford more compute: the
+  evidence points the other way on both. What a small model wants is
+  every parameter at work on every token, more than once if needed.
+
 ### The shapes these give
 
 Each line is a reading of the statements above, not a measured best.

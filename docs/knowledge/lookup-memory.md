@@ -29,6 +29,10 @@ The question is open at small sizes.
   bring what the training text repeats and not what the prompt states.
   **measured here**, one run each; the direction of the gap is within what
   one run can tell
+- That gap of 0.05 comes from one run of each model, and two runs of one
+  recipe of this size differ by as much before the end of training
+  ([run-to-run-spread.md](run-to-run-spread.md)): it is a gap to confirm,
+  not a settled gain.
 - Whether those 13.0M parameters do more in the table than in layers is not
   measured: the model without the table is smaller, not wider.
 - A table 16 times smaller, 0.9M parameters, keeps none of that gain: its

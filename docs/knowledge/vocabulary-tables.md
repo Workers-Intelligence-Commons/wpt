@@ -24,6 +24,10 @@ is one run of each model.
   on the same 1.18B tokens: validation loss 2.79 against 2.85, and 95% of
   the tokens of a repeated sequence copied against 48%. The gap in loss is
   there at every update compared. **measured here**, one run each
+- The gap in loss, 0.05, is of the size two runs of one recipe show before
+  the end of training ([run-to-run-spread.md](run-to-run-spread.md)). What
+  one run of each does show: the model with one table is no worse with 27%
+  fewer parameters, and it copies far better.
 - Sharing changes two things at once, the number of parameters and the
   tie between reading a token and predicting it; the measure does not
   say which of the two gives the gain.

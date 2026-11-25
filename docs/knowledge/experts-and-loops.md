@@ -27,7 +27,10 @@ loops at small sizes, and half against it.
   from 2.79 to 2.65, on the same 1.18B tokens, for 3 times the compute per
   token. The model copies from its context less well, 84% of the tokens of
   a repeated sequence against 95%. The measure does not separate the loops
-  from the table. **measured here**, one run each
+  from the table. The gap in loss is more than twice what two runs of one
+  recipe show before the end of training
+  ([run-to-run-spread.md](run-to-run-spread.md)); the gap in copying is
+  not. **measured here**, one run each
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or

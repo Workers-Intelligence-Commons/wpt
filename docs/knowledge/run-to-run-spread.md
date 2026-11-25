@@ -19,9 +19,15 @@ defined in [README.md](README.md).
   loss does, by 2 points and more, and a continuous measure such as the
   loss or bits per byte separates two models better. **published,
   agreed**, **unchecked**
-- So one run of each model shows a gap in validation loss of about 0.02
-  nats or more; a gap between 0.01 and 0.02 is undecided, and a smaller
-  one is not seen. **hypothesis**, from the spread above
+- Before the end of training the spread is far larger: two runs of one
+  recipe of 45M parameters differ by 0.06 nats of validation loss at the
+  same update, one ahead at two thirds of the run and behind near its end.
+  **measured here**, two runs
+- So a gap between two models is read at the end of training only, and one
+  run of each shows it when it is several times the spread there: about
+  0.02 nats if the published spread holds at this size, which is not
+  measured. A gap of 0.05 from one run of each is undecided until it is.
+  **hypothesis**
 - The rank of two models cannot be read early in training: predicting the
   final result needs most of the run. **published, one source**,
   **unchecked**; and **measured here**, one run each
@@ -80,6 +86,20 @@ exists under the id or address given.
 - arXiv 2103.03098 (2021). The spread is estimated by changing every
   source of randomness together, and an estimate from few runs is poor;
   pairing two models on one seed helps little when the models differ.
+
+### Measured with WPT
+
+One recipe trained twice with two seeds: width 256, 11 layers, 32 routed
+experts, a vocabulary of 65,536 in one shared table, 44.8M parameters,
+1.18B tokens in 8,990 updates, the learning rate at its peak until update
+7,192 (commit b7dca7b2f7, RTX 5080 Laptop GPU). Validation loss on the
+same windows:
+
+| Update | First seed | Second seed |
+| --- | --- | --- |
+| 5,400 | 3.32 | 3.27 |
+| 6,000 | 3.25 | 3.20 |
+| 8,000 | 2.92 | 2.98 |
 
 ## Open
 
