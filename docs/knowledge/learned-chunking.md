@@ -36,6 +36,12 @@ text.
   **published, one source**, **unchecked**
 - The gain in training data is measured on DNA, 3.6 times, and not on
   English text. **published, one source**, **unchecked**
+- At an equal number of parameters a model of bytes reaches fewer bits per
+  byte than a model of tokens, and at equal compute the model of tokens
+  wins, from 200M to 3B parameters. **published, one source**, **unchecked**
+- Cuts placed at spaces by a rule equal a model of tokens at equal compute;
+  groups of a fixed number of bytes are worse by about 10% of bits per
+  byte. **published, one source**, **unchecked**
 - The working assumption: at small sizes the share of the tables is what a
   learned cutting could give back, and the amount of training it needs to
   catch up is what could take it away. Nothing says which wins. **hypothesis**
@@ -77,6 +83,27 @@ exists under the id or address given.
   small model of bytes trained beforehand, which cuts where the next byte
   is hard to predict; the cutting is not learned with the model.
 - *MegaByte* (2023, arXiv 2305.07185). Groups of a fixed number of bytes.
+- *SpaceByte* (2024, arXiv 2404.14408). Cuts at spaces and like bytes, by a
+  rule. At equal compute: 1.009 bits per byte against 1.013 for a model of
+  tokens on books, 0.748 against 0.796 on research papers; with groups of a
+  fixed size, 1.112 on books.
+- *Hierarchical Autoregressive Transformers* (2025, arXiv 2501.10322) and
+  *Autoregressive U-Nets* (2025, arXiv 2506.14761). Bytes grouped into
+  words at spaces, at 1B parameters and more: equal to a model of tokens
+  for the first, 73.7 against 70.2 on a test of sentence endings for the
+  second. Nothing under 200M.
+
+### Bytes against tokens at an equal size
+
+- arXiv 2610.05978 (2026). 200M to 3B, trained from nothing. Each byte's
+  vector is averaged with vectors looked up from hashes of the 5 to 8 bytes
+  before it. At equal parameters the bytes reach fewer bits per byte; at
+  equal compute the tokens do. The model of bytes wants 3.2 times more
+  bytes of text per parameter. On a test of spelling at 200M: 99.19 against
+  69.89. Nothing under 200M, and no figure for the hashed tables alone.
+- *T-FREE* (2024, arXiv 2406.19223). Words enter and leave as sets of
+  hashed groups of three characters, the tables 85% smaller. At 1B and 3B
+  it equals a vocabulary of 64,000 on 18 tests; no loss is given.
 
 ### From a model of tokens
 
@@ -96,10 +123,14 @@ exists under the id or address given.
 - **What reads the bytes.** The same measure with attention over a short
   window in place of state-space layers says whether the published failure
   of attention holds at small sizes.
-- **Rigid cuts learned with the model.** Groups of a fixed number of bytes,
-  or cuts bound to a rule such as spaces, with the encoder and the decoder
-  still trained with the model: whether the gain needs the cuts to be
-  learned, or only the tables to be gone.
+- **Cuts by a rule, under 200M.** The sources above find cuts at spaces as
+  good as a vocabulary and groups of a fixed size worse, at 150M
+  parameters and more. A measure trains a model of bytes cut at spaces
+  against a model of tokens of the same total: whether the gain needs the
+  cuts to be learned, or only the tables to be gone.
+- **Bytes at an equal number of parameters, under 200M.** The one source
+  that compares them starts at 200M, where the tables are a smaller share
+  of the model than at 60M.
 - **A vocabulary whose merges are chosen in training.** A model that reads
   the tokens of a vocabulary and learns when to merge two neighbouring
   entries in one position: no source found measures it.

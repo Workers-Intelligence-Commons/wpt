@@ -64,6 +64,10 @@ exists under the id or address given.
   head: 2.724 against 2.784 at 400M.
 - arXiv 2610.22428 (2026). Fixed codes in place of a learned input table:
   3.358 nats against 3.155.
+- Against the source above: arXiv 2605.09751 (2026). Fixed binary codes in
+  place of the input table, vocabulary 65,536, width 1,024, 17B tokens, 3
+  seeds: a perplexity of 2.36 against 2.44 at 32 layers and 3.76 against
+  3.77 at 9, within the spread of the seeds.
 - *Differentiable Product Quantization* (2019, arXiv 1908.09756). The input
   table 163 times smaller at 83.2 against 83.4 of perplexity, on a small
   recurrent model, the output left whole.
@@ -85,6 +89,10 @@ exists under the id or address given.
   per byte have a minimum near 24,000 even for an untrained model.
 - *Over-Tokenized Transformer* (2025, arXiv 2501.16975). A larger output
   vocabulary hurts a model of 2.4M and helps one of 85M.
+- arXiv 2608.11361 (2026). Width 512, 12 layers, 47M to 307M parameters
+  with the tables, 50M tokens. Bits per byte: 1.368 at a vocabulary of
+  8,192, 1.344 at 16,384, 1.346 at 65,536, 1.355 at 131,072. The whole
+  spread is under 2%, on very little text.
 
 ### Counted from the model
 

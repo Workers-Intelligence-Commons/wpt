@@ -79,6 +79,25 @@ exists under the id or address given.
   test goes down.
 - arXiv 2510.02375 (2025). 160M with 18M fetched: 34.1 to 40.3 on specific
   knowledge; the same 18M always present: 35.7.
+- *Mixture of Lookup Experts* (2025, arXiv 2503.15798). Experts that read
+  the token's vector alone, so their output is a table with one row per
+  token. 160M active, 100B tokens: a mean score of 38.8 for the dense
+  model, 40.8 with 4 such experts and 41.9 with 16, where a mixture of 34
+  ordinary experts gives 41.8. The table of the 4 experts holds 1.8B
+  numbers.
+- arXiv 2602.00398 (2026). Feed-forward layers that read the token's
+  vector alone, 50B tokens. 245M active: perplexity 22.08 against 23.19
+  for a dense 265M. At an equal total of parameters the dense model wins.
+- *PEER* (2024, arXiv 2407.04153) and *UltraMem* (2024, arXiv 2411.12364).
+  A million experts of one neuron, or a sparse memory 12 times the dense
+  part. At 151M dense and 500B tokens and more: loss 2.96 dense, 2.67 with
+  the memory, 2.63 with a mixture of experts.
+- *Infini-gram* (2024, arXiv 2401.17377). The counts of a text of 5,000B
+  tokens mixed with a model of 117M: perplexity 22.82 to 13.71. The gain
+  falls to 11% with a model of 70B, and the model had not read that text.
+- arXiv 2601.21204 (2026). From 280M active. A table should stay under
+  about half the parameters, read 3 to 5 tokens, and have its vectors
+  scaled up before the layers read them.
 - Against: *kNN-LM Does Not Improve Open-ended Text Generation* (2023,
   arXiv 2305.14625). Perplexity 14.8 to 12.6, and readers do not prefer the
   text.

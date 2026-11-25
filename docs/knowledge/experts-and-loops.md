@@ -106,6 +106,28 @@ its id, with the subject given here.
   show no clear trend.
 - *ALBERT* (2019, arXiv 1909.11942). Every layer shared: 79.8 at 31M
   against 82.3 at 108M without sharing.
+- *Mixture-of-Recursions* (2025, arXiv 2507.10524). A shared block looped,
+  a router giving each token 1 to 3 passes; 135M to 1.7B, 20B tokens. With
+  2 passes and 167M parameters outside the tables: loss 2.7511, against
+  2.7824 for a plain model of 315M and 2.8079 for a plain loop of 167M.
+  With 3 passes and the other way of routing: 2.9163. The figures at 135M
+  were not read.
+- arXiv 2611.06206 (2026). 97M, 12 layers looped 4 times, 100M words, 3
+  seeds. A grammar test at 76.16 against 75.21 for the same model without
+  loop, a gap the source does not find significant; held-out loss 5.83
+  against 5.84.
+- arXiv 2602.11451 (2026). 1B to 3B, 25B tokens. A looped model at a
+  perplexity of 10.28 against 9.49 for a dense one.
+- arXiv 2610.00673 (2026). 1.4B, one seed. A looped model trains with the
+  normalisation before each layer and a last one at the end; with it after
+  the layer the loss stays near 7.4. A depth of 8 passes gains nothing
+  over 4. A small matrix of its own for each pass moves the result by 2
+  points at most.
+- Models of a few million parameters that loop over their own state solve
+  puzzles (arXiv 2506.21734, arXiv 2510.04871) and are not models of
+  language. The one model of language found built that way (arXiv
+  2605.28919, 83M, 10B tokens) scores under dense models of 90M and 120M
+  from the same source.
 
 #### Both together
 
@@ -153,5 +175,9 @@ its id, with the subject given here.
 - The tokens an expert needs before it pays, under 5B training tokens: the
   one source there finds 0.33B at 76M parameters.
 - A looped mixture against a dense model at equal parameters under 100M.
+- **A number of passes chosen for each token.** The one source that routes
+  tokens through a loop finds the routing, not the loop, gives the gain. A
+  measure trains, at an equal number of parameters and equal compute, a
+  plain model, a plain loop and a loop with 1 to 2 passes by token.
 - The figures of the published sources above, to be compared with their
   texts.
