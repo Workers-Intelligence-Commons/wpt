@@ -378,8 +378,8 @@ A size of a series computes `loops + 1` times the work per token of one
 pass ("Model series").
 
 A recipe switch, `loop_gate`, lets each token choose how much of each
-extra pass it keeps, after [Mixture-of-Recursions][mor], which finds that
-a choice of passes per token brings the gain, more than the loop itself.
+extra pass it keeps, after [Mixture-of-Recursions][mor], which gives each
+token its own number of passes.
 It is off unless a recipe sets it, and with `loops` at 0 it does nothing:
 the model then has no weight of it and computes what it computes without
 it.
@@ -1181,7 +1181,7 @@ marked as such above.
 - [Attention Residuals](https://arxiv.org/abs/2603.15031)
 - [In-Place Test-Time Training](https://arxiv.org/abs/2604.06169)
 - [Ouro: scaling latent reasoning via looped language models](https://arxiv.org/abs/2510.25741)
-- [Mixture-of-Recursions: a number of passes for each token](https://arxiv.org/abs/2507.10524)
+- [Mixture-of-Recursions: Learning Dynamic Recursive Depths for Adaptive Token-Level Computation](https://arxiv.org/abs/2507.10524)
 - [Moonlight: Muon at scale](https://arxiv.org/abs/2502.16982)
 - [NorMuon: neuron-wise normalized Muon](https://arxiv.org/abs/2510.05491)
 - [Cautious weight decay](https://arxiv.org/abs/2510.12402)
