@@ -117,7 +117,9 @@ recipe"):
 requests to the freight in order: the vocabulary first when the recipe
 learns one, then the corpus, whose request names the vocabulary's delivery
 as its input. It waits for both jobs and prints both delivery notes
-(`wpt.resources`). A vocabulary named by its sha256 makes no request: the
+(`wpt.resources`). Run again after it was stopped, it waits for the job of
+the same delivery that is still queued or running, which goes on from its
+checkpoint. A vocabulary named by its sha256 makes no request: the
 corpus names the delivery of that vocabulary the dock holds, the adopted
 one (`adopted-<sha256>`) when there is one, else the vocabulary delivery of
 that sha256 whose key comes first. The key of each delivery comes from the

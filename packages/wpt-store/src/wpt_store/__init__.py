@@ -198,9 +198,10 @@ class _Ticks:
 class Store:
     """Operations every store offers, built on its kind's five (see
     wpt_store.kinds), run records included. Subclasses give the kind,
-    `cache` (a local folder for copies of files) and `scratch` (a local
-    folder for files derived from others, such as token files for
-    training, which may be deleted at any time)."""
+    `cache` (a local folder for copies of files), `url` (the WPT_STORE
+    value that opens it) and `scratch` (a local folder for files derived
+    from others, such as token files for training, which may be deleted at
+    any time)."""
 
     scratch: Path
     local = False  # whether the kind's files are on this machine's disk already, so no copy of them is kept
@@ -912,6 +913,11 @@ class LocalStore(Store):
     def __repr__(self):
         return f"LocalStore({str(self.root)!r})"
 
+    @property
+    def url(self) -> str:
+        """The WPT_STORE value that opens this store (open_store)."""
+        return self.root.absolute().as_uri()
+
     def _raw_append_record(self, folder, name, data):
         """Add the lines at once to the plain file of the record file: one
         write, so lines of several processes never mix, and none is lost
@@ -1003,6 +1009,11 @@ class S3Store(Store):
 
     def __repr__(self):
         return f"S3Store(s3://{self.bucket}/{self.prefix})"
+
+    @property
+    def url(self) -> str:
+        """The WPT_STORE value that opens this store (open_store)."""
+        return f"s3://{self.bucket}/{self.prefix}"
 
     def _opening(self):
         return S3Store, (self.bucket, self.prefix, self._own_cache, None, self.settings)  # its client, from the same settings

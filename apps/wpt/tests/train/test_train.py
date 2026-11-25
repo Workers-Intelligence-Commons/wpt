@@ -898,6 +898,17 @@ def test_a_recipe_whose_snapshot_reads_another_change_or_digest_or_is_missing_fi
             find_corpus(built.store, None, {**data, **wrong})
 
 
+def test_a_corpus_the_depot_built_under_other_selection_rules_is_not_the_recipe_s(built):
+    # its build key covered the rules: one built under rules that no longer hold chose other texts
+    from wpt.train import find_corpus, load_data
+    from wpt_depot.corpus import RULES
+    data = load_data(built.recipe("three", training=one_stage(3)))
+    record = built.sized("d", data["total_tokens"])
+    built.store.put_json(f"{corpora.folder_of(record)}/{corpora.RECORD}", {**record, "rules": RULES - 1})
+    with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources ORDER`"):
+        find_corpus(built.store, None, data)
+
+
 def test_a_recipe_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the_build_that_makes_one(built):
     # without a corpus id, an old corpus of the build key must not pass for one never built
     from wpt.train import InputError, find_corpus, load_data

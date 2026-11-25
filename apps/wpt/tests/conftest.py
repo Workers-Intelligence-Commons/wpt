@@ -17,9 +17,9 @@ from wpt_depot import About, Declaration, Depot, NewText
 from wpt_depot import corpora
 from wpt_depot.errors import NotFound
 from wpt_depot.corpus import build
+from freight import api as freight
 from wpt_store import open_store
 from wpt_tokenizer import Tokenizer
-from wpt.adopt import main as adopt
 from wpt.resources import main as build_resources
 from wpt.train import main as train
 
@@ -170,8 +170,9 @@ def trained(request, built, tmp_path, monkeypatch):
     (its home FREIGHT_HOME, tmp_path/freight), as a person makes it:
     `wpt build-resources d`, then `wpt train d`. By default ("named") the
     order names its vocabulary by its sha256, the test vocabulary, which
-    the depot holds as the vocabulary of its tokenizer recipe TOKENIZER and
-    `wpt adopt-vocabularies` puts on the dock; with the parameter "learned"
+    the dock holds as the adopted delivery `adopted-<sha256>` (put there by
+    freight.api.adopt, its items every text of the depot, as the tokenizer
+    recipe TOKENIZER version 1 read them); with the parameter "learned"
     (indirect), the order learns its vocabulary of VOCAB_SIZE entries from
     the stories instead (LEARNED). Gives what built gives, folder, notes
     (the two delivery notes `wpt build-resources` printed) and corpus_id,
@@ -179,10 +180,13 @@ def trained(request, built, tmp_path, monkeypatch):
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
     printed = request.getfixturevalue("capsys")
     if request.param == "named":
-        recipe = built.depot.new_tokenizer(TOKENIZER, "d", None, 10**6, VOCAB_SIZE)
-        texts = [("", row["id"]) for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
-        built.depot.add_vocabulary(recipe, 1, built.tokenizer.to_bytes(), texts, None)
-        assert adopt([]) == 0
+        change = built.depot.snapshot("d")["at_change"]
+        items = [{"depot": built.depot.name(), "id": row["id"], "change": change}
+                 for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
+        freight.adopt(f"{freight.ADOPTED}{built.vocabulary}", {"vocabulary.json": built.tokenizer.to_bytes()},
+                      {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size,
+                       "tokenizer_version": json.loads(built.tokenizer.to_bytes())["tokenizer_version"]},
+                      {"by": "the test", "recipe": TOKENIZER, "version": 1}, on_erasure="note", items=items)
     else:
         path = tmp_path / "data" / "recipes" / "models" / "d.json"
         order = json.loads(path.read_text())

@@ -93,7 +93,9 @@ version, settings and input keys, and the version of the selection rules
 (`freight.selection.RULES`). It never covers the depot's address, the
 snapshot's name, the code's commit or the machine: the same request lands
 in the same folder wherever it runs, and a caller works the key out with
-no depot and no freight at hand.
+no depot and no freight at hand. `canonical(selection)` gives a
+selection in that canonical form, so a caller compares two selections as
+the key does.
 
 ## The calls
 
@@ -104,7 +106,7 @@ depot (its snapshot, change and digest), the dock (its inputs) and the
 program (it starts it once to read its version). A request whose delivery the dock
 holds, fresh, is a job done at once, its answer that delivery's note.
 `Refused` for a request that cannot be met; `Busy` when a job of the same
-key is queued or running.
+key is queued or running, which `jobs()` lists by its `key`.
 
 `wait(job, home=, seconds=)` gives the job's state once it ended, or after
 `seconds`. While no other process runs the queue, this one runs it, the
@@ -130,7 +132,7 @@ deliveries marked stale and of those whose note took an erasure in.
 
 `adopt(key, files, result, about, on_erasure=, items=, dock=)` puts files
 made elsewhere on the dock as the delivery of `key`, which starts with
-`adopted-`: `files` maps a path under `files/` to its bytes, `result` is
+`ADOPTED` (`adopted-`): `files` maps a path under `files/` to its bytes, `result` is
 what a preparation would have answered, `about` what the note says of
 where they come from (`adopted`), `on_erasure` (`"stale"` by default, or
 `"note"`) what an erasure that reaches one of its items does, and `items`
@@ -142,6 +144,9 @@ parts. A fresh delivery of that key stays as it is. WPT adopts the
 vocabularies of the depot's tokenizer recipes so (`wpt
 adopt-vocabularies`, [tokenizer.md](../tokenizer.md), "A vocabulary in an
 order").
+
+The module names what its calls refuse: `Refused`, `Busy`, and
+`SettingMissing` for a setting named nowhere.
 
 ## The queue
 

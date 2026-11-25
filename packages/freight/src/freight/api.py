@@ -12,6 +12,7 @@ can become a route without its callers changing.
 
     settings(home, depot, dock, cap)        the freight's settings, those not given read from the environment
     key(request, version)                   the delivery key of a request, its program answering that version
+    canonical(selection)                    a request's selection in the form its delivery key covers
     request(request, ...)                   queue a request: its job (done at once when its delivery is on the dock)
     wait(job, ...)                          the job once it ended, the queue run here while no other process does
     work(...)                               run the queue until stopped, or for a number of seconds
@@ -20,6 +21,9 @@ can become a route without its callers changing.
     items(key)                              the rows of a delivery's items tables
     check(...)                              mark what the erasures since the last check did to the deliveries
     adopt(key, files, result, about, ...)   files made elsewhere put on the dock as a delivery, with its items
+    ADOPTED                                 the start of the key of an adopted delivery
+    Refused, Busy, SettingMissing           what a call refuses: a request that cannot be met, a key with a job
+                                            queued or running already, a setting named nowhere
 """
 
 import os
@@ -30,11 +34,16 @@ from pathlib import Path
 from wpt_store import open_store, read_env_file
 
 from . import deliveries, erasures
-from .jobs import ENDED, Queue
+from .jobs import ENDED, Busy, Queue
 from .job import Job
-from .selection import delivery_key
+from .selection import Refused, delivery_key
+from .selection import canonical as canonical_selection
 
 ENV_FILE = ".env"
+ADOPTED = deliveries.ADOPTED
+__all__ = ["ADOPTED", "Busy", "Refused", "SettingMissing", "adopt", "cancel", "canonical", "check", "deliveries_on",
+           "delivery", "items", "job", "jobs", "key", "request", "settings", "settings_dock", "settings_home", "wait",
+           "work"]
 
 
 class SettingMissing(Exception):
@@ -73,6 +82,14 @@ def key(request: dict, version: str) -> str:
     return delivery_key(request["snapshot"], request.get("selection") or {},
                         {"name": preparation["name"], "version": version, "settings": preparation.get("settings"),
                          "inputs": preparation.get("inputs")})
+
+
+def canonical(selection: dict) -> dict:
+    """A request's selection in the form its delivery key covers
+    (freight.selection.canonical): {kinds sorted, each once; shares in
+    order, each share a float; size None or {unit, amount}}. Refused for a
+    selection that cannot be met."""
+    return canonical_selection(selection)
 
 
 def request(request: dict, *, home: str | None = None, depot: str | None = None, dock: str | None = None,

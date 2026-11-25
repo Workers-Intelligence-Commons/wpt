@@ -41,7 +41,8 @@ delivery), worked out from the recipe alone (`wpt.resources`). It reads no
 depot. Without that delivery, a recipe that names its vocabulary by its
 sha256 reads the latest corpus the depot built into the store's
 `corpora/` from the recipe's snapshot (its name, change and digest), depot,
-kinds, shares and vocabulary, at its size ([data-selection.md](data-selection.md),
+kinds, shares and vocabulary, at its size, under the selection rules the
+depot builds with now ([data-selection.md](data-selection.md),
 "Corpora"). With neither, or with a stale one, the run is refused, saying
 to run `wpt build-resources`, and nothing is built or queued. A corpus
 given by its id (`WPT_CORPUS` or the corpus option), of a delivery or of

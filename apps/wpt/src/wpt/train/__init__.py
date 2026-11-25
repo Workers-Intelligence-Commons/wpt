@@ -225,7 +225,7 @@ from pathlib import Path
 
 from freight import api as freight
 from wpt_depot import corpora
-from wpt_depot.corpus import canonical
+from wpt_depot.corpus import RULES, canonical
 from wpt_depot.errors import DepotError
 from wpt_depot.kinds import PLAIN
 from wpt_depot.notice import model_notice
@@ -238,7 +238,7 @@ from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
 from wpt_recipes import SIZE_OF, RecipeError, Recipes
 from wpt_recipes.series import layer_count
 from wpt_store import NAME as STORE_NAME
-from wpt_store import StoreError, read_env_file, store_from_settings
+from wpt_store import StoreError, StoreSettingError, read_env_file, store_from_settings
 from wpt_store.models import checkpoint_key, state_key
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, file_hashes, set_result, short
 from wpt_tokenizer import RUSTC_VERSION, Tokenizer, chat
@@ -468,13 +468,23 @@ def find_corpus(store, given, data, log=say) -> dict:
     the store holds no such corpus, the dataset publishes no vocabulary,
     or that triple is not built: the message names the triple and the
     dataset's listing of corpora, and says that no build makes a corpus
-    of a dataset, as check_record does."""
+    of a dataset, as check_record does. InputError too when the freight
+    cannot read the dock store (a setting it needs is missing)."""
+    try:
+        return _find_corpus(store, given, data, log)
+    except (freight.SettingMissing, StoreSettingError) as error:
+        raise InputError(f"the deliveries of the dock {store.url} cannot be read ({type(error).__name__}: "
+                         f"{error})") from None
+
+
+def _find_corpus(store, given, data, log) -> dict:
+    """find_corpus, its freight's and store's errors aside."""
     if given is None and on_snapshot(data):
         return _snapshot_corpus(store, data)
     dataset = None
     try:
         if given is not None:
-            found = corpora.find(store, given) or _delivered(given)
+            found = corpora.find(store, given) or _delivered(store, given)
         else:
             try:
                 reader = recipe_depot.opened(data, Path.cwd() / ".env")
@@ -512,19 +522,20 @@ def find_corpus(store, given, data, log=say) -> dict:
     return found
 
 
-def _delivered(given) -> dict | None:
-    """The record of the corpus delivery whose id or key starts with given,
-    None when none does. ValueError when several do."""
-    found = [note for note in freight.deliveries_on() if note.get("preparation", {}).get("name") == resources.TOKENS
+def _delivered(store, given) -> dict | None:
+    """The record of the corpus delivery of the dock store whose id or key
+    starts with given, None when none does. ValueError when several do."""
+    found = [note for note in freight.deliveries_on(dock=store.url)
+             if note.get("preparation", {}).get("name") == resources.TOKENS
              and (note["id"].startswith(given) or note["key"].startswith(given))]
     if len(found) > 1:
         raise ValueError(f"{given!r} starts the ids or keys of {len(found)} corpus deliveries: give more of it")
-    return _record_of(found[0]) if found else None
+    return _record_of(store, found[0]) if found else None
 
 
-def _record_of(note) -> dict:
-    """A corpus delivery's note as training reads it, with its vocabulary's note."""
-    vocabulary = freight.delivery(note["preparation"]["inputs"]["vocabulary"])
+def _record_of(store, note) -> dict:
+    """A corpus delivery's note as training reads it, with the note of its vocabulary on the dock store."""
+    vocabulary = freight.delivery(note["preparation"]["inputs"]["vocabulary"], dock=store.url)
     if vocabulary is None:
         raise InputError(f"corpus delivery {note['key']} names the vocabulary delivery "
                          f"{note['preparation']['inputs']['vocabulary']}, which the dock does not hold")
@@ -534,11 +545,11 @@ def _record_of(note) -> dict:
 def _snapshot_corpus(store, data) -> dict:
     """The record of the corpus a recipe's data part that names a snapshot
     asks for (find_corpus)."""
-    vocabulary = resources.vocabulary_key(data)
+    vocabulary = resources.vocabulary_key(data, store.url)
     key = None if vocabulary is None else resources.corpus_key(data, vocabulary)
-    note = None if key is None else freight.delivery(key)
+    note = None if key is None else freight.delivery(key, dock=store.url)
     if note is not None and "stale" not in note and "deleted" not in note:
-        return _record_of(note)
+        return _record_of(store, note)
     if note is not None:
         raise InputError(f"corpus delivery {note['key']} of the recipe is "
                          + (f"stale: the depot carried out the erasures {', '.join(note['stale']['erasures'])} on "
@@ -561,11 +572,12 @@ def _snapshot_corpus(store, data) -> dict:
 def _built(store, data) -> dict | None:
     """The latest corpus of the store's corpora/ built from the snapshot a
     data part names (name, change, digest), of its depot, with its kinds,
-    shares and vocabulary, at its size: a fresh one first. None without
-    one."""
+    shares and vocabulary, at its size, under the selection rules the depot
+    builds with now (RULES, which its build key covered): a fresh one
+    first. None without one."""
     found = [record for record in corpora.records(store)
-             if "build_key" in record and record["depot"] == data["depot"] and _same_build(record, data)
-             and corpora.triple(record)[2] == data["total_tokens"]]
+             if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == RULES
+             and _same_build(record, data) and corpora.triple(record)[2] == data["total_tokens"]]
     return next((record for record in found if corpora.fresh(record)), found[0] if found else None)
 
 
@@ -583,13 +595,16 @@ def _same_build(record, data) -> bool:
     asks for, its size aside: the same snapshot (name, change and digest,
     which names its owner too), kinds, shares and vocabulary. A corpus
     delivery's vocabulary is the delivery the data part names (its sha256,
-    or the key of the vocabulary it learns)."""
+    or the key of the vocabulary it learns), its kinds and shares compared
+    in the freight's canonical form."""
     snapshot = record["snapshot"]
     try:
-        ours = canonical(data)
-        theirs = canonical(record["data"]) if "build_key" in record else canonical(
-            {**record["request"]["selection"], "total_tokens": None})
-    except DepotError:
+        if "build_key" in record:
+            ours, theirs = canonical(data), canonical(record["data"])
+        else:
+            ours = freight.canonical({"kinds": data.get("kinds"), "shares": data.get("shares")})
+            theirs = freight.canonical({**record["request"]["selection"], "size": None})
+    except (DepotError, freight.Refused):
         return False
     if "delivery" in record:
         same_vocabulary = (record["vocabulary"]["sha256"] == data["vocabulary"]["sha256"]

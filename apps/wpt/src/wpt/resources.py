@@ -24,7 +24,9 @@ freight at hand, which is how `wpt train` finds its corpus; a vocabulary
 named by its sha256 is the one delivery of that vocabulary the dock holds,
 found by its note. The command sends the requests one after the other,
 waits for each job (running the freight's queue here while no other
-process does), and prints the two notes, `{"vocabulary": ..., "corpus":
+process does; a job of the same delivery already queued or running, such
+as one a stopped run left, is waited for, and goes on from its
+checkpoint), and prints the two notes, `{"vocabulary": ..., "corpus":
 ...}`, as JSON. Settings (environment or .env): FREIGHT_HOME, WPT_DEPOT and
 WPT_STORE, as the freight reads them. Exit codes: 0 done, 1 refused or
 failed.
@@ -49,7 +51,6 @@ from wpt_recipes import Recipes
 from wpt_utils.lines import ERROR, say
 
 TOKENS = "wpt-tokens"  # the program that writes a corpus
-ADOPTED = "adopted-"  # the start of the key of a vocabulary put on the dock from elsewhere (wpt adopt-vocabularies)
 
 
 class Unanswered(Exception):
@@ -96,7 +97,7 @@ def vocabulary_key(data: dict, dock: str | None = None) -> str | None:
     if not vocabulary_named(data):
         return api.key(vocabulary_request(data), learning.VERSION)
     sha256 = data["vocabulary"]["sha256"]
-    adopted = api.delivery(f"{ADOPTED}{sha256}", dock=dock)
+    adopted = api.delivery(f"{api.ADOPTED}{sha256}", dock=dock)
     if adopted is not None and _fresh(adopted):
         return adopted["key"]
     found = sorted(note["key"] for note in api.deliveries_on(dock=dock)
@@ -192,10 +193,19 @@ def _named(note: dict) -> dict:
     return {"key": note["key"], "id": note["id"], **made}
 
 
-def _asked(request: dict, what: str) -> dict:
-    """The delivery note of the request, its job run to its end. Unanswered
-    when the job did not end done."""
-    state = api.request(request)
+def _asked(request: dict, key: str, what: str) -> dict:
+    """The delivery note of the request, whose delivery key is key, its job
+    run to its end. A job of that key already queued or running, such as
+    one a stopped run of this command left, is the one waited for: a job
+    cut short goes on from its checkpoint. Unanswered when the job did not
+    end done."""
+    try:
+        state = api.request(request)
+    except api.Busy:
+        state = next((job for job in api.jobs() if job["key"] == key and job["state"] in ("queued", "running")),
+                     None)
+        if state is None:  # it ended meanwhile: ask again, which answers its delivery at once
+            state = api.request(request)
     if state["state"] not in ("queued", "running", "done"):
         raise Unanswered(f"the {what}'s request was {state['state']}: {state.get('problem')}")
     say(f"{what}: job {state['id']} {state['state']}")
@@ -220,9 +230,9 @@ def build(data: dict) -> dict:
         vocabulary = api.delivery(key)
         say(f"vocabulary: delivery {key}, already on the dock")
     else:
-        vocabulary = _asked(asking, "vocabulary")
+        vocabulary = _asked(asking, vocabulary_key(data), "vocabulary")
     say(f"vocabulary {vocabulary['result']['sha256']}: {label(vocabulary)}")
-    corpus = _asked(corpus_request(data, vocabulary["key"]), "corpus")
+    corpus = _asked(corpus_request(data, vocabulary["key"]), corpus_key(data, vocabulary["key"]), "corpus")
     say(f"corpus {corpus['id']} (delivery {corpus['key']}): {label(corpus)}, {corpus['result']['total_tokens']:,} "
         f"tokens of plain text, {corpus['items']['texts']:,} texts")
     return {"vocabulary": vocabulary, "corpus": corpus}

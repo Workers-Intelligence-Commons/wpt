@@ -30,8 +30,6 @@ from wpt_depot.settings import depot_address
 from wpt_tokenizer import Tokenizer
 from wpt_utils.lines import ERROR, say
 
-from .resources import ADOPTED
-
 PAGE = 100_000  # the texts of a vocabulary read at a time
 FILE = "vocabulary.json"
 VOCABULARIES = (
@@ -67,7 +65,7 @@ def main(argv=None) -> int:
     try:
         depot = Depot.view(depot_address(env_file=Path.cwd() / ".env"))
         for files, result, about, items in vocabularies(depot):
-            note = api.adopt(f"{ADOPTED}{result['sha256']}", files, result, about, on_erasure="note", items=items)
+            note = api.adopt(f"{api.ADOPTED}{result['sha256']}", files, result, about, on_erasure="note", items=items)
             say(f"vocabulary {result['sha256']} of the tokenizer recipe {about['recipe']} version "
                 f"{about['version']}: delivery {note['key']}, {len(items):,} texts")
     except Exception as error:  # noqa: BLE001 a refusal of the depot or the dock, said once
