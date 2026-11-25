@@ -31,6 +31,10 @@ loops at small sizes, and half against it.
   windows; the gap in copying, 11 points, is within the 13 points two
   seeds of one recipe show
   ([run-to-run-spread.md](run-to-run-spread.md)). **measured here**, one run each
+- A learned share between 0 and 1, by token, of what each extra pass
+  changes does not lower the loss: 2.67 against 2.65 without it, on the
+  same windows. It keeps 98% of the second pass and 42% of the third.
+  **measured here**, one run each
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or
@@ -191,8 +195,34 @@ lowered the loss by 0.05 ([lookup-memory.md](lookup-memory.md)); if it
 does the same here, the loops give about 0.09. The copying figures are
 those of the `copying` test of `wpt eval`, on 200 prompts each.
 
+A third model is the second with a gate on each extra pass: for each
+token, a share between 0 and 1 computed from the token's state before the
+pass (one weight vector of the model's width and one bias for each pass,
+514 parameters), by which what the pass changes is multiplied. The share
+starts at 0.98. Trained once the same way (commit a067f3ba0d, RTX 5090).
+
+| | 2 loops and the table | The same with the gate |
+| --- | --- | --- |
+| Validation loss at update 8,000 | 2.78 | 2.79 |
+| Validation loss at update 8,990 | 2.654 | 2.671 |
+| Mean share kept of the second pass, at the end | | 0.98 |
+| Mean share kept of the third pass, at the end | | 0.42 |
+| Repeated sequence, tokens written | 84% | 95% |
+| Repeated sequence, written whole | 72% | 90% |
+| Stated word, likeliest of four, English and French | 76%, 71% | 78%, 72% |
+| Stated number, likeliest of four, English and French | 86%, 76% | 91%, 85% |
+
+The share kept of the third pass fell to 0.02 in the first 200 updates,
+rose again, and moved between 0.3 and 0.5 from update 5,000 to the end.
+Both runs measure their loss on the same windows. The copying figures
+differ by less than two runs of one recipe do
+([run-to-run-spread.md](run-to-run-spread.md)).
+
 ## Open
 
+- **One loop against two.** The gate keeps less than half of the third
+  pass. A model with 1 loop, at two thirds of the compute of 2, measured
+  against both.
 - **Loops alone and the table alone on the model with one table**: the
   measure above gives their sum.
 - **The same loss by a deeper model of equal compute.** A model that runs
@@ -220,7 +250,9 @@ those of the `copying` test of `wpt eval`, on 200 prompts each.
 - A looped mixture against a dense model at equal parameters under 100M.
 - **A number of passes chosen for each token.** The one source that routes
   tokens through a loop finds the routing, not the loop, gives the gain. A
-  measure trains, at an equal number of parameters and equal compute, a
-  plain model, a plain loop and a loop with 1 to 2 passes by token.
+  soft share of each pass, measured above, gives none and saves no
+  compute. A measure trains, at an equal number of parameters and equal
+  compute, a plain model, a plain loop and a loop where a token that
+  leaves does not run the later passes.
 - The figures of the published sources above, to be compared with their
   texts.
