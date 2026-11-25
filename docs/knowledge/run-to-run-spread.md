@@ -19,14 +19,18 @@ defined in [README.md](README.md).
   loss does, by 2 points and more, and a continuous measure such as the
   loss or bits per byte separates two models better. **published,
   agreed**, **unchecked**
-- Before the end of training the spread is far larger: two runs of one
-  recipe of 45M parameters differ by 0.06 nats of validation loss at the
-  same update, one ahead at two thirds of the run and behind near its end.
-  **measured here**, two runs
-- So a gap between two models is read at the end of training only, and one
-  run of each shows it when it is several times the spread there: about
-  0.02 nats if the published spread holds at this size, which is not
-  measured. A gap of 0.05 from one run of each is undecided until it is.
+- Two runs of one recipe of 45M parameters copy a repeated sequence at
+  95% and at 82% of its tokens: a test of copying moves by 13 points
+  between seeds, so it ranks two models only when they differ by much
+  more. **measured here**, two runs
+- A loss measured on a few million tokens moves by about 0.05 nats with
+  the windows drawn, as much as most gaps between models. Two models are
+  compared on the same windows, or the gap says nothing: two runs of one
+  recipe measured on different windows end 0.06 apart, which the windows
+  alone can give. **measured here**, two runs
+- So one run of each model shows a gap in validation loss when it is
+  several times the spread between seeds, on the same windows: about 0.02
+  nats if the published spread holds at this size, which is not measured.
   **hypothesis**
 - The rank of two models cannot be read early in training: predicting the
   final result needs most of the run. **published, one source**,
@@ -91,21 +95,31 @@ exists under the id or address given.
 
 One recipe trained twice with two seeds: width 256, 11 layers, 32 routed
 experts, a vocabulary of 65,536 in one shared table, 44.8M parameters,
-1.18B tokens in 8,990 updates, the learning rate at its peak until update
-7,192 (commit b7dca7b2f7, RTX 5080 Laptop GPU). Validation loss on the
-same windows:
+1.18B tokens in 8,990 updates (commit b7dca7b2f7, RTX 5080 Laptop GPU).
+Each run measures its validation loss on 20 batches of windows drawn anew
+at each measure from its own seed, so the two runs never read the same
+windows, and within one run the loss moves by 0.05 to 0.08 from one
+measure to the next while the training loss falls smoothly.
 
-| Update | First seed | Second seed |
+| | First seed | Second seed |
 | --- | --- | --- |
-| 5,400 | 3.32 | 3.27 |
-| 6,000 | 3.25 | 3.20 |
-| 8,000 | 2.92 | 2.98 |
+| Validation loss at update 6,000, own windows | 3.25 | 3.20 |
+| Validation loss at update 8,000, own windows | 2.92 | 2.98 |
+| Validation loss at update 8,990, own windows | 2.79 | 2.85 |
+| Repeated sequence, tokens written | 95% | 82% |
+| Repeated sequence, written whole | 89% | 74% |
+| Stated word, likeliest of four, English and French | 77%, 80% | 80%, 74% |
+| Stated number, likeliest of four, English and French | 92%, 86% | 90%, 80% |
+
+The copying figures are those of the `copying` test of `wpt eval`, the
+same 200 prompts for both runs.
 
 ## Open
 
 - **The spread at 40M to 200M parameters on 1B to 4B tokens.** No source
-  measures it there. A measure trains one recipe again with another seed;
-  every such repeat, of any recipe, adds to one estimate.
+  measures it there. The two runs above give it once their loss is
+  measured on one set of windows, large enough for its own error to be
+  under 0.01 nats.
 - **The spread of a test of copying from the context.** The same repeats
   give it, on the `copying` test of `wpt eval`.
 - **Whether an average of the last weights shrinks the spread.** The same
