@@ -30,9 +30,10 @@ working folder:
 
 ## Rules of every call
 
-Every argument and every answer is a value JSON can carry. No call hands
-out a connection, a row object or a path into the freight's own files, so
-each can become a route without its callers changing.
+Every argument and every answer is a value JSON can carry, or a file's
+content as bytes. No call takes a function, and none hands out a
+connection, a row object or a path into the freight's own files, so each
+can become a route without its callers changing.
 
 ## A request
 
@@ -90,10 +91,11 @@ no depot and no freight at hand.
 
 ## The calls
 
-`request(request, home=, depot=, dock=, cap=, log=)` queues a request and
-gives its job's state. It first checks the request against the depot (its
-snapshot, change and digest), the dock (its inputs) and the program (it
-starts it once to read its version). A request whose delivery the dock
+`request(request, home=, depot=, dock=, cap=)` queues a request and gives
+its job's state. It first marks what the erasures carried out since the
+last check did ([Erasures](#erasures)), then checks the request against the
+depot (its snapshot, change and digest), the dock (its inputs) and the
+program (it starts it once to read its version). A request whose delivery the dock
 holds, fresh, is a job done at once, its answer that delivery's note.
 `Refused` for a request that cannot be met; `Busy` when a job of the same
 key is queued or running.
@@ -102,8 +104,9 @@ key is queued or running.
 `seconds`. While no other process runs the queue, this one runs it, the
 jobs queued before first.
 
-`work(home=, stop=)` runs the queue until `stop()` says so; `False` when
-another process runs it.
+`work(home=, seconds=)` runs the queue until the process is stopped, or
+for `seconds`; a job running then goes on from its checkpoint when the
+queue runs again. `False` when another process runs the queue.
 
 `job(job)`, `jobs(limit=)` and `cancel(job)` give a job's state, every
 job queued or running followed by the latest that ended, and cancel one.
@@ -114,15 +117,18 @@ problem, created, started, ended, restarts}`.
 when the dock holds none; `deliveries_on(dock=)` every note, the last made
 first; `items(key, dock=)` the rows of its items tables, in order.
 
-`check(home=, depot=, dock=)` asks the depot which erasures it carried
-out since the mark the freight saw last there, and marks stale every fresh
-delivery whose items hold a text one of them reached: `{mark, erasures,
-marked}`.
+`check(home=, depot=, dock=)` marks what the erasures carried out since
+the last check did ([Erasures](#erasures)): `{mark, erasures, stale,
+noted}`, the depot's mark now, the erasures' ids, and the keys of the
+deliveries marked stale and of those whose note took an erasure in.
 
-`adopt(key, files, result, about, dock=)` puts files made elsewhere on the
-dock as the delivery of `key`, which starts with `adopted-`: `files`
-maps a path under `files/` to a local file, `result` is what a preparation
-would have answered, `about` what the note says of where they come from.
+`adopt(key, files, result, about, on_erasure=, dock=)` puts files made
+elsewhere on the dock as the delivery of `key`, which starts with
+`adopted-`: `files` maps a path under `files/` to its bytes, `result` is
+what a preparation would have answered, `about` what the note says of
+where they come from, `on_erasure` (`"stale"` by default, or `"note"`)
+what an erasure that reaches one of its items does. A fresh delivery of
+that key stays as it is.
 
 ## The queue
 
@@ -160,12 +166,14 @@ The delivery note holds:
 | `snapshot` | its `id`, `name`, `owner`, `change` and `digest` |
 | `preparation` | its `name`, `version`, `unit`, `settings` and `inputs` (by delivery key) |
 | `result` | the JSON the preparation answered with `done` |
-| `files` | each file the program said: `path` (under `files/`), its key, `sha256`, `bytes`, and the fields of its `file` message |
+| `files` | each file the program said: `path` (under `files/`), its `key`, `sha256` and `bytes` on the dock, and `said`, its `file` message as the program sent it |
 | `tables` | the items parts (`rows`, `text_bytes`, `fingerprint` each), `licenses`, `notices` |
 | `items` | `texts`, `pieces`, and the items taken by kind |
 | `shares` | for each share, its `tag`, its `weight` and its groups (`tag`, `texts`, `weight`); `null` without shares |
 | `left_out` | what was left out and why, as a corpus record counts it |
 | `erasures` | the erasures that had reached the snapshot |
+| `on_erasure` | what an erasure that reaches one of its items does: `stale`, or `note` (the program's `ready` says which) |
+| `erasures_since` | with `on_erasure` `note`, the erasures that reached one of its items since it was made |
 | `made_at`, `code_commit`, `rules` | when, from which code, under which selection rules |
 | `stale`, `deleted` | once an erasure reached it, or once its files are deleted |
 
@@ -180,8 +188,27 @@ upload. Otherwise it makes room as it uploads, deleting a file at a time:
 first the files of a folder that holds no note (left by a job that failed),
 then those of a delivery whose deletion is not whole, then those of the
 delivery made least recently. A delivery whose files go is marked
-deleted.
+deleted. The cap never deletes an adopted delivery, which nothing can make
+again, nor a delivery that another one on the dock, or the one being made,
+names as an input: their files count, and stay.
 
 A request whose delivery the dock holds, fresh, is never run again. A
 stale delivery is made again into the same folder, and the files its note
 no longer names are deleted.
+
+## Erasures
+
+The depot marks nothing on the dock. The freight asks the depot
+(`wpt_depot.api.erasures`) which erasures it carried out since the mark it
+saw last there, which the queue's file keeps, and writes what each did into
+the note of every delivery whose items hold a text it reached
+(`freight.erasures`). It asks before every job, before it answers a
+request, and whenever `check` runs, so a delivery is known stale only once
+the freight has asked.
+
+What an erasure does to a delivery is its note's `on_erasure`, which the
+program's `ready` gives: `stale`, the default, marks it stale, and an input
+or a request that names it is refused until the same request makes it
+again; `note` adds the erasure to its `erasures_since` and leaves it fresh,
+for what models keep using after an erasure, such as a vocabulary
+([tokenizer.md](../tokenizer.md)).

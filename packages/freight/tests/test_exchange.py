@@ -20,15 +20,22 @@ def test_a_message_and_its_content_read_back_as_written():
     messages.write(stream, {"type": "take", "ref": 3}, "café\n".encode())
     messages.write(stream, {"type": "end"})
     stream.seek(0)
-    assert messages.read(stream) == ({"type": "take", "ref": 3, "bytes": 6}, "café\n".encode())
-    assert messages.read(stream) == ({"type": "end"}, None)
-    assert messages.read(stream) is None
+    assert messages.read(stream, messages.CONTENT) == ({"type": "take", "ref": 3, "bytes": 6}, "café\n".encode())
+    assert messages.read(stream, messages.CONTENT) == ({"type": "end"}, None)
+    assert messages.read(stream, messages.CONTENT) is None
+
+
+def test_bytes_is_a_length_only_in_a_message_that_carries_content():
+    # a program's file message may name its own `bytes`: no content follows it
+    stream = io.BytesIO(b'{"type": "file", "path": "x", "bytes": 1048576}\n{"type": "done"}\n')
+    assert messages.read(stream) == ({"type": "file", "path": "x", "bytes": 1048576}, None)
+    assert messages.read(stream) == ({"type": "done"}, None)
 
 
 @pytest.mark.parametrize("written", [b"not json\n", b'{"no": "type"}\n', b'{"type": "take", "bytes": 9}\nshort'])
 def test_a_line_that_is_no_message_is_refused(written):
     with pytest.raises(messages.BadMessage):
-        messages.read(io.BytesIO(written))
+        messages.read(io.BytesIO(written), messages.CONTENT)
 
 
 def test_the_delivery_key_covers_what_makes_the_delivery_and_nothing_else():

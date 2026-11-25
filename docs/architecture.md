@@ -43,7 +43,7 @@ disagree.
 | --- | --- | --- |
 | depot | every change to a depot's tables, under its rules; a recipe's corpus built from a snapshot into the store | `wpt_depot` |
 | service layer | the only code that reads or writes `data/` ([The service layer](#the-service-layer)) | `wpt_recipes/recipes.py` |
-| freight | a request's items chosen in a snapshot and prepared by one program into a delivery on the store ([api/freight.md](api/freight.md)) | `freight`, `wpt_corpus` |
+| freight | a request's items chosen in a snapshot and prepared by one program into a delivery on the store ([api/freight.md](api/freight.md)) | `freight` |
 | store | files, compressed, on a folder or a bucket ([The store](#the-store)) | `wpt_store` |
 | training | the steps a recipe names, through gpu workers | `wpt.train`, `wpt_training`, `wpt_worker` |
 | agent harness | the containers, tools and checks of agentic tasks, and the Git repository a task works in | `wpt_agent` |
@@ -1121,7 +1121,7 @@ store.
 | `wpt-depot` | the depot: texts and structured items, the decisions on them, snapshots and erasures, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `delta.py`, and `conversion.py`, which makes snapshots of the libraries and datasets of format 12); erasures carried out (`erasure.py`); snapshots, made, read and checked against their digest (`snapshots.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); what code outside the depot asks of it, a snapshot, its listing, its texts' content and credits and the erasures, in values JSON carries ([api/depot.md](api/depot.md), `api.py`); a snapshot's corpus built into the store as a stream, reading the depot only through `api.py` (`corpus.py`), in the order of its texts' export keys (`order.py`), each share split over its texts' tags (`groups.py`), a long text taken as pieces (`pieces.py`), estimated before it is built (`estimate.py`), what the store keeps of corpora (`corpora.py`) and a model's notice from a corpus (`notice.py`); the libraries and datasets of format 12, read-only, for models trained before snapshots, with a dataset's export in parts and its sample (`legacy.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
 | `wpt-recipes` | the model and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results; a kept model folder copied out, checked against its sha256s (`models.py`) |
-| `freight` | reads a request, chooses items in a depot's snapshot as `wpt depot build` chooses, reading the depot only through `wpt_depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the store with a delivery note (`job.py`, `deliveries.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
+| `freight` | reads a request, chooses items in a depot's snapshot as `wpt depot build` chooses, reading the depot only through `wpt_depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the store with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
 | `wpt-corpus` | WPT's preparations, the programs `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`, [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |
 | `wpt-tokenizer` | the byte-level BPE tokenizer, Rust inside |
@@ -1134,14 +1134,18 @@ store.
 | `wpt` (`apps/wpt`) | the app: the `wpt` command and its web server, two controllers over the services above ([The app](#the-app)) |
 | `freight-app` (`apps/freight`) | the `freight` command, a controller over `freight.api` ([api/freight.md](api/freight.md)) |
 
-The packages hold services only, and no command. Those that run without
+The packages hold services and no command, with one exception: the
+programs a preparation runs as, `wpt-tokens` and `wpt-count`, are console
+scripts of `wpt-corpus`, which the freight starts. Those that run without
 the repository, `wpt-worker` (on a gpu worker's machine), `wpt-model` and
 `wpt-inference` (a model folder and the text it writes), install alone.
 
 ## The app
 
-One project, `wpt` (`apps/wpt`; the workspace's root project is
-`wpt-workspace`), holds the one command, `wpt`:
+The project `wpt` (`apps/wpt`; the workspace's root project is
+`wpt-workspace`) holds the command `wpt`, and `freight-app`
+(`apps/freight`) the command `freight`, a controller over `freight.api`
+([api/freight.md](api/freight.md)). The command `wpt` has:
 
 - the subcommands: `wpt depot`, `wpt store`, `wpt agent`, `wpt train`,
   `wpt eval`, `wpt chat`, `wpt manager` and `wpt doctor`,

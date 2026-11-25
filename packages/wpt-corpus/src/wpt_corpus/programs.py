@@ -72,7 +72,7 @@ class _Program:
     def run(self, stdin, stdout) -> int:
         self.out = stdout
         try:
-            first = channel.read(stdin)
+            first = channel.read(stdin, channel.CONTENT)
             if first is None:
                 return 0
             start, _ = first
@@ -162,7 +162,7 @@ class _Program:
     def _read(self, stdin, waiting: queue.Queue):
         """Read the freight's messages and start the work of each on the pool, in order."""
         try:
-            while (found := channel.read(stdin)) is not None:
+            while (found := channel.read(stdin, channel.CONTENT)) is not None:
                 message, content = found
                 if message["type"] in ("weigh", "take"):
                     waiting.put((message, self.pool.submit(self._work, message, content)))

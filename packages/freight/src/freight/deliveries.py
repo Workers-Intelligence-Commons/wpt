@@ -16,7 +16,10 @@ A delivery is fresh while its note says neither `stale` (an erasure
 reached an item it holds: the ids of the erasures) nor `deleted` (its files
 are gone: when, and why). A deleted delivery keeps its note, so the same
 request can run again and its id be compared with the one the note keeps.
-A failed job leaves no note.
+A failed job leaves no note. Its note's `on_erasure` says what an erasure
+that reaches one of its items does: STALE (the default) marks it stale,
+NOTED writes the erasure into `erasures_since` and leaves it fresh, as its
+program asked (a vocabulary's, whose models keep working).
 
 A cap (Room) bounds the bytes the deliveries' files take together, as
 their notes give each file's size: past it, the job in progress deletes the
@@ -25,17 +28,19 @@ the one being made; a job that alone needs more than the cap fails
 (TooBig), and so does one that finds nothing it may delete (NoRoom),
 keeping what it uploaded. Before its first upload, a job estimates its
 whole size (Room.expect), so a delivery bigger than the cap fails before
-any other is deleted for it.
+any other is deleted for it. The cap never deletes an adopted delivery,
+which nothing can make again, nor one that a delivery on the dock, or the
+one being made, names as an input: their files count, and stay.
 
     notes(dock)                       every delivery note on the dock, newest first
     of_key(dock, key)                 the note of a delivery key, None without one
-    find(dock, delivery_id)           the note of that id (or of a start of it), None without one
     files(note)                       every file a note names
     read_items(dock, note)            the items tables, as one table
     fetch(dock, note, folder)         a delivery's files copied into a local folder
-    mark_stale(dock, texts, erasures) mark every fresh delivery that holds one of these texts stale
+    reached(note, erasures)           the note once those erasures reached an item it holds
+    mark_reached(dock, texts, erasures)   mark what those erasures did to every delivery that holds one of the texts
     delete(dock, note, why)           delete a delivery's files, its note kept and marked
-    adopt(dock, key, files, result, about)   files made elsewhere put on the dock as a delivery
+    adopt(dock, key, files, result, about, on_erasure)   files made elsewhere put on the dock as a delivery
 """
 
 import shutil
@@ -53,6 +58,8 @@ FOLDER = "deliveries"
 NOTE = "delivery.json"
 CAPPED = "the dock's cap needed its room"
 ADOPTED = "adopted-"  # the start of the key of a delivery adopted from files made elsewhere
+STALE, NOTED = "stale", "note"  # what an erasure that reaches an item of a delivery does to it (on_erasure)
+ON_ERASURE = (STALE, NOTED)
 
 
 class DeliveryError(Exception):
@@ -112,15 +119,6 @@ def of_key(dock, key: str) -> dict | None:
     return dock.get_json(f"{folder_of(key)}/{NOTE}")
 
 
-def find(dock, delivery_id: str) -> dict | None:
-    """The note of the delivery whose id is delivery_id, or starts with it
-    when only one does; None when none does. ValueError when several do."""
-    found = [note for note in notes(dock) if note["id"].startswith(delivery_id)]
-    if len(found) > 1:
-        raise ValueError(f"{delivery_id!r} starts the ids of {len(found)} deliveries: give more of the id")
-    return found[0] if found else None
-
-
 def read_items(dock, note: dict) -> pa.Table:
     """The items tables of a delivery, each part checked by the dock, as one table in order."""
     parts = note.get("tables", {}).get("items", [])
@@ -144,22 +142,30 @@ def fetch(dock, note: dict, folder: Path) -> Path:
     return folder
 
 
-def mark_stale(dock, texts, erasures, keep=lambda note: False) -> list[str]:
-    """Mark stale every delivery of the dock whose files are kept and that
-    holds one of the texts (ids) because the erasures (ids) were carried
-    out: the keys of the deliveries marked. keep(note) True writes the
-    erasures into the note instead and leaves it fresh. A delivery already
-    stale keeps its earlier erasures; a deleted one is left as it is."""
-    marked = []
+def reached(note: dict, erasures) -> dict:
+    """The note once the erasures (ids) reached an item it holds: marked
+    stale, the erasures it was stale for already kept, or with on_erasure
+    NOTED, the erasures added to its erasures_since and the note left fresh.
+    The note as it was without an erasure."""
+    if not erasures:
+        return note
+    if note.get("on_erasure", STALE) == NOTED:
+        return {**note, "erasures_since": sorted({*note.get("erasures_since", []), *erasures})}
+    return {**note, "stale": {"erasures": sorted({*note.get("stale", {}).get("erasures", []), *erasures})}}
+
+
+def mark_reached(dock, texts, erasures) -> dict[str, list[str]]:
+    """Write into the note of every delivery of the dock whose files are
+    kept and that holds one of the texts (ids) what the erasures (ids) do to
+    it (reached): {stale: the keys of the deliveries marked stale, noted:
+    the keys of those whose note took the erasures in}. A deleted delivery
+    is left as it is."""
+    marked = {"stale": [], "noted": []}
     for note in notes(dock):
         if "deleted" in note or not holds(dock, note, texts):
             continue
-        if keep(note):
-            noted = sorted({*note.get("erasures_since", []), *erasures})
-            dock.put_json(f"{folder_of(note['key'])}/{NOTE}", {**note, "erasures_since": noted})
-            continue
-        marked_stale(dock, note, erasures)
-        marked.append(note["key"])
+        dock.put_json(f"{folder_of(note['key'])}/{NOTE}", reached(note, erasures))
+        marked["noted" if note.get("on_erasure", STALE) == NOTED else "stale"].append(note["key"])
     return marked
 
 
@@ -174,13 +180,6 @@ def holds(dock, note: dict, texts) -> bool:
         if not wanted.isdisjoint(ids):
             return True
     return False
-
-
-def marked_stale(dock, note: dict, erasures) -> dict:
-    """The delivery's note marked stale because of the erasures (ids), with
-    the erasures it was stale for already: the note as stored."""
-    stale = sorted({*note.get("stale", {}).get("erasures", []), *erasures})
-    return dock.put_json(f"{folder_of(note['key'])}/{NOTE}", {**note, "stale": {"erasures": stale}})
 
 
 def delete(dock, note: dict, why: str) -> dict:
@@ -202,24 +201,27 @@ def mark_deleted(dock, note: dict, why: str, whole: bool = False) -> dict:
                          {**note, "deleted": {"at": at, "why": why, "whole": whole}})
 
 
-def adopt(dock, key: str, made: dict[str, Path], result: dict, about: dict) -> dict:
+def adopt(dock, key: str, made: dict[str, bytes], result: dict, about: dict, on_erasure: str = STALE) -> dict:
     """Put files made elsewhere on the dock as the delivery of key, which
-    starts with ADOPTED: made {path under files/: local file}, result the
+    starts with ADOPTED: made {path under files/: its bytes}, result the
     JSON a preparation would have answered, about what the note says of
-    where they come from (`adopted`). The note as stored; the one already
-    there when it is fresh."""
+    where they come from (`adopted`), on_erasure what an erasure that
+    reaches one of its items does (ON_ERASURE). The note as stored; the one
+    already there when it is fresh."""
     if not key.startswith(ADOPTED):
         raise DeliveryError(f"an adopted delivery's key starts with {ADOPTED}: {key}")
+    if on_erasure not in ON_ERASURE:
+        raise DeliveryError(f"on_erasure is one of {', '.join(ON_ERASURE)}: {on_erasure!r}")
     known = of_key(dock, key)
     if known is not None and fresh(known):
         return known
     folder = folder_of(key)
     listed = []
-    for path, local in sorted(made.items()):
-        file = dock.put_named(f"{folder}/files/{path}", local)
-        listed.append({**file.reference(), "path": path, "bytes": Path(local).stat().st_size})
+    for path, data in sorted(made.items()):
+        file = dock.put_named(f"{folder}/files/{path}", bytes(data))
+        listed.append({**file.reference(), "path": path, "bytes": len(data)})
     note = {"key": key, "id": fingerprint({"key": key, "files": [[one["path"], one["sha256"]] for one in listed]}),
-            "adopted": about, "result": result, "files": listed, "tables": {},
+            "adopted": about, "result": result, "files": listed, "tables": {}, "on_erasure": on_erasure,
             "made_at": datetime.now(UTC).isoformat()}
     return dock.put_json(f"{folder}/{NOTE}", note)
 
@@ -232,10 +234,14 @@ class Room:
     of a folder of deliveries/ that holds no note (left by a job that
     failed or was cancelled: its request, run again, finds them gone and
     starts over). The files are listed once, when the first room is asked
-    for, and only this Room deletes any while the job runs."""
+    for, and only this Room deletes any while the job runs. It never
+    deletes an adopted delivery, nor one that another delivery whose files
+    are kept, or the one being made (inputs: the keys it names), names as
+    an input."""
 
-    def __init__(self, dock, cap: int | None, own: str, log=lambda line: None):
+    def __init__(self, dock, cap: int | None, own: str, log=lambda line: None, inputs=()):
         self.dock, self.cap, self.own, self.log = dock, cap, own, log
+        self.kept_keys = set(inputs)  # the deliveries the cap never deletes, completed as the notes are listed
         self.used = 0  # the bytes the delivery being made uploaded so far
         self._kept = None  # {delivery key, or a folder without a note: (its note or None, [its files left])}
         self._said = set()  # the folders without a note whose deletion was said
@@ -264,6 +270,9 @@ class Room:
                     continue
                 if note.get("deleted", {}).get("whole", "deleted" in note):
                     continue
+                if note["key"].startswith(ADOPTED):
+                    self.kept_keys.add(note["key"])
+                self.kept_keys.update(((note.get("preparation") or {}).get("inputs") or {}).values())
                 left = [one for one in files(note) if "deleted" not in note or self.dock.has(File.of(one))]
                 self._kept[note["key"]] = (note, [{**one, "bytes": self._size(one)} for one in left])
         return self._kept
@@ -285,7 +294,7 @@ class Room:
         files of the others while the cap is passed, first those of a folder
         without a note, then those of a delivery whose deletion is not
         whole, then those of the delivery made least recently, a file at a
-        time. TooBig when the delivery alone passes the cap; NoRoom when
+        time, never those of a delivery it keeps (the class says which). TooBig when the delivery alone passes the cap; NoRoom when
         nothing more may be deleted."""
         if self.cap is None:
             self.used += size
@@ -301,7 +310,7 @@ class Room:
                 if note is None:
                     return (0, "")
                 return (1 if "deleted" in note else 2, note["made_at"])
-            free = sorted((name for name, (_, left) in kept.items() if left), key=rank)
+            free = sorted((name for name, (_, left) in kept.items() if left and name not in self.kept_keys), key=rank)
             if not free:
                 raise NoRoom(f"the dock's cap of {self.cap:,} bytes is reached ({taken:,} bytes of other deliveries, "
                              f"{self.used + size:,} of this one) and nothing else may be deleted")

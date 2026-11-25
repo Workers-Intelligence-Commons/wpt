@@ -21,7 +21,9 @@ the oldest queued job, marks it running and runs it in a spawned process,
 looking at the queue every POLL seconds. A job a stop cut short (its runner
 gone) is queued again when a runner starts, and goes on from its
 checkpoint, at most RESTARTS times; then it fails with that reason. A
-cancelled job never runs, and a running one's process is stopped.
+cancelled job never runs, and a running one's process is stopped. Before
+a job runs, its process marks what the erasures carried out since the last
+check did to the deliveries (freight.erasures).
 """
 
 import json
@@ -260,12 +262,15 @@ class Queue:
 
 
 def _work(home: str, job: str):
-    """A job's process: the request run (freight.job.Job), its progress,
-    then its answer or its failure, written to the queue while the job is
-    still running there (a cancelled job keeps its state)."""
+    """A job's process: the erasures the depot carried out since the last
+    check marked on the dock (freight.erasures), the request run
+    (freight.job.Job), its progress, then its answer or its failure, written
+    to the queue while the job is still running there (a cancelled job keeps
+    its state)."""
     from wpt_store import open_store
     from wpt_utils.programs import code
 
+    from . import erasures
     from .deliveries import DeliveryError
     from .exchange import PreparationFailed
     from .job import Job
@@ -296,6 +301,7 @@ def _work(home: str, job: str):
     key = row["key"]
     try:
         dock = open_store(row["dock"], env_file=".env")
+        erasures.check(queue, row["depot"], dock)
         found = Job(json.loads(row["request"]), row["depot"], dock, queue.work_folder(key),
                     checkpoint=queue.checkpoint(key), save=lambda state: queue.save(key, state), progress=progress,
                     cap=row["cap"], code_commit=code()["commit"]).run()

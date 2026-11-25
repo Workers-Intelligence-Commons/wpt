@@ -39,7 +39,6 @@ from wpt_depot import api
 
 PLAIN, CONVERSATION = "plain", "conversation"
 RULES = 1  # the version of the rules of what a job takes, in the delivery key: raised whenever they change
-UNITS = ("bytes",)  # the units of a size the freight weighs itself; any other is the preparation's
 INTERNED = 10_000  # different lists of tags kept as their JSON text, at most
 
 

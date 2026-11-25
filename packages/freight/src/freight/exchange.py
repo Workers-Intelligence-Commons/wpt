@@ -101,7 +101,7 @@ class Preparation:
         """The next message of the program that is no log line (each log line written as it comes)."""
         while True:
             try:
-                found = messages.read(self.process.stdout)
+                found = messages.read(self.process.stdout)  # no message of the program carries content
             except messages.BadMessage as error:
                 self.close()
                 raise PreparationFailed(f"{self.name} wrote {error}") from None

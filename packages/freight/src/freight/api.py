@@ -3,9 +3,10 @@ a request, wait for its job, find a delivery again, work out a delivery's
 key, mark what an erasure reached, and adopt files made elsewhere as a
 delivery.
 
-Every function takes and gives only values JSON can carry: the freight's
-home as a path, the depot as its address and the dock as its URL, each
-read from the settings when not given (settings). None hands out a
+Every function takes and gives only values JSON and byte streams can
+carry: the freight's home as a path, the depot as its address and the dock
+as its URL, each read from the settings when not given (settings), and a
+file's content as bytes. None takes a function, and none hands out a
 connection, a row object or a path into the freight's own files, so each
 can become a route without its callers changing.
 
@@ -13,12 +14,12 @@ can become a route without its callers changing.
     key(request, version)                   the delivery key of a request, its program answering that version
     request(request, ...)                   queue a request: its job (done at once when its delivery is on the dock)
     wait(job, ...)                          the job once it ended, the queue run here while no other process does
-    work(...)                               run the queue until stopped
+    work(...)                               run the queue until stopped, or for a number of seconds
     job(job), jobs(), cancel(job)           a job's state, every job's, cancelling one
     delivery(key), deliveries()             a delivery's note, every note on the dock
     items(key)                              the rows of a delivery's items tables
-    check(...)                              mark stale every delivery an erasure reached since the last check
-    adopt(key, files, result, about)        files made elsewhere put on the dock as a delivery
+    check(...)                              mark what the erasures since the last check did to the deliveries
+    adopt(key, files, result, about, ...)   files made elsewhere put on the dock as a delivery
 """
 
 import os
@@ -26,11 +27,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from wpt_depot import api as depot_api
 from wpt_store import open_store, read_env_file
-from wpt_utils.lines import say
 
-from . import deliveries
+from . import deliveries, erasures
 from .jobs import ENDED, Queue
 from .job import Job
 from .selection import delivery_key
@@ -77,9 +76,10 @@ def key(request: dict, version: str) -> str:
 
 
 def request(request: dict, *, home: str | None = None, depot: str | None = None, dock: str | None = None,
-            cap: int | None = None, log=say) -> dict:
+            cap: int | None = None) -> dict:
     """Queue request (docs/api/freight.md, "A request"): its job's state.
-    The request is checked first against the depot (its snapshot, change
+    The erasures carried out since the last check are marked first
+    (check). The request is checked against the depot (its snapshot, change
     and digest), the dock (its inputs) and the program (its version, which
     the delivery key covers): a request whose delivery the dock holds,
     fresh, is a job done at once, its answer that delivery's note. Refused
@@ -88,8 +88,9 @@ def request(request: dict, *, home: str | None = None, depot: str | None = None,
     found = settings(home, depot, dock, cap)
     queue = Queue(found["home"])
     store = _dock(found["dock"])
+    erasures.check(queue, found["depot"], store)
     with tempfile.TemporaryDirectory(prefix="probe-", dir=_made(Path(found["home"]))) as folder:
-        planned = Job(request, found["depot"], store, Path(folder), log=log)
+        planned = Job(request, found["depot"], store, Path(folder))
         delivery = planned.plan()
     known = deliveries.of_key(store, delivery)
     if known is not None and deliveries.fresh(known):
@@ -116,9 +117,12 @@ def wait(job: str, *, home: str | None = None, seconds: float | None = None) -> 
     return queue.state(job)
 
 
-def work(*, home: str | None = None, stop=lambda: False) -> bool:
-    """Run the queue until stop() says so: False when another process runs it."""
-    return Queue(settings_home(home)).run(stop=stop)
+def work(*, home: str | None = None, seconds: float | None = None) -> bool:
+    """Run the queue until the process is stopped, or for seconds (None: no
+    limit; a job running then is cut short and goes on from its checkpoint
+    when the queue runs again): False when another process runs it."""
+    deadline = None if seconds is None else time.monotonic() + seconds
+    return Queue(settings_home(home)).run(stop=lambda: deadline is not None and time.monotonic() >= deadline)
 
 
 def job(job: str, *, home: str | None = None) -> dict:
@@ -158,27 +162,21 @@ def items(key: str, *, dock: str | None = None) -> list[dict]:
 
 def check(*, home: str | None = None, depot: str | None = None, dock: str | None = None) -> dict:
     """Ask the depot which erasures it carried out since the mark the
-    freight saw last there, and mark stale every fresh delivery whose items
-    hold a text one of them reached: {mark (the depot's mark now), erasures
-    (their ids), marked (the keys of the deliveries marked)}."""
+    freight saw last there, and write what each did into every delivery
+    whose items hold a text it reached, as its note's on_erasure says:
+    {mark (the depot's mark now), erasures (their ids), stale (the keys of
+    the deliveries marked stale), noted (those whose note took an erasure
+    in and stay fresh)}. A job asks the same before it runs."""
     found = settings(home, depot, dock)
-    queue = Queue(found["home"])
-    since = queue.mark(found["depot"])
-    answer = depot_api.erasures(found["depot"], since)
-    marked = []
-    store = _dock(found["dock"])
-    for one in answer["erasures"]:
-        marked += deliveries.mark_stale(store, one["texts"], [one["id"]])
-    queue.keep_mark(found["depot"], answer["mark"])
-    return {"mark": answer["mark"], "erasures": [one["id"] for one in answer["erasures"]],
-            "marked": sorted(set(marked))}
+    return erasures.check(Queue(found["home"]), found["depot"], _dock(found["dock"]))
 
 
-def adopt(key: str, files: dict[str, str], result: dict, about: dict, *, dock: str | None = None) -> dict:
-    """Put files made elsewhere ({path under files/: local path}) on the dock as the delivery of key, which starts
-    with `adopted-`: its note (freight.deliveries.adopt)."""
-    return deliveries.adopt(_dock(settings_dock(dock)), key, {path: Path(local) for path, local in files.items()},
-                            result, about)
+def adopt(key: str, files: dict[str, bytes], result: dict, about: dict, *, on_erasure: str = deliveries.STALE,
+          dock: str | None = None) -> dict:
+    """Put files made elsewhere ({path under files/: its bytes}) on the dock as the delivery of key, which starts
+    with `adopted-`, an erasure that reaches one of its items doing what on_erasure says ("stale" or "note"): its
+    note (freight.deliveries.adopt)."""
+    return deliveries.adopt(_dock(settings_dock(dock)), key, files, result, about, on_erasure)
 
 
 def settings_home(home: str | None) -> str:

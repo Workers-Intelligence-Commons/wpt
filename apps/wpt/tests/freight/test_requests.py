@@ -1,7 +1,8 @@
 """A corpus asked of the freight, its program wpt-tokens preparing it,
 against the corpus `wpt depot build` builds (wpt_depot.corpus.build) from
 the same snapshot, data section and vocabulary: the same token files, by
-their token hashes, and the same rows of the texts table."""
+their token hashes, and the same rows of the texts table; and the same
+request with wpt-count, which gives the same weights and writes no file."""
 
 import base64
 import hashlib
@@ -71,27 +72,26 @@ def section(built, name, kinds, shares, size) -> dict:
             "total_tokens": size, "vocabulary": {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size}}
 
 
-def vocabulary(built, tmp_path) -> str:
+def vocabulary(built) -> str:
     """The test vocabulary put on the dock as an adopted delivery: its key."""
-    path = tmp_path / "vocabulary.json"
-    path.write_bytes(built.tokenizer.to_bytes())
     key = f"adopted-{built.vocabulary}"
-    api.adopt(key, {"vocabulary.json": str(path)}, {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size},
-              {"by": "a test"}, dock=built.store.root.as_uri())
+    api.adopt(key, {"vocabulary.json": built.tokenizer.to_bytes()},
+              {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size}, {"by": "a test"}, on_erasure="note",
+              dock=built.store.root.as_uri())
     return key
 
 
-def asked(built, tmp_path, name, kinds, shares, size, vocabulary_key) -> dict:
+def asked(built, tmp_path, name, kinds, shares, size, vocabulary_key, program="wpt-tokens") -> dict:
     """The delivery note of the corpus request of that snapshot, kinds, shares and size, run by the freight."""
     snapshot = built.depot.snapshot(name)
     request = {"depot": built.depot.name(),
                "snapshot": {"name": name, "change": snapshot["at_change"], "digest": snapshot["digest"]},
                "selection": {"kinds": kinds, "shares": [{"tag": tag, "share": share} for tag, share in shares],
                              "size": None if size is None else {"unit": "tokens", "amount": size}},
-               "preparation": {"name": "wpt-tokens", "settings": {"shard_tokens": SHORT},
+               "preparation": {"name": program, "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": vocabulary_key}}}
     where = {"home": str(tmp_path / "freight"), "depot": built.depot.address, "dock": built.store.root.as_uri()}
-    state = api.request(request, log=lambda *_: None, **where)
+    state = api.request(request, **where)
     done = api.wait(state["id"], home=where["home"])
     assert done["state"] == "done", done["problem"]
     assert done["answer"]["key"] == api.key(request, done["answer"]["preparation"]["version"])
@@ -134,7 +134,7 @@ def same(built, record: dict, note: dict):
 ])
 def test_a_corpus_request_gives_the_token_files_and_rows_wpt_depot_build_gives(built, tmp_path, kinds, shares, size):
     name = rich(built)
-    key = vocabulary(built, tmp_path)
+    key = vocabulary(built)
     record = build(built.depot, built.depot.snapshot(name)["id"], section(built, name, kinds, shares, size),
                    built.store, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT,
                    log=lambda *_: None)
@@ -147,7 +147,7 @@ def test_a_corpus_request_gives_the_token_files_and_rows_wpt_depot_build_gives(b
 
 
 def test_the_same_request_again_is_answered_at_once_with_its_delivery(built, tmp_path):
-    key = vocabulary(built, tmp_path)
+    key = vocabulary(built)
     first = asked(built, tmp_path, "d", [], [("en", 1.0)], 700, key)
     record = build(built.depot, built.depot.snapshot("d")["id"], section(built, "d", [], [("en", 1.0)], 700),
                    built.store, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT, log=lambda *_: None)
@@ -159,51 +159,31 @@ def test_the_same_request_again_is_answered_at_once_with_its_delivery(built, tmp
                "preparation": {"name": "wpt-tokens", "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": key}}}
     state = api.request(request, home=str(tmp_path / "freight"), depot=built.depot.address,
-                        dock=built.store.root.as_uri(), log=lambda *_: None)
+                        dock=built.store.root.as_uri())
     assert state["state"] == "done" and state["answer"]["id"] == first["id"]
 
 
-class Stop(Exception):
-    """A job cut short."""
-
-
-@pytest.mark.parametrize("cut", [1, 2, 3])
-def test_a_job_cut_short_goes_on_from_its_checkpoint_to_the_same_delivery(built, tmp_path, cut):
-    # the job stops right after its cut-th checkpoint (in the walk, or among the conversations once it ended);
-    # started again with that state and the same work folder, its program told which files it wrote, it gives
-    # the corpus a job that never stopped gives
-    from freight.job import Job
-
+def test_wpt_count_weighs_as_wpt_tokens_and_writes_no_file(built, tmp_path):
     name = rich(built)
-    key = vocabulary(built, tmp_path)
-    snapshot = built.depot.snapshot(name)
-    request = {"depot": built.depot.name(),
-               "snapshot": {"name": name, "change": snapshot["at_change"], "digest": snapshot["digest"]},
-               "selection": {"kinds": [], "shares": [{"tag": "en", "share": 0.7}, {"tag": "de", "share": 0.3}],
-                             "size": {"unit": "tokens", "amount": 3000}},
-               "preparation": {"name": "wpt-tokens", "settings": {"shard_tokens": SHORT},
-                               "inputs": {"vocabulary": key}}}
-    saved = []
-
-    def save(state):
-        saved.append(state)
-        if len(saved) == cut:
-            raise Stop()
-    work = tmp_path / "work"
-    with pytest.raises(Stop):
-        Job(request, built.depot.address, built.store, work, save=save, log=lambda *_: None).run()
-    assert saved[-1]["files"]
-    note = Job(request, built.depot.address, built.store, work, checkpoint=saved[-1],
-               log=lambda *_: None).run()
-    record = build(built.depot, snapshot["id"], section(built, name, [], [("en", 0.7), ("de", 0.3)], 3000),
-                   built.store, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT, log=lambda *_: None)
-    same(built, record, note)
+    key = vocabulary(built)
+    shares = [("en", 0.7), ("de", 0.3)]
+    tokens = asked(built, tmp_path, name, [], shares, 3000, key)
+    counted = asked(built, tmp_path, name, [], shares, 3000, key, program="wpt-count")
+    assert counted["key"] != tokens["key"] and counted["files"] == []
+    result = tokens["result"]
+    assert counted["result"] == {"total": result["total_tokens"] + result["items_tokens"],
+                                 "plain": result["total_tokens"], "items": result["items_tokens"]}
+    dock = built.store.root.as_uri()
+    assert [{**row, "tokens": None} for row in api.items(tokens["key"], dock=dock)] == [
+        {**row, "tokens": None} for row in api.items(counted["key"], dock=dock)]
+    assert (counted["items"], counted["shares"], counted["left_out"]) == (
+        tokens["items"], tokens["shares"], tokens["left_out"])
 
 
 def test_the_command_queues_a_request_waits_for_it_and_finds_its_delivery(built, tmp_path, monkeypatch, capsys):
     from freight_app import main
 
-    key = vocabulary(built, tmp_path)
+    key = vocabulary(built)
     snapshot = built.depot.snapshot("d")
     request = {"depot": built.depot.name(),
                "snapshot": {"name": "d", "change": snapshot["at_change"], "digest": snapshot["digest"]},

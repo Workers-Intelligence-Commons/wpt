@@ -56,20 +56,21 @@ else its sha256; each part of the items table by a hash of its rows; the
 licenses and notices), depot (the address the request names), request (as
 given), snapshot {id, name, owner, change, digest}, preparation {name,
 version, unit, settings, inputs}, result (what the program answered),
-files (each {path, key, sha256, bytes} and what the program said of it),
+files (each {path, key, sha256, bytes} and said, its file message),
 tables {items: [parts], licenses, notices}, items {texts (a text taken as
 pieces counting once), pieces, kinds: {kind: items taken}}, shares (with
 shares: [{tag, weight, groups: [{tag, texts, weight}]}]; a text counts for
 each of its groups, a text with no other tag for the group null), left_out,
 erasures (those the depot had carried out that reached a text of the
-snapshot), made_at, code_commit, rules}. Each row of the items table is a
+snapshot), on_erasure, made_at, code_commit, rules}. Each row of the items table is a
 text taken, with its revision, its credits, its tags as of the snapshot,
 its scores, `piece` (null for a whole text), `quotes` (a conversation's
 quoted texts), the fields of its `at`, and its `weight`.
 
 An erasure carried out while the job ran is checked before the note is
 written and again after: when it reached an item taken, the note is
-written stale.
+written stale, or with the erasure in it when the program answered
+`on_erasure` "note" (freight.deliveries.reached).
 
     Job(request, source, dock, work, ...).run()   the delivery note
 """
@@ -188,6 +189,10 @@ class Job:
         name = self.preparation["name"]
         self.ready = ready_of(name, self.settings, self.inputs, self.work / "probe", self.log)
         self.version, self.unit = str(self.ready.get("version")), self.ready.get("unit")
+        self.on_erasure = self.ready.get("on_erasure", deliveries.STALE)
+        if self.on_erasure not in deliveries.ON_ERASURE:
+            raise PreparationFailed(f"{name} answered on_erasure {self.on_erasure!r}, not one of "
+                                    f"{', '.join(deliveries.ON_ERASURE)}")
         self.prepared = tuple(self.ready.get("kinds") or ())
         self.key = delivery_key({"change": self.snapshot["at_change"], "digest": self.snapshot["digest"]},
                                 self.selection, {"name": name, "version": self.version, "settings": self.settings,
@@ -215,7 +220,7 @@ class Job:
         self.kinds = self.selection["kinds"] or None
         self.holder = self.snapshot["owner"]  # the depot's name every row carries
         self.census = census(self.snapshot["summary"], self.shares, self.kinds, self.prepared)
-        self.room = deliveries.Room(self.dock, self.cap, self.folder, self.log)
+        self.room = deliveries.Room(self.dock, self.cap, self.folder, self.log, inputs=self.input_keys.values())
         self.erasures = _erasures(self.source, self.snapshot["id"])
         named = sqlite3.connect(self.work / "named.sqlite", isolation_level=None)
         try:
@@ -553,8 +558,10 @@ class Job:
         counted yet."""
         state = self.state
         said, self.program.files = self.program.files, []
-        ready = [(self.work / "out" / one["path"], f"{self.folder}/files/{one['path']}", state["files"], one)
-                 for one in said]
+        # a file's entry: the dock's reference and size, and the program's file message apart (said), so no field
+        # the program names takes the place of the freight's
+        ready = [(self.work / "out" / one["path"], f"{self.folder}/files/{one['path']}", state["files"],
+                  {"path": one["path"], "said": one}) for one in said]
         if self.rows:
             number = len(state["parts"])
             path = self.work / f"items-{number:05d}.parquet"
@@ -713,7 +720,8 @@ class Job:
         tables = {"items": state["parts"], "licenses": put("licenses", license_rows),
                   "notices": put("notices", notice_rows)}
         delivery_id = fingerprint({"key": self.key,
-                                   "files": [[one["path"], one.get("hash") or one["sha256"]] for one in state["files"]],
+                                   "files": [[one["path"], one["said"].get("hash") or one["sha256"]]
+                                             for one in state["files"]],
                                    "items": [part["fingerprint"] for part in state["parts"]],
                                    "licenses": license_rows, "notices": notice_rows})
         unquoted = sum(state["unquoted"].values())
@@ -735,7 +743,8 @@ class Job:
                  "groups": [{"tag": tag, "texts": texts, "weight": weight} for tag, texts, weight in sorted(
                      state["groups"].get(share["tag"], []), key=lambda one: (one[0] is not None, one[0] or ""))]}
                 for share in self.shares],
-            "left_out": left_out, "erasures": self.erasures, "made_at": datetime.now(UTC).isoformat(),
+            "left_out": left_out, "erasures": self.erasures, "on_erasure": self.on_erasure,
+            "made_at": datetime.now(UTC).isoformat(),
             "code_commit": self.code_commit, "rules": RULES,
         }
         gone = deliveries.missing(self.dock, self.folder, deliveries.files(note))
@@ -743,14 +752,14 @@ class Job:
             raise deliveries.FilesGone(f"{len(gone)} files of this job were deleted while it ran, {gone[0]} first: "
                                        "no note was written; run the request again")
         # an erasure carried out while the job ran may have reached an item it took after the job passed it:
-        # checked before the note is written, and again after, for one carried out in between
+        # checked before the note is written, and again after, for one carried out in between; it makes the
+        # delivery stale, or is written into its note (on_erasure)
         now, hit = self._erased_since(self.erasures, note)
-        if hit:
-            note["stale"] = {"erasures": hit}
+        note = deliveries.reached(note, hit)
         note = self.dock.put_json(f"{self.folder}/{deliveries.NOTE}", note)
         _, hit = self._erased_since(now, note)
         if hit:
-            note = deliveries.marked_stale(self.dock, note, hit)
+            note = self.dock.put_json(f"{self.folder}/{deliveries.NOTE}", deliveries.reached(note, hit))
         self.log(f"delivery {note['key']} of snapshot {self.snapshot['name']} ({self.preparation['name']}): "
                  f"{note['items']['texts']:,} texts"
                  + (f" ({state['pieces']:,} pieces of {long_taken:,} of them)" if state["pieces"] else "")

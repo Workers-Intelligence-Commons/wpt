@@ -10,7 +10,8 @@
     freight cancel ID               cancel a queued or running job
     freight deliveries              every delivery note on the dock, the last made first
     freight delivery KEY            one delivery's note
-    freight check                   mark stale every delivery an erasure reached since the last check
+    freight check                   mark what the erasures carried out since the last check did to the
+                                    deliveries (a job checks the same before it runs)
 
 Settings (environment or .env): FREIGHT_HOME, the freight's own folder;
 WPT_DEPOT, the depot it reads; WPT_STORE, the dock it delivers on;

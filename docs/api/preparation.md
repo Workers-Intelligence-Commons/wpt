@@ -17,10 +17,12 @@ this document in the same commit.
 
 ## The format
 
-Each message is one line of JSON in UTF-8, ended by a line feed. A message
-that carries content names its length in `bytes`, and exactly that many
-bytes follow the line. The format does not depend on the channel
-(`freight.messages`, `wpt_corpus.channel`).
+Each message is one line of JSON in UTF-8, ended by a line feed. Only the
+freight's `weigh` and `take` carry content: each names its length in
+`bytes`, and exactly that many bytes follow the line. No message of the
+program carries content, so in its messages `bytes` is a field like any
+other. The format does not depend on the channel (`freight.messages`,
+`wpt_corpus.channel`).
 
 ## From the freight
 
@@ -39,10 +41,10 @@ written as the passage it quotes.
 
 | Message | Meaning |
 | --- | --- |
-| `{"type": "ready", "name": "...", "version": "...", "unit": "tokens", "kinds": [...], "weighs": true}` | the answer to `start`; `version` changes whenever the same messages give other files or weights, and the delivery key covers it; `kinds`: the kinds it prepares; `weighs`: whether it answers `weigh` |
+| `{"type": "ready", "name": "...", "version": "...", "unit": "tokens", "kinds": [...], "weighs": true, "on_erasure": "stale"}` | the answer to `start`; `version` changes whenever the same messages give other files or weights, and the delivery key covers it; `kinds`: the kinds it prepares; `weighs`: whether it answers `weigh`; `on_erasure`, optional: what an erasure that reaches one of the delivery's items does, `stale` (the default) or `note` (the erasure written into the delivery note, which stays fresh; [freight.md](freight.md), "Erasures") |
 | `{"type": "weight", "ref": R, "weight": N}` | the answer to `weigh` |
 | `{"type": "taken", "ref": R, "weight": N, "at": {...}}` | the answer to `take`, in the order of the `take` messages; `at`: where the item lies in the files, each field a whole number copied into its row of the items table |
-| `{"type": "file", "path": "...", "items": N, ...}` | a file under `out` is complete; any other field is the program's own, kept by the freight and sent back to it on a resume |
+| `{"type": "file", "path": "...", "items": N, "hash": "...", ...}` | a file under `out` is complete; `items`: the items it holds; `hash`, optional: the hash of its content the delivery id covers in place of the file's sha256, for a file whose bytes may differ where its content does not; any other field is the program's own. The delivery note keeps the whole message apart from the file's place on the dock, and the freight sends it back on a resume |
 | `{"type": "log", "level": "...", "text": "..."}` | a line for the job's log; `level` one of `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `{"type": "done", "result": {...}}` | the answer to `end`, after its last `file` |
 | `{"type": "failed", "reason": "..."}` | the program cannot do its part; the job fails with that reason |
@@ -102,13 +104,15 @@ prepares conversations, plain texts and tasks.
   (`plain-NNNNN.parquet`, `conversation-NNNNN.parquet`; the format:
   `wpt_corpus.shards`), one row per item: its `source` the item's depot,
   its `document` the item's `name`, its `pool` the share's tag.
-- A task becomes one line of `tasks.jsonl`, `{"depot", "id", "content"}`,
-  and weighs the tokens of that line.
+- A task becomes one line of `tasks.jsonl`, `{"depot", "id", "content"}`.
+  It weighs the tokens of its content alone, written as JSON text with
+  its keys sorted (`wpt_corpus.encoding.task_text`), not those of the
+  whole line.
 - Once a token file holds `shard_tokens` tokens, the token file of each
   kind closes, and each is said as it closes; `tasks.jsonl` is said at the
   end. Its `file` messages carry `kind`, `tokens`, `token_sha256`, `rows`,
-  `sources`, `hash` and `so_far` (what was taken up to then), which a
-  resume reads back.
+  `sources`, `hash` (its `token_sha256`) and `so_far` (what was taken up
+  to then), which a resume reads back.
 - An item's `at` is `{"tokens": N}`: the position of its first token over
   the token files of its kind in order, a task's line in `tasks.jsonl`.
 - Its result: `total_tokens` (plain text), `items_tokens` (conversations

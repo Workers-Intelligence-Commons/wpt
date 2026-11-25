@@ -16,5 +16,6 @@ freight.api.
     exchange     the program of a preparation, started and talked to
     messages     the messages of that exchange on byte streams
     deliveries   the deliveries on the dock: notes, staleness, the cap
+    erasures     what the erasures a depot carried out did to the deliveries
     jobs         the queue, one job at a time
 """
