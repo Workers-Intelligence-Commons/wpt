@@ -67,6 +67,7 @@ so.
 
 ## The files
 
+- [How should a model's choices change with its size?](choices-by-size.md)
 - [How wide must a model be for its vocabulary?](width-and-vocabulary.md)
 - [How should parameters be split between depth and width?](depth-and-width.md)
 - [How large a model for how many training tokens?](size-and-tokens.md)
