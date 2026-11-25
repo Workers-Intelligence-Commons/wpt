@@ -59,14 +59,29 @@ command.
 
 - `depot` imports none of the other three.
 - `dock` imports none of the other three.
-- `freight` imports `depot` and `dock`, and of `depot` only its request
-  module (section 5).
-- WPT imports `freight` and `dock`, never `depot`.
+- `freight` imports `depot.api` and `dock.api`, nothing else of them.
+- WPT imports `freight.api` and `dock.api`, never `depot`.
 - None of `depot`, `freight`, `dock` imports a WPT package.
 
 A test enforces it, written like
 `packages/wpt-recipes/tests/test_data_access.py`: it reads the imports of
 every module and fails on a forbidden one.
+
+### The module `api` of each part (settled)
+
+What one part offers the others is one module named `api`: `depot.api`,
+`freight.api`, `dock.api`. It is the only module of a part that code
+outside the part may import, and the same test fails on any other import
+between parts. Every function of an `api` takes and gives only values that
+JSON and byte streams can carry, and hands out no connection, row object or
+path into the part's own files, so that it can become REST routes without
+its callers changing. A part's own command and web app are inside the part
+and may import all of it.
+
+Each contract is described in a document of its own: `docs/api/depot.md`,
+`docs/api/freight.md`, `docs/api/dock.md`, and `docs/api/preparation.md`
+for the messages between the freight and a preparation (section 7.2). A
+change to an `api` changes its document in the same commit.
 
 Proposed: the helpers the three share today through `wpt_utils`
 (`parallel`, `lines`, `files`, `programs`, `web`, the reading of `.env`)
@@ -140,7 +155,7 @@ The legacy shape that names a dataset stays as it is
 ## 5. What the freight asks of the depot (settled)
 
 The freight never opens the depot's file. It calls the functions of one
-module of `depot` (proposed name: `depot.requests`), which are today's
+module of `depot`, `depot.api`, which are today's
 calls and tomorrow's REST routes: each takes and gives only values that
 JSON and byte streams can carry, and none hands out a connection, a row
 object or a path.
@@ -376,7 +391,7 @@ Proposed details:
   `freight cancel ID`, `freight deliveries`, `freight delivery KEY`,
   `freight estimate FILE` (today's estimate, through `weigh`),
   `freight check` (section 9).
-- WPT calls the same operations as Python functions of `freight`
+- WPT calls the same operations as Python functions of `freight.api`
   (`request`, `wait`, `delivery`).
 - The cap on the bytes the deliveries take on the dock (`WPT_CORPORA_CAP`,
   `wpt_depot.corpora.Room`) moves with the corpora's code and becomes the
@@ -394,7 +409,10 @@ runbook has a timer run `freight check`. `wpt train` refuses a stale corpus
 as it does today. `docs/erasure.md` says that a delivery is known stale
 only once the freight has asked.
 
-Open (section 13): what an erasure does to a vocabulary delivery.
+Settled: an erasure does not make a vocabulary delivery stale. The freight
+writes the erasure into the vocabulary's delivery note, so every model that
+names the vocabulary keeps working and the documented rule stays (the
+merges learned from an erased text stay, docs/tokenizer.md).
 
 ## 10. What changes in each part
 
@@ -436,7 +454,8 @@ Proposed:
 
 - `wpt-store` becomes `packages/dock` (module `dock`), its setting `DOCK`
   (was `WPT_STORE`), its command `dock` with `find`, `fetch` and `put`
-  (settled).
+  (settled). `dock.api` holds those three gestures and what opens a dock
+  from the settings.
 - Proposed: the layout keeps `models/`, `runs/` and `cache/`, and gains
   `deliveries/`. The corpora already under `corpora/` stay where they are
   and stay readable (section 11). `wpt_store.models` (a model folder copied
@@ -486,9 +505,9 @@ chat template.
 - **The corpora under `corpora/<build key>/`** stay and stay readable by
   `wpt train`, whose reader takes both record shapes. The orders that name
   them keep working. They are not copied into `deliveries/`.
-- **The snapshot `balanced`** (`wic-4`, change 32118) keeps its name. The
-  first vocabulary and corpus of this plan are made from it, so they can be
-  compared with the corpora that exist.
+- **The snapshot `balanced`** (`wic-4`, change 32118) keeps its name.
+  Settled: the first vocabulary and corpus of this plan are made from a new
+  snapshot, made once step 5 names it by its time.
 
 ## 12. Set aside (settled)
 
@@ -499,17 +518,14 @@ chat template.
 - Several people working on one depot at once.
 - Several machines for one freight.
 
-## 13. Open, for the maintainer
+## 13. Decided by the maintainer (settled)
 
-1. What an erasure does to a vocabulary. Today it does nothing: the merges
-   learned from an erased text stay (docs/tokenizer.md). Proposed: the
-   freight writes the erasure into the vocabulary's delivery note without
-   marking it stale, so every model that names it keeps working, and the
-   documented rule stays.
-2. Whether the first vocabulary reads the snapshot `balanced` (proposed,
-   section 11) or a new snapshot made now.
-3. The names marked proposed: `wic-utils`, `wpt-corpus`, `wpt-orders`,
-   `wpt build-resources`, the three preparations, `depot.requests`.
+1. An erasure is written into a vocabulary's delivery note and does not
+   make it stale (section 9).
+2. The first vocabulary reads a new snapshot, not `balanced` (section 11).
+3. The names `wic-utils`, `wpt-corpus`, `wpt-orders`, `wpt build-resources`,
+   `wpt-vocabulary`, `wpt-tokens` and `wpt-count` stand. The depot's request
+   module is `depot.api`, and every part has its `api` (section 2).
 
 ## 14. The order of the work (proposed)
 
@@ -517,7 +533,8 @@ Each step ends with `uv run ci/all.py` green and the documentation of what
 it touched describing the new state. Steps 1 to 4 deliver the vocabulary
 the problem started from; the renames come after.
 
-1. **The depot's request module.** Add it over today's code, and make
+1. **The depot's request module** (`wpt_depot.api` until the rename of
+   step 6, with `docs/api/depot.md`). Add it over today's code, and make
    `corpus.py`, `groups.py` and `estimate.py` read the depot only through
    it. No behavior changes: the existing tests pass unchanged.
 2. **The freight, with the preparations.** Create `freight` and
@@ -540,7 +557,8 @@ the problem started from; the renames come after.
    builds, their routes and pages, and the names of new snapshots.
 6. **The renames.** `wpt-store` to `dock`, `wpt-depot` to `depot`,
    `wpt-recipes` to `wpt-orders`, `data/recipes` to `data/orders`, the
-   settings, the three commands, `wic-utils`, and the import test of
+   settings, the three commands, `wic-utils`, the `api` module of each
+   part with its document under `docs/api/`, and the import test of
    section 2.
 7. **The documentation and the skills**, rewritten to describe the result:
    `docs/architecture.md`, `tokenizer.md`, `data-selection.md`,
@@ -554,7 +572,7 @@ the problem started from; the renames come after.
 On the server, with the code of step 4 at least:
 
 1. The dock holds a vocabulary delivery of 16,384 entries learned on
-   10,000,000,000 bytes of the snapshot `balanced` with the shares
+   10,000,000,000 bytes of a new snapshot with the shares
    0.35 / 0.15 / 0.05 / 0.05 / 0.40 of section 4.2, and its note lists the
    texts it read.
 2. The dock holds a corpus delivery built with it from the same snapshot,
