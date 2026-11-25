@@ -151,6 +151,7 @@ settle alone are listed for legal review in
 - [Machines for training: the wpt manager, gpu workers, sandboxes](docs/machines.md)
 - [The public depot web app: its containers, limits and host](docs/depot-web.md)
 - [Evaluation](docs/evaluation.md)
+- [Trials: how a change is judged](docs/trials.md)
 - [Observability: the record of every run, and its live view](docs/observability.md)
 - [Chat format: conversations as JSON, turned into tokens by a template](docs/chat-format.md)
 - [Output notice and attribution](docs/output-notice.md)
