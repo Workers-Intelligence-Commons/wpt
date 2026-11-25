@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from wpt_store import open_store
-from wpt_store.shards import read_verified
+from wpt_corpus.shards import read_verified
 from wpt_tokenizer import END, Tokenizer
 from wpt_depot import About, NewText, clone, erasure, parts
 from wpt_depot.corpus import _Encoder, build

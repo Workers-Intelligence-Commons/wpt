@@ -167,7 +167,7 @@ def _sha(what) -> str:
 
 class LinkStore:
     """The manager's store, as a job's process reads it (what
-    wpt_store.shards, the environments and wpt_telemetry call): files by
+    wpt_corpus.shards, the environments and wpt_telemetry call): files by
     their sha256, which only the manager holds and gives part by part; the
     record folder of the run, whose every write goes to the manager's store
     before the call returns, and whose lines that store holds back are sent

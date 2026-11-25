@@ -19,8 +19,11 @@ conflicts = [[
 
 [manifest]
 members = [
+    "freight",
+    "freight-app",
     "wpt",
     "wpt-agent",
+    "wpt-corpus",
     "wpt-depot",
     "wpt-inference",
     "wpt-model",
@@ -663,6 +666,42 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/35/c8/1d457d9150ff948f2ce6ada7715e0eeebbe5d3b58a45271a1e222474bcd3/filelock-4.1.1.tar.gz", hash = "sha256:7ba0927482c5a814b0a7f391d029ccdb8010f576f0a74c0dcde1811e8bc4c1b6", size = 563430, upload-time = "2026-10-11T16:11:54.373Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8b/f837f52905395ba4510fe61f753c24833fb0a9c76e21267bb9f828b664a9/filelock-4.1.1-py3-none-any.whl", hash = "sha256:3f4a557945a7b0f95efeb1f432267affe5d45ac8ddde2aed1b97ebb62382c089", size = 132460, upload-time = "2026-10-11T16:11:52.753Z" },
+]
+
+[[package]]
+name = "freight"
+version = "0.1.0"
+source = { editable = "packages/freight" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "wpt-depot" },
+    { name = "wpt-store" },
+    { name = "wpt-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2" },
+    { name = "pyarrow", specifier = ">=21" },
+    { name = "wpt-depot", editable = "packages/wpt-depot" },
+    { name = "wpt-store", editable = "packages/wpt-store" },
+    { name = "wpt-utils", editable = "packages/wpt-utils" },
+]
+
+[[package]]
+name = "freight-app"
+version = "0.1.0"
+source = { editable = "apps/freight" }
+dependencies = [
+    { name = "freight" },
+    { name = "wpt-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "freight", editable = "packages/freight" },
+    { name = "wpt-utils", editable = "packages/wpt-utils" },
 ]
 
 [[package]]
@@ -2248,6 +2287,27 @@ requires-dist = [
 ]
 
 [[package]]
+name = "wpt-corpus"
+version = "0.1.0"
+source = { editable = "packages/wpt-corpus" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "wpt-store" },
+    { name = "wpt-tokenizer" },
+    { name = "wpt-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2" },
+    { name = "pyarrow", specifier = ">=21" },
+    { name = "wpt-store", editable = "packages/wpt-store" },
+    { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
+    { name = "wpt-utils", editable = "packages/wpt-utils" },
+]
+
+[[package]]
 name = "wpt-depot"
 version = "0.1.0"
 source = { editable = "packages/wpt-depot" }
@@ -2258,6 +2318,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "pyroaring" },
+    { name = "wpt-corpus" },
     { name = "wpt-store" },
     { name = "wpt-tokenizer" },
     { name = "wpt-utils" },
@@ -2271,6 +2332,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5" },
     { name = "pyarrow", specifier = ">=21" },
     { name = "pyroaring", specifier = ">=1.2" },
+    { name = "wpt-corpus", editable = "packages/wpt-corpus" },
     { name = "wpt-store", editable = "packages/wpt-store" },
     { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
     { name = "wpt-utils", editable = "packages/wpt-utils" },
@@ -2327,16 +2389,12 @@ version = "0.1.0"
 source = { editable = "packages/wpt-store" }
 dependencies = [
     { name = "boto3" },
-    { name = "numpy" },
-    { name = "pyarrow" },
     { name = "wpt-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.40" },
-    { name = "numpy", specifier = ">=2" },
-    { name = "pyarrow", specifier = ">=21" },
     { name = "wpt-utils", editable = "packages/wpt-utils" },
 ]
 
@@ -2370,6 +2428,7 @@ source = { editable = "packages/wpt-training" }
 dependencies = [
     { name = "numpy" },
     { name = "wpt-agent" },
+    { name = "wpt-corpus" },
     { name = "wpt-model" },
     { name = "wpt-store" },
     { name = "wpt-telemetry" },
@@ -2381,6 +2440,7 @@ dependencies = [
 requires-dist = [
     { name = "numpy", specifier = ">=2" },
     { name = "wpt-agent", editable = "packages/wpt-agent" },
+    { name = "wpt-corpus", editable = "packages/wpt-corpus" },
     { name = "wpt-model", editable = "packages/wpt-model" },
     { name = "wpt-store", editable = "packages/wpt-store" },
     { name = "wpt-telemetry", editable = "packages/wpt-telemetry" },
@@ -2401,6 +2461,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "numpy" },
     { name = "psutil" },
+    { name = "wpt-corpus" },
     { name = "wpt-inference" },
     { name = "wpt-model" },
     { name = "wpt-store" },
@@ -2414,6 +2475,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=46" },
     { name = "numpy", specifier = ">=2" },
     { name = "psutil", specifier = ">=7" },
+    { name = "wpt-corpus", editable = "packages/wpt-corpus" },
     { name = "wpt-inference", editable = "packages/wpt-inference" },
     { name = "wpt-model", editable = "packages/wpt-model" },
     { name = "wpt-store", editable = "packages/wpt-store" },
@@ -2439,6 +2501,7 @@ cuda = [
     { name = "triton-windows", marker = "sys_platform == 'win32'" },
 ]
 dev = [
+    { name = "freight-app" },
     { name = "moto", extra = ["s3"] },
     { name = "pytest" },
     { name = "pytest-testmon" },
@@ -2465,6 +2528,7 @@ cuda = [
     { name = "triton-windows", marker = "sys_platform == 'win32'", specifier = ">=3.8,<3.9" },
 ]
 dev = [
+    { name = "freight-app", editable = "apps/freight" },
     { name = "moto", extras = ["s3"], specifier = ">=5" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-testmon", specifier = "==2.3.0" },

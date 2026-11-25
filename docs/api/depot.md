@@ -1,8 +1,9 @@
 # The depot's api
 
-`wpt_depot.api` is what code outside the depot asks of it. The corpus
-build, its estimate and the sample that trains a vocabulary
-(`wpt_depot.corpus`, `wpt_depot.estimate`) read the depot only through it. A change to the module changes this document in
+`wpt_depot.api` is what code outside the depot asks of it. The freight
+([freight.md](freight.md)), the corpus build, its estimate and the sample
+that trains a vocabulary (`wpt_depot.corpus`, `wpt_depot.estimate`) read
+the depot only through it. A change to the module changes this document in
 the same commit.
 
 ## Rules of every call

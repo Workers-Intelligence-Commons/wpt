@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from wpt_store import LocalStore
-from wpt_store.shards import write_shard
+from wpt_corpus.shards import write_shard
 
 
 @pytest.fixture

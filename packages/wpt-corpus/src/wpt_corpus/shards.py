@@ -1,5 +1,5 @@
-"""The token shard format shared by the corpus build (writer) and training
-(reader).
+"""The token shard format WPT's corpus is written in (the program wpt-tokens
+and the depot's corpus build write it) and training reads.
 
 A shard is a Parquet file with one row per document pass:
 
@@ -29,8 +29,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .errors import CorruptFile
-from .names import File
+from wpt_store.errors import CorruptFile
+from wpt_store.names import File
 from wpt_utils.files import sha256_file
 
 SCHEMA = pa.schema([

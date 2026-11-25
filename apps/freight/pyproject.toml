@@ -1,0 +1,17 @@
+[project]
+name = "freight-app"
+version = "0.1.0"
+description = "The freight command: a controller over the freight's api"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+dependencies = ["freight", "wpt-utils"]
+
+[project.scripts]
+freight = "freight_app:entry"
+
+[tool.uv.build-backend]
+module-name = "freight_app"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

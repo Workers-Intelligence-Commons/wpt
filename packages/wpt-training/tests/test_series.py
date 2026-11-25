@@ -14,7 +14,7 @@ from wpt_model.engram import Engram
 from wpt_model.experts import Experts
 from wpt_recipes import Recipes, series
 from wpt_store import LocalStore
-from wpt_store.shards import write_shard
+from wpt_corpus.shards import write_shard
 from wpt_telemetry import Telemetry
 from wpt_training import Data, Strategy, load_step
 

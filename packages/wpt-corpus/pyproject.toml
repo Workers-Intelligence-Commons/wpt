@@ -1,0 +1,17 @@
+[project]
+name = "wpt-corpus"
+version = "0.1.0"
+description = "WPT's preparations of a corpus, the programs the freight runs (wpt-tokens, wpt-count), and the token file format training reads"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+# wpt-tokenizer: the vocabulary and the chat template; wpt-store: the files a corpus's record names (shards.py);
+# wpt-utils: the one sha256 of a file; pyarrow, numpy: the token file format (shards.py)
+dependencies = ["wpt-tokenizer", "wpt-store", "wpt-utils", "pyarrow>=21", "numpy>=2"]
+
+[project.scripts]
+wpt-tokens = "wpt_corpus.programs:wpt_tokens"
+wpt-count = "wpt_corpus.programs:wpt_count"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

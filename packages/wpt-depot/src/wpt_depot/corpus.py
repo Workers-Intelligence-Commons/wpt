@@ -27,7 +27,7 @@ reading only the texts it reaches, tokenizes them in worker processes
 order before it (wpt_depot.groups) to choose the texts of each share that
 splits its budget over the tags of its texts (below), reading the rows of
 the texts but never their contents, but for the texts whose tokens the
-choice needs. A token file (wpt_store.shards) is uploaded to
+choice needs. A token file (wpt_corpus.shards) is uploaded to
 the store as soon as it is full, with the part of the texts table that
 lists its texts, and its local copies deleted, so the memory and the local
 disk the build takes stay bounded whatever the snapshot's size: the order
@@ -138,7 +138,7 @@ own. A plain text or a piece becomes tokens followed by END; a
 conversation becomes the tokens of the chat template (wpt_tokenizer.chat),
 which start with END and mark nothing: what the assistant wrote is told by
 the template's special tokens, and each excerpt is written as the passage
-it quotes. Both go into token files in the store's shard format, kept by
+it quotes. Both go into token files in WPT's shard format (wpt_corpus.shards), kept by
 kind (TOKEN_KINDS: plain and conversation), each token file holding texts
 of one kind, each row one text or one piece, its `source` the name of the
 depot that made the snapshot (its owner), its `document`
@@ -244,7 +244,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from wpt_store.names import File
-from wpt_store.shards import write_shard
+from wpt_corpus.shards import write_shard
 from wpt_tokenizer import END, Tokenizer, chat
 from wpt_utils.lines import say
 from wpt_utils.parallel import Sizing, in_order, process_pool

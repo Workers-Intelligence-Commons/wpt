@@ -26,7 +26,7 @@ from wpt.train import InputError, StoreCheckpoint, check_record, main
 from wpt_training import load_state
 from wpt_utils.lines import bare
 from wpt_depot import corpora
-from wpt_store.shards import shard_file
+from wpt_corpus.shards import shard_file
 
 ROOT = Path(__file__).resolve().parents[4]
 

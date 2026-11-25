@@ -46,7 +46,7 @@ def built(tmp_path, monkeypatch):
     """A corpus of a depot's snapshot "d": 16 plain texts. The working folder tmp_path is the
     repository, the store is WPT_STORE and the depot WPT_DEPOT. Gives store, depot (the Depot),
     corpus_id (the corpus of every token of "d", which the model recipe "d", a tiny model
-    trained one step, names), records(command) (the record folders of that
+    trained one step, names), tokenizer (the vocabulary every corpus here is built with), records(command) (the record folders of that
     command's runs, oldest first), notice (the texts' notice), vocabulary
     (the sha256 of the vocabulary every corpus here is built with),
     data(name, size) (the data section of a recipe of the snapshot name at
@@ -134,7 +134,7 @@ def built(tmp_path, monkeypatch):
 
     return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, recipe=recipe,
                            records=records, snapshot=snapshot, sized=sized, vocabulary=vocabulary["sha256"],
-                           data=data_of)
+                           tokenizer=tokenizer, data=data_of)
 
 
 @pytest.fixture

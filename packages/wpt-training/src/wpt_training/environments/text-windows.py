@@ -9,7 +9,7 @@ batch_size windows of block_size + 1 tokens at random places of the
 training tokens, seeded by the recipe's seed, the step's number in the
 recipe and the update only; with
 --stream, from the shards in use once the updates before it have used
-their tokens (wpt_store.shards.ShardStream).
+their tokens (wpt_corpus.shards.ShardStream).
 
 prefix_tokens, when above 0, makes the training tokens the first
 prefix_tokens of the corpus's, in the token files' order, and nothing after
@@ -43,7 +43,7 @@ import hashlib
 import numpy as np
 import torch
 
-from wpt_store.shards import ShardStream, prefix_shards, token_file
+from wpt_corpus.shards import ShardStream, prefix_shards, token_file
 from wpt_training import WINDOWS, Environment, Stage
 from wpt_training import parts as windows_in_parts
 

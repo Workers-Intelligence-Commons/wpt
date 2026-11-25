@@ -1,0 +1,14 @@
+[project]
+name = "freight"
+version = "0.1.0"
+description = "The freight: reads a request, chooses the items of a depot's snapshot, runs one preparation on them and delivers the result on the dock"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+# wpt-depot: the depot, read only through its api module (docs/api/depot.md); wpt-store: the dock the deliveries are
+# put on; wpt-utils: parallel work, printed lines, the code's commit, the file lock; numpy: the first pass of a share
+# that splits by group; pyarrow: the items tables
+dependencies = ["wpt-depot", "wpt-store", "wpt-utils", "numpy>=2", "pyarrow>=21"]
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

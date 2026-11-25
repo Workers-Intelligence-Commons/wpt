@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from wpt_store import open_store
-from wpt_store.shards import read_verified
+from wpt_corpus.shards import read_verified
 from wpt_tokenizer import END, Tokenizer, chat
 from wpt_depot import About, Depot, NewText, clone, ids, pull, snapshots
 from wpt_depot import corpora, order, pieces

@@ -76,7 +76,7 @@ from wpt_model import PARTS, WPT, ModelConfig
 from wpt_model.kernels import KernelUnavailable, kernels
 from wpt_model.model import compile_failure, fused_loss_failure
 from wpt_store import StoreError
-from wpt_store.shards import documents, prefix_shards
+from wpt_corpus.shards import documents, prefix_shards
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
 from wpt_training import (SENT, WINDOWS, Checkpoint, Data, FolderCheckpoint, Interrupted, Limit, Options, PluginError,
                           SettingsMismatch, StepFailed, StopSignals, draw_numbers, load_state, load_step, load_strategy,
@@ -514,7 +514,7 @@ def drafter_shards(spec, steps) -> list:
     """The training shards the drafter draws its prompts from: the token
     files of the corpus's plain texts (kind plain) the run's text steps
     read, never one past the longest prefix they read
-    (wpt_store.shards.prefix_shards). A step that reads every training
+    (wpt_corpus.shards.prefix_shards). A step that reads every training
     token, or a run with no text step, leaves every shard."""
     prefixes = [step.settings["prefix_tokens"] for step in steps if step.reads == WINDOWS]
     return prefix_shards(spec["record"]["shards"]["plain"], max(prefixes) if prefixes and all(prefixes) else None)

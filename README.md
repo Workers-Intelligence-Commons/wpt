@@ -145,6 +145,8 @@ settle alone are listed for legal review in
 - [Erasure requests](docs/erasure.md)
 - [Data selection: texts, tags, snapshots, corpora](docs/data-selection.md)
 - [The depot's api: what code outside the depot asks of it](docs/api/depot.md)
+- [The freight's api: requests, deliveries and the `freight` command](docs/api/freight.md)
+- [A preparation and its messages: the programs the freight runs](docs/api/preparation.md)
 - [Tokenizer](docs/tokenizer.md)
 - [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)

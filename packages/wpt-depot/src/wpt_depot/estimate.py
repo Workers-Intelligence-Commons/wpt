@@ -80,7 +80,7 @@ import time
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-from wpt_store.shards import SCHEMA as SHARD_SCHEMA
+from wpt_corpus.shards import SCHEMA as SHARD_SCHEMA
 from wpt_tokenizer import END, Tokenizer, chat
 
 from . import api
@@ -374,7 +374,7 @@ def _tokenize(source: str, sampled: list[tuple], tokenizer: Tokenizer) -> dict:
 
 
 def _shard_table(rows: list[tuple]) -> pa.Table:
-    """The rows as a token file's table (wpt_store.shards)."""
+    """The rows as a token file's table (wpt_corpus.shards)."""
     columns = {name: [] for name in SHARD_SCHEMA.names}
     for row in rows:
         for name, value in zip(SHARD_SCHEMA.names, row):

@@ -10,7 +10,7 @@ from wpt.train.remote import named_files
 from wpt_depot import NewText
 from wpt_depot import corpora
 from wpt_store import open_store
-from wpt_store.shards import documents, read_verified
+from wpt_corpus.shards import documents, read_verified
 from wpt_telemetry import Telemetry
 from wpt_tokenizer import Tokenizer
 

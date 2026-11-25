@@ -29,7 +29,7 @@ import math
 
 import torch
 
-from wpt_store.shards import read_verified, shard_file
+from wpt_corpus.shards import read_verified, shard_file
 from wpt_training import Environment, Stage, StepFailed, tagged
 
 GIVES = "conversations"

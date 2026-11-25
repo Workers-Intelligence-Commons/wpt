@@ -1,4 +1,5 @@
-# Workspace root: holds no code. Libraries live in packages/, the wpt app (the wpt command and its web server) in apps/wpt.
+# Workspace root: holds no code. Libraries live in packages/, the apps in apps/: wpt (the wpt command and its web
+# server) and freight (the freight command).
 # Never built itself; it exists to carry the groups below.
 [project]
 name = "wpt-workspace"
@@ -17,9 +18,9 @@ members = ["packages/*", "apps/*"]
 exclude = ["packages/__pycache__", "apps/__pycache__"]  # the pattern above matches them, and uv refuses a member with no project
 
 [dependency-groups]
-# `uv sync` installs the app, and through it every library (but not torch).
+# `uv sync` installs the apps, and through them every library (but not torch).
 # pytest-testmon is pinned exactly: ci/startup/child_files.py extends one of its internals.
-dev = ["wpt", "pytest>=8", "pytest-xdist>=3", "pytest-testmon==2.3.0", "moto[s3]>=5"]
+dev = ["wpt", "freight-app", "pytest>=8", "pytest-xdist>=3", "pytest-testmon==2.3.0", "moto[s3]>=5"]
 cpu = ["torch>=2.14"]
 # NVIDIA, CUDA 13.0: needs driver 580 or newer. The attention kernels: TileLang under Linux (DeepSeek's
 # version; apache-tvm-ffi 0.1.10 and later break it on Python 3.14), Triton on Windows through triton-windows
@@ -34,6 +35,9 @@ xpu = ["torch>=2.14", "triton-xpu"]
 [tool.uv.sources]
 wpt-tokenizer = { workspace = true }
 wpt-store = { workspace = true }
+wpt-corpus = { workspace = true }
+freight = { workspace = true }
+freight-app = { workspace = true }
 wpt-telemetry = { workspace = true }
 wpt-depot = { workspace = true }
 wpt-recipes = { workspace = true }
