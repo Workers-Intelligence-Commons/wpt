@@ -1,12 +1,13 @@
 """The routes of `wpt depot web` that models trained before snapshots
-read, frozen: the dataset routes of format 12, answering what they
-answered then, read-only, from the depot's legacy tables
-(wpt_depot.legacy) and the corpora the store holds of each dataset. Every
-route is a GET; none writes the depot. Code at the commits such a model
-records reaches them (docs/training.md, "Models trained before
-snapshots"): `wpt train` reads the listing of datasets and a dataset's
-downloads, and another depot's vocabulary training reads a dataset's
-sample; a person reads the rest from the pages of then.
+read, frozen: the dataset routes of format 12, and the two reads of a
+tokenizer recipe a training of then made, answering what they answered
+then, read-only, from the depot's legacy tables (wpt_depot.legacy) and the
+corpora the store holds of each dataset. Every route is a GET; none writes
+the depot. Code at the commits such a model records reaches them
+(docs/training.md, "Models trained before snapshots"): `wpt train` reads
+the listing of datasets, a dataset's downloads, its tokenizer recipe and
+that recipe's vocabulary file, and another depot's vocabulary training
+reads a dataset's sample; a person reads the rest from the pages of then.
 
 A dataset's download of one vocabulary and size
 (GET /api/datasets/{id}/download/{vocabulary}/{size}) gives the latest
@@ -160,6 +161,33 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
     @refusals
     def remote(values, body):
         return 200, shared.jsonable(read.remote(values["name"]))
+
+    # A tokenizer recipe and its vocabulary file, which a training of a dataset's recipe read
+
+    @refusals
+    def tokenizer(values, body):
+        found = read.tokenizer(values["name"])
+        recipe = found["recipe"]
+        named = None
+        if recipe.get("depot") is None and recipe.get("dataset"):
+            try:
+                named = read.dataset_by_id(recipe["dataset"])["name"]
+            except errors.NotFound:
+                pass
+        elif recipe.get("dataset"):
+            named = recipe["dataset"]
+        return 200, shared.jsonable({**found, "recipe": {**recipe, "dataset_name": named, "job": None},
+                                     "upstream": bool(read.upstream_owned([recipe["id"]]))})
+
+    @refusals
+    def vocabulary_file(values, body):
+        try:
+            version = int(values["version"])
+        except ValueError:
+            raise errors.NotFound(f"no version {values['version']} of the tokenizer recipe {values['name']}") from None
+        sha256, data = read.vocabulary_file(values["name"], version)
+        return 200, Stream(JSON_TYPE, iter([data]), len(data),
+                           {"Content-Disposition": f'attachment; filename="vocabulary-{sha256[:12]}.json"'})
 
     # Downloads of corpora
 
@@ -515,6 +543,12 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
               "false) and figures (measure: what its revision stored it reads, null when not known; since: null)",
               answer={"type": "object", "required": ["dataset", "upstream", "libraries", "remote", "corpora",
                                                      "store", "read_again", "figures"]}),
+        Route("GET", "/api/tokenizers/{name}", tokenizer, "frozen: one tokenizer recipe as the depot kept it: its "
+              "current revision (with dataset_name, the name of the dataset it named), every revision, its "
+              "vocabularies without their files, whether its version has one (trained), and whether the upstream "
+              "owns it", answer={"type": "object", "required": ["recipe", "revisions", "vocabularies", "trained"]}),
+        Route("GET", "/api/tokenizers/{name}/vocabularies/{version}/file", vocabulary_file, "frozen: the file of "
+              "the vocabulary of one version of a tokenizer recipe (wpt_tokenizer's format)"),
         Route("GET", "/api/datasets/{name}/remote", remote, "frozen: the dataset as a remote: the fields of its row "
               "that say what it reads (name, tokenizer, libraries, shares, max_tokens)", answer=OBJECT),
         Route("GET", "/api/datasets/{id}/download", downloads_listed, "frozen: the corpora the store holds of the "

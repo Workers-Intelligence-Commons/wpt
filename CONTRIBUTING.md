@@ -146,17 +146,15 @@ reference. A decision never changes what a snapshot made before it holds.
 
 ## Snapshots, tags and recipes
 
-A snapshot is a name on a change number: the texts admitted then, each
-read at its revision as of it, never changed afterward. A hand-picked
-selection of texts is a tag. A model recipe of the repository names a
-snapshot (with its change and digest), the kinds it takes and its shares
-by tag. `wpt depot snapshot new` makes a snapshot of the admitted texts;
-`wpt depot tokenizer new` and `train` make a tokenizer recipe on a
-snapshot and its vocabulary; and `wpt depot build FILE` builds the corpus
-a model recipe's file names into the store, the depot reading no
-repository. The pages "Snapshots" and "Build" of `wpt depot web` do the
-same by clicks, the recipe's file handed over, each showing its cost
-first ([docs/data-selection.md](docs/data-selection.md)).
+A snapshot is a change number, named by the UTC time it was made: the
+texts admitted then, each read at its revision as of it, never changed
+afterward. A hand-picked selection of texts is a tag. A model recipe of
+the repository names a snapshot (with its change and digest), the kinds it
+takes, its shares by tag and its vocabulary. `wpt depot snapshot new`, or
+the page "Snapshots" of `wpt depot web`, which shows its cost first, makes
+a snapshot of the admitted texts; `wpt build-resources RECIPE` asks the
+freight for the recipe's vocabulary and corpus, the depot reading no
+repository ([docs/data-selection.md](docs/data-selection.md)).
 
 ## Changing a text
 

@@ -214,7 +214,7 @@ def build(bench: Bench, layout: common.Layout, root: Path):
     """A snapshot of the depot's admitted texts, its corpus built at build.TOKENS tokens warm `runs` times into new
     stores: tokens per second (median, build.snapshot_build)."""
     import build as builds
-    snapshot = bench.depot.create_snapshot("bench-daily")
+    snapshot = bench.depot.create_snapshot()
     builds.snapshot_build(bench, root, snapshot, builds.tokenizer_of(bench.depot))
 
 

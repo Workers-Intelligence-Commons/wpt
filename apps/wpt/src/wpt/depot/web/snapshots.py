@@ -1,15 +1,17 @@
 """The routes of `wpt depot web` over the depot's snapshots
-(wpt_depot.snapshots): the list, the name and cost of the next one, making
-one as a job, one snapshot with what an erasure did to it since, its sets for anyone to check, and its texts a page at
-a time.
+(wpt_depot.snapshots): the list, the cost of the next one, making one as
+a job, one snapshot with what an erasure did to it since, its sets for
+anyone to check, and its texts a page at a time.
 
 Making a snapshot starts only once confirmed (confirmed: true) with the
 estimate GET /api/snapshots/new showed (estimate), and only while that
 estimate still holds (wpt.depot.shared.unchanged: refused with 409 and the
-new estimate otherwise). It runs as a job of the heavy lane
-(wpt.depot.jobs), its stages "reading texts", "catching up" and "writing";
-a restart of the web app starts it over, so the snapshot reads the change
-current when it finishes, which its answer gives (at_change).
+new estimate otherwise). It takes no name: the depot names it by the UTC
+time it is made. It runs as a job of the heavy lane (wpt.depot.jobs), one
+at a time, its stages "reading texts", "catching up" and "writing"; a
+restart of the web app starts it over, so the snapshot reads the change
+current when it finishes, which its answer gives (at_change) with its
+name.
 
 How many of a snapshot's texts an erasure cut or removed since is worked
 out once for each state of the depot's erasures (snapshots.last_erasure,
@@ -27,13 +29,12 @@ and every roaring library read), with the digest, so anyone can check them
 against the snapshot's digest without a copy of the depot
 (wpt_depot.snapshots says how the digest is made).
 
-    snapshot_job(depot, name, note, progress=..., job=...)   the job's operation
+    snapshot_job(depot, note, progress=..., job=...)         the job's operation
     sizes_job(depot, snapshot_id, progress=..., job=...)     the order by length's
     snapshot_routes(depot, jobs, refusals)                   the routes
 """
 
 import base64
-from datetime import UTC, datetime
 from pathlib import Path
 
 from wpt_depot import Depot, errors, sizes, snapshots
@@ -47,11 +48,11 @@ STRIP_TEXTS, STRIP_CHARACTERS = 200, 1_000_000  # the texts and characters a pag
 COSTS = {"seconds": 5, "bytes": 1 << 20}  # the costs of making a snapshot a confirmation covers, with their slack
 
 
-def snapshot_job(depot: Depot, name: str, note: str | None, *, progress, job: Job) -> dict:
-    """Make the snapshot called name with the note, its stages and the texts
-    read so far given to progress: {id, name, at_change, texts, digest}."""
+def snapshot_job(depot: Depot, note: str | None, *, progress, job: Job) -> dict:
+    """Make a snapshot with the note, its stages and the texts read so far
+    given to progress: {id, name, at_change, texts, digest}."""
     total = snapshots.estimate(depot)["texts"]
-    row = depot.create_snapshot(name, note, progress=progress,
+    row = depot.create_snapshot(note, progress=progress,
                                 read=lambda read: progress({"stage": "reading texts", "texts": read, "of": total}))
     return {"id": row["id"], "name": row["name"], "at_change": row["at_change"], "texts": row["texts"],
             "digest": row["digest"]}
@@ -79,9 +80,6 @@ def snapshot_routes(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     """The routes over depot's snapshots; refusals wraps a handler so that it
     answers each failure with its status."""
 
-    def being_made() -> list[str]:
-        return [one["key"] for one in jobs.listed(0) if one["kind"] == "snapshot"]
-
     def shown(row: dict) -> dict:
         return shared.jsonable({key: value for key, value in row.items() if key != "summary"})
 
@@ -94,13 +92,10 @@ def snapshot_routes(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
 
     @refusals
     def new(values, body):
-        made = being_made()
-        return 200, {"name": snapshots.next_name(depot, datetime.now(UTC).date(), made), "being_made": made,
-                     "estimate": estimate_now()}
+        return 200, {"job": jobs.open_job("snapshot"), "estimate": estimate_now()}
 
     @refusals
     def create(values, body):
-        snapshots.check_name(body["name"])
         if body.get("confirmed") is not True:
             raise errors.Refused("a snapshot is made only once confirmed (confirmed: true), after its estimate: "
                                  "nothing was queued")
@@ -109,11 +104,7 @@ def snapshot_routes(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
         if changed:
             return 409, {"problems": [f"the estimate changed since it was shown ({'; '.join(changed)}): confirm "
                                       "the new one"], "estimate": now}
-        if any(row["name"] == body["name"] for row in depot.snapshots() if row["owner"] == depot.name()):
-            raise errors.Refused(f"the depot has a snapshot named {body['name']} already")
-        return 200, jobs.add("snapshot", f"make the snapshot {body['name']}", snapshot_job, body["name"],
-                             body.get("note"), key=body["name"],
-                             target={"name": body["name"], "estimate": now})
+        return 200, jobs.add("snapshot", "make a snapshot", snapshot_job, body.get("note"), target={"estimate": now})
 
     def row_of(values) -> dict:
         return snapshots.snapshot_by_id(depot, values["id"])
@@ -183,18 +174,18 @@ def snapshot_routes(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
               "snapshot it is) in the order they were made: id, name, owner, at_change (the change its texts are "
               "read at), made_at, origin, note, texts, characters, bytes, digest; never its summary",
               answer={"type": "array", "items": row}),
-        Route("GET", "/api/snapshots/new", new, "the name offered for the next snapshot (the year and month, then "
-              "with b, c, ... once taken, a snapshot being made counting as taken), the names being made, and the "
-              "estimate of making one now (texts, seconds, bytes, change: the depot's change now); nothing is "
-              "written",
-              answer={"type": "object", "required": ["name", "estimate"], "properties": {"estimate": estimate}}),
-        Route("POST", "/api/snapshots", create, "make a snapshot of the texts admitted now, called name, with an "
-              "optional note, as a job of the heavy lane (the job's answer: id, name, at_change, texts, digest), "
-              "only with confirmed: true and the estimate GET /api/snapshots/new gave (409 with the new estimate "
-              f"when it now costs more than {shared.TOLERANCE:.0%} beyond it); refused when the name is taken",
-              body={"type": "object", "required": ["name", "confirmed", "estimate"],
-                    "properties": {"name": {"type": "string", "minLength": 1}, "note": {"type": ["string", "null"]},
-                                   "confirmed": {"type": "boolean"}, "estimate": {"type": "object"}}},
+        Route("GET", "/api/snapshots/new", new, "the snapshot job queued or running (job, null without one) and "
+              "the estimate of making a snapshot now (texts, seconds, bytes, change: the depot's change now); "
+              "nothing is written",
+              answer={"type": "object", "required": ["job", "estimate"], "properties": {"estimate": estimate}}),
+        Route("POST", "/api/snapshots", create, "make a snapshot of the texts admitted now, with an optional note, "
+              "named by the depot by the UTC time it is made (YYYY-MM-DDTHH-MM-SSZ), as a job of the heavy lane "
+              "(the job's answer: id, name, at_change, texts, digest), only with confirmed: true and the estimate "
+              f"GET /api/snapshots/new gave (409 with the new estimate when it now costs more than "
+              f"{shared.TOLERANCE:.0%} beyond it); refused while another snapshot is being made (409)",
+              body={"type": "object", "required": ["confirmed", "estimate"], "additionalProperties": False,
+                    "properties": {"note": {"type": ["string", "null"]}, "confirmed": {"type": "boolean"},
+                                   "estimate": {"type": "object"}}},
               answer={"type": "object", "required": ["id", "kind", "state"]}),
         Route("GET", "/api/snapshots/{id}", one, "one snapshot by its id: its row, its summary (by kind, tag, plain "
               "tag set, license and owner: texts, characters, bytes) and erased_since (how many of its texts an "

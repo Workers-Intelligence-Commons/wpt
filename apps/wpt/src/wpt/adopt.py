@@ -1,6 +1,8 @@
 """wpt adopt-vocabularies: put every vocabulary the depot's tokenizer
-recipes trained on the dock, each as a delivery of its own, so that an
-order naming a vocabulary by its sha256 finds it (wpt.resources).
+recipes trained, which the depot keeps unwritten in its tables
+tokenizers_revisions, vocabularies and vocabulary_texts, on the dock,
+each as a delivery of its own, so that an order naming a vocabulary by its
+sha256 finds it (wpt.resources).
 
     wpt adopt-vocabularies    adopt each vocabulary of the depot WPT_DEPOT names onto the dock WPT_STORE names
 
@@ -33,7 +35,7 @@ from wpt_utils.lines import ERROR, say
 PAGE = 100_000  # the texts of a vocabulary read at a time
 FILE = "vocabulary.json"
 VOCABULARIES = (
-    "SELECT v.recipe, v.version, v.sha256, v.texts, v.bytes, v.made_at, r.name, r.dataset, r.sample, "
+    "SELECT v.recipe, v.version, v.sha256, v.merges, v.texts, v.bytes, v.made_at, r.name, r.dataset, r.sample, "
     "r.sample_bytes, r.vocab_size FROM vocabularies v JOIN tokenizers_revisions r ON r.id = v.recipe "
     "AND r.version = v.version AND r.revision = (SELECT max(revision) FROM tokenizers_revisions "
     "WHERE id = v.recipe AND version = v.version) ORDER BY r.name, v.version")
@@ -45,7 +47,7 @@ def vocabularies(depot: Depot):
     """(files, result, about, items) of each vocabulary the depot holds, as adopt takes them."""
     own = depot.name()
     for row in depot.rows(VOCABULARIES):
-        merges = depot.vocabulary(row["recipe"], row["version"])["merges"].encode("utf-8")
+        merges = row["merges"].encode("utf-8")
         items, offset = [], 0
         while page := depot.rows(TEXTS, (row["recipe"], row["version"], PAGE, offset)):
             items += [{"depot": one["depot"] or own, "id": one["text"], "change": one["change"]} for one in page]

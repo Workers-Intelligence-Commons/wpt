@@ -1,6 +1,6 @@
 // What needs the maintainer: the texts admitted, the jobs open (by lane),
-// the latest snapshots with "Make a snapshot" and "Build" (a recipe file
-// handed over on the Build page), the jobs queued or running (only while there are some),
+// the latest snapshots with "Make a snapshot", the jobs queued or running
+// (only while there are some),
 // the number of texts under review (the depot's own counts, GET
 // /api/counts), those texts counted by tag and by license (a count made in
 // steps, which grows as it goes, counts.tsx), each tag and license linked to
@@ -52,7 +52,7 @@ function Overview() {
 
   return (
     <>
-      <PageHead title="Overview" chain="What waits for a decision in this depot, and the chain a model's data goes through: texts, snapshots, recipes, vocabularies, corpora." />
+      <PageHead title="Overview" chain="What waits for a decision in this depot, and the chain a model's data goes through here: texts, then snapshots, which an order to the freight names." />
       {!declared(who) && (
         <Notice title="who decides">No name and email set. <a href={settingsHref()}>Set them</a> to decide.</Notice>
       )}
@@ -62,7 +62,7 @@ function Overview() {
         {erasures?.ok && openErasures.length === 0 && <Stat href={href(["erasures"])} value="0" label="erasures open" />}
       </div>
       <div className="board">
-        <Section className={open.length === 0 ? "span-2" : undefined} title={<a href={href(["snapshots"])}>Latest snapshots</a>} tools={<><ButtonLink variant={snapshots?.ok && snapshots.data.length === 0 ? "primary" : "quiet"} href={href(["snapshots"], { new: "1" })}>Make a snapshot</ButtonLink>{snapshots?.ok && snapshots.data.length > 0 && <ButtonLink variant="quiet" href={href(["build"])}>Build a recipe</ButtonLink>}</>}>
+        <Section className={open.length === 0 ? "span-2" : undefined} title={<a href={href(["snapshots"])}>Latest snapshots</a>} tools={<ButtonLink variant={snapshots?.ok && snapshots.data.length === 0 ? "primary" : "quiet"} href={href(["snapshots"], { new: "1" })}>Make a snapshot</ButtonLink>}>
           {!snapshots && <Skeleton lines={2} />}
           {snapshots && !snapshots.ok && <Problems problems={snapshots.problems} />}
           {snapshots?.ok && (shownSnapshots.length === 0 ? <p className="small aside">None yet.</p> : (

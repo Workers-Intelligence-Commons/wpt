@@ -1,31 +1,23 @@
 // Snapshots: the depot's snapshots (GET /api/snapshots), each a name on a
-// change number with the set of texts admitted then, which a recipe names
-// and a build reads, every text at its revision as of that change, so a
-// corpus built from it is the same next year. "Make a snapshot" is one
-// confirmation: the next free name filled in (GET /api/snapshots/new: the
-// year and month, then with b, c, ...), what it costs shown before the click
-// (texts, time, disk, the change it reads), a note optional; the snapshot is
-// made as a job of the heavy lane (POST /api/snapshots with the estimate
-// shown; 409 with the new one when it changed meanwhile), followed to its
-// end, then its page opens.
+// change number with the set of texts admitted then, which an order to the
+// freight names, every text at its revision as of that change, so what is
+// made from it is the same next year. The depot names a snapshot by the UTC
+// time it is made (YYYY-MM-DDTHH-MM-SSZ). "Make a snapshot" is one
+// confirmation: what it costs shown before the click (GET
+// /api/snapshots/new: texts, time, disk, the change it reads), a note
+// optional; the snapshot is made as a job of the heavy lane, one at a time
+// (POST /api/snapshots with the estimate shown; 409 with the new one when it
+// changed meanwhile), followed to its end, then its page opens.
 //
 // #/snapshots/ID is one snapshot (GET /api/snapshots/ID): "Read it whole"
 // (#/snapshots/ID/strip, strip.tsx) and "Size map" (#/sizes?snapshot=ID,
-// sizes.tsx) at its head, its facts and
-// digest, its texts by kind and by tag (from its summary, which never
-// changes), what erasures carried out since did to it, its sets for anyone
-// to check the digest, and one "Recipes" block: the recipes built from it
-// here (the corpus jobs of the queue that name it, each opening its build),
-// a button that opens the recipe composer (composer.tsx; ?compose=1 opens
-// it, &vocabulary=SHA256 picks that vocabulary), and the drop zone of a
-// recipe file to build (recipe-build.tsx).
+// sizes.tsx) at its head, its facts and digest, its texts by kind and by tag
+// (from its summary, which never changes), what erasures carried out since
+// did to it, and its sets for anyone to check the digest.
 
 import { Button, ButtonLink, Dialog, Question, Skeleton, TextInput } from "@workers-intelligence-commons/components";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { get, part, post, type Answer, type Job } from "../api";
-import { Composer } from "../composer";
-import { keepHanded, RecipeBuild, RecipeDrop, type Handed } from "../recipe-build";
-import { whole } from "../mix";
 import { Facts, Help, optional, PageHead, plural, Problems, Section } from "../parts";
 import { pipelineChanged, snapshotHref, useSnapshots, type Sized, type SnapshotEstimate, type SnapshotOffer, type SnapshotShown } from "../pipeline";
 import { href } from "../route";
@@ -35,6 +27,7 @@ import { JobLine, useJobs } from "./jobs";
 import { SnapshotStrip } from "./strip";
 
 export const madeWhen = (at: string) => at.replace("T", " ").slice(0, 16);
+const whole = (n: number) => `${Math.round(n * 100)}%`;
 // What a snapshot was made from, in words: nothing for one made from the texts admitted then.
 const madeFrom = (origin: SnapshotShown["origin"]) => {
   const name = typeof origin.name === "string" ? origin.name : null;
@@ -59,7 +52,6 @@ export function SnapshotCost({ estimate }: { estimate: SnapshotEstimate }) {
 // onMade: the snapshot's id, once its job ended well.
 function MakeSnapshot({ open, onClose, onMade }: { open: boolean; onClose: () => void; onMade: (id: string) => void }) {
   const [offer, setOffer] = useState<Answer<SnapshotOffer> | null>(null);
-  const [name, setName] = useState("");
   const [note, setNote] = useState("");
   const [changed, setChanged] = useState(false); // the estimate shown is the one a 409 gave
   const [problems, setProblems] = useState<string[]>([]);
@@ -67,12 +59,12 @@ function MakeSnapshot({ open, onClose, onMade }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (!open) return;
     setOffer(null); setJob(null); setProblems([]); setChanged(false); setNote("");
-    get<SnapshotOffer>("/api/snapshots/new").then((a) => { setOffer(a); if (a.ok) setName(a.data.name); });
+    get<SnapshotOffer>("/api/snapshots/new").then(setOffer);
   }, [open]);
   const estimate = offer?.ok ? offer.data.estimate : null;
   const make = async () => {
     if (!estimate) return;
-    const a = await post<Job<unknown>>("/api/snapshots", { name: name.trim(), note: note.trim() || null, confirmed: true, estimate });
+    const a = await post<Job<unknown>>("/api/snapshots", { note: note.trim() || null, confirmed: true, estimate });
     if (a.ok) { setJob(a.data); setProblems([]); return; }
     const fresh = a.status === 409 ? (a.body?.estimate as SnapshotEstimate | undefined) : undefined;
     if (fresh && offer?.ok) { setOffer({ ok: true, data: { ...offer.data, estimate: fresh } }); setChanged(true); }
@@ -86,16 +78,20 @@ function MakeSnapshot({ open, onClose, onMade }: { open: boolean; onClose: () =>
     <Dialog open={open} onClose={onClose} title="Make a snapshot">
       {open && !offer && <Skeleton lines={4} label="Reading what it costs" />}
       {offer && !offer.ok && <Problems problems={offer.problems} />}
-      {job ? <JobLine job={job} onEnded={ended} /> : estimate && offer?.ok && (
-        <Question question={<>Make the snapshot <strong className="ledger">{name.trim() || "…"}</strong> of the texts admitted now?</>}
+      {job ? <JobLine job={job} onEnded={ended} /> : offer?.ok && offer.data.job ? (
+        <>
+          <p className="small">A snapshot is being made now; one is made at a time.</p>
+          <JobLine job={offer.data.job} onEnded={ended} />
+        </>
+      ) : estimate && offer?.ok && (
+        <Question question="Make a snapshot of the texts admitted now?"
           from="before it starts"
           onSubmit={(e) => { e.preventDefault(); make(); }}
-          actions={<Button type="submit" variant="primary" disabled={!name.trim()}>Make {name.trim() || "the snapshot"}</Button>}>
+          actions={<Button type="submit" variant="primary">Make the snapshot</Button>}>
           <SnapshotCost estimate={estimate} />
           {changed && <p className="small act">The cost changed since it was read: the figures above are the new ones.</p>}
-          {offer.data.being_made.length > 0 && <p className="small aside">Being made now: {offer.data.being_made.join(", ")}.</p>}
+          <p className="small aside">The depot names it by the UTC time it is made, such as 2026-11-26T14-03-27Z.</p>
           <div className="fields">
-            <TextInput label="Name" hint="Filled in with the next free one; kept for good." value={name} onChange={(e) => setName(e.target.value)} />
             <TextInput label={optional("Note")} value={note} onChange={(e) => setNote(e.target.value)} />
           </div>
           <p className="small aside">A job of the <a href={href(["jobs"])}>queue</a>; it never changes a text, and a snapshot is never deleted.</p>
@@ -116,12 +112,12 @@ function Snapshots({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Snapshots"
-        chain={<>A snapshot is a name on a change of the depot with the texts admitted then. A recipe names one, and every build of it reads each text as it was at that change, so a model trained on it can be checked later. Daily work on the texts never changes a snapshot.</>}
+        chain={<>A snapshot is a change of the depot, named by the time it was made, with the texts admitted then. An order to the freight names one, and reads each text as it was at that change, so what a model was trained on can be checked later. Daily work on the texts never changes a snapshot.</>}
         actions={<Button variant={rows?.ok && rows.data.length === 0 ? "primary" : "quiet"} onClick={() => setMaking(true)}>Make a snapshot</Button>} />
       {open.map((j) => <JobLine key={j.id} job={j} onEnded={() => { pipelineChanged(); reload(); }} />)}
       {!rows && <Skeleton lines={4} />}
       {rows && !rows.ok && <Problems problems={rows.problems} />}
-      {rows?.ok && (rows.data.length === 0 ? <p className="empty-state">No snapshot yet. Make one to compose a recipe.</p> : (
+      {rows?.ok && (rows.data.length === 0 ? <p className="empty-state">No snapshot yet. Make one for an order to name.</p> : (
         <div className="table-scroll cards">
           <table className="ledger-table" aria-label="The snapshots">
             <thead><tr><th scope="col">name</th>{owners.size > 1 && <th scope="col">depot</th>}<th scope="col" className="number">change</th><th scope="col" className="number">texts</th><th scope="col" className="number">size</th><th scope="col">made</th><th scope="col">note</th></tr></thead>
@@ -159,16 +155,10 @@ function Counted({ parts, label, link, share = false }: { parts: Record<string, 
   );
 }
 
-function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
+function OneSnapshot({ id }: { id: string }) {
   const [shown, setShown] = useState<Answer<SnapshotShown> | null>(null);
-  const [composing, setComposing] = useState(query.get("compose") === "1");
   const [copied, setCopied] = useState(false);
-  const [handed, setHanded] = useState<Handed | null>(null); // a recipe file dropped or chosen here
-  const take = useCallback((h: Handed) => { keepHanded(h); setHanded(h); }, []);
   useEffect(() => { get<SnapshotShown>(`/api/snapshots/${part(id)}`).then(setShown); }, [id]);
-  const jobs = useJobs();
-  const composer = useRef<HTMLDivElement>(null);
-  const compose = () => { setComposing(true); window.setTimeout(() => composer.current?.scrollIntoView({ block: "start", behavior: "smooth" }), 0); };
   if (!shown) return <Skeleton lines={6} label="Reading the snapshot" />;
   if (!shown.ok) return <><PageHead title={id} meta={<a href={href(["snapshots"])}>snapshots</a>} /><Problems problems={shown.problems} /></>;
   const s = shown.data;
@@ -189,7 +179,6 @@ function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
           <Help label="the digest">A sha256 of the text numbers it holds and the change it reads them at. Anyone can work it out again from its sets, without a copy of the depot.</Help></>],
         ["sets", <a href={`/api/snapshots/${part(s.id)}/sets`} download={`${s.name}-sets.json`}>Download its sets</a>],
       ]} />
-      <div ref={composer}>{composing && <Composer snapshot={s} vocabulary={query.get("vocabulary")} onClose={() => setComposing(false)} />}</div>
       <div className="board">
         <Section title="By kind">
           <Counted parts={s.summary.kinds} label="kind" share link={(k) => href(["texts"], { kind: k })} />
@@ -200,42 +189,16 @@ function OneSnapshot({ id, query }: { id: string; query: URLSearchParams }) {
         </Section>
         <Section title={<>Erased since{s.erased_since.texts ? `: ${plural(s.erased_since.texts, "text")}` : ""}</>}>
           {s.erased_since.erasures.length === 0 ? <p className="small aside">No erasure carried out since it was made.</p> : (
-            <p className="small">{plural(s.erased_since.texts, "text")} of it cut or removed by {s.erased_since.erasures.map((e, i) => <span key={e}>{i ? ", " : ""}<a className="ledger" href={href(["erasures"], { request: e })}>{e}</a></span>)}. A build leaves out what they erased.</p>
+            <p className="small">{plural(s.erased_since.texts, "text")} of it cut or removed by {s.erased_since.erasures.map((e, i) => <span key={e}>{i ? ", " : ""}<a className="ledger" href={href(["erasures"], { request: e })}>{e}</a></span>)}. What is made from it leaves out what they erased.</p>
           )}
         </Section>
-        <Section title="Recipes" help="The recipes built from this snapshot by this depot's queue, each opening its build. The depot reads no repository, so a recipe that names the snapshot but was never built here is not listed. A new one is composed by clicks here; a recipe file, a model recipe or a series, is built from its data section.">
-          <BuiltFrom jobs={jobs?.ok ? jobs.data : null} snapshot={s.name} />
-          <div className="row tight recipe-actions">
-            <Button variant={composing ? "quiet" : "primary"} onClick={compose} disabled={composing}>{composing ? "Composing above" : "Compose a new recipe"}</Button>
-          </div>
-          <RecipeDrop onHanded={take} primary={false} label="Build a recipe file" />
-        </Section>
       </div>
-      {handed && <RecipeBuild key={JSON.stringify(handed)} handed={handed} onClear={() => setHanded(null)} />}
     </>
-  );
-}
-
-// The recipes built from a snapshot here: one line per build key, the latest job of each, newest first.
-function BuiltFrom({ jobs, snapshot }: { jobs: Job<unknown>[] | null; snapshot: string }) {
-  if (!jobs) return <p className="small aside">Reading the queue…</p>;
-  const latest = new Map<string, Job<unknown>>();
-  for (const j of [...jobs].sort((a, b) => b.created - a.created))
-    if (j.kind === "corpus" && j.key && j.target?.snapshot === snapshot && !latest.has(j.key)) latest.set(j.key, j);
-  if (!latest.size) return <p className="small aside">No recipe built from it here yet.</p>;
-  return (
-    <ul className="plain small built-from">
-      {[...latest.values()].map((j) => (
-        <li key={j.key}><a href={href(["build"], { key: j.key! })}>{j.recipe ?? "a composed recipe"}</a>{" "}
-          <span className={j.state === "failed" || j.state === "refused" ? "not-allowed" : "aside"}>{j.state === "done" ? "built" : j.state}</span>{" "}
-          <span className="ledger aside">{madeWhen(new Date(j.created * 1000).toISOString())} UTC</span></li>
-      ))}
-    </ul>
   );
 }
 
 export const snapshots: Page = {
   path: "snapshots", title: "Snapshots", group: "data",
   Component: ({ rest, query }) => (rest[1] === "strip" ? <SnapshotStrip key={rest[0]} id={rest[0]} query={query} />
-    : rest[0] ? <OneSnapshot key={rest[0]} id={rest[0]} query={query} /> : <Snapshots query={query} />),
+    : rest[0] ? <OneSnapshot key={rest[0]} id={rest[0]} /> : <Snapshots query={query} />),
 };

@@ -92,7 +92,7 @@ def web(tmp_path, serve):
     return serve(depot), depot
 
 
-def test_the_pages_routes_take_texts_through_decisions_tokenizer_recipes_and_erasures(web):
+def test_the_pages_routes_take_texts_through_decisions_and_erasures(web):
     request, depot = web
     status, about = request("GET", "/api/about")
     assert status == 200 and about["about"]["name"] == "test-depot" and about["confirmation"] == CONFIRMATION
@@ -124,17 +124,7 @@ def test_the_pages_routes_take_texts_through_decisions_tokenizer_recipes_and_era
     assert (status, found) == (200, {"columns": ["id", "title"], "rows": [{"id": "test-depot-1", "title": "Fox"},
                                                                          {"id": "test-depot-2", "title": None}]})
 
-    assert request("GET", "/api/tokenizers") == (200, [])  # the depot's own recipes: none yet
-    snapshot = depot.create_snapshot("s1")["id"]
-    recipe = {"name": "tiny", "snapshot": "s1", "sample_bytes": 1000, "vocab_size": 560}
-    assert request("POST", "/api/tokenizers", {**recipe, "kinds": ["conversation"]})[0] == 422  # plain only, for now
-    assert request("POST", "/api/tokenizers", {**recipe, "snapshot": "s9"})[0] == 404
-    assert request("POST", "/api/tokenizers", recipe)[0] == 200
-    [shown] = request("GET", "/api/tokenizers")[1]
-    assert (shown["sample"], shown["snapshot_name"], shown["needs_snapshot"], shown["dataset_name"]) == (
-        {"snapshot": snapshot, "kinds": ["plain"]}, "s1", False, None)
-    assert request("PUT", "/api/tokenizers/tiny", {"snapshot": snapshot, "sample_bytes": 2000,
-                                                   "vocab_size": 560}) == (200, {"version": 2})
+    assert request("GET", "/api/tokenizers")[0] == 404  # tokenizer recipes are gone: the freight learns vocabularies
     assert request("POST", "/api/datasets", {"name": "first", "tokenizer": "tiny", "libraries": [
         {"library": "test-depot-1"}]})[0] == 404  # datasets are gone
 
@@ -153,7 +143,7 @@ def test_the_pages_routes_add_a_license_and_decide_erasures(web):
         request("POST", "/api/texts", {"text": text, "licenses": ["MIT"], "tags": [tag], "declaration": ME})
     assert [(one["id"], one["texts"]) for one in request("GET", "/api/licenses")[1]] == [("CC0-1.0", 0), ("MIT", 2)]
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-1", "test-depot-2"]), "declaration": ME})
-    depot.create_snapshot("first")
+    depot.create_snapshot()
 
     request("POST", "/api/erasures", {"reason": "a number", "needles": [{"text": "test-depot-1", "start": 5, "end": 13}],
                                       "declaration": ME})
@@ -456,7 +446,7 @@ def test_a_snapshot_read_whole_queues_its_order_by_length_once_then_pages_its_te
     texts = depot.add([NewText(text=c * n, licenses=("CC0-1.0",), tags=("t",) if n > 3 else ())
                        for c, n in zip("abcd", lengths)], Declaration(**ME))
     depot.decide("admitted", texts, Declaration(**ME))
-    made = depot.create_snapshot("first")
+    made = depot.create_snapshot()
     depot.decide("refused", [texts[1]], Declaration(**ME))
 
     status, first = request("POST", f"/api/snapshots/{made['id']}/strip", {})
@@ -490,7 +480,7 @@ def test_a_snapshot_order_that_failed_is_answered_until_asked_again_never_queued
     request, depot = web
     texts = depot.add([NewText(text=c * n, licenses=("CC0-1.0",)) for c, n in zip("ab", [3, 5])], Declaration(**ME))
     depot.decide("admitted", texts, Declaration(**ME))
-    made = depot.create_snapshot("first")
+    made = depot.create_snapshot()
     blocker = work_folder(depot.address) / "sizes"  # a file where the order's folder goes: keeping it fails
     blocker.parent.mkdir(parents=True, exist_ok=True)
     blocker.write_text("in the way")
@@ -541,7 +531,7 @@ def test_a_license_change_from_the_pages_starts_the_texts_over_and_a_snapshot_ke
     request("POST", "/api/texts", {"text": "held", "licenses": ["CC0-1.0"], "declaration": ME})
     request("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-1"]), "declaration": ME})
     request("POST", "/api/decisions", {"status": "admitted", "selection": named(["test-depot-3"]), "declaration": ME})
-    snapshot = depot.create_snapshot("first")["id"]
+    snapshot = depot.create_snapshot()["id"]
 
     status, changed = wrote(request, "/api/texts/licenses", {"selection": named(["test-depot-2", "test-depot-1"]),
                                                             "licenses": ["CC0-1.0"], "declaration": ME})
@@ -801,9 +791,10 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     request, upstream = web
     assert request("POST", "/api/texts", {"text": "Theirs.", "licenses": ["CC0-1.0"], "declaration": ME})[0] == 200
     upstream.decide("admitted", ["test-depot-1"], Declaration(ME["name"], ME["email"], True))
-    upstream.create_snapshot("theirs")
-    assert request("POST", "/api/tokenizers", {"name": "theirs", "snapshot": "theirs", "sample_bytes": 1000,
-                                               "vocab_size": 560})[0] == 200
+    with upstream.db.write("a kept recipe") as (con, number):  # a tokenizer recipe the upstream kept, unwritten now
+        con.execute("INSERT INTO tokenizers_revisions (id, revision, change, latest, name, version, depot, dataset, "
+                    "sample_bytes, vocab_size) VALUES ('test-depot-9', 1, ?, 1, 'theirs', 1, NULL, '', 1000, 560)",
+                    (number,))
     follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert mine("POST", "/api/texts", {"text": "Mine.", "licenses": ["CC0-1.0"], "declaration": ME}) == (
@@ -813,8 +804,6 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     status, refused = mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-depot-1", "test-clone-1"]),
                                                        "declaration": ME})
     assert status == 422 and "test-depot-1" in refused["problems"][0] and "to the upstream" in refused["problems"][0]
-    assert mine("PUT", "/api/tokenizers/theirs", {"snapshot": "test-depot-1", "sample_bytes": 2000,
-                                                  "vocab_size": 560})[0] == 422
     assert follower.change() == change
 
     assert mine("GET", "/api/texts/test-depot-1")[1]["upstream"] is True

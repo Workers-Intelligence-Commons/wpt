@@ -17,13 +17,12 @@
 #                        folder beside the file, and the store its local copies in cache/
 #     WPT_DEPOT_USER     uid:gid the app runs as, which must be able to write in that
 #                        folder (default 1000:1000)
-#     WPT_STORE          the store that holds the corpora the app builds and serves
-#                        (s3://BUCKET/PREFIX); unset, the app builds and serves none
+#     WPT_STORE          the store that holds the corpora the frozen dataset routes serve,
+#                        and the backups (s3://BUCKET/PREFIX); unset, the app serves none
 #     WPT_STORE_ACCESS_KEY_ID, WPT_STORE_SECRET_ACCESS_KEY
 #                        a key that reads and writes that store
 #     WPT_STORE_ENDPOINT_URL, WPT_STORE_REGION, WPT_STORE_SESSION_TOKEN
 #                        optional, as wpt_store reads them
-#     WPT_CORPORA_CAP    the bytes the store's corpora may take together (3TB); unset, no cap
 #     CERTBOT_EMAIL      the address Let's Encrypt writes to about the certificate; required
 #
 # Every service uses the host's network: ports Docker publishes would pass
@@ -44,7 +43,7 @@ services:
     user: ${WPT_DEPOT_USER:-1000:1000}
     environment:
       WPT_DEPOT: /depot/wpt-depot.sqlite
-      WPT_DEPOT_URL: https://depot.workers-intelligence-commons.org  # what the corpora it builds name it by
+      WPT_DEPOT_URL: https://depot.workers-intelligence-commons.org  # what an order names it by
       XDG_CACHE_HOME: /depot/cache
       WPT_STORE: ${WPT_STORE:-}
       WPT_STORE_ACCESS_KEY_ID: ${WPT_STORE_ACCESS_KEY_ID:-}
@@ -52,7 +51,6 @@ services:
       WPT_STORE_ENDPOINT_URL: ${WPT_STORE_ENDPOINT_URL:-}
       WPT_STORE_REGION: ${WPT_STORE_REGION:-}
       WPT_STORE_SESSION_TOKEN: ${WPT_STORE_SESSION_TOKEN:-}
-      WPT_CORPORA_CAP: ${WPT_CORPORA_CAP:-}
     volumes:
       - ${WPT_DEPOT_FOLDER:?set WPT_DEPOT_FOLDER, the host folder that holds wpt-depot.sqlite (docs/depot-web.md)}:/depot
     restart: unless-stopped

@@ -1,6 +1,5 @@
 """wpt depot: the depot WPT_DEPOT names (environment or .env), its texts
-and items, the decisions on them, its snapshots, tokenizer recipes and
-erasures.
+and items, the decisions on them, its snapshots and erasures.
 
     wpt depot new FILE --name N --maintainer M --takedown-contact C
                                           an empty depot in a new SQLite file
@@ -167,43 +166,13 @@ erasures.
                                           one decision on the erasure request ID; once it is admitted,
                                           the depot carries it out at once and marks stale every corpus
                                           of the store that holds a text it cut or removed
-    wpt depot tokenizer new NAME --snapshot S [--kind K ...] --sample-bytes N --vocab-size N [--note T]
-                                          a tokenizer recipe at version 1: its vocabulary trains on a sample
-                                          of the texts of kind K (plain, the one kind a sample takes for now
-                                          and the default) of the snapshot S (its id, or the name of one of
-                                          this depot's own)
-    wpt depot tokenizer edit NAME [--snapshot S] [--kind K ...] [--sample-bytes N] [--vocab-size N] [--note T]
-                                          change it as a new revision: a change of what trains its
-                                          vocabulary raises its version, a change of its note alone does not;
-                                          a recipe written before snapshots names a dataset and trains
-                                          nothing until an edit names a snapshot
-    wpt depot tokenizer train NAME        train the vocabulary of the recipe's version on its sample (the
-                                          plain texts of its snapshot, in the snapshot's order), read once,
-                                          and keep it in the depot with the texts it trained on; the depot
-                                          refuses a second vocabulary of the same version
-    wpt depot tokenizer import NAME FILE --snapshot S [--kind K ...] [--lock FILE | --vocabulary FILE]
-                                          a tokenizer recipe made from a recipe file (sample_bytes,
-                                          vocab_size, note), its sample read from the snapshot S, with the
-                                          vocabulary a lock file names (read from the store WPT_STORE names)
-                                          or a vocabulary file as the vocabulary of its version 1
-    wpt depot snapshot new NAME [--note TEXT]
-                                          a snapshot of the texts admitted now, called NAME: the change
-                                          number it reads, its texts, their digest and its summary
+    wpt depot snapshot new [--note TEXT]  a snapshot of the texts admitted now, named by the UTC time it is
+                                          made (YYYY-MM-DDTHH-MM-SSZ): the change number it reads, its texts,
+                                          their digest and its summary
     wpt depot snapshot list               every snapshot of the depot, one JSON row per line
     wpt depot snapshot show NAME [--owner DEPOT]
                                           one snapshot (of this depot, or of DEPOT, the upstream a clone
                                           follows): its row, its summary and what an erasure did to it since
-    wpt depot build FILE                  the corpus of the model recipe in the JSON file FILE, or of the
-                                          series in it at its largest size, the one corpus every size reads
-                                          (its record names it SERIES:); only its data section counts:
-                                          the snapshot it names, of this depot or of the
-                                          upstream it follows, checked against the change and digest it
-                                          names, its kinds, shares, size and vocabulary (one the depot
-                                          holds), built into the store WPT_STORE names under the cap
-                                          WPT_CORPORA_CAP, in the folder of its build key; a size counts
-                                          everything, conversations and tasks taking the share of the bytes
-                                          they hold in the corpus of every token, and the corpus never
-                                          passes it
     wpt depot jobs [cancel ID]            the web app's jobs, one JSON row per line; cancel: a queued job
                                           never runs, a running one is stopped
     wpt depot erase ID [START END] [--field POINTER] --reason TEXT DECLARATION
@@ -222,9 +191,8 @@ erasures.
                                           change who maintains the depot, or where to ask for a takedown;
                                           its name never changes, since it begins every id
     wpt depot web [--port N]              the same operations as pages, on http://127.0.0.1:N/, but
-                                          new, clone, pull, upgrade, backup, restore, about's change,
-                                          tokenizer import, jobs cancel and recount; a snapshot, a
-                                          vocabulary training and a build run as jobs of its heavy lane, one
+                                          new, clone, pull, upgrade, backup, restore, about's change, jobs
+                                          cancel and recount; a snapshot runs as a job of its heavy lane, one
                                           at a time, and the writes over many texts as jobs of its write
                                           lane, beside them
 
@@ -246,23 +214,18 @@ import sys
 from pathlib import Path
 
 from wpt_depot import About, Declaration, Depot, NewText, backup, clone, restore
-from wpt_depot.errors import DepotError, Refused
+from wpt_depot.errors import DepotError
 from wpt_depot.filters import literal
 from wpt_depot.kinds import PLAIN
 from wpt_depot.parts import FileText
 from wpt_depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from wpt_depot.settings import depot_address
 from wpt_depot import corpora, measures, snapshots, upgrade
-from wpt_recipes.errors import RecipeError
 from wpt_store import StoreError, StoreSettingError, store_from_settings
 from wpt_utils.lines import ERROR, say
-from wpt_utils.programs import code_name
 
-from .downloads import Downloads
-from .jobs import Jobs, jobs_file
-from .shared import (CONFIRMATION, BadSetting, NoSample, NoVocabulary, build_corpus, decide_erasures, env_file,
-                     corpora_cap, import_tokenizer, jsonable, opened, public_url, pulled, recipe_given,
-                     snapshot_named, train_vocabulary, viewed)
+from .jobs import Jobs
+from .shared import CONFIRMATION, decide_erasures, env_file, jsonable, opened, public_url, pulled, viewed
 
 PASSAGE_CHARACTERS = 200_000  # the characters wpt depot show --from prints unless told
 
@@ -547,7 +510,7 @@ def cmd_recount(args):
 
 
 def cmd_snapshot_new(args):
-    row = opened().create_snapshot(args.name, args.note, progress=lambda stage: say(f"  {stage}"))
+    row = opened().create_snapshot(args.note, progress=lambda stage: say(f"  {stage}"))
     say(f"snapshot {row['id']}: {row['name']}, {row['texts']:,} texts at change {row['at_change']}, digest "
         f"{row['digest']}")
     return 0
@@ -564,67 +527,6 @@ def cmd_snapshot_show(args):
     row = depot.snapshot(args.name, args.owner)
     print(json.dumps(jsonable({**row, "erased_since": snapshots.erased_since(depot, row["id"])}), ensure_ascii=False,
                      indent=1))
-    return 0
-
-
-def cmd_build(args):
-    depot = opened()
-    path = Path(args.recipe)
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error:
-        raise Refused(f"{path} is not JSON: {error}") from None
-    # a series: its data part at its largest size, the one corpus every size reads, named SERIES:
-    name, _, data = recipe_given(document, path.name)
-    if "snapshot" not in data:
-        raise Refused(f"the recipe {path} names a dataset, which no longer exists: give it the snapshot "
-                      "shape (docs/model.md, \"Model recipes\")")
-    snapshot = snapshot_named(depot, data["depot"], data["snapshot"])
-    store = store_from_settings(env_file())
-    cap = corpora_cap()
-    downloads = Downloads(jobs_file(depot.address))
-    record = build_corpus(depot, snapshot["id"], data, say, store=store, recipe=name, code_commit=code_name(),
-                          room=lambda folder: corpora.Room(store, cap, folder, downloads.last_download,
-                                                           downloads.busy, say))
-    say(f"corpus {record['id']}: build key {record['build_key']}")
-    return 0
-
-
-def cmd_tokenizer_new(args):
-    recipe = opened().new_tokenizer(args.name, args.snapshot, args.kind, args.sample_bytes, args.vocab_size, args.note)
-    say(f"tokenizer recipe {recipe}: {args.name}, version 1")
-    return 0
-
-
-def cmd_tokenizer_edit(args):
-    depot = opened()
-    row = depot.tokenizer(args.name)
-    sample = row["sample"] or {"snapshot": None, "kinds": None}  # a recipe written before snapshots names none
-    given = {"snapshot": args.snapshot, "kinds": args.kind, "sample_bytes": args.sample_bytes,
-             "vocab_size": args.vocab_size, "note": args.note}
-    values = {key: (sample if key in sample else row)[key] if value is None else value for key, value in given.items()}
-    if values["snapshot"] is None:
-        raise Refused(f"the tokenizer recipe {args.name} names a dataset, written before snapshots: give it a "
-                      "snapshot (--snapshot)")
-    version = depot.edit_tokenizer(row["id"], **values)
-    say(f"tokenizer recipe {row['id']}: {args.name}, version {version}")
-    return 0
-
-
-def cmd_tokenizer_train(args):
-    train_vocabulary(opened(), args.name, say)
-    return 0
-
-
-def cmd_tokenizer_import(args):
-    depot = opened()
-    given = json.loads(Path(args.file).read_text(encoding="utf-8"))
-    lock = None if args.lock is None else json.loads(Path(args.lock).read_text(encoding="utf-8"))
-    vocabulary = None if args.vocabulary is None else Path(args.vocabulary).read_bytes()
-    store = store_from_settings(env_file()) if lock is not None else None
-    found = import_tokenizer(depot, args.name, given, args.snapshot, args.kind, lock, vocabulary, store)
-    say(f"tokenizer recipe {found['recipe']}: {args.name}, version 1"
-        + (f", vocabulary {found['vocabulary']}" if found["vocabulary"] else ", no vocabulary yet"))
     return 0
 
 
@@ -857,48 +759,10 @@ def parser() -> argparse.ArgumentParser:
     adding_license.add_argument("file", help="the official text (UTF-8)")
     adding_license.set_defaults(run=cmd_license_add)
 
-    tokenizer = commands.add_parser("tokenizer", help="make, change, train and import tokenizer recipes")
-    tokenizers = tokenizer.add_subparsers(dest="action", required=True)
-    making = tokenizers.add_parser("new", help="a tokenizer recipe at version 1")
-    making.add_argument("name")
-    making.add_argument("--snapshot", required=True, help="the snapshot whose texts its sample reads: its id, or "
-                                                           "the name of one of this depot's own")
-    making.add_argument("--kind", action="append", help="a kind of texts its sample reads (plain, the default and "
-                                                        "the one kind a sample takes for now)")
-    making.add_argument("--sample-bytes", type=int, required=True, help="the sample's UTF-8 bytes at most")
-    making.add_argument("--vocab-size", type=int, required=True, help="the vocabulary's tokens at most")
-    making.add_argument("--note")
-    making.set_defaults(run=cmd_tokenizer_new)
-    editing = tokenizers.add_parser("edit", help="change a tokenizer recipe as a new revision: a change of what "
-                                                 "trains its vocabulary raises its version")
-    editing.add_argument("name")
-    editing.add_argument("--snapshot", help="the snapshot whose texts its sample reads: its id, or the name of one "
-                                            "of this depot's own")
-    editing.add_argument("--kind", action="append", help="a kind of texts its sample reads: every one")
-    editing.add_argument("--sample-bytes", type=int)
-    editing.add_argument("--vocab-size", type=int)
-    editing.add_argument("--note")
-    editing.set_defaults(run=cmd_tokenizer_edit)
-    training = tokenizers.add_parser("train", help="train the vocabulary of the recipe's version and keep it in "
-                                                   "the depot")
-    training.add_argument("name")
-    training.set_defaults(run=cmd_tokenizer_train)
-    importing = tokenizers.add_parser("import", help="a tokenizer recipe made from a recipe file, with the "
-                                                     "vocabulary of a lock file or a vocabulary file")
-    importing.add_argument("name")
-    importing.add_argument("file", help="the recipe file (JSON: sample_bytes, vocab_size, note)")
-    importing.add_argument("--snapshot", required=True, help="the snapshot whose texts its sample reads: its id, or "
-                                                              "the name of one of this depot's own")
-    importing.add_argument("--kind", action="append", help="a kind of texts its sample reads (plain by default)")
-    given = importing.add_mutually_exclusive_group()
-    given.add_argument("--lock", help="a lock file (JSON: texts, vocabulary_sha256), its vocabulary read from the "
-                                      "store WPT_STORE names")
-    given.add_argument("--vocabulary", help="a vocabulary file (wpt_tokenizer's format)")
-    importing.set_defaults(run=cmd_tokenizer_import)
     snapshotting = commands.add_parser("snapshot", help="snapshots: the texts admitted at a change number")
     snapshot_actions = snapshotting.add_subparsers(dest="action", required=True)
-    making_snapshot = snapshot_actions.add_parser("new", help="a snapshot of the texts admitted now")
-    making_snapshot.add_argument("name")
+    making_snapshot = snapshot_actions.add_parser("new", help="a snapshot of the texts admitted now, named by the "
+                                                             "UTC time it is made")
     making_snapshot.add_argument("--note")
     making_snapshot.set_defaults(run=cmd_snapshot_new)
     listing_snapshots = snapshot_actions.add_parser("list", help="every snapshot of the depot")
@@ -907,11 +771,6 @@ def parser() -> argparse.ArgumentParser:
     showing_snapshot.add_argument("name")
     showing_snapshot.add_argument("--owner", help="the depot whose snapshot it is (default: this one)")
     showing_snapshot.set_defaults(run=cmd_snapshot_show)
-    building = commands.add_parser("build", help="a model recipe's or a series' corpus, built into the store")
-    building.add_argument("recipe", metavar="FILE", help="a model recipe's JSON file, or a series', whose one corpus "
-                                                         "every size reads (named SERIES:); only its data section "
-                                                         "counts")
-    building.set_defaults(run=cmd_build)
     job = commands.add_parser("jobs", help="the web app's jobs: list them, or cancel one")
     job.set_defaults(run=cmd_jobs)
     job_actions = job.add_subparsers(dest="action")
@@ -959,8 +818,7 @@ def main(argv=None) -> int:
             found.error(f"credits takes --clear {both[0]} or a new value for it, not both")
     try:
         return args.run(args)
-    except (DepotError, StoreError, StoreSettingError, NoVocabulary, NoSample, BadSetting, RecipeError,
-            corpora.TooBig, corpora.NoRoom, OSError, UnicodeDecodeError, ValueError) as error:
+    except (DepotError, StoreError, StoreSettingError, OSError, UnicodeDecodeError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2
 

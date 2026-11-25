@@ -83,10 +83,10 @@ while (found := read()) is not None:
 
 @pytest.fixture
 def freight(tmp_path, monkeypatch):
-    """A depot at depot (its Depot; me, the declaration its decisions take), with the snapshot "s" of 12 plain
+    """A depot at depot (its Depot; me, the declaration its decisions take), with one snapshot of 12 plain
     texts tagged en and 6 tagged de, of several lengths; a dock (store) and
     its URL dock; a freight home; the program fake; and request(**settings),
-    the request of "s" with shares en 0.7 / de 0.3 and a size of 1,500 bytes
+    the request of that snapshot with shares en 0.7 / de 0.3 and a size of 1,500 bytes
     of text, prepared by fake with those settings."""
     monkeypatch.chdir(tmp_path)  # no .env of the checkout is read
     program = tmp_path / "fake"
@@ -101,13 +101,13 @@ def freight(tmp_path, monkeypatch):
               for n in range(6)]
     added = depot.add(texts, ME)
     depot.decide("admitted", f"id IN ({', '.join(repr(one) for one in added)})", ME)
-    depot.create_snapshot("s")
+    name = depot.create_snapshot()["name"]
     store = open_store((tmp_path / "dock").as_uri())
 
     def request(**settings) -> dict:
-        snapshot = depot.snapshot("s")
+        snapshot = depot.snapshot(name)
         return {"depot": depot.name(),
-                "snapshot": {"name": "s", "change": snapshot["at_change"], "digest": snapshot["digest"]},
+                "snapshot": {"name": name, "change": snapshot["at_change"], "digest": snapshot["digest"]},
                 "selection": {"shares": [{"tag": "en", "share": 0.7}, {"tag": "de", "share": 0.3}],
                               "size": {"unit": "bytes-of-text", "amount": 1500}},
                 "preparation": {"name": "fake", "settings": settings, "inputs": {}}}

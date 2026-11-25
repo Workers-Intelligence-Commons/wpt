@@ -68,7 +68,7 @@ can become a route without its callers changing.
   folder for each.
 - A request names exactly one preparation.
 
-The freight chooses as `wpt depot build` chooses
+The freight chooses by the selection rules
 ([data-selection.md](../data-selection.md), "Shares", "Filling a part",
 "Long texts", "Corpora", "Conversations that quote texts";
 `freight.selection`, `freight.groups`, `freight.fill`): the first share

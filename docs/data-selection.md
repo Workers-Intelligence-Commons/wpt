@@ -414,23 +414,25 @@ change would leave as it is gets nothing. In a clone, a change that reaches a te
 
 ## Snapshots
 
-A snapshot is a name on a change number: the texts admitted at that
-change, each read at its revision as of it, so it reads the same whatever
+A snapshot is a change number, named by the UTC time it was made: the
+texts admitted at that change, each read at its revision as of it, so it reads the same whatever
 its texts did since. A model recipe names the snapshot its corpus is built
 from ("Corpora", below), so a snapshot is what fixes the texts a model may
 read. A snapshot holds every admitted text of every kind; a recipe chooses
 among them by kind and by tag.
 
-`wpt depot snapshot new NAME [--note TEXT]`, or "Make a snapshot" on the
-Snapshots page of `wpt depot web`, makes one of the texts admitted now. The
-page fills in the next free name, the year and month (`2026-11`, then
-`2026-11b`, ...), and shows what making it takes (its texts, the time and
-the disk) before the one confirming click; it runs as a job of the heavy
-lane ([depot-web.md](depot-web.md), "Jobs and downloads") and reads the
-change current when it ends, which its page then shows. A name is made of
-letters, digits, `.`, `_` and `-`, begins with a letter or a digit, and is
-unique among the snapshots of the depot that made it, so a clone's own
-snapshot may take a name its upstream uses. Making one reads no text: its
+`wpt depot snapshot new [--note TEXT]`, or "Make a snapshot" on the
+Snapshots page of `wpt depot web`, makes one of the texts admitted now.
+The depot names it by the UTC time it makes it, `YYYY-MM-DDTHH-MM-SSZ`
+(`2026-11-26T14-03-27Z`): a second snapshot made in the same second waits
+for the next one, so a name is unique among the snapshots of the depot that
+made it, and a clone's own snapshot may bear a name its upstream uses. A
+snapshot with another name, such as one the upgrade to format 13 made,
+keeps it. The page shows what making it
+takes (its texts, the time and the disk) before the one confirming click;
+it runs as a job of the heavy lane, one at a time
+([depot-web.md](depot-web.md), "Jobs and downloads"), and reads the change
+current when it ends, which its page then shows. Making one reads no text: its
 texts come from the index of the admitted texts and its summary from the
 depot's counts ([architecture.md](architecture.md), "Snapshots"), so it
 stores a fraction of a byte a text and reads several hundred thousand
@@ -447,8 +449,8 @@ then. A snapshot the upgrade to format 13 made from a dataset has one part
 for each library the dataset read, in its order, and a text several parts
 hold is read in the first of them. Its summary says what it holds by kind,
 by tag, by plain tag set, by license and by depot, in texts, characters
-and bytes, so a recipe's measure and its build's plan read the summary and
-never count the texts again.
+and bytes, so the freight's plan reads the summary and never counts the
+texts again.
 
 A snapshot is never changed, renamed nor removed. An erasure cuts its
 texts in place and removes a text whole without touching the snapshot:
@@ -456,10 +458,9 @@ reading it skips the removed text and counts it, and its page says how
 many texts erasures reached since ([erasure.md](erasure.md)). A text
 refused after a snapshot stays in it.
 
-The page of a snapshot shows its change, its digest with a copy button,
-what it holds by kind and by tag, the texts erased since, the recipes of
-the repository that name it, and the composer of a recipe's data section
-("Corpora", below).
+The page of a snapshot shows its name, its change, its digest with a copy
+button, what it holds by kind and by tag, and the texts erased since: what
+a recipe's data section names it by.
 
 ### A snapshot's digest
 
@@ -482,8 +483,8 @@ recomputes it with any tool:
 A decimal number is written in ASCII digits with no sign, no leading zero
 and no separator. A number above 2**32 - 1 cannot be held, and making a
 snapshot of a depot that holds one admitted is refused. A clone and a pull
-check every snapshot they receive against its digest, a build checks the
-recipe's digest against the snapshot's, and a read checks the sets once in
+check every snapshot they receive against its digest, the freight checks
+the request's digest against the snapshot's, and a read checks the sets once in
 each process.
 
 ## The data section of a model recipe
@@ -501,16 +502,11 @@ selection is a tag, which a share names.
 `wpt build-resources RECIPE` asks the freight for the section's vocabulary
 and corpus, which the freight chooses by the rules below
 ([api/freight.md](api/freight.md)), and `wpt train RECIPE` finds both on
-the dock. The depot's own build, below, takes a vocabulary named by its
-sha256 only.
+the dock.
 
 Recipes are files a person keeps; the depot reads no code repository. The
-composer on a snapshot's page builds a data section by clicks: kind chips
-and tag chips from the snapshot's summary, a slider for each share, the
-size from preset buttons or a slider, and the vocabulary from a list of
-the depot's. It shows what the section takes and what its build costs as
-the clicks change it, and gives the section to build, to download as JSON
-or to copy, writing nothing (`POST /api/recipes/compose`).
+snapshot's page gives the name, change and digest its data section
+writes.
 
 ### Shares
 
@@ -612,23 +608,22 @@ every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
-`wpt depot build FILE`, or the Build button of the page "Build" in `wpt
-depot web` once the recipe's file is handed over there ([depot-web.md](depot-web.md),
-"Jobs and downloads"), builds the corpus of a model recipe, or of a series
-at its largest size (its record names it `SERIES:`), into the store
-(`WPT_STORE`): what training reads. Only the file's data section counts. The recipe names this depot, or
-the upstream it follows, by its public address, and a snapshot of it by
-name. It runs on the machine that holds the depot. A rented GPU machine only reads
-the corpus and trains ([machines.md](machines.md)). What a build takes is
-a recipe's data section: the snapshot (its name, and the change number and
+`wpt build-resources RECIPE` asks the freight for the corpus of a model
+recipe, or of a series at its largest size, which it delivers on the dock
+(`WPT_STORE`): what training reads ([api/freight.md](api/freight.md)). The
+depot builds no corpus. The rules below are the build's
+(`wpt_depot.corpus`), which the freight's choice follows, and the layout
+of a corpus the store's `corpora/` holds. The
+recipe names this depot, or the upstream it follows, by its public
+address, and a snapshot of it by name. A rented GPU machine only reads the
+corpus and trains ([machines.md](machines.md)). What a build takes is a
+recipe's data section: the snapshot (its name, and the change number and
 digest it reads, which the build checks), the kinds it takes (none: every
 kind), the shares, the size (`total_tokens`, none for every token) and the
-vocabulary (its sha256 and size). The vocabulary is one the depot holds
-already ([tokenizer.md](tokenizer.md)); without it nothing is built: a
-build never trains a vocabulary. A snapshot whose change number or digest
-is not the section's, or a vocabulary whose sha256 or size is not, refuses
-the build and names both: "snapshot S of depot D reads change N with
-digest H; the recipe says M, G".
+vocabulary (its sha256 and size). A snapshot whose change number or
+digest is not the section's, or a vocabulary whose sha256 or size is not,
+refuses the build and names both: "snapshot S of depot D reads change N
+with digest H; the recipe says M, G".
 
 The build is a stream. It first puts every text of the snapshot in the
 corpus's order, in memory (see "The order" below). It then reads the texts
@@ -745,15 +740,6 @@ deleted. The record also gives a fingerprint of what it holds of each
 kind a training step reads, `plain`, `conversation` and `task`
 (`fingerprints`), so a step's result depends on the kinds it reads alone
 ([training.md](training.md), "Step results and reuse").
-
-A cap (`WPT_CORPORA_CAP`) bounds the bytes all corpora take together, the
-files of a folder left without a record by a build that stopped included.
-To make room, a build deletes those files first, then the corpus
-downloaded least recently, a file at a time, never one being built or
-downloaded. Before its first upload, a build estimates its whole size from
-its first files, and a corpus bigger than the cap fails then, before any
-other corpus is deleted for it. A build whose uploaded files were deleted
-meanwhile writes no record, and started again it starts over.
 
 An erasure carried out while a corpus is built is checked once the build
 ends: when it reached a text the corpus took, the corpus is written stale

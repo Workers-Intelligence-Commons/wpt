@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import struct
+from datetime import UTC, datetime
 from pathlib import Path
 
 import apsw
@@ -75,7 +76,7 @@ def test_a_snapshot_made_while_texts_change_holds_what_was_admitted_at_its_chang
             other.decide("refused", [under_review[0]], me)
 
     measured = {}
-    made = snapshots.create(depot, "2026-11", read=meanwhile, page=3, measured=measured)
+    made = snapshots.create(depot, read=meanwhile, page=3, measured=measured)
 
     assert len(pages) >= 3 and measured["at_change"] > measured["started"] and measured["moved"] >= 8
     assert measured["longest_read"] < 1.0
@@ -97,7 +98,7 @@ def test_the_summary_holds_what_a_count_of_the_texts_themselves_gives(make_depot
     request = depot.ask_erasure("a passage", [(texts[7], 0, 5)], me)
     depot.decide_erasure(request, "admitted", me)
 
-    made = depot.create_snapshot("2026-11")
+    made = depot.create_snapshot()
 
     rows, erased = every_text(depot, made["id"])
     direct = {"kinds": {}, "tags": {}, "plain_tagsets": {}, "licenses": {}, "owners": {}}
@@ -127,7 +128,7 @@ def test_the_digest_is_the_sha256_of_the_numbers_sorted_as_the_module_says(make_
     # an outsider checks a snapshot with any roaring library or none, from the numbers alone
     depot = make_depot()
     mixed(depot, me)
-    made = depot.create_snapshot("2026-11")
+    made = depot.create_snapshot()
 
     numbers = sorted(ids.number(one) for one in admitted(depot))
     expected = hashlib.sha256(b"wpt-snapshot-1\n" + f"{made['at_change']}\n".encode()
@@ -149,7 +150,7 @@ def test_a_snapshot_reads_its_texts_at_their_revisions_then_whatever_changes_aft
     # after it changes nothing it reads, and an erasure of a whole text is skipped and counted
     depot = make_depot()
     texts = mixed(depot, me)
-    made = depot.create_snapshot("2026-11")
+    made = depot.create_snapshot()
     before, _ = every_text(depot, made["id"])
 
     depot.edit_credits(texts[0], {"tags": ["z"], "title": "Retitled"}, me)
@@ -172,7 +173,7 @@ def test_a_snapshot_reads_its_texts_at_their_revisions_then_whatever_changes_aft
     assert [one["id"] for one in conversations] == texts[14:]
     assert depot.snapshot_count(made["id"]) == {"texts": made["texts"], "characters": made["characters"],
                                                 "bytes": made["bytes"]}  # the summary, never a recount
-    later = depot.create_snapshot("2026-12")
+    later = depot.create_snapshot()
     third = next(one for one in every_text(depot, later["id"])[0] if one["id"] == texts[3])
     assert third["revision"] == 2 and texts[5] not in held(depot, later["id"])
 
@@ -204,7 +205,7 @@ def test_a_number_held_by_two_parts_is_read_in_the_first_part_at_its_bound(make_
 def test_a_clone_s_snapshot_holds_each_owner_s_texts_at_its_own_bound_and_names_are_per_owner(
         make_depot, me, serve, tmp_path):
     # a clone holds its upstream's texts in the upstream's numbering and its own in its own, so each owner has a
-    # set and a bound; a clone's "2026-11" never collides with its upstream's "2026-11"
+    # set and a bound; a clone's snapshot never collides with its upstream's of the same name
     upstream = make_depot("up")
     theirs = upstream.add([NewText(text=f"upstream {n}", licenses=("CC0-1.0",)) for n in range(4)], me)
     upstream.decide("admitted", theirs[:3], me)
@@ -212,7 +213,7 @@ def test_a_clone_s_snapshot_holds_each_owner_s_texts_at_its_own_bound_and_names_
     ours = follower.add([NewText(text=f"own {n}", licenses=("CC0-1.0",)) for n in range(2)], me)
     follower.decide("admitted", ours, me)
 
-    made = follower.create_snapshot("2026-11")
+    made = follower.create_snapshot()
 
     brought = follower.rows("SELECT upstream_change FROM pulls ORDER BY change DESC LIMIT 1")[0]["upstream_change"]
     assert [(part, owner, bound, len(bitmap)) for part, owner, bound, bitmap in snapshots.sets(follower, made["id"])] \
@@ -225,20 +226,20 @@ def test_a_clone_s_snapshot_holds_each_owner_s_texts_at_its_own_bound_and_names_
     assert next(one for one in rows if one["id"] == theirs[0])["title"] is None
 
     # the same name in two owners: the upstream's own snapshot, which a pull brings, beside the clone's
-    theirs_made = upstream.create_snapshot("2026-11")
+    theirs_made = upstream.create_snapshot()
+    with upstream.db.write("same name") as (con, _):  # made in the same second as the clone's: named alike
+        con.execute("UPDATE snapshots SET name = ? WHERE id = ?", (made["name"], theirs_made["id"]))
     pull(follower)
-    assert follower.snapshot("2026-11")["id"] == made["id"]
-    assert follower.snapshot("2026-11", owner="up")["id"] == theirs_made["id"]
+    assert follower.snapshot(made["name"])["id"] == made["id"]
+    assert follower.snapshot(made["name"], owner="up")["id"] == theirs_made["id"]
     assert [one["id"] for one in follower.snapshots()] == [made["id"], theirs_made["id"]]
-    with pytest.raises(Refused, match="already"):
-        follower.create_snapshot("2026-11")
     with pytest.raises(apsw.ConstraintError):
         with follower.db.write("twice") as (con, _):
             con.execute(f"INSERT INTO snapshots ({snapshots.COLUMNS}) SELECT 'follower-9', change, name, at_change, "
                         "made_at, origin, note, texts, characters, bytes, digest, summary FROM snapshots WHERE id = ?",
                         (made["id"],))
     with pytest.raises(NotFound):
-        follower.snapshot("2026-11", owner="elsewhere")
+        follower.snapshot(made["name"], owner="elsewhere")
 
 
 def test_a_pull_while_a_snapshot_reads_starts_the_reading_over(make_depot, me, serve, tmp_path):
@@ -257,42 +258,49 @@ def test_a_pull_while_a_snapshot_reads_starts_the_reading_over(make_depot, me, s
             pulled.append(pull(other))
 
     measured = {}
-    made = snapshots.create(follower, "2026-11", read=meanwhile, page=1, measured=measured)
+    made = snapshots.create(follower, read=meanwhile, page=1, measured=measured)
 
     assert measured["tries"] == 2 and held(follower, made["id"]) == set(theirs[1:]) == admitted(follower)
 
 
-def test_a_snapshot_s_name_and_numbers_are_checked_and_the_counts_must_hold_what_was_read(make_depot, me):
+def test_a_snapshot_is_named_by_the_utc_time_it_is_made_a_second_apart_from_another(make_depot, me):
     depot = make_depot()
     mixed(depot, me)
-    for name in ("", "a b", "-x", "é", None):
-        with pytest.raises(Refused, match="name"):
-            depot.create_snapshot(name)
-    depot.create_snapshot("v1.0_a-b")
-    with pytest.raises(Refused, match="already"):
-        depot.create_snapshot("v1.0_a-b")
+    first, second = depot.create_snapshot(), depot.create_snapshot()
+    for made in (first, second):
+        named = datetime.strptime(made["name"], snapshots.NAMED).replace(tzinfo=UTC)
+        assert named == datetime.fromisoformat(made["made_at"]).replace(microsecond=0)
+    assert second["name"] > first["name"]  # the second one waited for the next second
+    assert [one["name"] for one in depot.snapshots()] == [first["name"], second["name"]]
+
+
+def test_a_snapshot_s_numbers_are_checked_and_the_counts_must_hold_what_was_read(make_depot, me):
+    depot = make_depot()
+    mixed(depot, me)
+    made = depot.create_snapshot()
     # counts that drifted from the rows refuse it, and a recount mends them
     with depot.db.write("drift") as (con, _):
         con.execute("DELETE FROM counts WHERE facet = 'kind' AND name = 'admitted conversation'")
     with pytest.raises(Refused, match="recount"):
-        depot.create_snapshot("drifted")
+        depot.create_snapshot()
     depot.recount()
-    assert depot.create_snapshot("drifted")["texts"] == len(admitted(depot))
+    drifted = depot.create_snapshot()
+    assert drifted["texts"] == len(admitted(depot))
     # a number no 32-bit set holds
     with depot.db.write("far") as (con, _):
         con.execute("UPDATE numbers SET last = ? WHERE name = 'texts'", (1 << 32,))
     far = depot.add([NewText(text="far", licenses=("CC0-1.0",))], me)
     depot.decide("admitted", far, me)
     with pytest.raises(Refused, match="above"):
-        depot.create_snapshot("far")
-    assert [one["name"] for one in depot.snapshots()] == ["v1.0_a-b", "drifted"]
+        depot.create_snapshot()
+    assert [one["id"] for one in depot.snapshots()] == [made["id"], drifted["id"]]
 
 
 def test_no_write_changes_a_snapshot_once_written(make_depot, me):
     # a recipe and a trained model name a snapshot for good: nothing may change its row or its sets afterwards
     depot = make_depot()
     texts = mixed(depot, me)
-    made = depot.create_snapshot("2026-11")
+    made = depot.create_snapshot()
 
     def stored():
         con = depot.db.reader()
@@ -309,7 +317,7 @@ def test_no_write_changes_a_snapshot_once_written(make_depot, me):
     depot.edit_scores([{"id": texts[7], "scores": [{"name": "rank", "value": 1, "content_version": 1}]}], me)
     depot.decide_erasure(depot.ask_erasure("whole", [(texts[8], None, None)], me), "admitted", me)
     depot.decide_erasure(depot.ask_erasure("part", [(texts[9], 0, 3)], me), "admitted", me)
-    depot.create_snapshot("2026-12")
+    depot.create_snapshot()
     depot.recount()
 
     assert stored() == before
@@ -347,7 +355,7 @@ def test_a_snapshot_read_by_length_gives_each_text_at_its_revision_then_longest_
     texts = depot.add([NewText(text=f"{n:02d}" + "x" * (n - 2) if n > 2 else "x" * n, licenses=("CC0-1.0",))
                        for n in lengths], me)
     depot.decide("admitted", texts[:6], me)
-    made = depot.create_snapshot("first")
+    made = depot.create_snapshot()
     depot.change_content(texts[2], "y" * 100, None, me)  # longest now, 12 in the snapshot
     depot.decide("refused", [texts[1]], me)
     depot.decide_erasure(depot.ask_erasure("all of it", [(texts[3], None, None)], me), "admitted", me)

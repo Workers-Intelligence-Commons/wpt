@@ -141,9 +141,19 @@ def test_wpt_build_resources_run_again_waits_for_the_job_a_stopped_run_left(buil
 
 
 def test_wpt_adopt_vocabularies_puts_each_vocabulary_of_the_depot_on_the_dock_with_the_texts_it_read(built):
-    recipe = built.depot.new_tokenizer("t", "d", None, 10**6, built.tokenizer.vocab_size)
+    # a recipe and its vocabulary as a depot that trained them kept them in its tables, which nothing writes now
     listed = [row["id"] for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
-    built.depot.add_vocabulary(recipe, 1, built.tokenizer.to_bytes(), [("", one) for one in listed], None)
+    sample = json.dumps({"snapshot": built.depot.snapshot(built.names["d"])["id"], "kinds": ["plain"]})
+    with built.depot.db.write("a kept vocabulary") as (con, number):
+        recipe = built.depot._id(built.depot._take(con, "tokenizers"))
+        con.execute("INSERT INTO tokenizers_revisions (id, revision, change, latest, name, version, depot, dataset, "
+                    "sample_bytes, vocab_size, note, sample) VALUES (?, 1, ?, 1, 't', 1, NULL, '', ?, ?, NULL, ?)",
+                    (recipe, number, 10**6, built.tokenizer.vocab_size, sample))
+        con.execute("INSERT INTO vocabularies (recipe, version, change, sha256, merges, texts, bytes, made_at) "
+                    "VALUES (?, 1, ?, ?, ?, ?, NULL, '2026-01-01T00:00:00+00:00')",
+                    (recipe, number, built.vocabulary, built.tokenizer.to_bytes().decode(), len(listed)))
+        con.executemany("INSERT INTO vocabulary_texts (recipe, version, position, depot, text, change) "
+                        "VALUES (?, 1, ?, '', ?, ?)", [(recipe, at, one, number) for at, one in enumerate(listed)])
     assert adopt([]) == 0
     note = api.delivery(f"{api.ADOPTED}{built.vocabulary}")
     assert note["on_erasure"] == "note" and note["result"]["sha256"] == built.vocabulary

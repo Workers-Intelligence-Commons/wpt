@@ -97,8 +97,8 @@ class Tokenizer:
             raise ValueError(f"not a {FORMAT} vocabulary file")
         if document.get("tokenizer_version") != VERSION:
             raise ValueError(f"vocabulary written by tokenizer {document.get('tokenizer_version')}; this is tokenizer "
-                             f"{VERSION}, whose ids differ: rebuild the vocabulary (raise the tokenizer recipe's "
-                             "version) and train a new model on it")
+                             f"{VERSION}, whose ids differ: learn a new vocabulary (an order that "
+                             "asks for one, `wpt build-resources`) and train a new model on it")
         return cls(document["merges"])
 
     def save(self, path):

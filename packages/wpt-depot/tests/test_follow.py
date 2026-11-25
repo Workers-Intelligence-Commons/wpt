@@ -38,7 +38,7 @@ def test_snapshots_and_their_bitmaps_travel_by_clone_and_pull_and_read_the_same_
     # a recipe names the server's snapshot: a clone must hold the very same row and sets, so it reads the same texts
     upstream = make_depot("up")
     texts = admitted_texts(upstream, me, "upstream", 5)
-    first = upstream.create_snapshot("2026-10")
+    first = upstream.create_snapshot()
     follower = follower_of(serve, upstream, tmp_path, "follower")
 
     assert stored(follower) == stored(upstream)
@@ -47,14 +47,14 @@ def test_snapshots_and_their_bitmaps_travel_by_clone_and_pull_and_read_the_same_
 
     upstream.edit_credits(texts[0], {"title": "Edited"}, me)
     upstream.decide("refused", texts[1:2], me)
-    later = upstream.create_snapshot("2026-11")
+    later = upstream.create_snapshot()
     pull(follower)
 
     assert stored(follower) == stored(upstream)
-    assert follower.snapshot("2026-11", owner="up")["digest"] == later["digest"]
+    assert follower.snapshot(later["name"], owner="up")["digest"] == later["digest"]
     assert read_whole(follower, later["id"]) == read_whole(upstream, later["id"])
     assert read_whole(follower, first["id"]) == read_whole(upstream, first["id"])  # still at its own bound
-    assert follower.snapshot("2026-11", owner="up")["summary"] == later["summary"]
+    assert follower.snapshot(later["name"], owner="up")["summary"] == later["summary"]
 
 
 def test_a_snapshot_whose_sets_do_not_match_its_digest_is_refused_and_the_pull_writes_nothing(
@@ -62,7 +62,7 @@ def test_a_snapshot_whose_sets_do_not_match_its_digest_is_refused_and_the_pull_w
     upstream = make_depot("up")
     admitted_texts(upstream, me, "upstream", 4)
     follower = follower_of(serve, upstream, tmp_path, "follower")
-    made = upstream.create_snapshot("2026-11")
+    made = upstream.create_snapshot()
     with upstream.db.write("damage") as (con, _):  # as a damaged file or a broken answer would send it
         con.execute("UPDATE snapshot_sets SET bitmap = ? WHERE snapshot = ?",
                     (snapshots.BitMap([1, 2]).serialize(), made["id"]))
@@ -92,21 +92,21 @@ def test_a_clone_of_a_clone_holds_both_depots_snapshots_and_reads_them_alike(mak
     # the middle depot holds the top one's snapshot in the top one's numbering, and one of its own over both owners
     top = make_depot("up")
     theirs = admitted_texts(top, me, "top", 3)
-    top_made = top.create_snapshot("2026-11")
+    top_made = top.create_snapshot()
     middle = follower_of(serve, top, tmp_path, "middle")
     admitted_texts(middle, me, "middle", 2)
-    middle_made = middle.create_snapshot("2026-11")
+    middle_made = middle.create_snapshot()
     bottom = follower_of(serve, middle, tmp_path, "bottom")
 
     assert stored(bottom) == stored(middle)
     for made, owner in ((top_made, "up"), (middle_made, "middle")):
-        assert bottom.snapshot("2026-11", owner=owner)["id"] == made["id"]
+        assert bottom.snapshot(made["name"], owner=owner)["id"] == made["id"]
         assert read_whole(bottom, made["id"]) == read_whole(middle, made["id"])
     assert {owner for _, owner, _, _ in snapshots.sets(bottom, middle_made["id"])} == {"up", "middle"}
 
     # what the top depot does later reaches the bottom through the middle
     top.edit_credits(theirs[0], {"title": "Later"}, me)
-    top_later = top.create_snapshot("2026-12")
+    top_later = top.create_snapshot()
     pull(middle)
     pull(bottom)
 
@@ -120,14 +120,16 @@ def test_a_clone_s_own_snapshot_named_like_the_upstream_s_does_not_break_a_pull(
     admitted_texts(upstream, me, "upstream", 3)
     follower = follower_of(serve, upstream, tmp_path, "follower")
     admitted_texts(follower, me, "own", 2)
-    ours = follower.create_snapshot("2026-11")
-    theirs = upstream.create_snapshot("2026-11")
+    ours = follower.create_snapshot()
+    theirs = upstream.create_snapshot()
+    with upstream.db.write("same name") as (con, _):  # made in the same second as the clone's: named alike
+        con.execute("UPDATE snapshots SET name = ? WHERE id = ?", (ours["name"], theirs["id"]))
 
     pull(follower)
     pull(follower)  # a second pull brings nothing new and keeps both
 
-    assert follower.snapshot("2026-11")["id"] == ours["id"]
-    assert follower.snapshot("2026-11", owner="up")["id"] == theirs["id"]
+    assert follower.snapshot(ours["name"])["id"] == ours["id"]
+    assert follower.snapshot(ours["name"], owner="up")["id"] == theirs["id"]
     assert sorted(one["id"] for one in follower.snapshots()) == sorted([ours["id"], theirs["id"]])
     assert read_whole(follower, theirs["id"]) == read_whole(upstream, theirs["id"])
 

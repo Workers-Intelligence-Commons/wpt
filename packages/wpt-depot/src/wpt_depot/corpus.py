@@ -1,7 +1,9 @@
 """Building a corpus into the store from a snapshot and a recipe's data
 section: what training reads, which says everything about what it holds
-even once the depot it read changes or vanishes, and the sample of a
-snapshot that trains a vocabulary.
+even once the depot it read changes or vanishes. The freight
+(packages/freight) chooses as this module does, and builds what the
+deliveries hold; this module builds the corpora the tests compare it
+with.
 
 A build reads one snapshot of a depot (wpt_depot.snapshots), each text at
 its revision as of its bound, and the data section of a recipe: the kinds
@@ -13,8 +15,7 @@ may also name the snapshot's change and digest, as a recipe does; a build
 refuses a snapshot that reads another change or holds other texts than the
 section says, and a vocabulary of another sha256 or size (check).
 
-A build, its sample and its estimate (wpt_depot.estimate) read the depot
-only through wpt_depot.api, by the depot's address: the snapshot's row,
+A build reads the depot only through wpt_depot.api, by the depot's address: the snapshot's row,
 its listing, each text's content and credits, where a quote matches, the
 licenses and notices, and the erasures carried out (docs/api/depot.md).
 
@@ -224,7 +225,6 @@ cap its estimated size (Room.expect).
     walk(source, snapshot, shares, kinds, after, spread)  the snapshot's listing under a data section, as Entry
     entries(listed, shares, kinds)                        a listing given, the same way
     pool_of(kind, tags, shares, kinds)                    a text's pool and whether a corpus takes it
-    sample(depot, snapshot, sample_bytes)                 the plain texts that train a vocabulary, as a stream
     sample_lines(texts, here)                             that stream as a depot's web app sends it
 """
 
@@ -470,32 +470,16 @@ def walk(source: str, snapshot: str, shares: Sequence[str] | None, kinds: Sequen
     return entries(api.listing(source, snapshot, after, spread), shares, kinds)
 
 
-def sample(depot: Depot, snapshot: str, sample_bytes: int) -> Iterator[tuple[str, str, bytes]]:
-    """The sample of depot's snapshot whose id is snapshot that trains a
-    vocabulary, read as a stream in one walk of its listing
-    (wpt_depot.api.listing): ('', which stands for depot; its id; its text
-    as UTF-8 bytes) of its plain texts and pieces, a piece under its text's
-    id, in order, as a corpus fills a budget of sample_bytes (Fill, a piece
-    counting for its share of its text's bytes). Items are no sample. The
-    walk ends once the budget has closed."""
-    fill = Fill({0: sample_bytes})
-    for entry in walk(depot.address, snapshot, None, [PLAIN]):
-        if fill.done():
-            break
-        if not entry.taken or not fill.take(0, entry.bytes):
-            continue
-        yield "", entry.id, b"".join(api.content(depot.address, entry.id, entry.revision, entry.piece))
-
-
 def _no_plan() -> groups.Plan:
     """The plan of a recipe whose shares choose nothing by group (wpt_depot.groups)."""
     return groups.Plan({}, np.zeros(0, np.int64))
 
 
 def sample_lines(texts: Iterator[tuple[str, str, bytes]]) -> Iterator[bytes]:
-    """The sample texts (sample) as the sample route of a depot's web app
-    sends them: for each text one JSON line {"depot", "text", "bytes"},
-    depot as sample gives it, then the text's bytes; a last line {"end": true, "texts",
+    """The texts of a dataset's sample (wpt_depot.legacy.sample) as the
+    frozen sample route of a depot's web app sends them: for each text one
+    JSON line {"depot", "text", "bytes"}, depot as the sample gives it,
+    then the text's bytes; a last line {"end": true, "texts",
     "bytes"}. A line {"waiting": true} may come between texts, for each
     (None, None, b"") of texts: the sample is slow to find its next text."""
     count = total = 0

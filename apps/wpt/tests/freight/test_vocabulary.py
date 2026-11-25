@@ -45,6 +45,7 @@ def texts() -> list[NewText]:
 
 
 def request(built, name, shares, size=SAMPLE) -> dict:
+    name = built.names.get(name, name)  # a test's label of a snapshot, the depot's name of it
     snapshot = built.depot.snapshot(name)
     return {"depot": built.depot.name(),
             "snapshot": {"name": name, "change": snapshot["at_change"], "digest": snapshot["digest"]},
@@ -107,7 +108,7 @@ def test_without_shares_the_sample_takes_the_first_plain_texts_of_the_listing_th
     note = asked(built, tmp_path, request(built, "v", [], size=size))
     rows = api.items(note["key"], dock=(tmp_path / "dock").as_uri())
     expected, used, missed = [], 0, 0
-    for entry in depot_api.listing(built.depot.address, built.depot.snapshot("v")["id"]):
+    for entry in depot_api.listing(built.depot.address, built.depot.snapshot(built.names["v"])["id"]):
         if size - used <= size // 1000 or missed >= 1000:
             break
         if entry["kind"] != "plain":

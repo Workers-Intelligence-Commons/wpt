@@ -67,18 +67,19 @@ each current text's title, with title_owners, the slot of each depot name
 the ids carry, which numbers its rows (wpt_depot.titles), so a plain search
 of words of 3 characters or more reads only the texts whose title holds
 them. A decision and a notice
-record the change that wrote them. A tokenizer recipe is revised like the
-other rows (tokenizers_revisions), and its version rises only when what
-trains its vocabulary changes: the snapshot and kinds of its sample
-(sample), its sample's bytes and its vocabulary's size. A revision written
-before snapshots names no sample but a dataset (dataset, and depot, the web
-address of the depot that held it, or null for this one), and keeps it;
-every later revision writes an empty dataset and no depot. vocabularies
-holds at most one vocabulary for each version of a recipe, its merges kept
-as text, with the change that wrote it; vocabulary_texts lists, by
-position, every text it trained on, by its depot ('' for the depot that
-holds the recipe, else the web address of the depot whose sample a
-vocabulary trained before snapshots read) and id. numbers holds, for each kind of id, the
+record the change that wrote them. The tokenizer recipes and vocabularies
+a depot kept are read and no longer written (only a pull brings an
+upstream's rows of them): each recipe's revisions (tokenizers_revisions),
+whose version rose only when what trained its vocabulary changed, the
+snapshot and kinds of its sample (sample), or before snapshots a dataset
+(dataset, and depot, the web address of the depot that held it, or null
+for this one), its sample's bytes and its vocabulary's size; vocabularies,
+at most one vocabulary for each version of a recipe, its merges kept as
+text, with the change that wrote it; vocabulary_texts, by position, every
+text it trained on, by its depot ('' for the depot that holds the recipe,
+else the web address of the depot whose sample a vocabulary trained before
+snapshots read) and id (wpt_depot.legacy reads them; `wpt
+adopt-vocabularies` puts each vocabulary on the dock). numbers holds, for each kind of id, the
 last number of the depot's own ids, so a number is never given twice, even
 once an erasure removed its row.
 

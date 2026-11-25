@@ -20,14 +20,15 @@ recipes of the models. No checkpoint has been published yet.
 SQLite file, known by its address, that holds texts and items (conversations,
 tasks), each of one kind and with its license, credit, notice and tags,
 the human decisions that admit or refuse it, and its snapshots, each a
-name on a change number and the texts admitted then (`wpt depot`). A model
-recipe names a depot by its public address, a snapshot of it with the
-change and digest it reads, the kinds and the shares by tag it takes, its
-size and its vocabulary. `wpt depot build RECIPE` builds that into a corpus
-in a store you control (a folder or an S3 bucket): the token files, with
-copies of every text's credits, licenses and notices. `wpt train` reads
-that corpus from the store. A corpus is a cache: the depot's address, the
-snapshot and the recipe build it again, the same. A depot can follow
+change number, named by the UTC time it was made, and the texts admitted
+then (`wpt depot`). A model recipe names a depot by its public address, a
+snapshot of it with the change and digest it reads, the kinds and the
+shares by tag it takes, its size and its vocabulary. `wpt build-resources
+RECIPE` asks the freight to learn that vocabulary and prepare that corpus,
+which it delivers on a dock you control (a folder or an S3 bucket): the
+token files, with copies of every text's credits, licenses and notices.
+`wpt train` reads that corpus from the dock. A corpus is a cache: the
+depot's address, the snapshot and the recipe make it again, the same. A depot can follow
 another and pull its updates, the way a Git clone follows its remote.
 WPT hosts no data.
 
@@ -61,13 +62,11 @@ echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where corpora, models and r
 echo "WPT_DEPOT=$HOME/wpt-depot.sqlite" >> .env    # the depot the wpt depot commands work on
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
-uv run wpt depot snapshot new 2026-11              # the texts admitted now
-uv run wpt depot tokenizer new tok --snapshot 2026-11 --sample-bytes 100000000 --vocab-size 32768
-uv run wpt depot tokenizer train tok               # its vocabulary, into the depot
+uv run wpt depot snapshot new                      # the texts admitted now, named by the UTC time
 cp data/recipes/models/classics-test.json data/recipes/models/first.json
-uv run wpt depot web                               # "New recipe from this snapshot" on the page of 2026-11: its data section
-# put that data section in place of the "data" of data/recipes/models/first.json, then commit the file
-uv run wpt depot build first                       # the corpus of the recipe's snapshot, kinds, shares, size and vocabulary
+uv run wpt depot web                               # the snapshot's page gives its name, change and digest
+# put them in the "data" of data/recipes/models/first.json with a vocabulary to learn, then commit the file
+uv run wpt build-resources first                   # its vocabulary and corpus, from the freight, on the dock
 scripts/detach.sh uv run wpt train first --stream --out runs/first
 uv run wpt eval runs/first                         # the tests, into the model card
 uv run wpt chat runs/first                         # continue text with the model
@@ -82,18 +81,18 @@ A model recipe (`data/recipes/models/RECIPE.json`) holds everything that
 changes the model: its data, architecture and training steps
 ([model.md](docs/model.md)); the command-line options only say how the
 hardware runs it. Its data section names the depot, the snapshot (its
-name, change number and digest) and the vocabulary (its sha256 and size),
-so it builds only on the depot it names: the composer of a snapshot's page
-in `wpt depot web` makes it by clicks for this depot ("Download recipe" or
-"Copy JSON"), to put in the recipe file and commit, since the corpus and
-the model name the commit they were built from. `classics-test` is a
+name, change number and digest) and the vocabulary (its sha256 and size,
+or the size and sample of one to learn), so it is made only from the depot
+it names: a snapshot's page in `wpt depot web` gives its name, change and
+digest, to put in the recipe file and commit, since the corpus and the
+model name the commit they were built from. `classics-test` is a
 small model recipe, enough to see every step work on one machine, which
 the quick start copies for its model part. Like every recipe of the repository, it names the dataset
 `test1` (id `wic-1`) of the public depot
 https://depot.workers-intelligence-commons.org, in the legacy shape of
 recipes written before snapshots ([model.md](docs/model.md), "Model
-recipes"), which `wpt depot build` refuses: it trains only on a corpus of
-that dataset a store holds.
+recipes"), which `wpt build-resources` refuses: it trains only on a corpus
+of that dataset a store holds.
 
 **Streaming** keeps disk use small at each step, for data larger than the
 disk:

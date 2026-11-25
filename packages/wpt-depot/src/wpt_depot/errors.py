@@ -42,7 +42,7 @@ class BadDepotSetting(DepotError):
 
 
 class NotFound(DepotError):
-    """No text, item, decision, erasure, snapshot, tokenizer recipe, license or kind with that id or name."""
+    """No text, item, decision, erasure, snapshot, license or kind with that id or name, or no legacy row of it."""
 
 
 class Refused(DepotError):

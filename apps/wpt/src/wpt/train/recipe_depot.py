@@ -104,14 +104,15 @@ class FileDepot:
         """(the size of the vocabulary of the current version of the
         tokenizer recipe named so, or the size it asks for before it is
         trained; whether it is trained). Missing without the recipe."""
+        read = Legacy(self.depot.address)
         try:
-            found = self.depot.tokenizer(recipe)
+            found = read.tokenizer(recipe)
         except NotFound:
             raise Missing(f"no tokenizer recipe {recipe!r}") from None
-        trained = self.depot.vocabulary(found["id"], found["version"])
-        if trained is None:
-            return found["vocab_size"], False
-        return Tokenizer.from_bytes(trained["merges"].encode("utf-8")).vocab_size, True
+        if not found["trained"]:
+            return found["recipe"]["vocab_size"], False
+        _, merges = read.vocabulary_file(recipe, found["recipe"]["version"])
+        return Tokenizer.from_bytes(merges).vocab_size, True
 
 
 class WebDepot:
@@ -165,7 +166,7 @@ class WebDepot:
         return record
 
     def vocab_size(self, recipe: str) -> tuple[int, bool]:
-        """As FileDepot.vocab_size, through the tokenizer routes."""
+        """As FileDepot.vocab_size, through the frozen tokenizer routes (wpt.depot.web.legacy)."""
         name = quote(recipe, safe="")
         found = self._json(f"/api/tokenizers/{name}")
         version = found["recipe"]["version"]

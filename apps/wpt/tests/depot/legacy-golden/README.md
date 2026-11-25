@@ -33,7 +33,7 @@ clients read the fields named in the last column. Every route is a GET.
 | `/api/datasets/{id}/download/{vocabulary}/{size}/everything.tar` | a person downloading every file of a corpus, with or without a Range | the bytes |
 | `/api/datasets/{id}/export` | a person, from the export page | `parts[].forms` |
 | `/api/datasets/{id}/export/part-NNNNN.jsonl.zst`, `.parquet` | a person downloading the texts of a dataset | the bytes |
-| `/api/tokenizers`, `/api/vocabularies`, `/api/tokenizers/{name}/vocabularies/{version}`, `.../texts` | a person, from the tokenizer pages | none |
+| `/api/tokenizers`, `/api/vocabularies`, `/api/tokenizers/{name}/vocabularies/{version}`, `.../texts` | a person, from the tokenizer pages, which the web app no longer has | none: the test expects 404 for them |
 
 The answers also cover the refusals: a dataset, a recipe, a corpus file, an export part and a vocabulary version
 that do not exist (404), a size never built (`state` "not built"), a sample with no size (400) and a Range past the

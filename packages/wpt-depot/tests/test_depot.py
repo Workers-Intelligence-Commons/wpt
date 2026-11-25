@@ -14,6 +14,7 @@ from wpt_depot.errors import (BadContent, BadQuery, BelongsToUpstream, NoDepotSe
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from wpt_depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
 from wpt_depot.filters import Filter
+from wpt_depot.legacy import Legacy
 from wpt_depot.schema import FORMAT, KEYS
 from wpt_depot.settings import depot_address
 
@@ -1227,17 +1228,15 @@ def test_the_depots_maintainer_and_takedown_contact_change_and_its_name_does_not
 
 @pytest.fixture
 def upstream_and_clone(serve, make_depot, me, tmp_path):
-    """An upstream holding an admitted text, a snapshot of it, a tokenizer
-    recipe of that snapshot and an erasure request under review, and a clone
-    of it."""
+    """An upstream holding an admitted text, a snapshot of it and an erasure
+    request under review, and a clone of it."""
     upstream = make_depot("upstream")
     [text] = upstream.add([plain("upstream text 123", "a")], me)
     upstream.decide("admitted", [text], me)
-    snapshot = upstream.create_snapshot("first")["id"]
-    tokenizer = upstream.new_tokenizer("tok", snapshot, None, 1000, 600)
+    snapshot = upstream.create_snapshot()["id"]
     request = upstream.ask_erasure("a number", [(text, 14, 17)], me)
     follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    return upstream, follower, {"text": text, "snapshot": snapshot, "tokenizer": tokenizer, "request": request}
+    return upstream, follower, {"text": text, "snapshot": snapshot, "request": request}
 
 
 REFUSED_ON_UPSTREAM_ROWS = {
@@ -1252,8 +1251,6 @@ REFUSED_ON_UPSTREAM_ROWS = {
     "ask to erase": lambda depot, me, ids: depot.ask_erasure("why", [(ids["text"], 0, 8)], me),
     "decide an erasure": lambda depot, me, ids: depot.decide_erasure(ids["request"], "admitted", me),
     "retag": lambda depot, me, ids: depot.retag([ids["mine"], ids["text"]], ["b"], [], me),
-    "edit a tokenizer recipe": lambda depot, me, ids: depot.edit_tokenizer(ids["tokenizer"], ids["snapshot"], None,
-                                                                           2000, 600),
 }
 
 
@@ -1367,7 +1364,7 @@ def test_a_content_change_starts_the_text_over_and_a_snapshot_keeps_reading_the_
     depot = make_depot()
     changed, kept = depot.add([plain("The fox jumps."), plain("The dog sleeps.")], me)
     depot.decide("admitted", "true", me)
-    old = depot.create_snapshot("26.10")["id"]
+    old = depot.create_snapshot()["id"]
 
     decision, version = depot.change_content(changed, "The fox jumps high.", None, me)
 
@@ -1377,9 +1374,9 @@ def test_a_content_change_starts_the_text_over_and_a_snapshot_keeps_reading_the_
     assert shown["decisions"][-1]["id"] == decision
     assert shown["decisions"][-1]["reason"] == "content changed from version 1 to version 2"
     assert [one["counts"] for one in shown["decisions"]] == [False, False, True]
-    assert column(depot.snapshot_texts(depot.create_snapshot("26.11")["id"])["texts"], "id") == [kept]
+    assert column(depot.snapshot_texts(depot.create_snapshot()["id"])["texts"], "id") == [kept]
     depot.decide("admitted", [changed], me)
-    assert snapshot_texts(depot, depot.create_snapshot("26.12")["id"]) == [
+    assert snapshot_texts(depot, depot.create_snapshot()["id"]) == [
         {"id": changed, "text": "The fox jumps high."}, {"id": kept, "text": "The dog sleeps."}]
     assert snapshot_texts(depot, old) == [
         {"id": changed, "text": "The fox jumps."}, {"id": kept, "text": "The dog sleeps."}]
@@ -1393,7 +1390,7 @@ def test_an_erasure_after_a_content_change_cuts_the_passage_from_every_version_a
     secret = "555-0199"
     [text] = depot.add([plain(f"call {secret} now")], me)
     depot.decide("admitted", [text], me)
-    snapshot = depot.create_snapshot("26.10")["id"]
+    snapshot = depot.create_snapshot()["id"]
     depot.change_content(text, f"Please, call {secret} or {secret} today.", None, me)
     request = depot.ask_erasure("a number", [(text, 5, 13, None, 1)], me)  # the place in the first version
     assert depot.erasure_shown(request)["needles"][0]["passage"] == secret
@@ -1873,96 +1870,47 @@ def test_a_page_by_length_reads_the_length_index_past_sorted_matches_and_their_l
     assert not any("TEMP B-TREE" in one for one in plans), plans
 
 
-def recipe_depot(make_depot, me):
-    """A depot holding an admitted text and a snapshot of it: (the depot, the snapshot's id)."""
-    depot = make_depot()
-    depot.decide("admitted", depot.add([plain("one", "en")], me), me)
-    return depot, depot.create_snapshot("first")["id"]
+def kept_vocabulary(depot, name: str, merges: bytes, texts: list[str]) -> str:
+    """Write into depot's legacy tables, as a depot that trained tokenizer
+    recipes kept them, the recipe called name at version 1 with its
+    vocabulary merges, trained on texts (of this depot): the recipe's id."""
+    with depot.db.write("vocabulary") as (con, number):
+        recipe = depot._id(depot._take(con, "tokenizers"))
+        con.execute("INSERT INTO tokenizers_revisions (id, revision, change, latest, name, version, depot, dataset, "
+                    "sample_bytes, vocab_size, note, sample) VALUES (?, 1, ?, 1, ?, 1, NULL, '', 1000, 600, NULL, "
+                    "NULL)", (recipe, number, name))
+        con.execute("INSERT INTO vocabularies (recipe, version, change, sha256, merges, texts, bytes, made_at) "
+                    "VALUES (?, 1, ?, ?, ?, ?, NULL, '2026-01-01T00:00:00+00:00')",
+                    (recipe, number, hashlib.sha256(merges).hexdigest(), merges.decode(), len(texts)))
+        con.executemany("INSERT INTO vocabulary_texts (recipe, version, position, depot, text, change) "
+                        "VALUES (?, 1, ?, '', ?, ?)", [(recipe, at, text, number) for at, text in enumerate(texts)])
+    return recipe
 
 
-def test_a_tokenizer_recipe_takes_a_new_version_only_when_what_trains_its_vocabulary_changes(make_depot, me):
-    depot, snapshot = recipe_depot(make_depot, me)
-    recipe = depot.new_tokenizer("admitted", "first", None, 1000, 600, "the first note")
-    shown = depot.tokenizer("admitted")
-    assert (shown["version"], shown["sample"], shown["needs_snapshot"]) == (
-        1, {"snapshot": snapshot, "kinds": ["plain"]}, False)
-    assert (shown["depot"], shown["dataset"]) == (None, "")
-
-    assert depot.edit_tokenizer(recipe, snapshot, None, 1000, 600, "another note") == 1
-    assert depot.edit_tokenizer(recipe, snapshot, ["plain"], 1000, 600, "another note") == 1  # no change, no revision
-    assert depot.edit_tokenizer(recipe, snapshot, None, 2000, 600, "another note") == 2
-    second = depot.create_snapshot("second")["id"]
-    assert depot.edit_tokenizer(recipe, "second", None, 2000, 600, None) == 3
-
-    assert [one["revision"] for one in depot.sql(f"SELECT revision FROM tokenizers_revisions WHERE id = '{recipe}' "
-                                                 "ORDER BY revision")] == [1, 2, 3, 4]
-    assert depot.tokenizer_by_id(recipe)["sample"]["snapshot"] == second
-    with pytest.raises(Refused):
-        depot.new_tokenizer("admitted", snapshot, None, 1000, 600)  # a name is taken for good
-    with pytest.raises(Refused):
-        depot.new_tokenizer("small", snapshot, None, 1000, 100)  # under the 513 tokens every vocabulary holds
-    with pytest.raises(Refused, match="kind plain"):
-        depot.new_tokenizer("items", snapshot, ["conversation"], 1000, 600)
-    with pytest.raises(NotFound):
-        depot.new_tokenizer("none", "no such snapshot", None, 1000, 600)
-
-
-def test_a_tokenizer_recipe_written_before_snapshots_keeps_its_dataset_and_needs_a_snapshot_to_train(make_depot, me):
-    depot, snapshot = recipe_depot(make_depot, me)
-    recipe = depot.new_tokenizer("old", snapshot, None, 1000, 600)
-    with depot.db.write("an older revision") as (con, number):
-        con.execute("UPDATE tokenizers_revisions SET sample = NULL, dataset = 'datasets-1' WHERE id = ?", (recipe,))
-
-    shown = depot.tokenizer("old")
-    assert (shown["sample"], shown["dataset"], shown["needs_snapshot"]) == (None, "datasets-1", True)
-    assert depot.tokenizers()[0]["needs_snapshot"]
-    assert depot.edit_tokenizer(recipe, snapshot, None, 1000, 600) == 2  # naming a snapshot changes what trains it
-    assert not depot.tokenizer("old")["needs_snapshot"]
-
-
-def test_a_vocabulary_is_kept_once_per_version_with_the_texts_it_trained_on(make_depot, me):
-    depot, snapshot = recipe_depot(make_depot, me)
-    recipe = depot.new_tokenizer("admitted", snapshot, None, 1000, 600)
-    merges = b"a vocabulary file"
-
-    sha = depot.add_vocabulary(recipe, 1, merges, [("", "depot-1"), ("https://other.example.org", "other-7")], 12)
-
-    found = depot.vocabulary(recipe, 1)
-    assert sha == hashlib.sha256(merges).hexdigest() == found["sha256"]
-    assert found["merges"].encode() == merges and (found["texts"], found["bytes"]) == (2, 12)
-    assert depot.vocabulary_texts(recipe, 1) == [{"position": 0, "depot": "", "text": "depot-1"},
-                                                 {"position": 1, "depot": "https://other.example.org",
-                                                  "text": "other-7"}]
-    assert depot.tokenizers()[0]["trained"]
-    with pytest.raises(Refused, match="already"):
-        depot.add_vocabulary(recipe, 1, b"another", [], 0)
-    with pytest.raises(Refused, match="never had"):
-        depot.add_vocabulary(recipe, 2, merges, [], 0)
-    depot.edit_tokenizer(recipe, snapshot, None, 1000, 700)
-    assert not depot.tokenizers()[0]["trained"]  # the new version has none yet
-    depot.add_vocabulary(recipe, 2, b"the second", [], 0)
-    assert depot.vocabulary(recipe, 1)["merges"] == "a vocabulary file"  # the first never changes
-
-
-def test_a_clone_receives_the_upstream_s_tokenizer_recipes_and_vocabularies_and_a_pull_their_changes(
+def test_the_depot_writes_no_tokenizer_recipe_and_a_pull_brings_the_upstream_s_kept_ones(
         serve, make_depot, me, tmp_path):
-    upstream, snapshot = recipe_depot(make_depot, me)
-    recipe = upstream.new_tokenizer("admitted", snapshot, None, 1000, 600)
-    upstream.add_vocabulary(recipe, 1, b"first", [("", "upstream-1")], 3)
+    # the tables of the tokenizer recipes and vocabularies a depot trained stay, unwritten by any operation; what an
+    # upstream kept travels to its clones, which read it as it is (wpt_depot.legacy)
+    upstream = make_depot()
+    [text] = upstream.add([plain("one", "en")], me)
+    recipe = kept_vocabulary(upstream, "kept", b"first", [text])
+    assert not [name for name in dir(upstream) if "tokenizer" in name or "vocabular" in name]
     follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
                      About("follower", "Grace Hopper", "grace@example.org"))
-    assert follower.tokenizer("admitted")["version"] == 1
-    assert follower.vocabulary(recipe, 1)["merges"] == "first"
+    assert Legacy(follower.address).tokenizer("kept")["recipe"]["id"] == recipe
+    assert Legacy(follower.address).vocabulary_file("kept", 1) == (hashlib.sha256(b"first").hexdigest(), b"first")
 
-    upstream.edit_tokenizer(recipe, snapshot, None, 2000, 600)
-    upstream.add_vocabulary(recipe, 2, b"second", [("", "upstream-1")], 3)
+    later = kept_vocabulary(upstream, "later", b"second", [text])
     pull(follower)
 
-    assert follower.tokenizer("admitted")["version"] == 2
-    assert follower.vocabulary(recipe, 2)["merges"] == "second"
-    assert follower.vocabulary_texts(recipe, 2) == [{"position": 0, "depot": "", "text": "upstream-1"}]
-    with pytest.raises(BelongsToUpstream):
-        follower.edit_tokenizer(recipe, snapshot, None, 3000, 600)
+    found = Legacy(follower.address).tokenizer("later")
+    assert (found["recipe"]["id"], found["trained"], found["vocabularies"][0]["texts"]) == (later, True, 1)
+    assert follower.rows("SELECT depot, text FROM vocabulary_texts WHERE recipe = ?", (later,)) == [
+        {"depot": "", "text": text}]
+    with pytest.raises(NotFound):
+        Legacy(follower.address).tokenizer("none")
+    with pytest.raises(NotFound, match="no vocabulary of its version 2"):
+        Legacy(follower.address).vocabulary_file("kept", 2)
 
 
 def test_an_admitted_text_put_back_under_review_can_be_decided_again(make_depot, me):

@@ -1,5 +1,5 @@
 """A corpus asked of the freight, its program wpt-tokens preparing it,
-against the corpus `wpt depot build` builds (wpt_depot.corpus.build) from
+against the corpus wpt_depot.corpus.build builds from
 the same snapshot, data section and vocabulary: the same token files, by
 their token hashes, and the same rows of the texts table (the bytes and
 weight of each beside them); and the same request with wpt-count, which
@@ -40,7 +40,7 @@ def quoting(source, exact):
 
 
 def rich(built) -> str:
-    """The snapshot "rich" of the test depot: its 16 stories (tagged en), plain texts of other tags (en with a
+    """The name of the snapshot "rich" of the test depot: its 16 stories (tagged en), plain texts of other tags (en with a
     second tag, de, a tag no share names), a text longer than a piece, conversations that quote a text, a text no
     share takes or a piece, a conversation that quotes nothing, a task and a probe."""
     line = "the quick brown fox jumps over the lazy dog\n"
@@ -62,10 +62,11 @@ def rich(built) -> str:
                  {"role": "assistant", "content": [{"type": "text", "text": "Hello."}]}]}),
              item("task", TASK), item("probe", {"question": "q?", "patterns": ["x"]})]
     built.snapshot("rich", items)
-    return "rich"
+    return built.names["rich"]
 
 
 def section(built, name, kinds, shares, size) -> dict:
+    name = built.names.get(name, name)  # a test's label of a snapshot, the depot's name of it
     snapshot = built.depot.snapshot(name)
     return {"depot": built.depot.name(), "snapshot": name, "change": snapshot["at_change"],
             "digest": snapshot["digest"], "kinds": kinds, "shares": [{"tag": tag, "share": share}
@@ -84,6 +85,7 @@ def vocabulary(built) -> str:
 
 def asked(built, tmp_path, name, kinds, shares, size, vocabulary_key, program="wpt-tokens") -> dict:
     """The delivery note of the corpus request of that snapshot, kinds, shares and size, run by the freight."""
+    name = built.names.get(name, name)  # a test's label of a snapshot, the depot's name of it
     snapshot = built.depot.snapshot(name)
     request = {"depot": built.depot.name(),
                "snapshot": {"name": name, "change": snapshot["at_change"], "digest": snapshot["digest"]},
@@ -162,12 +164,12 @@ def test_a_corpus_request_gives_the_token_files_and_rows_wpt_depot_build_gives(b
 def test_the_same_request_again_is_answered_at_once_with_its_delivery(built, tmp_path):
     key = vocabulary(built)
     first = asked(built, tmp_path, "d", [], [("en", 1.0)], 700, key)
-    record = build(built.depot, built.depot.snapshot("d")["id"], section(built, "d", [], [("en", 1.0)], 700),
+    record = build(built.depot, built.depot.snapshot(built.names["d"])["id"], section(built, "d", [], [("en", 1.0)], 700),
                    built.store, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT, log=lambda *_: None)
     same(built, record, first)
-    snapshot = built.depot.snapshot("d")
+    snapshot = built.depot.snapshot(built.names["d"])
     request = {"depot": built.depot.name(),
-               "snapshot": {"name": "d", "change": snapshot["at_change"], "digest": snapshot["digest"]},
+               "snapshot": {"name": snapshot["name"], "change": snapshot["at_change"], "digest": snapshot["digest"]},
                "selection": {"shares": [{"tag": "en", "share": 1.0}], "size": {"unit": "tokens", "amount": 700}},
                "preparation": {"name": "wpt-tokens", "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": key}}}
@@ -197,9 +199,9 @@ def test_the_command_queues_a_request_waits_for_it_and_finds_its_delivery(built,
     from freight_app import main
 
     key = vocabulary(built)
-    snapshot = built.depot.snapshot("d")
+    snapshot = built.depot.snapshot(built.names["d"])
     request = {"depot": built.depot.name(),
-               "snapshot": {"name": "d", "change": snapshot["at_change"], "digest": snapshot["digest"]},
+               "snapshot": {"name": snapshot["name"], "change": snapshot["at_change"], "digest": snapshot["digest"]},
                "selection": {"shares": [{"tag": "en", "share": 1.0}], "size": None},
                "preparation": {"name": "wpt-tokens", "inputs": {"vocabulary": key}}}
     (tmp_path / "request.json").write_text(json.dumps(request))

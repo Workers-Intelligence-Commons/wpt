@@ -1,8 +1,7 @@
-"""What the routes that send a corpus's files share (wpt.depot.web.recipes,
-by build key; wpt.depot.web.legacy, the frozen dataset downloads): what
-each file of a corpus is, a name fit for a downloaded file, the one Range
-of bytes a request asks for, and a stream that leaves its guard once it is
-closed."""
+"""What the routes that send a corpus's files (wpt.depot.web.legacy, the
+frozen dataset downloads) use: what each file of a corpus is, a name fit
+for a downloaded file, the one Range of bytes a request asks for, and a
+stream that leaves its guard once it is closed."""
 
 import re
 

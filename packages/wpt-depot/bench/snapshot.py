@@ -29,11 +29,10 @@ READ = 20_000  # texts read in order by the read measure
 
 def measure(bench: Bench, layout: common.Layout):
     made = {"longest": []}
-    names = iter(f"bench-{n}" for n in range(10_000))
 
     def create(d, _):
         measured = {}
-        row = d.create_snapshot(next(names), measured=measured)
+        row = d.create_snapshot(measured=measured)
         made["row"], made["measured"] = row, measured
         made["longest"].append(measured["longest_read"])
         return f"{row['texts']:,} texts, {measured['pages']} pages, longest read {measured['longest_read'] * 1000:,.0f} ms"
@@ -106,7 +105,7 @@ def measure(bench: Bench, layout: common.Layout):
         started, done = threading.Event(), threading.Event()
 
         def job():
-            other.create_snapshot(next(names), progress=lambda stage: started.set())
+            other.create_snapshot(progress=lambda stage: started.set())
             done.set()
 
         worker = threading.Thread(target=job)

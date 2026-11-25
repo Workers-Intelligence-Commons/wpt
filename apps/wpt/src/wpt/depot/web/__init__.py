@@ -11,10 +11,11 @@ subcommands:
     routes.py   the routes, one per operation of the subcommands it serves
     readers.py  the processes that run a person's SQL, under a time limit
                 and a memory cap
-    builds.py   the routes over tokenizer recipes and jobs, and the job
-                operations they queue
-    legacy.py   the frozen dataset routes that models trained before
-                snapshots read, over wpt_depot.legacy
+    queue.py    the routes over the jobs' queue
+    snapshots.py  the routes over snapshots, and the job operations they
+                queue
+    legacy.py   the frozen dataset and tokenizer routes that models
+                trained before snapshots read, over wpt_depot.legacy
     translations.py  the language pairs and model files behind the
                 Texts page's translation, fetched from Mozilla
 

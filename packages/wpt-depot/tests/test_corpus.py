@@ -11,7 +11,7 @@ from wpt_tokenizer import END, Tokenizer, chat
 from wpt_depot import About, Depot, NewText, clone, ids, pull, snapshots
 from wpt_depot import corpora, order, pieces
 from wpt_depot.corpora import Room, TooBig, mark_stale, read_table, records
-from wpt_depot.corpus import build, build_key, census, sample, task_text
+from wpt_depot.corpus import build, build_key, census, task_text
 from wpt_depot.errors import Refused
 from wpt_depot.ids import export_key
 from wpt_depot.notice import model_notice
@@ -47,7 +47,7 @@ def vocabulary(tokenizer=TOKENIZER) -> dict:
 def snapshot_of(depot) -> dict:
     """The depot's last snapshot, with its summary; one made now when it has none."""
     made = [one for one in depot.snapshots() if one["owner"] == depot.name()]
-    return depot.snapshot(made[-1]["name"]) if made else depot.create_snapshot("s1")
+    return depot.snapshot(made[-1]["name"]) if made else depot.create_snapshot()
 
 
 def section(snapshot, tokenizer=TOKENIZER, total_tokens=None, shares=(), kinds=(), **more) -> dict:
@@ -81,14 +81,14 @@ def test_a_corpus_holds_its_snapshot_s_texts_tokenized_with_their_credits_and_a_
                                    item("probe", {"question": "q?", "patterns": ["x"]}, "en")], me)
     [waiting] = depot.add([NewText(text="not admitted", licenses=("CC0-1.0",))], me)
     depot.decide("admitted", f"id <> '{waiting}'", me)
-    snapshot = depot.create_snapshot("2026-11")
+    snapshot = depot.create_snapshot()
     depot.retag([first, talk], ["later"], ["en"], me)  # after the snapshot: its corpus keeps the tags it read
     store = open_store((tmp_path / "store").as_uri())
 
     record = make(depot, store, code_commit="abc123", recipe="first")
 
     assert record["depot"] == HERE  # the recipe's address, recorded only
-    assert record["snapshot"] == {"id": snapshot["id"], "name": "2026-11", "owner": "depot",
+    assert record["snapshot"] == {"id": snapshot["id"], "name": snapshot["name"], "owner": "depot",
                                   "change": snapshot["at_change"], "digest": snapshot["digest"]}
     assert (record["recipe"], record["code_commit"], record["rules"]) == ("first", "abc123", 8)
     assert record["vocabulary"] == vocabulary() and record["max_tokens"] is None
@@ -337,20 +337,6 @@ def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seede
     assert again["id"] == record["id"]  # the order makes the same subset
 
 
-def test_the_sample_takes_the_plain_texts_in_the_corpus_s_order_up_to_its_bytes(make_depot, me):
-    depot = shared_depot(make_depot, me, english=12, french=3)
-    snapshot = snapshot_of(depot)
-
-    # each text is 7 bytes: 28 bytes are the first 4 plain texts of the order
-    found = list(sample(depot, snapshot["id"], 28))
-
-    assert {where for where, _, _ in found} == {""}  # '' names the depot that holds the snapshot
-    plain = [one["id"] for one in depot.snapshot_texts(snapshot["id"], ["plain"])["texts"]]
-    assert [text for _, text, _ in found] == sorted(plain, key=export_key)[:4]
-    assert {data for _, _, data in found} <= {b"the dog", b"the fox"}
-    assert list(sample(depot, snapshot["id"], 28)) == found  # the order of the export keys, whatever the run
-
-
 def test_shares_naming_a_tag_no_text_has_refuse_the_build(make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=2, french=0)
 
@@ -379,7 +365,7 @@ def test_a_snapshot_builds_the_same_corpus_whatever_its_texts_did_since(make_dep
     first, second = depot.add([NewText(text="the fox", licenses=("CC0-1.0",), title="Fox"),
                                NewText(text="the dog", licenses=("CC0-1.0",))], me)
     depot.decide("admitted", [first], me)
-    snapshot = depot.create_snapshot("then")
+    snapshot = depot.create_snapshot()
     store = open_store((tmp_path / "store").as_uri())
     before = make(depot, store, snapshot)
     depot.decide("admitted", [second], me)
@@ -498,7 +484,7 @@ def test_the_census_comes_from_the_summary_equals_a_count_of_the_texts_and_stays
     erased = depot.ask_erasure("whole", [(added[1], None, None)], me)
     depot.decide_erasure(erased, "admitted", me)
     assert depot.snapshot_texts(snapshot["id"], limit=10_000)["erased"] == 1
-    assert census(depot.snapshot("s1")["summary"], shares) == found
+    assert census(depot.snapshot(snapshot["name"])["summary"], shares) == found
 
 
 def test_a_text_that_would_pass_the_size_is_left_out_and_the_texts_after_it_fill_the_corpus(make_depot, me,
@@ -676,7 +662,7 @@ def test_a_clone_holding_its_upstream_s_snapshot_builds_the_same_corpus_under_th
     upstream, _, _ = items_depot(make_depot, me, plain=4)
     address = serve(upstream)
     follower = clone(address, str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
-    made = upstream.create_snapshot("2026-11")
+    made = upstream.create_snapshot()
     pull(follower)
     built = make(upstream, open_store((tmp_path / "upstream").as_uri()), made)
 
@@ -747,7 +733,7 @@ def test_a_snapshot_change_digest_or_vocabulary_other_than_the_recipe_s_is_refus
             build(depot, snapshot["id"], data, store, tokenizer, log=lambda *_: None)
 
     refused(section(snapshot, change=snapshot["at_change"] + 1),
-            match=f"snapshot s1 of depot depot reads change {snapshot['at_change']} with digest {snapshot['digest']}; "
+            match=f"snapshot {snapshot['name']} of depot depot reads change {snapshot['at_change']} with digest {snapshot['digest']}; "
                   f"the recipe says {snapshot['at_change'] + 1}, {snapshot['digest']}")
     refused(section(snapshot, digest="0" * 64), match="the recipe says .*, 0{64}")
     refused(section(snapshot, vocabulary={"sha256": vocabulary()["sha256"], "size": 999}),
@@ -867,7 +853,7 @@ def two_parts(depot, parts):
     """Write the snapshot "two" of depot with those sets (part, owner, bound, bitmap), as an upgrade writes the
     snapshot of a dataset reading several libraries: a part per library."""
     late = max(bound for _, _, bound, _ in parts)
-    summary = depot.create_snapshot(f"now{len(depot.snapshots())}")["summary"]
+    summary = depot.create_snapshot()["summary"]
     with depot.db.write("snapshot") as (con, number):
         made = depot._id(depot._take(con, "snapshots"))
         con.execute(f"INSERT INTO snapshots ({snapshots.COLUMNS}) VALUES (?, ?, 'two', ?, 'now', ?, NULL, "
@@ -968,12 +954,6 @@ def test_a_long_text_no_longer_ends_a_corpus_smaller_than_it_which_takes_the_pie
     taken = documents(store, record)
     assert sorted(taken) == sorted([*short, pieces.name(repo, smallest)])
     assert record["total_tokens"] <= limit and record["left_out"]["trimmed"] == 0
-    # the sample of a vocabulary cuts and fills the same way, a piece under its text's id
-    sample_bytes = sum(len(f"the dog {n}") for n in range(200)) + 2 * pieces.LENGTH
-    found = list(sample(depot, snapshot_of(depot)["id"], sample_bytes))
-    assert {text for _, text, _ in found} >= set(short)
-    assert [len(data) for _, text, data in found if text == repo] and all(
-        len(data) < 1.5 * pieces.LENGTH for _, text, data in found if text == repo)
 
 
 def test_a_piece_is_cut_at_a_line_start_without_a_file_in_reach_and_at_its_place_without_a_line(make_depot, me):
@@ -1033,13 +1013,13 @@ def test_a_text_long_at_the_snapshot_s_bound_comes_as_pieces_even_once_it_is_sho
     depot = make_depot()
     [text] = depot.add([NewText(text=repository(4, 300_000), licenses=("CC0-1.0",))], me)
     depot.decide("admitted", "true", me)
-    snapshot = depot.create_snapshot("long")
+    snapshot = depot.create_snapshot()
     depot.change_content(text, "a short text now", None, me)
     depot.decide("admitted", [text], me)
     store = open_store((tmp_path / "store").as_uri())
 
     then = make(depot, store, snapshot)
-    now = make(depot, store, depot.create_snapshot("short"))
+    now = make(depot, store, depot.create_snapshot())
 
     assert sorted(documents(store, then)) == sorted(pieces.name(text, n) for n in range(2))
     assert documents(store, now) == [text]

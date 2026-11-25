@@ -19,14 +19,14 @@ depot through every route, with no login ([architecture.md](architecture.md),
   `.waiting` folder, the queue its `wpt-depot.sqlite.jobs` file and the
   jobs their `wpt-depot.sqlite.work` folder beside the file, and the store
   its local copies in `cache/` there. `WPT_DEPOT_URL` is
-  `https://depot.workers-intelligence-commons.org`, the address the
-  corpora it builds name the depot by. The app runs as `WPT_DEPOT_USER`,
-  which must be able to write in that folder. It reads no `.env` file. The
-  store settings Compose passes it name the store that holds the corpora
-  it builds and serves, with a key that reads and writes it; without
-  `WPT_STORE`, it builds and serves no corpus, and an erasure carried out
-  through it marks no corpus stale. It reads no code repository: a recipe
-  to build is a file a visitor hands over on the page "Build".
+  `https://depot.workers-intelligence-commons.org`, the address an order
+  names the depot by. The app runs as `WPT_DEPOT_USER`, which must be able
+  to write in that folder. It reads no `.env` file. The store settings
+  Compose passes it name the store that holds the corpora the frozen
+  dataset routes serve, with a key that reads and writes it; without
+  `WPT_STORE`, it serves no corpus, and an erasure carried out through it
+  marks no corpus stale. It reads no code repository, and builds no corpus
+  and trains no vocabulary: the freight does ([api/freight.md](api/freight.md)).
 - **nginx**: the reverse proxy, with the limits below. It takes the
   visitor's address from the `CF-Connecting-IP` header of a request that
   comes from one of Cloudflare's address ranges. It answers only for
@@ -51,9 +51,9 @@ A request over its limit gets 429.
 | Requests | Rate | Burst |
 | --- | --- | --- |
 | `POST` to `/api/texts/search` and `/api/texts/passages` (a page of a list or of a strip of texts, each bounded whatever the depot's size) | 5 a second | 20, at once |
-| `POST` to `/api/sql`, `/api/texts/counts`, `/api/texts/blocked` and `/api/recipes/estimate` (it works out a build's estimate) | 1 a second | 5, delayed |
-| every other `POST`, except `/api/texts/held`, `/api/recipes/check`, `/api/recipes/compose` and `/api/snapshots/ID/strip` | 1 a second | 10, delayed |
-| every other request, those four included (the first reads only the depot's counts; the next two write nothing and read a snapshot's summary; the last reads a page of a snapshot's order by length, and the page follows the job that makes that order every half second) | 10 a second | 40, at once |
+| `POST` to `/api/sql`, `/api/texts/counts` and `/api/texts/blocked` | 1 a second | 5, delayed |
+| every other `POST`, except `/api/texts/held` and `/api/snapshots/ID/strip` | 1 a second | 10, delayed |
+| every other request, those two included (the first reads only the depot's counts; the second reads a page of a snapshot's order by length, and the page follows the job that makes that order every half second) | 10 a second | 40, at once |
 
 A page of texts has a limit of its own, so the first page of a filter never
 waits behind a step of a count. A filter of every text, or of statuses with
@@ -66,55 +66,50 @@ step refused with 429 or for lack of a free reader again after a wait, so
 counting leaves at least half of the second limit to the other requests.
 
 An address holds at most 20 connections at a time. A request body holds
-at most 100 MB, and the app has 100 seconds to answer. The files of a
-corpus and its archive, and on the frozen routes of datasets a corpus's
-files, an export's parts and a sample, stream for as long as they last:
-nginx passes each piece on as it comes, without a temporary file, and waits
-up to 600 seconds between two pieces. The limits above count them as any
-other request. A build's estimate counts as a heavy read.
+at most 100 MB, and the app has 100 seconds to answer. On the frozen
+routes of datasets, a corpus's files, an export's parts and a sample
+stream for as long as they last: nginx passes each piece on as it comes,
+without a temporary file, and waits up to 600 seconds between two pieces.
+The limits above count them as any other request.
 
 ## Jobs and downloads
 
 The web app runs its long work as jobs, each in a process of its own, in
 three lanes that each run one job at a time. The write lane runs the writes
 over many texts (a decision, a license change, a score, a change of tags);
-the heavy lane runs the making of a snapshot, the training of a tokenizer
-recipe's vocabulary and the build of a recipe's corpus; the read lane
+the heavy lane makes the snapshots, one at a time; the read lane
 orders a snapshot by the length of its texts, once for good, the first
 time its strip or its size map opens (`POST /api/snapshots/{id}/strip`
 queues it and answers its state), and keeps that order in
-`wpt-depot.sqlite.work/sizes/`, about 14 bytes a text of the snapshot. A heavy job holds
-the depot's write lock for one short transaction at most, so a decision
-over many texts never waits behind a build of hours, and a small write runs
+`wpt-depot.sqlite.work/sizes/`, about 14 bytes a text of the snapshot. A
+snapshot holds the depot's write lock for one short transaction at most,
+so a decision over many texts never waits behind it, and a small write runs
 in the request while no write job is open. The queue lives in
 `wpt-depot.sqlite.jobs`, which nothing backs up, so a job survives a
 restart of the app: a queued job stays queued, and a job the restart cut
-short runs again, a corpus build going on from its last token file (its
-checkpoint is kept by its build key), a snapshot read again from the start,
-so it reads the change current when it finishes. Anyone may start a job.
-Each build key has at most one corpus job open, each snapshot name one
-snapshot job, each snapshot one order by length, and each tokenizer
-recipe one vocabulary job. The page "Jobs"
+short runs again, a snapshot read again from the start, so it reads the
+change current when it finishes. Anyone may start a job. At most one
+snapshot job is open, and each snapshot has at most one order by length.
+The page "Jobs"
 shows the queue, each job's lane and progress. Only `wpt depot jobs cancel
 ID`, run where the depot is, cancels one; `wpt depot jobs` lists them. A
 queue file written by an older app is brought up when the app opens it:
-a job of an operation the app no longer has fails, saying so, and so does
-every write still queued or running, since its selection could name a
+a job of an operation or a kind the app no longer has (a vocabulary's
+training, a corpus's build) fails, saying so, and so does every write
+still queued or running, since its selection could name a
 library, which no longer exists, and run now it would reach more texts
 than were chosen. Nothing of it is written; the texts are chosen again.
 
 Every heavy action shows its cost before the click that starts it, and its
 route refuses it without `confirmed: true` and the estimate it showed; when
-the estimate now differs (a cost more than 10% above the one shown, another
-build key, a corpus the store's cap would now delete), it answers 409 with
-the new estimate to confirm instead:
+the estimate now differs (a cost more than 10% above the one shown), it
+answers 409 with the new estimate to confirm instead:
 
-- a snapshot (`GET /api/snapshots/new`: the name offered, the year and
-  month, then `2026-11b`, `2026-11c`, ... once taken, with the admitted
-  texts now, the seconds and the bytes; `POST /api/snapshots`);
-- a build (`POST /api/recipes/estimate`: tokens, bytes, seconds, from a
-  sample, what the cap would delete, whether its corpus is built already;
-  `POST /api/recipes/build`);
+- a snapshot (`GET /api/snapshots/new`: the admitted texts now, the
+  seconds and the bytes, and the snapshot job open, if any; `POST
+  /api/snapshots`, which takes no name: the depot names the snapshot by
+  the UTC time it is made, `YYYY-MM-DDTHH-MM-SSZ`, and refuses with 409
+  while another is being made);
 - a change of tags over a selection (`POST /api/texts/retag/estimate`:
   the texts changed, the rows and bytes written, the seconds;
   `POST /api/texts/retag`, a job of the write lane past 100 texts).
@@ -129,31 +124,15 @@ check it without a copy of the depot; `POST /api/snapshots/{id}/texts`
 gives its texts a page at a time, each at its revision then.
 
 The depot lives apart from any code repository, and may serve models of
-other code. A recipe to build is a file a person hands over: on the page
-"Build", or on a snapshot's page, they choose or drop its JSON, a model
-recipe or a series, of which only the data section counts (read through
-`wpt_recipes.data_section`; a series at its largest size, the one corpus
-every size of it reads, named `SERIES:` after its file). `POST
-/api/recipes/check` says at once what it gives here: its state (ready, a
-recipe of the legacy dataset shape, which is never built here, its
-snapshot not here or not the one it names, its vocabulary missing or of
-another size), its measure from its snapshot's summary and the corpus of
-its build key; `POST /api/recipes/estimate` tokenizes a sample for its
-estimate, a request of its own the page shows running. `POST
-/api/recipes/compose` composes a data section from a snapshot, kinds,
-shares, a size and a vocabulary, with its measure, and writes nothing: the
-page offers it to build, to download as JSON or to copy. A corpus
-downloads by its build key: `GET /api/builds/{key}` (its state and files),
-`.../files/{name}` and `.../everything.tar`, each taking a `Range` of
-bytes; the page `#/build?key=KEY` shows it, and a corpus job links there.
-
-A corpus is a cache: the same recipe on the same snapshot builds it again,
-so a model never needs a kept corpus to be checked
-([training.md](training.md), "What is exactly repeatable").
+other code. An order names a snapshot by its name, change and digest, which
+its page shows; the freight reads the snapshot through the depot's request
+module and makes the vocabulary and the corpus
+([api/freight.md](api/freight.md)).
 
 ### Models trained before snapshots
 
-The dataset routes are frozen: they answer what they answered for a depot
+The dataset routes and two reads of a tokenizer recipe are frozen: they
+answer what they answered for a depot
 of format 12, read-only, from the depot's legacy tables
 (`wpt_depot/legacy.py`, served by `wpt/depot/web/legacy.py`), so a model
 trained before snapshots can still be checked with the depot's address and
@@ -163,22 +142,17 @@ the repository at the commit it records ([training.md](training.md),
 listing of its corpora (`download`), each corpus's fixed link
 (`download/{vocabulary}/{size}`) with its files and `everything.tar`, its
 export and its parts, and its sample (`sample?bytes=N`), the plain texts a
-vocabulary of another depot trained on. Their answers are the depot's
-legacy rows and the corpora the store kept; nothing builds a corpus of a
-dataset. The export gives a dataset revision's texts in numbered parts,
+vocabulary of another depot trained on; and two reads of a tokenizer
+recipe, `GET /api/tokenizers/{name}` (its row, revisions and vocabularies,
+whether its version is trained) and `GET
+/api/tokenizers/{name}/vocabularies/{version}/file`, which `wpt train`
+read for a dataset's vocabulary. Their answers are the depot's legacy rows
+and the corpora the store kept; nothing builds a corpus of a dataset. The export gives a dataset revision's texts in numbered parts,
 each in JSONL compressed with zstd and in Parquet, made as it is sent and
 the same bytes every time, a conversation whose quotes it cannot hold left
 out ([data-selection.md](data-selection.md), "Conversations that quote
 texts"). At most 2 parts and samples are sent at once in all, and 1 to
 each visitor; past that the app answers 429.
-
-A build deletes no other corpus but those the cap makes it delete.
-`WPT_CORPORA_CAP` bounds the bytes all corpora take together, the files a
-stopped build left without a record included. To make room, a build
-deletes those files first, then the corpus downloaded least recently, a
-file at a time, never one being built or downloaded. A corpus whose
-estimated size passes the cap fails before its first upload, with that
-reason. A deleted corpus keeps its record.
 
 ## Cloudflare's address ranges
 
@@ -233,19 +207,7 @@ Let's Encrypt's challenges must reach port 80 over plain HTTP.
    certbot gets the first certificate over port 80, and nginx starts its
    HTTPS server within a minute of it.
 
-6. Bring the tokenizer recipes into the depot. For each recipe file
-   (JSON with `sample_bytes`, `vocab_size` and an optional `note`) put in
-   the depot's folder, from `deploy/depot-web/`:
-
-   ```sh
-   docker compose run --rm app wpt depot tokenizer import NAME /depot/NAME.json --snapshot SNAPSHOT
-   ```
-
-   with `--lock /depot/LOCK.json` to keep the vocabulary a lock file names
-   ([tokenizer.md](tokenizer.md), "Importing one"). Without a vocabulary,
-   the tokenizer recipe's page trains it, its cost shown first.
-
-7. Name what backs the depot up. Every write leaves a change file in
+6. Name what backs the depot up. Every write leaves a change file in
    `wpt-depot.sqlite.waiting/` until `wpt depot backup` sends it to the
    store, and the app sends none by itself, so without one of these the
    folder grows until the disk fills
@@ -298,8 +260,7 @@ docker compose up -d --build
 | --- | --- |
 | `WPT_DEPOT_FOLDER` | the host folder that holds `wpt-depot.sqlite`; required |
 | `WPT_DEPOT_USER` | `uid:gid` the app runs as; default `1000:1000` |
-| `WPT_STORE` | the store that holds the corpora (`s3://BUCKET/PREFIX`); unset, no corpus is built or served |
+| `WPT_STORE` | the store that holds the corpora the frozen dataset routes serve (`s3://BUCKET/PREFIX`); unset, no corpus is served |
 | `WPT_STORE_ACCESS_KEY_ID`, `WPT_STORE_SECRET_ACCESS_KEY` | a key that reads and writes that store |
 | `WPT_STORE_ENDPOINT_URL`, `WPT_STORE_REGION`, `WPT_STORE_SESSION_TOKEN` | optional, as for any store ([architecture.md](architecture.md), "The store") |
-| `WPT_CORPORA_CAP` | the bytes all corpora may take together, such as `3TB`; unset, no cap |
 | `CERTBOT_EMAIL` | the address Let's Encrypt writes to about the certificate; required |

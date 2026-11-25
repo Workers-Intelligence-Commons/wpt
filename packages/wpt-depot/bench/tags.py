@@ -115,7 +115,7 @@ def measure(bench: Bench, layout: common.Layout):
     bench.time("credits write, 1,000 texts given a tag", lambda d, _: f"{credited(d, admitted.take(1000), 'bench-tag')[2]:,}"
                " changed")
 
-    snapshot = bench.depot.create_snapshot("bench-tags")
+    snapshot = bench.depot.create_snapshot()
     bench.time("snapshot texts, first page of 1,000, tags as of it",
                lambda d, _: f"{len(d.snapshot_texts(snapshot['id'], limit=1000)['texts']):,} texts")
 

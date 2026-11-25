@@ -23,7 +23,7 @@ def test_the_store_lists_its_corpora_models_and_runs(built, tmp_path, capsys):
     assert main(["list"]) == 0
     listed = capsys.readouterr().out
     record = corpora.find(built.store, built.corpus_id)
-    assert (f"{built.corpus_id}: build key {record['build_key']}, snapshot d (change {record['snapshot']['change']}) "
+    assert (f"{built.corpus_id}: build key {record['build_key']}, snapshot {built.names['d']} (change {record['snapshot']['change']}) "
             f"of {built.depot.name()}, recipe d, every token" in listed and "  fox-1" in listed)
 
     assert main(["runs"]) == 0

@@ -61,12 +61,14 @@ def built(tmp_path, monkeypatch):
     text of the snapshot's corpus of every token, 3000 before one is
     built), with those changes to "d" (training: to ONE_STEP, its
     read-text step; steps: the entries that follow it), and returns its
-    name, snapshot(name, items=()), which adds the items (NewText, licensed
+    name, snapshot(label, items=()), which adds the items (NewText, licensed
     MIT and tagged TAG unless they say otherwise) to the depot, admitted,
-    makes the snapshot name of every admitted text, builds its corpus of
-    every token and returns its id, and sized(name, size, url=None), which
-    builds the corpus of the snapshot name at that size, its record naming
-    the depot by url (default: its name), and returns its record."""
+    makes a snapshot of every admitted text that the test calls label (the
+    depot names it by the time it is made; names[label] is that name),
+    builds its corpus of every token and returns its id, and sized(label,
+    size, url=None), which builds the corpus of the snapshot label at that
+    size, its record naming the depot by url (default: its name), and
+    returns its record."""
     store = open_store((tmp_path / "store").as_uri())
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
@@ -74,8 +76,11 @@ def built(tmp_path, monkeypatch):
     tokenizer = Tokenizer.train([story.encode() for story in stories], vocab_size=VOCAB_SIZE)
     vocabulary = {"sha256": hashlib.sha256(tokenizer.to_bytes()).hexdigest(), "size": tokenizer.vocab_size}
 
-    def data_of(name, size):
-        """The data section of a recipe of the snapshot name at that size."""
+    names = {}  # the name the depot gave each snapshot, by the label the test calls it
+
+    def data_of(label, size):
+        """The data section of a recipe of the snapshot label at that size."""
+        name = names.get(label, label)
         try:
             snapshot = depot.snapshot(name)
         except NotFound:  # a recipe of a snapshot not made: its change and digest are not known
@@ -84,10 +89,10 @@ def built(tmp_path, monkeypatch):
                 "digest": snapshot["digest"], "shares": [{"tag": TAG, "share": 1.0}], "total_tokens": size,
                 "vocabulary": vocabulary}
 
-    def sized(name, size, url=None) -> dict:
-        snapshot = depot.snapshot(name)
-        return build(depot, snapshot["id"], data_of(name, size), store, tokenizer, address=url or depot.name(),
-                     recipe=name, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
+    def sized(label, size, url=None) -> dict:
+        snapshot = depot.snapshot(names[label])
+        return build(depot, snapshot["id"], data_of(label, size), store, tokenizer, address=url or depot.name(),
+                     recipe=label, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
 
     def write(kind, name, document):
         path = tmp_path / "data" / "recipes" / f"{kind}s" / f"{name}.json"
@@ -95,18 +100,19 @@ def built(tmp_path, monkeypatch):
         path.write_text(json.dumps(document))
         return name
 
-    def snapshot(name, items=()):
+    def snapshot(label, items=()):
         items = [replace(item, licenses=item.licenses or (LICENSE[0],), tags=item.tags or (TAG,)) for item in items]
         if items:
             added = depot.add(items, ME)
             depot.decide("admitted", f"id IN ({', '.join(repr(one) for one in added)})", ME)
-        depot.create_snapshot(name)
-        return sized(name, None)["id"]
+        names[label] = depot.create_snapshot()["name"]
+        return sized(label, None)["id"]
 
     def recipe(name="d", model=None, training=None, drafter=None, steps=(), snapshot="d"):
         text = {**ONE_STEP, **(training or {})}
         whole = next((one for one in corpora.records(store)
-                      if one.get("snapshot", {}).get("name") == snapshot and one["max_tokens"] is None), None)
+                      if one.get("snapshot", {}).get("name") == names.get(snapshot, snapshot)
+                      and one["max_tokens"] is None), None)
         total = whole["total_tokens"] if whole else 3000
         read_text = {"step": "read-text", "optimizer": {"name": text["optimizer"], "settings": text["settings"]},
                      "settings": {key: text[key] for key in ("stages", "eval_every", "eval_batches")}}
@@ -137,7 +143,7 @@ def built(tmp_path, monkeypatch):
 
     return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, recipe=recipe,
                            records=records, snapshot=snapshot, sized=sized, vocabulary=vocabulary["sha256"],
-                           tokenizer=tokenizer, data=data_of)
+                           tokenizer=tokenizer, data=data_of, names=names)
 
 
 @pytest.fixture
@@ -180,7 +186,7 @@ def trained(request, built, tmp_path, monkeypatch):
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
     printed = request.getfixturevalue("capsys")
     if request.param == "named":
-        change = built.depot.snapshot("d")["at_change"]
+        change = built.depot.snapshot(built.names["d"])["at_change"]
         items = [{"depot": built.depot.name(), "id": row["id"], "change": change}
                  for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
         freight.adopt(f"{freight.ADOPTED}{built.vocabulary}", {"vocabulary.json": built.tokenizer.to_bytes()},

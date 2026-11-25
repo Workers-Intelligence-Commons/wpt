@@ -10,10 +10,9 @@ is how a run is started and looked after.
 
 ## Before the run
 
-- The corpus of the recipe's dataset is built: `uv run wpt depot build
-  DATASET`, on the machine that holds the depot, prints its id. The build
-  needs the vocabulary of the dataset's tokenizer recipe at its version,
-  which the depot holds (`wpt depot tokenizer train NAME`).
+- The recipe's vocabulary and corpus are on the dock: `uv run wpt
+  build-resources RECIPE` asks the freight for both and prints their
+  delivery notes.
 - PyTorch is installed for this machine's GPU: a plain `uv sync` removes
   it, `uv run scripts/setup.py` puts it back.
 - The model folder (`--out`, under `runs/`, which git ignores) is new, or

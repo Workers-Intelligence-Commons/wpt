@@ -819,7 +819,7 @@ public, and is not verified; the form says so before anyone confirms.
   decision whose texts erasures removed since; its page says both and
   shows it read-only.
 
-A snapshot, a tokenizer recipe, and the depot's maintainer and takedown
+A snapshot and the depot's maintainer and takedown
 contact are made or changed with no declaration and no decision, since
 they decide nothing about a text ([data-selection.md](data-selection.md),
 "Snapshots").

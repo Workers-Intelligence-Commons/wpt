@@ -1,15 +1,13 @@
 // Jobs: the server's queue (GET /api/jobs), read again every few seconds, in
 // its three lanes, each running one job at a time: the writes over a
-// selection of texts, the heavy work (making a snapshot, training a
-// vocabulary, building a corpus), and the reads that order a snapshot by
-// size for its strip, so a long build never holds up a write or a strip. Each lane
-// lists every job queued or running, in the order they run, then the latest
-// that ended, each as a sentence: what it does, linked to what it works on
-// (the snapshot, the corpus, the tokenizer recipe, the decision), its
-// state with how long it waited or ran, and what it gave. Anyone starts a
-// snapshot, a vocabulary training or a corpus build, each after its estimate
-// and a confirmation, from the Snapshots, Tokenizers and Build pages; only
-// the command line cancels a job (wpt depot jobs cancel ID). This file also
+// selection of texts, the snapshots, and the reads that order a snapshot by
+// size for its strip, so a snapshot never holds up a write or a strip. Each
+// lane lists every job queued or running, in the order they run, then the
+// latest that ended, each as a sentence: what it does, linked to what it
+// works on (the snapshot, the decision), its state with how long it waited
+// or ran, and what it gave. Anyone starts a snapshot, after its estimate
+// and a confirmation, from the Snapshots page; only the command line
+// cancels a job (wpt depot jobs cancel ID). This file also
 // keeps what the other pages show of a job: JobProgress, its progress in
 // words; JobLine, one job followed from its start to its end; and
 // RunningJobs, the mark in the navigation while a job waits or runs.
@@ -17,7 +15,7 @@
 import { Skeleton } from "@workers-intelligence-commons/components";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, waiting, type Answer, type Job, type Lane } from "../api";
-import { leftOutWords, PageHead, plainProblem, plural, Problems, Section, takenWords, type LeftOut } from "../parts";
+import { PageHead, plainProblem, plural, Problems, Section } from "../parts";
 import { href } from "../route";
 import { pipelineChanged, snapshotHref } from "../pipeline";
 import type { Page } from "./index";
@@ -46,20 +44,11 @@ export function lasted(seconds: number): string {
   return `${Math.floor(s / 3600)} h${Math.round((s % 3600) / 60) ? ` ${Math.round((s % 3600) / 60)} min` : ""}`;
 }
 
-// The stages a vocabulary training, a snapshot and a corpus build report
-// (wpt.depot.shared, wpt_depot.snapshots, wpt_depot.corpus), in words.
+// The stages a snapshot reports (wpt_depot.snapshots), in words.
 const STAGES: Record<string, string> = {
   "reading texts": "reading the admitted texts",
   "catching up": "reading the texts decided while it read",
   writing: "writing the snapshot's sets and summary",
-  "finding long texts": "finding the texts longer than a million characters, which come as pieces",
-  "counting items": "counting the tokens of the conversations and tasks",
-  choosing: "choosing each share's texts, its part split over the tags of its texts by the square root of what each holds",
-  reading: "tokenizing the texts",
-  finishing: "writing the corpus's tables",
-  "reading the sample": "reading the sample of texts",
-  merging: "learning the vocabulary",
-  keeping: "saving the vocabulary",
 };
 export const stageWords = (stage: string) => STAGES[stage] ?? stage;
 
@@ -67,18 +56,11 @@ export const stageWords = (stage: string) => STAGES[stage] ?? stage;
 function numbersWords(stage: unknown, numbers: Record<string, unknown>): string {
   const n = (key: string) => (typeof numbers[key] === "number" ? (numbers[key] as number).toLocaleString("en") : null);
   const of = n("of");
-  if (stage === "reading" && n("position") !== null && of) {
-    const rest = Object.entries(numbers).filter(([k]) => !["position", "of"].includes(k));
-    return [`text ${((numbers.position as number) + 1).toLocaleString("en")} of ${of}`, ...rest.map(([k, v]) => `${typeof v === "number" ? v.toLocaleString("en") : String(v)} ${k === "texts" ? "taken" : k}`)].join(", ");
-  }
-  if (stage === "merging" && n("merges") !== null && of) return `${n("merges")} of ${of} tokens`;
   if (stage === "reading texts" && n("texts") !== null && of) return `${n("texts")} of ${of} texts`;
-  if (stage === "reading the sample" && typeof numbers.bytes === "number" && typeof numbers.of === "number") return `${n("texts")} texts, ${bytesShort(numbers.bytes)} of ${bytesShort(numbers.of)}`;
   return Object.entries(numbers).map(([k, v]) => (typeof v === "number" ? `${v.toLocaleString("en")} ${k}` : `${k} ${String(v)}`)).join(", ");
 }
-const bytesShort = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${Math.round(b / 1e3)} KB` : `${b} bytes`);
 
-// A job's progress in words: its stage and the numbers it gave ("tokenizing the texts: text 120 of 525, 5,000 tokens").
+// A job's progress in words: its stage and the numbers it gave ("reading the admitted texts: 120 of 525 texts").
 export function JobProgress({ job }: { job: Job<unknown> }) {
   const p = job.progress;
   if (!p) return <span className="aside">{job.state === "queued" ? "waiting its turn" : stageWords(job.stages.at(-1)?.stage ?? "starting")}</span>;
@@ -92,14 +74,11 @@ export function JobProgress({ job }: { job: Job<unknown> }) {
 }
 
 // Where a job's result is: the snapshot it made (the list while it runs),
-// the corpus of the build key it builds, the tokenizer recipe it trains,
-// and for a write that ended well, the decision it recorded.
+// the strip of the snapshot it ordered, and for a write that ended well, the
+// decision it recorded.
 function resultLink(job: Job<unknown>): string | null {
   const a = (job.state === "done" ? job.answer ?? {} : {}) as Record<string, unknown>;
   if (job.kind === "snapshot") return typeof a.id === "string" ? snapshotHref({ id: a.id }) : href(["snapshots"]);
-  if (job.kind === "corpus" && job.key) return href(["build"], { key: job.key });
-  if (job.kind === "corpus") return href(["build"]);
-  if (job.kind === "vocabulary" && job.recipe) return href(["tokenizers", job.recipe]);
   if (job.kind === "sizes" && job.key) return href(["snapshots", job.key, "strip"]);
   if (typeof a.decision === "string") return href(["decisions", a.decision]);
   return null;
@@ -123,8 +102,7 @@ function answered(job: Job<unknown>): ReactNode {
   const link = resultLink(job);
   const open = (words: string) => (link && !shownNow(link) ? <>: <a href={link}>{words}</a></> : null);
   if (job.kind === "snapshot") return <>{plural(n("texts"), "text")} as of change {n("at_change").toLocaleString("en")}{open("open it")}</>;
-  if (job.kind === "corpus") return <>{takenWords(n("texts"), n("conversations"), n("tasks"))}, {plural(n("tokens") + n("item_tokens"), "token")} in all{n("item_tokens") ? ` (${n("tokens").toLocaleString("en")} of plain text, ${n("item_tokens").toLocaleString("en")} of conversations and tasks)` : ""}{leftOutWords(a.left_out as LeftOut | undefined) ? `; left out: ${leftOutWords(a.left_out as LeftOut | undefined)}` : ""}{open("download it")}</>;
-  if (job.kind === "vocabulary") return link && !shownNow(link) ? <>Trained: <a href={link}>see the vocabulary</a></> : null;
+  if (job.kind === "corpus" || job.kind === "vocabulary") return null; // the web app no longer runs these
   if (job.kind === "sizes") return <>{plural(n("texts"), "text")} ordered by size{open("read it whole")}</>;
   if ("changed" in a && typeof a.decision === "string") return <>{plural(n("changed"), "text")} changed{leftWords(a.left)}: <a href={href(["decisions", a.decision])} title={`decision ${a.decision}`}>see the decision and its texts</a></>;
   if ("decisions" in a && Array.isArray(a.decisions)) return <>{plural((a.decisions as { texts: number }[]).reduce((t, d) => t + d.texts, 0), "text")} relicensed{leftWords(a.left)}</>;
@@ -250,7 +228,7 @@ export function RunningJobs() {
 }
 
 const LANES: { lane: Lane; title: string; help: string }[] = [
-  { lane: "heavy", title: "Snapshots, vocabularies and corpora", help: "Making a snapshot, training a vocabulary and building a corpus, one at a time." },
+  { lane: "heavy", title: "Snapshots", help: "Making a snapshot, one at a time." },
   { lane: "write", title: "Writes over many texts", help: "A decision, a change of tags or licenses over a selection, one at a time; they never wait for the heavy lane." },
   { lane: "read", title: "Snapshots ordered by size", help: "Ordering a snapshot by the size of its texts, once for good, the first time its strip or its size map opens; it never waits for the other lanes." },
 ];
@@ -293,7 +271,7 @@ function Jobs() {
     <>
       <PageHead title="Jobs"
         meta={jobs?.ok && list.length > 0 ? <><span>{list.filter((j) => j.state === "running").length.toLocaleString("en")} running</span><span>{list.filter((j) => j.state === "queued").length.toLocaleString("en")} waiting</span></> : undefined}
-        chain={<>The long work the server runs, in three lanes of one job at a time: making a <a href={href(["snapshots"])}>snapshot</a>, training a <a href={href(["tokenizers"])}>tokenizer recipe</a>'s vocabulary and <a href={href(["build"])}>building</a> a recipe's corpus in one; a write over many texts in another; ordering a snapshot by size, for its strip, in the third. A job that ended links to what it made. A job cannot be cancelled here; the command line can, on the depot's machine.</>} />
+        chain={<>The long work the server runs, in three lanes of one job at a time: making a <a href={href(["snapshots"])}>snapshot</a> in one; a write over many texts in another; ordering a snapshot by size, for its strip, in the third. A job that ended links to what it made. A job cannot be cancelled here; the command line can, on the depot's machine.</>} />
       {!jobs && <Skeleton lines={5} label="Reading the queue" />}
       {jobs && !jobs.ok && <Problems problems={jobs.problems} />}
       {jobs?.ok && LANES.map(({ lane, title, help }) => {

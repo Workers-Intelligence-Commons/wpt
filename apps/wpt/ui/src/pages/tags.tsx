@@ -19,7 +19,7 @@ function OneTag({ tag }: { tag: string }) {
     <>
       <PageHead title={tag}
         meta={<a href={href(["texts"], { tag })}><MatchedCount counting={found} /></a>}
-        chain={<>One of the <a href={href(["tags"])}>tags</a> the <a href={href(["texts"])}>texts</a> have. A hand-picked set of texts is a tag; a recipe's shares choose texts by tag.</>} />
+        chain={<>One of the <a href={href(["tags"])}>tags</a> the <a href={href(["texts"])}>texts</a> have. A hand-picked set of texts is a tag; an order's shares choose texts by tag.</>} />
       {found?.problems && <Problems problems={found.problems} />}
       {found && found.counted > 0 && (
         <div className="stats">

@@ -46,7 +46,7 @@ def holding(make_depot, me, legacy_rows, texts: int, name: str):
     some_ids = depot.add([NewText(text=f"some {n}", licenses=("CC0-1.0",)) for n in range(SOME)], me)
     decision = depot.decide("admitted", some_ids, me)[0]
     dataset = legacy_rows.dataset(depot, "every", [every])
-    snapshot = depot.create_snapshot("every")["id"]
+    snapshot = depot.create_snapshot()["id"]
     return depot, {"order": sizes.build(depot, snapshot), "ids": ids, "rare": rare, "every": every, "some_ids": some_ids, "decision": decision,
                    "dataset": dataset}
 

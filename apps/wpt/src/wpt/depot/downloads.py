@@ -1,6 +1,6 @@
 """What a depot's web app knows of its downloads, kept in the queue's file
-beside the depot (wpt.depot.jobs): when each corpus was last downloaded,
-the streams being sent now, how many texts each export of a dataset counts
+beside the depot (wpt.depot.jobs): the streams being sent now, how many
+texts each export of a dataset counts
 and the size, sha256 and conversations left out of each part of an export
 once it was sent whole (wpt_depot.legacy), and the erasures whose corpora are being marked stale.
 
@@ -12,10 +12,8 @@ holds an erasure, the web app sends no corpus, so a corpus an erasure
 reached is never sent, even when the marking failed or the web app
 stopped before it ended.
 
-A build's cap (wpt_depot.corpora.Room) reads the first two: it deletes the
-corpus downloaded least recently first, never one being downloaded. The
-web app reads the streams to bound the text exports: at most EXPORTS at
-once in all, and VISITOR_EXPORTS for one visitor (TooMany otherwise).
+The web app reads the streams to bound the text exports: at most EXPORTS
+at once in all, and VISITOR_EXPORTS for one visitor (TooMany otherwise).
 An export's count of texts and a part's size and conversations left out
 are what reading them again would give, kept only to save that work.
 """
@@ -51,8 +49,7 @@ class Downloads:
     def streaming(self, corpus: str | None, visitor: str, kind: str):
         """Keep a stream of that kind (a token file: "file"; LIMITED's kinds
         are bounded) to visitor, of the corpus, as being sent while the
-        block runs, and the corpus as downloaded now when it ends. TooMany
-        past a bound."""
+        block runs. TooMany past a bound."""
         stream = secrets.token_hex(8)
         with connected(self.path, write=True) as con:
             if kind in LIMITED:
@@ -70,19 +67,6 @@ class Downloads:
         finally:
             with connected(self.path, write=True) as con:
                 con.execute("DELETE FROM streams WHERE id = ?", (stream,))
-                if corpus is not None:
-                    con.execute("INSERT OR REPLACE INTO downloads (corpus, last) VALUES (?, ?)", (corpus, time.time()))
-
-    def last_download(self, corpus: str) -> float:
-        """When the corpus was last downloaded, in seconds since the epoch; 0 for never."""
-        with connected(self.path) as con:
-            found = con.execute("SELECT last FROM downloads WHERE corpus = ?", (corpus,)).fetchone()
-        return 0.0 if found is None else found["last"]
-
-    def busy(self) -> set[str]:
-        """The ids of the corpora being downloaded now."""
-        with connected(self.path) as con:
-            return {row["corpus"] for row in con.execute("SELECT DISTINCT corpus FROM streams WHERE corpus IS NOT NULL")}
 
     def export_texts(self, export: str) -> int | None:
         """How many texts the export (its identity, wpt_depot.legacy.Export) counts, once kept; None before."""

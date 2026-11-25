@@ -194,9 +194,7 @@ cut.
 
 A trained vocabulary is not retrained when a text changes (see
 [tokenizer.md](tokenizer.md)), so merges learned from erased text, such as
-pieces of a rare name, stay in it until someone changes what trains the
-tokenizer recipe, which raises its version. When an erasure must reach the
-vocabulary too, change the recipe together with the erasure. A vocabulary
+pieces of a rare name, stay in it. A vocabulary
 delivery, learned by the freight or adopted from the depot, is never made
 stale: the freight writes the erasure into its delivery note
 (`erasures_since`), and every recipe and model that names the vocabulary

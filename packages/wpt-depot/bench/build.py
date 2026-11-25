@@ -2,9 +2,8 @@
 order of a snapshot's texts by export key (wpt_depot.order.of), its time and
 the memory it holds, projected to PROJECTED texts; a build of the snapshot
 cut at TOKENS tokens (about the tokens of the small dataset the baseline
-built), in tokens per second, warm, into a new store each run; the estimate
-the Build page would show for that build; and, to compare with the
-baseline's dataset build, the whole corpus of a snapshot of the small
+built), in tokens per second, warm, into a new store each run; and, to
+compare with the baseline's dataset build, the whole corpus of a snapshot of the small
 library's texts alone (every other admitted text of the work copy refused
 first). It prints a Markdown
 report, and writes it to --out when given.
@@ -74,7 +73,7 @@ def snapshot_build(bench: Bench, root: Path, snapshot: dict, tokenizer, total_to
 
 def measure(bench: Bench, layout: common.Layout, root: Path):
     say("  snapshot")
-    snapshot = bench.depot.create_snapshot("bench-build")
+    snapshot = bench.depot.create_snapshot()
     took = []
     for _ in range(bench.runs):
         start = time.perf_counter()
@@ -95,19 +94,10 @@ def measure(bench: Bench, layout: common.Layout, root: Path):
                  f"22M projected: {peak * PROJECTED / snapshot['texts'] / 1e6:,.0f} MB (target <= 400 MB)")
     tokenizer = tokenizer_of(bench.depot)
     snapshot_build(bench, root, snapshot, tokenizer)
-    from wpt_depot.estimate import estimate
-    took = []
-    for _ in range(bench.runs):
-        start = time.perf_counter()
-        found = estimate(bench.depot, snapshot["id"], data_of(snapshot, tokenizer), tokenizer)
-        took.append(time.perf_counter() - start)
-    bench.figure("estimate of that build", f"{statistics.median(took) * 1000:,.0f}", "ms",
-                 f"{found['sample']['tokenized']:,} texts tokenized, forecast {found['forecast']}; what a recipe "
-                 "page would read (target for the page: <= 1,000 ms)")
     say("  refusing every admitted text outside the small library")
     bench.depot.decide("refused", "status = 'admitted' AND id NOT IN (SELECT text FROM memberships WHERE library = "
                        f"'{layout.small_library}')", common.ME)
-    small = bench.depot.create_snapshot("bench-small")
+    small = bench.depot.create_snapshot()
     snapshot_build(bench, root, small, tokenizer, None, "snapshot build, the small library's texts alone, whole")
 
 

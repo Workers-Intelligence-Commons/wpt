@@ -858,7 +858,7 @@ def test_an_upgrade_to_format_13_makes_the_snapshot_tables_and_counts_and_goes_o
     kinds = dict((name, texts) for name, texts in upgraded.db.reader().execute(
         "SELECT name, texts FROM counts WHERE facet = 'kind'"))
     assert kinds == {"admitted conversation": 1, "admitted plain": 4, "refused plain": 2, "under review plain": 6}
-    made = upgraded.create_snapshot("first")
+    made = upgraded.create_snapshot()
     assert made["texts"] == 5 and {tags: sized[0] for tags, sized in made["summary"]["plain_tagsets"].items()} == {
         "": 2, "a": 2}
     assert {tag: sized[0] for tag, sized in made["summary"]["tags"].items()} == {"a": 3, "b": 1}

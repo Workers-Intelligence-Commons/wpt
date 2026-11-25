@@ -1,6 +1,6 @@
-"""WPT's depot: texts and structured items, the decisions on them, erasures,
-snapshots and tokenizer recipes, in one SQLite file (wpt_depot.depot), and
-the corpus a snapshot builds into the store (wpt_depot.corpus).
+"""WPT's depot: texts and structured items, the decisions on them, erasures
+and snapshots, in one SQLite file (wpt_depot.depot), and the corpus a
+snapshot builds into the store (wpt_depot.corpus).
 
     depot.py     Depot: every change to a depot's tables, under its rules
     schema.py    the tables of the file, their keys and the views of the current state
@@ -27,7 +27,6 @@ the corpus a snapshot builds into the store (wpt_depot.corpus).
     corpus.py    a snapshot's corpus in the store, under its build key, read through api.py
     order.py     a snapshot's texts in the order of their export keys, each read at its part's bound
     groups.py    how a share splits its budget over the tags its texts carry
-    estimate.py  what a corpus build would give, from a small sample
     corpora.py   the corpora the store holds: records, staleness, the store's cap
     notice.py    a model's notice from its corpus
     legacy.py    the libraries and datasets of format 12, read-only, for models trained before snapshots

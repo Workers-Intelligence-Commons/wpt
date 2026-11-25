@@ -3,16 +3,16 @@
 ## Training
 
 ```sh
-uv run wpt depot snapshot new 2026-11   # the texts admitted now ("Make a snapshot" on the Snapshots page)
+uv run wpt depot snapshot new           # the texts admitted now, named by the UTC time ("Make a snapshot" on the Snapshots page)
 uv run wpt build-resources NAME         # the vocabulary and corpus of data/recipes/models/NAME.json (SERIES: for a series)
 uv run wpt train NAME
 ```
 
 The recipe's data section names the snapshot by its name, change and
 digest, and its vocabulary by its sha256 or as one to learn
-([tokenizer.md](tokenizer.md), "A vocabulary in an order"). The composer
-of the snapshot's page in `wpt depot web` makes it by clicks, to put
-beside a model part in `data/recipes/models/NAME.json` and commit
+([tokenizer.md](tokenizer.md), "A vocabulary in an order"). The
+snapshot's page in `wpt depot web` gives its name, change and digest, to
+write in the data section of `data/recipes/models/NAME.json` and commit
 ([data-selection.md](data-selection.md), "The data section of a model
 recipe").
 
@@ -41,9 +41,8 @@ delivery), worked out from the recipe alone (`wpt.resources`). It reads no
 depot. Without that delivery, a recipe that names its vocabulary by its
 sha256 reads the latest corpus the depot built into the store's
 `corpora/` from the recipe's snapshot (its name, change and digest), depot,
-kinds, shares and vocabulary, at its size, under the selection rules the
-depot builds with now ([data-selection.md](data-selection.md),
-"Corpora"). With neither, or with a stale one, the run is refused, saying
+kinds, shares and vocabulary, at its size, under the selection rules of
+now ([data-selection.md](data-selection.md), "Corpora"). With neither, or with a stale one, the run is refused, saying
 to run `wpt build-resources`, and nothing is built or queued. A corpus
 given by its id (`WPT_CORPUS` or the corpus option), of a delivery or of
 the store's `corpora/`, must be made from the recipe's snapshot (its name,
@@ -1137,21 +1136,20 @@ X"; the card names the corpus's delivery and the vocabulary's.
 The corpus is a cache, never kept for this. The same request to a freight
 that reads the depot, or a clone of it, makes the same delivery, its id
 compared with the one `provenance.json` names. Whoever holds the depot's
-address, the repository and what ships with the weights checks a model
-built by the depot so:
+address, the repository and what ships with the weights checks a model so:
 
 ```sh
 git checkout COMMIT                                   # the repository_commit provenance.json names
 uv run wpt depot clone ADDRESS my-copy.sqlite --name NAME --maintainer M --takedown-contact C
-WPT_DEPOT=my-copy.sqlite uv run wpt depot build RECIPE
+WPT_DEPOT=my-copy.sqlite uv run wpt build-resources RECIPE
 ```
 
-The clone holds the depot's snapshots and vocabularies, its snapshots'
-sets checked against their digests as they arrive. The build finds the
-recipe's snapshot in the clone, since the clone follows that address,
-checks that it reads the recipe's change and digest, refusing and naming
-both otherwise, and builds the corpus of the recipe's build key, whose id
-and files then compare with what `provenance.json` names. To check only
+The clone holds the depot's snapshots, their sets checked against their
+digests as they arrive. The freight finds the recipe's snapshot in the
+clone, since the clone follows that address, checks that it reads the
+recipe's change and digest, refusing and naming both otherwise, and makes
+the deliveries of the recipe's request, whose ids and files then compare
+with what `provenance.json` names. To check only
 which texts a snapshot holds, without a copy of the depot, `GET
 /api/snapshots/{id}/sets` on the depot's web app gives its sets with its
 digest, which anyone recomputes ([data-selection.md](data-selection.md),
@@ -1172,7 +1170,8 @@ A model trained before snapshots has a recipe of the legacy shape, which
 names a dataset, and the code at the commit it records reads the depot's
 web app through the dataset routes: `GET /api/datasets` to find the
 dataset, `GET /api/datasets/{id}/download` for the corpus of its
-vocabulary and size, `GET /api/tokenizers/{name}` and its vocabulary file,
+vocabulary and size, `GET /api/tokenizers/{name}` and its vocabulary file
+(the only routes of tokenizer recipes the web app keeps),
 and, for another depot's vocabulary training, `GET /api/datasets/{id or
 name}/sample`. Those routes stay, frozen and read-only: they answer from
 the depot's legacy tables what they answered for the depot of format 12

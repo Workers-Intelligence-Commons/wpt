@@ -1,7 +1,7 @@
 // Calls to the wpt depot web server (its routes are described at /api/openapi.json).
 // Every answer is JSON; a refusal carries {problems: string[]} with the depot's
 // own messages: 400 a query or remote that is not one, 404 not found, 409 a
-// job of the same snapshot or recipe queued or running already, or an
+// snapshot being made already, or the same snapshot ordered by size, or an
 // estimate that changed since it was shown (with the new one), 422 refused by
 // the depot's rules, 429 as many text exports running as the server sends at
 // once, 503 missing on this machine. A proxy in front of the server answers
@@ -31,17 +31,18 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<An
 export const get = <T,>(path: string) => call<T>("GET", path);
 export const post = <T,>(path: string, body: unknown) => call<T>("POST", path, body);
 
-// A write over a selection of texts, a vocabulary training, a snapshot and a
-// corpus build run as jobs of the server's queue (GET /api/jobs/ID), in three
-// lanes that each run one job at a time: write (the writes over a selection),
-// heavy (snapshot, vocabulary, corpus) and read (a snapshot's order by size,
-// for its strip), so a long build never holds up a write or a strip. A job is queued, running, then done with its answer, or refused,
-// failed or cancelled with its problem and status; stages, each stage a write
-// started, with its time in seconds; progress, what a training, a snapshot
-// or a build says it did so far; key, the snapshot's name or the corpus's
-// build key; recipe, the tokenizer or model recipe it works for.
+// A write over a selection of texts, a snapshot and a snapshot's order by
+// size run as jobs of the server's queue (GET /api/jobs/ID), in three lanes
+// that each run one job at a time: write (the writes over a selection),
+// heavy (the snapshots) and read (a snapshot's order by size, for its
+// strip), so a snapshot never holds up a write or a strip. A job is queued,
+// running, then done with its answer, or refused, failed or cancelled with
+// its problem and status; stages, each stage a job started, with its time in
+// seconds; progress, what a snapshot says it did so far; key, the snapshot
+// a sizes job orders. A queue kept from before may still list the
+// vocabulary trainings and corpus builds the web app once ran.
 export type JobState = "queued" | "running" | "done" | "refused" | "failed" | "cancelled";
-export type JobKind = "write" | "vocabulary" | "corpus" | "snapshot" | "sizes";
+export type JobKind = "write" | "snapshot" | "sizes" | "vocabulary" | "corpus";
 export type Lane = "write" | "heavy" | "read";
 export type Job<T> = {
   id: string; kind: JobKind; lane: Lane; title: string; state: JobState; stages: { stage: string; at: number }[];

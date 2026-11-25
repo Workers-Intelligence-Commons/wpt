@@ -1,8 +1,9 @@
-"""A depot: texts and structured items, the decisions on them, erasures,
-snapshots and tokenizer recipes with their vocabularies, in the tables of
-one SQLite file (wpt_depot.schema). The tables of the libraries and
-datasets an older format held stay in the file, and no write touches them
-(wpt_depot.legacy reads them).
+"""A depot: texts and structured items, the decisions on them, erasures
+and snapshots, in the tables of one SQLite file (wpt_depot.schema). The
+tables of the libraries, datasets, tokenizer recipes and vocabularies an
+older depot held stay in the file, and no write touches them
+(wpt_depot.legacy reads them; a pull still brings an upstream's rows of
+them).
 
 Depot is the only code that changes a depot's tables. Each operation is one
 change: one transaction under the next change number, recorded for the
@@ -13,7 +14,7 @@ The depot's state is numbered by its change number (Depot.change): every
 write raises it, and every revision row records the change number it was
 made at. What changes in place keeps its old versions as
 revision rows of its own table, never overwritten or deleted but by an
-erasure: a text's credits and licenses, a tokenizer recipe, the depot's
+erasure: a text's credits and licenses, the depot's
 maintainer and takedown contact, an
 erasure request's decisions and what it erased. A decision on a text is a
 row of text_decisions with the change it was made at, never deleted but by
@@ -121,19 +122,12 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   passage.
 - A snapshot (wpt_depot.snapshots) is a name on a change number, unique
   among the depot's own snapshots: the texts admitted at that change, each
-  read at its revision as of it. It is written once, in a change of its
-  own, and never changed nor removed, an erasure included.
-- A tokenizer recipe names the sample that trains its vocabulary: the
-  texts of some kinds of a snapshot, with sample_bytes, vocab_size and a
-  note (a revision written before snapshots named a dataset instead, and
-  needs a snapshot before it trains again). It changes as a new revision;
-  a change of what trains the vocabulary raises its version, a change of
-  the note alone does not. A version has at most one vocabulary, written
-  once with the list of the texts it trained on; a second one is refused.
+  read at its revision as of it. The depot names it by the UTC time it is
+  made. It is written once, in a change of its own, and never changed nor
+  removed, an erasure included.
 - The depot's maintainer and takedown contact change as a new revision;
-  its name never does, since it begins every id. A tokenizer recipe and
-  the depot's facts change with no declaration: they are no decision on a
-  text.
+  its name never does, since it begins every id. The depot's facts change
+  with no declaration: they are no decision on a text.
 - The depot's format (wpt_depot.schema) changes only through
   Depot.upgrade (wpt_depot.upgrade); opening or reading a depot of another
   format than the code's is refused (OtherFormat).
@@ -144,19 +138,16 @@ The rules (the app's policy, wpt_depot.policy, says how decisions combine):
   writing nothing (BelongsToUpstream): a decision on, a license change of,
   a content change of or an edit of the credits or scores of an upstream text, a request to erase one,
   a decision on an erasure request that is the upstream's or names an
-  upstream text, an edit of an upstream tokenizer recipe. An operation on
+  upstream text. An operation on
   several texts is refused whole when one of them is the upstream's, and
   Depot.blocked names them. The depot's own rows stay fully changeable.
 """
 
 import bisect
 import functools
-import hashlib
-import itertools
 import json
 import math
-import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -194,8 +185,7 @@ ALREADY_UNDER_REVIEW = "already under review"
 ALREADY = {ADMITTED: "already admitted", REFUSED: "already refused"}
 # how many ids a refusal of upstream rows names before it gives the count of the rest
 NAMED = 20
-SINGULAR = {"texts": "text", "erasure requests": "erasure request", "tokenizer recipes": "tokenizer recipe",
-            "decisions": "decision"}
+SINGULAR = {"texts": "text", "erasure requests": "erasure request", "decisions": "decision"}
 # the credits of a text that change as a new revision (Depot.edit_credits), in the order its reason names them
 CREDITS = crediting.CREDITS
 # what the rows of a search can be ordered by: each the SQL expressions over the searched rows it orders by, in turn,
@@ -208,13 +198,6 @@ ORDERS = {"id": [], "title": ["title IS NOT NULL", "coalesce(title, '')"],
 # most SORTED texts
 INDEXED = ("id", "status", "length")
 SORTED = 100_000
-# a tokenizer recipe's name
-TOKENIZER_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
-# what a tokenizer recipe's revision changes that trains another vocabulary, and so raises its version
-TRAINS_VOCABULARY = ("depot", "dataset", "sample", "sample_bytes", "vocab_size")
-# the kinds of texts a vocabulary's sample takes (Depot.new_tokenizer): a sample is read as text, which an item is not
-SAMPLE_KINDS = (PLAIN,)
-VOCABULARY_BASE = 513  # the smallest vocabulary: 256 bytes, the end of a text and 256 reserved ids (wpt_tokenizer)
 # how many tags a retag (Depot.retag) removes from the text whose id is {text} (it has them: :remove, a JSON list),
 # and how many it adds (it lacks them: :add), from its rows of taggings
 _REMOVED = ("(SELECT count(*) FROM taggings g WHERE g.text = {text} AND g.left_change IS NULL "
@@ -533,7 +516,7 @@ class Depot:
         return self._upstream
 
     def upstream_owned(self, row_ids: Sequence[str]) -> list[str]:
-        """Of the ids of rows (texts, erasure requests, tokenizer recipes),
+        """Of the ids of rows (texts, erasure requests),
         those the upstream owns, each once, in the order given: in a depot
         that follows an upstream, every id that does not carry this depot's
         own name (wpt_depot.ids.carries); in any other depot, none."""
@@ -2285,160 +2268,12 @@ class Depot:
             raise NotFound(f"the text {text} has no content version {version}")
         return Parted(reader or self.reader(), text, found[0]["parts"])
 
-    # Tokenizer recipes and their vocabularies
-
-    def new_tokenizer(self, name: str, snapshot: str, kinds: Sequence[str] | None, sample_bytes: int,
-                      vocab_size: int, note: str | None = None) -> str:
-        """A tokenizer recipe at version 1: its vocabulary trains on a
-        sample of at most sample_bytes bytes of the texts of the kinds named
-        (SAMPLE_KINDS, plain when None) of a snapshot (its id, or the name of
-        one of this depot's own snapshots), up to vocab_size tokens: its id.
-        Refused for a name that is taken or not one (TOKENIZER_NAME), a
-        sample or a size out of range, a kind a sample cannot take; NotFound
-        for a snapshot the depot does not hold."""
-        row = self._recipe_row(snapshot, kinds, sample_bytes, vocab_size, note)
-        if not isinstance(name, str) or not TOKENIZER_NAME.fullmatch(name):
-            raise Refused("a tokenizer recipe's name is lowercase a-z, 0-9, '.', '_' and '-', starting with a letter "
-                          "or a digit")
-        with self._write("tokenizer") as (con, number):
-            if self._rows("SELECT id FROM tokenizers WHERE name = ?", (name,)):
-                raise Refused(f"the tokenizer recipe name {name} is taken")
-            recipe = self._id(self._take(con, "tokenizers"))
-            _insert(con, "tokenizers_revisions", [{"id": recipe, "revision": 1, "change": number, "latest": 1,
-                                                   "name": name, "version": 1, **row,
-                                                   "sample": _json(row["sample"])}])
-            return recipe
-
-    def edit_tokenizer(self, recipe: str, snapshot: str, kinds: Sequence[str] | None, sample_bytes: int,
-                       vocab_size: int, note: str | None = None) -> int:
-        """Change the tokenizer recipe of that id as a new revision, its id
-        and name kept, with the checks of new_tokenizer: its version, which
-        it answers, goes up by one when the revision changes what trains its
-        vocabulary (the snapshot and kinds of its sample, or the dataset an
-        older revision named, the sample's bytes, the vocabulary's size),
-        and stays for a change of its note alone. A change that changes
-        nothing writes nothing. NotFound without such a recipe;
-        BelongsToUpstream for a recipe of the upstream."""
-        old = self.tokenizer_by_id(recipe)
-        self._refuse_upstream("tokenizer recipes", [recipe])
-        row = self._recipe_row(snapshot, kinds, sample_bytes, vocab_size, note)
-        if all(old[key] == value for key, value in row.items()):
-            return old["version"]
-        version = old["version"] + (any(old[key] != row[key] for key in TRAINS_VOCABULARY))
-        with self._write("edit tokenizer") as (con, number):
-            self._revise(con, "tokenizers_revisions", [recipe], number,
-                         {**{key: f":{key}" for key in row}, "version": ":version"},
-                         {**row, "sample": _json(row["sample"]), "version": version})
-        return version
-
-    def _recipe_row(self, snapshot: str, kinds: Sequence[str] | None, sample_bytes: int, vocab_size: int,
-                    note: str | None) -> dict:
-        """The columns of a tokenizer recipe's revision, from what a person
-        gives, checked (new_tokenizer): sample {snapshot: its id, kinds},
-        no depot and an empty dataset, the columns older revisions name
-        what they train on by."""
-        whole = (lambda value: isinstance(value, int) and not isinstance(value, bool))
-        if not whole(sample_bytes) or sample_bytes < 1:
-            raise Refused("a tokenizer recipe's sample holds a whole number of bytes above 0")
-        if not whole(vocab_size) or vocab_size < VOCABULARY_BASE:
-            raise Refused(f"a vocabulary holds at least {VOCABULARY_BASE} tokens (256 bytes, the end of a text and "
-                          "256 reserved ids)")
-        _filled(snapshot=snapshot)
-        kinds = list(dict.fromkeys(kinds or [PLAIN]))
-        other = [one for one in kinds if one not in SAMPLE_KINDS]
-        if other:
-            raise Refused(f"a vocabulary's sample takes texts of kind {', '.join(SAMPLE_KINDS)}, not "
-                          f"{', '.join(other)}")
-        if note is not None and not note.strip():
-            note = None
-        return {"depot": None, "dataset": "", "sample": {"snapshot": self._snapshot_id(snapshot.strip()),
-                                                          "kinds": kinds},
-                "sample_bytes": sample_bytes, "vocab_size": vocab_size, "note": note}
-
-    def _snapshot_id(self, snapshot: str) -> str:
-        """The id of the snapshot of that id, or else of this depot's own
-        snapshot of that name. NotFound without one."""
-        if self._rows("SELECT id FROM snapshots WHERE id = ?", (snapshot,)):
-            return snapshot
-        return self.snapshot(snapshot)["id"]
-
-    def tokenizer(self, name: str) -> dict:
-        """The current revision of the tokenizer recipe named so, with
-        needs_snapshot: whether it names no sample (a revision written
-        before snapshots, which named a dataset), so it trains nothing until
-        an edit names a snapshot. NotFound without one."""
-        found = self._rows("SELECT * FROM tokenizers WHERE name = ?", (name,))
-        if not found:
-            raise NotFound(f"no tokenizer recipe {name}")
-        return _recipe_shown(found[0])
-
-    def tokenizer_by_id(self, recipe: str) -> dict:
-        """The current revision of the tokenizer recipe of that id, as tokenizer gives it. NotFound without one."""
-        found = self._rows("SELECT * FROM tokenizers WHERE id = ?", (recipe,))
-        if not found:
-            raise NotFound(f"no tokenizer recipe {recipe}")
-        return _recipe_shown(found[0])
-
-    def tokenizers(self) -> list[dict]:
-        """Every tokenizer recipe's current revision, by name, as tokenizer
-        gives it, with trained: whether its version has a vocabulary."""
-        return [_recipe_shown(one) for one in self._rows(
-            "SELECT t.*, EXISTS (SELECT 1 FROM vocabularies v WHERE v.recipe = t.id "
-            "AND v.version = t.version) AS trained FROM tokenizers t ORDER BY t.name")]
-
-    def vocabulary(self, recipe: str, version: int) -> dict | None:
-        """The vocabulary of a version of the tokenizer recipe of that id:
-        {recipe, version, change, sha256, merges: the vocabulary file as
-        text (its bytes in UTF-8), texts: how many texts it trained on, bytes: their UTF-8
-        bytes, None when not known, made_at}; None when that version has none."""
-        found = self._rows("SELECT * FROM vocabularies WHERE recipe = ? AND version = ?", (recipe, version))
-        return found[0] if found else None
-
-    def vocabulary_texts(self, recipe: str, version: int, offset: int = 0, limit: int = 50) -> list[dict]:
-        """The texts a vocabulary trained on, a page at a time in the order
-        they were read: each {position, depot: the web address of the depot
-        that holds it, '' for the depot that holds the recipe, text: its id}."""
-        return self._rows("SELECT position, depot, text FROM vocabulary_texts WHERE recipe = ? AND version = ? "
-                          "ORDER BY position LIMIT ? OFFSET ?", (recipe, version, int(limit), int(offset)))
-
-    def add_vocabulary(self, recipe: str, version: int, merges: bytes, texts: Iterable[tuple[str, str]],
-                       size: int | None) -> str:
-        """Keep the vocabulary of a version of the tokenizer recipe of that
-        id, for good: merges, the vocabulary file's bytes (wpt_tokenizer),
-        and texts, (the web address of the depot that holds it, '' for this
-        depot; its id) of each text it trained on in the order they were
-        read, read a few at a time, whose UTF-8 bytes add up to size: its
-        sha256. Refused when that version has a vocabulary already, which
-        never changes, or when the recipe never had that version; NotFound
-        without such a recipe; BelongsToUpstream for a recipe of the
-        upstream, whose vocabularies a pull brings."""
-        self.tokenizer_by_id(recipe)
-        self._refuse_upstream("tokenizer recipes", [recipe])
-        sha = hashlib.sha256(merges).hexdigest()
-        with self._write("vocabulary") as (con, number):
-            if not con.execute("SELECT 1 FROM tokenizers_revisions WHERE id = ? AND version = ?",
-                               (recipe, version)).fetchall():
-                raise Refused(f"the tokenizer recipe {recipe} never had the version {version}")
-            if con.execute("SELECT 1 FROM vocabularies WHERE recipe = ? AND version = ?", (recipe, version)).fetchall():
-                raise Refused(f"the tokenizer recipe {recipe} has a vocabulary of its version {version} already: a "
-                              "vocabulary never changes, and a new one takes a new version of the recipe")
-            count = 0
-            for batch in itertools.batched(texts, 10_000):
-                con.executemany("INSERT INTO vocabulary_texts (recipe, version, position, depot, text, change) "
-                                "VALUES (?, ?, ?, ?, ?, ?)",
-                                [(recipe, version, count + at, depot, text, number)
-                                 for at, (depot, text) in enumerate(batch)])
-                count += len(batch)
-            _insert(con, "vocabularies", [{"recipe": recipe, "version": version, "change": number, "sha256": sha,
-                                           "merges": merges.decode("utf-8"), "texts": count, "bytes": size, "made_at": _now()}])
-        return sha
-
     # Snapshots (wpt_depot.snapshots)
 
-    def create_snapshot(self, name: str, note: str | None = None, progress=None, read=None,
+    def create_snapshot(self, note: str | None = None, progress=None, read=None,
                         measured: dict | None = None) -> dict:
-        """A new snapshot of the texts admitted now, called name: its row (snapshots.create)."""
-        return snapshots.create(self, name, note, progress, read, measured=measured)
+        """A new snapshot of the texts admitted now, named by the UTC time it is made: its row (snapshots.create)."""
+        return snapshots.create(self, note, progress, read, measured=measured)
 
     def snapshots(self) -> list[dict]:
         """Every snapshot of the depot, without its summary (snapshots.snapshots)."""
@@ -2828,11 +2663,6 @@ def _bounds(con, depot: str, change: int) -> dict[str, int]:
             break
         depot, change = last[2], last[3]
     return found
-
-
-def _recipe_shown(row: dict) -> dict:
-    """A tokenizer recipe's row with needs_snapshot (Depot.tokenizer)."""
-    return {**row, "needs_snapshot": row["sample"] is None}
 
 
 def _remove_texts(con, texts: list[str]):

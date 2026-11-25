@@ -53,4 +53,4 @@ body:
     id: vocabulary
     attributes:
       label: "Reaching the vocabulary"
-      description: "Whether the erased text must also leave the tokenizer's vocabulary (for example a rare name). That needs a new tokenizer recipe `version` (`docs/tokenizer.md`). Write \"no\" or \"not sure\"."
+      description: "Whether the erased text must also leave the tokenizer's vocabulary (for example a rare name). That needs a new vocabulary, learned on another sample or snapshot (`docs/erasure.md`). Write \"no\" or \"not sure\"."

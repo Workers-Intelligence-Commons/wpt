@@ -1,55 +1,51 @@
 """The queue of a depot's jobs: the long work the web app runs for anyone
-(making a snapshot, training a tokenizer recipe's vocabulary, building a
-recipe's corpus, a write over a selection of texts, ordering a snapshot by
-length), each in a process of
-its own, so the web app keeps the other cores and answers while a job runs.
+(making a snapshot, a write over a selection of texts, ordering a snapshot
+by length), each in a process of its own, so the web app keeps the other
+cores and answers while a job runs.
 
 The jobs run in three lanes, one job at a time in each (LANES): the write
 lane runs the writes over many texts (decisions, licenses, scores, tags),
 short and each holding the depot's write lock while it writes; the heavy
-lane runs the long work (snapshot, vocabulary, corpus), which holds the
-write lock never (a vocabulary training, a corpus build) or for one short
-transaction at its end (a snapshot); the read lane runs the reads that make
-what a page shows, kept in the jobs' folder and written nowhere in the depot
-(a snapshot's order by length, wpt.depot.web.snapshots). So a multi-hour
-build never holds back a decision over many texts nor the strip of a
-snapshot, and a write run in the request waits only for the write lane
-(writing).
+lane makes the snapshots, each holding the write lock for one short
+transaction at its end; the read lane runs the reads that make what a page
+shows, kept in the jobs' folder and written nowhere in the depot (a
+snapshot's order by length, wpt.depot.web.snapshots). So a snapshot never
+holds back a decision over many texts nor the strip of a snapshot, and a
+write run in the request waits only for the write lane (writing).
 
 The queue is a small SQLite file beside the depot, <depot file>.jobs,
 which nothing backs up: it holds each job's kind and lane, what it does in
-words, what it is for (its key: a corpus job's build key, a snapshot job's
-snapshot name, a sizes job's snapshot id; its recipe: a vocabulary job's tokenizer recipe or a corpus
-job's model recipe; its target: what it makes), the operation it runs and
-its arguments, its state, its progress and its answer, the checkpoints of
-the corpus builds by build key, and the jobs' other state
-(wpt.depot.downloads). Each lane's runner takes the oldest queued job of
-its lane, marks it running and runs it in a spawned process; it looks at
-the queue when a job is added in its own process, and every POLL seconds.
-A job's state is queued, running, done (its answer), refused (the failure that stopped
-it, with its HTTP status; what it is refused writes nothing), failed (the
-process ended without an answer, or with a failure the routes do not name)
-or cancelled. Each build key has at most one corpus job queued or running,
-each snapshot name one snapshot job, each snapshot id one sizes job, and
-each tokenizer recipe one vocabulary job (Busy otherwise). Only the command line cancels a job (wpt
-depot jobs cancel): a queued one never runs, and a running one's process
-is stopped.
+words, what it is for (its key: a sizes job's snapshot id; its target: what
+it makes), the operation it runs and its arguments, its state, its progress
+and its answer, and the jobs' other state (wpt.depot.downloads). Each
+lane's runner takes the oldest queued job of its lane, marks it running and
+runs it in a spawned process; it looks at the queue when a job is added in
+its own process, and every POLL seconds. A job's state is queued, running,
+done (its answer), refused (the failure that stopped it, with its HTTP
+status; what it is refused writes nothing), failed (the process ended
+without an answer, or with a failure the routes do not name) or cancelled.
+At most one snapshot job is queued or running, and each snapshot id has at
+most one sizes job (Busy otherwise). Only the command line cancels a job
+(wpt depot jobs cancel): a queued one never runs, and a running one's
+process is stopped.
 
 A job survives a restart of the web app: a queued job stays queued, and a
-job the restart cut short runs again from the start (a corpus build goes
-on from its last token file uploaded, its checkpoint kept by build key,
-wpt.depot.shared.build_corpus; a snapshot is read again from the start, so
-it reads the change current when it finishes; a write cut short wrote
-nothing), at most RESTARTS times, then fails with that reason.
+job the restart cut short runs again from the start (a snapshot is read
+again from the start, so it reads the change current when it finishes; a
+write cut short wrote nothing), at most RESTARTS times, then fails with
+that reason.
 
-A queue file of an older layout, whose jobs name a dataset, is brought up when it is opened
-(connected): its jobs' dataset column becomes key and each job gets its
-lane; a corpus job of a dataset that was queued or running fails, since
-datasets no longer exist, and so does every write that was queued or running:
-one of an operation that no longer exists (GONE), and any other
-(WRITES_BEFORE), since its selection was pickled with the libraries it
-named, which a selection no longer holds, so run now it would reach more
-texts than the person chose; the checkpoints of dataset builds are dropped.
+A queue file of an older layout is brought up when it is opened
+(connected). One whose jobs name a dataset has its jobs' dataset column
+become key and each job gets its lane; every write that was queued or
+running fails: one of an operation that no longer exists (GONE), and any
+other (WRITES_BEFORE), since its selection was pickled with the libraries
+it named, which a selection no longer holds, so run now it would reach
+more texts than the person chose. A job of a kind the web app no longer
+runs (KINDS_GONE: a vocabulary's training, a corpus's build) that was
+queued or running fails (KIND_GONE), and the tables of what only those
+jobs kept (the checkpoints of builds, when each corpus was last
+downloaded) go.
 
 A small write runs in the request itself (record) and is kept as a job that
 has ended, so every write answers the same way.
@@ -75,13 +71,16 @@ RESTARTS = 3  # restarts of the web app a running job lives through before it fa
 KEPT = 1000  # jobs that ended the queue keeps; the older ones go
 POLL = 0.5  # seconds between two looks of the runner at the queue and at a running job
 PROGRESS_EVERY = 1.0  # seconds between two writes of a job's progress
-LANES = {"write": "write", "snapshot": "heavy", "vocabulary": "heavy", "corpus": "heavy", "sizes": "read"}  # by kind
+LANES = {"write": "write", "snapshot": "heavy", "sizes": "read"}  # by kind
 KINDS = tuple(LANES)
+KINDS_GONE = ("vocabulary", "corpus")  # the kinds of jobs the web app ran once and runs no more
+# why a job of one of those kinds fails when it was queued or running
+KIND_GONE = ("the web app no longer trains vocabularies nor builds corpora: the freight makes them (`wpt "
+             "build-resources`); nothing was done")
 OPEN = ("queued", "running")
 ENDED = ("done", "refused", "failed", "cancelled")
 # the operations of writes that no longer exist: a job of one queued or running when the queue file is brought up fails
 GONE = (":fork_library", ":report_problem", ":put_texts", ":take_out_texts", ":lock_library")
-DATASETS_GONE = "datasets no longer exist: build a recipe of a snapshot instead"
 # why any other write queued or running when the queue file is brought up fails
 WRITES_BEFORE = ("this write was queued before the depot's upgrade, when a selection could name libraries, which no "
                  "longer exist: run now it could reach more texts than were chosen; nothing was written, choose the "
@@ -93,9 +92,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     state TEXT NOT NULL, stages TEXT NOT NULL, progress TEXT, answer TEXT, problem TEXT, status INTEGER,
     created REAL NOT NULL, started REAL, ended REAL, restarts INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS jobs_open ON jobs (state, number);
-CREATE TABLE IF NOT EXISTS checkpoints (key TEXT PRIMARY KEY, state TEXT NOT NULL);
+DROP TABLE IF EXISTS checkpoints;
 CREATE TABLE IF NOT EXISTS erased_since (snapshot TEXT PRIMARY KEY, last_erasure INTEGER NOT NULL, found TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS downloads (corpus TEXT PRIMARY KEY, last REAL NOT NULL);
+DROP TABLE IF EXISTS downloads;
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, corpus TEXT, visitor TEXT NOT NULL, kind TEXT NOT NULL,
     started REAL NOT NULL);
 DROP TABLE IF EXISTS exports;
@@ -109,9 +108,8 @@ CREATE TABLE IF NOT EXISTS marking (erasure TEXT PRIMARY KEY, since REAL NOT NUL
 
 
 class Busy(errors.DepotError):
-    """The build key has a corpus job queued or running already, the
-    snapshot name a snapshot job, or the tokenizer recipe a vocabulary job:
-    nothing was queued."""
+    """A snapshot job is queued or running already, or the snapshot a sizes
+    job: nothing was queued."""
 
 
 def jobs_file(address: str) -> Path:
@@ -136,7 +134,9 @@ def connected(path: Path, write: bool = False):
         con.execute("PRAGMA journal_mode = WAL")
         con.execute("PRAGMA busy_timeout = 60000")
         con.executescript(SCHEMA)
-        if {"target", "key", "lane"} - _columns(con, "jobs") or "key" not in _columns(con, "checkpoints"):
+        if {"target", "key", "lane"} - _columns(con, "jobs") or con.execute(
+                f"SELECT 1 FROM jobs WHERE kind IN ({', '.join('?' * len(KINDS_GONE))}) AND state IN "
+                "('queued', 'running') LIMIT 1", KINDS_GONE).fetchone():
             _brought_up(con)
         if write:
             con.execute("BEGIN IMMEDIATE")
@@ -160,9 +160,9 @@ def _brought_up(con):
     """Bring a queue file made before up to SCHEMA, in one transaction that
     looks again once it holds the write lock (another connection may have
     done it meanwhile): a jobs table without target gets it; one with
-    dataset has it renamed key, gets lane, and its corpus jobs of a dataset
-    and every write that were queued or running fail (GONE, WRITES_BEFORE);
-    the checkpoints of dataset builds are dropped."""
+    dataset has it renamed key, gets lane, and every write that was queued
+    or running fails (GONE, WRITES_BEFORE); every job of KINDS_GONE queued
+    or running fails (KIND_GONE)."""
     con.execute("BEGIN IMMEDIATE")
     try:
         columns = _columns(con, "jobs")
@@ -170,8 +170,6 @@ def _brought_up(con):
             con.execute("ALTER TABLE jobs ADD COLUMN target TEXT")
         if "dataset" in columns:
             con.execute("ALTER TABLE jobs RENAME COLUMN dataset TO key")
-            con.execute("UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? "
-                        "WHERE kind = 'corpus' AND state IN ('queued', 'running')", (time.time(), DATASETS_GONE))
             for gone in GONE:
                 con.execute("UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? "
                             "WHERE kind = 'write' AND state IN ('queued', 'running') AND operation LIKE ?",
@@ -181,9 +179,9 @@ def _brought_up(con):
         if "lane" not in _columns(con, "jobs"):
             con.execute("ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'heavy'")
             con.execute("UPDATE jobs SET lane = 'write' WHERE kind = 'write'")
-        if "key" not in _columns(con, "checkpoints"):
-            con.execute("DROP TABLE checkpoints")
-            con.execute("CREATE TABLE checkpoints (key TEXT PRIMARY KEY, state TEXT NOT NULL)")
+        con.execute(f"UPDATE jobs SET state = 'failed', status = 422, ended = ?, problem = ? WHERE kind IN "
+                    f"({', '.join('?' * len(KINDS_GONE))}) AND state IN ('queued', 'running')",
+                    (time.time(), KIND_GONE, *KINDS_GONE))
     except BaseException:
         con.execute("ROLLBACK")
         raise
@@ -211,26 +209,10 @@ def _shown(row) -> dict:
 
 class Job:
     """What a running job's operation gets beside its arguments (as job=):
-    the queue's file, the job's id and the folder it works in, and the
-    checkpoint of its key (a corpus job's build key)."""
+    the queue's file, the job's id, the folder it works in and its key."""
 
     def __init__(self, path: Path, job: str, work: Path, key: str | None):
         self.path, self.id, self.work, self.key = path, job, work, key
-
-    def checkpoint(self) -> dict | None:
-        """The state the last build of the job's key saved, None without one."""
-        with connected(self.path) as con:
-            found = con.execute("SELECT state FROM checkpoints WHERE key = ?", (self.key,)).fetchone()
-        return None if found is None else json.loads(found["state"])
-
-    def save(self, state: dict | None):
-        """Keep the state that resumes the build of the job's key; None forgets it."""
-        with connected(self.path, write=True) as con:
-            if state is None:
-                con.execute("DELETE FROM checkpoints WHERE key = ?", (self.key,))
-            else:
-                con.execute("INSERT OR REPLACE INTO checkpoints (key, state) VALUES (?, ?)",
-                            (self.key, json.dumps(state)))
 
 
 def _work(path: str, address: str, job: str, statuses: dict):
@@ -298,49 +280,45 @@ class Jobs:
 
     # Adding and reading
 
-    def add(self, kind: str, title: str, operation, *args, key: str | None = None, recipe: str | None = None,
+    def add(self, kind: str, title: str, operation, *args, key: str | None = None,
             target: dict | None = None, **kwargs) -> dict:
         """Queue a job of that kind (KINDS), in its lane, that does what
         title says by running operation(depot, *args, progress=...,
         **kwargs), a function the job's process imports by name (and job=,
-        a Job, for a kind that is not a write), for the key (a corpus job's
-        build key, a snapshot job's name) and the recipe, target saying
-        what it makes (JSON): its state. Busy when the key has a corpus or
-        snapshot job of that kind open, or the recipe a vocabulary job."""
+        a Job, for a kind that is not a write), for the key (a sizes job's
+        snapshot id), target saying what it makes (JSON): its state. Busy when a snapshot job is open, for a snapshot job, or
+        a sizes job of the key, for a sizes job."""
         if kind not in KINDS:
             raise ValueError(f"no kind of job {kind!r}")
         job = secrets.token_hex(8)
         with connected(self.path, write=True) as con:
-            if kind in ("corpus", "snapshot", "sizes") and con.execute(
+            if kind == "snapshot" and con.execute(
+                    "SELECT 1 FROM jobs WHERE kind = 'snapshot' AND state IN ('queued', 'running')").fetchone():
+                raise Busy("a snapshot is being made already: see the jobs page")
+            if kind == "sizes" and con.execute(
                     "SELECT 1 FROM jobs WHERE kind = ? AND key = ? AND state IN ('queued', 'running')",
                     (kind, key)).fetchone():
-                raise Busy(f"the build {key} has a corpus job queued or running already: see the jobs page"
-                           if kind == "corpus" else f"the snapshot {key} is being made already: see the jobs page"
-                           if kind == "snapshot" else f"the snapshot {key} is being ordered by length already")
-            if kind == "vocabulary" and con.execute("SELECT 1 FROM jobs WHERE kind = 'vocabulary' AND recipe = ? AND "
-                                                    "state IN ('queued', 'running')", (recipe,)).fetchone():
-                raise Busy(f"the tokenizer recipe {recipe} has a vocabulary job queued or running already")
+                raise Busy(f"the snapshot {key} is being ordered by length already")
             number = con.execute("SELECT coalesce(max(number), 0) + 1 FROM jobs").fetchone()[0]
             con.execute("INSERT INTO jobs (id, number, kind, lane, title, key, recipe, target, operation, arguments, "
                         "state, stages, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '[]', ?)",
-                        (job, number, kind, LANES[kind], title, key, recipe,
+                        (job, number, kind, LANES[kind], title, key, None,
                          None if target is None else json.dumps(target), _named(operation),
                          pickle.dumps((args, kwargs)), time.time()))
         self._wake[LANES[kind]].set()
         return self.state(job)
 
-    def open_job(self, kind: str, key: str | None = None, recipe: str | None = None) -> dict | None:
-        """The job of that kind queued or running for the key (a corpus, a
-        snapshot or a sizes job) or the recipe (a vocabulary job), None without one."""
-        column, value = ("key", key) if kind in ("corpus", "snapshot", "sizes") else ("recipe", recipe)
+    def open_job(self, kind: str, key: str | None = None) -> dict | None:
+        """The job of that kind queued or running for the key (a sizes job's
+        snapshot id; any key for a snapshot job), None without one."""
         with connected(self.path) as con:
-            row = con.execute(f"SELECT * FROM jobs WHERE kind = ? AND {column} = ? AND state IN ('queued', 'running') "
-                              "ORDER BY number LIMIT 1", (kind, value)).fetchone()
+            row = con.execute("SELECT * FROM jobs WHERE kind = ? AND (? OR key = ?) AND state IN ('queued', "
+                              "'running') ORDER BY number LIMIT 1", (kind, kind == "snapshot", key)).fetchone()
         return None if row is None else _shown(row)
 
     def last_ended(self, kind: str, key: str) -> dict | None:
-        """The latest job of that kind for the key (a corpus, a snapshot or
-        a sizes job) that ended, whatever its state, None without one."""
+        """The latest job of that kind for the key (a sizes job's snapshot
+        id) that ended, whatever its state, None without one."""
         with connected(self.path) as con:
             row = con.execute("SELECT * FROM jobs WHERE kind = ? AND key = ? AND state NOT IN ('queued', 'running') "
                               "ORDER BY number DESC LIMIT 1", (kind, key)).fetchone()
@@ -497,8 +475,7 @@ class Jobs:
                 self._wake[lane].wait(POLL)
                 self._wake[lane].clear()
                 continue
-            # not a daemon: a corpus build starts worker processes of its own, which a daemon may not have;
-            # stop() ends the process instead
+            # not a daemon: stop() ends the process instead
             process = self._context.Process(target=_work, args=(str(self.path), self.address, job, self.statuses))
             process.start()
             while process.is_alive():

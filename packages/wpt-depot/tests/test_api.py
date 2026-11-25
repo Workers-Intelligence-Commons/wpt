@@ -11,7 +11,7 @@ def admitted(depot, me, *texts):
     """The ids of texts added and admitted, and a snapshot of them."""
     added = depot.add(list(texts), me)
     depot.decide("admitted", "true", me)
-    return added, depot.create_snapshot("s1")
+    return added, depot.create_snapshot()
 
 
 def carried(value) -> bool:
@@ -30,7 +30,7 @@ def test_every_answer_is_a_value_json_carries_and_the_listing_names_every_text_a
     listed = list(api.listing(address, made["id"]))
     size = api.listing_size(address, made["id"])
 
-    assert row == api.snapshot(address, name="s1") and row["digest"] == made["digest"]
+    assert row == api.snapshot(address, name=made["name"]) and row["digest"] == made["digest"]
     assert size == {"entries": len(listed), "long_texts": 1, "pieces": pieces.count(len(long_text)),
                     "piece_characters": pieces.LENGTH}
     assert sorted((one["id"], one["piece"], one["name"]) for one in listed) == sorted(

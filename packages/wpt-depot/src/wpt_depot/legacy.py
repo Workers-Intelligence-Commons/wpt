@@ -1,7 +1,9 @@
 """What a model trained before snapshots reads of its depot, frozen: the
 libraries and datasets of format 12 and older, read with plain SQL from
 the tables that held them (libraries_revisions, memberships, pins,
-datasets_revisions). Every read the dataset routes and training make of
+datasets_revisions), and the tokenizer recipes and vocabularies those
+models were trained with (tokenizers_revisions, vocabularies,
+vocabulary_texts). Every read the dataset routes and training make of
 those tables is here, and this module never writes: it opens the depot's
 file read-only, of format 12 or of a later format that keeps the tables,
 and gives what the dataset routes of `wpt depot web` gave then
@@ -37,6 +39,7 @@ figures say what the revision stored, never what its libraries hold now
     Legacy.remote(name)                    a dataset's remote: the REMOTE fields of its row
     Legacy.figures(id, revision)           what a revision stored of each library it reads
     Legacy.library_range(...)              a library's texts at a change, by export key
+    Legacy.tokenizer(name), vocabulary_file(name, version)  a tokenizer recipe and its vocabularies
     Export(legacy, dataset, url)           the export of a dataset's current revision in parts
     sample(legacy, name, sample_bytes)     the sample of a dataset that trains a vocabulary
     depot_name(depot, dataset, url)        the name an export and a corpus of a dataset record for its depot
@@ -336,7 +339,36 @@ class Legacy:
                            "AND joined_change <= ? AND (left_change IS NULL OR left_change > ?)",
                            (library, change, change)).fetchall()[0][0]
 
-    # Vocabularies, named in a dataset's downloads
+    # Tokenizer recipes and their vocabularies, which `wpt train` of a dataset's recipe read
+
+    def tokenizer(self, name: str) -> dict:
+        """The tokenizer recipe named so as the depot kept it: {recipe: its
+        current revision, revisions: every revision, the latest first,
+        vocabularies: each version's vocabulary without its file, the latest
+        version first, trained: whether its current version has one}.
+        NotFound without such a recipe."""
+        found = self.depot.rows("SELECT * FROM tokenizers WHERE name = ?", (name,))
+        if not found:
+            raise NotFound(f"no tokenizer recipe {name}")
+        recipe = found[0]
+        vocabularies = self.depot.rows("SELECT recipe, version, change, sha256, texts, bytes, made_at FROM vocabularies "
+                                       "WHERE recipe = ? ORDER BY version DESC", (recipe["id"],))
+        return {"recipe": recipe,
+                "revisions": self.depot.rows("SELECT * FROM tokenizers_revisions WHERE id = ? ORDER BY revision DESC",
+                                             (recipe["id"],)),
+                "vocabularies": vocabularies,
+                "trained": any(one["version"] == recipe["version"] for one in vocabularies)}
+
+    def vocabulary_file(self, name: str, version: int) -> tuple[str, bytes]:
+        """(the sha256, the file) of the vocabulary of that version of the
+        tokenizer recipe named so. NotFound without the recipe or without a
+        vocabulary of that version."""
+        recipe = self.tokenizer(name)["recipe"]
+        found = self._con().execute("SELECT sha256, merges FROM vocabularies WHERE recipe = ? AND version = ?",
+                                    (recipe["id"], version)).fetchall()
+        if not found:
+            raise NotFound(f"the tokenizer recipe {name} has no vocabulary of its version {version}")
+        return found[0][0], found[0][1].encode("utf-8")
 
     def vocabulary_named(self, sha256: str) -> dict:
         """{sha256, recipe: the name of its tokenizer recipe, version} of the

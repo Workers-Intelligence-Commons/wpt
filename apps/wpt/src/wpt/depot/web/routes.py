@@ -4,11 +4,10 @@ the depot and turns its result, or its failure, into an answer. The depot
 applies every rule, so the pages and the subcommands cannot disagree. A
 pull and a change of the depot's maintainer or takedown
 contact have no route: they are commands only (docs/architecture.md, "Two
-interfaces"). The routes over tokenizer recipes and jobs are builds.py's,
-those over snapshots snapshots.py's, those over the builds of the recipes
-people hand over and their corpora recipes.py's, and the frozen dataset routes that
-models trained before snapshots read are legacy.py's, and those behind the Texts page's
-translation translations.py's. The follow routes only read:
+interfaces"). The routes over the jobs are queue.py's, those over
+snapshots snapshots.py's, the frozen routes that models trained before
+snapshots read legacy.py's, and those behind the Texts page's translation
+translations.py's. The follow routes only read:
 they answer a clone or a pull of another depot (wpt_depot.follow), a page
 at a time.
 
@@ -20,8 +19,8 @@ filter when it writes and leaves out every text changed after that change
 number, and the answer says how many it left out (wpt_depot.filters). Such
 an operation runs as a job (wpt.depot.jobs), in a process of its own, unless it
 writes at most INLINE texts (its filter names at most INLINE ids) and no job of the write lane is
-queued or running (a job of the heavy lane, a snapshot, a vocabulary or a
-corpus, never holds it back); either way its answer is the job's state,
+queued or running (a job of the heavy lane, a snapshot, never holds it
+back); either way its answer is the job's state,
 which GET /api/jobs/{id} reads again while it runs. A change of tags over a
 selection starts only once confirmed (confirmed: true) with the estimate
 POST /api/texts/retag/estimate gave, while that estimate still holds
@@ -40,8 +39,6 @@ from wpt_depot.erasure import CONTEXT
 from wpt_depot.filters import Filter
 from wpt_depot.kinds import PLAIN
 from wpt_depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
-from wpt_depot.corpora import NoRoom, TooBig
-from wpt_recipes.errors import NotFound as NoRecipe, RecipeError
 from wpt_store import StoreError
 from wpt_utils.lines import say
 
@@ -50,16 +47,15 @@ from ..shared import CONFIRMATION, REQUIREMENTS, jsonable
 from . import readers as limits
 from ..downloads import Downloads, TooMany
 from ..jobs import Busy, Jobs
-from .builds import builds
 from .legacy import legacy
+from .queue import queue_routes
 from .readers import Readers
 from .translations import ModelsUnreachable, translation_routes
 from .server import Request, Route, Stream
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
-STATUSES = {errors.NotFound: 404, NoRecipe: 404, errors.BadQuery: 400, Busy: 409, TooMany: 429, StoreError: 503,
-            ModelsUnreachable: 503, errors.DepotError: 422, shared.NoVocabulary: 422, shared.NoSample: 422, shared.BadSetting: 422,
-            TooBig: 422, NoRoom: 422, RecipeError: 422}
+STATUSES = {errors.NotFound: 404, errors.BadQuery: 400, Busy: 409, TooMany: 429, StoreError: 503,
+            ModelsUnreachable: 503, errors.DepotError: 422}
 # the costs of a change of tags a confirmation covers, with their slack in their unit
 RETAG_COSTS = {"changed": 10, "written": 50, "bytes": 1 << 20, "seconds": 5}
 
@@ -162,7 +158,7 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         Jobs page shows it), in the request when it
         writes few texts and no write job is open (a write waits for a
         running write job's write lock, which a job shows and a request does
-        not; a vocabulary training or a corpus build holds none), as a job
+        not; a snapshot holds it for one short transaction), as a job
         otherwise: the job's state once it ended (200) or after WAIT
         seconds (202, running), or its refusal with its status."""
         if few and not jobs.writing():
@@ -540,11 +536,11 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
         return {**job_answer, "properties": {**job_answer["properties"], "answer": {
             "oneOf": [{"type": "null"}, {**answer, "properties": {**answer.get("properties", {}), "left": left}}]}}}
     return [
-        *builds(depot, jobs, refusals),
+        *queue_routes(depot, jobs, refusals),
         *legacy(depot.address, Downloads(jobs.path), refusals),
         *translation_routes(refusals),
         Route("GET", "/api/about", about, "the depot's public address (WPT_DEPOT_URL, else its name), "
-              "which names it in the corpora it builds, its change number, its current about row, the "
+              "which an order's data section names it by, its change number, its current about row, the "
               "words of the confirmation every decision needs, and sorted, how many texts a search matches at most "
               f"for an order other than {' or '.join(INDEXED)}",
               answer={"type": "object", "required": ["address", "change", "about", "confirmation", "requirements",

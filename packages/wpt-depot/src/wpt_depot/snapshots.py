@@ -37,7 +37,10 @@ checkpoint, which waits for every reader, are never held back:
    and refused unless the counts hold as many admitted texts as the sets.
    The snapshot reads C1: every status it read is the one stored at C1.
 3. One short write transaction, a change of kind `snapshot`, writes its row
-   and its sets, the name checked again.
+   and its sets, named by the UTC time of that transaction,
+   `YYYY-MM-DDTHH-MM-SSZ` (NAMED), the same moment its made_at gives. A
+   snapshot of the depot made in the same second already holds that name:
+   the write waits for the next second and names it then.
 
 A snapshot and its sets are written once and never changed nor removed:
 an erasure leaves them as they are. A text an erasure removed whole has
@@ -75,24 +78,24 @@ bitmaps, checked against the digest once and then kept in this process
 a page at a time; erased_since what the erasures carried out after a
 snapshot's bounds cut or removed of its texts.
 
-Before one is made: next_name gives the name the pages offer (the year and
-month, then the same with b, c, ... once taken), and estimate what making
-one now takes (its texts, seconds and bytes), from the counts alone.
+Before one is made, estimate says what making one now takes (its texts,
+seconds and bytes), from the counts alone. A snapshot with another name,
+such as one the upgrade to format 13 made, keeps it: a snapshot's row
+never changes.
 """
 
 import hashlib
-import itertools
 import json
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
+from datetime import UTC, datetime
 
 import numpy as np
 from pyroaring import BitMap, FrozenBitMap
 
 from . import counts, ids
-from .database import now
 from .errors import NotFound, Refused
 from .filters import TEXTS_KEY
 from .schema import ADMITTED, tags_at
@@ -100,6 +103,7 @@ from .schema import ADMITTED, tags_at
 MAGIC = b"wpt-snapshot-1\n"  # the first bytes the digest reads
 PAGE = 50_000  # ids a read transaction of the scan reads
 TRIES = 3  # how many times create reads again after a pull came in between
+NAMED = "%Y-%m-%dT%H-%M-%SZ"  # the name of a snapshot made at a UTC time (strftime)
 LARGEST = (1 << 32) - 1  # the largest number a set holds
 KEPT = 8  # snapshots whose sets this process keeps read
 READ_BATCH = 2_000  # ids texts reads in one statement
@@ -177,14 +181,6 @@ class _Read:
         raise KeyError(number)
 
 
-def check_name(name: str):
-    """Refused unless name can name a snapshot: letters, digits, '.', '_'
-    and '-', beginning with a letter or a digit."""
-    if not isinstance(name, str) or not ids.NAME.fullmatch(name):
-        raise Refused(f"a snapshot's name is made of letters, digits, '.', '_' and '-', beginning with a letter or a "
-                      f"digit: {name!r}")
-
-
 def digest_of(sets: Iterable[tuple[int, str, int, Iterable[int]]], at_change: int) -> str:
     """The digest (the module says how it is made) of the sets, (part,
     owner, bound, numbers) each, the numbers a bitmap or any iterable of
@@ -204,24 +200,24 @@ def digest_of(sets: Iterable[tuple[int, str, int, Iterable[int]]], at_change: in
     return found.hexdigest()
 
 
-def create(depot, name: str, note: str | None = None, progress: Callable[[str], None] | None = None,
+class _SameSecond(Exception):
+    """A snapshot of the depot made in the same second holds the name already: nothing was written."""
+
+
+def create(depot, note: str | None = None, progress: Callable[[str], None] | None = None,
            read: Callable[[int], None] | None = None, page: int = PAGE, measured: dict | None = None) -> dict:
-    """A new snapshot of the depot called name, made as the module says,
-    with an optional note: its row (snapshot). progress, called with the
-    name of each stage it starts ("reading texts", "catching up",
-    "writing"); read, called after each page of the scan with how many ids
-    it read so far, no read transaction open; measured, when given, receives
-    {"pages", "longest_read" (seconds, the longest read transaction),
-    "moved" (texts read again), "tries", "started" (C0), "at_change" (C1)}.
-    Refused when the name is not one (check_name) or a snapshot of the
-    depot has it already, when a pull keeps coming in between (TRIES), when
-    an admitted text's number is above LARGEST, and when the counts do not
-    hold as many admitted texts as were read (`wpt depot recount` makes them
-    again)."""
-    check_name(name)
+    """A new snapshot of the depot, made as the module says and named by
+    the UTC time it is written, with an optional note: its row (snapshot).
+    progress, called with the name of each stage it starts ("reading
+    texts", "catching up", "writing"); read, called after each page of the
+    scan with how many ids it read so far, no read transaction open;
+    measured, when given, receives {"pages", "longest_read" (seconds, the
+    longest read transaction), "moved" (texts read again), "tries",
+    "started" (C0), "at_change" (C1)}. Refused when a pull keeps coming in
+    between (TRIES), when an admitted text's number is above LARGEST, and
+    when the counts do not hold as many admitted texts as were read (`wpt
+    depot recount` makes them again)."""
     own = depot.name()
-    if _named(depot.db.reader(), own, name):
-        raise Refused(f"the depot has a snapshot named {name} already")
     progress = progress or (lambda stage: None)
     stats = {"pages": 0, "longest_read": 0.0, "moved": 0, "tries": 0}
     for _ in range(TRIES):
@@ -253,17 +249,24 @@ def create(depot, name: str, note: str | None = None, progress: Callable[[str], 
     digest = digest_of(parts, at_change)
     sized = [sum(sizes[at] for sizes in summary["kinds"].values()) for at in (1, 2)]
     progress("writing")
-    with depot.db.write("snapshot") as (con, number):
-        if _named(con, own, name):
-            raise Refused(f"the depot has a snapshot named {name} already")
-        snapshot = depot._id(depot._take(con, "snapshots"))
-        con.execute(f"INSERT INTO snapshots ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (snapshot, number, name, at_change, now(), _json({"kind": "made"}), note, total, sized[0],
-                     sized[1], digest, _json({"version": 1, **summary})))
-        con.executemany("INSERT INTO snapshot_sets (snapshot, part, owner, bound, bitmap, texts) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        [(snapshot, part, owner, bound, bitmap.serialize(), len(bitmap))
-                         for part, owner, bound, bitmap in parts])
+    while True:
+        try:
+            with depot.db.write("snapshot") as (con, number):
+                made = datetime.now(UTC)
+                name = made.strftime(NAMED)
+                if _named(con, own, name):
+                    raise _SameSecond(name)
+                snapshot = depot._id(depot._take(con, "snapshots"))
+                con.execute(f"INSERT INTO snapshots ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (snapshot, number, name, at_change, made.isoformat(), _json({"kind": "made"}), note,
+                             total, sized[0], sized[1], digest, _json({"version": 1, **summary})))
+                con.executemany("INSERT INTO snapshot_sets (snapshot, part, owner, bound, bitmap, texts) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                [(snapshot, part, owner, bound, bitmap.serialize(), len(bitmap))
+                                 for part, owner, bound, bitmap in parts])
+            break
+        except _SameSecond:
+            time.sleep(1 - made.microsecond / 1_000_000)  # the next second names it
     if measured is not None:
         measured.update(stats, started=started, at_change=at_change)
     return snapshot_by_id(depot, snapshot)
@@ -495,25 +498,6 @@ def count(depot, snapshot_id: str, kinds: Sequence[str] | None = None) -> dict:
     chosen = held if kinds is None else {kind: held.get(kind, [0, 0, 0]) for kind in kinds}
     return dict(zip(("texts", "characters", "bytes"), (sum(sizes[at] for sizes in chosen.values())
                                                        for at in range(3))))
-
-
-def next_name(depot, today, taken: Iterable[str] = ()) -> str:
-    """The name the pages offer for the next snapshot of the depot made on
-    the date today: its year and month (2026-11), else the first of
-    2026-11b, 2026-11c, ..., 2026-11z, 2026-11ba, ... that neither one of
-    the depot's own snapshots nor taken (names being made) has."""
-    own = depot.name()
-    used = {row["name"] for row in snapshots(depot) if row["owner"] == own} | set(taken)
-    base = f"{today.year:04d}-{today.month:02d}"
-    if base not in used:
-        return base
-    for number in itertools.count(2):  # b, c, ..., z, aa, ab, ...: the letters of number in bijective base 26
-        letters, left = "", number
-        while left:
-            left, at = divmod(left - 1, 26)
-            letters = chr(ord("a") + at) + letters
-        if f"{base}{letters}" not in used:
-            return f"{base}{letters}"
 
 
 def estimate(depot) -> dict:

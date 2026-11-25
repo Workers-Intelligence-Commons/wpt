@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -9,11 +10,7 @@ import pytest
 
 import wpt
 from wpt_depot import Declaration, Depot, NewText
-from wpt_depot.corpora import read_table
 from wpt_depot.schema import FORMAT
-from wpt_recipes import Recipes
-from wpt_store import open_store
-from wpt_tokenizer import Tokenizer
 from wpt_utils.lines import bare
 from wpt.depot.jobs import Jobs
 from wpt.depot.web.routes import routes
@@ -63,8 +60,8 @@ def test_texts_go_from_a_file_through_a_decision_into_a_snapshot(depot, tmp_path
                          "--address", "https://example.org/fox", *ME) == 0
     assert depot_command("add", str(tmp_path / "probe.json"), "--kind", "probe", "--license", "CC0-1.0", *ME) == 0
     assert depot_command("decide", "admit", "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'en')", *ME) == 0
-    assert depot_command("snapshot", "new", "first-model") == 0
-    capsys.readouterr()
+    assert depot_command("snapshot", "new") == 0
+    made = bare(capsys.readouterr().out)
 
     assert depot_command("show", "test-depot-1") == 0
     shown = json.loads(capsys.readouterr().out)
@@ -83,7 +80,8 @@ def test_texts_go_from_a_file_through_a_decision_into_a_snapshot(depot, tmp_path
     assert printed_rows(capsys) == [{"id": "test-depot-1", "kind": "plain", "status": "admitted"},
                                     {"id": "test-depot-2", "kind": "probe", "status": "under review"}]
 
-    snapshot = Depot.open(depot).snapshot("first-model")
+    [snapshot] = Depot.open(depot).snapshots()
+    assert f"snapshot {snapshot['id']}: {snapshot['name']}," in made
     assert [one["id"] for one in Depot.open(depot).snapshot_texts(snapshot["id"])["texts"]] == ["test-depot-1"]
     with pytest.raises(SystemExit):  # no such command any more
         depot_command("library", "new", "next-model")
@@ -216,51 +214,6 @@ def test_an_erasure_request_is_decided_by_its_id_and_an_admitted_one_is_carried_
     assert depot_command("decide", "admit", "--erasure", "test-depot-9", *ME) == 2  # no such request
 
 
-def test_a_tokenizer_recipe_trains_its_vocabulary_on_its_snapshot_s_sample_once_and_keeps_it_in_the_depot(
-        depot, tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
-    opened = Depot.open(depot)
-    opened.add([NewText(text="the quick brown fox jumps over the lazy dog", licenses=("CC0-1.0",)),
-                NewText(text="pack my box with five dozen liquor jugs", licenses=("CC0-1.0",)),
-                NewText(kind="probe", content=json.dumps(PROBE), licenses=("CC0-1.0",)),
-                NewText(text="x" * 5000, licenses=("CC0-1.0",))], _declaration())
-    opened.decide("admitted", "true", _declaration())
-    assert depot_command("tokenizer", "new", "tiny", "--snapshot", "s1", "--sample-bytes", "6000",
-                         "--vocab-size", "560") == 2  # no such snapshot
-    assert depot_command("tokenizer", "new", "tiny", "--snapshot", "s1", "--kind", "probe", "--sample-bytes",
-                         "6000", "--vocab-size", "560") == 2  # a sample takes plain texts only, for now
-    opened.create_snapshot("s1")
-    assert depot_command("tokenizer", "new", "tiny", "--snapshot", "s1", "--sample-bytes", "6000",
-                         "--vocab-size", "560") == 0
-
-    assert depot_command("tokenizer", "train", "tiny") == 0
-
-    shown = Depot.open(depot)
-    recipe = shown.tokenizer("tiny")
-    vocabulary = shown.vocabulary(recipe["id"], 1)
-    assert 513 < Tokenizer.from_bytes(vocabulary["merges"].encode()).vocab_size <= 560  # merges learned
-    texts = {one["text"] for one in shown.vocabulary_texts(recipe["id"], 1)}
-    assert texts == {"test-depot-1", "test-depot-2", "test-depot-4"}  # every plain text fits, never the item
-    assert all(one["depot"] == "" for one in shown.vocabulary_texts(recipe["id"], 1))
-    capsys.readouterr()
-    assert depot_command("tokenizer", "train", "tiny") == 2  # a version's vocabulary is never trained again
-    assert bare(capsys.readouterr().err).startswith("Refused:")
-    assert depot_command("tokenizer", "edit", "tiny", "--note", "a note") == 0
-    assert Depot.open(depot).tokenizer("tiny")["version"] == 1  # a note is no new version
-    assert depot_command("tokenizer", "edit", "tiny", "--vocab-size", "600") == 0
-    assert Depot.open(depot).tokenizer("tiny")["version"] == 2
-    # a recipe written before snapshots names a dataset: it trains nothing until an edit names a snapshot
-    with opened.db.write("an older revision") as (con, number):
-        con.execute("UPDATE tokenizers_revisions SET sample = NULL, dataset = 'test-depot-1' WHERE latest")
-    capsys.readouterr()
-    assert depot_command("tokenizer", "train", "tiny") == 2
-    assert "NoSample: the tokenizer recipe tiny names a dataset" in bare(capsys.readouterr().err)
-    assert depot_command("tokenizer", "edit", "tiny", "--note", "still old") == 2
-    assert depot_command("tokenizer", "edit", "tiny", "--snapshot", "s1") == 0
-    assert Depot.open(depot).tokenizer("tiny")["version"] == 3
-
-
 def test_a_clone_follows_its_upstream_over_its_web_app_and_pulls_what_it_added_and_refuses_changing_it(
         depot, tmp_path, monkeypatch, capsys):
     opened = Depot.open(depot)
@@ -303,91 +256,26 @@ def test_a_backup_and_its_restore_are_made_by_commands_and_read_as_the_depot(dep
     assert depot_command("restore", str(tmp_path / "restored.sqlite")) == 2  # it never overwrites
 
 
-def test_a_recipe_file_and_its_lock_are_imported_and_a_model_recipe_builds_with_that_vocabulary(depot, tmp_path,
-                                                                                                monkeypatch, capsys):
-    # the step of a deploy that brings a tokenizer recipe, and the vocabulary its lock named, into a depot; then the
-    # corpus of a model recipe's file, built from the command line
-    store_folder = tmp_path / "store"
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
-    monkeypatch.delenv("WPT_DEPOT_URL", raising=False)
+def test_a_snapshot_is_named_by_the_time_it_is_made_and_shown_by_that_name(depot, capsys):
     opened = Depot.open(depot)
     opened.add([NewText(text="the quick brown fox", licenses=("CC0-1.0",), title="Fox")], _declaration())
     opened.decide("admitted", "true", _declaration())
     capsys.readouterr()
-    assert depot_command("snapshot", "new", "s1", "--note", "the first") == 0
-    assert "snapshot test-depot-1: s1, 1 texts at change" in bare(capsys.readouterr().out)
-    assert Depot.open(depot).snapshot("s1")["note"] == "the first"
-    assert depot_command("snapshot", "new", "s1") == 2  # a name once
-    capsys.readouterr()
+    assert depot_command("snapshot", "new", "--note", "the first") == 0
+    [made] = Depot.open(depot).snapshots()
+    assert f"snapshot test-depot-1: {made['name']}, 1 texts at change" in bare(capsys.readouterr().out)
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d-\d\d-\d\dZ", made["name"]) and made["note"] == "the first"
+    with pytest.raises(SystemExit):  # it takes no name
+        depot_command("snapshot", "new", "s1")
     assert depot_command("snapshot", "list") == 0
-    assert [(row["name"], row["texts"]) for row in printed_rows(capsys)] == [("s1", 1)]
-    assert depot_command("snapshot", "show", "s1") == 0
+    assert [(row["name"], row["texts"]) for row in printed_rows(capsys)] == [(made["name"], 1)]
+    assert depot_command("snapshot", "show", made["name"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["summary"]["kinds"]["plain"][0] == 1 and shown["erased_since"] == {"texts": 0, "erasures": []}
     assert depot_command("snapshot", "show", "s9") == 2
-    recipe = {"version": 1, "depot": "", "dataset": "", "sample_bytes": 1000, "vocab_size": 560, "note": "tiny"}
-    (tmp_path / "tiny.json").write_text(json.dumps(recipe), encoding="utf-8")
-    tokenizer = Tokenizer.train([b"the quick brown fox"] * 4, vocab_size=560)
-    store = open_store(store_folder.as_uri())
-    lock = {"recipe": recipe, "texts": [{"depot": depot, "id": "test-depot-1"}],
-            "vocabulary_sha256": store.put_bytes(tokenizer.to_bytes())}
-    (tmp_path / "lock.json").write_text(json.dumps(lock), encoding="utf-8")
-
-    assert depot_command("tokenizer", "import", "tiny", str(tmp_path / "tiny.json"), "--snapshot", "s1",
-                         "--lock", str(tmp_path / "lock.json")) == 0
-
-    shown = Depot.open(depot)
-    found = shown.tokenizer("tiny")
-    assert (found["version"], found["sample_bytes"], found["vocab_size"], found["note"]) == (1, 1000, 560, "tiny")
-    assert shown.vocabulary(found["id"], 1)["merges"].encode() == tokenizer.to_bytes()
-    assert shown.vocabulary_texts(found["id"], 1) == [{"position": 0, "depot": "", "text": "test-depot-1"}]
-    sha256 = lock["vocabulary_sha256"]
-    snapshot = shown.snapshot("s1")
-    data = {"depot": "test-depot", "snapshot": "s1", "change": snapshot["at_change"], "digest": snapshot["digest"],
-            "total_tokens": 1000, "vocabulary": {"sha256": sha256, "size": tokenizer.vocab_size}}
-    model = Recipes(REPOSITORY).recipe("model", Recipes(REPOSITORY).names("model")[0])
-    recipes = tmp_path / "recipes"  # anywhere: the depot reads no repository
-    recipes.mkdir()
-    for name, given in {"fox": data, "elsewhere": {**data, "depot": "https://other.example"},
-                        "untrained": {**data, "vocabulary": {"sha256": "0" * 64, "size": 560}}}.items():
-        (recipes / f"{name}.json").write_text(json.dumps({**model, "data": given}), encoding="utf-8")
-    (recipes / "broken.json").write_text("{", encoding="utf-8")
-    capsys.readouterr()
-    assert depot_command("build", str(recipes / "untrained.json")) == 2  # the depot holds no such vocabulary
-    assert "NoVocabulary" in bare(capsys.readouterr().err)
-    assert depot_command("build", str(recipes / "elsewhere.json")) == 2  # neither this depot nor its upstream
-    assert depot_command("build", str(recipes / "nothing.json")) == 2
-    assert depot_command("build", str(recipes / "broken.json")) == 2
-    assert not (store_folder / "corpora").exists() or _corpora(store_folder) == []  # nothing was built
-    capsys.readouterr()
-
-    assert depot_command("build", str(recipes / "fox.json")) == 0
-
-    corpus = bare(capsys.readouterr().out).splitlines()[-1].removeprefix("corpus ").split(":")[0]
-    [record] = [store.get_json(f"corpora/{folder}/corpus.json") for folder in _corpora(store_folder)]
-    assert record["id"] == corpus and record["tokenizer"]["recipe"] == "tiny" and record["data"]["total_tokens"] == 1000
-    assert record["tokenizer"]["sha256"] == sha256 and record["snapshot"]["name"] == "s1" and record["recipe"] == "fox"
-    assert record["folder"] == f"corpora/{record['build_key']}"
-    assert [(one["id"], one["title"]) for one in read_table(store, record, "texts").to_pylist()] == [("test-depot-1", "Fox")]
-
-    # a series' file builds its one corpus, at its largest size, named SERIES:, which wpt train SERIES:SIZE then
-    # finds in a repository holding the same series
-    whole = Recipes(REPOSITORY).recipe("series", Recipes(REPOSITORY).names("series")[0])
-    series_file = json.dumps({**whole, "data": {key: value for key, value in data.items() if key != "total_tokens"}})
-    (recipes / "ladder.json").write_text(series_file, encoding="utf-8")
-    (tmp_path / "repository" / "data" / "recipes" / "series").mkdir(parents=True)
-    (tmp_path / "repository" / "data" / "recipes" / "series" / "ladder.json").write_text(series_file,
-                                                                                       encoding="utf-8")
-    assert depot_command("build", str(recipes / "ladder.json")) == 0
-    [series] = [one for one in (store.get_json(f"corpora/{folder}/corpus.json") for folder in _corpora(store_folder))
-                if one["id"] != record["id"]]
-    largest = Recipes(tmp_path / "repository").data_part("ladder:")
-    assert series["data"]["total_tokens"] == largest["total_tokens"] > 1000 and series["recipe"] == "ladder:"
-
-
-def _corpora(store_folder):
-    return [path.name for path in (store_folder / "corpora").iterdir()]
+    for gone in (["build", "recipe.json"], ["tokenizer", "new", "tiny"], ["tokenizer", "train", "tiny"]):
+        with pytest.raises(SystemExit):  # no such command any more
+            depot_command(*gone)
 
 
 def _declaration():
@@ -398,7 +286,7 @@ def test_a_texts_credits_and_the_depots_facts_change_from_the_commands(depot, tm
     opened = Depot.open(depot)
     [text] = opened.add([NewText(text="The fox.", licenses=("CC0-1.0",), title="Fox", tags=("en",))], _declaration())
     opened.decide("admitted", "true", _declaration())
-    snapshot = opened.create_snapshot("first-model")["id"]
+    snapshot = opened.create_snapshot()["id"]
     (tmp_path / "notice.txt").write_text("(c) Ann", encoding="utf-8")
 
     assert depot_command("credits", text, "--title", "The fox", *ME) == 0  # a new revision; the snapshot keeps its own

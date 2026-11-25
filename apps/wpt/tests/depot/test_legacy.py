@@ -1,6 +1,6 @@
-"""The frozen dataset routes (wpt.depot.web.legacy) answer what the web app of commit 6b470328c7 answered, as the
-golden answers of legacy-golden/ hold them, on the format-12 fixture depot and its store, and on that depot brought to
-the code's format by its upgrade."""
+"""The frozen routes (wpt.depot.web.legacy) answer what the web app of commit 6b470328c7 answered, as the golden
+answers of legacy-golden/ hold them, on the format-12 fixture depot and its store, and on that depot brought to the
+code's format by its upgrade; the routes of the tokenizer pages, which only a person read, are gone."""
 
 import hashlib
 import json
@@ -15,7 +15,6 @@ import pytest
 from wpt_depot import Depot
 from wpt.depot.downloads import Downloads
 from wpt.depot.jobs import Jobs
-from wpt.depot.web.builds import builds
 from wpt.depot.web.legacy import legacy
 from wpt.depot.web.routes import STATUSES, refusals
 from wpt.depot.web.server import make_server
@@ -24,9 +23,12 @@ GOLDEN = Path(__file__).parent / "legacy-golden"
 FIXTURES = Path(__file__).parents[4] / "packages" / "wpt-depot" / "tests" / "fixtures"
 KEPT = ("Content-Type", "Content-Length", "Content-Disposition", "Content-Range", "Accept-Ranges", "ETag")
 PORTS = range(8560, 8600)  # the ports a test server may take on 127.0.0.1
-# the routes of tokenizer recipes stay in the app (wpt.depot.web.builds), which may add fields to them: their golden
-# answers must be held in what they answer now, each field old code reads with its value
-ADDED_TO = "/api/tokenizers", "/api/vocabularies"
+# the reads of a tokenizer recipe old code makes, whose answers once held more fields: their golden answers must be
+# held in what they answer now, each field old code reads with its value
+ADDED_TO = ("/api/tokenizers/",)
+# the routes of the tokenizer pages, which no code read: gone, answered 404
+GONE = ("/api/tokenizers", "/api/vocabularies", "/api/tokenizers/tok/vocabularies/1",
+        "/api/tokenizers/tok/vocabularies/1/texts")
 
 
 def served(routes, static: Path):
@@ -81,9 +83,7 @@ def fixture_depot(request, tmp_path, monkeypatch):
 def test_the_legacy_routes_answer_as_the_web_app_of_6b470328c7_did(fixture_depot, tmp_path):
     before = sha256(fixture_depot)
     jobs = Jobs(str(fixture_depot), STATUSES)
-    # the tokenizer routes read through the depot's own reads, opened read-only and of any format
-    routes = [*legacy(str(fixture_depot), Downloads(jobs.path), refusals),
-              *builds(Depot(str(fixture_depot), readonly=True), jobs, refusals)]
+    routes = legacy(str(fixture_depot), Downloads(jobs.path), refusals)
     (tmp_path / "static").mkdir()
     server = served(routes, tmp_path / "static")
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -94,6 +94,10 @@ def test_the_legacy_routes_answer_as_the_web_app_of_6b470328c7_did(fixture_depot
             compared += 1
             golden = json.loads((GOLDEN / "answers" / listed["file"]).read_text(encoding="utf-8"))
             status, headers, body = ask(base, golden["route"], golden["asked_headers"])
+            if golden["route"] in GONE:
+                if status != 404:
+                    differ.append(f"{listed['file']} {golden['route']}: status {status}, gone (404)")
+                continue
             added_to = golden["route"].startswith(ADDED_TO) and "body_file" not in golden
             kept = {name: headers[name] for name in KEPT if name in headers and not (
                 added_to and name == "Content-Length")}
@@ -112,24 +116,3 @@ def test_the_legacy_routes_answer_as_the_web_app_of_6b470328c7_did(fixture_depot
         server.server_close()
     assert compared == 48 and not differ, "\n".join(differ)
     assert sha256(fixture_depot) == before  # nothing wrote the depot's file
-
-
-def test_a_tokenizer_recipe_of_a_dataset_is_offered_the_snapshot_the_upgrade_made_of_it(fixture_depot, tmp_path):
-    jobs = Jobs(str(fixture_depot), STATUSES)
-    routes = builds(Depot(str(fixture_depot), readonly=True), jobs, refusals)
-    (tmp_path / "static").mkdir()
-    server = served(routes, tmp_path / "static")
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        status, _, body = ask(f"http://127.0.0.1:{server.server_address[1]}", "/api/tokenizers", {})
-    finally:
-        server.shutdown()
-        server.server_close()
-    assert status == 200
-    offers = {one["name"]: one["snapshot_offer"] for one in json.loads(body)}
-    depot = Depot(str(fixture_depot), readonly=True)
-    if not depot.rows("SELECT name FROM sqlite_master WHERE name = 'legacy_snapshot_of'"):
-        assert offers and set(offers.values()) == {None}  # format 12: no snapshot to offer
-    else:  # the upgrade made a snapshot of each recipe's dataset: offered by its id and name
-        snapshots = {one["id"]: one["name"] for one in depot.snapshots()}
-        assert offers and all(offer is not None and snapshots[offer["id"]] == offer["name"] for offer in offers.values())

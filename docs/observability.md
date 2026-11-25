@@ -103,7 +103,7 @@ its own lines start whole.
 ### Following a model through its runs
 
 The ids connect the folders: a training run's `inputs.corpus` names the
-corpus `wpt depot build` built; a training run's `outputs.step_results` holds the
+corpus it read, a delivery of the freight; a training run's `outputs.step_results` holds the
 results a later run reuses, named in its `inputs.reused_steps`; a training
 run's `outputs.weights` is an evaluation's `inputs.weights`. Each command is its own run; nothing groups them beyond
 these ids.

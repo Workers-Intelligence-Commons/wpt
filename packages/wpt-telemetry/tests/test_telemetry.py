@@ -472,11 +472,11 @@ def test_a_launcher_never_writes_back_an_older_copy_of_the_ids(tmp_path):
 
 def test_a_command_is_recorded_as_typed_and_its_folder_is_named_with_hyphens(tmp_path):
     store = open_store((tmp_path / "store").as_uri())
-    with Telemetry.start(store, "wpt depot build", ["small"], "small", env_file=tmp_path / ".env",
+    with Telemetry.start(store, "wpt build-resources", ["small"], "small", env_file=tmp_path / ".env",
                          environ={}) as run:
         pass
-    assert "-wpt-depot-build-small-" in run.folder
-    assert record(store, run.folder, "start.json")["command"] == "wpt depot build"
+    assert "-wpt-build-resources-small-" in run.folder
+    assert record(store, run.folder, "start.json")["command"] == "wpt build-resources"
 
 
 def test_on_s3_lines_go_in_groups_and_a_refused_send_stops_the_run(tmp_path, monkeypatch):

@@ -1,6 +1,5 @@
 import type { ComponentType } from "react";
 import { add } from "./add";
-import { build } from "./build";
 import { decisions } from "./decisions";
 import { depot } from "./depot";
 import { erasures } from "./erasures";
@@ -12,7 +11,6 @@ import { settings } from "./settings";
 import { sizes } from "./sizes";
 import { snapshots } from "./snapshots";
 import { tags } from "./tags";
-import { tokenizers } from "./tokenizers";
 import { texts } from "./texts";
 
 // One entry per page; each calls the routes of apps/wpt/src/wpt/depot/web/routes.py.
@@ -28,4 +26,4 @@ export type Page = {
   Component: ComponentType<{ rest: string[]; query: URLSearchParams }>;
 };
 
-export const pages: Page[] = [overview, texts, snapshots, build, tokenizers, jobs, erasures, licenses, depot, settings, add, decisions, tags, sizes, help];
+export const pages: Page[] = [overview, texts, snapshots, jobs, erasures, licenses, depot, settings, add, decisions, tags, sizes, help];

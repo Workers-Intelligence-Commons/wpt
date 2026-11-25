@@ -190,28 +190,6 @@ export function Outcome<T>({ answer, done }: { answer: Answer<T> | null; done: (
 
 export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
 
-// what a build left out, as its record counts it (docs/data-selection.md, "Conversations that quote texts")
-export type LeftOut = { "quoted text left out"?: number; "quote unmatched"?: number; "kinds not taken"?: Record<string, number> };
-
-// The conversations a build left out over their quotes, and the texts of the kinds no step reads, in words; null when none
-export const leftOutWords = (l: LeftOut | null | undefined): string | null => {
-  if (!l) return null;
-  const said = [];
-  if (l["quoted text left out"]) said.push(`${plural(l["quoted text left out"], "conversation")} quoting a text the corpus does not hold`);
-  if (l["quote unmatched"]) said.push(`${plural(l["quote unmatched"], "conversation")} whose quote matches no single place of the text`);
-  const kinds = Object.entries(l["kinds not taken"] ?? {}).filter(([, n]) => n > 0);
-  if (kinds.length) said.push(`${kinds.map(([kind, n]) => plural(n, `text of kind ${kind}`, `texts of kind ${kind}`)).join(", ")}, which no training step reads`);
-  return said.length ? said.join("; ") : null;
-};
-
-// What a corpus took, counted one way everywhere: its plain texts, then its
-// conversations and tasks, from texts (every text and item it took), and of
-// them its conversations and tasks.
-export function takenWords(texts: number, conversations = 0, tasks = 0) {
-  const items = [conversations ? plural(conversations, "conversation") : null, tasks ? plural(tasks, "task") : null].filter(Boolean).join(" and ");
-  return `${plural(Math.max(0, texts - conversations - tasks), "plain text")}${items ? ` and ${items}` : ""}`;
-}
-
 // The kind of a text read as it is (wpt_depot.kinds): every other kind is
 // an item's, JSON that matches its kind's schema.
 export const PLAIN = "plain";

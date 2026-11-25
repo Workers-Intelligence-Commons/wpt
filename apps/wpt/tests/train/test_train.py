@@ -68,7 +68,7 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
                                     "data": record["data"]}
     assert provenance["data"] == json.loads((tmp_path / "data" / "recipes" / "models" / "three.json").read_text())["data"]
     assert (provenance["data"]["snapshot"], provenance["data"]["change"], provenance["data"]["digest"]) == (
-        "d", record["snapshot"]["change"], record["snapshot"]["digest"])
+        built.names["d"], record["snapshot"]["change"], record["snapshot"]["digest"])
     assert provenance["repository_commit"] is not None
     assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
     assert provenance["learned"] == {"plain": record["total_tokens"]}  # the recipe trains on the whole corpus
@@ -545,7 +545,7 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
     notice = (folder / "NOTICE").read_text()
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
     snapshot = corpora.find(built.store, built.corpus_id)["snapshot"]
-    trained_on = (f"Trained on snapshot d (change {snapshot['change']}, digest {snapshot['digest']}) of the depot "
+    trained_on = (f"Trained on snapshot {built.names['d']} (change {snapshot['change']}, digest {snapshot['digest']}) of the depot "
                   f"{built.depot.name()}, recipe d, code at commit ")
     assert trained_on in notice and f"corpus {built.corpus_id}:" in notice
     assert credits.rstrip("\n") in notice
@@ -578,7 +578,8 @@ def test_a_corpus_of_another_snapshot_or_other_shares_than_the_recipe_s_is_refus
     with pytest.raises(SystemExit) as refused:
         main(["d", other, "--out", "model"])
     said = bare(capsys.readouterr().err)
-    assert refused.value.code == 2 and "was built from snapshot other" in said and "this recipe names snapshot d " in said
+    assert refused.value.code == 2 and f"was built from snapshot {built.names['other']}" in said \
+        and f"this recipe names snapshot {built.names['d']} " in said
     folder = tmp_path / "data" / "recipes" / "models"
     recipe = json.loads((folder / "d.json").read_text())
     recipe["data"]["shares"] = [{"tag": "en", "share": 0.5}]
@@ -871,7 +872,7 @@ def test_wpt_train_without_a_corpus_id_reads_the_corpus_the_depot_built_for_its_
     with pytest.raises(SystemExit) as refused:  # only the corpus of every token is built, not that size
         main([recipe, "--out", "model"])
     said = bare(capsys.readouterr().err)
-    assert refused.value.code == 2 and f"no fresh corpus of snapshot later of the depot fox with the vocabulary " \
+    assert refused.value.code == 2 and f"no fresh corpus of snapshot {built.names['later']} of the depot fox with the vocabulary " \
         f"{built.vocabulary} at the size {size:,}" in said and "run `wpt build-resources ORDER`" in said
 
     sized = built.sized("later", size)["id"]

@@ -148,7 +148,7 @@ prepares conversations, plain texts and tasks.
   `fingerprints` (by kind, as a training step reading that kind names it)
   and `vocabulary` (`sha256`, `size`).
 
-The files and hashes are those `wpt depot build` writes for the same
+The files and hashes are those `wpt_depot.corpus.build` writes for the same
 snapshot, data section and vocabulary
 (`apps/wpt/tests/freight/test_requests.py`).
 

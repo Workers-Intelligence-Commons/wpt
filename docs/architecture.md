@@ -2,17 +2,16 @@
 
 **The texts live in a depot; the repository holds none.** The repository
 holds the code, the model and series recipes, and the images of agentic
-tasks. The texts, the decisions on them, what to train on and the
-tokenizer recipes live in depots, and everything built or trained lives in
-a store.
+tasks. The texts, the decisions on them and what to train on live in
+depots, and everything built or trained lives in a store.
 
 - A depot is one SQLite file, known by its address, of tables: the texts and the
   structured items (conversations, tasks), each of one kind and with its
   status, tags, scores, licenses, credits and notice; the people's
-  decisions on them; the snapshots, each a name on a change number and the
-  texts admitted then; the erasures; and the tokenizer recipes, each with
-  the vocabulary of each of its versions. A hand-picked selection of texts
-  is a tag. A depot can follow an upstream depot and pull its updates
+  decisions on them; the snapshots, each a change number, named by the
+  UTC time it was made, and the texts admitted then; the erasures; and,
+  kept read only, the tokenizer recipes and vocabularies a depot may hold.
+  A hand-picked selection of texts is a tag. A depot can follow an upstream depot and pull its updates
   (`wpt_depot`).
 - A corpus is what a model recipe's data section is built into, in the
   store: the token files, the conversations and tasks, and copies of every
@@ -612,8 +611,8 @@ decision lists those texts apart. Only the upstream changes its rows, so
 a pull never meets a clone's change to one. The clone's own texts and
 snapshots stay fully changeable, and its own snapshot may hold upstream
 texts. A snapshot's name is unique among the snapshots of the depot that
-made it, so the clone's "2026-11" and the upstream's "2026-11" stand side
-by side. The pages show quietly that a text or erasure request
+made it, so a clone's snapshot and its upstream's named by the same second
+stand side by side. The pages show quietly that a text or erasure request
 belongs to the upstream, and offer no action on it that the depot would
 refuse.
 
@@ -690,11 +689,11 @@ A corpus lies under its build key: a hash of the snapshot (its id and
 digest), the recipe's kinds, shares and size, the vocabulary and the rules
 of the build, so the same build always lands in the same folder, on a
 server and on its clones alike (`wpt_depot/corpora.py`). The store keeps
-the record of every corpus. Under the cap
-`WPT_CORPORA_CAP`, a build deletes the files of folders without a record, then
-those of the corpus downloaded least recently, until its own fit, never
-those of a corpus being built or downloaded. A deleted corpus's record stays, marked deleted with the
-reason, and building it again checks that it gives the same id.
+the record of every corpus. A deleted corpus's record stays, marked
+deleted with the reason, and building it again checks that it gives the
+same id. The depot builds no corpus: the freight delivers corpora on the
+dock ([api/freight.md](api/freight.md)), and the store's `corpora/` holds
+the corpora a depot built.
 
 Hashes do two jobs. Every read checks the bytes against their sha256: a
 record names each file it points at by the one shape `{"key", "sha256"}` (the
@@ -839,20 +838,15 @@ refused change writes nothing.
 | the values a score has across every current text | `score-values NAME` | `GET /api/scores/{name}/values`: how many have it, its smallest and largest, its `SCORE_VALUES` most frequent (`wpt_depot/depot.py`), each to three significant digits, read from the counts; the choices of the score rows of the review panel of the "Texts" page |
 | a change of tags over a selection | `retag WHERE [--add T ...] [--remove T ...]`, its cost, then the change with `--yes` | `POST /api/texts/retag/estimate`, its cost (texts changed, rows and bytes written, seconds), then `POST /api/texts/retag` with the estimate it showed; the bulk bar of the "Texts" page |
 | the times of changes | `sql QUERY` | `POST /api/changes/times` |
-| tokenizer recipes | `tokenizer new`, `edit`, `import` | `/api/tokenizers`, `/api/tokenizers/{name}`; page "Tokenizers" with the page of each recipe; a recipe file's import is a command only |
-| a tokenizer's vocabulary | `tokenizer train NAME` | `GET /api/tokenizers/{name}/estimate`, then `POST /api/tokenizers/{name}/train`, confirmed, a job; `GET /api/vocabularies`; `GET /api/tokenizers/{name}/vocabularies/{version}`, its `file` and the `texts` it trained on |
-| a snapshot | `snapshot new NAME [--note TEXT]`, `snapshot list`, `snapshot show NAME [--owner DEPOT]` | `GET /api/snapshots/new` (the next free name and the cost of making one now), then `POST /api/snapshots` with the estimate it showed, a job; `GET /api/snapshots`, `GET /api/snapshots/{id}` (its summary and the texts erased since), `GET /api/snapshots/{id}/sets` (its bounds and bitmaps, base64, and its digest), `POST /api/snapshots/{id}/texts` (a page of its texts at their revision then); page "Snapshots" |
-| a recipe's corpus | `build FILE` (a model recipe's or a series' JSON file), run in the command | `POST /api/recipes/check` (a recipe handed over as JSON: its state, what it takes and its build state), `POST /api/recipes/estimate` (the cost of its build), then `POST /api/recipes/build` with the estimate it showed, a job; `POST /api/recipes/compose`, a data section's measure and JSON, which writes nothing; page "Build", where a recipe file is chosen or dropped, the same on a snapshot's page, and the composer of a snapshot's page |
-| a corpus, downloaded | none | `GET /api/builds/{key}`, its `files/{name}` and its `everything.tar` |
-| a dataset of a depot of format 12 or older, for models trained before snapshots | none | the frozen routes of `wpt/depot/web/legacy.py`: `GET /api/datasets`, `GET /api/datasets/{id}`, `GET /api/datasets/{name}/remote`, `GET /api/datasets/{id}/download` and its corpora, files and `everything.tar`, `GET /api/datasets/{id}/export` and its parts, `GET /api/datasets/{dataset}/sample`; no page |
+| a snapshot, named by the UTC time it is made | `snapshot new [--note TEXT]`, `snapshot list`, `snapshot show NAME [--owner DEPOT]` | `GET /api/snapshots/new` (the cost of making one now, and the snapshot job open), then `POST /api/snapshots` with the estimate it showed, a job, one at a time; `GET /api/snapshots`, `GET /api/snapshots/{id}` (its summary and the texts erased since), `GET /api/snapshots/{id}/sets` (its bounds and bitmaps, base64, and its digest), `POST /api/snapshots/{id}/texts` (a page of its texts at their revision then); page "Snapshots" |
+| a dataset of a depot of format 12 or older, and a tokenizer recipe, for models trained before snapshots | none | the frozen routes of `wpt/depot/web/legacy.py`: `GET /api/datasets`, `GET /api/datasets/{id}`, `GET /api/datasets/{name}/remote`, `GET /api/datasets/{id}/download` and its corpora, files and `everything.tar`, `GET /api/datasets/{id}/export` and its parts, `GET /api/datasets/{dataset}/sample`, `GET /api/tokenizers/{name}` and its `vocabularies/{version}/file`; no page |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
 | a plain text read translated, never saved | none | `GET /api/translations`, the language pairs of Mozilla's translation models, and `GET /api/translations/files/{sha256}`, one model file, fetched from Mozilla the first time and kept in the store; the Translate button of the "Texts" page, whose translation runs in the browser |
 | erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Texts" page asks |
 
 Each row of a list on the pages opens a view of that thing, with its own
 address in the page's hash so it can be linked: a text (`#/texts/ID`, the
-Texts page with that text open), a snapshot (`#/snapshots/ID`), a corpus
-by its build key (`#/build?key=KEY`), a license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
+Texts page with that text open), a snapshot (`#/snapshots/ID`), a license (`#/licenses/ID`), an erasure request (`#/erasures?request=ID`), a
 decision (`#/decisions/ID`) and a tag (`#/tags/TAG`).
 
 Every decision, an added text's, an erasure request's, a change of
@@ -1015,15 +1009,14 @@ shows comes from a route of its own, so no page sends SQL but the page
 where a person types it. The commands and the web reach the same SQL in `wpt_depot`.
 
 The server runs its long work as jobs (`wpt/depot/jobs.py`): a write over
-a selection, the making of a snapshot, the training
-of a vocabulary, the build of a recipe's corpus and the order by length of
-a snapshot. The queue is a SQLite
+a selection, the making of a snapshot and the order by length of a
+snapshot. The queue is a SQLite
 file beside the depot, `<depot file>.jobs`, which nothing backs up. Jobs
 run in three lanes, one at a time in each, each job in a process of its own,
 which runs the same `wpt_depot` operation as one change and sends the name
 of each stage it starts and its progress: the write lane runs the writes,
-the heavy lane the snapshots, vocabularies and corpora, which hold the
-depot's write lock for one short transaction at most, so a write never
+the heavy lane the snapshots, which hold the depot's write lock for one
+short transaction at most, so a write never
 waits behind them, and the read lane the orders by length of the snapshots
 read whole, which write nothing in the depot. A write over at most `INLINE` texts runs in the request
 instead, while no job of the write lane is queued or running: a selection
@@ -1033,13 +1026,11 @@ write's lock and only a job shows that it waits. Either way the answer is
 the job's state, and `GET /api/jobs/{id}` reads it again while it runs, so
 the page shows the stage of a long write and its end. A job survives a
 restart of the server: a queued job stays queued, and a job a restart cut
-short runs again, at most `RESTARTS` times, a corpus build from the
-checkpoint its build key keeps. Each build key has at most one corpus job
-open, each snapshot name one snapshot job and each tokenizer recipe one
-vocabulary job (409 otherwise). Only `wpt depot jobs cancel ID` cancels a
+short runs again, at most `RESTARTS` times. At most one snapshot job is
+open, and each snapshot has at most one order by length (409 otherwise).
+Only `wpt depot jobs cancel ID` cancels a
 job. The queue's file also holds what the downloads need
-(`wpt/depot/downloads.py`): when each corpus was last downloaded, the
-streams being sent, how many texts each legacy export counts, and each
+(`wpt/depot/downloads.py`): the streams being sent, how many texts each legacy export counts, and each
 export part's size, sha256 and conversations left out once it was sent
 whole; and
 how many texts of each snapshot an erasure reached since, by last erasure.
@@ -1101,16 +1092,13 @@ browser can do the same with a cross-origin `POST` with `Content-Type:
 text/plain`, which the browser sends without asking first, and so can a
 site that makes its own name resolve to 127.0.0.1 (DNS rebinding).
 
-A pull (which makes the machine fetch another depot), a tokenizer recipe
-file's import, and a change of the depot's maintainer or takedown contact
-are commands only: the server has no route for them, and nothing is opened
+A pull (which makes the machine fetch another depot) and a change of the
+depot's maintainer or takedown contact are commands only: the server has no route for them, and nothing is opened
 at an address a client gives. Some routes reach past the depot. `POST
 /api/erasures/decisions`, once it carries out an erasure, marks stale the
 store's corpora that hold a text it cut, in the background, and sends no
-corpus until that ends. The build of a recipe's corpus writes it into the
-store, and the downloads read it from there. No route reads a code
-repository: the depot lives apart from any, and a recipe to build is a
-file a client hands over, of which only the data section counts.
+corpus until that ends. No route reads a code repository: the depot lives
+apart from any, and builds no corpus.
 A legacy dataset's export reads its texts from the depot, never from the
 store.
 
@@ -1118,10 +1106,10 @@ store.
 
 | Package | Role |
 | --- | --- |
-| `wpt-depot` | the depot: texts and structured items, the decisions on them, snapshots and erasures, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `delta.py`, and `conversion.py`, which makes snapshots of the libraries and datasets of format 12); erasures carried out (`erasure.py`); snapshots, made, read and checked against their digest (`snapshots.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); what code outside the depot asks of it, a snapshot, its listing, its texts' content and credits and the erasures, in values JSON carries ([api/depot.md](api/depot.md), `api.py`); a snapshot's corpus built into the store as a stream, reading the depot only through `api.py` (`corpus.py`), in the order of its texts' export keys (`order.py`), each share split over its texts' tags (`groups.py`), a long text taken as pieces (`pieces.py`), estimated before it is built (`estimate.py`), what the store keeps of corpora (`corpora.py`) and a model's notice from a corpus (`notice.py`); the libraries and datasets of format 12, read-only, for models trained before snapshots, with a dataset's export in parts and its sample (`legacy.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
+| `wpt-depot` | the depot: texts and structured items, the decisions on them, snapshots and erasures, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore into the store (`backup.py`); the upgrade from an older format (`upgrade.py`, `delta.py`, and `conversion.py`, which makes snapshots of the libraries and datasets of format 12); erasures carried out (`erasure.py`); snapshots, made, read and checked against their digest (`snapshots.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); what code outside the depot asks of it, a snapshot, its listing, its texts' content and credits and the erasures, in values JSON carries ([api/depot.md](api/depot.md), `api.py`); a snapshot's corpus built into the store as a stream, reading the depot only through `api.py` (`corpus.py`), in the order of its texts' export keys (`order.py`), each share split over its texts' tags (`groups.py`), a long text taken as pieces (`pieces.py`), what the store keeps of corpora (`corpora.py`) and a model's notice from a corpus (`notice.py`); the libraries and datasets of format 12, read-only, for models trained before snapshots, with a dataset's export in parts and its sample (`legacy.py`); the table of counts (`counts.py`); `WPT_DEPOT` (`settings.py`) |
 | `wpt-recipes` | the model and series recipes and the images of agentic tasks: the service layer that reads and checks them (`recipes.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `wpt-store` | the store (its kinds: a local folder or S3), its compression, its named files (corpora, models, run folders) and its results; a kept model folder copied out, checked against its sha256s (`models.py`) |
-| `freight` | reads a request, chooses items in a depot's snapshot as `wpt depot build` chooses, reading the depot only through `wpt_depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the store with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
+| `freight` | reads a request, chooses items in a depot's snapshot by the selection rules ([data-selection.md](data-selection.md)), reading the depot only through `wpt_depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the store with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
 | `wpt-corpus` | WPT's preparations, the programs `wpt-vocabulary` (a vocabulary learned from plain texts, `vocabulary.py`), `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`; [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`) |
 | `wpt-telemetry` | the record of one command run in the store, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |
 | `wpt-tokenizer` | the byte-level BPE tokenizer, Rust inside |
@@ -1159,7 +1147,7 @@ The project `wpt` (`apps/wpt`; the workspace's root project is
   is `wpt/resources.py` (with `wpt/adopt.py`, the depot's vocabularies put on the dock); the jobs are the
   subpackages `wpt.train`, `wpt.eval`, `wpt.chat` and `wpt.manager`.
 - the web server, `wpt depot web` (`wpt/depot/web/`: `server.py`,
-  `routes.py`, `builds.py` for the routes of the tokenizer recipes and the jobs, `snapshots.py` and `recipes.py` for the snapshots, the recipes and their builds, `legacy.py` for the frozen dataset routes, `translations.py` for the translation models of the Texts page, and `ui.py`, which builds the interface of `apps/wpt/ui`
+  `routes.py`, `queue.py` for the routes of the jobs, `snapshots.py` for the snapshots, `legacy.py` for the frozen dataset and tokenizer routes, `translations.py` for the translation models of the Texts page, and `ui.py`, which builds the interface of `apps/wpt/ui`
   with Bun). The root `package.json` makes one Bun workspace of the
   interface and the packages of the organization's design system, the git
   submodule `vendor/wic-design-system`, whose tokens and components the
