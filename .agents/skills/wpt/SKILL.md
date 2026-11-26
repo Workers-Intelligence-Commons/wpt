@@ -225,9 +225,10 @@ sha256, a vocabulary the dock holds, or learns one, `{"size",
 Changing either changes every later model of the order and makes it
 incompatible with earlier ones, so it is a person's decision: never change
 it unasked. A change of the tokenizer's code asks for no new vocabulary.
-The tokenizer recipes and vocabularies a depot may hold stay read only,
-and the dock holds each of those vocabularies as the delivery
-`adopted-<sha256>`, which an order finds by its sha256. A vocabulary
+The tokenizer recipes and vocabularies a depot may hold stay read only.
+Some docks hold some of those vocabularies as the delivery
+`adopted-<sha256>`, which an order finds by its sha256; nothing makes
+new ones, and an order naming one a dock lacks is refused. A vocabulary
 delivery is never made stale by an erasure: the erasure goes into its note.
 
 ## The model folder

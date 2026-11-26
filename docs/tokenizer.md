@@ -65,8 +65,8 @@ snapshots, a dataset, `sample_bytes`, `vocab_size` and a note, its
 most one vocabulary for each version of a tokenizer recipe, and `vocabulary_texts`
 every text it trained on, in the order they were read, by its depot (empty
 for the depot that holds the recipe, the web address for another depot)
-and its id there. Each of those vocabularies is on the dock as an adopted
-delivery (below), and the web app's frozen routes `GET /api/tokenizers/{name}` and its
+and its id there. Some docks hold some of those vocabularies as adopted
+deliveries (below), and the web app's frozen routes `GET /api/tokenizers/{name}` and its
 vocabulary file serve the models trained before snapshots
 ([training.md](training.md), "Models trained before snapshots").
 
@@ -103,15 +103,17 @@ government 5 / code 5 / encyclopedia 40 · 10,000,000,000 bytes`. That is
 the `tokenizer` a model's weight files name for a vocabulary the freight
 learned (`wpt.resources.label`).
 
-Every vocabulary the depot's tokenizer recipes trained is on the dock, so
-an order naming one by its sha256 finds it: the delivery
+Some docks hold vocabularies a depot's tokenizer recipes trained, and an
+order naming one by its sha256 finds it there: the delivery
 `adopted-<sha256>`, its file `vocabulary.json`, the result a
 `wpt-vocabulary` delivery gives (`sha256`, `size`, `tokenizer_version`),
 what the depot recorded of it (`adopted`: its tokenizer recipe's name and version,
 the dataset it named, its sample and sample bytes, its count of texts and
 their bytes), and as its items table the texts it trained on, in the order
-it read them (`depot`, `id`, `change`). Nothing in WPT makes such a
-delivery: a new vocabulary is one the freight learns. The weight
+it read them (`depot`, `id`, `change`). Nothing makes such a delivery
+any more, so a dock that lacks one, or a vocabulary a depot gets later
+through a pull, is refused by an order that names it: a new vocabulary is
+one the freight learns. The weight
 files of a model trained on it name it by its tokenizer recipe and version
 (`classics version 1`).
 

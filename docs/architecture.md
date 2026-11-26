@@ -44,7 +44,7 @@ Four parts make a model, each with its own packages and its own command:
 | depot | `depot`, `depot-app` (`depot`) | models, tokens, vocabularies, the freight, the dock |
 | freight | `freight`, `freight-app` (`freight`) | what a token or a vocabulary is |
 | dock | `dock`, `dock-app` (`dock`) | everything else |
-| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot |
+| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot, except two reads named below |
 
 The depot, the freight and the dock are meant to serve other kinds of
 models than WPT's transformers, such as diffusion models, world models and
@@ -76,7 +76,13 @@ module and fails on any other, except those its list `EXCEPTIONS` names,
 each with its reason: the depot's own command and web app write its
 backups to the dock, keep the Translate button's models there, and read
 the corpora built before the freight there, which its frozen dataset
-routes send and an upgrade from a format before snapshots reads. Every call of `dock.api` names the
+routes send and an upgrade from a format before snapshots reads.
+Two reads of a depot by WPT import nothing of it, so that test does not
+see them: `wpt.train.order_depot` reads, for an order of the older dataset
+shape, the depot's frozen dataset and tokenizer routes over HTTP
+([training.md](training.md), "Models trained before snapshots"), and
+`scripts/source_credits.py` opens a depot's SQLite file read only
+([data-selection.md](data-selection.md), "Titles from a text's source"). Every call of `dock.api` names the
 dock by its URL and exchanges only values and bytes: no part holds a dock
 object or a path into the dock's files, and a part that needs a local file
 has the dock fetch it into a folder of its own ([api/dock.md](api/dock.md),
