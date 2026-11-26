@@ -50,8 +50,6 @@ EXCEPTIONS = {
     ("depot_app.web.routes", "dock.api"): "the routes answer a refusal of the dock as such",
     ("depot_app.web.translations", "dock.api"): "the Translate button's models are kept on the dock under their "
                                                 "sha256",
-    ("wpt.adopt", "depot.api"): "wpt adopt-vocabularies puts on the dock the vocabularies the depot's tokenizer "
-                                "recipes trained, which only the depot keeps",
 }
 
 

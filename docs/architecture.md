@@ -44,7 +44,7 @@ Four parts make a model, each with its own packages and its own command:
 | depot | `depot`, `depot-app` (`depot`) | models, tokens, vocabularies, the freight, the dock |
 | freight | `freight`, `freight-app` (`freight`) | what a token or a vocabulary is |
 | dock | `dock`, `dock-app` (`dock`) | everything else |
-| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot, which only `wpt adopt-vocabularies` reads (below) |
+| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot |
 
 The depot, the freight and the dock are meant to serve other kinds of
 models than WPT's transformers, such as diffusion models, world models and
@@ -76,9 +76,7 @@ module and fails on any other, except those its list `EXCEPTIONS` names,
 each with its reason: the depot's own command and web app write its
 backups to the dock, keep the Translate button's models there, and read
 the corpora built before the freight there, which its frozen dataset
-routes send and an upgrade from a format before snapshots reads;
-and `wpt adopt-vocabularies` reads the vocabularies the depot's tokenizer
-recipes trained through `depot.api`. Every call of `dock.api` names the
+routes send and an upgrade from a format before snapshots reads. Every call of `dock.api` names the
 dock by its URL and exchanges only values and bytes: no part holds a dock
 object or a path into the dock's files, and a part that needs a local file
 has the dock fetch it into a folder of its own ([api/dock.md](api/dock.md),
@@ -1204,7 +1202,7 @@ its part (the workspace's root project, `wpt-workspace`, holds none):
 
 - `wpt` (`apps/wpt`), the command `wpt`: the subcommands `wpt list`,
   `wpt copy-out`, `wpt runs`, `wpt run`, `wpt agent`,
-  `wpt build-resources`, `wpt adopt-vocabularies`, `wpt train`, `wpt eval`,
+  `wpt build-resources`, `wpt train`, `wpt eval`,
   `wpt chat`, `wpt manager` and `wpt doctor`, each with its own options
   (`wpt SUBCOMMAND --help`). The module `wpt`
   (`apps/wpt/src/wpt/__init__.py`) names the module whose `main` runs each
@@ -1213,8 +1211,7 @@ its part (the workspace's root project, `wpt-workspace`, holds none):
   (the corpora and models it holds, a model copied out, the runs) is
   `wpt/docked.py` and `wpt/models.py`, the agent harness `wpt/agent.py`;
   WPT's side of the freight, the requests an order makes and the
-  deliveries training reads, is `wpt/resources.py` (with `wpt/adopt.py`,
-  the depot's vocabularies put on the dock); the jobs are the subpackages
+  deliveries training reads, is `wpt/resources.py`; the jobs are the subpackages
   `wpt.train`, `wpt.eval`, `wpt.chat` and `wpt.manager`.
 - `depot-app` (`apps/depot`, module `depot_app`), the command `depot` and
   the depot's web server, `depot web` (`depot_app/web/`: `server.py`,

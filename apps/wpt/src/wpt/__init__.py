@@ -6,7 +6,6 @@ SUBCOMMAND --help`).
     wpt runs, wpt run FOLDER     the runs recorded on the dock, and one of them
     wpt agent ...                the images of agentic tasks, locked and built
     wpt build-resources ORDER    ask the freight for an order's vocabulary and corpus
-    wpt adopt-vocabularies       put the depot's vocabularies on the dock
     wpt train ...                train a model order on its corpus
     wpt eval ...                 run tests on a trained model, into its model card
     wpt chat ...                 continue text with a trained model, or chat with one
@@ -29,7 +28,7 @@ DOCKED = "wpt.docked"  # its main takes the subcommand's name first
 COMMANDS = {"list": "wpt.docked", "copy-out": "wpt.docked", "runs": "wpt.docked", "run": "wpt.docked",
             "agent": "wpt.agent", "train": "wpt.train",
             "eval": "wpt.eval", "chat": "wpt.chat", "manager": "wpt.manager",
-            "doctor": "wpt.doctor", "build-resources": "wpt.resources", "adopt-vocabularies": "wpt.adopt"}
+            "doctor": "wpt.doctor", "build-resources": "wpt.resources"}
 
 
 def main(argv=None):

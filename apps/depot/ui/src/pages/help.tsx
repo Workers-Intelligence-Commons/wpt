@@ -141,7 +141,7 @@ export function HelpPage() {
           <li><strong>Shares</strong> split the plain text by tag, each with a proportion: a plain text counts for the first share whose tag it has, and a plain text no share takes is left out. Without shares, every plain text of the kinds taken is in.</li>
           <li>Conversations and tasks are never a share: every one is in, and they take their own part, the part of the bytes they hold.</li>
         </ul>
-        <p>A depot may hold tokenizer recipes and the vocabularies they trained: they stay as they are, read only; <Cmd>wpt adopt-vocabularies</Cmd> puts each vocabulary on the dock. A trained model records the depot's address, the snapshot with its change number and digest, the order and the code commits. Anyone who has these and the code can check what it was trained on.</p>
+        <p>A depot may hold tokenizer recipes and the vocabularies they trained: they stay as they are, read only. A trained model records the depot's address, the snapshot with its change number and digest, the order and the code commits. Anyone who has these and the code can check what it was trained on.</p>
       </Part>
 
       <Part on="costs" title="What things cost">

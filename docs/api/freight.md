@@ -160,10 +160,9 @@ the rows of its items table in order, each an object with at least the
 `depot` and `id` of a text, which is how an erasure finds it (none by
 default). The rows go into parts of at most a million rows; the note's
 `items` gives their count as `texts`, and its id covers the files and the
-parts. A fresh delivery of that key stays as it is. WPT adopts the
-vocabularies of the depot's tokenizer recipes so (`wpt
-adopt-vocabularies`, [tokenizer.md](../tokenizer.md), "A vocabulary in an
-order").
+parts. A fresh delivery of that key stays as it is. The vocabularies a
+depot's tokenizer recipes trained are on the dock as deliveries adopted
+so ([tokenizer.md](../tokenizer.md), "A vocabulary in an order").
 
 `settings_home(home)` and `settings_dock(dock)` give the freight's home
 and the dock's URL, each the one given, else `FREIGHT_HOME` or `DOCK` from

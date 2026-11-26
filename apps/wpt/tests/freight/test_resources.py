@@ -4,9 +4,9 @@ vocabulary named by its sha256, an adopted delivery of the dock, or
 learned for the order; the keys worked out from the order alone; what the
 model folder keeps of both deliveries; a corpus delivery given by its id
 or key, as `wpt manager` gives it; a run of `wpt build-resources` stopped
-and run again; `wpt adopt-vocabularies`, which puts a depot's vocabularies
-on the dock; an erasure, written into the vocabulary's note, which
-stays, while the corpus is made again; and the corpora the depot built
+and run again; a vocabulary a depot's tokenizer recipe trained, found by
+its sha256 as the dock holds it; an erasure, written into the
+vocabulary's note, which stays, while the corpus is made again; and the corpora the depot built
 before the freight, which only the freight's check marks stale."""
 
 import hashlib
@@ -16,7 +16,6 @@ import pytest
 
 from freight import api
 from wpt import resources
-from wpt.adopt import main as adopt
 from wpt.resources import main as build_resources
 from wpt.train import main as train
 from depot import Declaration
@@ -121,7 +120,7 @@ def test_an_order_naming_a_vocabulary_the_dock_does_not_hold_makes_no_request(bu
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
     assert build_resources(["d"]) == 1
     said = bare(capsys.readouterr().err)
-    assert f"the dock holds no vocabulary {built.vocabulary}" in said and "wpt adopt-vocabularies" in said
+    assert f"the dock holds no vocabulary {built.vocabulary}" in said and "let the order learn" in said
     assert api.jobs() == []
     with pytest.raises(SystemExit) as refused:  # the corpus the depot built of every token is not of its size
         train(["d", "--out", "model"])
@@ -159,25 +158,23 @@ def test_wpt_build_resources_run_again_waits_for_the_job_a_stopped_run_left(buil
     assert [job["id"] for job in api.jobs() if job["key"] == notes["vocabulary"]["key"]] == [left["id"]]
 
 
-def test_wpt_adopt_vocabularies_puts_each_vocabulary_of_the_depot_on_the_dock_with_the_texts_it_read(built):
-    # an order and its vocabulary as a depot that trained them kept them in its tables, which nothing writes now
+def test_a_vocabulary_a_depot_s_tokenizer_recipe_trained_is_found_by_its_sha256(built, tmp_path):
+    # the delivery adopted-<sha256> as the docks hold it for each vocabulary a depot's tokenizer recipes trained:
+    # its note's `adopted` what the depot recorded of it, its items the texts it read, an erasure noted
     listed = [row["id"] for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
-    sample = json.dumps({"snapshot": built.depot.snapshot(built.names["d"])["id"], "kinds": ["plain"]})
-    with built.depot.db.write("a kept vocabulary") as (con, number):
-        order = built.depot._id(built.depot._take(con, "tokenizers"))
-        con.execute("INSERT INTO tokenizers_revisions (id, revision, change, latest, name, version, depot, dataset, "
-                    "sample_bytes, vocab_size, note, sample) VALUES (?, 1, ?, 1, 't', 1, NULL, '', ?, ?, NULL, ?)",
-                    (order, number, 10**6, built.tokenizer.vocab_size, sample))
-        con.execute("INSERT INTO vocabularies (recipe, version, change, sha256, merges, texts, bytes, made_at) "
-                    "VALUES (?, 1, ?, ?, ?, ?, NULL, '2026-01-01T00:00:00+00:00')",
-                    (order, number, built.vocabulary, built.tokenizer.to_bytes().decode(), len(listed)))
-        con.executemany("INSERT INTO vocabulary_texts (recipe, version, position, depot, text, change) "
-                        "VALUES (?, 1, ?, '', ?, ?)", [(order, at, one, number) for at, one in enumerate(listed)])
-    assert adopt([]) == 0
-    note = api.delivery(f"{api.ADOPTED}{built.vocabulary}")
-    assert note["on_erasure"] == "note" and note["result"]["sha256"] == built.vocabulary
-    assert note["result"]["size"] == built.tokenizer.vocab_size
-    assert (note["adopted"]["recipe"], note["adopted"]["version"], note["adopted"]["texts"]) == ("t", 1, 16)
-    rows = api.items(note["key"])
-    assert [row["id"] for row in rows] == listed and {row["depot"] for row in rows} == {built.depot.name()}
-    assert adopt([]) == 0 and api.delivery(note["key"])["id"] == note["id"]  # run again, it stays as it is
+    change = built.depot.snapshot(built.names["d"])["at_change"]
+    sample = {"snapshot": built.depot.snapshot(built.names["d"])["id"], "kinds": ["plain"]}
+    about = {"by": "wpt adopt-vocabularies", "depot": built.depot.name(), "recipe": "t", "version": 1,
+             "dataset": "", "sample": sample, "sample_bytes": 10**6, "texts": len(listed), "bytes": None,
+             "made_at": "2026-01-01T00:00:00+00:00"}
+    result = {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size,
+              "tokenizer_version": json.loads(built.tokenizer.to_bytes())["tokenizer_version"]}
+    key = f"{api.ADOPTED}{built.vocabulary}"
+    api.adopt(key, {"vocabulary.json": built.tokenizer.to_bytes()}, result, about, on_erasure="note",
+              items=[{"depot": built.depot.name(), "id": one, "change": change} for one in listed])
+    data = order(tmp_path)["data"]
+    assert data["vocabulary"] == {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size}
+    assert resources.vocabulary_key(data) == key
+    note = api.delivery(key)
+    assert resources.label(note) == f"vocabulary {built.tokenizer.vocab_size:,} · adopted · tokenizer recipe t version 1"
+    assert resources.corpus_request(data, key)["preparation"]["inputs"] == {"vocabulary": key}

@@ -8,9 +8,9 @@ requires-python = ">=3.14"
 # and the images of agentic tasks; wpt-worker: the gpu worker that trains and holds the model; freight: the requests
 # of wpt build-resources and the deliveries wpt train reads, through freight.api; dock: the dock, through dock.api;
 # wpt-corpus: the programs the freight runs for WPT and their versions, which the delivery keys cover, and the
-# corpora built before the freight; depot: the vocabularies wpt adopt-vocabularies reads, through depot.api; torch comes from the root group that scripts/setup.py picks
+# corpora built before the freight; torch comes from the root group that scripts/setup.py picks
 dependencies = ["wpt-tokenizer", "dock", "wpt-telemetry", "wpt-model", "wpt-inference", "wpt-training", "wpt-utils",
-                "wic-utils", "depot", "wpt-orders", "wpt-agent", "wpt-worker", "freight", "wpt-corpus", "numpy>=2"]
+                "wic-utils", "wpt-orders", "wpt-agent", "wpt-worker", "freight", "wpt-corpus", "numpy>=2"]
 
 [project.scripts]
 wpt = "wpt:main"

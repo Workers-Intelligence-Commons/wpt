@@ -2317,7 +2317,6 @@ name = "wpt"
 version = "0.1.0"
 source = { editable = "apps/wpt" }
 dependencies = [
-    { name = "depot" },
     { name = "dock" },
     { name = "freight" },
     { name = "numpy" },
@@ -2336,7 +2335,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "depot", editable = "packages/depot" },
     { name = "dock", editable = "packages/dock" },
     { name = "freight", editable = "packages/freight" },
     { name = "numpy", specifier = ">=2" },

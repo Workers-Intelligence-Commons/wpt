@@ -78,10 +78,9 @@ at most one vocabulary for each version of a recipe, its merges kept as
 text, with the change that wrote it; vocabulary_texts, by position, every
 text it trained on, by its depot ('' for the depot that holds the recipe,
 else the web address of the depot whose sample a vocabulary trained before
-snapshots read) and id (depot.legacy reads them; `wpt
-adopt-vocabularies` puts each vocabulary on the dock). numbers holds, for each kind of id, the
-last number of the depot's own ids, so a number is never given twice, even
-once an erasure removed its row.
+snapshots read) and id (depot.legacy reads them). numbers holds, for each
+kind of id, the last number of the depot's own ids, so a number is never
+given twice, even once an erasure removed its row.
 
 The legacy tables (LEGACY) hold the libraries and datasets of a depot of an
 older format, as it left them: no write of the depot touches them, and only

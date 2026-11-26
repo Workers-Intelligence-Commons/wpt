@@ -311,8 +311,8 @@ def build(data: dict) -> dict:
     if asking is None:
         key = vocabulary_key(data)
         if key is None:
-            raise Unanswered(f"the dock holds no vocabulary {data['vocabulary']['sha256']}: name one an earlier "
-                             "order learned, or put a depot's vocabulary on the dock with `wpt adopt-vocabularies`")
+            raise Unanswered(f"the dock holds no vocabulary {data['vocabulary']['sha256']}: name one the dock holds, "
+                             "or let the order learn its vocabulary, {\"size\", \"sample_bytes\"}")
         vocabulary = api.delivery(key)
         say(f"vocabulary: delivery {key}, already on the dock")
     else:

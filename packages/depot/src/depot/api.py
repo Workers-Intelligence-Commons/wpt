@@ -29,8 +29,6 @@ listing and make it once.
     credits(depot, texts)                             the credits of texts at given revisions
     licenses(depot, ids), notices(depot, ids)         the licenses and notices those credits name
     erasures(depot, since)                            the erasures carried out after a mark, and the mark now
-    vocabularies(depot)                               the vocabularies its tokenizer recipes trained
-    vocabulary_texts(depot, recipe, version, offset)  the texts one of them read, in order
 """
 
 import json
@@ -298,35 +296,3 @@ def erasures(depot: str, since: int = 0) -> dict:
         {"id": row["id"], "change": row["change"],
          "texts": list(dict.fromkeys(needle["text"] for needle in row["needles"]))} for row in rows]}
 
-
-# the vocabularies the depot's tokenizer recipes trained, kept unwritten in its legacy tables
-_VOCABULARIES = (
-    "SELECT v.recipe, v.version, v.sha256, v.merges, v.texts, v.bytes, v.made_at, r.name, r.dataset, r.sample, "
-    "r.sample_bytes, r.vocab_size FROM vocabularies v JOIN tokenizers_revisions r ON r.id = v.recipe "
-    "AND r.version = v.version AND r.revision = (SELECT max(revision) FROM tokenizers_revisions "
-    "WHERE id = v.recipe AND version = v.version) ORDER BY r.name, v.version")
-_VOCABULARY_TEXTS = ("SELECT depot, text, change FROM vocabulary_texts WHERE recipe = ? AND version = ? "
-                     "ORDER BY position LIMIT ? OFFSET ?")
-
-
-def vocabularies(depot: str) -> list[dict]:
-    """Every vocabulary the depot's tokenizer recipes trained, which its
-    tables tokenizers_revisions, vocabularies and vocabulary_texts keep
-    unwritten, in the order of their recipes' names and versions: {recipe
-    (its id), name, version, sha256, merges (the vocabulary file, as text),
-    texts, bytes, made_at, dataset, sample, sample_bytes, vocab_size}."""
-    found = []
-    for row in _view(depot).rows(_VOCABULARIES):
-        sample = row["sample"]
-        found.append({**row, "sample": json.loads(sample) if isinstance(sample, str) else sample})
-    return found
-
-
-def vocabulary_texts(depot: str, recipe: str, version: int, offset: int = 0, limit: int = 100_000) -> list[dict]:
-    """The texts the vocabulary of that recipe (its id) and version read, in
-    the order it read them, from the place offset on, at most limit: each
-    {depot (the depot's name for one of its own texts), id, change}."""
-    view = _view(depot)
-    own = view.name()
-    return [{"depot": row["depot"] or own, "id": row["text"], "change": row["change"]}
-            for row in view.rows(_VOCABULARY_TEXTS, (recipe, version, limit, offset))]
