@@ -109,7 +109,7 @@ exists under the id or address given.
 ## Open
 
 - **The first layer's values, with what WPT already carries between
-  layers.** A measure trains one recipe with and without them, twice each
+  layers.** A measure trains one order with and without them, twice each
   with different seeds, and compares the loss.
 - **Paths from every earlier layer, under 100M.** The same measure with
   weighted paths, beside the time per update.

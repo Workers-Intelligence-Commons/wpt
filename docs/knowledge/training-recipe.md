@@ -78,7 +78,7 @@ exists under the id or address given.
 - **The decay to zero at 20 tokens per parameter under 100M.** The source
   measures it at 200 and at 2, with opposite signs.
 - **Masked tokens in the loss, at 1B tokens and more.** The sources train
-  on 100M words at most. A measure trains one recipe with and without a
+  on 100M words at most. A measure trains one order with and without a
   share of masked tokens and compares the loss of the next token and the
   copying test of `wpt eval`.
 - **Many passes over less text against one pass over more**, at an equal

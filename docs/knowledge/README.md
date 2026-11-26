@@ -75,7 +75,7 @@ so.
 - [How wide must a model be for its vocabulary?](width-and-vocabulary.md)
 - [How should parameters be split between depth and width?](depth-and-width.md)
 - [How large a model for how many training tokens?](size-and-tokens.md)
-- [How far do two runs of one recipe differ?](run-to-run-spread.md)
+- [How far do two runs of one order differ?](run-to-run-spread.md)
 - [How is a faster training code shown to train the same model?](training-speed.md)
 - [At small sizes, are parameters better spent on experts or compute on loops?](experts-and-loops.md)
 - [Can the vocabulary's two tables shrink without losing precision on the vocabulary?](vocabulary-tables.md)

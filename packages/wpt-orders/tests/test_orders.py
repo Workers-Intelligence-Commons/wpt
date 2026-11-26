@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from wpt_orders import InvalidOrder, NotFound, Orders, data_section, dump_json
+from wpt_orders import InvalidOrder, NotFound, Orders, dump_json
 
 MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 16, "attention_heads": 2,
          "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
@@ -191,18 +191,3 @@ def test_an_image_s_pool_of_tools_is_read_after_the_check(orders):
         orders.image_tools("tiny")
     with pytest.raises(NotFound, match="no image 'gone'"):
         orders.image_tools("gone")
-
-
-def test_a_order_handed_over_as_json_is_read_by_its_data_section_alone():
-    # a depot's build reads an order a person hands over, never from data/: only its data section counts
-    assert data_section(snapshot_model(), "m.json") == ("model", snapshot_model()["data"])
-    assert data_section({"data": snapshot_model()["data"]}, "m.json") == ("model", snapshot_model()["data"])
-    assert data_section({**snapshot_model(), "model": "anything"}, "m.json")[0] == "model"
-    assert data_section(model(), "old.json") == ("model", model()["data"])  # the legacy shape reads; no build takes it
-    for document, message in (([], "no data section"), ({"model": MODEL}, "no data section"),
-                              (snapshot_model(change=-1), "at data/change: "),
-                              (snapshot_model(shares=[{"tag": "a", "share": 0.7}, {"tag": "b", "share": 0.7}]),
-                               "shares sum to 1.4"),
-                              (snapshot_model(digest=""), "data.digest empty")):
-        with pytest.raises(InvalidOrder, match=f"m.json: .*{re.escape(message)}"):
-            data_section(document, "m.json")

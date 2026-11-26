@@ -903,8 +903,10 @@ repository ("Model series", below). A model order holds:
   its digest (`digest`), the kinds of text it takes (`kinds`, left out: every
   kind), the share of the plain text each tag takes (`shares`, in order, a tag
   once, summing to at most 1; left out: the snapshot's own proportions), the
-  total tokens (`total_tokens`) and the vocabulary (`vocabulary`, its file's
-  `sha256` and its `size`). The legacy dataset shape, of the orders written
+  total tokens (`total_tokens`) and the vocabulary (`vocabulary`: its
+  file's `sha256` and its `size`, or the `size` and `sample_bytes` of one
+  the freight learns, [tokenizer.md](tokenizer.md), "A vocabulary in an
+  order"). The legacy dataset shape, of the orders of models trained
   before snapshots: the depot, a dataset there by id or name (`dataset`) and
   the total tokens, the vocabulary the one the corpus was built with, from the
   dataset's tokenizer recipe; such an order trains on a corpus of that
@@ -933,8 +935,9 @@ Settings that change the result come only from the order. Command-line
 options remain only for what does not: device strategy (splitting windows
 across processes included), number of processes, streaming, output folder,
 run name, resuming, micro-batch, recomputing, segments, checkpoints, weight
-file size and restarts. Tokenizer recipes stay separate files, since
-several models share them. A model has at least 5 layers: one window
+file size and restarts. A vocabulary is named by its sha256 or learned
+by its own request, never held in the order, since several models share
+it. A model has at least 5 layers: one window
 layer on each side of an exact layer, then one exact and one sparse layer.
 A head is at least 64 wide and even, for the 64 rotary dimensions. The orders' `drafter` sections
 state the same training values: 256 prompts of at most 64 tokens, answers

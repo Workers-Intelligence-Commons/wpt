@@ -12,7 +12,7 @@ The depot is opened read-only (depot.depot.Depot.view), once in each
 process, and kept while VIEWS others are not asked for after it. The
 listing of a snapshot is made once from its sets (depot.order) and
 kept until an erasure reaches the depot (depot.snapshots.last_erasure)
-or another snapshot is listed, so the walks of one build read the same
+or another snapshot is listed, so the walks of one job read the same
 listing and make it once.
 
     about(depot)                                      the depot's about row: its name, upstream and format

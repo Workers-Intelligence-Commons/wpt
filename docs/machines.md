@@ -444,7 +444,7 @@ step its own command:
 1. the corpus: `WPT_CORPUS`, or the order's, as `wpt train` finds it
    (the corpus delivery its data section names on the dock; for an order
    of the legacy dataset shape, the one last built for its depot and
-   dataset, which no build makes again); the manager neither downloads nor
+   dataset, which nothing makes again); the manager neither downloads nor
    builds, so the corpus is made first (`wpt build-resources ORDER`), and
    a run without one is refused,
    saying so; then `wpt agent build-image
@@ -479,7 +479,7 @@ wins (`DOCK`, the manager's folders, `HOME`, `DOCKER_HOST`).
 | Setting | Meaning |
 | --- | --- |
 | `WPT_ORDER` | the model order, `SERIES:SIZE` for a size of a model series, or `SERIES:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
-| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus of the order's build key (an order written before snapshots: the corpus last built for its depot and dataset) |
+| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus delivery of the order's delivery key (an order of the legacy dataset shape: the corpus last built for its depot and dataset) |
 | `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the dock |
 | `WPT_EVALUATE` | `1`: evaluate the model at the end; off by default |
 | `DOCK` | the dock; unset, a folder on the Compose volume `wpt-store`. A `file://` dock must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |

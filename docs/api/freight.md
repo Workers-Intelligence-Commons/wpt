@@ -13,7 +13,7 @@ module of the package `freight` that code outside it imports. The command
 `freight` (`apps/freight`) is a controller over the same functions. A
 change to the module changes this document in the same commit.
 
-The dock is, for now, the dock `dock` opens: `DOCK` names it.
+The dock is the one `dock.api` opens: `DOCK` names it.
 
 ## Settings
 

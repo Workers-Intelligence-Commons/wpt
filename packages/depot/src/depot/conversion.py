@@ -488,7 +488,7 @@ def set_bytes(measured: Measured) -> int:
     return sum(len(bitmap.serialize()) for _, _, _, bitmap in measured.sets)
 
 
-def recipe_data(planned: Planned, measured: Measured, depot: str, vocab_size: int | None) -> dict:
+def order_data(planned: Planned, measured: Measured, depot: str, vocab_size: int | None) -> dict:
     """The data section of a model order (wpt-orders, the snapshot shape)
     that builds what the dataset revision built: its snapshot, change and
     digest, the kinds a dataset's corpus took, its shares, its max_tokens as

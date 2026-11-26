@@ -2,7 +2,7 @@
 
 This document covers what WPT trains on: the texts of a depot, the tags
 that group them, the snapshots that fix which texts a model may read, and
-the corpus a model order's data section is built into from a snapshot. How a depot stores them is in
+the corpus the freight delivers for a model order's data section from a snapshot. How a depot stores them is in
 [architecture.md](architecture.md), "The depot"; which licenses a text may
 carry and how decisions work is in [licenses.md](licenses.md).
 
@@ -523,49 +523,49 @@ hold in the share, so a big group stays the biggest and a small one still
 gets a real part: a group that holds a hundred times the bytes of another
 aims at ten times its tokens. Every tag counts alike, length tags such as `long` or `huge`
 included: the rule reads the texts' tags and nothing else. A share whose
-texts make a single group fills in the corpus's order (see "Filling a
-part"), and so does the share the build keeps whole without a size.
+texts make a single group fills in the snapshot's order (see "Filling a
+part"), and so does the share a delivery keeps whole without a size.
 
-The build brings the shares to their proportions, and each share's groups
+The freight brings the shares to their proportions, and each share's groups
 to their parts of it, without repeating a text.
 Without a size (`total_tokens`), it finds the share with the fewest bytes relative to
 its proportion and keeps every text of that share; each other share fills
-its proportion of the scarcest share's bytes, in the corpus's order (see
+its proportion of the scarcest share's bytes, in the snapshot's order (see
 "Filling a part"), a piece of a long text counting for its share of the
 text's bytes, split evenly among its pieces. The bytes of each share come from
 the snapshot's summary, as the items' share does (see "Corpora"). With a size, each share fills
 its part of it. A text enters a corpus once at most, whole or as some of
 its pieces. The order depends on
-the texts' ids alone, so the same snapshot builds the same corpus, and a
+the texts' ids alone, so the same snapshot gives the same corpus, and a
 change of the size keeps its order. The
-corpus's record keeps how many tokens each share holds (`shares_tokens`),
-with each of its groups, and how many texts the build left out (`left_out`: texts no share took, texts
+delivery note keeps how much each share holds (`shares`),
+with each of its groups, and how many texts the freight left out (`left_out`: texts no share took, texts
 of which a share took nothing, items the size left out, conversations
 whose quoted texts it left out or whose quotes are unmatched, and the items
 of each kind that is no training data, by kind: `kinds not taken`).
 
-A share with no text refuses the build. Shares apply to plain texts only:
+A share with no text refuses the request. Shares apply to plain texts only:
 only a size trims conversations and tasks, to their natural share of it.
 
 ### Filling a part
 
 Every part of a corpus fills the same way: the items' share, each share
 of the plain texts, and a vocabulary's sample. The texts
-come in the corpus's order. A text that fits what is left of its part is
+come in the snapshot's order. A text that fits what is left of its part is
 taken. A text that would pass it is left out, and the next text is tried.
 A part closes once what is left of it is at most a thousandth of it, or
-once a thousand of its texts in a row did not fit. The build stops reading
+once a thousand of its texts in a row did not fit. The freight stops reading
 once every part is closed, so a nearly full corpus never reads the rest of
 the snapshot for its last tokens. A smaller size takes the same texts as a
 larger one up to the first text it leaves out; past it, it takes only what
 fits what is left of it.
 
 A share whose texts make two groups or more (see "Shares") fills by
-group instead. Each group's texts wait in the corpus's order, and each
+group instead. Each group's texts wait in the snapshot's order, and each
 group weighs the square root of the bytes its texts hold in the share. The
 share always takes the next text of the group that holds the fewest tokens
 so far for its weight; when several groups are level, the group whose next
-text comes first in the corpus's order goes first. A text taken counts for every one
+text comes first in the snapshot's order goes first. A text taken counts for every one
 of its groups, and is taken once. A text that does not fit what is left of
 the share is left out for good. A group whose texts run out drops out, and
 so does a group that meets a thousand texts in a row that do not fit. The
@@ -573,15 +573,14 @@ share closes once what is left of it is at most a thousandth of it, or
 once every group dropped out. So a group with few texts gives all it has,
 and the other groups share what it leaves.
 
-To choose so, the build first walks the whole order, reading each text's
+To choose so, the freight first walks the whole order, reading each text's
 tags and size but not its content, and keeps what the choice needs in
-compact arrays. With a size, it chooses on the texts' exact tokens, which
-worker processes count a few texts ahead of each group; the texts it
-chooses are tokenized again as the build writes them. Without a size, it
-chooses on bytes. The build keeps the list of
-the texts chosen in its work folder, so a build cut short takes the same
-texts when it goes on, and chooses them again, the same, when the list is
-lost. A smaller size takes about the same share of each group as a larger
+compact arrays. With a size in the preparation's unit, it chooses on the
+weights the preparation gives (`weigh`), in tokens for a corpus. With a
+size in bytes, or without a size, it chooses on bytes. The freight keeps
+the list of the texts chosen in its job's work folder, so a job cut short
+takes the same texts when it goes on, and chooses them again, the same,
+when the list is lost. A smaller size takes about the same share of each group as a larger
 one, but not the start of the larger one's texts.
 
 ### Long texts
@@ -593,100 +592,98 @@ ends right before a line that begins with `=== `, the line that begins
 each file of a repository, when one comes within the next piece's length;
 otherwise before the first line start there, or at the length itself when
 the text has no line break there. Each piece has its own place in the
-corpus's order and counts as a text of its own for every part, so a long
+snapshot's order and counts as a text of its own for every part, so a long
 text spreads through the corpus, and a corpus of any size takes about its
 share of it. Each piece waits in the groups of its text's tags as a text of
 its own. An item is never cut.
 
-### Building a snapshot again
+### Choosing in a snapshot again
 
 A snapshot names the change number it reads and the texts it holds, and a
-depot keeps every revision, so a snapshot builds the same corpus again
-whatever its texts did since. Only an admitted erasure changes that
-corpus: the texts it removes are gone, and the passages it cuts are cut in
-every revision ([erasure.md](erasure.md)).
+depot keeps every revision, so the same request on a snapshot chooses the
+same texts whatever its texts did since. Only an admitted erasure changes
+that choice: the texts it removes are gone, and the passages it cuts are
+cut in every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
 `wpt build-resources ORDER` asks the freight for the corpus of a model
-order, or of a series at its largest size, which it delivers on the dock
-(`DOCK`): what training reads ([api/freight.md](api/freight.md)). The
-depot builds no corpus. The rules below are the build's
-(`depot.corpus`), which the freight's choice follows, and the layout
-of a corpus the dock's `corpora/` holds. The
-order names this depot, or the upstream it follows, by its public
-address, and a snapshot of it by name. A rented GPU machine only reads the
-corpus and trains ([machines.md](machines.md)). What a build takes is a
-order's data section: the snapshot (its name, and the change number and
-digest it reads, which the build checks), the kinds it takes (none: every
-kind), the shares, the size (`total_tokens`, none for every token) and the
-vocabulary (its sha256 and size). A snapshot whose change number or
-digest is not the section's, or a vocabulary whose sha256 or size is not,
-refuses the build and names both: "snapshot S of depot D reads change N
-with digest H; the order says M, G".
+order, or of a series at its largest size: a request whose preparation is
+`wpt-tokens`, which the freight delivers on the dock (`DOCK`), what
+training reads ([api/freight.md](api/freight.md),
+[api/preparation.md](api/preparation.md)). The depot builds no corpus. The
+order names this depot, or the upstream it follows, by its public address,
+and a snapshot of it by name. A rented GPU machine only reads the corpus
+and trains ([machines.md](machines.md)). The request carries the order's
+data section: the snapshot (its name, and the change number and digest it
+reads, which the freight checks), the kinds it takes (none: every kind),
+the shares, the size (`total_tokens` in tokens, none for every token) and
+the vocabulary, the delivery the request names as its input. A snapshot
+whose change number or digest is not the request's refuses the request
+and names both: "snapshot S of depot D reads change N with digest H; the
+request says M, G".
 
-The build is a stream. It first puts every text of the snapshot in the
-corpus's order, in memory (see "The order" below). It then reads the texts
-in that order, each at its revision as of the change number its part of
-the snapshot reads, so it reads only the texts it reaches. A build with
-shares walks the order once whole before the stream, to choose each
-share's texts by group (see "Filling a part"), which reads every text's
-row but only the contents of the texts whose tokens the choice needs.
-The build tokenizes its first 16 MiB of texts in its own process, and
-worker processes the rest, so a small size of a large snapshot never
-waits for workers to start; it takes their results in that order. It uploads each token file to the dock as soon as it is
-full, with the part of the `texts` table that lists its texts, and
-deletes its local copies, so the local disk it takes stays bounded
-whatever the snapshot's size. A build cut short goes on from the first
-text after the last token file uploaded, from a state named by its build
-key, and writes the same bytes as a build that never stopped; when an
-erasure reached the snapshot meanwhile, it starts over.
+The freight reads the snapshot as a stream. It first puts every text of
+the snapshot in the snapshot's order (see "The order" below), from the
+depot's listing. It then reads the texts in that order, each at its
+revision as of the change number its part of the snapshot reads, so it
+reads only the texts it reaches. A request with shares walks the order
+once whole before the stream, to choose each share's texts by group (see
+"Filling a part"), which reads every text's row but only the contents of
+the texts whose weights the choice needs. The program writes its token
+files as the items come; the freight uploads each to the dock as soon as
+the program says it is complete, with the part of the items table that
+lists its texts, and deletes the local copy, so the local disk a job takes
+stays bounded whatever the snapshot's size. A job cut short goes on from
+the first text after the last token file uploaded, from a state named by
+its delivery key, and writes the same bytes as a job that never stopped;
+when an erasure reached the snapshot meanwhile, it starts over.
 
 What the corpus may take comes from the snapshot's summary, read at once:
 the bytes and texts of each kind and of each set of tags of its plain
 texts. A plain text counts once, for the first share whose tag it has.
 Conversations and tasks together have their natural share of the size:
-the share they hold of the UTF-8 bytes of the corpus built without a size
+the share they hold of the UTF-8 bytes of the corpus without a size
 (every conversation and task the kinds take, and the plain texts the
 shares keep, see "Shares"), rounded down to a whole token, so every size
 has the mix of the corpus of every token. The items fill that share in
-the corpus's order (see "Filling a part"). A conversation counts the
+the snapshot's order (see "Filling a part"). A conversation weighs the
 tokens of its chat template. A task is kept as a JSON line and never
-tokenized, so it counts the tokens of its content written as the JSON text
+tokenized, so it weighs the tokens of its content written as the JSON text
 of that line. Each share then fills its proportion of what the items
-left, or, without shares, the plain texts fill all of it, in the corpus's
-order. Without a size, every conversation and task is taken. The corpus's
-record keeps the tokens its conversations and tasks hold
+left, or, without shares, the plain texts fill all of it, in the
+snapshot's order. Without a size, every conversation and task is taken.
+The program's result gives the tokens the conversations and tasks hold
 (`items_tokens`).
 
-The build chooses nothing by score. It keeps:
+The freight chooses nothing by score. `wpt-tokens` keeps:
 
 - every plain text (kind `plain`), as its tokens followed by the
   end-of-document token, in the token files of kind `plain`; a long text
   as its pieces, each a row of its own, named by its text's id, `#` and
   its number (`depot-12#3`);
-- every conversation whose quoted texts it holds (see "Conversations that
-  quote texts" below), as the tokens of the chat template
-  ([chat-format.md](chat-format.md), "The template"), in the token files
-  of kind `conversation`;
+- every conversation whose quoted texts the freight took (see
+  "Conversations that quote texts" below), as the tokens of the chat
+  template ([chat-format.md](chat-format.md), "The template"), in the
+  token files of kind `conversation`;
 - every task, as one line of `tasks.jsonl`.
 
-The record lists the token files by kind (`shards`, `{"plain": [...],
-"conversation": [...]}`), so a step finds the files of the kinds it
-reads and nothing else. Items of other kinds, and of the kinds the data
-section leaves out, are not taken: the record counts them by kind
+Its result lists the token files by kind (`shards`, `{"plain": [...],
+"conversation": [...]}`), so a step finds the files of the kinds it reads
+and nothing else. Items of other kinds, and of the kinds the data section
+leaves out, are not taken: the delivery note counts them by kind
 (`left_out`, `kinds not taken`).
 
 ### The order
 
 The texts go in the order of their export keys, a hash of each text's id,
 so that any first part of the corpus is drawn from all of it. A piece's
-key is the same hash of its name. The build finds the long texts before it
-reads, through an index of the depot's long content versions, so it never
-reads every text to find them. A snapshot can hold a number in several
-parts (a part for each library of the dataset an upgrade made the
-snapshot from): the text is taken once, read as of its first part's change number. Texts
-of one key go by their depot's name, then their number, then their piece.
+key is the same hash of its name. The depot's listing finds the long texts
+through an index of its long content versions, so it never reads every
+text to find them. A snapshot can hold a number in several parts (a part
+for each library of the dataset an upgrade made the snapshot from): the
+text is taken once, read as of its first part's change number. Texts of
+one key go by their depot's name, then their number, then their piece.
 The order depends on nothing but the snapshot, so every size of a model
 series reads the same corpus, the smaller sizes its first part
 ([model.md](model.md), "Model series"). The order takes 8 bytes a text in
@@ -696,68 +693,69 @@ memory, and at most 16 while it is made.
 
 The rows of a corpus name each text's depot by the name of the depot that
 made the snapshot, never by a file or an address, so the same snapshot
-builds the same bytes wherever its file is, and a clone holding its
-upstream's snapshot builds the same corpus. The record names the depot by
-the address the order's data section names, which on a clone is its
+gives the same bytes wherever its file is, and a clone holding its
+upstream's snapshot gives the same corpus. The delivery note names the
+depot by the address the request names, which on a clone is its
 upstream's, and the snapshot by its id, name, owner, change number and
 digest.
 
 A corpus says everything about what it holds, even once the depot it read
-changes or vanishes. Beside its token files and `tasks.jsonl`, it holds
-these tables:
+changes or vanishes. Beside its token files and `tasks.jsonl`, under
+`files/`, its delivery holds these tables:
 
-- `texts`: every text it took, in parts, one for each token file, with its depot's name (above), its id there,
-  its kind, its credits, licenses and tags copied, its scores copied with
-  the content version each was made from, its notice, and where its
-  tokens start (the steps that read conversations and tasks pick them by
-  tag from this table); a piece taken has a row of its own with its
-  text's credits and its number (`piece`, empty for a whole text); a
-  conversation's row names the texts it quotes (`quotes`), each in the
-  corpus with its own row, credits, licenses and notice, so a model that
-  learned the conversation credits the texts it quotes;
+- the items tables: every text it took, in parts, with its depot's name
+  (above), its id there, its revision, its kind, its credits, licenses and
+  tags copied, its scores copied with the content version each was made
+  from, its notice, and where its tokens start (the steps that read
+  conversations and tasks pick them by tag from these tables); a piece
+  taken has a row of its own with its text's credits and its number
+  (`piece`, empty for a whole text); a conversation's row names the texts
+  it quotes (`quotes`), each in the corpus with its own row, credits,
+  licenses and notice, so a model that learned the conversation credits
+  the texts it quotes;
 - `licenses` and `notices`: the license texts and notices those texts
   name, copied from the depot.
 
-Everything goes under `corpora/<build key>/` on the dock, with the
-record, `corpus.json`, written last, so a build that fails leaves no
-corpus. The build key covers the snapshot's id and digest, the data
-section's kinds, shares and size, the vocabulary's sha256 and the build's
-rules, never the address the build was asked from, so a clone and the
-server key the same corpus, and another vocabulary or size builds into
-another folder. The record keeps the data section, the build key, the
-code's commit when given, the rules, and the erasures carried out on a
-text the snapshot holds. Each share of its `shares_tokens` lists its
-groups (see "Shares"), each with its tag, null for the texts that carry no
-other tag, how many texts it holds and their tokens; a text counts for
-each of its groups, so the groups' tokens add up to more than the share's
-when texts carry several tags. The corpus id covers the build key and
-every file's content (of each text: its depot, id, notice, where its
-tokens start and, when it has any, its scores), so building the same
-corpus again finds it and writes nothing. When an erasure reached the
-snapshot, the same key builds again into the same folder, with a new id,
-and the files of the record it replaces that it no longer names are
-deleted. The record also gives a fingerprint of what it holds of each
-kind a training step reads, `plain`, `conversation` and `task`
-(`fingerprints`), so a step's result depends on the kinds it reads alone
+Everything goes under `deliveries/<delivery key>/` on the dock, with the
+delivery note, `delivery.json`, written last, so a job that fails leaves
+no delivery ([api/freight.md](api/freight.md), "A delivery on the dock").
+The delivery key covers the snapshot's digest and change, the selection
+(kinds, shares and size), the program's name, version and settings, the
+vocabulary's delivery key and the version of the selection rules, never
+the address the request came from, so a clone and the server key the same
+corpus, and another vocabulary or size goes into another folder. Each
+share of the note's `shares` lists its groups (see "Shares"), each with
+its tag, null for the texts that carry no other tag, how many texts it
+holds and their tokens; a text counts for each of its groups, so the
+groups' tokens add up to more than the share's when texts carry several
+tags. The delivery id covers the key, every file's content and every row of
+its tables, so the same request is answered with the delivery the dock
+holds and writes nothing. When an erasure reached the snapshot, the same
+request makes the delivery again into the same folder, with a new id, and
+the files of the note it replaces that it no longer names are deleted. The
+result also gives a fingerprint of what the corpus holds of each kind a
+training step reads, `plain`, `conversation` and `task` (`fingerprints`),
+so a step's result depends on the kinds it reads alone
 ([training.md](training.md), "Step results and reuse").
 
-An erasure carried out while a corpus is built is checked once the build
-ends: when it reached a text the corpus took, the corpus is written stale
-and deletes no other corpus.
+An erasure carried out while a job runs is checked once the job ends:
+when it reached a text the corpus took, the delivery is written stale.
 
 `wpt train` reads the corpus it is given, or else the corpus delivery its
-order names on the dock, and without one the latest corpus the depot built
-for the order's snapshot, data section and size; with neither it refuses
-and says to run `wpt build-resources` ([training.md](training.md),
-"Training"). Training never builds or queues anything. A corpus is a cache: building the same order
-on the same snapshot gives it again, so a model's reproducibility rests on
-the depot's address, the snapshot and the order, never on a kept corpus.
+order names on the dock, and without one the latest corpus under the
+dock's `corpora/` made for the order's snapshot, data section and size,
+which the depot built before the freight; with neither it refuses and says
+to run `wpt build-resources` ([training.md](training.md), "Training").
+Training never builds or queues anything. A corpus is a cache: the same
+request on the same snapshot gives it again, so a model's reproducibility
+rests on the depot's address, the snapshot and the order, never on a kept
+corpus.
 
 ### Conversations that quote texts
 
 A conversation depends on every text its excerpts quote
 ([chat-format.md](chat-format.md), "Excerpts"), which nobody declares: the
-build reads them from its excerpts. The corpus takes a conversation only
+freight reads them from its excerpts. The corpus takes a conversation only
 when, for each excerpt:
 
 - it takes the quoted text, from the conversation's own depot; of a text
@@ -767,13 +765,13 @@ when, for each excerpt:
 
 Otherwise the conversation is left out, whatever left the quoted text out:
 the size, the shares, the snapshot, the kinds or an erasure. The rule reads
-the depot alone, with no model, so the same depot builds the same corpus.
-The build takes the plain texts first, in the corpus's order, keeping in its
-work folder which ones it took, and then the conversations, in their own
-order. A conversation left out still counted for the items' part of the
-size, so a corpus with a size holds fewer tokens of items by as many. The
-record counts these conversations in `left_out`: `quoted text left out` and
-`quote unmatched`.
+the depot alone, with no model, so the same depot gives the same corpus.
+The freight takes the plain texts first, in the snapshot's order, keeping
+in its job's work folder which ones it took, and then the conversations,
+in their own order. A conversation left out still counted for the items'
+part of the size, so a corpus with a size holds fewer tokens of items by as
+many. The delivery note counts these conversations in `left_out`: `quoted
+text left out` and `quote unmatched`.
 
 The frozen export of a legacy dataset's texts ([depot-web.md](depot-web.md),
 "Models trained before snapshots") follows the same rule: it leaves out a

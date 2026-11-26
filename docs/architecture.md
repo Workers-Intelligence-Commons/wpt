@@ -22,10 +22,10 @@ depots, and everything built or trained lives in a dock.
   for reproducibility.
 - A model order names a depot by its public address, a snapshot of it (with the change
   and digest it reads), its kinds, shares, size and vocabulary; training reads the
-  corpus of that build's key from the dock, and every size of a model series reads
+  corpus of that request's delivery key from the dock, and every size of a model series reads
   the same corpus, the one of its largest size, the smaller sizes its first part;
-  `total_tokens` is the size the corpus is built at and a ceiling on what training
-  reads, and training reads what a corpus built at that size holds. An order of
+  `total_tokens` is the size the corpus is made at and a ceiling on what training
+  reads, and training reads what a corpus made at that size holds. An order of
   the older dataset shape names a dataset of a depot of format 12 or older, read
   through the frozen legacy reader ([training.md](training.md), "Models trained
   before snapshots").
@@ -40,6 +40,19 @@ Four parts make a model, each with its own packages and its own command:
 | freight | `freight`, `freight-app` (`freight`) | what a token or a vocabulary is |
 | dock | `dock`, `dock-app` (`dock`) | everything else |
 | WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot, which only `wpt adopt-vocabularies` reads (below) |
+
+The depot, the freight and the dock are meant to serve other kinds of
+models than WPT's transformers, such as diffusion models, world models and
+convolutional networks, and other kinds of data than text, such as images,
+video and sound. They are meant to leave this repository for one of their
+own, and may be written again in another language. So each knows nothing
+of WPT. The aim is that what one offers the others goes through its `api`
+module alone, whose calls carry only values JSON and byte streams can
+carry, so that each `api` can become web routes without its callers
+changing. The code is not all there yet: the exceptions below say where a
+part still reaches into another, and `dock.api` still hands out the dock
+as an object. Until they leave, they live here as three parts, each with
+its own packages, its own command and its own document under `docs/api/`.
 
 What one part offers the others is one module named `api`: `depot.api`,
 `freight.api` and `dock.api`, each described in a document of its own
@@ -93,9 +106,11 @@ known by that address. The setting `DEPOT`, in the environment or in
 `DOCK` names the dock. `depot new ADDRESS` makes an empty one,
 with its name, its maintainer and its takedown contact. The setting
 `DEPOT_URL`, read the same way, is the depot's public address, the web
-address of its `depot web`: its corpora name the depot by it, never by
-its file, and a depot without it is named by its name. A corpus names
-another local depot it reads by that depot's name too
+address of its `depot web`. `/api/about` answers it as the depot's
+address, and the frozen dataset routes and `depot upgrade` name the depot
+by it, never by its file; a depot without it is named by its name. A
+corpus the freight delivers names the depot by the address its order's
+`data.depot` gives, and each of its items by the depot's name
 ([data-selection.md](data-selection.md), "Corpora").
 
 Its tables are `about` (the depot's name, maintainer, takedown contact
@@ -155,7 +170,7 @@ characters and UTF-8 bytes (`content_kind`, `content_length`,
 `content_bytes`), copied from it by every write that makes a revision or a
 content version and set again by an erasure's cut, which changes a
 version's length in place. The counts, a decision, a change of licenses or
-tags, a snapshot's read and a build's walk read them from the revision
+tags, a snapshot's read and a listing's walk read them from the revision
 alone, never from `content_lists`. The table `quotes` records, for each content
 version of a conversation, the texts its excerpts quote, so an erasure
 finds the conversations quoting a text it reaches without reading every
@@ -249,9 +264,9 @@ order it needs where SQLite would otherwise choose to read a whole table.
 `packages/depot/tests/test_reads.py` runs each such route on two depots,
 one twice the size of the other, and fails when its reads grow.
 
-**A snapshot's order.** A corpus build, its estimate and the sample that
-trains a vocabulary read a snapshot's texts in the order of their export
-keys (`depot/order.py`). The order is made in memory from the
+**A snapshot's order.** The depot gives a snapshot's texts, in its
+listing (`depot.api.listing`), in the order of their export keys
+(`depot/order.py`), which every delivery of the freight follows. The order is made in memory from the
 snapshot's sets, never from stored keys: each text's key is worked out from
 its id, a number several parts hold is read in the lowest part, and the
 whole is sorted, at 8 bytes a text once sorted. A plain text longer than
@@ -260,15 +275,16 @@ key of its own name, so a long text spreads over the order; the walk finds
 those texts from the index `content_lists_long` of long content versions,
 so finding them grows with the depot's long contents, not with the
 snapshot's texts. A walk reads each text at its revision as of its part's
-bound, a page at a time, and only the texts it reaches, so a build at a
-small size starts at once whatever the snapshot's size. An order with
+bound, a page at a time, and only the texts it reaches, so a delivery at a
+small size starts at once whatever the snapshot's size. A request with
 shares is the exception: each share splits its part over the tags of its
-texts ([data-selection.md](data-selection.md), "Filling a part"), so a
-first walk reads every entry of the snapshot, keeping numpy arrays and no
-object per text (`depot/groups.py`), before the stream takes the texts
-it chose. What a build needs of the whole snapshot (the bytes of each share
-and of the conversations and tasks) comes from the snapshot's summary,
-never from a recount, so a build plans the same after an erasure.
+texts ([data-selection.md](data-selection.md), "Filling a part"), so the
+freight's first walk reads every entry of the listing, keeping numpy arrays
+and no object per text (`freight/groups.py`), before the stream takes the
+texts it chose. What a delivery needs of the whole snapshot (the bytes of
+each share and of the conversations and tasks) comes from the snapshot's
+summary, never from a recount, so the freight plans the same after an
+erasure.
 
 **Contents.** A content version, a plain text or an item's JSON, is the
 ordered list of its parts, and its row of `content_lists` holds that list,
@@ -289,10 +305,9 @@ version of the text held before. An erasure writes again only the parts
 that hold a character it cuts, and the versions list the new parts
 instead. A part that no version lists any longer goes. A text bigger than
 memory is added from a file read as a stream. An erasure, a clone and a
-pull read and write a text's parts a few at a time, and the corpus build
-reads the parts of all the texts it takes in one pass over `parts`. The corpus build
-reads a piece of a long text from the parts its characters lie in alone,
-and holds the tokens of one text or piece whole in memory while it encodes it.
+pull read and write a text's parts a few at a time. The content the
+freight asks for (`depot.api.content`) is read from the parts, a piece of a
+long text from the parts its characters lie in alone.
 `depot show` gives a text whole, so it holds it in memory, and with
 `--from` and `--characters` it reads one passage from the parts that passage
 reaches alone. `GET /api/texts/{id}` gives a plain text of more than
@@ -626,7 +641,7 @@ number until a later pull. An erasure the upstream carries out meanwhile
 makes the pull start over, and a pull writes nothing until it ends whole.
 A snapshot of the upstream reads its texts by the upstream's numbers, so
 it reads the same in the clone as in the upstream, and an order naming it
-builds the same corpus under the same build key in both. A snapshot the
+gets the same corpus under the same delivery key from both. A snapshot the
 clone makes holds the upstream's texts in a set of their own, read at the
 upstream change the clone's pulls had brought, and its own texts by its
 own numbers. A clone copies
@@ -714,24 +729,28 @@ compression) is built on them, alike for every kind.
 A dock holds real named things, the same on a folder and on a bucket:
 
 ```
-corpora/<build key>/               an order's corpus: corpus.json, token files, vocabulary, tables, tasks
+deliveries/<delivery key>/         what the freight delivered for a request: its note, items tables and files
+corpora/<build key>/               a corpus the depot built before the freight: corpus.json, token files, tables
 models/<name>/                     the model's real files
 runs/<run>/                        each command's record
 cache/<stage>/<fingerprint>        only what can be rebuilt
+backups/<depot name>/              the depot's backups
 ```
 
-`wpt list` lists the corpora and models.
+`freight deliveries` lists the deliveries, and `wpt list` the corpora and
+models.
 
-A corpus lies under its build key: a hash of the snapshot (its id and
-digest), the order's kinds, shares and size, the vocabulary and the rules
-of the build, so the same build always lands in the same folder, on a
-server and on its clones alike. WPT reads them (`wpt_corpus/corpora.py`), and
-the freight marks them stale after an erasure (`freight/corpora.py`). The dock keeps
-the record of every corpus. A deleted corpus's record stays, marked
-deleted with the reason, and building it again checks that it gives the
-same id. The depot builds no corpus: the freight delivers corpora on the
-dock ([api/freight.md](api/freight.md)), and the dock's `corpora/` holds
-the corpora a depot built.
+A delivery lies under its delivery key: a hash of the request (the
+snapshot's change and digest, the selection, the preparation and its
+inputs, the selection rules), so the same request always lands in the same
+folder, on a server and on its clones alike. The freight writes and finds
+them, and marks them stale after an erasure ([api/freight.md](api/freight.md),
+"A delivery on the dock"). A delivery whose files a cap deleted keeps its
+note, marked deleted. The corpora under `corpora/` stay readable by WPT
+(`wpt_corpus/corpora.py`). The freight marks them stale after an erasure
+(`freight/corpora.py`), and so does the depot when it carries one out,
+from `depot decide admit --erasure`, `depot pull` or `depot web`
+(`depot_app/shared.py`, `depot_app/corpora.py`); nothing writes a new one.
 
 Hashes do two jobs. Every read checks the bytes against their sha256: a
 record names each file it points at by the one shape `{"key", "sha256"}` (the
@@ -742,8 +761,8 @@ fingerprint, such as a training step's result in `cache/steps/`. A file
 known only by its content, such as the kept state of a step that nothing
 but the step's result names, lies in `cache/files/<sha256>`.
 
-`cache/` holds only what can be rebuilt, so emptying it leaves every corpus
-and every model usable: a corpus's files and a model's files, a run's
+`cache/` holds only what can be rebuilt, so emptying it leaves every delivery
+and every model usable: a delivery's files and a model's files, a run's
 checkpoint included, lie in their own folders, and a record never points
 into `cache/` for a file it needs to be read.
 
@@ -802,9 +821,7 @@ check adds the rules across files: a series derives every size, and an
 image's pool takes no built-in tool's name. An order's data part has the snapshot shape
 or the legacy dataset shape ([model.md](model.md), "Model orders"); the check refuses
 shares that name a tag twice or sum above 1. An order whose depot, snapshot, digest,
-vocabulary or dataset is still empty reads, and the check names it for a person to fill in. An order a person
-hands over as JSON, never read from `data/` (a depot's build), is read through its `data_section`, which checks
-its data section (a series whole) and gives its data part. People edit the
+vocabulary or dataset is still empty reads, and the check names it for a person to fill in. People edit the
 orders and `tools.json` as files; `Orders` writes only the generated
 files (an image's `lock.json` and `licenses.json`), for the command that makes them, after their schema,
 through a temporary file and a rename.
@@ -1124,7 +1141,7 @@ and each answer is one bounded page, streamed as it is read.
 `Content-Type`: like the commands, it asks for no login and no header, and
 it answers any client that reaches it, through a proxy in front of it
 included. Every such client reads and changes the depot through every
-route: it adds texts and licenses, makes snapshots, builds corpora, and sends
+route: it adds texts and licenses, makes snapshots, and sends
 decisions with a declaration it made up. A web page open in the same
 browser can do the same with a cross-origin `POST` with `Content-Type:
 text/plain`, which the browser sends without asking first, and so can a

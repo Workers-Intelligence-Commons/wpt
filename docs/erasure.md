@@ -120,7 +120,7 @@ The depot carries out an admitted request at once:
   the excerpt still matches the cut text. An excerpt of a text removed
   whole, or one that matches no version of its text at exactly one place,
   keeps none of its characters. The conversation itself stays. A corpus
-  built again leaves out a conversation whose quote no longer matches
+  made again leaves out a conversation whose quote no longer matches
   ([data-selection.md](data-selection.md), "Conversations that quote
   texts").
 - A cut text keeps its id, its decisions and its place in every snapshot
@@ -160,37 +160,43 @@ the pull brings the result.
 
 ## What it covers
 
-Erasure applies to the depot and to every corpus built after it, never
-to the depot's backups. A corpus
-already on the dock is not rewritten: it keeps the passage until its
-order is built again, and it is marked stale (its record names the
-erasures), so `wpt train` refuses it and its download link gives
-nothing until someone builds it again; nothing builds it by itself. A
-corpus being built when the erasure is carried out is written stale when
-its build ends, if it took a text the erasure reached. A corpus is marked
-stale by the texts it holds, whichever depot's numbering their ids carry,
-and its record names the erasures carried out on the texts its snapshot
-holds. An erasure decided
-through `depot web` is recorded as being checked before it is carried
-out, and the web app sends no corpus until every corpus holding one of its
-texts is marked stale, which it does in the background. Built again, a
-order gives what its snapshot held at its change, less what the erasure
-removed or cut, its plan unchanged since it comes from the snapshot's
-summary ([data-selection.md](data-selection.md), "Building a snapshot
-again"). The legacy tables of a depot brought up from format 12 hold no
-content, and the frozen dataset routes read the texts' content from the
-depot as erasures left it. Models already trained and published are not
-changed.
+Erasure applies to the depot and to every delivery the freight makes
+after it, never to the depot's backups. Models already trained and
+published are not changed.
 
 The freight's deliveries on the dock learn of an erasure from the freight,
 not from the depot: before every job, before it answers a request, and
 whenever `freight check` runs, the freight asks the depot which erasures it
 carried out since it last asked, and marks stale every corpus delivery
-whose items hold a text one of them reached ([api/freight.md](api/freight.md),
-"Erasures"). So a delivery is known stale only once the freight has asked.
-`wpt train` refuses a stale corpus delivery, and `wpt build-resources`
-makes it again into the same place, without what the erasure removed or
-cut.
+whose items hold a text one of them reached, whichever depot's numbering
+their ids carry ([api/freight.md](api/freight.md), "Erasures"). So a
+delivery is known stale only once the freight has asked, and a timer
+outside the freight runs `freight check`, as one runs `depot backup`:
+
+    */15 * * * * cd /path/to/wpt && uv run freight check
+
+A delivery on the dock is not rewritten: it keeps the passage until the
+same request makes it again, and its note says `stale` with the erasures,
+so `wpt train` refuses it; nothing makes it again by itself. A job running
+when the erasure is carried out writes its delivery stale when it ends, if
+it took a text the erasure reached. Its note names the erasures carried
+out on the texts its snapshot holds. `wpt build-resources` makes a stale
+delivery again into the same place: the order gives what its snapshot held
+at its change, less what the erasure removed or cut, its plan unchanged
+since it comes from the snapshot's summary
+([data-selection.md](data-selection.md), "Choosing in a snapshot again").
+
+The corpora the depot built before the freight, under the dock's
+`corpora/`, are marked stale the same way, by the freight at the same
+moments and by the depot itself when it carries out an erasure: `depot
+decide admit --erasure`, `depot pull` and `depot web` each mark them on
+the dock that `DOCK` names, and say how many in their log. An erasure
+decided through `depot web`
+is recorded as being checked before it is carried out, and the web app
+sends no such corpus until every one holding one of its texts is marked
+stale, which it does in the background. The legacy tables of a depot
+brought up from format 12 hold no content, and the frozen dataset routes
+read the texts' content from the depot as erasures left it.
 
 A trained vocabulary is not retrained when a text changes (see
 [tokenizer.md](tokenizer.md)), so merges learned from erased text, such as

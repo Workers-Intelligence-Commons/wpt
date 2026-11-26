@@ -162,8 +162,8 @@ that order (filters.Filter.decision). The indexes of change numbers
 text_decisions_change, pins_change, and texts_change) let a pull read the
 rows past a change without reading a whole table (depot.follow). The
 partial index content_lists_long holds the content versions of kind
-plain longer than LONG characters, those a corpus build cuts into pieces
-(depot.pieces), so a build finds the long texts it reads from them
+plain longer than LONG characters, those a snapshot's listing cuts into
+pieces (depot.pieces), so a listing finds the long texts it reads from them
 without reading every text (depot.order, depot.legacy). The partial
 index texts_length holds the current texts by status, then by the length in
 characters of the content version each reads (content_length), then in the

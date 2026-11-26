@@ -143,7 +143,7 @@ def corpus_record(corpus: dict, vocabulary: dict) -> dict:
     `delivery` (its key), `vocabulary_delivery`, its token files by kind
     (`shards`, each the dock's reference with what the program said of it),
     its tables (`texts`: the items tables), `tasks`, `tokenizer` (the
-    vocabulary's file and size, named "ORDER version N" for one adopted
+    vocabulary's file and size, named "RECIPE version N" for one adopted
     from a depot's tokenizer recipe, else by label), `max_tokens` (the size in
     tokens it was asked for), `total_tokens`, `items_tokens`,
     `fingerprints`, and `stale` or `deleted` as its note says."""

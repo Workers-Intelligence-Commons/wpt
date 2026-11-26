@@ -160,48 +160,6 @@ def _shares(where: str, data: dict, place: str):
         raise InvalidOrder(f"{where}: {place}shares are all 0: give one a share above 0, or give no shares")
 
 
-def data_section(document, where: str) -> tuple[str, dict]:
-    """(the kind, "model" or "series", and the data part) of an order
-    handed over whole as JSON, never read from data/ (a file a person gives
-    a depot's build): a series (a document with sizes), checked whole
-    against its schema and its rules, gives its data part at its largest
-    size (series.data_part), the one corpus every size reads; any other
-    document is read as a model order, of which only the data section is
-    checked, so a document holding a data section alone reads too. The
-    data section passes the check's rules on shares and on fields left
-    empty. InvalidOrder otherwise; where names the document in messages."""
-    if not isinstance(document, dict) or not isinstance(document.get("data"), dict):
-        raise InvalidOrder(f"{where}: no data section: give a model order or a series, a JSON object with data")
-    if "sizes" in document:
-        validate(document, "series", where)
-        try:
-            series.check(document)
-            data = series.data_part(document)
-        except ValueError as error:
-            raise InvalidOrder(f"{where}: {error}") from None
-        kind = "series"
-    else:
-        error = jsonschema.exceptions.best_match(_data_validator().iter_errors(document["data"]))
-        while error is not None and error.validator == "oneOf" and error.context:
-            error = _nearest_shape(error)
-        if error is not None:
-            place = "/".join(["data", *map(str, error.absolute_path)])
-            raise InvalidOrder(f"{where}: at {place}: {error.message}")
-        data, kind = document["data"], "model"
-    _shares(where, data, "data.")
-    _empty_data(where, data, "data.")
-    return kind, data
-
-
-@cache
-def _data_validator():
-    """The validator of a model order's data section alone."""
-    whole = schema("model")
-    part = {"$schema": whole.get("$schema"), "$defs": whole["$defs"], **whole["properties"]["data"]}
-    part = {key: value for key, value in part.items() if value is not None}
-    return jsonschema.validators.validator_for(part)(part)
-
-
 class Orders:
     """The orders and task images of the repository at root."""
 

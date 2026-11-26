@@ -86,7 +86,7 @@ body:
     id: order
     attributes:
       label: "Order"
-      description: "The name of the model order (`data/orders/models/NAME.json`), tokenizer recipe or dataset involved. Write \"none\" if no order was involved."
+      description: "The name of the model order (`data/orders/models/NAME.json`), vocabulary (its sha256) or dataset involved. Write \"none\" if no order was involved."
       placeholder: "unimpaired-axolotl"
     validations:
       required: true

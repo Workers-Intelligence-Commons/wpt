@@ -143,7 +143,7 @@ The copying figures are those of the `copying` test of `wpt eval`, on 200
 prompts each. Other models of this shape copy 43% to 70% of the tokens
 from one run to another ([lookup-memory.md](lookup-memory.md)), so a gap
 of 47 points is outside what those runs show, and the spread between two
-runs of one recipe is still not measured.
+runs of one order is still not measured.
 
 ## Open
 

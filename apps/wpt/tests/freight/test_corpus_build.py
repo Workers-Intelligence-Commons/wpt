@@ -11,10 +11,12 @@ from wpt_tokenizer import END, Tokenizer, chat
 from depot import About, Depot, NewText, clone, ids, pull, snapshots
 from depot import order, pieces
 from freight import corpora
-from freight.corpora import Room, TooBig, mark_stale, records
+from freight.corpora import mark_stale, records
 from wpt_corpus.corpora import find, fresh
 from wpt_corpus.corpora import rows as corpus_rows
 from corpus_build import build, build_key, census, task_text
+from corpus_room import Room, TooBig
+import corpus_room
 from depot.errors import Refused
 from depot.ids import export_key
 from wpt.train.notice import model_notice
@@ -832,7 +834,7 @@ def test_a_cap_deletes_the_files_a_build_left_without_a_record_and_that_build_st
     assert fresh(record)
     assert sum(store.kind.list(left, deep=True).values()) < left_bytes  # a file at a time, as the build needed room
     resumed = make(depot, store, work=tmp_path / "work", checkpoint=saved[-1], shard_tokens=20)
-    assert resumed["id"] == whole["id"] and not corpora.missing(store, resumed["folder"], corpora.files(resumed))
+    assert resumed["id"] == whole["id"] and not corpus_room.missing(store, resumed["folder"], corpora.files(resumed))
 
 
 def test_an_erasure_of_a_text_the_snapshot_does_not_hold_leaves_its_corpus_s_folder_and_id_as_they_were(
@@ -841,7 +843,7 @@ def test_an_erasure_of_a_text_the_snapshot_does_not_hold_leaves_its_corpus_s_fol
     [outside] = depot.add([NewText(text="the cat", licenses=("CC0-1.0",))], me)  # under review: not in the snapshot
     store = open_dock((tmp_path / "store").as_uri())
     first = make(depot, store)
-    corpora.delete(store, first, "a test deleted it")
+    corpus_room.delete(store, first, "a test deleted it")
     request = depot.ask_erasure("a cat", [(outside, 4, 7)], me)
     assert depot.decide_erasure(request, "admitted", me) is True
 

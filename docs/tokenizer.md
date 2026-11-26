@@ -62,9 +62,9 @@ its name, its sample (the snapshot whose plain texts trained its
 vocabulary, and the kinds it read) or, for a revision written before
 snapshots, a dataset, `sample_bytes`, `vocab_size` and a note, its
 `version` raised by each change of what trains it. `vocabularies` holds at
-most one vocabulary for each version of an order, and `vocabulary_texts`
+most one vocabulary for each version of a tokenizer recipe, and `vocabulary_texts`
 every text it trained on, in the order they were read, by its depot (empty
-for the depot that holds the order, the web address for another depot)
+for the depot that holds the recipe, the web address for another depot)
 and its id there. `wpt adopt-vocabularies` puts each on the dock (below),
 and the web app's frozen routes `GET /api/tokenizers/{name}` and its
 vocabulary file serve the models trained before snapshots
@@ -107,12 +107,13 @@ learned (`wpt.resources.label`).
 recipes trained on the dock, so an order naming one by its sha256 finds it:
 the delivery `adopted-<sha256>`, its file `vocabulary.json`, the result a
 `wpt-vocabulary` delivery gives (`sha256`, `size`, `tokenizer_version`),
-what the depot recorded of it (`adopted`: its order's name and version,
+what the depot recorded of it (`adopted`: its tokenizer recipe's name and version,
 the dataset it named, its sample and sample bytes, its count of texts and
 their bytes), and as its items table the texts it trained on, in the order
 it read them (`depot`, `id`, `change`). It reads the depot without writing
 to it, and a vocabulary the dock holds already stays as it is. The weight
-files of a model trained on it name it as before (`classics version 1`).
+files of a model trained on it name it by its tokenizer recipe and version
+(`classics version 1`).
 
 An erasure never makes a vocabulary delivery stale, adopted or learned: the
 freight writes it into the delivery's `erasures_since` and the delivery

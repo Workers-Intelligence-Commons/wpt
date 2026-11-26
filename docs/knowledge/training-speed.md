@@ -48,5 +48,5 @@ A change belongs to one of two kinds, and each kind has its own proof.
 
 - **The bound over a whole run.** Nothing here bounds how far two codes
   equal within rounding on one pass may drift apart over a run. A measure
-  would train the same recipe several times with each code and compare the
+  would train the same order several times with each code and compare the
   spread of the final loss within a code with the gap between the codes.

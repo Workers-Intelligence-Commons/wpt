@@ -93,12 +93,12 @@ snapshot job is open, and each snapshot has at most one order by length.
 The page "Jobs"
 shows the queue, each job's lane and progress. Only `depot jobs cancel
 ID`, run where the depot is, cancels one; `depot jobs` lists them. A
-queue file written by an older app is brought up when the app opens it:
-a job of an operation or a kind the app no longer has (a vocabulary's
-training, a corpus's build) fails, saying so, and so does every write
-still queued or running, since its selection could name a
-library, which no longer exists, and run now it would reach more texts
-than were chosen. Nothing of it is written; the texts are chosen again.
+queue file of an earlier layout is brought up when the app opens it: a
+job of an operation or a kind the app does not have fails, saying so, and
+so does every write still queued or running, since its selection could
+name a library, which the depot does not hold, and run now it would reach
+more texts than were chosen. Nothing of it is written; the texts are
+chosen again.
 
 Every heavy action shows its cost before the click that starts it, and its
 route refuses it without `confirmed: true` and the estimate it showed; when

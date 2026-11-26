@@ -68,12 +68,12 @@ whatever asks, and an erasure that removed a text whole passes it by.
 
 `after` is the place of an entry, `[key, owner, number, piece]`, its key
 as the listing gives it and `-1` for a whole text's piece: the listing goes on right after it, which is how
-a build goes on from its last upload. `spread` gives at most that many
+a job of the freight goes on from its last upload. `spread` gives at most that many
 places spread evenly over the listing instead of every one.
 
 The listing of a snapshot is made once from its sets and kept until an
 erasure reaches the depot or another snapshot is listed, so the walks of
-one build read the same listing and make it once.
+one job read the same listing and make it once.
 
 `listing_size(depot, snapshot)` gives `{entries, long_texts, pieces,
 piece_characters}`: the places of the listing (a text an erasure removed

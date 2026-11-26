@@ -1689,13 +1689,13 @@ def _datasets_13(db: Database, log, known: dict, public: str | None = None):
 
 
 def _data_section(con, planned, digest: str, public: str | None) -> dict:
-    """The order data section that builds what the converted dataset revision built (conversion.recipe_data)."""
+    """The order data section that builds what the converted dataset revision built (conversion.order_data)."""
     from . import conversion
     vocabulary = (planned.row or {}).get("vocabulary")
     size = con.execute("SELECT r.vocab_size FROM vocabularies v JOIN tokenizers_revisions r ON r.id = v.recipe AND "
                        "r.version = v.version WHERE v.sha256 = ? LIMIT 1", (vocabulary,)).fetchall() if vocabulary else []
     measured = conversion.Measured([], {}, 0, 0, 0, digest, 0, 0)
-    return conversion.recipe_data(planned, measured, public or _owner_13(con), size[0][0] if size else None)
+    return conversion.order_data(planned, measured, public or _owner_13(con), size[0][0] if size else None)
 
 
 def _tables_13(db: Database, log):

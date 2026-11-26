@@ -1,5 +1,4 @@
-"""The order in which a corpus build, the estimate of a build and the
-sample that trains a vocabulary read a snapshot's texts (depot.snapshots),
+"""The order in which the freight reads a snapshot's texts (depot.snapshots),
 which they are given as its listing (depot.api.listing, the entries of
 a walk): every text the snapshot holds, by its export key (depot.ids.export_key),
 but for its long plain texts, each of which comes as its pieces

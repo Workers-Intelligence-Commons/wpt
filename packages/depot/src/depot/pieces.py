@@ -1,4 +1,4 @@
-"""Where a corpus build cuts a long plain text into pieces, and the text of
+"""Where a snapshot's listing cuts a long plain text into pieces, and the text of
 one piece read from the text's parts.
 
 A plain text longer than LENGTH characters (schema.LONG, the texts the

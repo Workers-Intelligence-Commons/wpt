@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from wpt_orders import InvalidOrder, NotFound, Orders, data_section, series, validate
+from wpt_orders import InvalidOrder, NotFound, Orders, series, validate
 
 ROOT = Path(__file__).resolve().parents[3]
 SERIES = "eldest-titmouse"
@@ -141,12 +141,3 @@ def test_a_series_of_the_snapshot_shape_gives_every_size_its_data_and_the_larges
     # a series' sizes give the size: its data part names none
     with pytest.raises(InvalidOrder, match="at data: Additional properties are not allowed .'total_tokens' was"):
         validate({**snapshot, "data": {**SNAPSHOT_DATA, "total_tokens": 100}}, "series", "snapshot")
-
-
-def test_a_series_handed_over_as_json_gives_the_data_part_of_its_largest_size(ladder):
-    # a depot's build reads a series a person hands over, never from data/: its one corpus, at its largest size
-    snapshot = {**copy.deepcopy(ladder), "data": copy.deepcopy(SNAPSHOT_DATA)}
-    assert data_section(snapshot, "ladder.json") == ("series", series.data_part(snapshot))
-    broken = {**snapshot, "sizes": [*snapshot["sizes"], snapshot["sizes"][0]]}  # a size named twice
-    with pytest.raises(InvalidOrder, match="ladder.json: size names repeat"):
-        data_section(broken, "ladder.json")

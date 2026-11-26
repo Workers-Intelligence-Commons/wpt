@@ -1,8 +1,8 @@
 """How each share of a selection splits its budget over the tags its texts
 carry, each tag's part following the square root of what it holds
 (docs/data-selection.md, "Shares"): a first pass over the snapshot's
-order, the choice of texts it makes, and the chosen set a corpus build
-follows as it walks the order again. Nothing here reads a depot: the
+order, the choice of texts it makes, and the chosen set a job follows
+as it walks the order again. Nothing here reads a depot: the
 entries come from the caller, a job's walk of the snapshot's listing
 (freight.selection.walk).
 

@@ -1,4 +1,4 @@
-# How far do two runs of one recipe differ?
+# How far do two runs of one order differ?
 
 This file asks one question: how much the result of training changes when
 the same model is trained again with another random seed, what causes it,
@@ -7,7 +7,7 @@ defined in [README.md](README.md).
 
 ## Answer
 
-- Two runs of one recipe never give the same model: training amplifies
+- Two runs of one order never give the same model: training amplifies
   any difference, down to one bit of one weight, and no single source of
   randomness is the cause. **published, agreed**, **unchecked**
 - The validation loss of a language model of 80M to 300M parameters
@@ -19,14 +19,14 @@ defined in [README.md](README.md).
   loss does, by 2 points and more, and a continuous measure such as the
   loss or bits per byte separates two models better. **published,
   agreed**, **unchecked**
-- Two runs of one recipe of 45M parameters copy a repeated sequence at
+- Two runs of one order of 45M parameters copy a repeated sequence at
   95% and at 82% of its tokens: a test of copying moves by 13 points
   between seeds, so it ranks two models only when they differ by much
   more. **measured here**, two runs
 - A loss measured on a few million tokens moves by about 0.05 nats with
   the windows drawn, as much as most gaps between models. Two models are
   compared on the same windows, or the gap says nothing: two runs of one
-  recipe measured on different windows end 0.06 apart, which the windows
+  order measured on different windows end 0.06 apart, which the windows
   alone can give. **measured here**, two runs
 - So one run of each model shows a gap in validation loss when it is
   several times the spread between seeds, on the same windows: about 0.02
@@ -93,7 +93,7 @@ exists under the id or address given.
 
 ### Measured with WPT
 
-One recipe trained twice with two seeds: width 256, 11 layers, 32 routed
+One order trained twice with two seeds: width 256, 11 layers, 32 routed
 experts, a vocabulary of 65,536 in one shared table, 44.8M parameters,
 1.18B tokens in 8,990 updates (commit b7dca7b2f7, RTX 5080 Laptop GPU).
 Each run measures its validation loss on 20 batches of windows drawn anew

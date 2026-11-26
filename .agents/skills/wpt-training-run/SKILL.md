@@ -30,9 +30,10 @@ from the repository folder:
 | Windows (PowerShell) | `.\scripts\detach.ps1 uv run wpt train ORDER [CORPUS_ID] --out runs/NAME [options]` |
 | Linux, macOS | `scripts/detach.sh uv run wpt train ORDER [CORPUS_ID] --out runs/NAME [options]` |
 
-Without a corpus id, `wpt train` reads the latest fresh corpus of the
-order's dataset; `uv run wpt list` lists the corpora the
-dock holds.
+Without a corpus id, `wpt train` reads the corpus delivery whose key the
+order gives; `uv run freight deliveries` lists the deliveries the dock
+holds, and `uv run wpt list` the corpora the depot built before the
+freight.
 
 On a Windows machine, use the Windows row from PowerShell, never a WSL
 shell (the `wpt` skill, "Setting up a machine").

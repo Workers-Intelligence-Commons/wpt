@@ -30,7 +30,7 @@ and items, the decisions on them, its snapshots and erasures.
                                           locked library and dataset revision becomes (a snapshot; the dataset
                                           revisions the corpora of DOCK were built from included), the
                                           check of every revision each snapshot reads against the libraries'
-                                          reads, the names made snapshots' names, a recipe data section for
+                                          reads, the names made snapshots' names, an order data section for
                                           each dataset revision, the cost (time, disk, WAL, the next backup's
                                           full copy) and what to do before; --yes runs that check again and,
                                           when it passes, upgrades: a folder runs each step up to format 3 in

@@ -32,7 +32,10 @@ corpus, or a start of it, and never builds. `wpt build-resources ORDER`
 (`SERIES:` for a series: the one corpus every size reads, at its largest
 size) asks the freight for the order's vocabulary, when it learns one,
 then for its corpus, which the freight delivers on the dock, the dock
-`DOCK` names ([api/freight.md](api/freight.md)). Without an id,
+`DOCK` names. It queues both requests in the freight's folder, which
+`FREIGHT_HOME` names in the environment or `.env` like `DOCK`, and runs
+that queue itself while no other process does
+([api/freight.md](api/freight.md)). Without an id,
 `wpt train` reads the corpus delivery whose key the order gives: the key
 of the request its data part makes (the snapshot's change and digest, its
 kinds, shares, `data.total_tokens` as the size in tokens, for a series the
@@ -41,8 +44,8 @@ delivery), worked out from the order alone (`wpt.resources`). It reads no
 depot. Without that delivery, an order that names its vocabulary by its
 sha256 reads the latest corpus the depot built onto the dock's
 `corpora/` from the order's snapshot (its name, change and digest), depot,
-kinds, shares and vocabulary, at its size, under the selection rules of
-now ([data-selection.md](data-selection.md), "Corpora"). With neither, or with a stale one, the run is refused, saying
+kinds, shares and vocabulary, at its size, under the selection rules
+`wpt_corpus.corpora.RULES` names ([data-selection.md](data-selection.md), "Corpora"). With neither, or with a stale one, the run is refused, saying
 to run `wpt build-resources`, and nothing is built or queued. A corpus
 given by its id (`WPT_CORPUS` or the corpus option), of a delivery or of
 the dock's `corpora/`, must be made from the order's snapshot (its name,
@@ -65,8 +68,8 @@ texts and of its conversations, each kind's apart, and its tasks. Its
 record, or its delivery's result, gives a fingerprint (a sha256) of what it holds of each kind,
 `plain`, `conversation` and `task`, which the steps' fingerprints read
 ("Step results and reuse", below). A
-text added to the depot after the build reaches training only once the
-corpus is built again.
+text added to the depot after the snapshot reaches training only through a
+later snapshot and the corpus made from it.
 
 `wpt train` trains through gpu workers, one per machine
 ([machines.md](machines.md)): each worker's job runs the steps on its GPUs, and `wpt train` answers it from
@@ -1039,8 +1042,10 @@ The model folder holds:
 - the weights (safetensors, optionally split with `--max-shard-size`); each
   file's header carries `license` (AGPL-3.0-or-later), `output_license`
   (CC0-1.0) and `notice`, which points to the folder's `NOTICE` and the
-  project, and `tokenizer` (the tokenizer recipe and version, such as
-  `classics version 1`) and `tokenizer_sha256`;
+  project, and `tokenizer` (the label of the vocabulary's delivery, such
+  as `vocabulary 16,384 · snapshot ... · 10,000,000,000 bytes`, or, for a
+  vocabulary adopted from a depot, its tokenizer recipe and version, such
+  as `classics version 1`) and `tokenizer_sha256`;
 - `tokenizer.json`, the corpus's vocabulary, exactly the bytes those
   headers name: `wpt chat` and `wpt eval` refuse another (see
   [tokenizer.md](tokenizer.md));
@@ -1117,7 +1122,8 @@ says.
 A model trained on a snapshot names, in `provenance.json`, what anyone needs
 to make its corpus again and check it: `data`, the order's data section (the
 depot's address, the snapshot's name, change and digest, the kinds, shares,
-size and vocabulary); `recipe_name` and `recipe`; and `repository_commit`
+size and vocabulary); `recipe_name` and `recipe`, the order's name and the
+order itself; and `repository_commit`
 with `repository_dirty`, the code (the commit pins the design-system
 submodule too). A model trained on deliveries of the freight names too
 `deliveries`, the key, id and preparation (for an adopted vocabulary, what
@@ -1178,16 +1184,15 @@ the depot's legacy tables what they answered for the depot of format 12
 (`depot/legacy.py`, [depot-web.md](depot-web.md), "Models trained
 before snapshots"), so the depot's address and the repository at that
 commit still check the model. Its corpus is read from the dock that holds
-it, since nothing builds a corpus of a dataset any more. The upgrade to
-format 13 also made a snapshot of each locked library and of each dataset
-revision a corpus was built from ([architecture.md](architecture.md),
-"Format"), so the same texts can be built again as an order of the
-snapshot shape.
+it, since nothing makes a corpus of a dataset. The upgrade to format 13
+makes a snapshot of each locked library and of each dataset revision a
+corpus was built from ([architecture.md](architecture.md), "Format"), so
+an order of the snapshot shape can ask the freight for the same texts.
 
-The other way is the depot as it was: restore a backup made before the
+The other way is the depot at format 12: restore a backup made before the
 upgrade (`depot restore TO --at MOMENT`) with the wpt of format 12,
-checked out from a commit of then, since the code of format 13 refuses a
-depot of format 12, and serve or build from it with that code.
+checked out from a commit of that format, since the code of format 13
+refuses a depot of format 12, and serve or build from it with that code.
 
 ## Records written for training
 
@@ -2076,19 +2081,19 @@ round's value is `mean_reward`). Its settings are those of `finish-tasks`
 
 ## What is exactly repeatable
 
-**The corpus is what a model trained on**: its record and tables name
+**The corpus is what a model trained on**: its delivery note and tables name
 every text, and its fingerprints cover its parts. Shards are compared by their token hash, which covers
 only their rows, not the bytes of the Parquet file (a newer pyarrow may write
 different bytes for the same tokens).
 
-**The corpus is built again exactly**: a snapshot names the change it
+**The corpus is made again exactly**: a snapshot names the change it
 reads and the texts it holds, its digest proves them, and a depot keeps
 every revision, so the depot's address, the snapshot and the order give
 the same corpus, its id included, on the server or on any clone, whenever
-it is built ("What a model records", above). Only an admitted erasure
-changes it: the texts it removes are gone and the passages it cuts are cut,
-and the corpus built again says so in its record
-([data-selection.md](data-selection.md), "Building a snapshot again").
+the freight makes it ("What a model records", above). Only an admitted
+erasure changes it: the texts it removes are gone and the passages it cuts
+are cut, and the delivery made again says so in its note
+([data-selection.md](data-selection.md), "Choosing in a snapshot again").
 
 **Tool versions**: the repository pins a reference version of each tool
 (`uv.lock` for Python packages, `.python-version`, and

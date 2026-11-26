@@ -14,14 +14,12 @@ size's model order from it, for the vocabulary's size. A task image
 in, its lock, its packages' licenses and its shared pool of tools.
 
 Orders (orders.py) is the only code that opens these files; guard.py
-refuses any other (docs/architecture.md, "The service layer"). An order
-a person hands over as JSON, read elsewhere (a depot's build), is read
-through data_section, which gives its data part.
+refuses any other (docs/architecture.md, "The service layer").
 """
 
 from . import series
 from .errors import InvalidOrder, NotFound, OrderError
-from .orders import ASK, BUILT_IN_TOOLS, SIZE_OF, Orders, data_section, dump_json, validate
+from .orders import ASK, BUILT_IN_TOOLS, SIZE_OF, Orders, dump_json, validate
 
-__all__ = ["ASK", "BUILT_IN_TOOLS", "SIZE_OF", "InvalidOrder", "NotFound", "OrderError", "Orders", "data_section",
-           "dump_json", "series", "validate"]
+__all__ = ["ASK", "BUILT_IN_TOOLS", "SIZE_OF", "InvalidOrder", "NotFound", "OrderError", "Orders", "dump_json",
+           "series", "validate"]

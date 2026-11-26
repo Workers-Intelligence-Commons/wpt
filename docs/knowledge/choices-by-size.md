@@ -160,7 +160,7 @@ per parameter at each.
 
 ### Before any comparison
 
-- **The spread between two runs of one recipe.** The same recipe with
+- **The spread between two runs of one order.** The same order with
   another seed, at the smallest size and at one larger. Every gap below is
   read against it.
 

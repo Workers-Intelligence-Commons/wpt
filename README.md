@@ -10,9 +10,13 @@ modified version must share it. The principles are in the
 [charter](docs/charter.md).
 
 This repository is everything needed to build a WPT model from nothing:
-the code of the depot that holds the texts and the decisions on them, the
-code that builds a corpus from it, trains, evaluates and runs the model, and the
-orders of the models. No checkpoint has been published yet.
+the code of the depot that holds the texts and the decisions on them, of
+the freight that prepares a vocabulary and a corpus from it, of the dock
+that keeps what machines made, the code that trains, evaluates and runs
+the model, and the orders of the models. The depot, the freight and the
+dock are meant to serve other models and other kinds of data too, and to
+move to a repository of their own
+([architecture](docs/architecture.md), "The parts"). No checkpoint has been published yet.
 
 ## How it works
 
@@ -45,7 +49,7 @@ WPT hosts no data.
   `NOTICE` and `CREDITS` naming each text it learned from, with its credit, and a
   `provenance.json` recording exactly what produced it.
 - **Erasure on request**: an admitted erasure cuts the passage from the
-  depot and drops every older state of it, so every later corpus is built
+  depot and drops every older state of it, so every later corpus is made
   without it ([docs/erasure.md](docs/erasure.md)).
 
 ## Quick start
@@ -58,8 +62,9 @@ through Docker Desktop.
 
 ```sh
 uv run scripts/setup.py                            # the PyTorch build for this machine's GPU
-echo "DOCK=file://$HOME/dock" >> .env    # where corpora, models and runs live
+echo "DOCK=file://$HOME/dock" >> .env    # where deliveries, models and runs live
 echo "DEPOT=$HOME/depot.sqlite" >> .env    # the depot the depot commands work on
+echo "FREIGHT_HOME=$HOME/freight" >> .env  # the freight's queue and the work of its jobs
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
 uv run depot snapshot new                      # the texts admitted now, named by the UTC time
@@ -72,10 +77,13 @@ uv run wpt eval runs/first                         # the tests, into the model c
 uv run wpt chat runs/first                         # continue text with the model
 ```
 
-Every job is a subcommand of one command, `wpt` (`uv run wpt --help`
-lists them, and `uv run wpt SUBCOMMAND --help` gives each one's options).
-The dock holds plain named things: `corpora/`, `models/` and `runs/`
-(`wpt list` lists the corpora and models).
+Every job of WPT is a subcommand of one command, `wpt` (`uv run wpt --help`
+lists them, and `uv run wpt SUBCOMMAND --help` gives each one's options);
+the depot, the freight and the dock have their own commands, `depot`,
+`freight` and `dock`. The dock holds plain named things: `deliveries/`,
+`corpora/` (the corpora the depot built before the freight), `models/` and
+`runs/` (`freight deliveries` lists the deliveries, `wpt list` the corpora
+and models).
 
 A model order (`data/orders/models/ORDER.json`) holds everything that
 changes the model: its data, architecture and training steps
@@ -116,12 +124,12 @@ the same command with `--resume` continues.
 | train on another machine's GPUs | a gpu worker on each machine (`deploy/gpu-worker/compose.yaml`, with `compose.nvidia.yaml` or `compose.amd.yaml` for GPUs), their keys in `WPT_GPU_WORKERS` ([machines](docs/machines.md)) |
 | rent the GPUs | `WPT_GPU_WORKERS=N` and `WPT_RENTAL_GPUS` for `wpt manager`, which rents N gpu workers through SkyPilot (as one cluster in one request), replaces a lost one and gives them back at the end ([machines](docs/machines.md)) |
 | train on a built corpus in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_ORDER` set in `.env`; then `wpt copy-out NAME runs/NAME` ([machines](docs/machines.md)) |
-| teach the model to chat | conversations in the snapshot, the corpus built again, and an order whose `steps` add `answer-as-assistant` after `read-text`: `wpt train ORDER CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
-| teach the model to finish tasks as an agent | tasks in the snapshot, the corpus built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and an order whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
+| teach the model to chat | conversations in a new snapshot, its corpus made, and an order whose `steps` add `answer-as-assistant` after `read-text`: `wpt train ORDER CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
+| teach the model to finish tasks as an agent | tasks in a new snapshot, its corpus made, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and an order whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
 | teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the order's `steps`: it trains on the same tasks ([training](docs/training.md)) |
 | train long windows on a small GPU | nothing: each stage whose pass does not fit the GPU's memory runs its layers again in the backward pass instead of keeping their values; `--recompute` does it in every stage, `--no-recompute` in none |
 | train without `torch.compile` | `--no-compile`: the passes over whole text windows, compiled by default on a CUDA device (an NVIDIA or AMD GPU) with Triton and a C++ compiler, run uncompiled ([training](docs/training.md), "Compiling the passes") |
-| add texts, conversations and tasks, decide on them, tag them, make snapshots, compose orders and build their corpora, in a browser | `depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
+| add texts, conversations and tasks, decide on them, tag them and make snapshots, in a browser | `depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
 
 Every option also comes from the environment (`--micro-batch` is
 `WPT_MICRO_BATCH`), and `--help` lists them all. Details:

@@ -104,11 +104,11 @@ look.
 
 Each text of a depot holds its credits (title, authors, address), its
 licenses and its notice ([licenses.md](licenses.md), "Licenses and
-notices"). A corpus copies them into its own tables when it is built
-([data-selection.md](data-selection.md), "Corpora"), so it never depends on
-the depot afterwards. Training writes the model folder's CREDITS from the
-corpus's tables alone, one line per text the model's steps read
-(`depot.notice`), and records the corpus in `provenance.json`; the
+notices"). A corpus copies them into its own tables when the freight
+makes it ([data-selection.md](data-selection.md), "Corpora"), so it never
+depends on the depot afterwards. Training writes the model folder's CREDITS
+from the corpus's tables alone, one line per text the model's steps read
+(`wpt.train.notice`), and records the corpus in `provenance.json`; the
 model folder's NOTICE, model card and weight metadata are generated from
 the folder's own files, so they cannot contradict each other. They are
 generated when a model is trained, not checked by CI, because the

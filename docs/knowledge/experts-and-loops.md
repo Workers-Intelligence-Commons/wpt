@@ -29,7 +29,7 @@ loops at small sizes, and half against it.
   a repeated sequence against 95%. The measure does not separate the loops
   from the table. The two runs share their seed, so their validation
   windows; the gap in copying, 11 points, is within the 13 points two
-  seeds of one recipe show
+  seeds of one order show
   ([run-to-run-spread.md](run-to-run-spread.md)). **measured here**, one run each
 - More experts and more loops add up more than they replace each other.
   **published, one source**

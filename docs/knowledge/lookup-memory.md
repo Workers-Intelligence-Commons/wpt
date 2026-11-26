@@ -42,7 +42,7 @@ The question is open at small sizes.
   here**, one run
 - The three models copy a repeated sequence at 43%, 48% and 70% of its
   tokens, the best being the one with the small table. Nothing here says
-  how far two runs of one recipe differ on that test, so these three
+  how far two runs of one order differ on that test, so these three
   figures do not rank the models. **measured here**, one run each
 - A trained model does not copy through its table. With the table's
   output set to zero after training, the model with the small table copies
@@ -148,7 +148,7 @@ the table adds to this model, not what its parameters would do elsewhere.
 ## Open
 
 - **Tables against layers at an equal number of parameters, under 500M.**
-  A measure trains one shape with no table, with the recipe's tables and
+  A measure trains one shape with no table, with the order's tables and
   with tables 4 times larger, each at the same total of parameters by
   changing the width, and compares the loss, `general_knowledge` and
   `copying` of `wpt eval`.
@@ -157,7 +157,7 @@ the table adds to this model, not what its parameters would do elsewhere.
   Which of the two shrinks faster decides at which sizes a table is worth
   its parameters. A measure repeats the comparison above at two totals at
   least, with and without the table at an equal total.
-- **The spread between two runs of one recipe.** The same recipe trained
+- **The spread between two runs of one order.** The same order trained
   again with another seed says how far the loss and the copying test move
   by chance. Without it, a gap of 0.05 in loss rests on its being the same
   at two updates, and the copying figures cannot be compared at all.

@@ -207,7 +207,8 @@ plain texts' token files), "conversation" (the vocabulary and the
 conversations' token files) and "task" (the vocabulary and tasks.jsonl),
 so a step's result is found again only for the same kinds it reads
 (docs/training.md, "Steps")}. A corpus whose record exists and is fresh is
-not built again (freight.corpora says what the dock keeps of corpora).
+not built again (freight.corpora says what the dock keeps of corpora, and
+corpus_room the cap a build works under).
 
 An erasure carried out while the build ran is checked before the record is
 written and again after: when it reached a text the corpus took, the
@@ -250,6 +251,7 @@ from depot.fill import Fill
 from depot.kinds import PLAIN
 from dock.api import File
 from freight import corpora
+import corpus_room
 from wpt_corpus.corpora import RULES as CORPUS_RULES
 from wpt_corpus.corpora import fresh
 from wic_utils.lines import say
@@ -308,7 +310,7 @@ def build(depot: Depot, snapshot: str, data: dict, store, tokenizer: Tokenizer, 
     a former build in the same folder handed save, to go on from it; save:
     called with that state after each upload; progress: called with
     {stage, ...} as it goes, and may raise to stop the build; room: makes a
-    freight.corpora.Room for the corpus's folder (default: no cap).
+    corpus_room.Room for the corpus's folder (default: no cap).
 
     A snapshot or vocabulary the section does not match (check), shares
     that cannot be met (Refused), the cap's (TooBig, NoRoom) and files
@@ -768,7 +770,7 @@ class _Build:
         self.erasures = _erasures(self.source, snapshot)
         self.key = build_key(self.snapshot, data, self.vocabulary_sha256)
         self.folder = f"{FOLDER}/{self.key}"
-        self.room = room(self.folder) if room is not None else corpora.Room(store, None, self.folder)
+        self.room = room(self.folder) if room is not None else corpus_room.Room(store, None, self.folder)
 
     def run(self) -> dict:
         known = self.store.get_json(f"{self.folder}/{RECORD}")
@@ -800,7 +802,7 @@ class _Build:
 
     def _stream(self, named_file) -> dict:
         state = self.state
-        if state.get("key") == self.key and (gone := corpora.missing(self.store, self.folder, _uploaded(state))):
+        if state.get("key") == self.key and (gone := corpus_room.missing(self.store, self.folder, _uploaded(state))):
             self.log(f"{len(gone)} files this build uploaded are no longer on the dock: it starts over")
             state = {}
         if state.get("key") == self.key and state.get("erasures") != self.erasures:
@@ -1311,11 +1313,11 @@ class _Build:
             self.room.make(size)
             record["tasks"] = {"file": {**self.store.put_named(f"{self.folder}/tasks.jsonl", tasks_path).reference(),
                                         "bytes": size}, "count": state["tasks_count"]}
-        gone = corpora.missing(self.store, self.folder, [*_uploaded(state), *(
+        gone = corpus_room.missing(self.store, self.folder, [*_uploaded(state), *(
             [record["tasks"]["file"]] if "tasks" in record else []), vocabulary,
             *(one for one in record["tables"].values() if isinstance(one, dict))])
         if gone:
-            raise corpora.FilesGone(f"{len(gone)} files of this build were deleted while it ran, {gone[0]} first: no "
+            raise corpus_room.FilesGone(f"{len(gone)} files of this build were deleted while it ran, {gone[0]} first: no "
                                     "record was written; build again")
         # an erasure carried out while the build ran may have reached a text it took after the build passed it:
         # checked before the record is written, and again after, for one carried out in between (an erasure

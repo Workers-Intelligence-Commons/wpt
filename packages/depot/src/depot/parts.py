@@ -28,7 +28,7 @@ A part's text is stored compressed with zstd (pack, unpack). Reading
 goes through Reader, which fetches parts by hash, and Parted, a content
 version read lazily: its length, a slice of its characters or its parts in
 order, each part fetched only when needed (per-part lengths come with its
-list). A reader of many texts at once (the corpus build) uses scan.
+list). A reader of many texts at once uses scan.
 """
 
 import bisect

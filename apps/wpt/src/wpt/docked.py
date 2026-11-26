@@ -100,7 +100,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="wpt", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("list", help="every corpus and model the dock holds").set_defaults(run=cmd_list)
+    commands.add_parser("list", help="the corpora the depot built under the dock's corpora/, and the models (freight deliveries lists the deliveries)").set_defaults(run=cmd_list)
     copying = commands.add_parser("copy-out", help="a model folder the dock keeps, into a new folder")
     copying.add_argument("name", help="the run's name, which the wpt manager printed")
     copying.add_argument("folder", type=Path, help="the folder to write, which must not exist yet")

@@ -148,8 +148,9 @@ def stale(depot: Depot, store, erasures: list[str], log):
     texts = sorted({needle["text"] for row in depot.erasures() if row["id"] in erasures
                     for needle in row["needles"]})
     marked = corpora.mark_stale(store, texts, erasures)
-    log(f"{len(marked)} corpora marked stale: nothing downloads them, and wpt train refuses them, "
-        "until they are built again" if marked else "no corpus of the dock holds a text of the erasure")
+    log(f"{len(marked)} corpora marked stale: nothing downloads them and wpt train refuses them; "
+        "wpt build-resources makes an order's corpus again" if marked
+        else "no corpus of the dock holds a text of the erasure")
 
 
 def jsonable(value):
