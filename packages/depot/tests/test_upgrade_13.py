@@ -143,7 +143,8 @@ def test_a_depot_of_format_11_is_brought_to_13_in_one_run_as_the_check_said(tmp_
         ("fixture-2", 1): made["ds-mixed"]["id"]}
     assert all(not one["origin"].get("library", "").startswith("up-") for one in made.values())
     assert made["ds-two-r2"]["origin"] == {"kind": "dataset", "dataset": "fixture-1", "revision": 2, "name": "ds-two"}
-    assert any(line.startswith(f"{path}: the data section of a model order that builds revision 2 of the dataset")
+    assert any(line.startswith(f"{path}: the data section of a model order on the snapshot of revision 2 of the "
+                               "dataset")
                for line in said)
     for one in made.values():
         assert texts_of(depot, one["id"])  # its sets match its digest

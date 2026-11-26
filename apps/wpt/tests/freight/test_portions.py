@@ -5,11 +5,14 @@ wpt-tokens writes each portion's files under the folder of its name, by
 kind, and lists them by portion; training's view of the delivery names no
 file of the held-out portion; two corpora of one snapshot and one set of
 shares hold the same held-out texts whatever their vocabulary and sizes;
-and a job cut short goes on to the same delivery."""
+a job cut short goes on to the same delivery; and the order schemas of
+wpt-orders, which cannot import wpt_corpus, name the roles as
+wpt_corpus.roles does."""
 
 import base64
 import io
 import json
+from importlib.resources import files
 
 import pyarrow.parquet as pq
 import pytest
@@ -18,7 +21,8 @@ from depot import Declaration, NewText
 from freight import api
 from freight.job import LEFT_OUT, Job
 from wpt import resources
-from wpt_corpus import corpora, roles
+from wpt_corpus import corpora, programs, roles
+from wpt_orders import orders
 from wpt_tokenizer import Tokenizer
 import dock_files
 
@@ -92,6 +96,7 @@ def test_an_order_s_corpus_is_cut_into_its_roles_portions_each_in_its_own_files(
     assert portions[1]["shares"] == portions[0]["shares"] and portions[1]["size"] == {"unit": "tokens", "amount": 1500}
     assert (portions[2]["kinds"], portions[2]["size"]) == (["conversation", "task"], None)
     note = asked(cut, tmp_path, request)
+    assert note["preparation"]["version"] == programs.PORTIONED_VERSION  # files VERSION never described
     made, rows = note["result"]["portions"], api.items(note["key"], dock=cut.dock)
     assert list(made) == ["held_out", "pretrain", "finetune"]
     for name, portion in made.items():
@@ -134,6 +139,11 @@ def test_an_order_s_corpus_is_cut_into_its_roles_portions_each_in_its_own_files(
         one["key"] for one in note["files"] if one["path"].startswith("held_out/plain-")]
     assert found["texts"] == sum(1 for row in rows if row["portion"] == "held_out")
     assert "held_out" in resources.label(note) and "finetune" in resources.label(note)
+    # a delivery cut into portions by a wpt-tokens that wrote them into the same files is refused, not misread
+    flat = {**note, "preparation": {**note["preparation"], "version": programs.VERSION},
+            "result": {key: value for key, value in note["result"].items() if key != "portions"}}
+    with pytest.raises(ValueError, match=f"wpt-tokens of version {programs.VERSION}, which wrote every portion"):
+        resources.corpus_record(flat, vocabulary)
 
 
 def test_two_corpora_of_one_snapshot_and_shares_hold_the_same_held_out_texts_whatever_their_sizes_and_vocabulary(
@@ -183,3 +193,40 @@ def test_a_job_of_portions_cut_short_goes_on_to_the_same_files(cut, tmp_path, st
     assert (note["id"], note["result"]) == (whole["id"], whole["result"])
     assert [(one["path"], one["sha256"]) for one in note["files"]] == [
         (one["path"], one["sha256"]) for one in whole["files"]]
+
+
+def _roles_field(schema):
+    """The field `roles` of an order schema, wherever it lies."""
+    if isinstance(schema, dict):
+        if isinstance(schema.get("properties"), dict) and "roles" in schema["properties"]:
+            return schema["properties"]["roles"]
+        schema = list(schema.values())
+    for one in schema if isinstance(schema, list) else []:
+        found = _roles_field(one)
+        if found is not None:
+            return found
+    return None
+
+
+@pytest.mark.parametrize("schema", ["model.schema.json", "series.schema.json"])
+def test_an_order_schema_names_the_roles_their_order_pretrain_and_the_default_as_wpt_corpus_does(schema):
+    field = _roles_field(json.loads((files("wpt_orders") / "schemas" / schema).read_text(encoding="utf-8")))
+    assert field["items"]["enum"] == list(roles.ROLES) and field["contains"] == {"const": roles.PRETRAIN}
+    assert f"left out: {' and '.join(roles.DEFAULT)}" in field["description"]
+
+
+@pytest.mark.parametrize("named", [None, ["pretrain"], ["held_out", "pretrain"], ["pretrain", "finetune"],
+                                   ["held_out", "pretrain", "finetune"]])
+def test_the_order_check_refuses_a_size_of_the_finetune_portion_where_wpt_corpus_does(named):
+    data = {"finetune_tokens": 10, **({"roles": named} if named else {})}
+    try:
+        orders._finetune("an order", data, "data.")
+        checked = True
+    except orders.InvalidOrder:
+        checked = False
+    try:
+        roles.names(data)
+        cut = True
+    except roles.Refused:
+        cut = False
+    assert checked == cut == ("finetune" in (named or roles.DEFAULT))

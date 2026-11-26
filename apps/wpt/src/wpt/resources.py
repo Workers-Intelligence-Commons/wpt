@@ -22,7 +22,7 @@ The data section makes two requests (docs/api/freight.md, "A request"):
   texts; its input `vocabulary` the vocabulary's delivery.
 
 Each delivery key is worked out from the order alone (freight.api.key,
-with the version of the program wpt_corpus holds), with no depot and no
+with the version the program wpt_corpus holds answers that request), with no depot and no
 freight at hand, which is how `wpt train` finds its corpus; a vocabulary
 named by its sha256 is the one delivery of that vocabulary the dock holds,
 found by its note. The command sends the requests one after the other,
@@ -111,7 +111,8 @@ def vocabulary_key(data: dict, dock: str | None = None) -> str | None:
 
 def corpus_key(data: dict, vocabulary: str) -> str:
     """The key of the delivery of a data section's corpus, its vocabulary the delivery of that key."""
-    return api.key(corpus_request(data, vocabulary), programs.VERSION)
+    request = corpus_request(data, vocabulary)
+    return api.key(request, programs.version(True, bool(request["selection"].get("portions"))))
 
 
 def _fresh(note: dict) -> bool:
@@ -174,7 +175,9 @@ def corpus_record(corpus: dict, vocabulary: dict) -> dict:
     tables training reads (wpt_corpus.corpora.rows). It names no file of the
     held-out portion: `portions` only counts each portion's texts and
     tokens. A delivery without portions is all of it its pretraining
-    portion, read as a whole (no `trains_on`)."""
+    portion, read as a whole (no `trains_on`). ValueError for a delivery cut
+    into portions whose result does not list its files by portion (a
+    wpt-tokens older than programs.PORTIONED_VERSION wrote it)."""
     result = corpus["result"]
     by_path = {one["path"]: one for one in corpus["files"]}
 
@@ -199,6 +202,10 @@ def corpus_record(corpus: dict, vocabulary: dict) -> dict:
                    "notices": corpus["tables"]["notices"]},
         "deliveries": {"vocabulary": _named(vocabulary), "corpus": _named(corpus)},
     }
+    if selection.get("portions") and "portions" not in result:
+        raise ValueError(f"corpus delivery {corpus['key']} was cut into portions by a wpt-tokens of version "
+                         f"{corpus['preparation'].get('version')}, which wrote every portion into the same files: "
+                         f"ask the freight for the order's corpus again (`wpt build-resources`)")
     if selection.get("portions"):
         asked = {one["name"]: one for one in selection["portions"]}
         counted = {one["name"]: one for one in corpus["portions"]}
@@ -247,8 +254,8 @@ def corpus_record(corpus: dict, vocabulary: dict) -> dict:
 
 def held_out(corpus: dict) -> dict | None:
     """The held-out portion of a corpus delivery's note
-    (wpt_corpus.roles.HELD_OUT), what an evaluation measures a model on and
-    no training reads: {"shards": its token files of plain text, each the
+    (wpt_corpus.roles.HELD_OUT), what wpt eval's bits_per_byte measures a
+    model on and no training reads: {"shards": its token files of plain text, each the
     dock's reference with what the program said of it, "total_tokens",
     "texts", "bytes" (what the depot's listing gives its texts)}. None for a
     delivery without one, made without portions or for an order whose roles

@@ -14,9 +14,10 @@ else on the search path (`freight.exchange.find`). WPT's programs,
 `wpt-vocabulary`, `wpt-tokens` and `wpt-count`, are console scripts of the
 package `wpt-corpus` (`wpt_corpus.vocabulary`, `wpt_corpus.programs`).
 `wpt-tokens` writes each portion of a delivery cut into portions (below)
-into files of its own; `wpt-vocabulary` and `wpt-count` read neither
-`portions` nor `portion`. A change to these messages changes this
-document in the same commit.
+into files of its own; `wpt-count` checks the portions' names as
+`wpt-tokens` does and counts every portion together; `wpt-vocabulary`
+reads neither `portions` nor `portion`. A change to these messages changes
+this document in the same commit.
 
 ## The format
 
@@ -156,9 +157,13 @@ prepares conversations, plain texts and tasks.
   item's `at` counts within its portion. A portion's files close once its
   last item is taken, before the first item of the next, and each `file`
   message names its `portion`; a portion's `tasks.jsonl` carries `so_far`
-  too, which a resume reads back. The result is `{"portions": {"<name>":
+  and `tasks_sha256` (the file's sha256) too, which a resume reads back, so
+  a resume in a fresh folder still gives the hash of an earlier portion's
+  tasks. The result is `{"portions": {"<name>":
   {total_tokens, items_tokens, shards, tasks, fingerprints}}, "vocabulary"}`,
-  every portion `start` names, one that took nothing included.
+  every portion `start` names, one that took nothing included. For such
+  a delivery its `ready` answers the `version` `2`; a delivery without
+  portions keeps the version `1`, and so its key.
 
 Without portions, the files and hashes are those the reference corpus
 build of the tests (`apps/wpt/tests/support/corpus_build.py`) writes for

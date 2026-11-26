@@ -208,7 +208,8 @@ under the step's change, and a run after a stop skips those written. A
 text the snapshot would read at another revision than the library read it
 stops the stage (Refused), the snapshot unwritten: `depot upgrade
 --check` (check) finds it before anything is written. The stage datasets
-then says the order data section that builds each converted revision. Open libraries are not converted. Its stage counts, in
+then says, for each converted revision, the data section of a model order on its snapshot with the revision's
+shares, size and vocabulary (conversion.order_data). Open libraries are not converted. Its stage counts, in
 one transaction that reads only the table counts, deletes the counts of
 what libraries hold (LIBRARY_FACETS_13) and folds the rows of the facets
 split by status and by whether a locked library held the text (SPLIT_13)
@@ -1647,8 +1648,8 @@ def _datasets_13(db: Database, log, known: dict, public: str | None = None):
     (_measured_13), or given the snapshot of the locked library it reads
     alone, recorded in legacy_snapshot_of, each in a transaction of its
     own, stopping on a revision the snapshot would read otherwise, those a
-    run before wrote skipped; then the order data section that builds
-    each one said."""
+    run before wrote skipped; then, for each one, the data section of a
+    model order on its snapshot said."""
     from . import conversion
     _, datasets, left, done = _measured_13(db, log, known)
     con = db.reader()
@@ -1682,14 +1683,16 @@ def _datasets_13(db: Database, log, known: dict, public: str | None = None):
         found = con.execute("SELECT s.digest FROM legacy_snapshot_of l JOIN snapshots s ON s.id = l.snapshot "
                             "WHERE l.dataset = ? AND l.revision = ?",
                             (planned.origin["dataset"], planned.origin["revision"])).fetchall()
-        log(f"{db.path}: the data section of a model order that builds {_origin_label(planned.origin)}: "
+        log(f"{db.path}: the data section of a model order on the snapshot of {_origin_label(planned.origin)}, "
+            "with its shares, size and vocabulary: "
             + _json(_data_section(con, planned, found[0][0], public)))
     with db.bulk() as written:
         written.execute(f"DELETE FROM {UNDER_WAY} WHERE stage = 'datasets'")
 
 
 def _data_section(con, planned, digest: str, public: str | None) -> dict:
-    """The order data section that builds what the converted dataset revision built (conversion.order_data)."""
+    """The data section of a model order on the snapshot of the converted dataset revision, with its shares, size
+    and vocabulary (conversion.order_data)."""
     from . import conversion
     vocabulary = (planned.row or {}).get("vocabulary")
     size = con.execute("SELECT r.vocab_size FROM vocabularies v JOIN tokenizers_revisions r ON r.id = v.recipe AND "

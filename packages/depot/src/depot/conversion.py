@@ -490,11 +490,12 @@ def set_bytes(measured: Measured) -> int:
 
 def order_data(planned: Planned, measured: Measured, depot: str, vocab_size: int | None) -> dict:
     """The data section of a model order (wpt-orders, the snapshot shape)
-    that builds what the dataset revision built: its snapshot, change and
-    digest, its shares, its max_tokens as total_tokens and its vocabulary
-    (sha256 '' and size 0 when it named none: a vocabulary has to be
-    chosen); it names no roles, so its corpus has the default ones of an
-    order's data section."""
+    on the snapshot of the dataset revision, with what the revision named:
+    the snapshot, change and digest, its shares, its max_tokens as
+    total_tokens and its vocabulary (sha256 '' and size 0 when it named
+    none: a vocabulary has to be chosen). Nothing else: what the order does
+    with it, such as the cut of its corpus, is the order's, so a corpus
+    built anew for it need not hold the texts the revision's corpus held."""
     row = planned.row or {}
     found = {"depot": depot, "snapshot": planned.name, "change": planned.at_change, "digest": measured.digest,
              "total_tokens": row.get("max_tokens"), "vocabulary": {"sha256": row.get("vocabulary") or "",

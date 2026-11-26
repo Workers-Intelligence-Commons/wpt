@@ -695,6 +695,16 @@ The rule reads texts by their id: two editions of one work held as two
 texts of the depot can fall in two portions, one held out and one trained
 on.
 
+A vocabulary an order learns is asked for apart, from `sample_bytes`
+bytes of the plain texts of the snapshot with the section's shares (see
+"The data section of a model order"). Its sample is chosen as the
+held-out portion is, so it begins with the held-out texts: a learned
+vocabulary has read them, though the model's weights have not. A
+vocabulary named by its sha256 was learned elsewhere.
+
+`wpt eval`'s test `bits_per_byte` measures a model on the held-out portion
+of its corpus ([evaluation.md](evaluation.md)).
+
 ### Choosing in a snapshot again
 
 A snapshot names the change number it reads and the texts it holds, and a
@@ -772,9 +782,9 @@ Its result lists the token files by kind (`shards`, `{"plain": [...],
 "conversation": [...]}`), and for a delivery cut into portions by portion
 first (`portions`, `{"pretrain": {"shards": {"plain": [...]}, ...}, ...}`),
 each portion's files under the folder of its name, so a reader finds the
-files of one portion and one kind and nothing else. Items of other kinds, and of the kinds the data section
-leaves out, are not taken: the delivery note counts them by kind
-(`left_out`, `kinds not taken`).
+files of one portion and one kind and nothing else. Items of other kinds, and of the kinds a portion (or a
+selection without portions) leaves out, are not taken: the delivery note
+counts them by kind (`left_out`, `kinds not taken`).
 
 ### The order
 

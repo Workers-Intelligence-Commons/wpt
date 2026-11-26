@@ -541,7 +541,9 @@ upstream's snapshots arrive by pull. Open libraries are not converted. For
 every text of every snapshot, the revision the snapshot reads must be the
 one the library read: a text that differs stops the stage, the snapshot
 unwritten. The stage then says, for each dataset revision converted, the
-data section of a model order that builds it. Its stage `counts` deletes
+data section of a model order on its snapshot with the revision's shares,
+size and vocabulary; the order adds the rest, so a corpus built anew for
+it need not hold the texts the revision's corpus held. Its stage `counts` deletes
 the counts of what libraries hold and folds the splits by whether a locked
 library held the text, and its stage `views` drops the views `libraries`
 and `datasets` an older file may hold and deletes the strip reader's

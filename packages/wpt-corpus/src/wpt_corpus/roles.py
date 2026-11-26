@@ -2,7 +2,11 @@
 and the rules each follows (docs/data-selection.md, "The portions of a
 corpus"). The freight cuts a delivery into named portions and knows only
 their names, kinds, shares and sizes (docs/api/freight.md, "A request");
-what each one means is set here, and nowhere else, never by an order.
+what each one means is set here, never by an order. The order schemas of
+wpt-orders, which cannot import this module, repeat the role names in
+their order, that pretrain is always one and the default, and its check
+refuses finetune_tokens without finetune; apps/wpt/tests/freight/
+test_portions.py holds them to this module.
 
     held_out   plain texts no training reads, to measure a model on; always
                the first portion, with the shares of the pretraining

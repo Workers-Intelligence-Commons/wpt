@@ -23,12 +23,14 @@ step reading that kind reads, the vocabulary and the files}, vocabulary
 A delivery cut into portions (start names them, each take its own) gets
 the same files for each portion apart, under the folder of its name
 (`<portion>/plain-NNNNN.parquet`, `<portion>/tasks.jsonl`): an item's
-position counts within its portion, each file message names its portion,
-a portion's files close when its last item is taken, and the result lists
-them by portion, {portions: {name: {total_tokens, items_tokens, shards,
-tasks, fingerprints}}, vocabulary}, every portion named there, one that took
-nothing included. A delivery without portions gets the files and result
-it always got.
+position counts within its portion, each file message names its portion
+(a tasks file's carries its sha256, `tasks_sha256`, which a resume reads
+back), a portion's files close when its last item is taken, and the result
+lists them by portion, {portions: {name: {total_tokens, items_tokens,
+shards, tasks, fingerprints}}, vocabulary}, every portion named there, one
+that took nothing included. wpt-tokens answers such a delivery the version
+PORTIONED_VERSION. A delivery without portions gets the files, result and
+version (VERSION) it always got, so its delivery key stays the same.
 
 wpt-count (wpt_count) gives the same weights and writes nothing: its result is
 {total, plain, items}, the tokens of what it took, every portion together.
@@ -56,6 +58,9 @@ from .encoding import KINDS, PLAIN, TASK, TOKEN_KINDS, task_text, tokens, weight
 from .shards import write_shard
 
 VERSION = "1"  # raised whenever the files or weights the same messages give change
+# what wpt-tokens answers for a delivery cut into portions, whose files and result VERSION never described: a
+# request without portions keeps VERSION, and so its delivery key
+PORTIONED_VERSION = "2"
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
 WAITING = 4  # items read ahead of the one being answered, for each thread
 TASKS = "tasks.jsonl"
@@ -77,6 +82,13 @@ def wpt_count():
     sys.exit(_Program("wpt-count", files=False).run(sys.stdin.buffer, sys.stdout.buffer))
 
 
+def version(files: bool, portioned: bool) -> str:
+    """The version a program answers: wpt-tokens (files) for a delivery cut
+    into portions PORTIONED_VERSION, else VERSION (wpt-count gives the same
+    result either way)."""
+    return PORTIONED_VERSION if files and portioned else VERSION
+
+
 class _Program:
     def __init__(self, name: str, files: bool):
         self.name, self.files = name, files
@@ -94,8 +106,8 @@ class _Program:
         except (Failed, channel.BadMessage, OSError, ValueError, KeyError) as error:
             self._send({"type": "failed", "reason": f"{type(error).__name__}: {error}"})
             return 1
-        self._send({"type": "ready", "name": self.name, "version": VERSION, "unit": "tokens", "kinds": list(KINDS),
-                    "weighs": True})
+        self._send({"type": "ready", "name": self.name, "version": version(self.files, self.portioned),
+                    "unit": "tokens", "kinds": list(KINDS), "weighs": True})
         stdout.flush()
         waiting = queue.Queue(maxsize=WAITING * self.threads)
         reader = threading.Thread(target=self._read, args=(stdin, waiting), daemon=True)
@@ -163,7 +175,7 @@ class _Program:
                     "path", "token_sha256", "rows", "tokens", "sources")})
                 portion.writers[one["kind"]].resumed(one)
             if one.get("kind") == TASK:
-                portion.tasks_said = True
+                portion.tasks_said, portion.tasks_sha256 = True, one.get("tasks_sha256")
             if "so_far" in one:
                 portion.tasks, portion.kept = one["so_far"]["tasks"], one["so_far"]["tasks_bytes"]
                 portion.total = {"plain": one["so_far"]["plain"], "items": one["so_far"]["items"]}
@@ -260,9 +272,12 @@ class _Program:
         so_far = {"tasks": portion.tasks, "tasks_bytes": portion.tasks_file.tell(), **portion.total}
         portion.tasks_file.close()
         portion.tasks_said = True
+        portion.tasks_sha256 = hashlib.sha256((self.folder / portion.tasks_path).read_bytes()).hexdigest()
         if portion.tasks:
+            # a portion's tasks file carries its hash, which its result reads on a resume in a fresh folder
             self._send({"type": "file", "path": portion.tasks_path, "items": portion.tasks, "kind": TASK,
-                        **({"so_far": so_far} if self.portioned else {}), **portion.named})
+                        **({"so_far": so_far, "tasks_sha256": portion.tasks_sha256} if self.portioned else {}),
+                        **portion.named})
 
     def _end(self):
         if not self.files:
@@ -296,11 +311,12 @@ class _Portion:
         self.total = {"plain": 0, "items": 0}
         self.tasks = self.kept = 0
         self.tasks_file, self.tasks_said = None, False
+        self.tasks_sha256 = None  # the sha256 of its tasks file once said
 
     def result(self, vocabulary: str) -> dict:
         """{total_tokens, items_tokens, shards, tasks, fingerprints} of the portion, once its files are said."""
         tasks = self.folder / self.tasks_path
-        tasks_sha256 = hashlib.sha256(tasks.read_bytes() if tasks.exists() else b"").hexdigest()
+        tasks_sha256 = self.tasks_sha256 or hashlib.sha256(tasks.read_bytes() if tasks.exists() else b"").hexdigest()
         return {"total_tokens": sum(one["tokens"] for one in self.shards[PLAIN]), "items_tokens": self.total["items"],
                 "shards": self.shards, "tasks": {"path": self.tasks_path, "count": self.tasks} if self.tasks else None,
                 "fingerprints": {**{kind: _fingerprint([vocabulary, [one["token_sha256"] for one in kept]])

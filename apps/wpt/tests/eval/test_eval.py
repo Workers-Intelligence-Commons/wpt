@@ -4,6 +4,7 @@ import threading
 import pytest
 
 import wpt_telemetry
+from wpt import resources
 from wpt.eval import BUILT_IN, main
 from dock import api as dock_api
 from wpt_telemetry import FLUSH_THREAD
@@ -160,3 +161,33 @@ def test_copying_measures_nothing_with_a_vocabulary_of_too_few_whole_words(train
     main([str(trained.folder), str(test)])
     record = json.loads((trained.folder / "evals" / "copying.json").read_text())
     assert "sequence" not in record["data"] and "nothing measured" in record["text"]
+
+
+def test_bits_per_byte_measures_the_model_on_the_held_out_portion_of_its_corpus(trained):
+    main([str(trained.folder), "bits_per_byte"])
+    record = json.loads((trained.folder / "evals" / "bits_per_byte.json").read_text())
+    data, note = record["data"], trained.notes["corpus"]
+    held = resources.held_out(note)
+    # every text of the held-out portion, and its bytes as the depot's listing gives them
+    assert data["delivery"] == note["key"] and (data["texts"], data["bytes"]) == (held["texts"], held["bytes"]) == (
+        2, sum(one["bytes"] for one in note["portions"] if one["name"] == "held_out"))
+    assert data["tokens"] == held["total_tokens"] and data["bits_per_byte"] > 0 and data["nats_per_token"] > 0
+    assert set(data["by_share"]) == {"en"} and data["by_share"]["en"]["bits_per_byte"] == data["bits_per_byte"]
+    assert "bits per byte" in (trained.folder / "README.md").read_text()
+
+
+@pytest.mark.parametrize("change, refused", [
+    (lambda provenance, notes: provenance.pop("deliveries"), "a corpus the freight did not deliver"),
+    # a delivery without portions: the vocabulary's stands for one here
+    (lambda provenance, notes: provenance["deliveries"]["corpus"].update(key=notes["vocabulary"]["key"]),
+     "has no held-out portion"),
+    (lambda provenance, notes: provenance["deliveries"]["corpus"].update(key="0" * 64), "holds no corpus delivery"),
+])
+def test_bits_per_byte_refuses_a_model_whose_corpus_has_no_held_out_portion(trained, change, refused):
+    path = trained.folder / "provenance.json"
+    provenance = json.loads(path.read_text())
+    change(provenance, trained.notes)
+    path.write_text(json.dumps(provenance))
+    with pytest.raises(SystemExit, match=f"EvalError: .*{refused}"):
+        main([str(trained.folder), "bits_per_byte"])
+    assert not (trained.folder / "evals" / "bits_per_byte.json").exists()
