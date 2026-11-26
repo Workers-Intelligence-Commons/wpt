@@ -74,7 +74,10 @@ copy; copies_in(folder) is the same dock making in folder only the copies
 its work asks for as files, for work that keeps none. A local dock keeps
 that folder and its scratch folder under .local/ at its root, which is no
 part of the dock. A dock sent to another process (pickled) opens the same
-dock there.
+dock there. dock.api opens each dock it serves keeping no copies
+(copies_only): copy_to() writes a file into a path its caller names, and
+stream() gives a file's bytes in pieces; neither path() nor the cache
+folder leaves the package.
 
 Failures: DockSettingError (no or bad DOCK), MissingFile (no such
 file or record file), CorruptFile (stored bytes do not match their sha256,
@@ -93,6 +96,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import threading
 import time
@@ -218,6 +222,7 @@ class Dock:
         self._writer, self._pending, self._ticks = secrets.token_hex(4), {}, _Ticks()
         self._pending_lock = threading.Lock()
         self._record_started = set()  # (folder, name) of the plain record files this dock has added to
+        self._versions = _Kept(KEYS_KEPT)  # key -> the version of its file when refresh last saw it
 
     # Results
 
@@ -347,6 +352,15 @@ class Dock:
                 pass
         return None
 
+    def refresh(self, key: str):
+        """Forget what is kept in memory about the file under key when
+        another process replaced it since the last refresh (its version
+        changed)."""
+        now = self.version(key)
+        if self._versions.get(key) not in (None, now):
+            self.forget(key)
+        self._versions.put(key, now)
+
     def delete_json(self, key: str):
         """Remove the record under key; nothing when it is absent."""
         for stored in (key + PACKED, key):
@@ -439,6 +453,67 @@ class Dock:
         if len(data) != length:
             raise CorruptFile(f"{file.key}: {length} bytes at {start} read back as {len(data)}")
         return data
+
+    def copy_to(self, what, target: Path) -> str:
+        """The file's bytes written into target, a local file of the
+        caller's (replaced whole, never left in part), checked against the
+        sha256 of what names it when it names one: the sha256 of the bytes
+        written. A local dock's file kept as it is is copied; any other file
+        is fetched from the dock, several parts at once, with no copy kept
+        in the cache folder."""
+        file = what if isinstance(what, File) else None
+        key = self._found(file) if file is not None else self._stored(what, fresh=True)
+        if key is None:
+            raise MissingFile(f"{what} is not on the dock")
+        name = file.key if file is not None else what
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        on_disk = None if key.endswith(PACKED) else self.kind.on_disk(key)
+        if on_disk is not None:
+            fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".partial-")
+            os.close(fd)
+            os.unlink(tmp)
+            try:
+                try:
+                    shutil.copyfile(on_disk, tmp)
+                except FileNotFoundError:
+                    self.forget(name)
+                    raise MissingFile(f"{name} is not on the dock") from None
+                os.replace(tmp, target)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        else:
+            with self._reading(name, key):
+                self._copy(key, target)
+        actual = sha256_file(target)
+        if file is not None and actual != file.sha256:
+            target.unlink(missing_ok=True)
+            raise CorruptFile(f"{name} reads back as {actual}, not {file.sha256}")
+        return actual
+
+    def stream(self, key, start=0, length=None, chunk=8 * CHUNK):
+        """The original bytes of the file under key from start, length of
+        them (None: up to its end), in pieces of at most chunk bytes, read
+        as read_range reads (the frames after them requested ahead on S3).
+        MissingFile when there is no such file."""
+        stored = self._stored(key)
+        if stored is None:
+            raise MissingFile(f"{key} is not on the dock")
+        with self._reading(key, stored):
+            total = self._table(stored).size if stored.endswith(PACKED) else self.kind.list(stored).get(stored)
+        if total is None:
+            self.forget(key)
+            raise MissingFile(f"{key} is not on the dock")
+        end = total if length is None else min(total, start + length)
+        at = start
+        while at < end:
+            with self._reading(key, stored):
+                data = self._range(stored, at, min(chunk, end - at))
+            if not data:
+                raise CorruptFile(f"{key}: ends at {at}, before {end}")
+            yield data
+            at += len(data)
 
     def release(self, what):
         """Remove the local copy of a file (it stays on the dock); nothing

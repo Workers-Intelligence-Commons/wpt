@@ -46,7 +46,8 @@ from wpt_model import DrafterMismatch, TokenizerMismatch, check_drafter, load_to
 from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CARD_NAME, EVALS_NAME, documents
 from wpt_model.provenance import corpus_id
-from dock.api import Dock, DockError, dock_from_settings
+from dock import api as dock_api
+from dock.api import DockError
 from wic_utils.env import read_env_file
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, short
 from wpt_tokenizer import Tokenizer
@@ -79,7 +80,7 @@ class Context:
     tokenizer: Tokenizer
     device: str  # where the model runs, in words
     provenance: dict
-    store: Dock
+    store: str  # the dock's URL, read through dock.api
     telemetry: Telemetry = field(default_factory=Telemetry.off)  # the run's record, for a test's own events
 
 
@@ -194,7 +195,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     environ = {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
     try:
-        store = dock_from_settings(Path.cwd() / ".env")
+        store = dock_api.url(Path.cwd() / ".env")
     except DockError as error:  # no dock, no record: nothing has started
         sys.exit(f"{type(error).__name__}: {error}")
     evals = args.evals or built_in_names()

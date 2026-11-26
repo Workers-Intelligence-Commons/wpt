@@ -3,7 +3,7 @@ file checked against its sha256."""
 
 import pytest
 
-from dock import CorruptFile, MissingFile, open_dock
+from dock import CorruptFile, MissingFile
 from wpt.models import copy_out, keep_model, put_model
 
 
@@ -16,7 +16,7 @@ def model_folder(root):
 
 
 def test_a_model_kept_under_its_run_s_name_is_copied_out_whole_and_a_damaged_file_is_refused(tmp_path):
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     files = model_folder(tmp_path / "model")
     keep_model(store, "fox-1", put_model(store, "fox-1", tmp_path / "model"))
 

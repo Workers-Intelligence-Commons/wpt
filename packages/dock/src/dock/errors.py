@@ -9,6 +9,10 @@ class DockSettingError(DockError):
     pass
 
 
+class NoDockFolder(DockSettingError):
+    """DOCK names a local folder that does not exist."""
+
+
 class MissingFile(DockError):
     pass
 

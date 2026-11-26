@@ -26,6 +26,14 @@ from wpt_tokenizer import chat
 from wpt_training import Context, Data, Strategy, in_process, load_step, step_seed
 from wpt_training import agentic
 from wpt.train import main as train
+from dock import api as dock_api
+import dock_files
+from wpt_corpus.files import DockFiles
+
+
+def reader(store):
+    """The dock store's files as training reads them (wpt_corpus.files), copies beside its folder."""
+    return DockFiles(store, dock_files.folder(store).parent / "reader")
 
 
 def one_stage(steps, block_size=16, batch_size=4):
@@ -80,7 +88,7 @@ def test_answer_as_assistant_learns_from_the_corpus_s_conversations_and_credits_
     err = refused(capsys, [built.order("no-talk", training=one_stage(1, 64), steps=chat_step), built.corpus_id,
                            "--out", "model"])
     assert "InputError: step 2 answer-as-assistant: no conversations: the corpus holds none tagged answer-as-assistant" in err
-    assert not (tmp_path / "model").exists() and not (built.store.root / "cache" / "steps").exists()
+    assert not (tmp_path / "model").exists() and not (dock_files.folder(built.store) / "cache" / "steps").exists()
 
     dataset = talks(built)
     assert corpora.find(built.store, dataset)["conversations"] == 1
@@ -157,7 +165,7 @@ def test_the_steps_after_a_reused_one_train_as_in_a_run_of_every_step(built, on_
     steps = [{"step": "answer-as-assistant", "settings": {"epochs": 1}}]
     train([built.order("base", training=one_stage(1, 64), snapshot="chat"), dataset, "--out", "base"])
     train([built.order("chat", training=one_stage(1, 64), steps=steps, snapshot="chat"), dataset, "--out", "reused"])
-    shutil.rmtree(built.store.root / "cache" / "steps")  # a dock that never saw these orders
+    shutil.rmtree(dock_files.folder(built.store) / "cache" / "steps")  # a dock that never saw these orders
     train([built.order("chat", training=one_stage(1, 64), steps=steps, snapshot="chat"), dataset, "--out", "fresh"])
 
     reused, fresh = (json.loads((tmp_path / name / "provenance.json").read_text())["steps"]
@@ -191,7 +199,7 @@ def test_two_text_steps_of_one_order_draw_other_windows(built):
     strategy = Strategy(torch.device("cpu"))
 
     def first_windows(number):
-        data = Data(step.name, built.store, record, None, strategy, Telemetry.off(), lambda _: None, 1337, number)
+        data = Data(step.name, reader(built.store), record, None, strategy, Telemetry.off(), lambda _: None, 1337, number)
         environment = step.start_environment(data)
         try:
             [(x, _)] = environment.batch(1, None, strategy)
@@ -212,7 +220,7 @@ def test_every_run_is_evaluated_on_the_same_windows_whatever_its_seed_step_and_u
     strategy = Strategy(torch.device("cpu"))
 
     def windows(seed, number, update):
-        data = Data(step.name, built.store, record, None, strategy, Telemetry.off(), lambda _: None, seed, number)
+        data = Data(step.name, reader(built.store), record, None, strategy, Telemetry.off(), lambda _: None, seed, number)
         environment = step.start_environment(data)
         try:
             return (torch.cat([x for x, _ in environment.evaluation_passes(update)]),
@@ -232,15 +240,15 @@ def test_two_identical_steps_of_one_order_draw_other_conversations_and_tasks(bui
     # goes through the conversations and the tasks in another order, while
     # one step draws the same order on every run
     record = corpora.find(built.store, talks(built, count=12))
-    tokenizer = wpt.train.Tokenizer.from_bytes(built.store.get_bytes(record["tokenizer"]["vocabulary"]))
+    tokenizer = wpt.train.Tokenizer.from_bytes(dock_files.fetch(built.store, record["tokenizer"]["vocabulary"]))
     strategy = Strategy(torch.device("cpu"))
 
     def conversation_orders(number):
         step = load_step({"step": "answer-as-assistant"}, PARTS)
         config = SimpleNamespace(block_size=64)
-        part = step.start_manager(Context("x", built.store, record, tokenizer, config, Telemetry.off(),
+        part = step.start_manager(Context("x", reader(built.store), record, tokenizer, config, Telemetry.off(),
                                           lambda _: None, 1337, number))
-        data = Data("x", built.store, record, config, strategy, Telemetry.off(), lambda _: None, 1337, number,
+        data = Data("x", reader(built.store), record, config, strategy, Telemetry.off(), lambda _: None, 1337, number,
                     call=in_process(part))
         return step.start_environment(data).orders
 
@@ -317,7 +325,7 @@ def test_finish_tasks_says_so_when_the_corpus_holds_no_tasks(built, tmp_path, ca
     err = refused(capsys, [built.order("agent", steps=[{"step": "finish-tasks"}]), built.corpus_id,
                            "--out", "model"])
     assert "InputError: step 2 finish-tasks: no tasks: the corpus holds none tagged finish-tasks" in err
-    assert not (tmp_path / "model").exists() and not (built.store.root / "cache" / "steps").exists()
+    assert not (tmp_path / "model").exists() and not (dock_files.folder(built.store) / "cache" / "steps").exists()
 
 
 TASK = {"instructions": "Write hello into out.txt.", "image": "tiny",
@@ -338,13 +346,13 @@ def task_corpus(built, root, check='#!/bin/bash\necho "0.$RANDOM"\n') -> tuple[s
     content = {"task": TASK, "files": {"notes.txt": {"mode": "100644", "content": encoded(b"start\n")}},
                "check": {"mode": "100755", "content": encoded(check.encode())}}
     corpus_id = built.snapshot("tasks", [NewText(kind="task", content=json.dumps(content), tags=("finish-tasks",))])
-    [line] = built.store.get_bytes(corpora.find(built.store, corpus_id)["tasks"]["file"]).decode().splitlines()
+    [line] = dock_files.fetch(built.store, corpora.find(built.store, corpus_id)["tasks"]["file"]).decode().splitlines()
     return corpus_id, f"{built.depot.name()} {json.loads(line)['id']}"
 
 
 def attempt_lines(store, folder, name) -> list[dict]:
     """The attempts file's lines, each a conversation in the chat format."""
-    lines = [json.loads(line) for line in store.read_record(folder, name).decode().splitlines()]
+    lines = [json.loads(line) for line in dock_api.read_record(store, folder, name).decode().splitlines()]
     assert all({"messages", "metadata"} <= set(line) for line in lines)
     return lines
 

@@ -110,11 +110,11 @@ these ids.
 
 ```python
 import json
-from dock.api import dock_from_settings
+from dock import api
 
-dock = dock_from_settings()
-for folder in dock.record_folders():
-    ids = json.loads(dock.read_record(folder, "ids.json"))
+dock = api.url()  # the dock DOCK names
+for folder in api.record_folders(dock):
+    ids = json.loads(api.read_record(dock, folder, "ids.json"))
     print(folder, ids["inputs"].get("corpus"), ids["outputs"].get("weights"))
 ```
 

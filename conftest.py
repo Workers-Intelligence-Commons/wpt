@@ -3,7 +3,7 @@ PyTorch thread and no GPU per test process when pytest-xdist runs the tests
 in parallel (ci/tests.py), the `on_the_cpu` fixture, whether Docker runs
 on this machine and a Debian-based image the sandbox tests run in, how two
 passes over the same tokens may differ in routing, a dock in the test's
-folder, and a local OpenTelemetry backend. Test files reach them as
+folder (each test opening its docks anew), and a local OpenTelemetry backend. Test files reach them as
 fixtures (they cannot import this file under --import-mode=importlib)."""
 
 import http.server
@@ -14,7 +14,7 @@ import threading
 
 import pytest
 
-from dock import open_dock
+from dock import api as dock_api
 
 NO_GPU = {"CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": ""}  # the settings that hide every GPU from a program
 
@@ -122,7 +122,16 @@ def routing():
 
 @pytest.fixture
 def store(tmp_path):
-    return open_dock((tmp_path / "store").as_uri())
+    """A dock in the test's folder, by its URL."""
+    return (tmp_path / "store").as_uri()
+
+
+@pytest.fixture(autouse=True)
+def fresh_docks():
+    """Each test opens its docks anew: dock.api keeps the dock of a URL
+    open for the process, and a test's mock S3 bucket goes with the test."""
+    yield
+    dock_api._forget_opened()
 
 
 class OtlpBackend:

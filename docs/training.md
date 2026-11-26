@@ -435,8 +435,8 @@ training's. The tokens are read from disk as training needs them, so a
 corpus larger than memory trains:
 before the step's first update, the shards are checked against their
 token hashes and their tokens written once into one file per part, in the
-dock's `scratch/` folder (`<dock folder>/scratch/` for a local dock,
-the cache for S3). A later run reuses that file without reading it while
+`scratch/` folder of the reader of the corpus's files (`wpt_corpus.files`:
+on a gpu worker, its own folder). A later run reuses that file without reading it while
 its size and modification time are those recorded when it was written;
 when either changed, it reuses it only if it still matches the sha256
 recorded then, and builds it again otherwise. A change that keeps both

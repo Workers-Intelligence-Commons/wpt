@@ -21,6 +21,8 @@ that reaches one of its items does: STALE (the default) marks it stale,
 NOTED writes the erasure into `erasures_since` and leaves it fresh, as its
 program asked (a vocabulary's, whose models keep working).
 
+The dock is named by its URL, and read and written through dock.api.
+
 A cap (Room) bounds the bytes the deliveries' files take together, as
 their notes give each file's size: past it, the job in progress deletes the
 delivery made least recently, a file at a time, as it needs room, never
@@ -43,13 +45,13 @@ one being made, names as an input: their files count, and stay.
     adopt(dock, key, files, result, about, on_erasure, items)   files made elsewhere put on the dock as a delivery
 """
 
-import shutil
+import io
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dock.api import PACKED, File
+from dock import api
 
 from .selection import fingerprint
 
@@ -88,8 +90,8 @@ def folder_of(key: str) -> str:
 
 def missing(dock, folder: str, uploaded: list[dict]) -> list[str]:
     """The keys of the files uploaded ({key, ...}) that the folder of the dock no longer holds, from one listing."""
-    held = set(dock.kind.list(f"{folder}/", deep=True))
-    return [one["key"] for one in uploaded if one["key"] not in held and one["key"] + PACKED not in held]
+    held = {one["key"] for one in api.find(dock, f"{folder}/")}
+    return [one["key"] for one in uploaded if one["key"] not in held]
 
 
 def fresh(note: dict) -> bool:
@@ -108,26 +110,31 @@ def files(note: dict) -> list[dict]:
 def notes(dock) -> list[dict]:
     """The note of every delivery on the dock, each checked by the dock, the last made first."""
     found = []
-    for key in dock.kind.list(f"{FOLDER}/", deep=False):
-        if key.endswith("/") and (note := dock.get_json(f"{key}{NOTE}")) is not None:
+    for name in api.folders(dock, f"{FOLDER}/"):
+        if (note := api.get_json(dock, f"{FOLDER}/{name}/{NOTE}")) is not None:
             found.append(note)
     return sorted(found, key=lambda note: note["made_at"], reverse=True)
 
 
 def of_key(dock, key: str) -> dict | None:
     """The note of the delivery of that key, None when the dock holds none."""
-    return dock.get_json(f"{folder_of(key)}/{NOTE}")
+    return api.get_json(dock, f"{folder_of(key)}/{NOTE}")
 
 
 def read_items(dock, note: dict) -> pa.Table:
     """The items tables of a delivery, each part checked by the dock, as one table in order."""
     parts = note.get("tables", {}).get("items", [])
-    return pa.concat_tables([pq.read_table(dock.path(File.of(one))) for one in parts]) if parts else pa.table({})
+    return pa.concat_tables([_table(dock, one) for one in parts]) if parts else pa.table({})
 
 
 def read_table(dock, note: dict, table: str) -> pa.Table:
     """One of a delivery's other tables (licenses, notices), checked by the dock."""
-    return pq.read_table(dock.path(File.of(note["tables"][table])))
+    return _table(dock, note["tables"][table])
+
+
+def _table(dock, one: dict, columns=None) -> pa.Table:
+    """A Parquet file of a delivery, named by its reference {key, sha256}, checked by the dock."""
+    return pq.read_table(io.BytesIO(api.fetch(dock, one["key"], one["sha256"])), columns=columns)
 
 
 def fetch(dock, note: dict, folder: Path) -> Path:
@@ -135,10 +142,7 @@ def fetch(dock, note: dict, folder: Path) -> Path:
     under files/), each checked by the dock: the folder."""
     folder.mkdir(parents=True, exist_ok=True)
     for one in note.get("files", []):
-        target = folder / one["path"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(dock.path(File.of(one)), target)
-        dock.release(File.of(one))
+        api.fetch_into(dock, one["key"], folder / one["path"], one["sha256"])
     return folder
 
 
@@ -164,7 +168,7 @@ def mark_reached(dock, texts, erasures) -> dict[str, list[str]]:
     for note in notes(dock):
         if "deleted" in note or not holds(dock, note, texts):
             continue
-        dock.put_json(f"{folder_of(note['key'])}/{NOTE}", reached(note, erasures))
+        api.put_json(dock, f"{folder_of(note['key'])}/{NOTE}", reached(note, erasures))
         marked["noted" if note.get("on_erasure", STALE) == NOTED else "stale"].append(note["key"])
     return marked
 
@@ -175,8 +179,7 @@ def holds(dock, note: dict, texts) -> bool:
     if not wanted:
         return False
     for part in note.get("tables", {}).get("items", []):
-        ids = pq.read_table(dock.path(File.of(part)), columns=["id"])["id"].to_pylist()
-        dock.release(File.of(part))
+        ids = _table(dock, part, columns=["id"])["id"].to_pylist()
         if not wanted.isdisjoint(ids):
             return True
     return False
@@ -189,7 +192,7 @@ def delete(dock, note: dict, why: str) -> dict:
     if "deleted" not in note:
         note = mark_deleted(dock, note, why)
     for one in files(note):
-        dock.delete(File.of(one))
+        api.delete(dock, one["key"])
     return mark_deleted(dock, note, note["deleted"]["why"], whole=True)
 
 
@@ -197,7 +200,7 @@ def mark_deleted(dock, note: dict, why: str, whole: bool = False) -> dict:
     """The delivery's note marked deleted for that reason, whole when none
     of its files is left: the note as stored. The time is the first mark's."""
     at = note.get("deleted", {}).get("at") or datetime.now(UTC).isoformat()
-    return dock.put_json(f"{folder_of(note['key'])}/{NOTE}",
+    return api.put_json(dock, f"{folder_of(note['key'])}/{NOTE}",
                          {**note, "deleted": {"at": at, "why": why, "whole": whole}})
 
 
@@ -222,8 +225,8 @@ def adopt(dock, key: str, made: dict[str, bytes], result: dict, about: dict, on_
     folder = folder_of(key)
     listed = []
     for path, data in sorted(made.items()):
-        file = dock.put_named(f"{folder}/files/{path}", bytes(data))
-        listed.append({**file.reference(), "path": path, "bytes": len(data)})
+        file = api.put(dock, f"{folder}/files/{path}", bytes(data))
+        listed.append({"key": file["key"], "sha256": file["sha256"], "path": path, "bytes": len(data)})
     rows, parts = list(items or []), []
     if not all(isinstance(row, dict) and isinstance(row.get("depot"), str) and isinstance(row.get("id"), str)
                for row in rows):
@@ -233,14 +236,14 @@ def adopt(dock, key: str, made: dict[str, bytes], result: dict, about: dict, on_
         sink = pa.BufferOutputStream()
         pq.write_table(pa.Table.from_pylist(chunk), sink, compression="zstd")
         data = sink.getvalue().to_pybytes()
-        file = dock.put_named(f"{folder}/items/part-{number:05d}.parquet", data)
-        parts.append({**file.reference(), "bytes": len(data), "rows": len(chunk),
+        file = api.put(dock, f"{folder}/items/part-{number:05d}.parquet", data)
+        parts.append({"key": file["key"], "sha256": file["sha256"], "bytes": len(data), "rows": len(chunk),
                       "fingerprint": fingerprint(chunk)})
     note = {"key": key, "id": fingerprint({"key": key, "files": [[one["path"], one["sha256"]] for one in listed],
                                            "items": [part["fingerprint"] for part in parts]}),
             "adopted": about, "result": result, "files": listed, "tables": {"items": parts} if parts else {},
             "items": {"texts": len(rows)}, "on_erasure": on_erasure, "made_at": datetime.now(UTC).isoformat()}
-    return dock.put_json(f"{folder}/{NOTE}", note)
+    return api.put_json(dock, f"{folder}/{NOTE}", note)
 
 
 class Room:
@@ -267,21 +270,20 @@ class Room:
         if "bytes" in one:
             return one["bytes"]
         try:
-            return self.dock.size(File.of(one))
+            return api.size(self.dock, one["key"])
         except Exception:  # a file the dock no longer holds takes no room
             return 0
 
     def _listed(self) -> dict:
         if self._kept is None:
             self._kept = {}
-            for key in self.dock.kind.list(f"{FOLDER}/", deep=False):
-                folder = key.rstrip("/")
-                if not key.endswith("/") or folder == self.own:
+            for name in api.folders(self.dock, f"{FOLDER}/"):
+                folder = f"{FOLDER}/{name}"
+                if folder == self.own:
                     continue
-                note = self.dock.get_json(f"{key}{NOTE}")
+                note = api.get_json(self.dock, f"{folder}/{NOTE}")
                 if note is None:
-                    left = [{"key": one, "bytes": size or 0} for one, size in
-                            sorted(self.dock.kind.list(key, deep=True).items())]
+                    left = api.find(self.dock, f"{folder}/")
                     if left:
                         self._kept[folder] = (None, left)
                     continue
@@ -290,7 +292,7 @@ class Room:
                 if note["key"].startswith(ADOPTED):
                     self.kept_keys.add(note["key"])
                 self.kept_keys.update(((note.get("preparation") or {}).get("inputs") or {}).values())
-                left = [one for one in files(note) if "deleted" not in note or self.dock.has(File.of(one))]
+                left = [one for one in files(note) if "deleted" not in note or api.has(self.dock, one["key"])]
                 self._kept[note["key"]] = (note, [{**one, "bytes": self._size(one)} for one in left])
         return self._kept
 
@@ -338,12 +340,12 @@ class Room:
                     self._said.add(free[0])
                     self.log(f"the files of {free[0]} deleted, a file at a time as this job needs room: no delivery "
                              "note names them")
-                self.dock.kind.delete(one["key"])
+                api.delete(self.dock, one["key"])
             else:
                 if "deleted" not in note:
                     note = mark_deleted(self.dock, note, CAPPED)
                     self.log(f"delivery {note['key']} deleted, a file at a time as this job needs room: {CAPPED}")
-                self.dock.delete(File.of(one))
+                api.delete(self.dock, one["key"])
                 if not left:
                     note = mark_deleted(self.dock, note, note["deleted"]["why"], whole=True)
             taken -= one["bytes"]

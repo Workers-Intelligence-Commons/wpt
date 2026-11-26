@@ -40,7 +40,6 @@ import apsw
 from depot import About, Declaration, Depot, NewText, follow
 from corpus_build import build
 from depot.schema import FORMAT
-from dock import open_dock
 from wpt_tokenizer import Tokenizer
 
 ME = Declaration("Ada Lovelace", "ada@example.org", True)
@@ -199,7 +198,7 @@ def make(out: Path):
     row = depot.dataset_by_id(two)
     libraries = [(None, one["library"]) for one in row["libraries"]]
     depot.edit_dataset(two, "ds-two", libraries, [("en", 0.5), ("poem", None)], vocabulary=sha)
-    store = open_dock((out / f"format-{FORMAT}-store").resolve().as_uri())
+    store = (out / f"format-{FORMAT}-store").resolve().as_uri()
     quiet = lambda *_: None  # noqa: E731
     build(depot, "ds-two", store, vocabulary, 1, max_tokens=SMALL, log=quiet)
     depot.edit_dataset(two, "ds-two", libraries, [("en", 0.3), ("letter", None)], vocabulary=sha)

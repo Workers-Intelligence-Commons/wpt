@@ -12,14 +12,18 @@ lists the ids of its texts. A record says `stale` once an admitted erasure
 reached a text it holds (the ids of the erasures), and `deleted` once its
 files are gone (when, and why). A deleted corpus keeps its record.
 
-    records(store)                       every corpus the dock holds, newest first
+    records(dock)                        every corpus the dock holds, newest first
     files(record)                        every file a corpus's record names
-    mark_stale(store, texts, erasures)   mark every corpus that holds one of these texts stale
-    holds(store, record, texts)          whether a corpus holds one of these texts
+    mark_stale(dock, texts, erasures)    mark every corpus that holds one of these texts stale
+    holds(dock, record, texts)           whether a corpus holds one of these texts
+
+The dock is named by its URL, and read and written through dock.api.
 """
 
+import io
+
 import pyarrow.parquet as pq
-from dock.api import as_record_name
+from dock import api
 
 FOLDER = "corpora"
 RECORD = "corpus.json"
@@ -28,7 +32,7 @@ RECORD = "corpus.json"
 def folder_of(record: dict) -> str:
     """The dock's folder of a corpus: the one its record names, or for a
     record that names none, corpora/<dataset name>-<first 8 hex characters of its id>."""
-    return record.get("folder") or f"{FOLDER}/{as_record_name(record['dataset']['name'])}-{record['id'][:8]}"
+    return record.get("folder") or f"{FOLDER}/{api.as_record_name(record['dataset']['name'])}-{record['id'][:8]}"
 
 
 def files(record: dict) -> list[dict]:
@@ -51,47 +55,46 @@ def files(record: dict) -> list[dict]:
     return found
 
 
-def records(store) -> list[dict]:
+def records(dock: str) -> list[dict]:
     """The record of every corpus the dock holds, each checked by the
     dock, the last built first."""
     found = []
-    for key in store.kind.list(f"{FOLDER}/", deep=False):
-        if key.endswith("/") and (record := store.get_json(f"{key}{RECORD}")) is not None:
+    for name in api.folders(dock, f"{FOLDER}/"):
+        if (record := api.get_json(dock, f"{FOLDER}/{name}/{RECORD}")) is not None:
             found.append(record)
     return sorted(found, key=lambda record: record["built_at"], reverse=True)
 
 
-def mark_stale(store, texts, erasures) -> list[str]:
+def mark_stale(dock: str, texts, erasures) -> list[str]:
     """Mark stale every corpus of the dock whose files are kept and that
     holds one of the texts (ids), because the erasures (ids) were carried
     out: the ids of the corpora marked. A corpus already stale keeps its
     earlier erasures. A deleted corpus is left as it is: its rebuild
     compares its id."""
     marked = []
-    for record in records(store):
-        if "deleted" in record or not holds(store, record, texts):
+    for record in records(dock):
+        if "deleted" in record or not holds(dock, record, texts):
             continue
-        marked_stale(store, record, erasures)
+        marked_stale(dock, record, erasures)
         marked.append(record["id"])
     return marked
 
 
-def holds(store, record: dict, texts) -> bool:
+def holds(dock: str, record: dict, texts) -> bool:
     """Whether the corpus holds one of the texts (ids), as its texts table lists them."""
     wanted = set(texts)
     if not wanted:
         return False
     parts = record["tables"]["texts"]
     for part in parts if isinstance(parts, list) else [parts]:
-        ids = pq.read_table(store.path(part), columns=["id"])["id"].to_pylist()
-        store.release(part)
+        ids = pq.read_table(io.BytesIO(api.fetch(dock, part["key"], part["sha256"])), columns=["id"])["id"].to_pylist()
         if not wanted.isdisjoint(ids):
             return True
     return False
 
 
-def marked_stale(store, record: dict, erasures) -> dict:
+def marked_stale(dock: str, record: dict, erasures) -> dict:
     """The corpus's record marked stale because of the erasures (ids), with
     the erasures it was stale for already: the record as stored."""
     stale = sorted({*record.get("stale", {}).get("erasures", []), *erasures})
-    return store.put_json(f"{folder_of(record)}/{RECORD}", {**record, "stale": {"erasures": stale}})
+    return api.put_json(dock, f"{folder_of(record)}/{RECORD}", {**record, "stale": {"erasures": stale}})

@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from dock import open_dock
-from dock.names import File
+from dock import api as dock_api
+from wpt_corpus.files import DockFiles
 from wpt_corpus.shards import read_verified
 from wpt_tokenizer import END, Tokenizer, chat
 from depot import About, Depot, NewText, clone, ids, pull, snapshots
@@ -22,6 +22,7 @@ from depot.errors import Refused
 from depot.ids import export_key
 from wpt.train.notice import model_notice
 from depot.parts import Parted
+import dock_files
 
 TOKENIZER = Tokenizer.train([b"the quick brown fox jumps over the lazy dog"] * 4, vocab_size=560)
 OTHER = Tokenizer.train([b"the quick brown fox jumps over the lazy cat"] * 4, vocab_size=561)
@@ -72,8 +73,13 @@ def make(depot, store, snapshot=None, tokenizer=TOKENIZER, total_tokens=None, sh
                  address=HERE, **options)
 
 
+def reader(store):
+    """The dock store's files as training reads them (wpt_corpus.files), copies beside its folder."""
+    return DockFiles(store, dock_files.folder(store).parent / f"{dock_files.folder(store).name}-reader")
+
+
 def documents(store, record, kind="plain") -> list[str]:
-    return [document for shard in record["shards"][kind] for _, _, document, _, _ in read_verified(store, shard)]
+    return [document for shard in record["shards"][kind] for _, _, document, _, _ in read_verified(reader(store), shard)]
 
 
 def test_a_corpus_holds_its_snapshot_s_texts_tokenized_with_their_credits_and_a_notice_line_each(make_depot, me,
@@ -89,7 +95,7 @@ def test_a_corpus_holds_its_snapshot_s_texts_tokenized_with_their_credits_and_a_
     depot.decide("admitted", f"id <> '{waiting}'", me)
     snapshot = depot.create_snapshot()
     depot.retag([first, talk], ["later"], ["en"], me)  # after the snapshot: its corpus keeps the tags it read
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, code_commit="abc123", recipe="first")
 
@@ -100,14 +106,14 @@ def test_a_corpus_holds_its_snapshot_s_texts_tokenized_with_their_credits_and_a_
     assert record["vocabulary"] == vocabulary() and record["max_tokens"] is None
     assert record["build_key"] == build_key(snapshot, section(snapshot), vocabulary()["sha256"])
     assert record["folder"] == f"corpora/{record['build_key']}"
-    rows = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard)]
+    rows = [row for shard in record["shards"]["plain"] for row in read_verified(reader(store), shard)]
     found = {(source, document): (list(tokens), pool) for tokens, source, document, pool, _ in rows}
     # every row names the depot by the snapshot's owner, never by an address or a file
     assert set(found) == {("depot", first), ("depot", twin), ("depot", french)}  # duplicates kept
     assert found[("depot", french)] == ([*TOKENIZER.encode("le renard".encode()), END], "")
-    [conversation] = [row for shard in record["shards"]["conversation"] for row in read_verified(store, shard)]
+    [conversation] = [row for shard in record["shards"]["conversation"] for row in read_verified(reader(store), shard)]
     assert list(conversation[0]) == chat.encode(TOKENIZER, CONVERSATION)[0]
-    [kept_task] = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines()
+    [kept_task] = dock_files.fetch(store, record["tasks"]["file"]).decode("utf-8").splitlines()
     assert json.loads(kept_task) == {"depot": "depot", "id": task, "content": TASK}
     assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0,
                                   "kinds not taken": {"probe": 1}, "quoted text left out": 0, "quote unmatched": 0}
@@ -145,7 +151,7 @@ def test_a_order_s_kinds_keep_only_those_kinds_and_the_others_are_counted(make_d
     [plain] = depot.add([NewText(text="the fox", licenses=("CC0-1.0",), tags=("en",))], me)
     talk, task = depot.add([item("conversation", CONVERSATION, "en"), item("task", TASK, "en")], me)
     depot.decide("admitted", "true", me)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, kinds=["plain", "task"])
 
@@ -177,11 +183,11 @@ def test_a_conversation_comes_with_the_passages_it_quotes_and_only_when_the_corp
                                            quoting(twice, "dog")], me)
     depot.change_content(twice, "a dog and a dog", None, me)  # its quote now finds two places
     depot.decide("admitted", f"id <> '{outside}'", me)  # the quoted text left out of the snapshot
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store)
 
-    [row] = [row for shard in record["shards"]["conversation"] for row in read_verified(store, shard)]
+    [row] = [row for shard in record["shards"]["conversation"] for row in read_verified(reader(store), shard)]
     typed = json.loads(depot.content(kept))
     typed["messages"][0]["content"][1] = {"type": "text", "text": "brown fox"}
     assert (row[2], list(row[0])) == (kept, chat.encode(TOKENIZER, typed)[0])  # the passage in the block's place
@@ -204,11 +210,11 @@ def test_a_conversation_comes_with_the_passages_it_quotes_and_only_when_the_corp
     again = make(depot, store)
     assert again["folder"] == record["folder"] and again["id"] != record["id"] and fresh(again)
     assert again["erasures"] == [erased]
-    [row] = [row for shard in again["shards"]["conversation"] for row in read_verified(store, shard)]
+    [row] = [row for shard in again["shards"]["conversation"] for row in read_verified(reader(store), shard)]
     assert "brown" not in chat.show(TOKENIZER, list(row[0])) and " fox" in chat.show(TOKENIZER, list(row[0]))
     # the files of the record it replaced that it does not name are gone
     named = {one["key"] for one in corpora.files(again)}
-    assert all(store.has(File.of(one)) == (one["key"] in named) for one in corpora.files(record))
+    assert all(dock_files.has(store, one) == (one["key"] in named) for one in corpora.files(record))
 
 
 def test_a_build_of_quoting_conversations_cut_short_anywhere_goes_on_to_the_same_corpus(make_depot, me, tmp_path):
@@ -219,9 +225,9 @@ def test_a_build_of_quoting_conversations_cut_short_anywhere_goes_on_to_the_same
                        for n in range(6)], me)
     depot.add([quoting(text, f"number {n}") for n, text in enumerate(texts)], me)
     depot.decide("admitted", f"id <> '{texts[0]}'", me)
-    whole = make(depot, open_dock((tmp_path / "whole").as_uri()), shard_tokens=20)
+    whole = make(depot, (tmp_path / "whole").as_uri(), shard_tokens=20)
     saved = []
-    make(depot, open_dock((tmp_path / "count").as_uri()), shard_tokens=20, save=saved.append)
+    make(depot, (tmp_path / "count").as_uri(), shard_tokens=20, save=saved.append)
     assert (whole["conversations"], whole["left_out"]["quoted text left out"]) == (5, 1) and len(saved) > 4
 
     for stop in range(1, len(saved)):
@@ -231,7 +237,7 @@ def test_a_build_of_quoting_conversations_cut_short_anywhere_goes_on_to_the_same
             kept.append(state)
             if len(kept) == stop:
                 raise KeyboardInterrupt
-        store, work = open_dock((tmp_path / f"store{stop}").as_uri()), tmp_path / f"work{stop}"
+        store, work = (tmp_path / f"store{stop}").as_uri(), tmp_path / f"work{stop}"
         with pytest.raises(KeyboardInterrupt):
             make(depot, store, work=work, save=stopping, shard_tokens=20)
 
@@ -251,7 +257,7 @@ def test_quoting_conversations_read_on_workers_page_by_page_make_the_corpus_one_
                quoting(dog, "runs")], me)
     depot.change_content(dog, "the dog sleeps and the dog sleeps", None, me)  # "runs" gone, "dog sleeps" twice
     depot.decide("admitted", "true", me)
-    alone = make(depot, open_dock((tmp_path / "alone").as_uri()))
+    alone = make(depot, (tmp_path / "alone").as_uri())
     monkeypatch.setattr("corpus_build.IN_PROCESS", 0)
     monkeypatch.setattr("corpus_build.HELD_PAGE", 2)
     import corpus_build as corpus
@@ -262,7 +268,7 @@ def test_quoting_conversations_read_on_workers_page_by_page_make_the_corpus_one_
         return run(work, *rest, **options)
     monkeypatch.setattr(corpus, "in_order", watched)
 
-    spread = make(depot, open_dock((tmp_path / "spread").as_uri()))
+    spread = make(depot, (tmp_path / "spread").as_uri())
 
     assert {"_conversations", "_matched"} <= set(ran)
     assert (alone["conversations"], alone["left_out"]["quote unmatched"]) == (2, 3)
@@ -302,7 +308,7 @@ def test_a_quote_of_a_long_text_needs_the_pieces_its_passage_lies_in(make_depot,
     [talk] = depot.add([quoting(repo, "=== src/file7.c")], me)
     depot.decide("admitted", [talk], me)
 
-    record = make(depot, open_dock((tmp_path / "store").as_uri()))
+    record = make(depot, (tmp_path / "store").as_uri())
 
     assert record["conversations"] == 1 and record["pieces"] == 4
 
@@ -322,12 +328,12 @@ def shared_depot(make_depot, me, english, french):
 def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seeded_subset_of_the_others(
         make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=12, french=3)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     shares = [("en", 0.5), ("fr", 0.5)]
 
     record = make(depot, store, shares=shares)
 
-    rows = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard)]
+    rows = [row for shard in record["shards"]["plain"] for row in read_verified(reader(store), shard)]
     by_pool = {}
     for tokens, _, document, pool, _ in rows:
         by_pool.setdefault(pool, []).append(document)
@@ -339,7 +345,7 @@ def test_shares_trim_to_their_proportions_keeping_the_scarcest_whole_and_a_seede
                                        {"tag": "fr", "tokens": tokens, "groups": alone}]
     assert record["left_out"]["no share"] == 1 and record["left_out"]["trimmed"] == 9
     assert record["conversations"] == 1  # an item is no plain text: shares leave it whole
-    again = make(depot, open_dock((tmp_path / "other").as_uri()), shares=shares)
+    again = make(depot, (tmp_path / "other").as_uri(), shares=shares)
     assert again["id"] == record["id"]  # the order makes the same subset
 
 
@@ -347,14 +353,14 @@ def test_shares_naming_a_tag_no_text_has_refuse_the_build(make_depot, me, tmp_pa
     depot = shared_depot(make_depot, me, english=2, french=0)
 
     with pytest.raises(Refused, match="tag fr"):
-        make(depot, open_dock((tmp_path / "store").as_uri()), shares=[("en", 0.5), ("fr", 0.5)])
+        make(depot, (tmp_path / "store").as_uri(), shares=[("en", 0.5), ("fr", 0.5)])
 
-    assert records(open_dock((tmp_path / "store").as_uri())) == []
+    assert records((tmp_path / "store").as_uri()) == []
 
 
 def test_an_erasure_marks_stale_every_corpus_holding_its_text_and_a_new_build_is_fresh(make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=2, french=2)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     record = make(depot, store)
     [text] = [row["id"] for row in depot.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) "
                                              "WHERE value = 'de')")]
@@ -372,14 +378,14 @@ def test_a_snapshot_builds_the_same_corpus_whatever_its_texts_did_since(make_dep
                                NewText(text="the dog", licenses=("CC0-1.0",))], me)
     depot.decide("admitted", [first], me)
     snapshot = depot.create_snapshot()
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     before = make(depot, store, snapshot)
     depot.decide("admitted", [second], me)
     depot.edit_credits(first, {"title": "The fox"}, me)
     depot.decide("refused", [first], me)
     depot.add([NewText(text="a new text", licenses=("CC0-1.0",))], me)
 
-    again = make(depot, open_dock((tmp_path / "other").as_uri()), snapshot)
+    again = make(depot, (tmp_path / "other").as_uri(), snapshot)
 
     assert again["id"] == before["id"] and again["build_key"] == before["build_key"]
     assert [(one["id"], one["title"]) for one in corpus_rows(store, again, "texts")] == [(first, "Fox")]
@@ -395,7 +401,7 @@ def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_choo
                                                        {"name": "machine-made", "value": 0.03,
                                                         "content_version": 2}]}]), me)
     depot.decide("admitted", "true", me)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store)
 
@@ -408,7 +414,7 @@ def test_an_erasure_carried_out_while_a_corpus_is_built_makes_it_stale_once_writ
         make_depot, me, tmp_path):
     # the erasure's own marking reads only the records that exist, and the build's record does not exist yet
     depot = shared_depot(make_depot, me, english=2, french=0)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     older = make(depot, store)
     [text] = [row["id"] for row in depot.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) "
                                              "WHERE value = 'de')")]
@@ -437,7 +443,7 @@ def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_
     added = depot.add([NewText(text=f"text {'n' * (n % 5)} {n}", licenses=("CC0-1.0",), tags=("en",))
                        for n in range(20)], me)
     depot.decide("admitted", "true", me)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store)
 
@@ -500,10 +506,10 @@ def test_a_text_that_would_pass_the_size_is_left_out_and_the_texts_after_it_fill
                                 tags=("en",))], me)
     short = depot.add([NewText(text=f"the dog {n}", licenses=("CC0-1.0",), tags=("en",)) for n in range(10)], me)
     depot.decide("admitted", "true", me)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     whole = make(depot, store)
     rows = [(document, len(tokens)) for shard in whole["shards"]["plain"] for tokens, _, document, _, _ in
-            read_verified(store, shard)]
+            read_verified(reader(store), shard)]
     taken_order = [document for document, _ in rows]
     assert taken_order.index(long) < len(taken_order) - 1  # some short texts come after the long one
     limit = whole["total_tokens"] - dict(rows)[long]  # every short text fits, the long one does not
@@ -530,7 +536,7 @@ def items_depot(make_depot, me, plain: int):
 
 def corpus_tokens(store, record) -> int:
     """Every token the corpus holds: its plain texts', its conversations' and its tasks' (task_text)."""
-    tasks = store.get_bytes(record["tasks"]["file"]).decode("utf-8").splitlines() if "tasks" in record else []
+    tasks = dock_files.fetch(store, record["tasks"]["file"]).decode("utf-8").splitlines() if "tasks" in record else []
     return (record["total_tokens"] + sum(one["tokens"] for one in record["shards"]["conversation"])
             + sum(len(TOKENIZER.encode(task_text(json.loads(line)["content"]).encode("utf-8"))) for line in tasks))
 
@@ -545,7 +551,7 @@ def items_part(depot, limit: int) -> int:
 
 def test_a_size_gives_the_items_their_natural_share_and_the_plain_texts_the_rest(make_depot, me, tmp_path):
     depot, conversation, task = items_depot(make_depot, me, plain=300)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     every = make(depot, store)
     limit = every["items_tokens"]  # the items' share of it leaves some of them out, the plain texts' part fills
     part = items_part(depot, limit)
@@ -561,7 +567,7 @@ def test_a_size_gives_the_items_their_natural_share_and_the_plain_texts_the_rest
     assert record["items_tokens"] == corpus_tokens(store, record) - record["total_tokens"]
     assert limit - record["items_tokens"] - 3 < record["total_tokens"] <= limit - record["items_tokens"]
     # the same snapshot, data section and vocabulary build the same corpus into the same folder
-    again = make(depot, open_dock((tmp_path / "again").as_uri()), total_tokens=limit)
+    again = make(depot, (tmp_path / "again").as_uri(), total_tokens=limit)
     assert (again["id"], again["folder"]) == (record["id"], record["folder"])
 
 
@@ -574,7 +580,7 @@ def test_with_shares_the_items_have_their_share_of_the_corpus_of_every_token(mak
     shares = [("en", 0.5), ("fr", 0.5)]
     conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
     items = 6 * len(json.dumps(CONVERSATION).encode("utf-8"))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     every = make(depot, store, shares=shares)
     limit = every["items_tokens"]
     part = limit * items // (items + 2 * 10 * 7)  # without a size, en keeps as many bytes as fr: 10 texts of 7
@@ -591,7 +597,7 @@ def test_the_item_share_stops_at_its_first_item_that_would_pass_its_part(make_de
     limit = 3 * 3 + conversation + task  # the items hold nearly all the bytes: their part is most of the size
     part = items_part(depot, limit)
     assert part < 2 * conversation + task  # so not every item fits
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, total_tokens=limit)
 
@@ -609,7 +615,7 @@ def test_conversations_and_tasks_are_one_share_where_an_item_that_does_not_fit_l
     depot.decide("admitted", "true", me)
     conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
     task = len(TOKENIZER.encode(task_text(TASK).encode("utf-8")))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     every = make(depot, store)
     kinds = [one["kind"] for one in corpus_rows(store, every, "texts") if one["kind"] != "plain"]
     assert task > conversation
@@ -633,7 +639,7 @@ def test_conversations_and_tasks_are_one_share_where_an_item_that_does_not_fit_l
 def test_a_snapshot_of_items_alone_fills_its_size_with_them(make_depot, me, tmp_path):
     depot, conversation, task = items_depot(make_depot, me, plain=0)
     limit = 2 * conversation + task - 1  # every item but the last in order fits
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, total_tokens=limit)
 
@@ -652,13 +658,13 @@ def same_files(one: dict, other: dict) -> bool:
 
 def test_a_depot_moved_to_another_file_builds_the_same_corpus(make_depot, me, tmp_path):
     depot, _, _ = items_depot(make_depot, me, plain=4)
-    first = make(depot, open_dock((tmp_path / "first").as_uri()))
+    first = make(depot, (tmp_path / "first").as_uri())
     moved = tmp_path / "elsewhere" / "moved.sqlite"
     moved.parent.mkdir()
     with sqlite3.connect(depot.address) as source, sqlite3.connect(moved) as target:
         source.backup(target)
 
-    second = make(Depot.view(str(moved)), open_dock((tmp_path / "second").as_uri()), snapshot_of(depot))
+    second = make(Depot.view(str(moved)), (tmp_path / "second").as_uri(), snapshot_of(depot))
 
     assert second["id"] == first["id"] and second["folder"] == first["folder"] and same_files(first, second)
 
@@ -670,9 +676,9 @@ def test_a_clone_holding_its_upstream_s_snapshot_builds_the_same_corpus_under_th
     follower = clone(address, str(tmp_path / "follower.sqlite"), About("follower", "Grace Hopper", "grace@example.org"))
     made = upstream.create_snapshot()
     pull(follower)
-    built = make(upstream, open_dock((tmp_path / "upstream").as_uri()), made)
+    built = make(upstream, (tmp_path / "upstream").as_uri(), made)
 
-    again = build(follower, made["id"], section(made), open_dock((tmp_path / "follower").as_uri()), TOKENIZER,
+    again = build(follower, made["id"], section(made), (tmp_path / "follower").as_uri(), TOKENIZER,
                   address="https://a-clone.example", log=lambda *_: None)
 
     assert again["build_key"] == built["build_key"] and again["id"] == built["id"] and same_files(built, again)
@@ -681,7 +687,7 @@ def test_a_clone_holding_its_upstream_s_snapshot_builds_the_same_corpus_under_th
 
 def test_a_build_cut_short_goes_on_from_its_last_token_file_and_writes_the_same_corpus(make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=40, french=0)
-    whole = make(depot, open_dock((tmp_path / "whole").as_uri()), shard_tokens=20)
+    whole = make(depot, (tmp_path / "whole").as_uri(), shard_tokens=20)
     saved = []
 
     def stop_after_two(state):
@@ -689,7 +695,7 @@ def test_a_build_cut_short_goes_on_from_its_last_token_file_and_writes_the_same_
         if len(saved) == 2:
             raise KeyboardInterrupt
 
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(KeyboardInterrupt):
         make(depot, store, work=tmp_path / "work", save=stop_after_two, shard_tokens=20)
     assert records(store) == []  # no record until the build is whole
@@ -699,7 +705,7 @@ def test_a_build_cut_short_goes_on_from_its_last_token_file_and_writes_the_same_
 
     assert resumed["id"] == whole["id"] and same_files(resumed, whole)
     # a state of another build starts nothing of it: this one starts over
-    other = make(depot, open_dock((tmp_path / "other").as_uri()), total_tokens=30, work=tmp_path / "work2",
+    other = make(depot, (tmp_path / "other").as_uri(), total_tokens=30, work=tmp_path / "work2",
                  checkpoint=saved[-1], shard_tokens=20)
     assert other["build_key"] != whole["build_key"] and other["total_tokens"] <= 30
 
@@ -713,7 +719,7 @@ def test_a_build_stopped_before_an_erasure_that_reached_its_snapshot_starts_over
         if len(saved) == 2:
             raise KeyboardInterrupt
 
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(KeyboardInterrupt):
         make(depot, store, work=tmp_path / "work", save=stop_after_two, shard_tokens=20)
     [text] = [row["id"] for row in depot.sql("SELECT id FROM texts WHERE EXISTS (SELECT 1 FROM json_each(tags) "
@@ -725,14 +731,14 @@ def test_a_build_stopped_before_an_erasure_that_reached_its_snapshot_starts_over
     resumed = make(depot, store, work=tmp_path / "work", checkpoint=saved[-1], shard_tokens=20, log=lines.append)
 
     assert any("starts over" in line for line in lines)
-    assert resumed["id"] == make(depot, open_dock((tmp_path / "fresh").as_uri()), shard_tokens=20)["id"]
+    assert resumed["id"] == make(depot, (tmp_path / "fresh").as_uri(), shard_tokens=20)["id"]
     assert resumed["erasures"] == [erased]
 
 
 def test_a_snapshot_change_digest_or_vocabulary_other_than_the_order_s_is_refused(make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=2, french=0)
     snapshot = snapshot_of(depot)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     def refused(data, tokenizer=TOKENIZER, match=None):
         with pytest.raises(Refused, match=match):
@@ -755,13 +761,13 @@ def test_a_snapshot_change_digest_or_vocabulary_other_than_the_order_s_is_refuse
 def test_a_cap_deletes_the_corpus_downloaded_least_recently_and_refuses_a_corpus_bigger_than_itself(
         make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=3, french=3)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     english = make(depot, store, shares=[("en", 1.0)])
     french = make(depot, store, shares=[("fr", 1.0)])
     size = sum(one["bytes"] for one in corpora.files(english))
     downloaded = {english["id"]: 2.0, french["id"]: 1.0}  # french was downloaded least recently
     cap = 2 * size + size // 2
-    whole = make(depot, open_dock((tmp_path / "alone").as_uri()))
+    whole = make(depot, (tmp_path / "alone").as_uri())
     whole_size = sum(one["bytes"] for one in corpora.files(whole))
     # what the cap would delete, told before the build: the corpus it then deletes, nothing deleted yet
     foretold = Room(store, cap, "corpora/next", downloaded.get, set).evicted(whole_size)
@@ -786,9 +792,9 @@ def test_a_cap_weighs_only_the_items_the_size_keeps(make_depot, me, tmp_path):
     depot.decide("admitted", "true", me)
     conversation = len(chat.encode(TOKENIZER, CONVERSATION)[0])
     limit = 2 * conversation + conversation // 2  # the conversations' part holds two of them
-    alone = make(depot, open_dock((tmp_path / "alone").as_uri()), total_tokens=limit, shard_tokens=6)
+    alone = make(depot, (tmp_path / "alone").as_uri(), total_tokens=limit, shard_tokens=6)
     size = sum(one["bytes"] for one in corpora.files(alone))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     # the 198 conversations the limit leaves out take no room in the estimate a cap of ten times the size checks
     record = make(depot, store, total_tokens=limit, shard_tokens=6, room=lambda folder: Room(store, 10 * size, folder))
@@ -798,9 +804,9 @@ def test_a_cap_weighs_only_the_items_the_size_keeps(make_depot, me, tmp_path):
 
 def test_a_corpus_bigger_than_the_cap_is_refused_before_any_other_corpus_is_deleted_for_it(make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=40, french=2)
-    whole = make(depot, open_dock((tmp_path / "whole").as_uri()), shard_tokens=20)
+    whole = make(depot, (tmp_path / "whole").as_uri(), shard_tokens=20)
     size = sum(one["bytes"] for one in corpora.files(whole))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     french = make(depot, store, shares=[("fr", 1.0)])
 
     with pytest.raises(TooBig, match="no corpus was deleted"):
@@ -812,8 +818,8 @@ def test_a_corpus_bigger_than_the_cap_is_refused_before_any_other_corpus_is_dele
 def test_a_cap_deletes_the_files_a_build_left_without_a_record_and_that_build_started_again_starts_over(
         make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=40, french=0)
-    whole = make(depot, open_dock((tmp_path / "whole").as_uri()), shard_tokens=20)
-    store = open_dock((tmp_path / "store").as_uri())
+    whole = make(depot, (tmp_path / "whole").as_uri(), shard_tokens=20)
+    store = (tmp_path / "store").as_uri()
     saved = []
 
     def stop_after_five(state):
@@ -823,17 +829,17 @@ def test_a_cap_deletes_the_files_a_build_left_without_a_record_and_that_build_st
 
     with pytest.raises(KeyboardInterrupt):
         make(depot, store, work=tmp_path / "work", save=stop_after_five, shard_tokens=20)
-    [left] = [key for key in store.kind.list("corpora/", deep=False)]
-    left_bytes = sum(store.kind.list(left, deep=True).values())
+    [left] = [f"corpora/{name}/" for name in dock_api.folders(store, "corpora/")]
+    left_bytes = sum(one["bytes"] for one in dock_api.find(store, left))
 
     # another key: a new folder, in one token file, whose first upload is all of it (its estimate is its size)
-    other = make(depot, open_dock((tmp_path / "other").as_uri()), total_tokens=10**6, shard_tokens=1_000)
+    other = make(depot, (tmp_path / "other").as_uri(), total_tokens=10**6, shard_tokens=1_000)
     other_size = sum(one["bytes"] for one in corpora.files(other))
     record = make(depot, store, total_tokens=10**6, shard_tokens=1_000,
                   room=lambda folder: Room(store, other_size + left_bytes - 1, folder))
 
     assert fresh(record)
-    assert sum(store.kind.list(left, deep=True).values()) < left_bytes  # a file at a time, as the build needed room
+    assert sum(one["bytes"] for one in dock_api.find(store, left)) < left_bytes  # a file at a time, as the build needed room
     resumed = make(depot, store, work=tmp_path / "work", checkpoint=saved[-1], shard_tokens=20)
     assert resumed["id"] == whole["id"] and not corpus_room.missing(store, resumed["folder"], corpora.files(resumed))
 
@@ -842,7 +848,7 @@ def test_an_erasure_of_a_text_the_snapshot_does_not_hold_leaves_its_corpus_s_fol
         make_depot, me, tmp_path):
     depot = shared_depot(make_depot, me, english=3, french=0)
     [outside] = depot.add([NewText(text="the cat", licenses=("CC0-1.0",))], me)  # under review: not in the snapshot
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     first = make(depot, store)
     corpus_room.delete(store, first, "a test deleted it")
     request = depot.ask_erasure("a cat", [(outside, 4, 7)], me)
@@ -880,13 +886,13 @@ def test_a_number_two_parts_hold_is_built_once_at_its_first_part_s_bound(make_de
     late = depot.change()
     two_parts(depot, [(0, "depot", early, snapshots.BitMap([ids.number(first)])),
                       (1, "depot", late, snapshots.BitMap([ids.number(first), ids.number(second)]))])
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, depot.snapshot("two"))
 
     texts = {one["id"]: one["revision"] for one in corpus_rows(store, record, "texts")}
     assert texts == {first: 1, second: 1}  # first read at the bound of part 0, before its change
-    [row] = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard) if row[2] == first]
+    [row] = [row for shard in record["shards"]["plain"] for row in read_verified(reader(store), shard) if row[2] == first]
     assert list(row[0]) == [*TOKENIZER.encode(b"text 0"), END]
 
 
@@ -901,7 +907,7 @@ def test_an_erasure_of_a_text_only_an_earlier_part_holds_is_one_the_corpus_lists
     request = depot.ask_erasure("a word", [(first, 0, 4)], me)
     assert depot.decide_erasure(request, "admitted", me) is True
 
-    record = make(depot, open_dock((tmp_path / "store").as_uri()), depot.snapshot("two"))
+    record = make(depot, (tmp_path / "store").as_uri(), depot.snapshot("two"))
 
     assert record["erasures"] == [request]
 
@@ -910,12 +916,12 @@ def test_a_long_text_comes_as_pieces_cut_between_files_each_at_its_own_place_of_
     depot, short, repo, _ = long_depot(make_depot, me)
     text = depot.content(repo)
     assert pieces.count(len(text)) == 4
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store)
 
     rows = [(document, list(tokens)) for shard in record["shards"]["plain"] for tokens, _, document, _, _ in
-            read_verified(store, shard)]
+            read_verified(reader(store), shard)]
     names = [pieces.name(repo, n) for n in range(4)]
     taken = [document for document, _ in rows]
     # each piece at the export key of its name, among the other texts, never one after the other
@@ -937,7 +943,7 @@ def test_a_long_text_comes_as_pieces_cut_between_files_each_at_its_own_place_of_
     assert [line for line in model_notice(store, record).split("\n\n")[0].splitlines()
             if line.startswith(f"depot {repo}:")] == [f"depot {repo}: A repository; CC0-1.0"]
     # the same snapshot builds the same bytes
-    again = make(depot, open_dock((tmp_path / "again").as_uri()))
+    again = make(depot, (tmp_path / "again").as_uri())
     assert again["id"] == record["id"] and again["shards"]["plain"] == record["shards"]["plain"]
 
 
@@ -945,10 +951,10 @@ def test_a_long_text_no_longer_ends_a_corpus_smaller_than_it_which_takes_the_pie
                                                                                                tmp_path):
     # the whole repository would pass the size: the corpus still takes every short text and the pieces that fit
     depot, short, repo, _ = long_depot(make_depot, me)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     whole = make(depot, store)
     tokens = {document: len(row) for shard in whole["shards"]["plain"] for row, _, document, _, _ in
-              read_verified(store, shard)}
+              read_verified(reader(store), shard)}
     short_tokens = sum(tokens[one] for one in short)
     smallest = min(range(4), key=lambda n: tokens[pieces.name(repo, n)])
     others = [tokens[pieces.name(repo, n)] for n in range(4) if n != smallest]
@@ -999,7 +1005,7 @@ def test_a_text_of_more_pieces_than_a_16_bit_number_holds_comes_as_every_one_of_
     # a walk goes on right after the place of a piece numbered past any 16-bit number
     at = made.piece.tolist().index(count - 1)
     assert made.start(list(made.place(at)[:1]) + ["depot", *made.place(at)[2:]]) == at + 1
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     record = make(depot, store, total_tokens=20_000)  # the first pieces of the order, most numbered past 32,767
     taken = documents(store, record)
     numbers = [int(name.rpartition("#")[2]) for name in taken]
@@ -1009,7 +1015,7 @@ def test_a_text_of_more_pieces_than_a_16_bit_number_holds_comes_as_every_one_of_
     assert table == set(numbers)
     held = Parted(depot.reader(), text, depot.listed_text(text, 1)["parts"])
     rows = {document: list(tokens) for shard in record["shards"]["plain"]
-            for tokens, _, document, _, _ in read_verified(store, shard)}
+            for tokens, _, document, _, _ in read_verified(reader(store), shard)}
     for name, number in zip(taken[:50], numbers):
         assert rows[name] == [*TOKENIZER.encode(pieces.read(held, number).encode()), END]
 
@@ -1022,7 +1028,7 @@ def test_a_text_long_at_the_snapshot_s_bound_comes_as_pieces_even_once_it_is_sho
     snapshot = depot.create_snapshot()
     depot.change_content(text, "a short text now", None, me)
     depot.decide("admitted", [text], me)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     then = make(depot, store, snapshot)
     now = make(depot, store, depot.create_snapshot())
@@ -1053,12 +1059,12 @@ def test_a_build_cut_short_right_after_a_piece_goes_on_and_writes_the_same_corpu
     # a token file closes after each piece here, so the state that resumes names a piece's place, and the size
     # leaves one piece out, so what each part took and left out is part of that state
     depot, short, repo, _ = long_depot(make_depot, me)
-    store = open_dock((tmp_path / "whole").as_uri())
+    store = (tmp_path / "whole").as_uri()
     whole = make(depot, store)
     tokens = {document: len(row) for shard in whole["shards"]["plain"] for row, _, document, _, _ in
-              read_verified(store, shard)}
+              read_verified(reader(store), shard)}
     limit = whole["total_tokens"] - max(tokens[pieces.name(repo, n)] for n in range(4))
-    straight = make(depot, open_dock((tmp_path / "straight").as_uri()), total_tokens=limit, shard_tokens=5_000)
+    straight = make(depot, (tmp_path / "straight").as_uri(), total_tokens=limit, shard_tokens=5_000)
     saved = []
 
     def stop_after_a_piece(state):
@@ -1066,7 +1072,7 @@ def test_a_build_cut_short_right_after_a_piece_goes_on_and_writes_the_same_corpu
         if state["after"][3] >= 0:
             raise KeyboardInterrupt
 
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(KeyboardInterrupt):
         make(depot, store, total_tokens=limit, work=tmp_path / "work", save=stop_after_a_piece, shard_tokens=5_000)
 
@@ -1099,7 +1105,7 @@ def groups_taken(record) -> dict:
 def test_a_share_splits_its_part_over_its_texts_tags_by_the_square_root_of_what_each_holds(make_depot, me, tmp_path):
     # a holds four times the bytes of b, so it aims at twice its tokens: 36 tokens are 12 texts, 8 of a and 4 of b
     depot, _ = tagged_depot(make_depot, me, (("en", "a"), 80, SMALL), (("en", "b"), 20, SMALL))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, total_tokens=36, shares=[("en", 1.0)])
 
@@ -1111,7 +1117,7 @@ def test_a_small_group_gives_all_it_has_and_its_leftover_goes_to_the_others(make
     # alike, split the rest evenly, whatever the order of their texts
     depot, _ = tagged_depot(make_depot, me, (("en", "a"), 20, SMALL), (("en", "b"), 20, SMALL),
                             (("en", "c"), 2, SMALL))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, total_tokens=30, shares=[("en", 1.0)])
 
@@ -1126,7 +1132,7 @@ def test_a_request_for_tokens_names_texts_of_at_most_its_bytes_and_chooses_the_s
     from depot import groups
     depot, _ = tagged_depot(make_depot, me, *((("en", tag), 30, SMALL) for tag in "abcdefgh"))
     monkeypatch.setattr("corpus_build.IN_PROCESS", 0)  # count in worker processes, as a big build does
-    wide = make(depot, open_dock((tmp_path / "wide").as_uri()), total_tokens=90, shares=[("en", 1.0)])
+    wide = make(depot, (tmp_path / "wide").as_uri(), total_tokens=90, shares=[("en", 1.0)])
     asked = []
     choose = groups._choose
 
@@ -1138,7 +1144,7 @@ def test_a_request_for_tokens_names_texts_of_at_most_its_bytes_and_chooses_the_s
 
     monkeypatch.setattr(groups, "ASKED_BYTES", 3 * len(SMALL))
     monkeypatch.setattr(groups, "_choose", watched)
-    narrow = make(depot, open_dock((tmp_path / "narrow").as_uri()), total_tokens=90, shares=[("en", 1.0)])
+    narrow = make(depot, (tmp_path / "narrow").as_uri(), total_tokens=90, shares=[("en", 1.0)])
 
     assert asked and max(asked) <= 1 + 3
     assert [one["sha256"] for one in narrow["shards"]["plain"]] == [one["sha256"] for one in wide["shards"]["plain"]]
@@ -1148,7 +1154,7 @@ def test_a_request_for_tokens_names_texts_of_at_most_its_bytes_and_chooses_the_s
 def test_a_text_of_two_groups_counts_for_both_and_is_taken_once(make_depot, me, tmp_path):
     # 24 tokens are 8 texts: each text tagged a and b gives both groups its tokens, so 4 of them balance 4 texts of c
     depot, _ = tagged_depot(make_depot, me, (("en", "a", "b"), 10, SMALL), (("en", "c"), 10, SMALL))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, total_tokens=24, shares=[("en", 1.0)])
 
@@ -1162,7 +1168,7 @@ def test_a_text_that_does_not_fit_what_its_share_has_left_is_left_out_and_its_gr
     big = "the quick brown fox jumps over the lazy dog " * 4
     depot, added = tagged_depot(make_depot, me, (("en", "a"), 1, big), (("en", "a"), 16, SMALL),
                                 (("en", "b"), 4, SMALL))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     record = make(depot, store, total_tokens=18, shares=[("en", 1.0)])
 
@@ -1173,7 +1179,7 @@ def test_a_text_that_does_not_fit_what_its_share_has_left_is_left_out_and_its_gr
 def test_a_share_of_one_group_takes_its_texts_in_the_order_as_a_order_without_shares_does(make_depot, me,
                                                                                            tmp_path):
     depot, _ = tagged_depot(make_depot, me, (("en", "a"), 12, SMALL))
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     shared = make(depot, store, total_tokens=15, shares=[("en", 1.0)])
     plain = make(depot, store, total_tokens=15)
@@ -1187,10 +1193,10 @@ def test_a_build_of_shares_split_by_group_cut_short_goes_on_to_the_same_bytes_ev
     depot, _ = tagged_depot(make_depot, me, (("en", "a"), 40, SMALL), (("en", "b"), 40, SMALL),
                             (("en", "c"), 5, SMALL))
     shares = [("en", 1.0)]
-    whole = make(depot, open_dock((tmp_path / "whole").as_uri()), total_tokens=150, shares=shares, shard_tokens=20)
-    again = make(depot, open_dock((tmp_path / "again").as_uri()), total_tokens=150, shares=shares, shard_tokens=20)
+    whole = make(depot, (tmp_path / "whole").as_uri(), total_tokens=150, shares=shares, shard_tokens=20)
+    again = make(depot, (tmp_path / "again").as_uri(), total_tokens=150, shares=shares, shard_tokens=20)
     assert again["id"] == whole["id"] and groups_taken(whole)["c"] == (5, 15)
-    store, work, saved = open_dock((tmp_path / "store").as_uri()), tmp_path / "work", []
+    store, work, saved = (tmp_path / "store").as_uri(), tmp_path / "work", []
 
     def stop_after(count):
         def save(state):

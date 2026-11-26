@@ -221,7 +221,8 @@ from depot.parts import FileText
 from depot.schema import ADMITTED, FORMAT, REFUSED, UNDER_REVIEW
 from depot.settings import depot_address
 from depot import measures, snapshots, upgrade
-from dock.api import DockError, DockSettingError, dock_from_settings
+from dock import api as dock_api
+from dock.api import DockError, DockSettingError
 from wic_utils.lines import ERROR, say
 
 from . import corpora
@@ -232,6 +233,30 @@ PASSAGE_CHARACTERS = 200_000  # the characters depot show --from prints unless t
 
 STATUSES = {"admit": ADMITTED, "refuse": REFUSED, "back-to-review": UNDER_REVIEW}
 BACK = "back-to-review"  # the status of decide that puts texts back under review, never an erasure request
+
+
+class DockBackups:
+    """Where `depot backup` and `depot restore` keep the depot's backups:
+    the calls depot.backup makes of its `store`, each on the dock named by
+    its URL, through dock.api (depot.backup knows nothing of the dock)."""
+
+    def __init__(self, dock: str):
+        self.dock = dock
+
+    def put_from(self, key: str, path) -> dict:
+        return dock_api.put_from(self.dock, key, path)
+
+    def put_json(self, key: str, record: dict) -> dict:
+        return dock_api.put_json(self.dock, key, record)
+
+    def get_json(self, key: str) -> dict | None:
+        return dock_api.get_json(self.dock, key)
+
+    def folders(self, prefix: str) -> list[str]:
+        return dock_api.folders(self.dock, prefix)
+
+    def fetch_into(self, reference: dict, path) -> dict:
+        return dock_api.fetch_into(self.dock, reference["key"], path, reference["sha256"])
 
 
 def cmd_new(args):
@@ -253,7 +278,7 @@ def cmd_backup(args):
         say(f"{depot.address}: its writes record no change file until its next backup, which sends a full copy; "
             "its waiting change files are deleted")
         return 0
-    record = backup(depot, dock_from_settings(env_file()), full=args.full)
+    record = backup(depot, DockBackups(dock_api.url(env_file())), full=args.full)
     full = record["full"]
     say(f"{depot.address}: sent {len(record['changes'])} change files"
         + (f" and a full copy at its change {full['change']}" if full else "")
@@ -262,7 +287,7 @@ def cmd_backup(args):
 
 
 def cmd_restore(args):
-    found = restore(dock_from_settings(env_file()), args.to, args.at, args.depot)
+    found = restore(DockBackups(dock_api.url(env_file())), args.to, args.at, args.depot)
     say(f"{found.address}: restored from the dock's backups of {found.name()}, at its change {found.change()}")
     return 0
 
@@ -278,7 +303,7 @@ def cmd_pull(args):
 def cmd_upgrade(args):
     address = depot_address(env_file=env_file())
     try:
-        records = corpora.records(dock_from_settings(env_file()))
+        records = corpora.records(dock_api.url(env_file()))
     except DockSettingError:
         records = None  # the check says only the current dataset revisions convert
     public = public_url()

@@ -2,8 +2,10 @@
 wrote, so that afterwards one can know exactly what happened.
 
 wpt train, wpt eval and wpt manager each open one Telemetry per run. Its
-record is its own folder on the dock named by DOCK, runs/<run>/ (see
-dock), named
+record is its own folder on the dock named by DOCK, runs/<run>/
+(docs/api/dock.md, "Run records"), written through dock.api on the dock's
+URL (DockRecords), or through the link to the manager on a gpu worker,
+named
 <UTC start>-<command>-<main id>-<8 random hex digits>, where the command is
 the one that ran (`wpt train`; as_record_name turns each space into a '-':
 `wpt-train`) and the main id is what the run is about (an order name, a short
@@ -123,6 +125,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, Spa
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import NonRecordingSpan, SpanContext, Status, StatusCode, TraceFlags
 
+from dock import api as dock_api
 from dock.api import MissingFile, MixedRecord, as_record_name, check_record_name
 
 from wic_utils.env import read_env_file
@@ -237,13 +240,58 @@ def _memory_in_use() -> str:
     return f", memory {(total - available) / 2**30:.1f} of {total / 2**30:.1f} GiB"
 
 
+class DockRecords:
+    """The run records of the dock named by its URL, read and written
+    through dock.api: what a Telemetry given a URL writes to. A gpu
+    worker's process, which cannot reach the dock, gives Telemetry the
+    link to the manager instead (wpt_worker.job.LinkDock), which answers to
+    the same calls."""
+
+    def __init__(self, dock: str):
+        self.dock = dock
+
+    def __repr__(self):
+        return f"the dock {self.dock}"
+
+    def read_record(self, folder, name) -> bytes:
+        return dock_api.read_record(self.dock, folder, name)
+
+    def write_record(self, folder, name, data):
+        dock_api.write_record(self.dock, folder, name, data)
+
+    def append_record(self, folder, name, data):
+        dock_api.append_record(self.dock, folder, name, data)
+
+    def flush_records(self):
+        dock_api.flush_records(self.dock)
+
+    def end_records(self, folder):
+        dock_api.end_records(self.dock, folder)
+
+    def record_reader(self, folder, name) -> "NewLines":
+        return NewLines(self.dock, folder, name)
+
+
+class NewLines:
+    """The lines added to a file of a run's record since the last read():
+    each read gives only what is new (dock.api.read_new)."""
+
+    def __init__(self, dock: str, folder, name):
+        self.dock, self.folder, self.name, self.cursor = dock, folder, name, None
+
+    def read(self) -> bytes:
+        data, self.cursor = dock_api.read_new(self.dock, self.folder, self.name, self.cursor)
+        return data
+
+
 class Telemetry:
     """One command run's record; see the module's docstring. Built by
     start(), join() or off(); a with block closes it and records how the
     run ended."""
 
     def __init__(self, store, folder, command, live, echo, owner, parent=None):
-        self.store, self.folder, self.command = store, folder, command
+        self.store = DockRecords(store) if isinstance(store, str) else store
+        self.folder, self.command = folder, command
         self._live, self._echo, self._owner = live, echo, owner
         # re-entrant: an interruption (the flush thread's, or Ctrl+C) can land just after the main
         # thread took it and leave it taken; the main thread can then still take it again in close()
@@ -297,6 +345,7 @@ class Telemetry:
         folder = environ[JOIN_FOLDER]
         trace_id, span_id = (int(part, 16) for part in environ[JOIN_PARENT].split("-"))
         parent = SpanContext(trace_id, span_id, is_remote=True, trace_flags=TraceFlags(TraceFlags.SAMPLED))
+        store = DockRecords(store) if isinstance(store, str) else store
         try:
             store.read_record(folder, START)
         except Exception as error:
@@ -962,24 +1011,24 @@ def _interrupt_main():
         signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
 
 
-def set_result(store, stage, fingerprint, data, telemetry):
+def set_result(dock, stage, fingerprint, data, telemetry):
     """Keep data, a result the build can compute again, as
     cache/<stage>/<fingerprint> (Store.put_result): the event
     "store.result_set" goes with the next group of lines, so a run that
     keeps one result per source writes no part of the record for each. A
     crash may leave such a result unrecorded; it then only saves work. The
     result holds the commit that made it."""
-    sha = store.put_result(stage, fingerprint, data, made_by=code_name())
+    sha = dock_api.put_result(dock, stage, fingerprint, data, made_by=code_name())
     telemetry.event("store.result_set", stage=stage, fingerprint=fingerprint, sha256=sha)
     return sha
 
 
-def get_result(store, stage, fingerprint, telemetry):
+def get_result(dock, stage, fingerprint, telemetry):
     """The bytes of a result set_result kept, None without one, noting it
     in telemetry when another commit made it (Telemetry.note_reused)."""
-    data, made_by = store.get_result(stage, fingerprint)
+    data = dock_api.get_result(dock, stage, fingerprint)
     if data is not None:
-        telemetry.note_reused(stage, fingerprint, made_by)
+        telemetry.note_reused(stage, fingerprint, dock_api.result_maker(dock, stage, fingerprint))
     return data
 
 

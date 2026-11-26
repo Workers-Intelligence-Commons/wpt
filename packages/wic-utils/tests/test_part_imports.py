@@ -16,6 +16,9 @@ every other module of packages/*/src, apps/*/src and scripts/ is WPT's. A part's
 
 The test reads the source of every module and fails on any import that
 breaks the rule and is not in EXCEPTIONS, each of which says why it stands.
+It also fails on any name of dock.api that another part imports and that is
+neither a function, an error, nor a plain value: the dock is named by its
+URL, and no part holds a dock object (docs/api/dock.md, "The calls").
 The tests themselves are left out: they build the depots, docks and
 deliveries they check.
 """
@@ -116,6 +119,31 @@ def test_every_part_imports_the_others_only_as_the_rule_allows():
     assert problems() == [], "imports between the parts that the rule refuses:\n" + "\n".join(problems())
 
 
+def dock_values(name: str) -> bool:
+    """Whether the name of dock.api is one other parts may import: one it
+    lists in __all__ that is a function, an error, or a plain value (a
+    string, a number, a pattern)."""
+    import inspect
+    import re
+
+    from dock import api
+
+    if name not in api.__all__:
+        return False
+    found = getattr(api, name)
+    if inspect.isclass(found):
+        return issubclass(found, Exception)
+    return inspect.isfunction(found) or isinstance(found, (str, int, float, re.Pattern))
+
+
+def test_other_parts_take_from_the_dock_only_functions_errors_and_values():
+    found = sorted(f"{path.relative_to(ROOT).as_posix()}:{line}: {module} imports {name}"
+                   for module, path in module_files().items() if part_of(module) != DOCK
+                   for line, name in imported(module, path)
+                   if name.startswith("dock.api.") and not dock_values(name.removeprefix("dock.api.")))
+    assert found == [], "names of dock.api that are no function, error or value:\n" + "\n".join(found)
+
+
 def test_the_rule_refuses_each_import_it_names():
     assert refused("freight.job", "depot.depot")
     assert not refused("freight.job", "depot.api")
@@ -129,3 +157,5 @@ def test_the_rule_refuses_each_import_it_names():
     assert not refused("depot_app.web", "depot.errors")
     assert not refused("wpt.train", "wic_utils.lines")
     assert not refused("wpt.train", "json")
+    assert dock_values("fetch") and dock_values("MissingFile") and dock_values("NAME")
+    assert not dock_values("Dock") and not dock_values("File") and not dock_values("open_dock")

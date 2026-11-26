@@ -1,12 +1,14 @@
 """What a dock's records say about its runs, read back for people.
 
-    runs(store)            every run, by its folder's name, with its command, its start
+    runs(dock)             every run, by its folder's name, with its command, its start
                            and how it ended, from its start.json and end.json
-    summary(store, folder) one run: its stage (the spans open at the last
+    summary(dock, folder)  one run: its stage (the spans open at the last
                            line read), how many spans, events and lines it
                            holds, its last events and its errors
-    follow(store, folder)  the lines of a run as they reach the dock, until
+    follow(dock, folder)   the lines of a run as they reach the dock, until
                            its end.json is there
+
+dock is the dock's URL, read through dock.api.
 
 Each line read back for people is its text and the level of wic_utils.lines
 it prints at (described).
@@ -22,6 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from dock import api
 from dock.api import MissingFile
 from wic_utils.lines import ERROR, INFO
 
@@ -54,29 +57,29 @@ class Summary:
     errors: list[tuple[str, str]] = field(default_factory=list)  # its last spans that failed and error lines
 
 
-def _json_file(store, folder, name) -> dict | None:
+def _json_file(dock, folder, name) -> dict | None:
     try:
-        return json.loads(store.read_record(folder, name))
+        return json.loads(api.read_record(dock, folder, name))
     except MissingFile:
         return None
 
 
-def run_of(store, folder) -> Run:
-    start = _json_file(store, folder, START) or {}
-    end = _json_file(store, folder, END) or {}
+def run_of(dock, folder) -> Run:
+    start = _json_file(dock, folder, START) or {}
+    end = _json_file(dock, folder, END) or {}
     return Run(folder, start.get("command"), start.get("started"), end.get("status", "no end"), end.get("seconds"))
 
 
-def runs(store) -> list[Run]:
+def runs(dock) -> list[Run]:
     """Every run of the dock, oldest first."""
     with ThreadPoolExecutor(READERS) as pool:
-        return list(pool.map(lambda folder: run_of(store, folder), store.record_folders()))
+        return list(pool.map(lambda folder: run_of(dock, folder), api.record_folders(dock)))
 
 
-def find(store, given: str) -> str:
+def find(dock, given: str) -> str:
     """The record folder a name gives: itself, or the only folder holding
     it. ValueError when none does, or several."""
-    folders = store.record_folders()
+    folders = api.record_folders(dock)
     if given in folders:
         return given
     found = [folder for folder in folders if given in folder]
@@ -99,11 +102,11 @@ def described(line: dict) -> tuple[str, str] | None:
     return None
 
 
-def summary(store, folder) -> Summary:
-    start = _json_file(store, folder, START) or {}
-    end = _json_file(store, folder, END) or {}
+def summary(dock, folder) -> Summary:
+    start = _json_file(dock, folder, START) or {}
+    end = _json_file(dock, folder, END) or {}
     try:
-        data = store.read_record(folder, EVENTS)
+        data = api.read_record(dock, folder, EVENTS)
     except MissingFile:
         data = b""
     opened, spans, events, lines = {}, collections.Counter(), collections.Counter(), 0
@@ -128,19 +131,20 @@ def summary(store, folder) -> Summary:
             last.append(shown)
             if shown[1] == ERROR:
                 errors.append(shown)
-    return Summary(run_of(store, folder), start.get("arguments", []), end.get("error"),
+    return Summary(run_of(dock, folder), start.get("arguments", []), end.get("error"),
                    [line["name"] for line in opened.values()], dict(spans), dict(events), lines, list(last),
                    list(errors))
 
 
-def follow(store, folder, seconds=FOLLOW_SECONDS, wait=time.sleep):
+def follow(dock, folder, seconds=FOLLOW_SECONDS, wait=time.sleep):
     """Each line of the run as described gives it, as it reaches the dock,
     from the run's first; it ends once the run's end.json is there and every
     line is read."""
-    reader = store.record_reader(folder, EVENTS)
+    cursor = None
     while True:
-        ended = END in store.record_files(folder)
-        for raw in reader.read().splitlines():
+        ended = END in api.record_files(dock, folder)
+        data, cursor = api.read_new(dock, folder, EVENTS, cursor)
+        for raw in data.splitlines():
             try:
                 shown = described(json.loads(raw))
             except ValueError:

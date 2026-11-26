@@ -27,6 +27,8 @@ from wpt_training import load_state
 from wic_utils.lines import INFO, bare
 from wpt_worker.link import Key
 from wpt.models import has_model
+from dock import api as dock_api
+import dock_files
 
 
 class Fake(Provider):
@@ -205,10 +207,10 @@ def cut_run(built, tmp_path) -> Workers:
     workers.save()
     workers.release()  # the manager that ran it crashed: the system gave its lock back
     folder = "20261025T120000Z-wpt-manager-cut-0000aaaa"
-    built.store.write_record(folder, "start.json", json.dumps({"command": "wpt manager", "started": "2026-10-25T12:00:00Z",
+    dock_api.write_record(built.store, folder, "start.json", json.dumps({"command": "wpt manager", "started": "2026-10-25T12:00:00Z",
                                                                "arguments": [], "inputs": {"run": "cut"}}).encode())
-    built.store.write_record(folder, "ids.json", json.dumps({"inputs": {"run": "cut"}, "outputs": {}}).encode())
-    built.store.append_record(folder, "events.jsonl", b"")
+    dock_api.write_record(built.store, folder, "ids.json", json.dumps({"inputs": {"run": "cut"}, "outputs": {}}).encode())
+    dock_api.append_record(built.store, folder, "events.jsonl", b"")
     return workers
 
 
@@ -694,7 +696,8 @@ def stopping_order(built, tmp_path, at_update_3):
 
 
 def checkpoint_step(built, name) -> int:
-    return load_state(built.store.path(DockCheckpoint(built.store, name, None, set()).state_file()))["step"]
+    state = DockCheckpoint(built.store, name, None, set()).state_file()
+    return load_state(dock_files.into(built.store, state, dock_files.folder(built.store).parent / f"state-{state['sha256']}"))["step"]
 
 
 @pytest.mark.parametrize("reason, ask", [("wpt manager stop", lambda: main(["stop"])),

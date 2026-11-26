@@ -9,10 +9,12 @@ from wpt.train import DockCheckpoint
 from wpt.train.remote import named_files
 from depot import NewText
 from wpt_corpus import corpora
-from dock import open_dock
+from dock import api as dock_api
+from wpt_corpus.files import DockFiles
 from wpt_corpus.shards import documents, read_verified
 from wpt_telemetry import Telemetry
 from wpt_tokenizer import Tokenizer
+import dock_files
 
 TALK = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]},
                      {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}]}
@@ -26,20 +28,21 @@ def test_emptying_the_cache_leaves_a_corpus_readable_and_a_checkpoint_to_resume_
 
     # every file the record refers to lies in the corpus's folder, none in cache/
     files = named_files(record).values()
-    assert files and all(file.key.startswith(f"{corpora.FOLDER}/") for file in files)
+    assert files and all(file["key"].startswith(f"{corpora.FOLDER}/") for file in files)
 
     checkpoint = DockCheckpoint(store, "fox-1", Telemetry.off(), set())
     checkpoint.save({"step": 3, "weights": torch.arange(4)})
     state = checkpoint.state_file()
     assert state["key"].startswith("models/fox-1/")
 
-    shutil.rmtree(store.root / "cache", ignore_errors=True)
-    shutil.rmtree(store.cache, ignore_errors=True)  # and the copies this machine made of the dock's files
-    fresh = open_dock(store.root.as_uri())
+    shutil.rmtree(dock_files.folder(store) / "cache", ignore_errors=True)
+    dock_api._forget_opened()  # and what this process learned of the dock's files
+    fresh = store
+    files = DockFiles(fresh, dock_files.folder(store).parent / "reader")
 
-    assert Tokenizer.from_bytes(fresh.get_bytes(record["tokenizer"]["vocabulary"])).vocab_size > 0
-    assert list(documents(fresh, record["shards"]["plain"]))
-    [talk] = [row for shard in record["shards"]["conversation"] for row in read_verified(fresh, shard)]
+    assert Tokenizer.from_bytes(dock_files.fetch(fresh, record["tokenizer"]["vocabulary"])).vocab_size > 0
+    assert list(documents(files, record["shards"]["plain"]))
+    [talk] = [row for shard in record["shards"]["conversation"] for row in read_verified(files, shard)]
     assert len(talk[0]) > 0
 
     resumed = DockCheckpoint(fresh, "fox-1", Telemetry.off(), set())

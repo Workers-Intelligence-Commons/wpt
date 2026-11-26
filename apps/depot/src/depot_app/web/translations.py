@@ -22,7 +22,7 @@ import threading
 import time
 
 from depot import errors
-from dock.api import dock_from_settings
+from dock import api as dock_api
 from wic_utils.web import urlopen
 
 from .. import shared
@@ -108,11 +108,11 @@ def translation_routes(refusals) -> list[Route]:
                          if file["sha256"] == sha256), None)
         if location is None:
             raise errors.NotFound(f"no translation model file {sha256} in Mozilla's list")
-        store = dock_from_settings(shared.env_file())
+        dock, key = dock_api.url(shared.env_file()), dock_api.content_key(sha256)
         with fetching_lock:
             lock = fetching.setdefault(sha256, threading.Lock())
         with lock:
-            if not store.has(sha256):
+            if not dock_api.has(dock, key):
                 try:
                     with urlopen(ATTACHMENTS + location, timeout=TIMEOUT) as answer:
                         data = answer.read()
@@ -120,8 +120,8 @@ def translation_routes(refusals) -> list[Route]:
                     raise ModelsUnreachable(f"the translation model file {sha256}: {error}") from None
                 if hashlib.sha256(data).hexdigest() != sha256:
                     raise ModelsUnreachable(f"the translation model file {sha256} came with other bytes; nothing kept")
-                store.put_bytes(data)
-        data = store.get_bytes(sha256)
+                dock_api.put_content(dock, data)
+        data = dock_api.fetch(dock, key, sha256)
         return 200, Stream("application/octet-stream", iter([data]), len(data), {"Cache-Control": KEPT})
 
     return [

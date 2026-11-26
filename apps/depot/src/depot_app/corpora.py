@@ -4,14 +4,15 @@ from a dataset (depot_app.web.legacy), and an upgrade from a format
 before snapshots reads their records (depot.upgrade). The depot only reads
 them: the freight marks stale those an erasure reached (freight.erasures).
 The depot reaches the dock through dock.api alone (docs/architecture.md,
-"The parts").
+"The parts"); dock is the dock's URL.
 
-    records(store)                       every corpus the dock holds, newest first
-    built_from(store, depot, dataset)    every corpus built for that depot's dataset (by id), latest first
+    records(dock)                        every corpus the dock holds, newest first
+    built_from(dock, depot, dataset)     every corpus built for that depot's dataset (by id), latest first
     folder_of, fresh, by_kind, token_files, files, triple
                                          what a record says: its folder, fresh, its files, what it was built for
 """
 
+from dock import api
 from dock.api import as_record_name
 
 FOLDER = "corpora"
@@ -67,17 +68,17 @@ def triple(record: dict) -> tuple[str | None, str, int | None]:
     return dataset.get("id"), vocabulary, size
 
 
-def records(store) -> list[dict]:
+def records(dock: str) -> list[dict]:
     """The record of every corpus the dock holds, each checked by the
     dock, the last built first."""
     found = []
-    for key in store.kind.list(f"{FOLDER}/", deep=False):
-        if key.endswith("/") and (record := store.get_json(f"{key}{RECORD}")) is not None:
+    for name in api.folders(dock, f"{FOLDER}/"):
+        if (record := api.get_json(dock, f"{FOLDER}/{name}/{RECORD}")) is not None:
             found.append(record)
     return sorted(found, key=lambda record: record["built_at"], reverse=True)
 
 
-def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> list[dict]:
+def built_from(dock: str, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> list[dict]:
     """The records of the corpora built from the dataset of id dataset of
     the depot of that name (depot.legacy.depot_name), latest first: those of the dataset's newest
     revision first, each revision's last built first, so a corpus of an
@@ -86,7 +87,7 @@ def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, s
     given an old name has none. vocabulary (a sha256) and size (max_tokens,
     None for none) keep only the corpora built for them (triple); by
     default, every vocabulary and size."""
-    found = [record for record in records(store)
+    found = [record for record in records(dock)
              if record["depot"] == depot and (record.get("dataset") or {}).get("id") == dataset
              and (vocabulary is None or triple(record)[1] == vocabulary)
              and (size is ANY or triple(record)[2] == size)]

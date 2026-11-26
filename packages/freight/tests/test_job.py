@@ -14,8 +14,7 @@ from freight import api, deliveries
 from freight import job
 from freight.exchange import PreparationFailed
 from freight.job import Job
-from dock import open_dock
-from dock.names import File
+from dock import api as dock_api
 
 
 class Stop(Exception):
@@ -29,7 +28,7 @@ def items(store, note) -> list[dict]:
 @pytest.mark.parametrize("cut", [1, 2, 3])
 def test_a_job_cut_short_goes_on_from_its_checkpoint_to_the_same_delivery(freight, cut):
     request = freight.request()
-    whole_dock = open_dock((freight.tmp_path / "whole").as_uri())
+    whole_dock = (freight.tmp_path / "whole").as_uri()
     whole = Job(request, freight.depot.address, whole_dock, freight.tmp_path / "whole-work").run()
     assert len(whole["files"]) > cut  # a file is a checkpoint: the cut falls inside the job
     saved = []
@@ -53,7 +52,7 @@ def test_the_note_keeps_the_programs_file_messages_apart_from_the_docks_referenc
         said = one["said"]
         assert (said["bytes"], said["key"], said["sha256"]) == (1 << 20, "mine", "mine")
         assert one["key"] == f"deliveries/{note['key']}/files/{one['path']}" and one["sha256"] != "mine"
-        assert one["bytes"] == freight.store.size(File.of(one))
+        assert one["bytes"] == dock_api.size(freight.store, one["key"])
     rows = items(freight.store, note)
     assert [row["line"] for row in rows] == list(range(len(rows)))
     assert sum(one["said"]["items"] for one in note["files"]) == len(rows) == note["result"]["lines"]
@@ -81,9 +80,9 @@ def test_the_cap_never_deletes_an_adopted_delivery_nor_an_input(freight):
     dock = freight.store
 
     def put(key, made_at, inputs=None):
-        file = dock.put_named(f"deliveries/{key}/files/f", b"x" * 100)
-        dock.put_json(f"deliveries/{key}/delivery.json", {
-            "key": key, "id": key, "files": [{**file.reference(), "path": "f", "bytes": 100}], "tables": {},
+        file = dock_api.put(dock, f"deliveries/{key}/files/f", b"x" * 100)
+        dock_api.put_json(dock, f"deliveries/{key}/delivery.json", {
+            "key": key, "id": key, "files": [{**file, "path": "f"}], "tables": {},
             "made_at": made_at, "preparation": {"inputs": inputs or {}}})
     put("adopted-v", "2000-01-01")  # the oldest, which nothing can make again
     put("input", "2000-01-02")  # named as an input by "user"
@@ -127,7 +126,7 @@ def test_the_rows_of_a_part_held_in_local_files_past_the_bound_give_the_same_par
     request = freight.request(per_file=100)  # one file, so one part of every row
     held = Job(request, freight.depot.address, freight.store, freight.tmp_path / "a").run()
     monkeypatch.setattr(job, "SPILL_ROWS", 2)
-    dock = open_dock((freight.tmp_path / "spilled").as_uri())
+    dock = (freight.tmp_path / "spilled").as_uri()
     spilled = Job(request, freight.depot.address, dock, freight.tmp_path / "b").run()
     assert len(held["tables"]["items"]) == 1 and held["tables"]["items"][0]["rows"] > 2
     assert (spilled["key"], spilled["id"], spilled["tables"]["items"][0]["fingerprint"]) == (

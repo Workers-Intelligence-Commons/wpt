@@ -31,17 +31,21 @@ import threading
 from dataclasses import asdict
 
 from wpt_inference import replayed_costs
-from dock.api import File
+from dock import api as dock_api
 from wpt_training import Context
 from wic_utils.programs import code
 from wpt_worker.writing import RemoteWriter
 
-def named_files(value) -> dict[str, File]:
-    """{sha256: File} of every file a corpus's record refers to: each
-    reference {"key", "sha256"} in it, shards included."""
+def _reference(value: dict) -> dict:
+    return {"key": value["key"], "sha256": value["sha256"]}
+
+
+def named_files(value) -> dict[str, dict]:
+    """{sha256: its reference {"key", "sha256"}} of every file a corpus's
+    record refers to, shards included."""
     if isinstance(value, dict):
         if set(value) >= {"key", "sha256"}:
-            return {value["sha256"]: File.of(value)}
+            return {value["sha256"]: _reference(value)}
         return {sha: file for part in value.values() for sha, file in named_files(part).items()}
     if isinstance(value, list):
         return {sha: file for part in value for sha, file in named_files(part).items()}
@@ -61,7 +65,6 @@ class Training:
         self.lock = threading.Lock()  # around self.parts, which every worker's thread changes
         self.plan = self.ready_found = self.finished = None
         self.done, self.outputs = list(run.done), {}
-        self.offered = []  # the files of the dock copied to this machine for the job, released at the end
 
     def handlers(self, worker) -> dict:
         """The answers to worker's job."""
@@ -73,15 +76,17 @@ class Training:
                 "finished": self._finished, **self.files.handlers()}
 
     def close(self):
-        for file in self.offered:
-            self.run.store.release(file)
         self.files.close()
 
-    def _offer(self, file: File) -> dict:
-        sha = file.sha256
-        path = self.run.store.path(file)  # checked against its sha256
-        self.offered.append(file)
-        return self.files.offer(path, sha)
+    def _offer(self, file: dict) -> dict:
+        """A file of the dock, offered as the job reads it: in parts read
+        straight from the dock (a range a request asks for at most, the
+        parts after it requested ahead on S3), which the job checks against
+        the file's sha256 once it has it whole."""
+        store, key = self.run.store, file["key"]
+        size = dock_api.size(store, key)
+        return self.files.offer_reader(size, file["sha256"], lambda start, length: dock_api.fetch_range(
+            store, key, start, max(0, min(length, size - start))))
 
     def _ready(self, header, body):
         run, telemetry = self.run, self.run.telemetry
@@ -113,8 +118,8 @@ class Training:
                 telemetry.event("training.step_reused", step=step.name, number=about["number"],
                                 fingerprint=about["fingerprint"], result=about["result"])
                 run.log(f"step {about['number']} {step.name}: reused, result {about['result'][:12]}")
-            state = File.of(found[-1]["state"])
-            self.allowed[state.sha256] = state
+            state = _reference(found[-1]["state"])
+            self.allowed[state["sha256"]] = state
         self.marks, self.last_state = marks, state
         self.plan = {"marks": marks, "reused": reused, "state": None if state is None else self._offer(state),
                      "costs": costs}
@@ -133,16 +138,16 @@ class Training:
         return header["folder"]
 
     def _read(self, header, body):
-        return {}, self.run.store.read_record(self._folder(header), header["name"])
+        return {}, dock_api.read_record(self.run.store, self._folder(header), header["name"])
 
     def _write(self, header, body):
-        self.run.store.write_record(self._folder(header), header["name"], body)
+        dock_api.write_record(self.run.store, self._folder(header), header["name"], body)
 
     def _append(self, header, body):
-        self.run.store.append_record(self._folder(header), header["name"], body)
+        dock_api.append_record(self.run.store, self._folder(header), header["name"], body)
 
     def _flush(self, header, body):
-        self.run.store.flush_records()
+        dock_api.flush_records(self.run.store)
 
     def _exists(self, header, body):
         return {"exists": self.run.checkpoint.exists()}, b""
@@ -150,8 +155,8 @@ class Training:
     def _load(self, header, body):
         state, path = self.run.checkpoint_state(), self.run.checkpoint_file()
         if state is not None:
-            self.allowed[state["sha256"]] = File.of(state)
-            return self._offer(File.of(state)), b""
+            self.allowed[state["sha256"]] = _reference(state)
+            return self._offer(_reference(state)), b""
         if path is not None:
             return self.files.offer(path), b""
         return {"file": None}, b""
@@ -176,7 +181,7 @@ class Training:
             part = self.parts.get(key)
         if part is None:
             run, step = self.run, self.run.steps[number - 1]
-            context = Context(step.name, run.store, run.record, run.tokenizer, run.model_config, run.telemetry,
+            context = Context(step.name, run.files, run.record, run.tokenizer, run.model_config, run.telemetry,
                               run.log, run.order["seed"], number,
                               writer=functools.partial(RemoteWriter, worker, header.get("channel")))
             part = step.start_manager(context)
@@ -200,7 +205,8 @@ class Training:
             if header.get("state") is not None:  # the job sent the step's last checkpoint with its end
                 path = self.files.received(header["state"])
                 try:
-                    state = run.store.file(run.store.put_file(path)).reference()
+                    stored = dock_api.put_content_from(run.store, path)
+                    state = _reference(stored)
                 finally:
                     path.unlink(missing_ok=True)
             else:

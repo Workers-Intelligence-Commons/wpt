@@ -32,7 +32,6 @@ import tempfile
 import time
 from pathlib import Path
 
-from dock.api import open_dock
 from wic_utils.env import read_env_file
 
 from . import deliveries, erasures
@@ -106,7 +105,7 @@ def request(request: dict, *, home: str | None = None, depot: str | None = None,
     running."""
     found = settings(home, depot, dock, cap)
     queue = Queue(found["home"])
-    store = _dock(found["dock"])
+    store = found["dock"]
     erasures.check(queue, found["depot"], store)
     with tempfile.TemporaryDirectory(prefix="probe-", dir=_made(Path(found["home"]))) as folder:
         planned = Job(request, found["depot"], store, Path(folder))
@@ -162,17 +161,17 @@ def cancel(job: str, *, home: str | None = None) -> dict:
 
 def delivery(key: str, *, dock: str | None = None) -> dict | None:
     """The note of the delivery of that key, None when the dock holds none."""
-    return deliveries.of_key(_dock(settings_dock(dock)), key)
+    return deliveries.of_key(settings_dock(dock), key)
 
 
 def deliveries_on(*, dock: str | None = None) -> list[dict]:
     """The note of every delivery on the dock, the last made first."""
-    return deliveries.notes(_dock(settings_dock(dock)))
+    return deliveries.notes(settings_dock(dock))
 
 
 def items(key: str, *, dock: str | None = None) -> list[dict]:
     """The rows of the items tables of the delivery of that key, in order."""
-    store = _dock(settings_dock(dock))
+    store = settings_dock(dock)
     note = deliveries.of_key(store, key)
     if note is None:
         raise deliveries.DeliveryError(f"the dock holds no delivery {key}")
@@ -188,7 +187,7 @@ def check(*, home: str | None = None, depot: str | None = None, dock: str | None
     in and stay fresh), corpora (the ids of the corpora under corpora/,
     built before the freight, marked stale)}. A job asks the same before it runs."""
     found = settings(home, depot, dock)
-    return erasures.check(Queue(found["home"]), found["depot"], _dock(found["dock"]))
+    return erasures.check(Queue(found["home"]), found["depot"], found["dock"])
 
 
 def adopt(key: str, files: dict[str, bytes], result: dict, about: dict, *, on_erasure: str = deliveries.STALE,
@@ -197,7 +196,7 @@ def adopt(key: str, files: dict[str, bytes], result: dict, about: dict, *, on_er
     with `adopted-`, its items table the rows items gives (each with the `depot` and `id` of a text), an erasure
     that reaches one of its items doing what on_erasure says ("stale" or "note"): its note
     (freight.deliveries.adopt)."""
-    return deliveries.adopt(_dock(settings_dock(dock)), key, files, result, about, on_erasure, items)
+    return deliveries.adopt(settings_dock(dock), key, files, result, about, on_erasure, items)
 
 
 def settings_home(home: str | None) -> str:
@@ -212,11 +211,6 @@ def settings_dock(dock: str | None) -> str:
     if not found:
         raise SettingMissing("DOCK is not set: put it in the environment or in .env")
     return found
-
-
-def _dock(url: str):
-    """The dock of that URL, its keys read from the environment or .env."""
-    return open_dock(url, env_file=ENV_FILE)
 
 
 def _made(folder: Path) -> Path:

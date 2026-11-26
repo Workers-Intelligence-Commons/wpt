@@ -19,21 +19,24 @@ was built for a triple (triple): its dataset, its vocabulary (by sha256)
 and its size; those are found by their dataset (built_from, latest_fresh),
 and a corpus of a build key belongs to no dataset.
 
-    records(store)                       every corpus the dock holds, newest first
-    find(store, corpus_id)               the corpus of that id (or of a start of it), None without one
+    records(dock)                        every corpus the dock holds, newest first
+    find(dock, corpus_id)                the corpus of that id (or of a start of it), None without one
     canonical(data), RULES               a data section in the form a build key covers, and the rules' version
     fresh(record), by_kind(record)       whether a corpus can train, whether it lists its token files by kind
     triple(record)                       what a corpus was built for: (its dataset's id, its vocabulary's sha256,
                                          its size)
-    built_from(store, depot, dataset)    every corpus built for that depot's dataset (by id), latest first
-    latest_fresh(store, depot, dataset)  the fresh one built last
-    rows(store, record, table)           the rows of one of a corpus's tables
+    built_from(dock, depot, dataset)     every corpus built for that depot's dataset (by id), latest first
+    latest_fresh(dock, depot, dataset)   the fresh one built last
+    rows(dock, record, table)            the rows of one of a corpus's tables
 
-store is the dock (dock.api.dock_from_settings or open_dock).
+dock is the dock's URL, read through dock.api.
 """
+
+import io
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from dock import api
 
 FOLDER = "corpora"
 RECORD = "corpus.json"
@@ -96,26 +99,26 @@ def canonical(data: dict) -> dict:
                                                     for one in shares], "total_tokens": size}
 
 
-def records(store) -> list[dict]:
+def records(dock) -> list[dict]:
     """The record of every corpus the dock holds, each checked by the
     dock, the last built first."""
     found = []
-    for key in store.kind.list(f"{FOLDER}/", deep=False):
-        if key.endswith("/") and (record := store.get_json(f"{key}{RECORD}")) is not None:
+    for name in api.folders(dock, f"{FOLDER}/"):
+        if (record := api.get_json(dock, f"{FOLDER}/{name}/{RECORD}")) is not None:
             found.append(record)
     return sorted(found, key=lambda record: record["built_at"], reverse=True)
 
 
-def find(store, corpus_id: str) -> dict | None:
+def find(dock, corpus_id: str) -> dict | None:
     """The record of the corpus whose id is corpus_id, or starts with it
     when only one does; None when none does. ValueError when several do."""
-    found = [record for record in records(store) if record["id"].startswith(corpus_id)]
+    found = [record for record in records(dock) if record["id"].startswith(corpus_id)]
     if len(found) > 1:
         raise ValueError(f"{corpus_id!r} starts the ids of {len(found)} corpora: give more of the id")
     return found[0] if found else None
 
 
-def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> list[dict]:
+def built_from(dock, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> list[dict]:
     """The records of the corpora built from the dataset of id dataset of
     the depot of that name, latest first: those of the dataset's newest
     revision first, each revision's last built first, so a corpus of an
@@ -123,26 +126,31 @@ def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, s
     vocabulary (a sha256) and size (max_tokens, None for none) keep only the
     corpora built for them (triple); by default, every vocabulary and
     size."""
-    found = [record for record in records(store)
+    found = [record for record in records(dock)
              if record["depot"] == depot and (record.get("dataset") or {}).get("id") == dataset
              and (vocabulary is None or triple(record)[1] == vocabulary)
              and (size is ANY or triple(record)[2] == size)]
     return sorted(found, key=lambda record: (record["dataset"].get("revision", 0), record["built_at"]), reverse=True)
 
 
-def latest_fresh(store, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> dict | None:
+def latest_fresh(dock, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> dict | None:
     """The record of the fresh corpus last built for that dataset (and
     vocabulary and size, as built_from says); None without one."""
-    return next((record for record in built_from(store, depot, dataset, vocabulary, size) if fresh(record)), None)
+    return next((record for record in built_from(dock, depot, dataset, vocabulary, size) if fresh(record)), None)
 
 
-def rows(store, record: dict, table: str) -> list[dict]:
+def rows(dock, record: dict, table: str) -> list[dict]:
     """The rows of one of a corpus's tables (texts, licenses, notices), in
     order, each file checked by the dock: the texts table is the
     concatenation of its parts."""
     found = record["tables"][table]
     if isinstance(found, list):
-        read = pa.concat_tables([pq.read_table(store.path(one)) for one in found]) if found else pa.table({})
+        read = pa.concat_tables([_table(dock, one) for one in found]) if found else pa.table({})
     else:
-        read = pq.read_table(store.path(found))
+        read = _table(dock, found)
     return read.to_pylist()
+
+
+def _table(dock, one: dict) -> pa.Table:
+    """A Parquet file a record names by its reference {key, sha256}, checked by the dock."""
+    return pq.read_table(io.BytesIO(api.fetch(dock, one["key"], one["sha256"])))

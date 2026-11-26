@@ -37,6 +37,13 @@ on before anything else, then sends a full copy.
 A change file holds the rows its change removed as they were, so an
 erased passage stays in the waiting folder until the next backup sends it,
 and in the backups for good (docs/erasure.md).
+
+The depot knows nothing of the dock: backup and restore take `store`, the
+place the backups go, which answers put_from(key, path) and put_json(key,
+record) (each giving the reference {key, sha256} of what it stored),
+get_json(key), folders(prefix) (the folders right under a key prefix) and
+fetch_into(reference, path) (a stored file into a local file, checked).
+The depot's command gives one over dock.api (depot_app.DockBackups).
 """
 
 import shutil
@@ -77,12 +84,12 @@ def backup(depot: Depot, store, full: bool = False) -> dict:
         with tempfile.TemporaryDirectory(prefix=f".{db.path.name}.backup-", dir=db.path.parent) as folder:
             copy = Path(folder) / "depot.sqlite"
             change = db.copy_to(copy)
-            stored = store.put_named(f"{base}/full/{change:012d}-{stamp}.sqlite", copy)
-            record["full"] = {**stored.reference(), "change": change, "made_at": made_at}
+            stored = store.put_from(f"{base}/full/{change:012d}-{stamp}.sqlite", copy)
+            record["full"] = {"key": stored["key"], "sha256": stored["sha256"], "change": change, "made_at": made_at}
     for path in waiting:
         number, previous, at = parse_waiting(path.name)
-        stored = store.put_named(f"{base}/changes/{path.name}", path)
-        record["changes"].append({**stored.reference(), "number": number, "previous": previous,
+        stored = store.put_from(f"{base}/changes/{path.name}", path)
+        record["changes"].append({"key": stored["key"], "sha256": stored["sha256"], "number": number, "previous": previous,
                                   "made_at": at.isoformat()})
     record = store.put_json(f"{base}/runs/{stamp}/record.json", record)
     for path in waiting:
@@ -137,8 +144,8 @@ def restore(store, to: str, at: str | None = None, name: str | None = None) -> D
     copies = target.with_name(target.name + RESTORING + "-copies")
     _remove(working, copies)
     try:
-        held = store.copies_in(copies)
-        Path(held.path(chosen)).rename(working)
+        copies.mkdir(parents=True)
+        store.fetch_into(chosen, working)
         found_format = format_of(str(working))
         if found_format != FORMAT:
             raise OtherFormat(f"the backups of {name} are of format {found_format}, and this depot restores format "
@@ -148,9 +155,11 @@ def restore(store, to: str, at: str | None = None, name: str | None = None) -> D
             for pragma in WRITER:
                 con.execute(f"PRAGMA {pragma}").fetchall()
             for change in chain:
-                with open(held.path(change), "rb") as file, con:
+                local = copies / f"{change['number']}"
+                store.fetch_into(change, local)
+                with open(local, "rb") as file, con:
                     apsw.Changeset.apply(file.read, con, conflict=_conflict)
-                held.release(change)
+                local.unlink()
             con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
         except apsw.Error as error:
             raise BackupRefused(f"a change of the backups of {name} does not apply: {error}") from None
@@ -211,15 +220,14 @@ _KINDS = {apsw.SQLITE_CHANGESET_DATA: "a row that differs", apsw.SQLITE_CHANGESE
 def _records(store, name: str) -> list[dict]:
     """The record of every backup run of the depot called name, in order."""
     found = []
-    for key in store.kind.list(f"{FOLDER}/{name}/runs/", deep=False):
-        if key.endswith("/") and (record := store.get_json(f"{key}record.json")) is not None:
+    for run in store.folders(f"{FOLDER}/{name}/runs/"):
+        if (record := store.get_json(f"{FOLDER}/{name}/runs/{run}/record.json")) is not None:
             found.append(record)
     return sorted(found, key=lambda one: one["made_at"])
 
 
 def _only_name(store) -> str:
-    names = [key.rstrip("/").rsplit("/", 1)[-1] for key in store.kind.list(f"{FOLDER}/", deep=False)
-             if key.endswith("/")]
+    names = store.folders(f"{FOLDER}/")
     if len(names) != 1:
         raise BackupRefused(f"the dock holds backups of {len(names)} depots ({', '.join(sorted(names)) or 'none'}): "
                             "name the one to restore")

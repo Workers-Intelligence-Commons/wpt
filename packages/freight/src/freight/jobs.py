@@ -267,7 +267,6 @@ def _work(home: str, job: str):
     (freight.job.Job), its progress, then its answer or its failure, written
     to the queue while the job is still running there (a cancelled job keeps
     its state)."""
-    from dock.api import open_dock
     from wic_utils.programs import code
 
     from . import erasures
@@ -300,7 +299,7 @@ def _work(home: str, job: str):
 
     key = row["key"]
     try:
-        dock = open_dock(row["dock"], env_file=".env")
+        dock = row["dock"]
         erasures.check(queue, row["depot"], dock)
         found = Job(json.loads(row["request"]), row["depot"], dock, queue.work_folder(key),
                     checkpoint=queue.checkpoint(key), save=lambda state: queue.save(key, state), progress=progress,

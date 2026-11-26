@@ -11,7 +11,7 @@ import pytest
 
 from depot import About, Declaration, Depot, NewText, clone
 from depot.schema import FORMAT
-from dock import dock_from_settings
+from dock import api as dock_api
 from wic_utils.lines import bare
 from depot_app import main
 from depot_app.shared import CONFIRMATION, REQUIREMENTS
@@ -922,12 +922,13 @@ def test_a_model_file_is_fetched_once_checked_kept_in_the_dock_and_served_from_i
     assert request("GET", model_url) == (200, b"the model's bytes")
     assert request("GET", model_url) == (200, b"the model's bytes")
     assert len(fetched) == 1  # the second answer came from the dock
-    assert dock_from_settings().get_bytes(good["attachment"]["hash"]) == b"the model's bytes"
+    dock = dock_api.url()
+    assert dock_api.fetch(dock, dock_api.content_key(good["attachment"]["hash"])) == b"the model's bytes"
 
     status, refused = request("GET", f"/api/translations/files/{lying['attachment']['hash']}")
     assert status == 503 and "other bytes" in refused["problems"][0]
-    assert not dock_from_settings().has(lying["attachment"]["hash"])
-    assert not dock_from_settings().has(hashlib.sha256(b"other bytes").hexdigest())
+    assert not dock_api.has(dock, dock_api.content_key(lying["attachment"]["hash"]))
+    assert not dock_api.has(dock, dock_api.content_key(hashlib.sha256(b"other bytes").hexdigest()))
 
     assert request("GET", f"/api/translations/files/{'0' * 64}")[0] == 404  # only the files Mozilla lists
 

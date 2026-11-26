@@ -40,10 +40,10 @@ environment cannot read, is refused. A setting belongs to the
 method or to the environment by its name, never both.
 
 A step trains on a gpu worker (wpt_worker; docs/machines.md), which has no
-tokenizer, no Docker and no store of its own: everything it reads comes
+tokenizer, no Docker and no dock of its own: everything it reads comes
 from the wpt manager. An environment that needs what only the manager
 holds (the tokenizer, the sandboxes) has a part there: manager(settings,
-context), given a Context (the dock, the corpus's record, the tokenizer,
+context), given a Context (the corpus's files, the corpus's record, the tokenizer,
 the run's record, and writer(...), which has the model on the gpu worker
 write tokens), returns an object whose methods the environment's part on
 the worker calls through data.call(name, *arguments). Arguments and
@@ -320,8 +320,9 @@ def step_seed(seed: int, number: int) -> int:
 @dataclass
 class Data:
     """What an environment's part on the gpu worker reads its examples
-    from: the step's name, the dock (the manager's, as the worker reads
-    it: wpt_worker.job.LinkDock), the corpus's record, the model's
+    from: the step's name, the corpus's files (store: a reader of
+    wpt_corpus.files, the manager's dock as the worker reads it,
+    wpt_worker.job.LinkDock), the corpus's record, the model's
     configuration, the strategy, the run's telemetry (its record), log (a
     no-op except in the main process), the order's seed, the step's number
     in the order (from 1), which the step's draws read with the seed
@@ -357,7 +358,8 @@ class Data:
 @dataclass
 class Context:
     """What an environment's part on the wpt manager reads: the step's
-    name, the dock, the corpus's record, the model's tokenizer and
+    name, the corpus's files (store: a reader of wpt_corpus.files,
+    wpt_corpus.files.DockFiles on the manager), the corpus's record, the model's tokenizer and
     configuration, the run's telemetry (its record), log, the order's seed
     and the step's number, and writer(prompt, rows, *, temperature, top_k,
     stops, routes), a writer (wpt_inference.Writer's write and routes) whose
@@ -557,8 +559,8 @@ class Step:
         return getattr(self.environment.module, "context", lambda settings: None)(self.environment_settings)
 
     def check_corpus(self, record: dict, store):
-        """ValueError when the corpus (its record, and its files in the
-        store) holds nothing the step can learn from, from its environment
+        """ValueError when the corpus (its record, and its files, store: a
+        reader of wpt_corpus.files) holds nothing the step can learn from, from its environment
         file's check_corpus(settings, record, store, kinds); nothing when it
         has none."""
         getattr(self.environment.module, "check_corpus", lambda settings, record, store, kinds: None)(

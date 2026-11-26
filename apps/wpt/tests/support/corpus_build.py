@@ -249,7 +249,7 @@ from depot.depot import Depot
 from depot.errors import Refused
 from depot.fill import Fill
 from depot.kinds import PLAIN
-from dock.api import File
+from dock import api as dock_api
 from freight import corpora
 import corpus_room
 from wpt_corpus.corpora import RULES as CORPUS_RULES
@@ -773,7 +773,7 @@ class _Build:
         self.room = room(self.folder) if room is not None else corpus_room.Room(store, None, self.folder)
 
     def run(self) -> dict:
-        known = self.store.get_json(f"{self.folder}/{RECORD}")
+        known = dock_api.get_json(self.store, f"{self.folder}/{RECORD}")
         if known is not None and fresh(known):
             self.log(f"corpus {known['id']} of snapshot {self.snapshot['name']} is already built")
             return known
@@ -892,9 +892,9 @@ class _Build:
         def upload(path: Path, key: str) -> dict:
             size = path.stat().st_size
             self.room.make(size)
-            file = self.store.put_named(key, path)
+            file = dock_api.put_from(self.store, key, path)
             path.unlink()
-            return {**file.reference(), "bytes": size}
+            return {"key": file["key"], "sha256": file["sha256"], "bytes": size}
 
         def estimate(local: int, final: bool) -> int:
             """The corpus's whole size in bytes, from the local files of its first upload: those files when the
@@ -1264,13 +1264,12 @@ class _Build:
             pq.write_table(pa.Table.from_pylist(rows, schema=CORPUS_SCHEMAS[table]), path, compression="zstd")
             size = path.stat().st_size
             self.room.make(size)
-            reference = {**self.store.put_named(f"{self.folder}/{table}.parquet", path).reference(), "bytes": size}
+            reference = dock_api.put_from(self.store, f"{self.folder}/{table}.parquet", path)
             path.unlink()
             return reference
 
         self.room.make(len(self.vocabulary))
-        vocabulary = {**self.store.put_named(f"{self.folder}/vocabulary", self.vocabulary).reference(),
-                      "bytes": len(self.vocabulary)}
+        vocabulary = dock_api.put(self.store, f"{self.folder}/vocabulary", self.vocabulary)
         items_taken = state["conversations"] + state["tasks_count"]
         unquoted = sum(state["unquoted"].values())
         left_out = {"no share": self.census["no_share"],
@@ -1311,8 +1310,8 @@ class _Build:
         if state["tasks_count"]:
             size = tasks_path.stat().st_size
             self.room.make(size)
-            record["tasks"] = {"file": {**self.store.put_named(f"{self.folder}/tasks.jsonl", tasks_path).reference(),
-                                        "bytes": size}, "count": state["tasks_count"]}
+            record["tasks"] = {"file": dock_api.put_from(self.store, f"{self.folder}/tasks.jsonl", tasks_path),
+                               "count": state["tasks_count"]}
         gone = corpus_room.missing(self.store, self.folder, [*_uploaded(state), *(
             [record["tasks"]["file"]] if "tasks" in record else []), vocabulary,
             *(one for one in record["tables"].values() if isinstance(one, dict))])
@@ -1325,7 +1324,7 @@ class _Build:
         now, hit = self._erased_since(self.erasures, record)
         if hit:
             record["stale"] = {"erasures": hit}
-        record = self.store.put_json(f"{self.folder}/{RECORD}", record)
+        record = dock_api.put_json(self.store, f"{self.folder}/{RECORD}", record)
         _, hit = self._erased_since(now, record)
         if hit:
             record = corpora.marked_stale(self.store, record, hit)
@@ -1346,8 +1345,8 @@ class _Build:
             return
         kept = {one["key"] for one in corpora.files(record)}
         for one in corpora.files(self.replaced):
-            if one["key"] not in kept and self.store.has(File.of(one)):
-                self.store.delete(File.of(one))
+            if one["key"] not in kept and dock_api.has(self.store, one["key"]):
+                dock_api.delete(self.store, one["key"])
                 self.log(f"{one['key']} deleted: {REBUILT}")
 
     def _not_taken(self) -> dict[str, int]:

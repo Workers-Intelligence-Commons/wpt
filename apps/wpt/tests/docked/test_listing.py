@@ -5,10 +5,11 @@ from wpt.models import keep_model, put_model
 from wpt_telemetry import Telemetry
 
 from wpt.docked import main
+import dock_files
 
 
 def _record(store, message):
-    with Telemetry.start(store, "wpt train", [], "x", env_file=store.root / ".env", environ={},
+    with Telemetry.start(store, "wpt train", [], "x", env_file=dock_files.folder(store) / ".env", environ={},
                          echo=lambda *_: None) as telemetry:
         telemetry.log(message)
 

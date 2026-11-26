@@ -2,7 +2,7 @@ from pathlib import Path
 
 import apsw
 import pytest
-from dock import open_dock
+from depot_app import DockBackups
 
 from depot import Depot, NewText, backup, restore
 from depot.database import PENDING
@@ -30,7 +30,7 @@ def table_rows(path) -> dict[str, list[tuple]]:
 
 @pytest.fixture
 def store(tmp_path):
-    return open_dock((tmp_path / "store").as_uri())
+    return DockBackups((tmp_path / "store").as_uri())
 
 
 def test_a_restore_holds_every_row_the_depot_held_after_a_full_copy_and_its_changes(make_depot, me, tmp_path,

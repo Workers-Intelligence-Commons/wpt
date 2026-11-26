@@ -46,7 +46,8 @@ from wpt_inference import COSTS_FILE, costs_setup, measure_costs, next_message, 
 from wpt_model import TokenizerMismatch, check_drafter, load_drafter, load_model, load_tokenizer
 from wpt_model.kernels import FORMS, KernelUnavailable, kernels, named_form
 from wpt_model.notice import LICENSE, NOTICE_NAME, OUTPUT_LICENSE, REPOSITORY
-from dock.api import DockError, dock_from_settings
+from dock import api as dock_api
+from dock.api import DockError
 from wpt_tokenizer import Tokenizer, chat
 from wpt_utils.device import describe, select_device
 from wic_utils.lines import say
@@ -150,8 +151,8 @@ def main(argv=None):
     elif args.scheduler_costs:  # a run's recorded pass times, on this setup only
         try:
             env_file = Path.cwd() / ".env"
-            store = dock_from_settings(env_file)
-            recorded = store.read_record(args.scheduler_costs, COSTS_FILE)
+            store = dock_api.url(env_file)
+            recorded = dock_api.read_record(store, args.scheduler_costs, COSTS_FILE)
             costs = replayed_costs(recorded, costs_setup(model.config, 1, drafter.block, device))
         except (DockError, ValueError) as error:
             sys.exit(f"{type(error).__name__}: {error}")

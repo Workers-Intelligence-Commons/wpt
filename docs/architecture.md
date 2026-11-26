@@ -50,8 +50,7 @@ of WPT. The aim is that what one offers the others goes through its `api`
 module alone, whose calls carry only values JSON and byte streams can
 carry, so that each `api` can become web routes without its callers
 changing. The code is not all there yet: the exceptions below say where a
-part still reaches into another, and `dock.api` still hands out the dock
-as an object. Until they leave, they live here as three parts, each with
+part still reaches into another. Until they leave, they live here as three parts, each with
 its own packages, its own command and its own document under `docs/api/`.
 
 What one part offers the others is one module named `api`: `depot.api`,
@@ -74,10 +73,11 @@ backups to the dock, keep the Translate button's models there, and read
 the corpora built before the freight there, which its frozen dataset
 routes send and an upgrade from a format before snapshots reads;
 and `wpt adopt-vocabularies` reads the vocabularies the depot's tokenizer
-recipes trained through `depot.api`. `dock.api` also hands out the dock as
-an object (`open_dock`, `dock_from_settings`), which every part that reads
-or writes more than whole files works through
-([api/dock.md](api/dock.md), "The dock as an object").
+recipes trained through `depot.api`. Every call of `dock.api` names the
+dock by its URL and exchanges only values and bytes: no part holds a dock
+object or a path into the dock's files, and a part that needs a local file
+has the dock fetch it into a folder of its own ([api/dock.md](api/dock.md),
+"The calls").
 
 ## Components and services
 

@@ -14,7 +14,8 @@ from opentelemetry._logs import SeverityNumber
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 
 import wpt_telemetry
-from dock import LocalDock, open_dock
+from dock import LocalDock
+from dock import api as dock_api
 from wpt_telemetry import ENDPOINT, FLUSH_THREAD, RELAY_THREAD, RecordError, Telemetry, runs
 from wic_utils.lines import ERROR, WARNING, bare
 
@@ -23,17 +24,22 @@ from wic_utils.lines import ERROR, WARNING, bare
 PATIENCE = 120
 
 
+def opened(store):
+    """The dock dock.api opened for that URL in this process, whose parts a test makes fail."""
+    return dock_api._dock(store)
+
+
 def _run(folder) -> str:
     """The key prefix of a run's record folder."""
     return f"runs/{folder}/"
 
 
 def record(store, folder, name):
-    return json.loads(store.read_record(folder, name))
+    return json.loads(dock_api.read_record(store, folder, name))
 
 
 def events(store, folder):
-    return [json.loads(line) for line in store.read_record(folder, "events.jsonl").splitlines()]
+    return [json.loads(line) for line in dock_api.read_record(store, folder, "events.jsonl").splitlines()]
 
 
 def a_short_run(store, tmp_path, environ):
@@ -48,13 +54,13 @@ def a_short_run(store, tmp_path, environ):
 
 
 def test_a_local_record_holds_its_events_as_one_compressed_part_once_the_run_ended(tmp_path):
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
         telemetry.event("one")
         # while the run goes, its events are in the plain file, whole after a crash
-        assert any(key.endswith("events.jsonl.open") for key in store.kind.list(_run(telemetry.folder)))
+        assert any(key.endswith("events.jsonl.open") for key in opened(store).kind.list(_run(telemetry.folder)))
         assert [e["name"] for e in events(store, telemetry.folder) if e.get("kind") == "event"] == ["one"]
-    stored = store.kind.list(_run(telemetry.folder))
+    stored = opened(store).kind.list(_run(telemetry.folder))
     assert not any(key.endswith(".open") for key in stored)
     assert len([key for key in stored if f"/events.jsonl/" in key]) == 1
     assert record(store, telemetry.folder, "end.json")["status"] == "succeeded"
@@ -62,12 +68,12 @@ def test_a_local_record_holds_its_events_as_one_compressed_part_once_the_run_end
 
 
 def test_a_result_is_found_from_its_fingerprint(tmp_path):
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
         assert wpt_telemetry.get_result(store, "stage", "abc", telemetry) is None
         wpt_telemetry.set_result(store, "stage", "abc", b"what the stage gave\n", telemetry)
         assert wpt_telemetry.get_result(store, "stage", "abc", telemetry) == b"what the stage gave\n"
-    assert store.has_result("stage", "abc")
+    assert opened(store).has_result("stage", "abc")
 
 
 def test_a_backend_that_cannot_be_reached_gets_one_warning_and_the_run_goes_on(tmp_path, capsys, monkeypatch):
@@ -77,7 +83,7 @@ def test_a_backend_that_cannot_be_reached_gets_one_warning_and_the_run_goes_on(t
     with socket.socket() as probe:  # a port nothing listens on
         probe.bind(("127.0.0.1", 0))
         closed = probe.getsockname()[1]
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     folder = a_short_run(store, tmp_path, {ENDPOINT: f"http://127.0.0.1:{closed}"})
 
     assert capsys.readouterr().err.count("warning: the OpenTelemetry backend") == 1
@@ -87,7 +93,7 @@ def test_a_backend_that_cannot_be_reached_gets_one_warning_and_the_run_goes_on(t
 
 
 def test_a_level_reaches_the_printed_line_the_record_and_opentelemetry(tmp_path, capfd):
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     sent = InMemoryLogRecordExporter()
     with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env",
                          environ={ENDPOINT: "http://127.0.0.1:9"}) as telemetry:
@@ -121,7 +127,7 @@ def test_the_exporters_own_messages_are_silenced_only_while_wpt_sends(tmp_path, 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed = probe.getsockname()[1]
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with caplog.at_level(logging.WARNING, logger="opentelemetry.exporter.otlp"):
         a_short_run(store, tmp_path, {ENDPOINT: f"http://127.0.0.1:{closed}"})
         assert [r for r in caplog.records if r.name.startswith("opentelemetry.exporter.otlp")] == []
@@ -153,7 +159,7 @@ def test_the_backend_named_in_dot_env_receives_the_spans_logs_and_values(tmp_pat
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Collector)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     (tmp_path / ".env").write_text(f"{ENDPOINT}=http://127.0.0.1:{server.server_address[1]}\n")
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     try:
         a_short_run(store, tmp_path, {})
     finally:
@@ -182,7 +188,7 @@ def test_after_a_backend_failure_the_live_data_is_still_sent(tmp_path, capsys):
     Collector.received = []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FailsFirst)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     try:
         a_short_run(store, tmp_path, {ENDPOINT: f"http://127.0.0.1:{server.server_address[1]}"})
     finally:
@@ -226,7 +232,7 @@ def joined_to(run, store, tmp_path):
 
 def test_a_relay_sends_a_joined_process_s_lines_as_it_would_have_and_ends_with_the_block(tmp_path, otlp_backend,
                                                                                          quick_relay, capsys):
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env", environ={ENDPOINT: otlp_backend.endpoint},
                          echo=lambda *_: None) as run:
         run.log("from this side")
@@ -279,7 +285,7 @@ def test_a_relay_sends_a_joined_process_s_lines_as_it_would_have_and_ends_with_t
 
 
 def test_a_stopped_run_s_relay_sends_the_last_lines_and_ends(tmp_path, otlp_backend, quick_relay):
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(KeyboardInterrupt):
         with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env",
                              environ={ENDPOINT: otlp_backend.endpoint}, echo=lambda *_: None) as run:
@@ -304,8 +310,8 @@ def test_a_record_that_cannot_be_read_gets_one_warning_and_its_lines_go_once_it_
     printed = []
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_dock("s3://wpt-test/records")
-        read, refused = store.kind.read, []
+        store = "s3://wpt-test/records"
+        read, refused = opened(store).kind.read, []
 
         with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env",
                              environ={ENDPOINT: otlp_backend.endpoint},
@@ -317,7 +323,7 @@ def test_a_record_that_cannot_be_read_gets_one_warning_and_its_lines_go_once_it_
                         raise OSError("the bucket did not answer")
                     return read(key, *rest)
 
-                monkeypatch.setattr(store.kind, "read", failing)
+                monkeypatch.setattr(opened(store).kind, "read", failing)
                 joined.log("kept")
                 joined.irreversible("sent")  # the dock's lines reach the bucket
                 wait_for(lambda: len(refused) == 3)  # the run goes on, and each read is tried again
@@ -329,7 +335,7 @@ def test_a_record_that_cannot_be_read_gets_one_warning_and_its_lines_go_once_it_
 
 
 def test_a_read_of_a_long_backlog_sends_every_line(tmp_path, otlp_backend):
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env",
                          environ={ENDPOINT: otlp_backend.endpoint}, echo=lambda *_: None) as run:
         with run.relay(), joined_to(run, store, tmp_path) as joined:  # the relay's one read comes at the end
@@ -340,20 +346,20 @@ def test_a_read_of_a_long_backlog_sends_every_line(tmp_path, otlp_backend):
 
 def relay_listing(store, monkeypatch, listed):
     """Calls listed each time the relay's thread lists the dock."""
-    listing = store.kind.list
+    listing = opened(store).kind.list
 
     def noted(prefix, **options):
         if threading.current_thread().name == RELAY_THREAD:
             listed()
         return listing(prefix, **options)
 
-    monkeypatch.setattr(store.kind, "list", noted)
+    monkeypatch.setattr(opened(store).kind, "list", noted)
 
 
 def test_a_dock_that_stops_answering_does_not_hold_up_the_end_of_a_relay(tmp_path, monkeypatch, otlp_backend,
                                                                           quick_relay):
     monkeypatch.setattr(wpt_telemetry, "RELAY_END_SECONDS", 0.01)
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     answers = threading.Event()
     relay_listing(store, monkeypatch, lambda: answers.wait(PATIENCE))
     printed = []
@@ -369,7 +375,7 @@ def test_a_dock_that_stops_answering_does_not_hold_up_the_end_of_a_relay(tmp_pat
 
 
 def test_a_relay_whose_record_broke_ends_without_a_last_read(tmp_path, monkeypatch, otlp_backend):
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     reads = []
     relay_listing(store, monkeypatch, lambda: reads.append(1))
 
@@ -385,7 +391,7 @@ def test_a_relay_whose_record_broke_ends_without_a_last_read(tmp_path, monkeypat
 
 
 def test_a_relay_without_a_backend_starts_nothing(tmp_path):
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env", environ={},
                          echo=lambda *_: None) as run, run.relay():
         assert relay_threads() == []
@@ -393,7 +399,7 @@ def test_a_relay_without_a_backend_starts_nothing(tmp_path):
 
 def test_a_failure_is_recorded_with_its_traceback(tmp_path):
     # afterwards one must see where a failed run broke, not only its message
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
 
     def load_the_order():
         raise ValueError("no order named d")
@@ -414,7 +420,7 @@ def test_a_failure_is_recorded_with_its_traceback(tmp_path):
 def test_each_thread_records_under_its_own_spans(tmp_path):
     # work run on other threads at once must land under its own item's span, never under whatever span another
     # thread has open; a span begun on a worker can be ended by the thread that puts the results together
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt-example", ["d"], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
         with telemetry.span("documents"):
             parent, begun, ready = telemetry.current(), {}, threading.Barrier(3)
@@ -456,11 +462,11 @@ def test_each_thread_records_under_its_own_spans(tmp_path):
 def test_a_launcher_never_writes_back_an_older_copy_of_the_ids(tmp_path):
     # wpt train's launcher opens the record, its training process joins it and
     # adds the ids it wrote; whatever the launcher adds later keeps them
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt train", [], "d", inputs={"recipe": "d"}, env_file=tmp_path / ".env",
                          environ={}) as launcher:
         environment = launcher.child_environment()
-        with Telemetry.join(open_dock((tmp_path / "store").as_uri()), "wpt train", environment,
+        with Telemetry.join((tmp_path / "store").as_uri(), "wpt train", environment,
                             env_file=tmp_path / ".env") as child:
             child.output(weights={"model.safetensors": "ab" * 32})
         launcher.input(restarts=0)
@@ -471,7 +477,7 @@ def test_a_launcher_never_writes_back_an_older_copy_of_the_ids(tmp_path):
 
 
 def test_a_command_is_recorded_as_typed_and_its_folder_is_named_with_hyphens(tmp_path):
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt build-resources", ["small"], "small", env_file=tmp_path / ".env",
                          environ={}) as run:
         pass
@@ -493,23 +499,23 @@ def test_on_s3_lines_go_in_groups_and_a_refused_send_stops_the_run(tmp_path, mon
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_dock("s3://wpt-test/records")
+        store = "s3://wpt-test/records"
         with pytest.raises(RecordError):
             with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
                 with telemetry.span("training"):
                     telemetry.event("training.step", values={"train_loss": 2.0}, step=1)
-                assert "events.jsonl" not in open_dock("s3://wpt-test/records").record_files(telemetry.folder)
+                assert "events.jsonl" not in dock_api.record_files("s3://wpt-test/records", telemetry.folder)
                 telemetry.irreversible("model.folder_replaced")
-                ended = [e["kind"] for e in events(open_dock("s3://wpt-test/records"), telemetry.folder)]
+                ended = [e["kind"] for e in events("s3://wpt-test/records", telemetry.folder)]
                 assert ended[-4:] == ["span_start", "event", "span_end", "event"]
 
                 def refused(**request):
                     raise OSError("the bucket refused the request")
 
-                monkeypatch.setattr(store.client, "put_object", refused)
+                monkeypatch.setattr(opened(store).client, "put_object", refused)
                 telemetry.irreversible("model.folder_replaced")
                 telemetry.log("never reached")
-        assert "end.json" not in store.record_files(telemetry.folder)
+        assert "end.json" not in dock_api.record_files(store, telemetry.folder)
 
 
 def refused_in_the_background(monkeypatch):
@@ -531,7 +537,7 @@ def test_a_record_that_broke_in_the_background_ends_the_run_in_record_error(tmp_
     # block then ends without an error, the run must end in RecordError (exit
     # code 3), never as a run that succeeded without its end.json
     refused_in_the_background(monkeypatch)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         with pytest.raises(RecordError, match="No space left on device"):
@@ -539,14 +545,14 @@ def test_a_record_that_broke_in_the_background_ends_the_run_in_record_error(tmp_
                 telemetry._flusher.join(PATIENCE)  # it ends once a send failed
     finally:
         signal.signal(signal.SIGINT, previous)
-    assert "end.json" not in store.record_files(telemetry.folder)
+    assert "end.json" not in dock_api.record_files(store, telemetry.folder)
 
 
 def test_a_send_refused_in_the_background_interrupts_the_run_before_its_next_record_call(tmp_path, monkeypatch):
     # the run must stop when the send fails, not at its next record call,
     # and as a record failure, not as a stop the user asked for
     refused_in_the_background(monkeypatch)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     finished = False
     with pytest.raises(RecordError, match="No space left on device"):
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}):
@@ -566,7 +572,7 @@ def test_a_send_refused_in_the_background_ends_a_wait_of_the_main_thread(tmp_pat
     import sys
 
     refused_in_the_background(monkeypatch)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     finished = False
     with pytest.raises(RecordError, match="No space left on device"):
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}):
@@ -585,7 +591,7 @@ def test_a_send_refused_in_the_background_ends_a_wait_of_the_main_thread(tmp_pat
 def test_a_ctrl_c_while_a_broken_record_closes_still_ends_in_record_error(tmp_path, monkeypatch):
     # a record that broke must end the command with code 3 even when a stop
     # asked by the user reaches it while the record closes: never with 130
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     real = LocalDock._raw_append_record
 
     def disk_full(self, folder, name, data):
@@ -605,13 +611,13 @@ def test_a_ctrl_c_while_a_broken_record_closes_still_ends_in_record_error(tmp_pa
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
             with contextlib.suppress(RecordError):  # the command went on; close() must still say the record broke
                 telemetry.log("refused")
-    assert "end.json" not in store.record_files(telemetry.folder)
+    assert "end.json" not in dock_api.record_files(store, telemetry.folder)
 
 
 def test_an_interruption_that_left_the_lock_taken_does_not_stop_the_record_from_closing(tmp_path):
     # an interruption can land just after the main thread took the lock and
     # leave it taken; close() must still return, not wait for that hold
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     closed = threading.Event()
 
     def run():  # stands for the main thread; a daemon, so that a hang cannot hold the tests
@@ -635,7 +641,7 @@ def test_a_record_failure_while_the_record_starts_ends_in_record_error_not_a_sto
         real(self, folder, name, data)
 
     monkeypatch.setattr(LocalDock, "_raw_write_record", slow)
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(RecordError, match="No space left on device"):
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
             telemetry._flusher.join(PATIENCE)  # it ends once a send failed
@@ -646,7 +652,7 @@ def test_a_bad_file_name_or_a_mixed_file_is_the_callers_error_and_the_record_goe
     # itself is fine and the run must still end with its end.json
     from dock import MixedRecord
 
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
         for name in ("results/a.json", ".hidden", "été.json"):
             with pytest.raises(ValueError, match="letters, digits"):
@@ -656,12 +662,12 @@ def test_a_bad_file_name_or_a_mixed_file_is_the_callers_error_and_the_record_goe
             telemetry.append_file("summary.json", b"{}\n")
         telemetry.log("still recorded")
     assert record(store, telemetry.folder, "end.json")["status"] == "succeeded"
-    assert store.read_record(telemetry.folder, "summary.json") == b"{}\n"
+    assert dock_api.read_record(store, telemetry.folder, "summary.json") == b"{}\n"
 
 
 def test_ctrl_c_still_ends_the_run_with_code_130(tmp_path):
     # a stop the user asked for is recorded as such, unlike a record failure
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(KeyboardInterrupt):
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
             raise KeyboardInterrupt
@@ -685,12 +691,12 @@ def test_after_the_run_ends_every_recording_call_is_refused(tmp_path, monkeypatc
             monkeypatch.delenv("AWS_PROFILE", raising=False)
             stack.enter_context(mock_aws())
             boto3.client("s3").create_bucket(Bucket="wpt-test")
-            store = open_dock("s3://wpt-test/records")
+            store = "s3://wpt-test/records"
         else:
-            store = open_dock((tmp_path / "store").as_uri())
+            store = (tmp_path / "store").as_uri()
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
             telemetry.log("during the run")
-        written = store.read_record(telemetry.folder, "events.jsonl")
+        written = dock_api.read_record(store, telemetry.folder, "events.jsonl")
 
         calls = [lambda: telemetry.log("late"), lambda: telemetry.event("late"), lambda: telemetry.input(late=1),
                  lambda: telemetry.output(late=1), lambda: telemetry.span("late").__enter__(),
@@ -699,7 +705,7 @@ def test_after_the_run_ends_every_recording_call_is_refused(tmp_path, monkeypatc
         for call in calls:
             with pytest.raises(RuntimeError, match="is closed"):
                 call()
-        assert store.read_record(telemetry.folder, "events.jsonl") == written
+        assert dock_api.read_record(store, telemetry.folder, "events.jsonl") == written
 
 
 def test_the_end_of_a_run_waits_about_one_timeout_per_kind_for_a_backend_that_never_answers(tmp_path, monkeypatch):
@@ -723,7 +729,7 @@ def test_the_end_of_a_run_waits_about_one_timeout_per_kind_for_a_backend_that_ne
     silent = socket.socket()
     silent.bind(("127.0.0.1", 0))
     silent.listen(64)  # the system accepts the connections; nothing ever answers
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     try:
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env",
                              environ={ENDPOINT: f"http://127.0.0.1:{silent.getsockname()[1]}"}) as telemetry:
@@ -738,7 +744,7 @@ def test_the_end_of_a_run_waits_about_one_timeout_per_kind_for_a_backend_that_ne
 
 
 def test_a_run_is_listed_shown_and_followed_from_its_record(tmp_path):
-    store = LocalDock(tmp_path / "store")
+    store = (tmp_path / "store").as_uri()
     with pytest.raises(ValueError, match="boom"):
         with Telemetry.start(store, "wpt dataset build", ["small"], "small", env_file=tmp_path / ".env", environ={},
                              echo=lambda *_: None) as telemetry:
@@ -753,7 +759,7 @@ def test_a_run_is_listed_shown_and_followed_from_its_record(tmp_path):
                             echo=lambda *_: None)
     with going.span("step"):
         going.log("update 1")
-        reader = store.record_reader(going.folder, "events.jsonl")
+        reader = wpt_telemetry.NewLines(store, going.folder, "events.jsonl")
         assert b"update 1" in reader.read()
         assert reader.read() == b""  # only what is new
         going.log("update 2")

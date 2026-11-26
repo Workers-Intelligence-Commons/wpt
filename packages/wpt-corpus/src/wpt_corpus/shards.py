@@ -15,6 +15,9 @@ of its file (`key`, `sha256`), which every read checks. A shard is also
 identified by its token hash, which covers only the rows' content. A newer pyarrow
 may write different file bytes for the same rows; the token hash stays the
 same, so it is what repeatability checks compare.
+
+The functions that read shards take a reader of the corpus's files
+(wpt_corpus.files): its path, get_bytes, release and scratch.
 """
 
 import bisect
@@ -31,7 +34,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from dock.api import CorruptFile
-from dock.api import File
 from wic_utils.files import sha256_file
 
 SCHEMA = pa.schema([
@@ -85,17 +87,17 @@ def read_shard(path):
             yield (tokens[j].values.to_numpy(zero_copy_only=False), *(column[j] for column in others))
 
 
-def shard_file(shard) -> File:
-    """The stored file of a shard a corpus's record names."""
-    return File(shard["key"], shard["sha256"])
+def shard_file(shard) -> dict:
+    """The reference {key, sha256} of a shard's file, as a corpus's record names it."""
+    return {"key": shard["key"], "sha256": shard["sha256"]}
 
 
-def read_verified(store, shard) -> list:
+def read_verified(files, shard) -> list:
     """The rows of a shard recorded as {"key": ..., "sha256": ...,
     "token_sha256": ...}, in order. The dock checks the file; this checks
     the rows against the token hash. Raises CorruptFile when they differ."""
     rows, digest = [], TokenHash()
-    for row in read_shard(store.path(shard_file(shard))):
+    for row in read_shard(files.path(shard_file(shard))):
         digest.add(*row)
         rows.append(row)
     if digest.hexdigest() != shard["token_sha256"]:
@@ -103,12 +105,12 @@ def read_verified(store, shard) -> list:
     return rows
 
 
-def documents(store, shards, passes=None):
+def documents(files, shards, passes=None):
     """Yield (document id, source id, tokens) of every document in these
     shards once, in shard order (a document the mixture repeats comes
     once), each shard checked (read_verified) before its documents are
-    given; one shard is in memory at a time, and for a remote store each
-    shard's local copy is released once read. The disk then holds at most
+    given; one shard is in memory at a time, and each shard's local copy
+    is released once read. The disk then holds at most
     one shard only when the shards were not already local (wpt train
     --stream, whose ShardStream released each one, or a wpt train run
     whose steps read no text windows); copies already there, as after
@@ -117,8 +119,8 @@ def documents(store, shards, passes=None):
     document was given."""
     seen = set()
     for shard in shards:
-        rows = read_verified(store, shard)
-        store.release(shard_file(shard))  # its rows are in memory now
+        rows = read_verified(files, shard)
+        files.release(shard_file(shard))  # its rows are in memory now
         for tokens, source, document, _, _ in rows:
             if passes is not None:
                 passes[document] += 1
@@ -127,19 +129,19 @@ def documents(store, shards, passes=None):
                 yield document, source, tokens
 
 
-def token_file(store, shards) -> Path:
+def token_file(files, shards) -> Path:
     """A local file holding the tokens of these shards' rows, in order, as
     little-endian uint32, for reading from disk on demand (np.memmap).
 
     It is built from the shards, each checked against its token hash, into
-    the dock's scratch folder, and named after the shards. A later call
+    the reader's scratch folder, and named after the shards. A later call
     reuses it while its size and modification time are those recorded when
     it was built, without reading it; when they differ, only if it still
     matches the sha256 recorded then (and the size and time are recorded
     again); otherwise it is built again. Raises CorruptFile (leaving no
     file) when a shard's rows do not match their token hash."""
     key = hashlib.sha256(json.dumps([[s["sha256"], s["token_sha256"]] for s in shards]).encode()).hexdigest()
-    folder = store.scratch / "tokens"
+    folder = files.scratch / "tokens"
     path, mark = folder / f"{key}.u32", folder / f"{key}.sha256"
     if path.is_file() and mark.is_file():
         recorded = mark.read_text().split()  # sha256, then the size and the modification time in nanoseconds
@@ -154,7 +156,7 @@ def token_file(store, shards) -> Path:
         with open(partial, "wb") as out:
             for shard in shards:
                 digest = TokenHash()
-                for row in read_shard(store.path(shard_file(shard))):
+                for row in read_shard(files.path(shard_file(shard))):
                     digest.add(*row)
                     out.write(np.asarray(row[0], dtype="<u4").tobytes())
                 if digest.hexdigest() != shard["token_sha256"]:
@@ -185,18 +187,18 @@ class ShardStream:
     `consumed` (counted over every shard, starting again after the last) and
     the next window - 1 shards are the ones in use, and windows are drawn
     from them only. The shard after them is prepared in the background, and
-    a shard that leaves the set loses its token file and, for a remote
-    store, its local copy. Which shards are in use depends only on
+    a shard that leaves the set loses its token file, and a shard's local
+    copy goes once its token file is built. Which shards are in use depends only on
     `consumed`, so a resumed run and any number of processes use the same
     ones. Each shard's rows are checked against its token hash when its
     token file is built (see token_file). With a limit, the tokens are the
     first `limit` of the shards (a prefix, as prefix_shards cuts it): the
     walk starts again after them."""
 
-    def __init__(self, store, shards, window: int, limit: int | None = None):
+    def __init__(self, files, shards, window: int, limit: int | None = None):
         if not shards:
             raise ValueError("no shards to stream")
-        self.store, self.shards = store, prefix_shards(shards, limit)
+        self.files, self.shards = files, prefix_shards(shards, limit)
         self.window = max(1, min(window, len(self.shards)))
         self.ends = []
         for shard in self.shards:
@@ -247,8 +249,8 @@ class ShardStream:
 
     def _prepare(self, index):
         shard = self.shards[index]
-        path = token_file(self.store, [shard])
-        self.store.release(shard_file(shard))  # its tokens are in the token file now
+        path = token_file(self.files, [shard])
+        self.files.release(shard_file(shard))  # its tokens are in the token file now
         return path
 
     def _close(self, index):
@@ -307,7 +309,7 @@ def prefix_shards(shards, limit: int | None) -> list:
     return found
 
 
-def sources_of(store, shards) -> set[str]:
+def sources_of(files, shards) -> set[str]:
     """The source ids in these shards' rows: from each shard's record when
     the build wrote them there, else by reading only that column."""
     found = set()
@@ -315,7 +317,7 @@ def sources_of(store, shards) -> set[str]:
         if "sources" in shard:
             found |= set(shard["sources"])
         else:
-            found |= set(pq.read_table(store.path(shard_file(shard)), columns=["source"]).column("source").to_pylist())
+            found |= set(pq.read_table(files.path(shard_file(shard)), columns=["source"]).column("source").to_pylist())
     return found
 
 

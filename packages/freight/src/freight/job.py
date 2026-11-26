@@ -98,7 +98,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from depot import api
-from dock.api import File
+from dock import api as dock_api
 from wic_utils.lines import say
 
 from . import deliveries, groups
@@ -579,9 +579,9 @@ class Job:
     def _upload(self, path: Path, key: str) -> dict:
         size = path.stat().st_size
         self.room.make(size)
-        file = self.dock.put_named(key, path)
+        file = dock_api.put_from(self.dock, key, path)
         path.unlink()
-        return {**file.reference(), "bytes": size}
+        return {"key": file["key"], "sha256": file["sha256"], "bytes": size}
 
     def _checkpoint(self, before: dict | None = None, final: bool = False):
         """Upload the files the program said and the part of the items table
@@ -791,10 +791,10 @@ class Job:
         # delivery stale, or is written into its note (on_erasure)
         now, hit = self._erased_since(self.erasures, note)
         note = deliveries.reached(note, hit)
-        note = self.dock.put_json(f"{self.folder}/{deliveries.NOTE}", note)
+        note = dock_api.put_json(self.dock, f"{self.folder}/{deliveries.NOTE}", note)
         _, hit = self._erased_since(now, note)
         if hit:
-            note = self.dock.put_json(f"{self.folder}/{deliveries.NOTE}", deliveries.reached(note, hit))
+            note = dock_api.put_json(self.dock, f"{self.folder}/{deliveries.NOTE}", deliveries.reached(note, hit))
         self.log(f"delivery {note['key']} of snapshot {self.snapshot['name']} ({self.preparation['name']}): "
                  f"{note['items']['texts']:,} texts"
                  + (f" ({state['pieces']:,} pieces of {long_taken:,} of them)" if state["pieces"] else "")
@@ -815,8 +815,8 @@ class Job:
             return
         kept = {one["key"] for one in deliveries.files(note)}
         for one in deliveries.files(self.replaced):
-            if one["key"] not in kept and self.dock.has(File.of(one)):
-                self.dock.delete(File.of(one))
+            if one["key"] not in kept and dock_api.has(self.dock, one["key"]):
+                dock_api.delete(self.dock, one["key"])
                 self.log(f"{one['key']} deleted: {REBUILT}")
 
     def _not_taken(self) -> dict[str, int]:

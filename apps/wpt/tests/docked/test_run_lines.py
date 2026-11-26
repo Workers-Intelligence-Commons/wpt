@@ -3,7 +3,6 @@
 import re
 
 import pytest
-from dock import open_dock
 from wpt_telemetry import Telemetry
 from wic_utils.lines import ERROR
 
@@ -11,8 +10,8 @@ from wpt.docked import main
 
 
 def test_a_run_s_lines_print_at_the_level_of_its_record(tmp_path, monkeypatch, capsys):
-    store = open_dock((tmp_path / "store").as_uri())
-    monkeypatch.setenv("DOCK", store.root.as_uri())
+    store = (tmp_path / "store").as_uri()
+    monkeypatch.setenv("DOCK", store)
     with pytest.raises(ValueError, match="boom"):
         with Telemetry.start(store, "wpt train", [], "failed", env_file=tmp_path / ".env", environ={},
                              echo=lambda *_: None) as telemetry:

@@ -55,7 +55,8 @@ def run(context):
 - `device`: where the model runs, in words;
 - `tokenizer`, `folder`, and `provenance` (the folder's
   `provenance.json`);
-- `store`: the dock holding the corpus;
+- `store`: the URL of the dock holding the corpus, read through `dock.api`
+  ([api/dock.md](api/dock.md));
 - `telemetry`: the run's record, for the test's own events
   ([observability.md](observability.md)).
 

@@ -154,7 +154,8 @@ from pathlib import Path
 
 from wpt_orders import OrderError, Orders
 from dock.api import NAME as STORE_NAME
-from dock.api import MissingFile, DockError, dock_from_settings
+from dock import api as dock_api
+from dock.api import MissingFile, DockError
 from wic_utils.env import read_env_file
 from wpt.models import has_model, keep_model, put_model
 from dock.api import as_record_name
@@ -397,7 +398,7 @@ def _main(argv, signalled) -> int:
     folder = Path(environ.get("WPT_MANAGER_FOLDER") or root / DEFAULT_FOLDER)
     kept = Path(environ.get("WPT_MANAGER_STATE") or root / DEFAULT_STATE)
     try:
-        store = dock_from_settings(root / ".env")
+        store = dock_api.url(root / ".env")
         previous = previous_run(root, order, store, name)
     except (DockError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
@@ -524,16 +525,16 @@ def unfinished(store, name) -> bool:
     if has_model(store, name):
         return False
     found = []
-    for folder in store.record_folders():
+    for folder in dock_api.record_folders(store):
         if "-wpt-manager-" not in folder:
             continue
         try:
-            start = json.loads(store.read_record(folder, "start.json"))
+            start = json.loads(dock_api.read_record(store, folder, "start.json"))
         except (MissingFile, ValueError):
             continue
         if start.get("command") == "wpt manager" and start.get("inputs", {}).get("run") == name:
             found.append((start.get("started", ""), folder))
-    return not found or "end.json" not in store.record_files(max(found)[1])
+    return not found or "end.json" not in dock_api.record_files(store, max(found)[1])
 
 
 def one_run(order, name, folder, evaluate, store, environ, root, workers, arguments, signalled) -> int:
@@ -559,7 +560,8 @@ def one_run(order, name, folder, evaluate, store, environ, root, workers, argume
 def task_images(store, record) -> list[str]:
     """The images the corpus's tasks name, each once, in order."""
     part = record.get("tasks")
-    lines = [] if part is None else store.get_bytes(part["file"]).decode("utf-8").splitlines()
+    lines = [] if part is None else dock_api.fetch(store, part["file"]["key"],
+                                                    part["file"]["sha256"]).decode("utf-8").splitlines()
     return sorted({json.loads(line)["content"]["task"]["image"] for line in lines if line.strip()})
 
 

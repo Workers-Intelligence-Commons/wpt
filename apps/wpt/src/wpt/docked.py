@@ -20,7 +20,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from dock.api import DockError, dock_from_settings
+from dock import api as dock_api
+from dock.api import DockError
 from wpt_corpus import corpora
 from wpt.models import copy_out, names
 from wpt_telemetry import runs
@@ -112,7 +113,7 @@ def main(argv=None) -> int:
     showing.set_defaults(run=cmd_run)
     args = parser.parse_args(argv)
     try:
-        return args.run(args, dock_from_settings(Path.cwd() / ".env"))
+        return args.run(args, dock_api.url(Path.cwd() / ".env"))
     except (DockError, FileExistsError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return 2

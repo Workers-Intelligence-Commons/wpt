@@ -13,7 +13,6 @@ from depot import Depot, conversion, upgrade
 from freight.corpora import records
 from depot.errors import HalfUpgraded, OtherFormat, Refused
 from depot.schema import FORMAT, KEYS, LEGACY
-from dock import dock_from_settings
 
 from .conftest import ME, sizes_apart, tags_apart
 
@@ -29,7 +28,7 @@ def copied(tmp_path: Path, format_: int, name: str = "depot") -> tuple[Path, lis
     store = tmp_path / f"{name}-store"
     if not store.exists():
         shutil.copytree(FIXTURES / f"format-{format_}-store", store)
-    return path, records(dock_from_settings(environ={"DOCK": store.as_uri()}))
+    return path, records(store.as_uri())
 
 
 def connected(path: Path) -> apsw.Connection:

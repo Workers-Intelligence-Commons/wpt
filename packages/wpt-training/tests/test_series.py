@@ -2,7 +2,6 @@
 "Model series"): the series counts the parameters the model has, and a
 size reads exactly the start of the series' one corpus."""
 
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +12,8 @@ from wpt_model import PARTS, ModelConfig, WPT
 from wpt_model.engram import Engram
 from wpt_model.experts import Experts
 from wpt_orders import Orders, series
-from dock import LocalDock
+from dock import api
+from wpt_corpus.files import DockFiles
 from wpt_corpus.shards import write_shard
 from wpt_telemetry import Telemetry
 from wpt_training import Data, Strategy, load_step
@@ -68,15 +68,16 @@ def dataset(tmp_path):
     """A dock holding 4 token files of 100 tokens each, token i at place i
     of the corpus's plain text, each file its own text; and the corpus's
     record."""
-    store = LocalDock(tmp_path / "store")
+    dock = (tmp_path / "store").as_uri()
     shards = []
     for i in range(4):
         path = tmp_path / f"{i}.parquet"
         digest = write_shard(path, [(list(range(100 * i, 100 * i + 100)), f"s{i}", f"s{i}/d", "p", 0)])
-        shards.append({**asdict(store.put_named(f"corpora/d/{digest}.parquet", path)), "token_sha256": digest,
-                       "rows": 1, "tokens": 100})
+        stored = api.put_from(dock, f"corpora/d/{digest}.parquet", path)
+        shards.append({"key": stored["key"], "sha256": stored["sha256"], "token_sha256": digest, "rows": 1,
+                       "tokens": 100})
     record = {"shards": {"plain": shards}, "total_tokens": 400}
-    return store, record
+    return DockFiles(dock, tmp_path / "reader"), record
 
 
 def windows(store, record, prefix, stream_shards=None, updates=40):

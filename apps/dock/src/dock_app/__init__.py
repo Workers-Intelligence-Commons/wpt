@@ -49,7 +49,7 @@ def main(argv=None) -> int:
             else:
                 Path(args.out).write_bytes(data)
         else:
-            print(json.dumps(api.put(dock, args.key, Path(args.file).read_bytes())))
+            print(json.dumps(api.put_from(dock, args.key, args.file)))
     except (api.DockError, OSError, ValueError) as error:
         say(f"dock {args.command}: {type(error).__name__}: {error}", ERROR)
         return 1

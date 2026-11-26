@@ -25,7 +25,7 @@ import subprocess
 import sys
 
 from wpt_orders import OrderError, Orders
-from dock.api import local_folder, dock_from_settings
+from dock import api as dock_api
 from wic_utils.env import read_env_file
 from wic_utils.lines import ERROR, INFO, say
 from wic_utils.programs import MissingTool, program
@@ -37,12 +37,10 @@ SETUP = "run `uv run scripts/setup.py`, which installs the build for this machin
 def check_dock(root, environ) -> tuple[list, object]:
     """(its findings, the dock, None when it does not answer)."""
     try:
-        folder = local_folder(environ.get("DOCK", ""))
-        if folder is not None and not folder.is_dir():
-            return [(False, f"dock: {folder} does not exist",
-                     "correct DOCK, or create that folder for a new dock")], None
-        store = dock_from_settings(root / ".env")
-        store.record_folders()  # a read: the dock has to answer
+        store = dock_api.url(root / ".env", environ)
+        dock_api.ready(store)  # a read: the dock has to answer
+    except dock_api.NoDockFolder as error:
+        return [(False, f"dock: {error}", "correct DOCK, or create that folder for a new dock")], None
     except Exception as error:  # noqa: BLE001: whatever the dock fails with is what this command reports
         return [(False, f"dock: {type(error).__name__}: {error}",
                  "set DOCK and its keys (DOCK_*) in the environment or in .env")], None
@@ -103,10 +101,9 @@ def check_rust() -> list:
     return found
 
 
-def check_disk(root, store) -> list:
-    folder = store.scratch.parent if store is not None and store.scratch.parent.exists() else root
-    free = shutil.disk_usage(folder).free
-    return [(True, f"disk: {free / 10**9:,.1f} GB free in {folder}", None)]
+def check_disk(root) -> list:
+    free = shutil.disk_usage(root).free
+    return [(True, f"disk: {free / 10**9:,.1f} GB free in {root}", None)]
 
 
 def check_checkout(root) -> list:
@@ -144,7 +141,7 @@ def _main(argv) -> int:
     found += torch_found
     if device is not None and not environ.get("WPT_GPU_WORKERS"):
         found += check_attention(device, environ)
-    found += check_rust() + check_disk(root, store) + check_checkout(root)
+    found += check_rust() + check_disk(root) + check_checkout(root)
     for good, text, fix in found:
         level = INFO if good else ERROR
         say(f"{'ok' if good else 'MISSING'}  {text}", level, sys.stdout)

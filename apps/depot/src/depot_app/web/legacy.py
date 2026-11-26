@@ -54,7 +54,8 @@ from functools import wraps
 
 from depot import errors
 from depot.legacy import FORMS, Export, Legacy, depot_name, parts_for, sample
-from dock.api import DockError, DockSettingError, File, dock_from_settings
+from dock import api as dock_api
+from dock.api import DockError, DockSettingError
 
 from .. import corpora, shared
 from ..downloads import EXPORTS, VISITOR_EXPORTS, Downloads
@@ -117,21 +118,23 @@ def sample_lines(texts: Iterator[tuple[str, str, bytes]]) -> Iterator[bytes]:
     yield (json.dumps({"end": True, "texts": count, "bytes": total}) + "\n").encode()
 
 
-def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=shared.public_url) -> list[Route]:
+def legacy(address: str, downloads: Downloads, refusals, store: str | None = None,
+           public_url=shared.public_url) -> list[Route]:
     """The frozen dataset routes over the depot whose file is at address,
     read through its own read-only connections (depot.legacy.Legacy),
     whatever its format; downloads: the web app's (depot_app.downloads),
     where the streams being sent and the sizes of export parts are kept;
     refusals wraps a handler so that it answers each failure with its
-    status (depot_app.web.routes.refusals); store: the dock of the
-    corpora, by default the one DOCK names, opened when first asked;
+    status (depot_app.web.routes.refusals); store: the URL of the dock of
+    the corpora (dock.api), by default the one DOCK names, read from the
+    settings when first asked;
     public_url: the depot's public address, None without one."""
     read = Legacy(address)
     held = {} if store is None else {"store": store}
 
     def opened_store():
         if "store" not in held:
-            held["store"] = dock_from_settings(shared.env_file())
+            held["store"] = dock_api.url(shared.env_file())
         return held["store"]
 
     def wrapped(handler):
@@ -241,7 +244,7 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
     sizes = {}  # {corpus id: the sizes of its files}: a corpus never changes once built
     sizing = threading.Lock()
 
-    def sizes_of(record: dict, files: list[dict], references: list[File]) -> list[int]:
+    def sizes_of(record: dict, files: list[dict], references: list[str]) -> list[int]:
         """The length of each file of the corpus: the record's own when it names
         one, else the dock's, asked SIZING at a time once per corpus and kept."""
         with sizing:
@@ -249,7 +252,7 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
         if known is None:
             asked = [i for i, one in enumerate(files) if "bytes" not in one]
             with ThreadPoolExecutor(min(SIZING, len(asked) or 1)) as pool:
-                found = dict(zip(asked, pool.map(lambda i: opened_store().size(references[i]), asked)))
+                found = dict(zip(asked, pool.map(lambda i: dock_api.size(opened_store(), references[i]), asked)))
             known = [found[i] if i in found else one["bytes"] for i, one in enumerate(files)]
             with sizing:
                 sizes[record["id"]] = known
@@ -258,12 +261,12 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
     def archive_of(row: dict, record: dict, vocabulary: str, size: int | None) -> dict:
         """The tar archive of every file of the corpus, in the order
         corpora.files gives them, each under its download name, dated when
-        the corpus was built: its files' references, its pieces
+        the corpus was built: its files' keys on the dock (references), its pieces
         (depot_app.web.archive.layout), its length, its ETag and its download
         name. It reads the record and the dock's sizes of the files."""
         files = corpora.files(record)
         saved = download_names(row, record, vocabulary, size)
-        references = [File.of(one) for one in files]
+        references = [one["key"] for one in files]
         entries = list(zip((saved[file_name(record, one)] for one in files), sizes_of(record, files, references)))
         built = int(datetime.fromisoformat(record["built_at"]).timestamp()) if record.get("built_at") else 0
         pieces, length = archive.layout(entries, built)
@@ -374,8 +377,8 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
         chosen = next((one for one in corpora.files(record) if file_name(record, one) == values["name"]), None)
         if chosen is None:
             raise errors.NotFound(f"corpus {record['id']} has no file {values['name']}")
-        reference = File.of(chosen)
-        size = opened_store().size(reference)
+        reference = chosen["key"]
+        size = dock_api.size(opened_store(), reference)
         start, end, status = ranged(request, size, f'"{chosen["sha256"]}"')
         if status is None:
             return start, end
@@ -387,7 +390,7 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
             at = start
             while at < end:
                 length = min(CHUNK, end - at)
-                yield opened_store().read_range(reference, at, length)
+                yield dock_api.fetch_range(opened_store(), reference, at, length)
                 at += length
         saved = download_names(row, record, vocabulary_given(values["vocabulary"]), size_of(values["size"]))
         headers = {"Accept-Ranges": "bytes", "ETag": f'"{chosen["sha256"]}"',
@@ -410,7 +413,7 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
         references = whole["references"]
 
         def read_piece(index: int, at: int, length: int) -> bytes:
-            return opened_store().read_range(references[index], at, length)
+            return dock_api.fetch_range(opened_store(), references[index], at, length)
         headers = {"Accept-Ranges": "bytes", "ETag": whole["etag"],
                    "Content-Disposition": f'attachment; filename="{whole["download"]}"'}
         if status == 206:

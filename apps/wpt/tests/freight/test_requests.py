@@ -16,7 +16,8 @@ from freight import api
 from depot import Declaration, NewText
 from wpt_corpus.corpora import rows as corpus_rows
 from corpus_build import build
-from dock.names import File
+import io
+import dock_files
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
 TASK = {"task": {"instructions": "Write hello into out.txt.", "image": "base",
@@ -79,7 +80,7 @@ def vocabulary(built) -> str:
     key = f"adopted-{built.vocabulary}"
     api.adopt(key, {"vocabulary.json": built.tokenizer.to_bytes()},
               {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size}, {"by": "a test"}, on_erasure="note",
-              dock=built.store.root.as_uri())
+              dock=built.store)
     return key
 
 
@@ -93,7 +94,7 @@ def asked(built, tmp_path, name, kinds, shares, size, vocabulary_key, program="w
                              "size": None if size is None else {"unit": "tokens", "amount": size}},
                "preparation": {"name": program, "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": vocabulary_key}}}
-    where = {"home": str(tmp_path / "freight"), "depot": built.depot.address, "dock": built.store.root.as_uri()}
+    where = {"home": str(tmp_path / "freight"), "depot": built.depot.address, "dock": built.store}
     state = api.request(request, **where)
     done = api.wait(state["id"], home=where["home"])
     assert done["state"] == "done", done["problem"]
@@ -108,7 +109,7 @@ def same(built, record: dict, note: dict):
         assert [one["token_sha256"] for one in result["shards"][kind]] == [
             one["token_sha256"] for one in record["shards"][kind]], kind
     built_rows = corpus_rows(store, record, "texts")
-    rows = api.items(note["key"], dock=store.root.as_uri())
+    rows = api.items(note["key"], dock=store)
     # the rows of the corpus's texts table, with the bytes the freight counted each at and its weight beside them
     assert [{key: value for key, value in row.items() if key not in ("bytes", "weight")} for row in rows] == built_rows
     assert result["total_tokens"] == record["total_tokens"] and result["items_tokens"] == record["items_tokens"]
@@ -118,7 +119,7 @@ def same(built, record: dict, note: dict):
     if tasks is not None:
         assert tasks["sha256"] == record["tasks"]["file"]["sha256"] and result["tasks"]["count"] == record["tasks"]["count"]
     for table in ("licenses", "notices"):
-        assert pq.read_table(store.path(File.of(note["tables"][table]))).to_pylist() == \
+        assert pq.read_table(io.BytesIO(dock_files.fetch(store, note["tables"][table]))).to_pylist() == \
             corpus_rows(store, record, table)
     assert (note["items"]["texts"], note["items"]["pieces"], note["items"]["kinds"].get("conversation", 0)) == (
         record["texts"], record["pieces"], record["conversations"])
@@ -174,7 +175,7 @@ def test_the_same_request_again_is_answered_at_once_with_its_delivery(built, tmp
                "preparation": {"name": "wpt-tokens", "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": key}}}
     state = api.request(request, home=str(tmp_path / "freight"), depot=built.depot.address,
-                        dock=built.store.root.as_uri())
+                        dock=built.store)
     assert state["state"] == "done" and state["answer"]["id"] == first["id"]
 
 
@@ -188,7 +189,7 @@ def test_wpt_count_weighs_as_wpt_tokens_and_writes_no_file(built, tmp_path):
     result = tokens["result"]
     assert counted["result"] == {"total": result["total_tokens"] + result["items_tokens"],
                                  "plain": result["total_tokens"], "items": result["items_tokens"]}
-    dock = built.store.root.as_uri()
+    dock = built.store
     assert [{**row, "tokens": None} for row in api.items(tokens["key"], dock=dock)] == [
         {**row, "tokens": None} for row in api.items(counted["key"], dock=dock)]
     assert (counted["items"], counted["shares"], counted["left_out"]) == (
@@ -206,7 +207,7 @@ def test_the_command_queues_a_request_waits_for_it_and_finds_its_delivery(built,
                "preparation": {"name": "wpt-tokens", "inputs": {"vocabulary": key}}}
     (tmp_path / "request.json").write_text(json.dumps(request))
     for name, value in (("FREIGHT_HOME", str(tmp_path / "freight")), ("DEPOT", built.depot.address),
-                        ("DOCK", built.store.root.as_uri())):
+                        ("DOCK", built.store)):
         monkeypatch.setenv(name, value)
     assert main(["request", str(tmp_path / "request.json"), "--wait"]) == 0
     note = json.loads(capsys.readouterr().out)

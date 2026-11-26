@@ -4,6 +4,7 @@ code's format by its upgrade; the routes of the tokenizer pages, which only a pe
 the depot carries out leaves the corpora on the dock, and what these routes answer of them, as they were."""
 
 import hashlib
+import io
 import json
 import shutil
 import threading
@@ -21,7 +22,7 @@ from depot_app.downloads import Downloads
 from depot_app.jobs import Jobs
 from depot_app.web.legacy import legacy
 from depot_app.web.routes import STATUSES, refusals, routes
-from dock import dock_from_settings
+from dock import api as dock_api
 from depot_app.web.server import make_server
 
 GOLDEN = Path(__file__).parent / "legacy-golden"
@@ -135,10 +136,11 @@ def test_an_erasure_the_depot_carries_out_leaves_the_corpora_on_the_dock_and_the
     # stays fresh and the frozen routes still send it until the freight's next check, whether the erasure is
     # decided by `depot decide admit --erasure` or through POST /api/erasures/decisions
     monkeypatch.setenv("DEPOT", str(fixture_depot))
-    store = dock_from_settings(tmp_path / ".env")
+    store = dock_api.url(tmp_path / ".env")
     [record, *_] = [one for one in corpora.records(store) if corpora.fresh(one)]
     texts = record["tables"]["texts"]
-    held = pq.read_table(store.path(texts[0] if isinstance(texts, list) else texts), columns=["id"])["id"]
+    table = texts[0] if isinstance(texts, list) else texts
+    held = pq.read_table(io.BytesIO(dock_api.fetch(store, table["key"], table["sha256"])), columns=["id"])["id"]
     first, second = held.to_pylist()[:2]
     depot = Depot.open(str(fixture_depot))
     declaration = Declaration("Ada Lovelace", "ada@example.org", True)

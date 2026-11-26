@@ -18,7 +18,7 @@ from wpt_corpus import corpora
 from depot.errors import NotFound
 from corpus_build import build
 from freight import api as freight
-from dock import open_dock
+from dock import api as dock_api
 from wpt_tokenizer import Tokenizer
 from wpt.resources import main as build_resources
 from wpt.train import main as train
@@ -69,7 +69,7 @@ def built(tmp_path, monkeypatch):
     size, url=None), which builds the corpus of the snapshot label at that
     size, its record naming the depot by url (default: its name), and
     returns its record."""
-    store = open_dock((tmp_path / "store").as_uri())
+    store = (tmp_path / "store").as_uri()
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
     stories = [f"story {i}: the quick brown fox jumps over the lazy dog. " * 30 for i in range(16)]
@@ -122,7 +122,7 @@ def built(tmp_path, monkeypatch):
 
     corpus_id = snapshot("d", [NewText(text=story, notice=NOTICE) for story in stories])
     order()
-    monkeypatch.setenv("DOCK", store.root.as_uri())  # where each command run also writes its record
+    monkeypatch.setenv("DOCK", store)  # where each command run also writes its record
     monkeypatch.setenv("DEPOT", depot.address)  # the depot the orders name (by its name: it has no public address)
     monkeypatch.delenv("DEPOT_URL", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)  # no live backend, whatever this machine sets
@@ -131,14 +131,15 @@ def built(tmp_path, monkeypatch):
 
     def records(command):
         found = []
-        for folder in store.record_folders():
-            start = json.loads(store.read_record(folder, "start.json"))
+        for folder in dock_api.record_folders(store):
+            start = json.loads(dock_api.read_record(store, folder, "start.json"))
             if start["command"] == command:
                 found.append(SimpleNamespace(
-                    folder=folder, start=start, ids=json.loads(store.read_record(folder, "ids.json")),
-                    events=[json.loads(line) for line in store.read_record(folder, "events.jsonl").splitlines()],
-                    end=json.loads(store.read_record(folder, "end.json")) if "end.json" in store.record_files(folder)
-                    else None))
+                    folder=folder, start=start, ids=json.loads(dock_api.read_record(store, folder, "ids.json")),
+                    events=[json.loads(line) for line in
+                            dock_api.read_record(store, folder, "events.jsonl").splitlines()],
+                    end=json.loads(dock_api.read_record(store, folder, "end.json"))
+                    if "end.json" in dock_api.record_files(store, folder) else None))
         return sorted(found, key=lambda run: run.start["started"])
 
     return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, order=order,
@@ -225,12 +226,13 @@ def s3(tmp_path, monkeypatch):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_dock("s3://wpt-test/store")
-        monkeypatch.setenv("DOCK", "s3://wpt-test/store")
+        store = "s3://wpt-test/store"
+        monkeypatch.setenv("DOCK", store)
 
         def copy(local):
-            for key in local.kind.list(""):
-                store.kind.write(key, local.root / key)
+            source, target = dock_api._dock(local), dock_api._dock(store)
+            for key in source.kind.list(""):
+                target.kind.write(key, source.root / key)
 
         def refuse(marker):
             real = S3Dock._raw_flush_records

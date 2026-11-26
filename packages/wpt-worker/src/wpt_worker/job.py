@@ -160,14 +160,16 @@ def upload(link, path) -> str:
 
 
 def _sha(what) -> str:
-    """The sha256 of what names a file: a dock.File, a record's
-    reference to one ({"key", "sha256"}), or the sha256."""
-    return what["sha256"] if isinstance(what, dict) else getattr(what, "sha256", what)
+    """The sha256 of what names a file: a record's reference to one
+    ({"key", "sha256"}), or the sha256."""
+    return what["sha256"] if isinstance(what, dict) else what
 
 
 class LinkDock:
-    """The manager's dock, as a job's process reads it (what
-    wpt_corpus.shards, the environments and wpt_telemetry call): files by
+    """The manager's dock, as a job's process reads it: a reader of the
+    corpus's files (wpt_corpus.files), which wpt_corpus.shards and the
+    environments take, and the run's records, which wpt_telemetry writes
+    to, as wpt_telemetry.DockRecords answers on the manager. Files by
     their sha256, which only the manager holds and gives part by part; the
     record folder of the run, whose every write goes to the manager's dock
     before the call returns, and whose lines that dock holds back are sent

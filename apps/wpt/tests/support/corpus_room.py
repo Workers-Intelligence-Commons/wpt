@@ -16,7 +16,7 @@ being built or downloaded; a build that alone needs more than the cap fails
 
 from datetime import UTC, datetime
 
-from dock.api import PACKED, File
+from dock import api as dock_api
 from freight.corpora import FOLDER, RECORD, files, folder_of
 
 CAPPED = "the dock's cap needed its room"
@@ -46,8 +46,8 @@ class FilesGone(CorpusError):
 
 def missing(store, folder: str, uploaded: list[dict]) -> list[str]:
     """The keys of the files uploaded ({key, ...}) that the folder of the dock no longer holds, from one listing."""
-    held = set(store.kind.list(f"{folder}/", deep=True))
-    return [one["key"] for one in uploaded if one["key"] not in held and one["key"] + PACKED not in held]
+    held = {one["key"] for one in dock_api.find(store, f"{folder}/")}
+    return [one["key"] for one in uploaded if one["key"] not in held]
 
 
 def delete(store, record: dict, why: str) -> dict:
@@ -57,7 +57,7 @@ def delete(store, record: dict, why: str) -> dict:
     if "deleted" not in record:
         record = mark_deleted(store, record, why)
     for one in files(record):
-        store.delete(File.of(one))
+        dock_api.delete(store, one["key"])
     return mark_deleted(store, record, record["deleted"]["why"], whole=True)
 
 
@@ -66,8 +66,8 @@ def mark_deleted(store, record: dict, why: str, whole: bool = False) -> dict:
     of its files is left: the record as stored. The time is the first
     mark's."""
     at = record.get("deleted", {}).get("at") or datetime.now(UTC).isoformat()
-    return store.put_json(f"{folder_of(record)}/{RECORD}",
-                          {**record, "deleted": {"at": at, "why": why, "whole": whole}})
+    return dock_api.put_json(store, f"{folder_of(record)}/{RECORD}",
+                             {**record, "deleted": {"at": at, "why": why, "whole": whole}})
 
 
 class Room:
@@ -97,28 +97,27 @@ class Room:
         if "bytes" in one:
             return one["bytes"]
         try:
-            return self.store.size(File.of(one))
+            return dock_api.size(self.store, one["key"])
         except Exception:  # a file the dock no longer holds takes no room
             return 0
 
     def _listed(self) -> dict:
         if self._kept is None:
             self._kept = {}
-            for key in self.store.kind.list(f"{FOLDER}/", deep=False):
-                folder = key.rstrip("/")
-                if not key.endswith("/") or folder == self.own:
+            for name in dock_api.folders(self.store, f"{FOLDER}/"):
+                folder = f"{FOLDER}/{name}"
+                if folder == self.own:
                     continue
-                record = self.store.get_json(f"{key}{RECORD}")
+                record = dock_api.get_json(self.store, f"{folder}/{RECORD}")
                 if record is None:
-                    left = [{"key": one, "bytes": size or 0} for one, size in
-                            sorted(self.store.kind.list(key, deep=True).items())]
+                    left = dock_api.find(self.store, f"{folder}/")
                     if left:
                         self._kept[folder] = (None, left)
                     continue
                 if record.get("deleted", {}).get("whole", "deleted" in record):
                     continue
                 left = [one for one in files(record)
-                        if "deleted" not in record or self.store.has(File.of(one))]
+                        if "deleted" not in record or dock_api.has(self.store, one["key"])]
                 self._kept[record["id"]] = (record, [{**one, "bytes": self._size(one)} for one in left])
         return self._kept
 
@@ -203,12 +202,12 @@ class Room:
                     self._said.add(free[0])
                     self.log(f"the files of {free[0]} deleted, a file at a time as this build needs room: no corpus "
                              "record names them")
-                self.store.kind.delete(one["key"])
+                dock_api.delete(self.store, one["key"])
             else:
                 if "deleted" not in record:
                     record = mark_deleted(self.store, record, CAPPED)
                     self.log(f"corpus {record['id']} deleted, a file at a time as this build needs room: {CAPPED}")
-                self.store.delete(File.of(one))
+                dock_api.delete(self.store, one["key"])
                 if not left:
                     record = mark_deleted(self.store, record, record["deleted"]["why"], whole=True)
             taken -= one["bytes"]
