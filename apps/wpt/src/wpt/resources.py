@@ -305,8 +305,10 @@ def _asked(request: dict, key: str, what: str) -> dict:
 def build(data: dict) -> dict:
     """Send a data section's requests to the freight, the vocabulary first
     when it is learned, then the corpus: {"vocabulary": its note, "corpus":
-    its note}. Unanswered when the dock holds no vocabulary of a sha256
-    named, or a job does not end done."""
+    its note}. roles.Refused, before any request, for roles no corpus of
+    the section can have; Unanswered when the dock holds no vocabulary of a
+    sha256 named, or a job does not end done."""
+    roles.names(data)
     asking = vocabulary_request(data)
     if asking is None:
         key = vocabulary_key(data)

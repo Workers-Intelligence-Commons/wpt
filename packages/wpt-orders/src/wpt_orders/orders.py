@@ -27,8 +27,9 @@ shape of the orders written before snapshots (a dataset of a depot); the
 schema accepts either. An order whose depot, snapshot, digest, vocabulary
 or dataset is still empty passes its schema, so it reads, and the check
 names it for a person to fill in; the check also refuses shares that name
-a tag twice or sum above 1, and a size of the finetune portion in a data
-part whose roles leave it out.
+a tag twice or sum above 1, a size of the finetune portion in a data
+part whose roles leave it out, and a held-out portion in a data part whose
+total_tokens is too small for it (HELD_OUT_MIN_TOKENS).
 """
 
 import json
@@ -65,6 +66,9 @@ SIZE_OF = ":"  # SERIES:SIZE[:RUN] names one size of a series (or another run of
 #                name goes (Orders.model_order)
 BUILT_IN_TOOLS = ("read", "write", "edit", "bash")  # the tools every task can offer (wpt_agent.tools)
 ASK = "ask"  # the tool a task with replies offers
+# the least total_tokens of a data part whose roles hold held_out, wpt_corpus.roles.HELD_OUT_MIN_TOKENS (64 MiB),
+# which this package cannot import
+HELD_OUT_MIN_TOKENS = 64 * 1024 * 1024
 # characters str.splitlines() splits on that JSON may hold raw inside a string
 LINE_BREAKS = {" ": "\\u2028", " ": "\\u2029", "\x85": "\\u0085"}
 
@@ -169,6 +173,19 @@ def _finetune(where: str, data: dict, place: str):
     if "finetune_tokens" in data and "finetune" not in (data.get("roles") or []):
         raise InvalidOrder(f"{where}: {place}finetune_tokens sizes the finetune portion, which {place}roles leave "
                             "out: add finetune to the roles, or give no finetune_tokens")
+
+
+def _held_out(where: str, data: dict, place: str):
+    """InvalidOrder for a data part of the snapshot shape whose roles hold
+    held_out (left out: they do) with a total_tokens under
+    HELD_OUT_MIN_TOKENS, too small a corpus for the held-out portion
+    (wpt_corpus.roles); for a series, data is its largest size's."""
+    total = data.get("total_tokens")
+    if ("snapshot" in data and "held_out" in (data.get("roles") or ["held_out"]) and total is not None
+            and total < HELD_OUT_MIN_TOKENS):
+        raise InvalidOrder(f"{where}: {place}total_tokens {total:,} is too small for the held-out portion, which "
+                           f"needs at least {HELD_OUT_MIN_TOKENS:,}: name {place}roles without held_out, such as "
+                           "[\"pretrain\"], or ask for more tokens")
 
 
 class Orders:
@@ -437,3 +454,4 @@ class Orders:
         _shares(where, document["data"], "data.")
         _empty_data(where, document["data"], "data.")
         _finetune(where, document["data"], "data.")
+        _held_out(where, series.data_part(document) if kind == "series" else document["data"], "data.")

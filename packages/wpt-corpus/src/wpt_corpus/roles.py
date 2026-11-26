@@ -5,8 +5,9 @@ their names, kinds, shares and sizes (docs/api/freight.md, "A request");
 what each one means is set here, never by an order. The order schemas of
 wpt-orders, which cannot import this module, repeat the role names in
 their order, that pretrain is always one and the default, and its check
-refuses finetune_tokens without finetune; apps/wpt/tests/freight/
-test_portions.py holds them to this module.
+refuses finetune_tokens without finetune and held_out with a total_tokens
+under HELD_OUT_MIN_TOKENS; apps/wpt/tests/freight/test_portions.py holds
+them to this module.
 
     held_out   plain texts no training reads, to measure a model on; always
                the first portion, with the shares of the pretraining
@@ -24,11 +25,21 @@ first: it reads nothing of the portions after it, and two corpora of one
 snapshot and one set of shares hold exactly the same held-out texts,
 whatever their vocabulary and their sizes.
 
-HELD_OUT_BYTES is 2 MiB: enough text for a measure of bits per byte that
-moves little from one corpus to another (about half a million tokens, of
-every share), and under a fifth of the smallest corpus the orders ask for
-(4.3 million tokens, some 17 MB of text at about four bytes a token), a
-two-thousandth of the orders of a billion tokens.
+HELD_OUT_BYTES is 64 MiB: a measure of bits per byte on 2 MiB is known to
+about 1.7 percent, too coarse beside the gaps between the variants it
+compares, and its error shrinks as the square root of the text measured,
+so 32 times the text brings it to about 0.3 percent. 64 MiB is some 16
+million tokens at about four bytes a token, and about a seventieth of the
+text of the orders of a billion tokens.
+
+A data section whose roles hold held_out asks for a total_tokens of at
+least HELD_OUT_MIN_TOKENS, which is HELD_OUT_BYTES: the pretraining portion
+then holds at least as many tokens as the held-out portion holds bytes, and
+a token of text stands for at least one byte, so the held-out portion is
+never the larger part of the plain text (at about four bytes a token, it is
+at most a fifth of it). A smaller one is refused: its order names its roles
+without held_out, as the small test orders do, and its models are measured
+on nothing held out.
 
 A corpus without portions (a delivery made without them, or one of the
 corpora under the dock's corpora/) is all of it its pretraining portion,
@@ -47,7 +58,8 @@ ROLES = (HELD_OUT, PRETRAIN, FINETUNE)  # every role, in the order the portions 
 DEFAULT = (HELD_OUT, PRETRAIN)  # the roles of a data section that names none
 KINDS = {HELD_OUT: (PLAIN,), PRETRAIN: (PLAIN,), FINETUNE: (CONVERSATION, TASK)}  # what each role's portion holds
 TRAINING = (PRETRAIN, FINETUNE)  # the roles whose portions training reads; never HELD_OUT
-HELD_OUT_BYTES = 2 * 1024 * 1024  # the size of the held-out portion, in bytes, the same for every corpus
+HELD_OUT_BYTES = 64 * 1024 * 1024  # the size of the held-out portion, in bytes, the same for every corpus
+HELD_OUT_MIN_TOKENS = HELD_OUT_BYTES  # the least total_tokens of a data section whose roles hold held_out
 BYTES, TOKENS = "bytes", "tokens"  # the units of a portion's size
 
 
@@ -58,8 +70,9 @@ class Refused(ValueError):
 def names(data: dict) -> list[str]:
     """The roles the corpus of a data section has, in the order its portions
     fill: its `roles`, else DEFAULT. Refused for a role that is none of
-    ROLES, a role named twice, roles without pretrain, and finetune_tokens
-    without finetune."""
+    ROLES, a role named twice, roles without pretrain, finetune_tokens
+    without finetune, and held_out with a total_tokens under
+    HELD_OUT_MIN_TOKENS."""
     given = data.get("roles")
     given = list(DEFAULT) if given is None else given
     if not isinstance(given, list) or not all(isinstance(one, str) for one in given):
@@ -73,6 +86,11 @@ def names(data: dict) -> list[str]:
         raise Refused(f"a data section's roles hold {PRETRAIN}, the portion its total_tokens sizes: {given!r}")
     if data.get("finetune_tokens") is not None and FINETUNE not in given:
         raise Refused(f"finetune_tokens sizes the {FINETUNE} portion, which the data section's roles do not hold")
+    total = data.get("total_tokens")
+    if HELD_OUT in given and total is not None and total < HELD_OUT_MIN_TOKENS:
+        raise Refused(f"a corpus of {total:,} tokens of pretraining is too small for a held-out portion of "
+                      f"{HELD_OUT_BYTES:,} bytes, which needs a total_tokens of at least {HELD_OUT_MIN_TOKENS:,}: "
+                      f"name the roles without {HELD_OUT}, such as [\"{PRETRAIN}\"], or ask for more tokens")
     return [one for one in ROLES if one in given]
 
 

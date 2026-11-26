@@ -13,7 +13,8 @@ UTC time it was made, and the texts admitted then (`depot`; docs/architecture.md
 selection of texts is a tag. A model order's data section names a
 snapshot, with its change and digest, and the roles of the portions its
 corpus is cut into: `held_out` (plain texts no training reads, always
-first, its size in bytes fixed in `wpt_corpus.roles`), `pretrain` (sized
+first, its size in bytes fixed in `wpt_corpus.roles`, only with a
+`total_tokens` of at least `HELD_OUT_MIN_TOKENS` there), `pretrain` (sized
 by `total_tokens`) and `finetune` (conversations and tasks, sized by
 `finetune_tokens`); left out, `held_out` and `pretrain`
 (docs/data-selection.md, "The portions of a corpus"). The freight (`freight`;

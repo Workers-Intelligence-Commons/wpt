@@ -657,7 +657,7 @@ and the sizes the rules leave to it. The freight fills them in this order:
 
 | Role | What it holds | Its shares | Its size |
 | --- | --- | --- | --- |
-| `held_out` | plain texts that no training reads, to measure a model on | the section's | `HELD_OUT_BYTES`, 2 MiB of the bytes the depot's listing gives its texts, the same for every corpus |
+| `held_out` | plain texts that no training reads, to measure a model on | the section's | `HELD_OUT_BYTES`, 64 MiB of the bytes the depot's listing gives its texts, the same for every corpus |
 | `pretrain` | plain texts, what the steps that read text windows learn from | the section's | `total_tokens`, in tokens |
 | `finetune` | conversations and tasks, what the steps that read them learn from | none | `finetune_tokens`, in tokens; left out: every conversation and task left |
 
@@ -665,15 +665,28 @@ and the sizes the rules leave to it. The freight fills them in this order:
 plain text the model reads; `finetune_tokens` without `finetune` is
 refused.
 
+A corpus with a held-out portion asks for a `total_tokens` of at least
+`HELD_OUT_MIN_TOKENS`, which is `HELD_OUT_BYTES` as a count of tokens,
+some 67 million. The pretraining portion then holds at least as many
+tokens as the held-out portion holds bytes, and a token of text stands for
+at least one byte, so the held-out portion is never the larger part of the
+plain text; at about four bytes a token, it is at most a fifth of it. An
+order that asks for fewer tokens names its roles without `held_out`
+(`["pretrain"]`), as the small test orders do, and its models are measured
+on nothing held out. The check of the orders (`ci/data.py`) and
+`wpt build-resources` refuse a held-out portion in a smaller corpus, the
+second before it asks the freight for anything.
+
 The held-out portion comes first, is sized in bytes and names its kinds,
 so it reads nothing of the vocabulary, the sizes or the portions after it:
 two corpora of one snapshot and one set of shares hold exactly the same
 held-out texts, whatever their vocabulary and their sizes, and a model is
-measured on texts it never read. 2 MiB is about half a million tokens
-of every share, enough for a measure that moves little from one corpus
-to another, and under a fifth of the smallest corpus
-the orders ask for (4.3 million tokens, some 17 MB of text at about four
-bytes a token).
+measured on texts it never read. Bits per byte measured on 2 MiB is
+known to about 1.7 percent, too coarse beside the gaps between the
+variants it compares; its error shrinks as the square root of the text
+measured, so 64 MiB, 32 times as much, brings it to about 0.3 percent.
+64 MiB is some 16 million tokens at about four bytes a token, about a
+seventieth of the text of an order of a billion tokens.
 
 Training reads only its portions ([training.md](training.md), "Steps"):
 the steps that read text windows the pretraining portion, as they read the

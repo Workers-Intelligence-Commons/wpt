@@ -901,7 +901,8 @@ repository ("Model series", below). A model order holds:
   public address, [data-selection.md](data-selection.md)), the name of one of
   its snapshots (`snapshot`) with the change number it reads (`change`) and
   its digest (`digest`), the roles of the portions its corpus is cut into
-  (`roles`: `held_out`, `pretrain`, `finetune`; `pretrain` always; left out:
+  (`roles`: `held_out`, `pretrain`, `finetune`; `pretrain` always;
+  `held_out` only with a `total_tokens` large enough for it; left out:
   `held_out` and `pretrain`; [data-selection.md](data-selection.md), "The
   portions of a corpus"), the share of the plain text each tag takes
   (`shares`, in order, a tag once, summing to at most 1; left out: the

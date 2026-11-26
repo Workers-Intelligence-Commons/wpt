@@ -6,9 +6,11 @@ kind, and lists them by portion; training's view of the delivery names no
 file of the held-out portion; two corpora of one snapshot and one set of
 shares hold the same held-out texts whatever their vocabulary and sizes,
 and wpt eval's bits_per_byte measures two vocabularies on the same bytes;
-a job cut short goes on to the same delivery; and the order schemas of
-wpt-orders, which cannot import wpt_corpus, name the roles as
-wpt_corpus.roles does."""
+a job cut short goes on to the same delivery; the order schemas and
+checks of wpt-orders, which cannot import wpt_corpus, name the roles and
+refuse a held-out portion in too small a corpus as wpt_corpus.roles does;
+and wpt build-resources refuses such an order before it asks for
+anything."""
 
 import base64
 import importlib.util
@@ -26,10 +28,12 @@ from depot import Declaration, NewText
 from freight import api
 from freight.job import LEFT_OUT, Job
 from wpt import resources
+from wpt.resources import main as build_resources
 from wpt.eval import BUILT_IN
 from wpt_corpus import corpora, programs, roles
 from wpt_orders import orders
 from wpt_tokenizer import Tokenizer
+from wic_utils.lines import bare
 import dock_files
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
@@ -264,3 +268,32 @@ def test_the_order_check_refuses_a_size_of_the_finetune_portion_where_wpt_corpus
     except roles.Refused:
         cut = False
     assert checked == cut == ("finetune" in (named or roles.DEFAULT))
+
+
+@pytest.mark.parametrize("named", [None, ["pretrain"], ["held_out", "pretrain"]])
+@pytest.mark.parametrize("total", [roles.HELD_OUT_MIN_TOKENS - 1, roles.HELD_OUT_MIN_TOKENS])
+def test_the_order_check_refuses_a_held_out_portion_in_too_small_a_corpus_where_wpt_corpus_does(named, total):
+    # the real sizes, which the tests that build corpora set smaller
+    assert orders.HELD_OUT_MIN_TOKENS == roles.HELD_OUT_MIN_TOKENS == roles.HELD_OUT_BYTES == 64 * 1024 * 1024
+    data = {"snapshot": "s", "total_tokens": total, **({"roles": named} if named else {})}
+    try:
+        orders._held_out("an order", data, "data.")
+        checked = True
+    except orders.InvalidOrder:
+        checked = False
+    try:
+        roles.names(data)
+        cut = True
+    except roles.Refused:
+        cut = False
+    assert checked == cut == ("held_out" not in (named or roles.DEFAULT) or total >= roles.HELD_OUT_MIN_TOKENS)
+
+
+def test_wpt_build_resources_refuses_a_held_out_portion_its_corpus_is_too_small_for_before_any_request(
+        built, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
+    monkeypatch.setattr(roles, "HELD_OUT_MIN_TOKENS", 10**6)  # the order "d" asks for a few thousand tokens
+    assert build_resources(["d"]) == 1
+    said = bare(capsys.readouterr().err)
+    assert "too small for a held-out portion" in said and 'name the roles without held_out, such as ["pretrain"]' in said
+    assert api.jobs() == []

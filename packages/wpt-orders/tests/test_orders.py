@@ -6,6 +6,7 @@ import re
 import pytest
 
 from wpt_orders import InvalidOrder, NotFound, Orders, dump_json
+from wpt_orders.orders import HELD_OUT_MIN_TOKENS
 
 MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 16, "attention_heads": 2,
          "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
@@ -41,7 +42,7 @@ def snapshot_model(**data):
     return {"data": {"depot": DEPOT, "snapshot": "2026-11", "change": 1234, "digest": DIGEST,
                      "roles": ["held_out", "pretrain", "finetune"],
                      "shares": [{"tag": "fiction", "share": 0.3}, {"tag": "law", "share": 0.2}],
-                     "total_tokens": 100, "finetune_tokens": 40, "vocabulary": {"sha256": SHA256, "size": 4096},
+                     "total_tokens": 10**9, "finetune_tokens": 40, "vocabulary": {"sha256": SHA256, "size": 4096},
                      **data},
             "model": MODEL, "seed": 1, "steps": STEPS, "drafter": {}}
 
@@ -135,6 +136,26 @@ def test_the_check_refuses_a_size_of_the_finetune_portion_its_roles_leave_out(or
     assert orders.problems("model", "m") == [
         "data/orders/models/m.json: data.finetune_tokens sizes the finetune portion, which data.roles leave out: add "
         "finetune to the roles, or give no finetune_tokens"]
+
+
+@pytest.mark.parametrize("named", [None, ["held_out", "pretrain"]])
+def test_the_check_refuses_a_held_out_portion_in_a_corpus_too_small_for_it(orders, named):
+    # the role held_out, named or left out, needs a total_tokens of at least HELD_OUT_MIN_TOKENS
+    def sized(total, roles=named):
+        document = snapshot_model(roles=roles, total_tokens=total)
+        del document["data"]["finetune_tokens"]
+        if roles is None:
+            del document["data"]["roles"]
+        return document
+
+    write(orders, "model", "m", sized(HELD_OUT_MIN_TOKENS - 1))
+    assert orders.problems("model", "m") == [
+        f"data/orders/models/m.json: data.total_tokens {HELD_OUT_MIN_TOKENS - 1:,} is too small for the held-out "
+        f"portion, which needs at least {HELD_OUT_MIN_TOKENS:,}: name data.roles without held_out, such as "
+        '["pretrain"], or ask for more tokens']
+    write(orders, "model", "m", sized(HELD_OUT_MIN_TOKENS - 1, ["pretrain"]))
+    write(orders, "model", "enough", sized(HELD_OUT_MIN_TOKENS))
+    assert orders.check() == []
 
 
 def test_a_legacy_model_order_names_a_depot_a_dataset_there_and_its_tokens(orders):

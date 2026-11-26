@@ -68,7 +68,13 @@ def built(tmp_path, monkeypatch):
     builds its corpus of every token and returns its id, and sized(label,
     size, url=None), which builds the corpus of the snapshot label at that
     size, its record naming the depot by url (default: its name), and
-    returns its record."""
+    returns its record. Every corpus cut into portions here has a held-out
+    portion of HELD_OUT bytes and takes it whatever its total_tokens: the
+    sizes wpt_corpus.roles sets for real corpora would hold every text of
+    these small depots (the least total_tokens a held-out portion needs has
+    a test of its own)."""
+    monkeypatch.setattr(roles, "HELD_OUT_BYTES", HELD_OUT)
+    monkeypatch.setattr(roles, "HELD_OUT_MIN_TOKENS", 0)
     dock = (tmp_path / "dock").as_uri()
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
@@ -188,7 +194,6 @@ def trained(request, built, tmp_path, monkeypatch):
     corpus_id, the corpus delivery's id, and fetched, the keys of every
     file `wpt train` fetched from the dock."""
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
-    monkeypatch.setattr(roles, "HELD_OUT_BYTES", HELD_OUT)
     printed = request.getfixturevalue("capsys")
     if request.param == "named":
         change = built.depot.snapshot(built.names["d"])["at_change"]

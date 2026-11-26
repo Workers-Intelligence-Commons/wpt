@@ -5,7 +5,6 @@
     "change": 30019,
     "digest": "d21d5edd07aff55c750233785445146fc2173582c1ce10d7a7c2481fa0d34927",
     "roles": [
-      "held_out",
       "pretrain"
     ],
     "total_tokens": 4290110,
