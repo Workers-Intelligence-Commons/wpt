@@ -640,9 +640,9 @@ texts exactly.
 The delivery note counts each portion apart (`portions`: its texts,
 weight, bytes, shares with their groups, and what it left out, the texts
 an earlier portion took counted as `earlier portion`), and each row of
-its items table names its portion. A delivery without portions is
-unchanged: its key, its files and its note are those of a selection that
-never names portions.
+its items table names its portion. A delivery without portions names
+none: its note has no `portions`, its items rows no `portion`, and its key
+covers no portion.
 
 The rule reads texts by their id: two editions of one work held as two
 texts of the depot can fall in two portions.

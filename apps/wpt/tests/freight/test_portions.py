@@ -102,7 +102,7 @@ def test_an_order_s_corpus_is_cut_into_its_roles_portions_each_in_its_own_files(
     assert portions[1]["shares"] == portions[0]["shares"] and portions[1]["size"] == {"unit": "tokens", "amount": 1500}
     assert (portions[2]["kinds"], portions[2]["size"]) == (["conversation", "task"], None)
     note = asked(cut, tmp_path, request)
-    assert note["preparation"]["version"] == programs.PORTIONED_VERSION  # files VERSION never described
+    assert note["preparation"]["version"] == programs.PORTIONED_VERSION  # not the files VERSION gives
     made, rows = note["result"]["portions"], api.items(note["key"], dock=cut.dock)
     assert list(made) == ["held_out", "pretrain", "finetune"]
     for name, portion in made.items():

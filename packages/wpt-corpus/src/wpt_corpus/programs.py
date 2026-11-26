@@ -29,8 +29,8 @@ back), a portion's files close when its last item is taken, and the result
 lists them by portion, {portions: {name: {total_tokens, items_tokens,
 shards, tasks, fingerprints}}, vocabulary}, every portion named there, one
 that took nothing included. wpt-tokens answers such a delivery the version
-PORTIONED_VERSION. A delivery without portions gets the files, result and
-version (VERSION) it always got, so its delivery key stays the same.
+PORTIONED_VERSION. A delivery without portions gets the files and result
+above and the version VERSION, which its delivery key covers.
 
 wpt-count (wpt_count) gives the same weights and writes nothing: its result is
 {total, plain, items}, the tokens of what it took, every portion together.
@@ -58,8 +58,8 @@ from .encoding import KINDS, PLAIN, TASK, TOKEN_KINDS, task_text, tokens, weight
 from .shards import write_shard
 
 VERSION = "1"  # raised whenever the files or weights the same messages give change
-# what wpt-tokens answers for a delivery cut into portions, whose files and result VERSION never described: a
-# request without portions keeps VERSION, and so its delivery key
+# what wpt-tokens answers for a delivery cut into portions, whose files and result are not those VERSION gives: a
+# delivery without portions answers VERSION
 PORTIONED_VERSION = "2"
 SHARD_TOKENS = 1 << 26  # about 64M tokens (256 MB of uint32) per token file
 WAITING = 4  # items read ahead of the one being answered, for each thread

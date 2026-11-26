@@ -162,8 +162,8 @@ prepares conversations, plain texts and tasks.
   tasks. The result is `{"portions": {"<name>":
   {total_tokens, items_tokens, shards, tasks, fingerprints}}, "vocabulary"}`,
   every portion `start` names, one that took nothing included. For such
-  a delivery its `ready` answers the `version` `2`; a delivery without
-  portions keeps the version `1`, and so its key.
+  a delivery its `ready` answers the `version` `2`; for a delivery without
+  portions, the version `1`.
 
 Without portions, the files and hashes are those the reference corpus
 build of the tests (`apps/wpt/tests/support/corpus_build.py`) writes for
