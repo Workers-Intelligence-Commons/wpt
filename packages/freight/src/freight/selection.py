@@ -8,8 +8,12 @@ preparation prepares), its shares by tag ([{tag, share}] in order; none:
 every plain text, in the snapshot's own proportions) and its size (None:
 everything the rules take; {unit, amount}: a number of bytes (unit
 BYTES), which the freight measures on the listing's bytes, or a number of
-the preparation's unit, which only the preparation can weigh). canonical
-gives it in the form the delivery key covers.
+the preparation's unit, which only the preparation can weigh). Or it names
+portions instead, in order, each with a name and its own kinds, shares and
+size: one delivery cut into named portions, filled in that order, a text
+taken by a portion never taken by a later one (Excluded). canonical gives
+it in the form the delivery key covers, and portions_of its portions, a
+selection without portions being one portion with no name.
 
 A plain text counts for the first share whose tag it has, and a plain
 text that has none of their tags is left out. An item (any other kind) is
@@ -24,24 +28,30 @@ from the snapshot's summary alone, so it never changes, an erasure after it
 included.
 
     canonical(selection)                              a selection in the form the key covers
+    portions_of(selection)                            the portions of a canonical selection, in order
     delivery_key(snapshot, selection, preparation)    the key of a delivery
     census(summary, shares, kinds, prepared)          what a delivery of the snapshot may take
+    census_without(census, walked, excluded, ...)     the same, the texts of earlier portions taken out
     walk(source, snapshot, shares, kinds, prepared)   the snapshot's listing under a selection, as Entry
     pool_of(kind, tags, shares, kinds, prepared)      a text's pool and whether a delivery takes it
+    Excluded(ids)                                     the texts earlier portions took, which a later one leaves out
     excerpts(conversation)                            the excerpts of a conversation, in order
 """
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Iterator, Sequence
 from typing import NamedTuple
 
+import numpy as np
 from depot import api
 
 PLAIN, CONVERSATION = "plain", "conversation"
 BYTES = "bytes"  # the unit of a size the freight measures itself, on the bytes the listing gives each entry
 RULES = 1  # the version of the rules of what a job takes, in the delivery key: raised whenever they change
 INTERNED = 10_000  # different lists of tags kept as their JSON text, at most
+PORTION_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")  # what a portion's name is made of
 
 
 class Refused(ValueError):
@@ -52,10 +62,42 @@ def canonical(selection: dict) -> dict:
     """What a selection says, in the form the delivery key covers: {kinds:
     the kinds named, sorted, each once ([]: every kind), shares: [{tag,
     share}] in order ([]: none), size: None or {unit, amount}, amount a
-    whole number above 0}. Refused for a selection that cannot be met:
-    kinds not a list of names, shares whose tags repeat or whose share is
-    below 0 or not a number, or whose shares are all 0, a size that is not
-    a unit and a whole number above 0."""
+    whole number above 0}; or, for a selection that names portions,
+    {portions: [{name, kinds, shares, size}] in order}, each portion's
+    kinds, shares and size in that form. Refused for a selection that
+    cannot be met: kinds not a list of names, shares whose tags repeat or
+    whose share is below 0 or not a number, or whose shares are all 0, a
+    size that is not a unit and a whole number above 0; portions that are
+    not a list of objects, a portion's name that is not 1 to 64 letters,
+    digits, `_` or `-`, a name given twice, or kinds, shares or a size
+    given beside portions."""
+    portions = selection.get("portions")
+    if not portions:
+        return _canonical_one(selection)
+    if not isinstance(portions, list) or not all(isinstance(one, dict) for one in portions):
+        raise Refused(f"a selection's portions are a list of {{name, kinds, shares, size}}: {portions!r}")
+    if beside := [name for name in ("kinds", "shares", "size") if selection.get(name)]:
+        raise Refused(f"a selection with portions gives its kinds, shares and size in each portion, not beside "
+                      f"them: {', '.join(beside)}")
+    names = [one.get("name") for one in portions]
+    for name in names:
+        if not isinstance(name, str) or not PORTION_NAME.fullmatch(name):
+            raise Refused(f"a portion's name is 1 to 64 letters, digits, _ or -: {name!r}")
+    if len(set(names)) != len(names):
+        raise Refused(f"the selection's portions name a portion twice: {', '.join(names)}")
+    return {"portions": [{"name": one["name"], **_canonical_one(one)} for one in portions]}
+
+
+def portions_of(selection: dict) -> list[dict]:
+    """The portions of a canonical selection, in order, each {name, kinds,
+    shares, size}: a selection without portions is one portion whose name
+    is None."""
+    return selection.get("portions") or [{"name": None, **selection}]
+
+
+def _canonical_one(selection: dict) -> dict:
+    """The kinds, shares and size of a selection, or of one portion, in
+    the form canonical gives them."""
     kinds = selection.get("kinds") or []
     if not isinstance(kinds, list) or not all(isinstance(one, str) and one for one in kinds):
         raise Refused(f"the selection's kinds are a list of kinds' names: {kinds!r}")
@@ -170,25 +212,55 @@ def tags_text(tags: list[str]) -> str:
     return found
 
 
+class Excluded:
+    """The texts the portions before one took, by id, which that portion
+    leaves out, its pieces and the passages they hold included. Each id is
+    kept as an 8-byte hash in a sorted array, 8 bytes a text: an id whose
+    hash is that of an id taken counts as taken, so a later portion may
+    leave out a text it could have taken, never take one twice."""
+
+    def __init__(self, ids: Iterable[str]):
+        self.hashes = np.unique(np.fromiter((_hash(one) for one in ids), np.uint64))
+
+    def __len__(self) -> int:
+        return len(self.hashes)
+
+    def __contains__(self, text: str) -> bool:
+        found = _hash(text)
+        at = int(np.searchsorted(self.hashes, found))
+        return at < len(self.hashes) and int(self.hashes[at]) == found
+
+
+def _hash(text: str) -> int:
+    return int.from_bytes(hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest(), "little")
+
+
 def entries(listed: Iterable[dict], shares: Sequence[str] | None, kinds: Sequence[str] | None,
-            prepared: Sequence[str]) -> Iterator[Entry]:
+            prepared: Sequence[str], excluded: Excluded | None = None) -> Iterator[Entry]:
     """The entries of a listing (the depot's api), each as Entry under the
     tags of a selection's shares (None without shares), the kinds it names
-    and the kinds the preparation prepares."""
+    and the kinds the preparation prepares; a text excluded holds (an
+    earlier portion took it) has no pool and is not taken."""
+    excluded = excluded if excluded else None
     for one in listed:
         tags = tags_text(one["tags"])
-        pool, taken = pool_of(one["kind"], tags, shares, kinds, prepared)
+        if excluded is not None and one["id"] in excluded:
+            pool, taken = None, False
+        else:
+            pool, taken = pool_of(one["kind"], tags, shares, kinds, prepared)
         yield Entry(int(one["key"]), one["owner"], one["number"], one["id"], one["piece"], one["revision"],
                     one["kind"], pool, one["bytes"], taken, tags, one["name"])
 
 
 def walk(source: str, snapshot: str, shares: Sequence[str] | None, kinds: Sequence[str] | None,
-         prepared: Sequence[str], after: Sequence | None = None) -> Iterator[Entry]:
+         prepared: Sequence[str], after: Sequence | None = None, excluded: Excluded | None = None
+         ) -> Iterator[Entry]:
     """The listing of the snapshot whose id is snapshot of the depot at the
-    address source, from the place after on, as entries (Entry)."""
+    address source, from the place after on, as entries (Entry), the texts
+    excluded holds left out."""
     if after is not None:
         after = [str(after[0]), *after[1:]]
-    return entries(api.listing(source, snapshot, after), shares, kinds, prepared)
+    return entries(api.listing(source, snapshot, after), shares, kinds, prepared, excluded)
 
 
 def tags_of(shares: list[dict] | None) -> list[str] | None:
@@ -256,7 +328,43 @@ def census(summary: dict, shares: list[dict] | None, kinds: list[str] | None, pr
             "item_bytes": sum(sizes.get(kind, {"bytes": 0})["bytes"] for kind in items),
             "items": sum(sizes.get(kind, {"texts": 0})["texts"] for kind in items),
             "no_share": no_share, "other": other, "kinds": sizes,
-            "texts": sum(one["texts"] for one in sizes.values())}
+            "texts": sum(one["texts"] for one in sizes.values()), "earlier": 0}
+
+
+def census_without(found: dict, walked: Iterable[Entry], excluded: Excluded, kinds: list[str] | None,
+                   prepared: Sequence[str]) -> dict:
+    """The census found (census) with the texts excluded holds taken out:
+    walked, the entries of the snapshot's listing under the same selection
+    with nothing excluded, each text read once whole or as its pieces;
+    earlier: how many texts went. A text counts out at its first piece
+    (0) or whole, its bytes those of every piece."""
+    found = {**found, "pool_bytes": dict(found["pool_bytes"]), "pool_texts": dict(found["pool_texts"]),
+             "kinds": {kind: dict(one) for kind, one in found["kinds"].items()}}
+    allowed = set(kinds) if kinds else None
+    taken_plain = PLAIN in prepared and (allowed is None or PLAIN in allowed)
+    items = set(items_of(prepared, kinds))
+    for entry in walked:
+        if entry.id not in excluded:
+            continue
+        first = int(entry.piece in (None, 0))
+        held = found["kinds"].setdefault(entry.kind, {"texts": 0, "bytes": 0})
+        held["texts"] = max(0, held["texts"] - first)
+        held["bytes"] = max(0, held["bytes"] - entry.bytes)
+        found["earlier"] += first
+        if entry.kind == PLAIN and taken_plain:
+            if entry.pool is None:
+                found["no_share"] = max(0, found["no_share"] - first)
+            else:
+                found["pool_bytes"][entry.pool] = max(0, found["pool_bytes"][entry.pool] - entry.bytes)
+                found["pool_texts"][entry.pool] = max(0, found["pool_texts"][entry.pool] - first)
+        elif entry.kind in items:
+            found["items"] = max(0, found["items"] - first)
+            found["item_bytes"] = max(0, found["item_bytes"] - entry.bytes)
+    found["plain"] = sum(found["pool_texts"].values())
+    found["other"] = sum(one["texts"] for kind, one in found["kinds"].items()
+                         if kind not in items and not (kind == PLAIN and taken_plain))
+    found["texts"] = sum(one["texts"] for one in found["kinds"].values())
+    return found
 
 
 def excerpts(conversation: dict) -> Iterator[dict]:

@@ -63,6 +63,14 @@ can become a route without its callers changing.
   `bytes`, which the freight measures itself whatever the preparation, or
   an amount in the preparation's unit (`tokens` for `wpt-tokens`), which
   only a preparation that weighs can meet.
+- `selection.portions`, instead of `kinds`, `shares` and `size`: the
+  delivery cut into named portions, in order, each
+  `{"name", "kinds", "shares", "size"}` with the meaning above and its
+  own size, in bytes or in the preparation's unit. A name is 1 to 64
+  letters, digits, `_` or `-`, each name once; kinds, shares or a size
+  beside `portions` refuse the request, and `[]` or absent is a selection
+  without portions. The freight fills the portions in that order, and a
+  text one portion takes no later one takes (below).
 - `preparation.inputs` names earlier deliveries by their delivery key. The
   freight fetches their files from the dock and hands the program a
   folder for each.
@@ -83,12 +91,23 @@ text's bytes, split evenly among its pieces), and nothing is weighed: each
 share fills its proportion of the size, by group, as a delivery without a
 size chooses on bytes.
 
+A selection with portions runs those rules once for each portion, in the
+order given ([data-selection.md](../data-selection.md), "Portions"): each
+portion chooses among the texts no portion before it took, so a text lies
+in one portion at most, whole or as some of its pieces, and a conversation
+is taken only with every passage it quotes in its own portion. The freight
+knows a portion only by its name, kinds, shares and size, never what a
+portion is for. A first portion whose size is in bytes and whose kinds are
+named takes the same texts whatever the preparation (one that prepares
+those kinds), its settings and the portions after it.
+
 ## The delivery key
 
 `key(request, version)` gives the delivery key of a request whose
 program answers `version`: the SHA-256 of the canonical JSON of the
 snapshot's change and digest, the selection in canonical form (kinds
-sorted, shares in order, size with its unit), the preparation's name,
+sorted, shares in order, size with its unit; with portions, each portion
+so, with its name, in order), the preparation's name,
 version, settings and input keys, and the version of the selection rules
 (`freight.selection.RULES`). It never covers the depot's address, the
 snapshot's name, the code's commit or the machine: the same request lands
@@ -192,8 +211,9 @@ The delivery note holds:
 | `files` | each file the program said: `path` (under `files/`), its `key`, `sha256` and `bytes` on the dock, and `said`, its `file` message as the program sent it |
 | `tables` | the items parts (`rows`, `text_bytes`, `fingerprint` each), `licenses`, `notices` |
 | `items` | `texts`, `pieces`, and the items taken by kind |
-| `shares` | for each share, its `tag`, its `weight` in the preparation's unit (`null` for a preparation with none), its `bytes` (what the listing gives the texts taken, which a size in bytes counts) and its groups (`tag`, `texts`, `weight`, `bytes`); `null` without shares |
-| `left_out` | what was left out and why, as a corpus record counts it |
+| `shares` | for each share, its `tag`, its `weight` in the preparation's unit (`null` for a preparation with none), its `bytes` (what the listing gives the texts taken, which a size in bytes counts) and its groups (`tag`, `texts`, `weight`, `bytes`); `null` without shares, and with portions |
+| `left_out` | what was left out and why, as a corpus record counts it; `null` with portions |
+| `portions` | only with portions: for each, in order, its `name`, its `items` (`texts`, `pieces`, the items taken by kind), its `weight` in the preparation's unit (`null` for a preparation with none), its `bytes`, its `shares` as above and its `left_out`, which counts as `earlier portion` the texts a portion before it took |
 | `erasures` | the erasures that had reached the snapshot |
 | `on_erasure` | what an erasure that reaches one of its items does: `stale`, or `note` (the program's `ready` says which) |
 | `erasures_since` | with `on_erasure` `note`, the erasures that reached one of its items since it was made |
@@ -203,7 +223,8 @@ The delivery note holds:
 The items tables are the texts table of a corpus (`depot`, `id`,
 `revision`, `kind`, `title`, `authors`, `address`, `licenses`, `tags`,
 `notice`, `scores`, `piece`, `quotes`), then `bytes`, what the listing
-gives the item and a size in bytes counts, the fields of its `at`, and its
+gives the item and a size in bytes counts, `portion`, its portion's name
+(a delivery with portions only), the fields of its `at`, and its
 `weight` in the preparation's unit (`null` for a preparation with none).
 They are how an erasure finds the deliveries that hold a text. A job holds
 a bounded number of the rows of the part it is making in memory and the

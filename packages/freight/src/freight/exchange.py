@@ -51,11 +51,12 @@ def find(name: str) -> str:
 class Preparation:
     """One run of the program name: started with its settings, its inputs
     ({name: local folder}), the folder out it writes into, the threads it
-    may use and resume (the files a former run said, and the last item
-    they hold) when it goes on. ready: its answer to start."""
+    may use, resume (the files a former run said, and the last item they
+    hold) when it goes on, and the names of the portions of a delivery cut
+    into portions, in order. ready: its answer to start."""
 
     def __init__(self, name: str, settings: dict, inputs: dict[str, str], out: Path, threads: int,
-                 resume: dict | None = None, log=say):
+                 resume: dict | None = None, log=say, portions: list[str] | None = None):
         self.name, self.log = name, log
         self.files = []  # the file messages read and not yet handed out
         self.process = subprocess.Popen([find(name)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -66,6 +67,8 @@ class Preparation:
         self._sender = threading.Thread(target=self._send_all, name=f"to-{name}", daemon=True)
         self._sender.start()
         start = {"type": "start", "settings": settings, "inputs": inputs, "out": str(out), "threads": threads}
+        if portions is not None:
+            start["portions"] = portions
         if resume is not None:
             start["resume"] = resume
         self._send(start)
@@ -145,7 +148,8 @@ class Preparation:
         return [found[first_ref + at] for at in range(len(items))]
 
     def take(self, item: dict, content: bytes):
-        """Send one item to prepare: {ref, id, name, depot, piece, kind, pool}."""
+        """Send one item to prepare: {ref, id, name, depot, piece, kind, pool}, and portion in a delivery cut
+        into portions."""
         self._send({"type": "take", **item}, content)
 
     def taken(self) -> dict:

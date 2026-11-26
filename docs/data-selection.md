@@ -550,7 +550,8 @@ only a size trims conversations and tasks, to their natural share of it.
 ### Filling a part
 
 Every part of a corpus fills the same way: the items' share, each share
-of the plain texts, and a vocabulary's sample. The texts
+of the plain texts, and a vocabulary's sample, in each portion of a
+delivery cut into portions (see "Portions"). The texts
 come in the snapshot's order. A text that fits what is left of its part is
 taken. A text that would pass it is left out, and the next text is tried.
 A part closes once what is left of it is at most a thousandth of it, or
@@ -596,6 +597,53 @@ snapshot's order and counts as a text of its own for every part, so a long
 text spreads through the corpus, and a corpus of any size takes about its
 share of it. Each piece waits in the groups of its text's tags as a text of
 its own. An item is never cut.
+
+### Portions
+
+A request to the freight can cut its delivery into named portions, in
+order, each with its own kinds, shares and size, the size in bytes or in
+the preparation's unit ([api/freight.md](api/freight.md), "A request").
+The freight knows a portion only by its name, kinds, shares and size, and
+never what it is for: what a portion means is the business of whoever
+asks.
+
+The freight fills the portions one after the other, in the order given,
+each by the rules above (shares and their groups, "Filling a part", long
+texts, the items' natural share of its size, conversations), as a
+delivery of its own would, with two differences:
+
+- A portion leaves out every text a portion before it took, whole or as
+  some of its pieces: once one piece of a long text is in a portion, no
+  later portion takes any piece of it. So a text lies in one portion at
+  most, as a delivery takes a text once at most.
+- What a portion may take comes from the snapshot's summary less the texts
+  the portions before it took, read from the snapshot's listing, so its
+  shares and the items' share of its size are measured on what is left.
+
+A conversation is taken in a portion only with every passage its excerpts
+quote in that same portion (see "Conversations that quote texts"): one
+that quotes a text an earlier portion took is left out of the later ones
+(`quoted text left out`), so no passage of a text reaches a second
+portion through a conversation.
+
+The first portion reads nothing of the ones after it. When its size is in
+bytes and it names its kinds, it is chosen on the bytes the depot's
+listing gives each text and nothing is weighed, so it takes the same texts
+whatever the preparation (as long as it prepares those kinds), its
+settings and the sizes of the later portions: the same texts as a
+delivery without portions that asks for what that portion asks for. Two
+deliveries of one snapshot whose first portions are the same share those
+texts exactly.
+
+The delivery note counts each portion apart (`portions`: its texts,
+weight, bytes, shares with their groups, and what it left out, the texts
+an earlier portion took counted as `earlier portion`), and each row of
+its items table names its portion. A delivery without portions is
+unchanged: its key, its files and its note are those of a selection that
+never names portions.
+
+The rule reads texts by their id: two editions of one work held as two
+texts of the depot can fall in two portions.
 
 ### Choosing in a snapshot again
 
@@ -768,7 +816,8 @@ the size, the shares, the snapshot, the kinds or an erasure. The rule reads
 the depot alone, with no model, so the same depot gives the same corpus.
 The freight takes the plain texts first, in the snapshot's order, keeping
 in its job's work folder which ones it took, and then the conversations,
-in their own order. A conversation left out still counted for the items'
+in their own order; in a delivery cut into portions, it does so in each
+portion, and a conversation counts only the texts its own portion took. A conversation left out still counted for the items'
 part of the size, so a corpus with a size holds fewer tokens of items by as
 many. The delivery note counts these conversations in `left_out`: `quoted
 text left out` and `quote unmatched`.

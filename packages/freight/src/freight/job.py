@@ -39,8 +39,20 @@ only the texts it reaches:
   taken, in pieces taken for a text taken as pieces, and its selector
   matches exactly one place (`quoted text left out`, `quote unmatched` in
   left_out otherwise). The walk keeps the conversations it passes in the
-  work folder (named.sqlite) and takes them once it ends, HELD_PAGE at a
+  work folder (walk.sqlite) and takes them once it ends, HELD_PAGE at a
   time.
+
+A selection that names portions (freight.selection.portions_of) runs these
+rules once for each portion, in order, each with its own kinds, shares and
+size, and its own census: what the snapshot's summary gives, less the texts
+the portions before it took (freight.selection.census_without). A portion
+leaves out every text a portion before it took, whole or as some of its
+pieces (freight.selection.Excluded, from the work folder's table took), and
+a conversation only counts the plain texts its own portion took. The
+program receives every item of the first portion, then every item of the
+next, `start` naming the portions in order and each `take` its own. A
+selection without portions is one portion with no name, and nothing it
+sends, writes or keys names a portion.
 
 Each item taken is sent to the program (`take`), with its content; the
 program's answers come in order, each with its weight and where the item
@@ -68,12 +80,16 @@ in the program's unit, null when it has none, bytes those the listing gives
 the texts taken; a text counts for each of its groups, a text with no other
 tag for the group null), left_out,
 erasures (those the depot had carried out that reached a text of the
-snapshot), on_erasure, made_at, code_commit, rules}. Each row of the items table is a
-text taken, with its revision, its credits, its tags as of the snapshot,
-its scores, `piece` (null for a whole text), `quotes` (a conversation's
-quoted texts), `bytes` (what the listing gives it, which a size in bytes
-counts), the fields of its `at` (which take none of those names), and its
-`weight` (null for a program with no unit). A part's rows wait in memory
+snapshot), on_erasure, made_at, code_commit, rules}; in a delivery cut into
+portions, shares and left_out are null and portions holds, for each, its
+name, items, weight (null for a program with no unit), bytes, shares and
+left_out (EARLIER: the texts a portion before it took). Each row of the
+items table is a text taken, with its revision, its credits, its tags as
+of the snapshot, its scores, `piece` (null for a whole text), `quotes` (a
+conversation's quoted texts), `bytes` (what the listing gives it, which a
+size in bytes counts), `portion` (its portion's name, in a delivery cut
+into portions only), the fields of its `at` (which take none of those
+names), and its `weight` (null for a program with no unit). A part's rows wait in memory
 SPILL_ROWS at a time, the others in local files, until the part is
 written.
 
@@ -104,8 +120,9 @@ from wic_utils.lines import say
 from . import deliveries, groups
 from .exchange import Preparation, PreparationFailed
 from .fill import Fill
-from .selection import (BYTES, CONVERSATION, PLAIN, RULES, Refused, canonical, census, delivery_key, excerpts,
-                        fingerprint, items_of, proportions, scarcest_trim, tags_of, walk)
+from .selection import (BYTES, CONVERSATION, PLAIN, RULES, Excluded, Refused, canonical, census, census_without,
+                        delivery_key, excerpts, fingerprint, items_of, portions_of, proportions, scarcest_trim, tags_of,
+                        walk)
 
 HELD_PAGE = 1000  # conversations the job takes from its work folder at a time once the walk ends
 LEFT_OUT, UNMATCHED = "quoted text left out", "quote unmatched"  # why a conversation is left out
@@ -121,16 +138,21 @@ ITEM_FIELDS = [pa.field("depot", pa.string(), False), pa.field("id", pa.string()
                pa.field("licenses", NAMES, False), pa.field("tags", NAMES, False), pa.field("notice", pa.string()),
                pa.field("scores", SCORES), pa.field("piece", pa.int64()), pa.field("quotes", NAMES),
                pa.field("bytes", pa.int64(), False)]
-RESERVED = frozenset({field.name for field in ITEM_FIELDS} | {"weight"})  # names an `at` field cannot take
+PORTION_FIELD = pa.field("portion", pa.string(), False)  # a row's portion, in a delivery cut into portions
+RESERVED = frozenset({field.name for field in ITEM_FIELDS} | {PORTION_FIELD.name, "weight"})  # names `at` cannot take
 TABLES = {"licenses": pa.schema([pa.field("id", pa.string(), False), pa.field("name", pa.string(), False),
                                  pa.field("text", pa.string(), False)]),
           "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)])}
 REBUILT = "made again over its stale note"  # why the files of a note a job replaces are deleted
+LAYOUT = 2  # the layout of a job's state and work folder: a state of another layout starts over
+EARLIER = "earlier portion"  # why a portion leaves out a text: a portion before it took it
 
 
-def items_schema(at: list[str]) -> pa.Schema:
-    """The schema of a part of the items table whose rows' `at` hold those fields."""
-    return pa.schema([*ITEM_FIELDS, *(pa.field(name, pa.int64()) for name in at), pa.field("weight", pa.int64())])
+def items_schema(at: list[str], portioned: bool = False) -> pa.Schema:
+    """The schema of a part of the items table whose rows' `at` hold those fields, with the field portion after
+    bytes in a delivery cut into portions."""
+    return pa.schema([*ITEM_FIELDS, *([PORTION_FIELD] if portioned else []),
+                      *(pa.field(name, pa.int64()) for name in at), pa.field("weight", pa.int64())])
 
 
 def threads() -> int:
@@ -156,9 +178,10 @@ def inputs_of(dock, keys: dict[str, str], folder: Path) -> dict[str, str]:
     return found
 
 
-def ready_of(name: str, settings: dict, inputs: dict[str, str], folder: Path, log=say) -> dict:
+def ready_of(name: str, settings: dict, inputs: dict[str, str], folder: Path, log=say,
+             portions: list[str] | None = None) -> dict:
     """The answer of the program name to start (ready), the program stopped right after."""
-    with Preparation(name, settings, inputs, folder, 1, log=log) as program:
+    with Preparation(name, settings, inputs, folder, 1, log=log, portions=portions) as program:
         return program.ready
 
 
@@ -177,6 +200,9 @@ class Job:
         self.state, self.save, self.progress, self.log = checkpoint or {}, save, progress, log
         self.cap, self.code_commit = cap, code_commit
         self.selection = canonical(request.get("selection") or {})
+        self.portions = portions_of(self.selection)
+        self.portioned = "portions" in self.selection  # a delivery cut into named portions
+        self.portion_names = [one["name"] for one in self.portions] if self.portioned else None
         self.preparation = request.get("preparation") or {}
         if not isinstance(self.preparation.get("name"), str):
             raise Refused(f"a request names its preparation as {{name, settings, inputs}}: {self.preparation!r}")
@@ -201,7 +227,7 @@ class Job:
         self.work.mkdir(parents=True, exist_ok=True)
         self.inputs = inputs_of(self.dock, self.input_keys, self.work / "inputs")
         name = self.preparation["name"]
-        self.ready = ready_of(name, self.settings, self.inputs, self.work / "probe", self.log)
+        self.ready = ready_of(name, self.settings, self.inputs, self.work / "probe", self.log, self.portion_names)
         self.version, self.unit = str(self.ready.get("version")), self.ready.get("unit")
         self.on_erasure = self.ready.get("on_erasure", deliveries.STALE)
         if self.on_erasure not in deliveries.ON_ERASURE:
@@ -223,47 +249,106 @@ class Job:
             self.log(f"delivery {known['key']} of snapshot {self.snapshot['name']} is on the dock already")
             return known
         self.replaced = known
-        size = self.selection["size"]
-        self.limit = None if size is None else size["amount"]
-        self.by_bytes = size is not None and size["unit"] == BYTES  # the freight's own measure: nothing to weigh
-        if size is not None and not self.by_bytes and size["unit"] != self.unit:
-            raise Refused(f"the size is in {size['unit']}, and {name} weighs in {self.unit or 'nothing'}: give it "
-                          f"in {self.unit or BYTES}" + (f" or in {BYTES}" if self.unit else ""))
         if ready.get("weighs") and self.unit is None:
             raise PreparationFailed(f"{name} says it weighs, and names no unit")
-        if size is not None and not self.by_bytes and not ready.get("weighs"):
-            raise Refused(f"{name} weighs nothing, so a size in {size['unit']} cannot be met")
-        self.shares = self.selection["shares"] or None
-        self.kinds = self.selection["kinds"] or None
+        for portion in self.portions:
+            size, of = portion["size"], "" if portion["name"] is None else f" of the portion {portion['name']}"
+            if size is None or size["unit"] == BYTES:  # BYTES: the freight's own measure, nothing to weigh
+                continue
+            if size["unit"] != self.unit:
+                raise Refused(f"the size{of} is in {size['unit']}, and {name} weighs in {self.unit or 'nothing'}: "
+                              f"give it in {self.unit or BYTES}" + (f" or in {BYTES}" if self.unit else ""))
+            if not ready.get("weighs"):
+                raise Refused(f"{name} weighs nothing, so a size{of} in {size['unit']} cannot be met")
         self.holder = self.snapshot["owner"]  # the depot's name every row carries
-        self.census = census(self.snapshot["summary"], self.shares, self.kinds, self.prepared)
         self.room = deliveries.Room(self.dock, self.cap, self.folder, self.log, inputs=self.input_keys.values())
         self.erasures = _erasures(self.source, self.snapshot["id"])
-        named = sqlite3.connect(self.work / "named.sqlite", isolation_level=None)
+        named = sqlite3.connect(self.work / "walk.sqlite", isolation_level=None)
         try:
             named.execute("CREATE TABLE IF NOT EXISTS named (kind TEXT NOT NULL, id TEXT NOT NULL, "
                           "PRIMARY KEY (kind, id)) WITHOUT ROWID")
-            # the conversations the walk passed, by their place in it, and the plain texts it took (piece -1: whole)
-            named.execute("CREATE TABLE IF NOT EXISTS held (walked INTEGER NOT NULL PRIMARY KEY, id TEXT NOT NULL, "
-                          "revision INTEGER NOT NULL, bytes INTEGER NOT NULL, tags TEXT NOT NULL)")
-            named.execute("CREATE TABLE IF NOT EXISTS taken (id TEXT NOT NULL, piece INTEGER NOT NULL, "
-                          "revision INTEGER NOT NULL, PRIMARY KEY (id, piece)) WITHOUT ROWID")
+            # by portion (its number, 0 for a delivery with none): the conversations the walk passed, by their
+            # place in it, and the plain texts it took (piece -1: whole)
+            named.execute("CREATE TABLE IF NOT EXISTS held (portion INTEGER NOT NULL, walked INTEGER NOT NULL, "
+                          "id TEXT NOT NULL, revision INTEGER NOT NULL, bytes INTEGER NOT NULL, tags TEXT NOT NULL, "
+                          "PRIMARY KEY (portion, walked)) WITHOUT ROWID")
+            named.execute("CREATE TABLE IF NOT EXISTS taken (portion INTEGER NOT NULL, id TEXT NOT NULL, "
+                          "piece INTEGER NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY (portion, id, piece)) "
+                          "WITHOUT ROWID")
+            # in a delivery cut into portions, every item each portion took, once a text: what later ones leave out
+            named.execute("CREATE TABLE IF NOT EXISTS took (portion INTEGER NOT NULL, id TEXT NOT NULL, "
+                          "kind TEXT NOT NULL, PRIMARY KEY (portion, id)) WITHOUT ROWID")
+            self.named_file = named
             return self._stream(named)
         finally:
             named.close()
 
+    # The portions
+
+    def _enter(self, index: int):
+        """Set what the job reads of the portion of that number: its size, shares, kinds, the texts the portions
+        before it took (Excluded, None for the first) and its census, those texts taken out."""
+        portion = self.portions[index]
+        self.index, self.portion = index, portion
+        size = portion["size"]
+        self.limit = None if size is None else size["amount"]
+        self.by_bytes = size is not None and size["unit"] == BYTES  # the freight's own measure: nothing to weigh
+        self.shares = portion["shares"] or None
+        self.kinds = portion["kinds"] or None
+        self.census = census(self.snapshot["summary"], self.shares, self.kinds, self.prepared)
+        self.excluded = None
+        if index:
+            self._flush_named()
+            self.excluded = Excluded(one for (one,) in self.named_file.execute(
+                "SELECT id FROM took WHERE portion < ?", (index,)))
+            if self.excluded:
+                self.census = census_without(self.census, walk(self.source, self.snapshot["id"],
+                                                               tags_of(self.shares), self.kinds, self.prepared),
+                                             self.excluded, self.kinds, self.prepared)
+
+    @staticmethod
+    def _portion_state(state: dict) -> dict:
+        """The fields of a job's state that each portion starts afresh, start the counts of state then."""
+        return {"after": None, "walked": 0, "limited": None, "pools": {}, "pool_bytes": {}, "fill": None,
+                "plan": None, "seen": 0, "covered": {}, "groups": {}, "resolved": 0,
+                "unquoted": {LEFT_OUT: 0, UNMATCHED: 0},
+                "start": json.loads(json.dumps({name: state[name] for name in ("pieces", "kinds", "weight", "read")}))}
+
+    def _leave(self):
+        """Count the portion the job took into the state's portions (in a delivery cut into portions), and start
+        the next one, if any."""
+        state = self.state
+        if self.portioned:
+            self._flush_named()
+            texts, plain = next(self.named_file.execute(
+                "SELECT count(*), count(*) FILTER (WHERE kind = ?) FROM took WHERE portion = ?", (PLAIN, self.index)))
+            start = state["start"]
+            kinds = {kind: count - start["kinds"].get(kind, 0) for kind, count in sorted(state["kinds"].items())}
+            kinds = {kind: count for kind, count in kinds.items() if count}
+            items_taken = sum(count for kind, count in kinds.items() if kind != PLAIN)
+            state["portions"].append({
+                "name": self.portion["name"],
+                "items": {"texts": texts, "pieces": state["pieces"] - start["pieces"], "kinds": kinds},
+                "weight": self._weight(state["weight"] - start["weight"]),
+                "bytes": sum(state["read"].values()) - sum(start["read"].values()),
+                "shares": self._shares_note(),
+                "left_out": {EARLIER: self.census["earlier"], **self._left_out(plain, items_taken)}})
+        if self.index + 1 < len(self.portions):
+            state.update(self._portion_state(state))
+            state["portion"] = self.index + 1
+
     # The stream
 
     def _fresh_state(self) -> dict:
-        return {"key": self.key, "erasures": self.erasures, "after": None, "walked": 0, "limited": None,
-                "files": [], "said": [], "parts": [], "ref": 0, "last_ref": None, "pools": {}, "pool_bytes": {},
-                "fill": None,
-                "taken": 0, "whole": 0, "pieces": 0, "kinds": {}, "plan": None, "seen": 0, "covered": {},
-                "groups": {}, "resolved": 0, "unquoted": {LEFT_OUT: 0, UNMATCHED: 0},
-                "read": {"plain": 0, "items": 0}, "result": None}
+        state = {"key": self.key, "layout": LAYOUT, "erasures": self.erasures, "files": [], "said": [], "parts": [],
+                 "ref": 0, "last_ref": None, "taken": 0, "whole": 0, "pieces": 0, "kinds": {}, "weight": 0,
+                 "read": {"plain": 0, "items": 0}, "portion": 0, "portions": [], "result": None}
+        return {**state, **self._portion_state(state)}
 
     def _stream(self, named_file) -> dict:
         state = self.state
+        if state.get("layout") != LAYOUT:  # a state of another layout starts nothing
+            state = {}
         if state.get("key") == self.key and (gone := deliveries.missing(self.dock, self.folder, _uploaded(state))):
             self.log(f"{len(gone)} files this job uploaded are no longer on the dock: it starts over")
             state = {}
@@ -273,107 +358,126 @@ class Job:
         out = self.work / "out"
         if state.get("key") != self.key:  # a state of another request starts nothing
             state = self._fresh_state()
-            for table in ("named", "held", "taken"):
+            for table in ("named", "held", "taken", "took"):
                 named_file.execute(f"DELETE FROM {table}")
             if out.exists():
                 shutil.rmtree(out)
         self.state = state
-        shares, limit = self.shares, self.limit
         if state.get("result") is not None:  # the program was done before this job stopped: only the note is left
+            if not self.portioned:
+                self._enter(0)
             return self._finish(state, state["result"], named_file)
         resume = {"files": state["said"], "after": state["last_ref"]} if state["said"] or state["ref"] else None
         with ExitStack() as stack:
             program = stack.enter_context(Preparation(self.preparation["name"], self.settings, self.inputs, out,
-                                                      threads(), resume, self.log))
+                                                      threads(), resume, self.log, self.portion_names))
             if str(program.ready.get("version")) != self.version:
                 raise PreparationFailed(f"{self.preparation['name']} answered version {program.ready.get('version')} "
                                         f"and then {self.version}")
             self.program = program
-            if state["limited"] is None:  # with a size, the items take their share of it first (_limit_items)
-                state["limited"] = self._limit_items(shares) if limit is not None else {
-                    "weight": None, "texts": self.census["items"], "bytes": self.census["item_bytes"],
-                    "last": None, "skipped": []}
-            limited = state["limited"]
-            last_item = None if limited["last"] is None else tuple(limited["last"])
-            skipped_items = {tuple(one) for one in limited["skipped"]}
-
-            def item_taken(entry) -> bool:
-                """Whether the job takes the item: every one without a size, else those _limit_items took."""
-                place = tuple(entry.place())
-                return limit is None or (last_item is not None and place <= last_item and place not in skipped_items)
-
-            if limit is not None:  # the items took their share; the shares split what is left
-                budget = proportions(shares, limit - limited["weight"])
-                counted = "bytes" if self.by_bytes else "weights"
-            elif shares is not None:
-                budget, counted = self._byte_budget(shares), "bytes"
-            else:
-                budget, counted = None, None
-            self.budget, self.counted = budget, counted
-            chosen = self._plan(state, budget, counted, shares)
-            fill = None if budget is None else Fill({pool: most for pool, most in budget.items()
-                                                     if pool not in chosen.last}, state["fill"])
-            self.fill = fill
-            tags = [""] if shares is None else [one["tag"] for one in shares]
-            self.group_counts = {share: {tag: [texts, weight, size] for tag, texts, weight, size in found}
-                                 for share, found in state["groups"].items()}
-            self.named_groups = {}
-            self.rows, self.named = _Rows(self.work), set()
-            self.held_rows, self.taken_rows = [], []
-            self.keep_taken = CONVERSATION in items_of(self.prepared, self.kinds) and self.census["items"] > 0
-            self.named_file = named_file
-            ahead = None if fill is None else fill.copy()  # the decisions, made ahead of the program's answers
-
-            def batches():
-                """The texts the job takes from the state's place on, in batches of [entry, read, walked, place]:
-                read is whether it is taken (None: once weighed), which a closed pool, a limit that leaves it out,
-                or a share's choice by group saves; walked how many texts the walk passed up to it; place the
-                entry's place among the plan's entries, None for an entry of a share the plan does not cover.
-                With a size, an item _limit_items did not take is passed, and the batches end once every pool is
-                closed, every share the plan covers is past its last chosen text, and no item taken follows."""
-                picker = chosen.picker(state["seen"])
-                batch, size, walked = [], 0, state["walked"]
-                for entry in walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared,
-                                  state["after"]):
-                    walked += 1
-                    if limit is not None and ahead.done() and picker.done() and (
-                            last_item is None or tuple(entry.place()) > last_item):
-                        break
-                    if not entry.taken or (entry.kind != PLAIN and not item_taken(entry)):
-                        continue
-                    place = None
-                    if entry.kind != PLAIN or counted is None:
-                        read = True
-                    elif picker.covers(entry.pool):
-                        place, read = picker.pick(entry.pool)
-                    elif counted == "bytes":
-                        read = ahead.take(entry.pool, entry.bytes)
-                    else:
-                        read = None if entry.pool not in ahead.closed else False
-                    batch.append([entry, read, walked, place])
-                    size += entry.bytes if read is not False else 0
-                    if size >= BATCH_BYTES or len(batch) >= BATCH_TEXTS:
-                        yield batch
-                        batch, size = [], 0
-                if batch:
-                    yield batch
-
-            for batch in batches():
-                self._batch(batch, ahead, tags)
-                self.progress({"stage": "reading", "position": state["walked"],
-                               "texts": state["taken"], "weight": sum(state["pools"].values()),
-                               "files": len(state["files"])})
-            self._flush_named()
-            last = state["resolved"]
-            while page := list(named_file.execute("SELECT walked, id, revision, bytes, tags FROM held "
-                                                  "WHERE walked > ? ORDER BY walked LIMIT ?", (last, HELD_PAGE))):
-                self._conversations(page)
-                last = state["resolved"]
-                self.progress({"stage": "taking conversations", "conversations": state["kinds"].get(CONVERSATION, 0),
-                               "left out": sum(state["unquoted"].values())})
+            self.rows, self.named = _Rows(self.work, self.portioned), set()
+            self.held_rows, self.taken_rows, self.took_rows = [], [], []
+            while True:
+                self._enter(state["portion"])
+                self._take_portion()
+                last = state["portion"] + 1 == len(self.portions)
+                self._leave()
+                if last:
+                    break
             state["result"] = program.end()
             self._checkpoint(final=True)
         return self._finish(state, state["result"], named_file)
+
+    def _take_portion(self):
+        """Take the items of the portion the job is in (_enter), from the state's place on: the walk of the
+        snapshot's listing, then the conversations it passed."""
+        state, named_file = self.state, self.named_file
+        shares, limit = self.shares, self.limit
+        if state["limited"] is None:  # with a size, the items take their share of it first (_limit_items)
+            state["limited"] = self._limit_items(shares) if limit is not None else {
+                "weight": None, "texts": self.census["items"], "bytes": self.census["item_bytes"],
+                "last": None, "skipped": []}
+        limited = state["limited"]
+        last_item = None if limited["last"] is None else tuple(limited["last"])
+        skipped_items = {tuple(one) for one in limited["skipped"]}
+
+        def item_taken(entry) -> bool:
+            """Whether the job takes the item: every one without a size, else those _limit_items took."""
+            place = tuple(entry.place())
+            return limit is None or (last_item is not None and place <= last_item and place not in skipped_items)
+
+        if limit is not None:  # the items took their share; the shares split what is left
+            budget = proportions(shares, limit - limited["weight"])
+            counted = "bytes" if self.by_bytes else "weights"
+        elif shares is not None:
+            budget, counted = self._byte_budget(shares), "bytes"
+        else:
+            budget, counted = None, None
+        self.budget, self.counted = budget, counted
+        chosen = self._plan(state, budget, counted, shares)
+        fill = None if budget is None else Fill({pool: most for pool, most in budget.items()
+                                                 if pool not in chosen.last}, state["fill"])
+        self.fill = fill
+        tags = [""] if shares is None else [one["tag"] for one in shares]
+        self.group_counts = {share: {tag: [texts, weight, size] for tag, texts, weight, size in found}
+                             for share, found in state["groups"].items()}
+        self.named_groups = {}
+        self.keep_taken = CONVERSATION in items_of(self.prepared, self.kinds) and self.census["items"] > 0
+        ahead = None if fill is None else fill.copy()  # the decisions, made ahead of the program's answers
+
+        def batches():
+            """The texts the job takes from the state's place on, in batches of [entry, read, walked, place]:
+            read is whether it is taken (None: once weighed), which a closed pool, a limit that leaves it out,
+            or a share's choice by group saves; walked how many texts the walk passed up to it; place the
+            entry's place among the plan's entries, None for an entry of a share the plan does not cover.
+            With a size, an item _limit_items did not take is passed, and the batches end once every pool is
+            closed, every share the plan covers is past its last chosen text, and no item taken follows."""
+            picker = chosen.picker(state["seen"])
+            batch, size, walked = [], 0, state["walked"]
+            for entry in walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared,
+                              state["after"], self.excluded):
+                walked += 1
+                if limit is not None and ahead.done() and picker.done() and (
+                        last_item is None or tuple(entry.place()) > last_item):
+                    break
+                if not entry.taken or (entry.kind != PLAIN and not item_taken(entry)):
+                    continue
+                place = None
+                if entry.kind != PLAIN or counted is None:
+                    read = True
+                elif picker.covers(entry.pool):
+                    place, read = picker.pick(entry.pool)
+                elif counted == "bytes":
+                    read = ahead.take(entry.pool, entry.bytes)
+                else:
+                    read = None if entry.pool not in ahead.closed else False
+                batch.append([entry, read, walked, place])
+                size += entry.bytes if read is not False else 0
+                if size >= BATCH_BYTES or len(batch) >= BATCH_TEXTS:
+                    yield batch
+                    batch, size = [], 0
+            if batch:
+                yield batch
+
+        for batch in batches():
+            self._batch(batch, ahead, tags)
+            self.progress({"stage": "reading", **self._where(), "position": state["walked"],
+                           "texts": state["taken"], "weight": sum(state["pools"].values()),
+                           "files": len(state["files"])})
+        self._flush_named()
+        last = state["resolved"]
+        while page := list(named_file.execute("SELECT walked, id, revision, bytes, tags FROM held "
+                                              "WHERE portion = ? AND walked > ? ORDER BY walked LIMIT ?",
+                                              (self.index, last, HELD_PAGE))):
+            self._conversations(page)
+            last = state["resolved"]
+            self.progress({"stage": "taking conversations", **self._where(),
+                           "conversations": state["kinds"].get(CONVERSATION, 0),
+                           "left out": sum(state["unquoted"].values())})
+
+    def _where(self) -> dict:
+        """The portion a progress report is about, by its name: nothing in a delivery with no portions."""
+        return {"portion": self.portion["name"]} if self.portioned else {}
 
     def _batch(self, batch: list[list], ahead: Fill | None, tags: list[str]):
         """Decide, send and take one batch of the walk, in order."""
@@ -397,11 +501,12 @@ class Job:
             refs[id(one)] = ref = self._refs(1)
             self.program.take({"ref": ref, "id": entry.id, "name": entry.name, "depot": self.holder,
                                "piece": entry.piece, "kind": entry.kind,
-                               "pool": tags[entry.pool] if entry.kind == PLAIN else ""}, contents[id(one)])
+                               "pool": tags[entry.pool] if entry.kind == PLAIN else "", **self._where()},
+                              contents[id(one)])
         for one in batch:
             entry, read, walked, place = one
             if entry.kind == CONVERSATION:  # taken once the walk knows every plain text taken (_conversations)
-                self.held_rows.append((walked, entry.id, entry.revision, entry.bytes, entry.tags))
+                self.held_rows.append((self.index, walked, entry.id, entry.revision, entry.bytes, entry.tags))
                 self._passed(entry, walked)
                 continue
             answer = self._taken(refs[id(one)]) if read else None
@@ -483,13 +588,18 @@ class Job:
                 state["pieces"] += 1
                 self.named.add(("long text", entry.id))
             if self.keep_taken:
-                self.taken_rows.append((entry.id, -1 if entry.piece is None else entry.piece, entry.revision))
+                self.taken_rows.append((self.index, entry.id, -1 if entry.piece is None else entry.piece,
+                                        entry.revision))
         state["kinds"][entry.kind] = state["kinds"].get(entry.kind, 0) + 1
         state["taken"] += 1
+        state["weight"] += weight or 0
         state["last_ref"] = answer["ref"]
         row = {"depot": self.holder, "id": entry.id, "revision": entry.revision, **credit,
                "tags": json.loads(entry.tags), "piece": entry.piece, "bytes": entry.bytes, **answer["at"],
                "weight": weight}
+        if self.portioned:
+            row["portion"] = self.portion["name"]
+            self.took_rows.append((self.index, entry.id, entry.kind))
         if quotes is not None:
             row["quotes"] = quotes
         self.rows.add(row, entry.bytes)
@@ -516,7 +626,7 @@ class Job:
             for source, selector in found:
                 if source not in taken:
                     taken[source] = list(self.named_file.execute(
-                        "SELECT piece, revision FROM taken WHERE id = ?", (source,)))
+                        "SELECT piece, revision FROM taken WHERE portion = ? AND id = ?", (self.index, source)))
                 rows = taken[source]
                 if rows:
                     on = asked.setdefault((source, rows[0][1], rows[0][0] != -1), {})
@@ -551,7 +661,7 @@ class Job:
             content = raw[at]
             refs[at] = ref = self._refs(1)
             self.program.take({"ref": ref, "id": text, "name": text, "depot": self.holder, "piece": None,
-                               "kind": CONVERSATION, "pool": ""}, content)
+                               "kind": CONVERSATION, "pool": "", **self._where()}, content)
         for at, ((walked, text, revision, size, tags), why) in enumerate(zip(page, kept)):
             if why is not None:
                 state["unquoted"][why] += 1
@@ -568,13 +678,16 @@ class Job:
         con = self.named_file
         con.execute("BEGIN")
         con.executemany("INSERT OR IGNORE INTO named (kind, id) VALUES (?, ?)", sorted(self.named))
-        con.executemany("INSERT OR IGNORE INTO held (walked, id, revision, bytes, tags) VALUES (?, ?, ?, ?, ?)",
-                        self.held_rows)
-        con.executemany("INSERT OR IGNORE INTO taken (id, piece, revision) VALUES (?, ?, ?)", self.taken_rows)
+        con.executemany("INSERT OR IGNORE INTO held (portion, walked, id, revision, bytes, tags) "
+                        "VALUES (?, ?, ?, ?, ?, ?)", self.held_rows)
+        con.executemany("INSERT OR IGNORE INTO taken (portion, id, piece, revision) VALUES (?, ?, ?, ?)",
+                        self.taken_rows)
+        con.executemany("INSERT OR IGNORE INTO took (portion, id, kind) VALUES (?, ?, ?)", self.took_rows)
         con.execute("COMMIT")
         self.named.clear()
         self.held_rows.clear()
         self.taken_rows.clear()
+        self.took_rows.clear()
 
     def _upload(self, path: Path, key: str) -> dict:
         size = path.stat().st_size
@@ -614,7 +727,10 @@ class Job:
     def _estimate(self, local: int, final: bool) -> int:
         """The delivery's whole size in bytes, from the local files of its first upload: those files when the
         job ends with them, else their size times the bytes the delivery may take over the bytes they hold (the
-        order is shuffled, so its start stands for the whole)."""
+        order is shuffled, so its start stands for the whole). In a delivery cut into portions, the bytes the
+        portions before took, those the one the job is in may take, and those each later one may take: its size
+        in bytes, a size in the program's unit as many bytes as the weights taken so far hold, and without a
+        size, all its census holds."""
         if final:
             return local
         state, read = self.state, self.state["read"]
@@ -624,11 +740,23 @@ class Job:
                                              for pool, value in self.budget.items()))
         elif self.counted == "weights":
             weight = sum(state["pools"].values())
-            plain_bytes = plain_all if not weight else min(plain_all, int(sum(self.budget.values())
-                                                                          * read["plain"] / weight))
+            plain_bytes = plain_all if not weight else min(plain_all, int(
+                sum(self.budget.values()) * (read["plain"] - state["start"]["read"]["plain"]) / weight))
         else:
             plain_bytes = plain_all
-        return int(local * (plain_bytes + state["limited"]["bytes"]) / max(read["plain"] + read["items"], 1))
+        planned = plain_bytes + state["limited"]["bytes"] + sum(one["bytes"] for one in state["portions"])
+        for later in self.portions[self.index + 1:]:
+            found = census(self.snapshot["summary"], later["shares"] or None, later["kinds"] or None, self.prepared)
+            most = sum(found["pool_bytes"].values()) + found["item_bytes"]
+            size = later["size"]
+            if size is None:
+                planned += most
+            elif size["unit"] == BYTES:
+                planned += min(most, size["amount"])
+            else:
+                planned += most if not state["weight"] else min(most, int(size["amount"] * sum(read.values())
+                                                                          / state["weight"]))
+        return int(local * planned / max(read["plain"] + read["items"], 1))
 
     def _weigh(self, described: list[tuple]) -> list[int]:
         """The weights of entries (the depot's address, id, revision, piece) of plain texts, in order."""
@@ -642,14 +770,15 @@ class Job:
         them, else chosen again, the same for the same depot state, and kept there, its sha256 in the state."""
         if shares is None or budget is None:
             return groups.Plan({}, np.zeros(0, np.int64))
-        path = self.work / "chosen.bin"
+        path = self.work / ("chosen.bin" if not self.index else f"chosen-{self.index}.bin")
         known = state.get("plan")
         if known is not None:
             found = groups.Plan.load(path, {int(pool): last for pool, last in known["last"].items()}, known["sha256"])
             if found is not None:
                 return found
         self.progress({"stage": "choosing"})
-        chosen = groups.plan(walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared),
+        chosen = groups.plan(walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared,
+                                  excluded=self.excluded),
                              tags_of(shares), budget, self._weigh if counted == "weights" else None, self.progress,
                              self.source)
         sha256 = chosen.save(path)
@@ -681,7 +810,8 @@ class Job:
 
         def batches():
             batch, size = [], 0
-            for entry in walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared):
+            for entry in walk(self.source, self.snapshot["id"], tags_of(shares), self.kinds, self.prepared,
+                              excluded=self.excluded):
                 if not entry.taken or entry.kind == PLAIN:
                     continue
                 batch.append(entry)
@@ -757,11 +887,7 @@ class Job:
                                              for one in state["files"]],
                                    "items": [part["fingerprint"] for part in state["parts"]],
                                    "licenses": license_rows, "notices": notice_rows})
-        unquoted = sum(state["unquoted"].values())
         items_taken = sum(count for kind, count in state["kinds"].items() if kind != PLAIN)
-        left_out = {"no share": self.census["no_share"], "kinds not taken": self._not_taken(),
-                    "trimmed": max(0, self.census["plain"] - plain_taken),
-                    "trimmed items": max(0, self.census["items"] - items_taken - unquoted), **state["unquoted"]}
         note = {
             "key": self.key, "id": delivery_id, "depot": self.request.get("depot"), "request": self.request,
             "snapshot": {"id": self.snapshot["id"], "name": self.snapshot["name"], "owner": self.holder,
@@ -771,14 +897,10 @@ class Job:
             "result": result, "files": state["files"], "tables": tables,
             "items": {"texts": state["taken"] - state["pieces"] + long_taken, "pieces": state["pieces"],
                       "kinds": dict(sorted(state["kinds"].items()))},
-            "shares": None if self.shares is None else [
-                {"tag": share["tag"], "weight": self._weight(state["pools"].get(share["tag"], 0)),
-                 "bytes": state["pool_bytes"].get(share["tag"], 0),
-                 "groups": [{"tag": tag, "texts": texts, "weight": self._weight(weight), "bytes": size}
-                            for tag, texts, weight, size in sorted(state["groups"].get(share["tag"], []),
-                                                                   key=lambda one: (one[0] is not None, one[0] or ""))]}
-                for share in self.shares],
-            "left_out": left_out, "erasures": self.erasures, "on_erasure": self.on_erasure,
+            "shares": None if self.portioned else self._shares_note(),
+            "left_out": None if self.portioned else self._left_out(plain_taken, items_taken),
+            **({"portions": state["portions"]} if self.portioned else {}),
+            "erasures": self.erasures, "on_erasure": self.on_erasure,
             "made_at": datetime.now(UTC).isoformat(),
             "code_commit": self.code_commit, "rules": RULES,
         }
@@ -808,6 +930,25 @@ class Job:
     def _weight(self, weight: int) -> int | None:
         """A weight of the note: None for a preparation that has no unit."""
         return None if self.unit is None else weight
+
+    def _shares_note(self) -> list[dict] | None:
+        """What each share of the portion the job is in holds, as the note gives it: None without shares."""
+        state = self.state
+        return None if self.shares is None else [
+            {"tag": share["tag"], "weight": self._weight(state["pools"].get(share["tag"], 0)),
+             "bytes": state["pool_bytes"].get(share["tag"], 0),
+             "groups": [{"tag": tag, "texts": texts, "weight": self._weight(weight), "bytes": size}
+                        for tag, texts, weight, size in sorted(state["groups"].get(share["tag"], []),
+                                                               key=lambda one: (one[0] is not None, one[0] or ""))]}
+            for share in self.shares]
+
+    def _left_out(self, plain_taken: int, items_taken: int) -> dict:
+        """What the portion the job is in left out and why, from its census, the plain texts it took (a text
+        taken as pieces counting once) and the items it took."""
+        unquoted = sum(self.state["unquoted"].values())
+        return {"no share": self.census["no_share"], "kinds not taken": self._not_taken(),
+                "trimmed": max(0, self.census["plain"] - plain_taken),
+                "trimmed items": max(0, self.census["items"] - items_taken - unquoted), **self.state["unquoted"]}
 
     def _drop_replaced(self, note: dict):
         """Delete the files of the note this job replaced (a stale or deleted one) that the new one does not name."""
@@ -844,8 +985,8 @@ class _Rows:
     fingerprint is freight.selection.fingerprint of its rows, worked out as
     they come."""
 
-    def __init__(self, work: Path):
-        self.work = work
+    def __init__(self, work: Path, portioned: bool = False):
+        self.work, self.portioned = work, portioned
         for old in work.glob("items-spill-*.parquet"):
             old.unlink()
         self._reset()
@@ -863,7 +1004,7 @@ class _Rows:
         self.held.append(row)
         if len(self.held) >= SPILL_ROWS:
             path = self.work / f"items-spill-{len(self.spilled):05d}.parquet"
-            pq.write_table(pa.Table.from_pylist(self.held, schema=items_schema(sorted(self.at))), path,
+            pq.write_table(pa.Table.from_pylist(self.held, schema=items_schema(sorted(self.at), self.portioned)), path,
                            compression="zstd")
             self.spilled.append(path)
             self.held = []
@@ -872,7 +1013,7 @@ class _Rows:
         """Write every row added since the last write into the parquet file
         path, one schema for all (the `at` fields of every row, null where a
         row has none): {rows, text_bytes, fingerprint}."""
-        schema = items_schema(sorted(self.at))
+        schema = items_schema(sorted(self.at), self.portioned)
         with pq.ParquetWriter(path, schema, compression="zstd") as writer:
             for spill in self.spilled:
                 table = pq.read_table(spill)

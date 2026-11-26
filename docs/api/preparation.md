@@ -12,8 +12,10 @@ The freight finds a program by its name: an executable of that name beside
 the Python the freight runs on (the console scripts installed with it),
 else on the search path (`freight.exchange.find`). WPT's programs,
 `wpt-vocabulary`, `wpt-tokens` and `wpt-count`, are console scripts of the
-package `wpt-corpus` (`wpt_corpus.vocabulary`, `wpt_corpus.programs`). A change to these messages changes
-this document in the same commit.
+package `wpt-corpus` (`wpt_corpus.vocabulary`, `wpt_corpus.programs`). They read neither `portions`
+nor `portion` (below): they prepare the items of every portion into the
+same files. A change to these messages changes this document in the same
+commit.
 
 ## The format
 
@@ -28,9 +30,9 @@ other. The format does not depend on the channel (`freight.messages`,
 
 | Message | Meaning |
 | --- | --- |
-| `{"type": "start", "settings": {...}, "inputs": {"<name>": "<local folder>"}, "out": "<local folder>", "threads": N}` | the first message; `inputs`: the folder of each delivery the request names, holding its files; `threads`: how many the program may use; `resume`, when the job goes on (below) |
+| `{"type": "start", "settings": {...}, "inputs": {"<name>": "<local folder>"}, "out": "<local folder>", "threads": N}` | the first message; `inputs`: the folder of each delivery the request names, holding its files; `threads`: how many the program may use; `portions`, for a delivery cut into portions only: their names, in order ([freight.md](freight.md), "A request"); `resume`, when the job goes on (below) |
 | `{"type": "weigh", "ref": R, "kind": K, "bytes": B}` + content | how much does this item weigh in your unit? |
-| `{"type": "take", "ref": R, "depot": D, "id": I, "name": N, "piece": P, "kind": K, "pool": T, "bytes": B}` + content | prepare this item; the items come in the order of the delivery. `depot`: the depot that owns the item; `name`: the item's id, or `<id>#<n>` for the piece `n` of a long text; `piece`: `n`, or null; `pool`: the tag of the share a plain text was taken for, `""` for an item of another kind |
+| `{"type": "take", "ref": R, "depot": D, "id": I, "name": N, "piece": P, "kind": K, "pool": T, "bytes": B}` + content | prepare this item; the items come in the order of the delivery. `depot`: the depot that owns the item; `name`: the item's id, or `<id>#<n>` for the piece `n` of a long text; `piece`: `n`, or null; `pool`: the tag of the share a plain text was taken for, `""` for an item of another kind; `portion`, for a delivery cut into portions only: the name of the portion the item belongs to. Every item of a portion comes before those of the next |
 | `{"type": "end"}` | no more items |
 
 The content of a plain text is its UTF-8 text, a piece's the piece. An
@@ -43,7 +45,7 @@ written as the passage it quotes.
 | --- | --- |
 | `{"type": "ready", "name": "...", "version": "...", "unit": "tokens", "kinds": [...], "weighs": true, "on_erasure": "stale"}` | the answer to `start`; `version` changes whenever the same messages give other files or weights, and the delivery key covers it; `unit`: what its weights count, `null` for a program that gives none; `kinds`: the kinds it prepares; `weighs`: whether it answers `weigh`, which needs a unit; `on_erasure`, optional: what an erasure that reaches one of the delivery's items does, `stale` (the default) or `note` (the erasure written into the delivery note, which stays fresh; [freight.md](freight.md), "Erasures") |
 | `{"type": "weight", "ref": R, "weight": N}` | the answer to `weigh` |
-| `{"type": "taken", "ref": R, "weight": N, "at": {...}}` | the answer to `take`, in the order of the `take` messages; `weight`: a whole number in its unit, absent or `null` for a program with no unit; `at`: where the item lies in the files, each field a whole number copied into its row of the items table, and named as none of the fields the freight gives that row (`depot`, `id`, `revision`, `kind`, `title`, `authors`, `address`, `licenses`, `tags`, `notice`, `scores`, `piece`, `quotes`, `bytes`, `weight`; [freight.md](freight.md), "A delivery on the dock"): such a name fails the job |
+| `{"type": "taken", "ref": R, "weight": N, "at": {...}}` | the answer to `take`, in the order of the `take` messages; `weight`: a whole number in its unit, absent or `null` for a program with no unit; `at`: where the item lies in the files, each field a whole number copied into its row of the items table, and named as none of the fields the freight gives that row (`depot`, `id`, `revision`, `kind`, `title`, `authors`, `address`, `licenses`, `tags`, `notice`, `scores`, `piece`, `quotes`, `bytes`, `portion`, `weight`; [freight.md](freight.md), "A delivery on the dock"): such a name fails the job |
 | `{"type": "file", "path": "...", "items": N, "hash": "...", ...}` | a file under `out` is complete; `items`: the items it holds; `hash`, optional: the hash of its content the delivery id covers in place of the file's sha256, for a file whose bytes may differ where its content does not; any other field is the program's own. The delivery note keeps the whole message apart from the file's place on the dock, and the freight sends it back on a resume |
 | `{"type": "log", "level": "...", "text": "..."}` | a line for the job's log; `level` one of `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `{"type": "done", "result": {...}}` | the answer to `end`, after its last `file` |

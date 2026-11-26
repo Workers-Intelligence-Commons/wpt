@@ -88,8 +88,9 @@ def key(request: dict, version: str) -> str:
 def canonical(selection: dict) -> dict:
     """A request's selection in the form its delivery key covers
     (freight.selection.canonical): {kinds sorted, each once; shares in
-    order, each share a float; size None or {unit, amount}}. Refused for a
-    selection that cannot be met."""
+    order, each share a float; size None or {unit, amount}}, or {portions:
+    [{name, kinds, shares, size}] in order}, each portion's in that form.
+    Refused for a selection that cannot be met."""
     return canonical_selection(selection)
 
 

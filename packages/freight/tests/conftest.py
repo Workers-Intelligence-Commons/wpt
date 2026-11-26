@@ -14,9 +14,12 @@ ME = Declaration("Ada Writer", "ada@example.org", True)
 LICENSE = ("MIT", "MIT License", "Copyright (c) 2026 Ada Writer\n\nPermission is hereby granted, free of charge, to "
            "any person.\n")
 
-# The program fake: weighs an item by its bytes; writes each item taken as one line of a file part-NNNNN.txt,
-# closing a file once it holds per_file lines (a setting, 3 by default); answers each take with `at` {at_name (a
-# setting, "line" by default): the item's line}; answers on_erasure as its settings say. Its
+# The program fake: weighs an item by its bytes, in the unit its setting unit names ("bytes-of-text" by default;
+# null: no unit, weighing nothing); writes each item taken as one line of a file part-NNNNN.txt (its name, its pool,
+# its portion when it has one, and its content), closing a file once it holds per_file lines (a setting, 3 by
+# default); answers each take with `at` {at_name (a setting, "line" by default): the item's line}; answers
+# on_erasure as its settings say; fails on a take whose portion is not one of those start names, or that has none
+# while start names some. Its
 # file messages carry `lines` (the lines written so far, which a resume reads back) and fields named as the freight
 # names its own (`bytes`, `key`, `sha256`), which the freight keeps apart from the dock's.
 FAKE = r'''
@@ -42,12 +45,14 @@ start, _ = read()
 settings = start.get("settings") or {}
 per_file = settings.get("per_file", 3)
 at_name = settings.get("at_name", "line")
+unit = settings.get("unit", "bytes-of-text")
+portions = start.get("portions")
 folder = Path(start["out"])
 folder.mkdir(parents=True, exist_ok=True)
 said = (start.get("resume") or {}).get("files") or []
 number, lines, batch = len(said), said[-1]["lines"] if said else 0, []
-send({"type": "ready", "name": "fake", "version": "1", "unit": "bytes-of-text", "kinds": ["plain", "conversation",
-      "task"], "weighs": True, "on_erasure": settings.get("on_erasure", "stale")})
+send({"type": "ready", "name": "fake", "version": "1", "unit": unit, "kinds": ["plain", "conversation", "task"],
+      "weighs": unit is not None, "on_erasure": settings.get("on_erasure", "stale")})
 stdout.flush()
 
 
@@ -66,8 +71,15 @@ while (found := read()) is not None:
     if message["type"] == "weigh":
         send({"type": "weight", "ref": message["ref"], "weight": len(content)})
     elif message["type"] == "take":
-        batch.append(f"{message['name']} {message['pool']} ".encode() + content.replace(b"\n", b" ") + b"\n")
-        send({"type": "taken", "ref": message["ref"], "weight": len(content), "at": {at_name: lines}})
+        if message.get("portion") not in (portions or [None]):
+            send({"type": "failed", "reason": f"a take in the portion {message.get('portion')!r}"})
+            stdout.flush()
+            break
+        portion = f"{message['portion']} " if "portion" in message else ""
+        batch.append(f"{message['name']} {message['pool']} {portion}".encode() + content.replace(b"\n", b" ")
+                     + b"\n")
+        send({"type": "taken", "ref": message["ref"], "weight": None if unit is None else len(content),
+              "at": {at_name: lines}})
         lines += 1
         if len(batch) >= per_file:
             close()
