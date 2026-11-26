@@ -37,8 +37,9 @@ each token counted in its text's share.
 
 MAX_BYTES bounds the work: at most that many bytes of text, so at most
 that many tokens of text plus one END per text and the first one, which a
-GPU reads in a few minutes; it stands above wpt_corpus.roles.HELD_OUT_BYTES,
-so the whole held-out portion is measured.
+GPU reads in a few minutes. It is twice wpt_corpus.roles.HELD_OUT_BYTES, the
+size the freight fills the held-out portion to, so the whole portion is
+measured, its last text included, whatever that size is set to.
 
 A model whose corpus has no held-out portion is refused (EvalError), and
 so the run of wpt eval stops: one trained on a corpus the depot built under
@@ -54,6 +55,7 @@ import tempfile
 import numpy as np
 
 from freight import api as freight
+from wpt_corpus import roles
 from wpt_corpus.files import DockFiles
 from wpt_corpus.shards import read_verified, shard_file
 from wpt_model.provenance import corpus_label, deliveries
@@ -61,7 +63,7 @@ from wpt_tokenizer import Tokenizer
 from wpt import resources
 from wpt.eval import EvalError, Result
 
-MAX_BYTES = 4 * 1024 * 1024  # bytes of text measured at most, above the held-out portion's 2 MiB
+MAX_BYTES = 2 * roles.HELD_OUT_BYTES  # bytes of text measured at most: the whole held-out portion
 CALL_TOKENS = 1 << 16  # tokens sent to the model in one call, about: the windows of a call are whole
 
 
