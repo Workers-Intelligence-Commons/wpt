@@ -14,10 +14,11 @@ A dataset's download of one vocabulary and size
 fresh corpus of that triple built from the dataset's current revision (or
 from one that differs from it only in its max_tokens or the vocabulary it
 publishes, which a build never read: SAME), or a state with nothing to
-download: "checking an erasure" (an erasure decided here is being carried
-into the corpora's records, depot_app.downloads; no corpus is sent
-meanwhile), "stale" (an admitted erasure reached a text of the latest
-corpus of the dataset's current revision), "not built" or "no store". A
+download: "stale" (the freight marked the latest corpus of the dataset's
+current revision stale, since an admitted erasure reached one of its
+texts), "not built" or "no store". The depot marks nothing: between an
+erasure and the freight's next check (docs/erasure.md, "What it covers"),
+a corpus that holds the erased text is still sent. A
 built corpus gives each of its files, streamed from the dock with Range
 support, and all of them in one tar archive (depot_app.web.archive), made
 as it is sent, of a length known beforehand, with the same Range support,
@@ -313,9 +314,6 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
     def downloads_listed(values, body):
         row = read.dataset_by_id(values["id"])
         shown = {"dataset": shared.jsonable(row), "job": None, "corpora": []}
-        marking = downloads.pending()
-        if marking:
-            return 200, {**shown, "state": "checking an erasure", "erasures": marking}
         try:
             found = corpora.built_from(opened_store(), corpus_depot(row), row["id"])
         except (DockSettingError, DockError, OSError) as error:
@@ -338,9 +336,6 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
         vocabulary, size = vocabulary_given(values["vocabulary"]), size_of(values["size"])
         shown = {"dataset": shared.jsonable(row), "vocabulary": read.vocabulary_named(vocabulary), "max_tokens": size,
                  "size": size_name(size), "link": link(row, vocabulary, size), "job": None}
-        marking = downloads.pending()
-        if marking:
-            return 200, {**shown, "state": "checking an erasure", "erasures": marking}
         try:
             records = corpora.built_from(opened_store(), corpus_depot(row), row["id"], vocabulary, size)
         except (DockSettingError, DockError, OSError) as error:
@@ -366,10 +361,6 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
         """(the dataset's row, the fresh corpus its download address names). Refused or NotFound without one."""
         row = read.dataset_by_id(values["id"])
         vocabulary, size = vocabulary_given(values["vocabulary"]), size_of(values["size"])
-        marking = downloads.pending()
-        if marking:
-            raise errors.Refused(f"the corpora holding a text of the erasures {', '.join(marking)} are being marked "
-                                 "stale: no corpus is sent until that ends")
         records = corpora.built_from(opened_store(), corpus_depot(row), row["id"], vocabulary, size)
         _, found, _ = state_of(row, records)
         if found is None:
@@ -571,12 +562,11 @@ def legacy(address: str, downloads: Downloads, refusals, store=None, public_url=
         Route("GET", "/api/datasets/{id}/download", downloads_listed, "frozen: the corpora the dock holds of the "
               "dataset, one row per vocabulary and size, each with the address of its download, its state and "
               "latest_fresh, the latest fresh corpus of that vocabulary and size built from any revision of the "
-              "dataset (the one training of then takes); checking an erasure or no store instead when nothing can "
-              "be listed", answer={"type": "object", "required": ["state", "corpora"]}),
+              "dataset (the one training of then takes); no store instead when nothing can be listed", answer={"type": "object", "required": ["state", "corpora"]}),
         Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}", download, "frozen: the dataset's download "
               "of one vocabulary (its sha256) and size (a number of tokens, or all): state built (the latest fresh "
               "corpus built from the dataset's current revision, its files and the tar archive of every file), "
-              "checking an erasure, stale, not built or no store", answer={"type": "object", "required": ["state"]}),
+              "stale, not built or no store", answer={"type": "object", "required": ["state"]}),
         Route("GET", "/api/datasets/{id}/download/{vocabulary}/{size}/files/{name}", download_file, "frozen: one "
               "file of that corpus, streamed from the dock and saved under its download name; one Range of bytes "
               "gives 206", request=True),

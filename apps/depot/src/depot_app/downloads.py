@@ -2,15 +2,7 @@
 beside the depot (depot_app.jobs): the streams being sent now, how many
 texts each export of a dataset counts
 and the size, sha256 and conversations left out of each part of an export
-once it was sent whole (depot.legacy), and the erasures whose corpora are being marked stale.
-
-An erasure decided through the web app is written into marking before it
-is carried out, and leaves it once every corpus holding one of its texts
-is marked stale (depot_app.shared.settle_marks, in the background, since
-it reads the texts table of every corpus the dock keeps): while marking
-holds an erasure, the web app sends no corpus, so a corpus an erasure
-reached is never sent, even when the marking failed or the web app
-stopped before it ended.
+once it was sent whole (depot.legacy).
 
 The web app reads the streams to bound the text exports: at most EXPORTS
 at once in all, and VISITOR_EXPORTS for one visitor (TooMany otherwise).
@@ -98,19 +90,3 @@ class Downloads:
             con.execute("INSERT OR REPLACE INTO exported_parts (export, parts, part, format, maker, bytes, sha256, "
                         "left_out) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (export, parts, part, form, MAKER, size, sha256, json.dumps(left_out, sort_keys=True)))
-
-    def marking(self, erasures: list[str]):
-        """Keep the erasures as being marked: no corpus is sent until they leave (marked)."""
-        with connected(self.path, write=True) as con:
-            con.executemany("INSERT OR IGNORE INTO marking (erasure, since) VALUES (?, ?)",
-                            [(one, time.time()) for one in erasures])
-
-    def marked(self, erasures: list[str]):
-        """The erasures leave marking: every corpus holding one of their texts is marked, or they were not carried out."""
-        with connected(self.path, write=True) as con:
-            con.executemany("DELETE FROM marking WHERE erasure = ?", [(one,) for one in erasures])
-
-    def pending(self) -> list[str]:
-        """The erasures being marked."""
-        with connected(self.path) as con:
-            return [row["erasure"] for row in con.execute("SELECT erasure FROM marking ORDER BY erasure")]

@@ -187,16 +187,17 @@ since it comes from the snapshot's summary
 ([data-selection.md](data-selection.md), "Choosing in a snapshot again").
 
 The corpora the depot built before the freight, under the dock's
-`corpora/`, are marked stale the same way, by the freight at the same
-moments and by the depot itself when it carries out an erasure: `depot
-decide admit --erasure`, `depot pull` and `depot web` each mark them on
-the dock that `DOCK` names, and say how many in their log. An erasure
-decided through `depot web`
-is recorded as being checked before it is carried out, and the web app
-sends no such corpus until every one holding one of its texts is marked
-stale, which it does in the background. The legacy tables of a depot
-brought up from format 12 hold no content, and the frozen dataset routes
-read the texts' content from the depot as erasures left it.
+`corpora/`, are marked stale the same way and only by the freight, at the
+same moments. The depot marks nothing on the dock: `depot decide admit
+--erasure`, `depot pull` and `depot web` carry the erasure out in the
+depot and stop there. So between an erasure and the freight's next check,
+the frozen dataset routes of `depot web` still send a corpus that holds
+the erased text, to whoever asks for it
+([depot-web.md](depot-web.md), "Models trained before snapshots").
+Running `freight check` right after the erasure closes that gap at once;
+the timer above bounds it to its period otherwise. The legacy tables of a
+depot brought up from format 12 hold no content, and the frozen dataset
+routes read the texts' content from the depot as erasures left it.
 
 A trained vocabulary is not retrained when a text changes (see
 [tokenizer.md](tokenizer.md)), so merges learned from erased text, such as

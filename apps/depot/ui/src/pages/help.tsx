@@ -159,7 +159,7 @@ export function HelpPage() {
 
       <Part on="erasures-explained" title="Erasures">
         <p>An erasure request names passages of texts by their place (from one character to another, in a field for a JSON kind) or a whole text, with a public reason. It never repeats the passage itself.</p>
-        <p>Admitted, it is carried out at once and cannot be undone: every place where the passage appears in that text is cut, in every version of it, snapshots included; a whole text leaves the depot. Every corpus holding it goes stale. Refused, the texts stay as they are. Every request is kept.</p>
+        <p>Admitted, it is carried out at once and cannot be undone: every place where the passage appears in that text is cut, in every version of it, snapshots included; a whole text leaves the depot. The depot marks nothing on the dock: a corpus holding the passage goes stale at the freight's next check, and until then the frozen dataset routes still send it, so run <Cmd>freight check</Cmd> right after the decision. Refused, the texts stay as they are. Every request is kept.</p>
       </Part>
 
       <Part on="older-models" title="Models trained before snapshots">

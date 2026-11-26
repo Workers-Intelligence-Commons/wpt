@@ -50,7 +50,7 @@ function Erasures({ query }: { query: URLSearchParams }) {
   return (
     <>
       <PageHead title="Erasure requests"
-        chain={<>A request names passages of <a href={href(["texts"])}>texts</a> by their place, asked here or beside a text on the Texts page; admitted, it cuts them, and every corpus holding them goes stale. Every request is kept.</>}
+        chain={<>A request names passages of <a href={href(["texts"])}>texts</a> by their place, asked here or beside a text on the Texts page; admitted, it cuts them at once. The corpora on the dock that hold them go stale only at the freight's next check (<span className="ledger">freight check</span>); until then the frozen dataset routes still send them. Every request is kept.</>}
         actions={<Button variant={ticked.length ? "quiet" : "primary"} onClick={() => { setSaid(null); setAsking(true); }}>Ask for an erasure</Button>} />
       {said && <p className="done cue" role="status">{said}</p>}
       {answer && !deciding && <Outcome answer={answer.answer} done={(d) => {

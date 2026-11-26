@@ -164,8 +164,8 @@ and items, the decisions on them, its snapshots and erasures.
                                           changed and how many were left out
     depot decide admit|refuse --erasure ID DECLARATION [--reason TEXT]
                                           one decision on the erasure request ID; once it is admitted,
-                                          the depot carries it out at once and marks stale every corpus
-                                          of the dock that holds a text it cut or removed
+                                          the depot carries it out at once; it marks nothing on the dock,
+                                          `freight check` marks stale what the erasure reached there
     depot snapshot new [--note TEXT]  a snapshot of the texts admitted now, named by the UTC time it is
                                           made (YYYY-MM-DDTHH-MM-SSZ): the change number it reads, its texts,
                                           their digest and its summary
@@ -213,7 +213,7 @@ import json
 import sys
 from pathlib import Path
 
-from depot import About, Declaration, Depot, NewText, backup, clone, restore
+from depot import About, Declaration, Depot, NewText, backup, clone, pull, restore
 from depot.errors import DepotError
 from depot.filters import literal
 from depot.kinds import PLAIN
@@ -226,7 +226,7 @@ from wic_utils.lines import ERROR, say
 
 from . import corpora
 from .jobs import Jobs
-from .shared import CONFIRMATION, decide_erasures, env_file, jsonable, opened, public_url, pulled, viewed
+from .shared import CONFIRMATION, env_file, jsonable, opened, public_url, viewed
 
 PASSAGE_CHARACTERS = 200_000  # the characters depot show --from prints unless told
 
@@ -269,7 +269,7 @@ def cmd_restore(args):
 
 def cmd_pull(args):
     depot = opened()
-    brought = pulled(depot, say)
+    brought = pull(depot)
     say(f"{depot.address}: pulled from {depot.about()['upstream']}, now at its change {depot.change()}"
         + (f"; carried out the erasures {', '.join(brought)}" if brought else ""))
     return 0
@@ -336,8 +336,7 @@ def cmd_license_add(args):
 
 def cmd_decide(args):
     if args.erasure is not None:
-        carried_out = decide_erasures(opened(), [args.erasure], STATUSES[args.status], _declaration(args),
-                                      args.reason, say)[args.erasure]
+        carried_out = opened().decide_erasure(args.erasure, STATUSES[args.status], _declaration(args), args.reason)
         say(f"erasure {args.erasure}: {STATUSES[args.status]}" + (", carried out" if carried_out else ""))
         return 0
     decision, texts, left = opened().decide(STATUSES[args.status], args.where, _declaration(args), args.reason,

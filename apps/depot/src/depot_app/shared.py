@@ -1,19 +1,13 @@
 """What the two controllers of `depot`, its subcommands and its web
 routes, share: the depot DEPOT names, the words of the confirmation a
-decision needs, rows made fit for JSON, the check that an estimate a person
-confirmed still holds, and an erasure carried out with the corpora it makes
-stale."""
+decision needs, rows made fit for JSON, and the check that an estimate a
+person confirmed still holds."""
 
-import threading
 from datetime import date, datetime
 from pathlib import Path
 
-from depot import Declaration, Depot, pull
-from depot.schema import ADMITTED
+from depot import Depot
 from depot.settings import depot_address, depot_url
-from dock.api import DockSettingError, dock_from_settings
-
-from . import corpora
 
 # what a person confirms with every decision: the subcommands' --accept and the web pages' button say it
 CONFIRMATION = ("I read the requirements, I accept them, and what I submit meets them. My name and email are "
@@ -67,90 +61,6 @@ def public_url() -> str | None:
 def viewed(address: str) -> Depot:
     """The depot at address, to read."""
     return Depot.view(address)
-
-
-def corpora_store(log):
-    """The dock DOCK names, where the corpora are; None, said in the
-    log, when it is not set: no corpus of this machine can be marked."""
-    try:
-        return dock_from_settings(env_file())
-    except DockSettingError as error:
-        log(f"no corpus is marked stale: {error}")
-        return None
-
-
-def decide_erasures(depot: Depot, requests: list[str], status: str, declaration: Declaration, reason: str | None,
-                    log, downloads=None) -> dict[str, bool]:
-    """depot.decide_erasures, then every corpus of the dock that holds a
-    text the carried-out erasures cut or removed marked stale (said in the
-    log): whether each was carried out, by id. The dock is found before
-    any erasure is carried out, since carrying one out cannot be undone.
-    With downloads (the web app's depot_app.downloads.Downloads), an
-    admission is kept as being marked before it is carried out, and the
-    marking runs in the background (settle_marks)."""
-    store = corpora_store(log)
-    if downloads is None:
-        carried_out = depot.decide_erasures(requests, status, declaration, reason)
-        done = [request for request, carried in carried_out.items() if carried]
-        if done:
-            stale(depot, store, done, log)
-        return carried_out
-    if status == ADMITTED:
-        downloads.marking(requests)
-    try:
-        return depot.decide_erasures(requests, status, declaration, reason)
-    finally:
-        settle_marks(depot, downloads, log)
-
-
-def settle_marks(depot: Depot, downloads, log) -> threading.Thread | None:
-    """The erasures downloads keeps as being marked: those never carried out
-    leave it at once; the corpora holding a text of the others are marked
-    stale in a thread of their own, which takes them out of it once done
-    (a failure is said in the log, and they stay until the next call, at
-    the web app's next start or next erasure decided): that thread, None
-    without one."""
-    pending = downloads.pending()
-    if not pending:
-        return None
-    carried = {row["id"] for row in depot.erasures() if row["id"] in pending and row["erased"] is not None}
-    downloads.marked([one for one in pending if one not in carried])
-    if not carried:
-        return None
-
-    def mark():
-        try:
-            stale(depot, corpora_store(log), sorted(carried), log)
-        except Exception as error:
-            log(f"the corpora holding a text of the erasures {', '.join(sorted(carried))} are not marked stale yet "
-                f"({type(error).__name__}: {error}): no corpus is sent until they are")
-            return
-        downloads.marked(sorted(carried))
-    thread = threading.Thread(target=mark, name="marking", daemon=True)
-    thread.start()
-    return thread
-
-
-def pulled(depot: Depot, log) -> list[str]:
-    """pull(depot), then every corpus of the dock holding a text the erasures
-    it carried out cut or removed marked stale (said in the log): the
-    erasures."""
-    store = corpora_store(log)
-    brought = pull(depot)
-    if brought:
-        stale(depot, store, brought, log)
-    return brought
-
-
-def stale(depot: Depot, store, erasures: list[str], log):
-    if store is None:
-        return
-    texts = sorted({needle["text"] for row in depot.erasures() if row["id"] in erasures
-                    for needle in row["needles"]})
-    marked = corpora.mark_stale(store, texts, erasures)
-    log(f"{len(marked)} corpora marked stale: nothing downloads them and wpt train refuses them; "
-        "wpt build-resources makes an order's corpus again" if marked
-        else "no corpus of the dock holds a text of the erasure")
 
 
 def jsonable(value):

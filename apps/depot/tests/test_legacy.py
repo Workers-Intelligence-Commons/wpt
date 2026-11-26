@@ -1,6 +1,7 @@
 """The frozen routes (depot_app.web.legacy) answer what the web app of commit 6b470328c7 answered, as the golden
 answers of legacy-golden/ hold them, on the format-12 fixture depot and its dock, and on that depot brought to the
-code's format by its upgrade; the routes of the tokenizer pages, which only a person read, are gone."""
+code's format by its upgrade; the routes of the tokenizer pages, which only a person read, are gone; and an erasure
+the depot carries out leaves the corpora on the dock, and what these routes answer of them, as they were."""
 
 import hashlib
 import json
@@ -10,13 +11,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 
-from depot import Depot
+import depot_app
+from depot import Declaration, Depot
+from depot_app import corpora
 from depot_app.downloads import Downloads
 from depot_app.jobs import Jobs
 from depot_app.web.legacy import legacy
-from depot_app.web.routes import STATUSES, refusals
+from depot_app.web.routes import STATUSES, refusals, routes
+from dock import dock_from_settings
 from depot_app.web.server import make_server
 
 GOLDEN = Path(__file__).parent / "legacy-golden"
@@ -116,3 +121,52 @@ def test_the_legacy_routes_answer_as_the_web_app_of_6b470328c7_did(fixture_depot
         server.server_close()
     assert compared == 48 and not differ, "\n".join(differ)
     assert sha256(fixture_depot) == before  # nothing wrote the depot's file
+
+
+def every_file(folder: Path) -> dict[str, str]:
+    """{path under folder: its sha256} of every file under folder."""
+    return {str(path.relative_to(folder)): sha256(path) for path in sorted(folder.rglob("*")) if path.is_file()}
+
+
+@pytest.mark.parametrize("fixture_depot", ["brought up"], indirect=True)
+def test_an_erasure_the_depot_carries_out_leaves_the_corpora_on_the_dock_and_their_download_as_they_were(
+        fixture_depot, tmp_path, monkeypatch):
+    # the depot marks nothing on the dock (docs/erasure.md, "What it covers"): a corpus holding the erased text
+    # stays fresh and the frozen routes still send it until the freight's next check, whether the erasure is
+    # decided by `depot decide admit --erasure` or through POST /api/erasures/decisions
+    monkeypatch.setenv("DEPOT", str(fixture_depot))
+    store = dock_from_settings(tmp_path / ".env")
+    [record, *_] = [one for one in corpora.records(store) if corpora.fresh(one)]
+    texts = record["tables"]["texts"]
+    held = pq.read_table(store.path(texts[0] if isinstance(texts, list) else texts), columns=["id"])["id"]
+    first, second = held.to_pylist()[:2]
+    depot = Depot.open(str(fixture_depot))
+    declaration = Declaration("Ada Lovelace", "ada@example.org", True)
+    asked = [depot.ask_erasure("a passage", [(text, 0, 1)], declaration) for text in (first, second)]
+    jobs = Jobs(str(fixture_depot), STATUSES)
+    (tmp_path / "static").mkdir()
+    server = served([*routes(depot, jobs), *legacy(str(fixture_depot), Downloads(jobs.path), refusals)],
+                    tmp_path / "static")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    listing = f"/api/datasets/{record['dataset']['id']}/download"
+    try:
+        dock_before, listed_before = every_file(tmp_path / "store"), ask(base, listing, {})
+
+        assert depot_app.main(["decide", "admit", "--erasure", asked[0], "--name", "Ada Lovelace", "--email",
+                               "ada@example.org", "--accept"]) == 0
+        decided = urllib.request.Request(
+            base + "/api/erasures/decisions", method="POST", headers={"Content-Type": "application/json"},
+            data=json.dumps({"erasures": [asked[1]], "status": "admitted",
+                             "declaration": {"name": "Ada Lovelace", "email": "ada@example.org",
+                                             "accepted": True}}).encode())
+        with urllib.request.urlopen(decided, timeout=60) as answer:
+            assert json.loads(answer.read()) == {"carried_out": {asked[1]: True}}
+
+        assert [row["erased"] is not None for row in depot.erasures() if row["id"] in asked] == [True, True]
+        assert every_file(tmp_path / "store") == dock_before
+        listed = ask(base, listing, {})
+        assert listed[0] == 200 and listed[2] == listed_before[2]
+    finally:
+        server.shutdown()
+        server.server_close()

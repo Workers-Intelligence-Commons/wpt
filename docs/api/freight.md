@@ -246,6 +246,7 @@ the dock, each with its record `corpus.json` (`freight.corpora`). The
 freight marks stale, at the same moments, every one whose texts table
 holds a text an erasure reached; WPT reads them itself, through the dock
 (`wpt_corpus.corpora`), and `freight.api` offers no call on them. The
-depot's web app marks the same corpora when it carries out an erasure, so
-its frozen dataset routes never send one an erasure reached
-([depot-web.md](../depot-web.md), "Models trained before snapshots").
+depot marks none of them, so the depot's frozen dataset routes send a
+corpus an erasure reached until the freight's next check marks it
+([erasure.md](../erasure.md), "What it covers";
+[depot-web.md](../depot-web.md), "Models trained before snapshots").

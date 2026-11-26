@@ -41,8 +41,6 @@ EXCEPTIONS = {
                                "upgrade from a format before snapshots reads the records of the dock's corpora",
     ("depot_app.web.legacy", "dock.api"): "the frozen dataset routes send the corpora built from a dataset, which "
                                           "the dock holds",
-    ("depot_app.shared", "dock.api"): "an erasure carried out marks stale the corpora on the dock that hold a text it "
-                                      "reached, so that the frozen dataset routes never send one",
     ("depot_app.corpora", "dock.api"): "the depot's reading of those corpora",
     ("depot_app.web.routes", "dock.api"): "the routes answer a refusal of the dock as such",
     ("depot_app.web.translations", "dock.api"): "the Translate button's models are kept on the dock under their "

@@ -7,10 +7,7 @@ depot_app.web.snapshots'.
 """
 
 from depot import Depot
-from wic_utils.lines import say
-
 from .. import shared
-from ..downloads import Downloads
 from ..jobs import Jobs
 from .server import Route
 from .snapshots import snapshot_routes
@@ -19,10 +16,7 @@ from .snapshots import snapshot_routes
 def queue_routes(depot: Depot, jobs: Jobs, refusals) -> list[Route]:
     """The routes over the jobs' queue, then those of depot's snapshots;
     refusals wraps a handler so that it answers each failure with its
-    status (depot_app.web.routes.refusals). The marking of the corpora an
-    erasure reached that a stop of the web app cut short goes on first
-    (depot_app.shared.settle_marks)."""
-    shared.settle_marks(depot, Downloads(jobs.path), say)
+    status (depot_app.web.routes.refusals)."""
 
     @refusals
     def jobs_listed(values, body):

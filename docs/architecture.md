@@ -71,8 +71,8 @@ of it. The parts import one another only so:
 module and fails on any other, except those its list `EXCEPTIONS` names,
 each with its reason: the depot's own command and web app write its
 backups to the dock, keep the Translate button's models there, and read
-and mark the corpora built before the freight there, which its frozen
-dataset routes send and an upgrade from a format before snapshots reads;
+the corpora built before the freight there, which its frozen dataset
+routes send and an upgrade from a format before snapshots reads;
 and `wpt adopt-vocabularies` reads the vocabularies the depot's tokenizer
 recipes trained through `depot.api`. `dock.api` also hands out the dock as
 an object (`open_dock`, `dock_from_settings`), which every part that reads
@@ -747,10 +747,11 @@ folder, on a server and on its clones alike. The freight writes and finds
 them, and marks them stale after an erasure ([api/freight.md](api/freight.md),
 "A delivery on the dock"). A delivery whose files a cap deleted keeps its
 note, marked deleted. The corpora under `corpora/` stay readable by WPT
-(`wpt_corpus/corpora.py`). The freight marks them stale after an erasure
-(`freight/corpora.py`), and so does the depot when it carries one out,
-from `depot decide admit --erasure`, `depot pull` or `depot web`
-(`depot_app/shared.py`, `depot_app/corpora.py`); nothing writes a new one.
+(`wpt_corpus/corpora.py`). Only the freight marks them stale after an
+erasure, at its next check (`freight/erasures.py`, `freight/corpora.py`);
+the depot marks nothing on the dock, so its frozen dataset routes send one
+an erasure reached until that check ([erasure.md](erasure.md), "What it
+covers"). Nothing writes a new one.
 
 Hashes do two jobs. Every read checks the bytes against their sha256: a
 record names each file it points at by the one shape `{"key", "sha256"}` (the
@@ -1149,11 +1150,12 @@ site that makes its own name resolve to 127.0.0.1 (DNS rebinding).
 
 A pull (which makes the machine fetch another depot) and a change of the
 depot's maintainer or takedown contact are commands only: the server has no route for them, and nothing is opened
-at an address a client gives. Some routes reach past the depot. `POST
-/api/erasures/decisions`, once it carries out an erasure, marks stale the
-dock's corpora that hold a text it cut, in the background, and sends no
-corpus until that ends. No route reads a code repository: the depot lives
-apart from any, and builds no corpus.
+at an address a client gives. `POST /api/erasures/decisions` carries out
+an erasure in the depot alone: it marks nothing on the dock, and the frozen
+dataset routes still send a corpus that holds the erased text until the
+freight's next check marks it stale ([erasure.md](erasure.md), "What it
+covers"). No route reads a code repository: the depot lives apart from
+any, and builds no corpus.
 A legacy dataset's export reads its texts from the depot, never from the
 dock.
 

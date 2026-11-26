@@ -40,7 +40,6 @@ from depot.filters import Filter
 from depot.kinds import PLAIN
 from depot.schema import ADMITTED, REFUSED, UNDER_REVIEW
 from dock.api import DockError
-from wic_utils.lines import say
 
 from .. import shared
 from ..shared import CONFIRMATION, REQUIREMENTS, jsonable
@@ -449,8 +448,8 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
 
     @refusals
     def decide_erasures(values, body):
-        return 200, {"carried_out": shared.decide_erasures(depot, body["erasures"], body["status"], declared(body),
-                                                           body.get("reason"), say, Downloads(jobs.path))}
+        return 200, {"carried_out": depot.decide_erasures(body["erasures"], body["status"], declared(body),
+                                                          body.get("reason"))}
 
     def streamed(kind: str, chunks) -> Stream:
         """chunks as an answer sent as it is made, its first chunk made
@@ -908,8 +907,9 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
                                    "declaration": DECLARATION}}, answer=ID),
         Route("POST", "/api/erasures/decisions", decide_erasures, "the same decision, admitted or refused, on each "
               "erasure request named, with an optional public reason, every request checked before any is decided; "
-              "each one admitted is carried out at once, and every corpus holding a text it cut or removed is "
-              "marked stale (depot decide --erasure): whether each was carried out, by id",
+              "each one admitted is carried out at once (depot decide --erasure); nothing is marked on the dock, "
+              "where the freight's next check marks stale the corpora holding a text it cut or removed: whether "
+              "each was carried out, by id",
               body={"type": "object", "required": ["erasures", "status", "declaration"],
                     "properties": {"erasures": IDS, "status": status, "reason": TEXT, "declaration": DECLARATION}},
               answer={"type": "object", "required": ["carried_out"]}),

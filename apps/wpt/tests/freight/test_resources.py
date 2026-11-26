@@ -5,8 +5,9 @@ learned for the order; the keys worked out from the order alone; what the
 model folder keeps of both deliveries; a corpus delivery given by its id
 or key, as `wpt manager` gives it; a run of `wpt build-resources` stopped
 and run again; `wpt adopt-vocabularies`, which puts a depot's vocabularies
-on the dock; and an erasure, written into the vocabulary's note, which
-stays, while the corpus is made again."""
+on the dock; an erasure, written into the vocabulary's note, which
+stays, while the corpus is made again; and the corpora the depot built
+before the freight, which only the freight's check marks stale."""
 
 import hashlib
 import json
@@ -20,6 +21,7 @@ from wpt.resources import main as build_resources
 from wpt.train import main as train
 from depot import Declaration
 from wpt_model import load_tokenizer
+from wpt_corpus import corpora as readers
 from wic_utils.lines import bare
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
@@ -96,6 +98,22 @@ def test_an_erasure_is_written_into_the_vocabulary_s_note_and_the_corpus_is_made
     assert "stale" not in notes["corpus"]
     train(["d", "--out", "again"])
     assert json.loads((tmp_path / "again" / "provenance.json").read_text())["corpus"]["id"] == notes["corpus"]["id"]
+
+
+def test_only_the_freight_s_check_marks_stale_a_corpus_the_depot_built_before_it(built, tmp_path):
+    # an erasure the depot carried out leaves the corpus under corpora/ fresh until the freight checks, which marks
+    # it once (docs/erasure.md, "What it covers"); apps/depot/tests/test_legacy.py shows that the depot's commands
+    # and web app leave it as it was
+    text = readers.rows(built.store, readers.find(built.store, built.corpus_id), "texts")[0]["id"]
+    erased = built.depot.ask_erasure("a passage", [(text, 0, 5)], ME)
+    built.depot.decide_erasure(erased, "admitted", ME)
+    assert "stale" not in readers.find(built.store, built.corpus_id)
+
+    home = str(tmp_path / "freight")
+    checked = api.check(home=home)
+    assert checked["erasures"] == [erased] and built.corpus_id in checked["corpora"]
+    assert readers.find(built.store, built.corpus_id)["stale"] == {"erasures": [erased]}
+    assert api.check(home=home)["corpora"] == []  # each erasure is checked once
 
 
 def test_an_order_naming_a_vocabulary_the_dock_does_not_hold_makes_no_request(built, tmp_path, monkeypatch, capsys):

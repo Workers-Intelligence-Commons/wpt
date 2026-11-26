@@ -24,9 +24,10 @@ depot through every route, with no login ([architecture.md](architecture.md),
   to write in that folder. It reads no `.env` file. The dock settings
   Compose passes it name the dock that holds the corpora the frozen
   dataset routes serve, with a key that reads and writes it; without
-  `DOCK`, it serves no corpus, and an erasure carried out through it
-  marks no corpus stale. It reads no code repository, and builds no corpus
-  and trains no vocabulary: the freight does ([api/freight.md](api/freight.md)).
+  `DOCK`, it serves no corpus. It marks no corpus stale, with or without
+  `DOCK`: the freight's check does. It reads no code repository, and
+  builds no corpus and trains no vocabulary: the freight does
+  ([api/freight.md](api/freight.md)).
 - **nginx**: the reverse proxy, with the limits below. It takes the
   visitor's address from the `CF-Connecting-IP` header of a request that
   comes from one of Cloudflare's address ranges. It answers only for
@@ -147,7 +148,14 @@ recipe, `GET /api/tokenizers/{name}` (its row, revisions and vocabularies,
 whether its version is trained) and `GET
 /api/tokenizers/{name}/vocabularies/{version}/file`, which `wpt train`
 read for a dataset's vocabulary. Their answers are the depot's legacy rows
-and the corpora the dock kept; nothing builds a corpus of a dataset. The export gives a dataset revision's texts in numbered parts,
+and the corpora the dock kept; nothing builds a corpus of a dataset. The
+depot marks no corpus stale when it carries out an erasure: only the
+freight's check does (`freight check`, and the check before each of its
+jobs). Until that check runs, the download routes still list and send a
+corpus that holds the erased text. Run `freight check` right after
+admitting an erasure, and keep the timer that runs it
+([erasure.md](erasure.md), "What it covers"), so the gap lasts at most
+its period. The export gives a dataset revision's texts in numbered parts,
 each in JSONL compressed with zstd and in Parquet, made as it is sent and
 the same bytes every time, a conversation whose quotes it cannot hold left
 out ([data-selection.md](data-selection.md), "Conversations that quote

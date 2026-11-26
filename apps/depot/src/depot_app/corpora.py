@@ -1,18 +1,17 @@
 """The corpora the dock keeps under corpora/, as the depot's web app and
 commands read them: the frozen dataset routes list and send those built
-from a dataset (depot_app.web.legacy), an upgrade from a format before
-snapshots reads their records (depot.upgrade), and an erasure carried out
-marks stale those that hold a text it reached. The depot reaches the
-dock through dock.api alone (docs/architecture.md, "The parts").
+from a dataset (depot_app.web.legacy), and an upgrade from a format
+before snapshots reads their records (depot.upgrade). The depot only reads
+them: the freight marks stale those an erasure reached (freight.erasures).
+The depot reaches the dock through dock.api alone (docs/architecture.md,
+"The parts").
 
     records(store)                       every corpus the dock holds, newest first
     built_from(store, depot, dataset)    every corpus built for that depot's dataset (by id), latest first
     folder_of, fresh, by_kind, token_files, files, triple
                                          what a record says: its folder, fresh, its files, what it was built for
-    mark_stale(store, texts, erasures)   mark every corpus that holds one of these texts stale
 """
 
-import pyarrow.parquet as pq
 from dock.api import as_record_name
 
 FOLDER = "corpora"
@@ -93,38 +92,3 @@ def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, s
              and (size is ANY or triple(record)[2] == size)]
     return sorted(found, key=lambda record: (record["dataset"].get("revision", 0), record["built_at"]), reverse=True)
 
-
-def mark_stale(store, texts, erasures) -> list[str]:
-    """Mark stale every corpus of the dock whose files are kept and that
-    holds one of the texts (ids), because the erasures (ids) were carried
-    out: the ids of the corpora marked. A corpus already stale keeps its
-    earlier erasures. A deleted corpus is left as it is: its rebuild
-    compares its id."""
-    marked = []
-    for record in records(store):
-        if "deleted" in record or not holds(store, record, texts):
-            continue
-        marked_stale(store, record, erasures)
-        marked.append(record["id"])
-    return marked
-
-
-def holds(store, record: dict, texts) -> bool:
-    """Whether the corpus holds one of the texts (ids), as its texts table lists them."""
-    wanted = set(texts)
-    if not wanted:
-        return False
-    parts = record["tables"]["texts"]
-    for part in parts if isinstance(parts, list) else [parts]:
-        ids = pq.read_table(store.path(part), columns=["id"])["id"].to_pylist()
-        store.release(part)
-        if not wanted.isdisjoint(ids):
-            return True
-    return False
-
-
-def marked_stale(store, record: dict, erasures) -> dict:
-    """The corpus's record marked stale because of the erasures (ids), with
-    the erasures it was stale for already: the record as stored."""
-    stale = sorted({*record.get("stale", {}).get("erasures", []), *erasures})
-    return store.put_json(f"{folder_of(record)}/{RECORD}", {**record, "stale": {"erasures": stale}})

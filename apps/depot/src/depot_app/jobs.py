@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS exported_parts (export TEXT NOT NULL, parts INTEGER N
     format TEXT NOT NULL, maker TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, left_out TEXT NOT NULL,
     PRIMARY KEY (export, parts, part, format, maker));
 CREATE TABLE IF NOT EXISTS export_texts (export TEXT PRIMARY KEY, texts INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS marking (erasure TEXT PRIMARY KEY, since REAL NOT NULL);
+DROP TABLE IF EXISTS marking;
 """
 
 
