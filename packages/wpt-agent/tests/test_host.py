@@ -4,7 +4,7 @@
 import subprocess
 
 from wpt_agent import host
-from wpt_utils import parallel
+from wic_utils import parallel
 
 
 def test_a_remote_docker_host_is_measured_through_a_container_and_this_machine_s_daemon_is_read_here(docker_runs):

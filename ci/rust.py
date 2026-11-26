@@ -1,9 +1,9 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["wpt-utils"]
+# dependencies = ["wic-utils"]
 #
 # [tool.uv.sources]
-# wpt-utils = { path = "../packages/wpt-utils", editable = true }
+# wic-utils = { path = "../packages/wic-utils", editable = true }
 # ///
 """The tokenizer's Rust tests. Options: common.py."""
 

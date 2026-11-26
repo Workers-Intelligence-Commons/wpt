@@ -1,7 +1,7 @@
 # Contributing
 
 Thank you for helping. WPT trains only on content whose license is clear.
-The repository holds code, recipes and documentation; the texts live in
+The repository holds code, orders and documentation; the texts live in
 depots, and most of this page is about adding texts to a depot and
 deciding on them.
 
@@ -20,7 +20,7 @@ Open an issue from one of the forms in
 (both cover the tooling and the model), **Model behavior**, **Source
 proposal** and **Erasure request**. Each form asks for the part concerned.
 The Bug and Enhancement forms also ask for the commit, the exact command,
-the recipe, the corpus id and the weights' sha256, the run record's
+the order, the corpus id and the weights' sha256, the run record's
 folder, and your system, GPU and PyTorch build. The other forms ask for
 what fits their kind. A blank issue stays possible. For an
 erasure request that should not be public, or for a security problem, use
@@ -74,7 +74,7 @@ text.
    reservation), and check that the text holds no personal data
    ([docs/licenses.md](docs/licenses.md), "Rules").
 3. The depot must hold each license the text names, by its SPDX id
-   (`wpt depot sql "SELECT id, name FROM licenses"`). A text's licenses are
+   (`depot sql "SELECT id, name FROM licenses"`). A text's licenses are
    a choice: one allowed license is enough.
 4. Write the text's notice into a file: the license statement exactly as
    the source gives it, with its copyright line, followed for Apache-2.0 by
@@ -84,7 +84,7 @@ text.
 5. Add it:
 
    ```sh
-   uv run wpt depot add FILE --license L [--license L2] --notice NOTICE_FILE \
+   uv run depot add FILE --license L [--license L2] --notice NOTICE_FILE \
        --tag TAG ... --title TITLE --author NAME ... --address ADDRESS \
        --name "LEGAL NAME" --email EMAIL --accept
    ```
@@ -92,7 +92,7 @@ text.
    It joins the depot under review, with your declaration as its first
    decision ("Decisions", below). Tags are free text; the tags in use and
    their meanings are in [docs/data-selection.md](docs/data-selection.md),
-   "Tags". The "Add" page of `uv run wpt depot web` does the same.
+   "Tags". The "Add" page of `uv run depot web` does the same.
 
 The depot refuses a text that names a license it does not hold, and
 nothing is written.
@@ -134,7 +134,7 @@ them, and that what they submit meets them. The declaration is public and
 not verified ([docs/licenses.md](docs/licenses.md), "Who decides").
 
 ```sh
-uv run wpt depot decide admit "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'gutenberg')" \
+uv run depot decide admit "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'gutenberg')" \
     --name "LEGAL NAME" --email EMAIL --accept
 ```
 
@@ -144,16 +144,16 @@ least one decision admits it and none refuses it, and only an admitted
 text enters a snapshot and trains. A refused text stays in the depot as a
 reference. A decision never changes what a snapshot made before it holds.
 
-## Snapshots, tags and recipes
+## Snapshots, tags and orders
 
 A snapshot is a change number, named by the UTC time it was made: the
 texts admitted then, each read at its revision as of it, never changed
-afterward. A hand-picked selection of texts is a tag. A model recipe of
+afterward. A hand-picked selection of texts is a tag. A model order of
 the repository names a snapshot (with its change and digest), the kinds it
-takes, its shares by tag and its vocabulary. `wpt depot snapshot new`, or
-the page "Snapshots" of `wpt depot web`, which shows its cost first, makes
-a snapshot of the admitted texts; `wpt build-resources RECIPE` asks the
-freight for the recipe's vocabulary and corpus, the depot reading no
+takes, its shares by tag and its vocabulary. `depot snapshot new`, or
+the page "Snapshots" of `depot web`, which shows its cost first, makes
+a snapshot of the admitted texts; `wpt build-resources ORDER` asks the
+freight for the order's vocabulary and corpus, the depot reading no
 repository ([docs/data-selection.md](docs/data-selection.md)).
 
 ## Changing a text
@@ -164,8 +164,8 @@ asks for its erasure. A snapshot keeps the revisions it read.
 
 ## Erasure requests
 
-Every erasure request is honored. Ask through `wpt depot erase` or the
-text's "Ask to erase" on the Texts page of `wpt depot web`, open a public
+Every erasure request is honored. Ask through `depot erase` or the
+text's "Ask to erase" on the Texts page of `depot web`, open a public
 issue, or use the repository's **Security** tab, **Report a
 vulnerability**, to ask privately. See [docs/erasure.md](docs/erasure.md).
 
@@ -205,7 +205,7 @@ also holds ratings and probes.
 ## Writing about the project
 
 The repository describes only its current state: the documentation, the
-skills (`.agents/skills/`), code comments and docstrings, and recipe
+skills (`.agents/skills/`), code comments and docstrings, and order
 notes say what is true now and why, never when it was decided or what it
 was before. A change may break compatibility with what came before; the
 text then describes the new state alone, and the old one stays only in
@@ -227,7 +227,7 @@ uv run ci/tests.py           # one part: lock, tests, rust, data or commits
 ```
 
 The tests prove that things work, not that they are correct. `ci/all.py`
-is what CI runs too: the tests, the Rust tests, the recipes' check, and
+is what CI runs too: the tests, the Rust tests, the orders' check, and
 the checks on your commits. Only what your change touches runs:
 pytest-testmon runs the tests whose source changed, and the other parts
 run when their files changed since your upstream branch, committed or not.

@@ -3,7 +3,7 @@ from, read from any of its three shapes, so every reader (the NOTICE, the
 model card, wpt eval) says the same and never rewrites a folder.
 
 A model trained on deliveries of the freight (docs/training.md, "What a
-model records") names, in `data`, the data section of its recipe: the
+model records") names, in `data`, the data section of its order: the
 depot's address, the snapshot's name, its change and digest; in
 `deliveries`, the key, id and preparation of its vocabulary's delivery and
 of its corpus's; in `corpus`, the corpus delivery's id, key and rules; and
@@ -34,7 +34,7 @@ def corpus_id(provenance: dict) -> str:
 
 def corpus_label(provenance: dict) -> str:
     """What the model learned from, in one sentence without its final
-    full stop: "snapshot S (change N, digest H) of the depot D, recipe R,
+    full stop: "snapshot S (change N, digest H) of the depot D, order R,
     code at commit X" for a model trained on a snapshot (a delivery's or a
     corpus the depot built), "corpus C, built
     from dataset T of the depot D" for one trained before snapshots."""
@@ -46,12 +46,12 @@ def corpus_label(provenance: dict) -> str:
     code = (f"code at commit {commit}" + (" with uncommitted changes" if provenance.get("repository_dirty") else "")
             if commit else "code outside a git checkout")
     return (f"snapshot {data['snapshot']} (change {data['change']}, digest {data['digest']}) of the depot "
-            f"{data['depot']}, recipe {provenance.get('recipe_name')}, {code}")
+            f"{data['depot']}, order {provenance.get('recipe_name')}, {code}")
 
 
 def _data(provenance: dict) -> dict:
-    """The data section the model's recipe gave: provenance's own `data`,
-    else the recipe's."""
+    """The data section the model's order gave: provenance's own `data`,
+    else the order's."""
     return provenance.get("data") or (provenance.get("recipe") or {}).get("data") or {}
 
 

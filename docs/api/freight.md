@@ -3,7 +3,7 @@
 The freight reads a request, chooses items in a depot's snapshot, runs one
 preparation on what it chose, and leaves the result on the dock with a
 delivery note. It finds a delivery again by its key, and marks stale what
-an erasure reached. It reads the depot only through `wpt_depot.api`
+an erasure reached. It reads the depot only through `depot.api`
 ([depot.md](depot.md)) and knows nothing of what its preparations make: a
 preparation is a program it starts and talks to
 ([preparation.md](preparation.md)).
@@ -13,7 +13,7 @@ module of the package `freight` that code outside it imports. The command
 `freight` (`apps/freight`) is a controller over the same functions. A
 change to the module changes this document in the same commit.
 
-The dock is, for now, the store `wpt_store` opens: `WPT_STORE` names it.
+The dock is, for now, the dock `dock` opens: `DOCK` names it.
 
 ## Settings
 
@@ -24,8 +24,8 @@ working folder:
 | Setting | What it names |
 | --- | --- |
 | `FREIGHT_HOME` (`home`) | the freight's own folder: its queue (`queue.sqlite`) and the work of its jobs (`work/<delivery key>/`), which nothing backs up |
-| `WPT_DEPOT` (`depot`) | the depot it reads, by its address |
-| `WPT_STORE` (`dock`) | the dock it delivers on, by its URL |
+| `DEPOT` (`depot`) | the depot it reads, by its address |
+| `DOCK` (`dock`) | the dock it delivers on, by its URL |
 | `FREIGHT_CAP` (`cap`) | the bytes its deliveries may take on the dock together; none by default |
 
 ## Rules of every call
@@ -222,7 +222,7 @@ no longer names are deleted.
 ## Erasures
 
 The depot marks nothing on the dock. The freight asks the depot
-(`wpt_depot.api.erasures`) which erasures it carried out since the mark it
+(`depot.api.erasures`) which erasures it carried out since the mark it
 saw last there, which the queue's file keeps, and writes what each did into
 the note of every delivery whose items hold a text it reached
 (`freight.erasures`). It asks before every job, before it answers a

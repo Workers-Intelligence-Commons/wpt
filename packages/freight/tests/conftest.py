@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from freight import exchange
-from wpt_depot import About, Declaration, Depot, NewText
-from wpt_store import open_store
+from depot import About, Declaration, Depot, NewText
+from dock import open_dock
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
 LICENSE = ("MIT", "MIT License", "Copyright (c) 2026 Ada Writer\n\nPermission is hereby granted, free of charge, to "
@@ -102,7 +102,7 @@ def freight(tmp_path, monkeypatch):
     added = depot.add(texts, ME)
     depot.decide("admitted", f"id IN ({', '.join(repr(one) for one in added)})", ME)
     name = depot.create_snapshot()["name"]
-    store = open_store((tmp_path / "dock").as_uri())
+    store = open_dock((tmp_path / "dock").as_uri())
 
     def request(**settings) -> dict:
         snapshot = depot.snapshot(name)

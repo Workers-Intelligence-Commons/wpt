@@ -1,6 +1,6 @@
 """The model of a model folder, on a gpu worker (docs/machines.md,
 "Evaluation"): what a test asks of the model goes through the link, and the
-tests, which hold the tokenizer, the store and the sandboxes, run here.
+tests, which hold the tokenizer, the dock and the sandboxes, run here.
 
     with Remote(folder, environ, log, kernels) as model:
                                                 the first gpu worker WPT_GPU_WORKERS lists, or
@@ -34,10 +34,10 @@ from pathlib import Path
 
 import numpy as np
 
-from wpt_recipes import Recipes
+from wpt_orders import Orders
 from wpt_model import ModelConfig, weight_files
 from wpt_model.checkpoint import CONFIG_NAME
-from wpt_utils.lines import say
+from wic_utils.lines import say
 from wpt_worker.link import LinkError
 from wpt_worker.manager import WORKERS, Files, NoCheckout, code_root, keys, start_workers
 from wpt_worker.writing import RemoteWriter, worker_generator
@@ -68,7 +68,7 @@ class Remote:
                 root = code_root()
             except NoCheckout as error:
                 raise WorkerError(str(error)) from None
-            self.worker.send_checkout(Recipes(root).data_folder(), root)
+            self.worker.send_checkout(Orders(root).data_folder(), root)
             self.files = Files(Path(tempfile.mkdtemp(prefix="wpt-eval-link-")))
             weights = {name: self.files.offer(self.folder / name) for name in weight_files(self.folder)}
             spec = {"task": "wpt-eval", "model": asdict(self.config), "weights": weights,

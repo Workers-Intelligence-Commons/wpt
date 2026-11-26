@@ -12,7 +12,7 @@ against the kind's JSON Schema when it is added):
     check    any program, the same way; run after the attempt, it prints a score from 0 to 1
 
 from_item reads one into a Task and applies the rules across fields that
-a schema cannot: its image must be a folder of data/images/ (wpt_recipes).
+a schema cannot: its image must be a folder of data/images/ (wpt_orders).
 The attempt's container, and the check's, take SIZES, each raised by the
 task's `container` when it asks for more; /work and /tmp are kept in
 memory and may each hold `disk` MiB, so 2 x disk + HEADROOM must stay
@@ -39,7 +39,7 @@ commit (repository.fetch) and /work starts as the repository checked out
 at it, its .git folder included, with the task's files laid over it.
 
 A corpus keeps each of its tasks as one line of its tasks.jsonl,
-{"depot", "id", "content"} (wpt_depot.corpus); from_line reads one.
+{"depot", "id", "content"} (wpt_corpus.programs); from_line reads one.
 """
 
 import base64
@@ -49,7 +49,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
-from wpt_recipes import ASK, BUILT_IN_TOOLS, RecipeError, Recipes
+from wpt_orders import ASK, BUILT_IN_TOOLS, OrderError, Orders
 
 from . import repository as repositories
 
@@ -97,26 +97,26 @@ class Task:
     repository: tuple | None = None  # (address, commit) of the Git repository /work starts as; None: none
 
 
-def from_line(line: str, recipes: Recipes | None = None, pools: dict | None = None) -> Task:
+def from_line(line: str, orders: Orders | None = None, pools: dict | None = None) -> Task:
     """The Task of one line of a corpus's tasks.jsonl."""
     found = json.loads(line)
-    return from_item(f"{found['depot']} {found['id']}", found["content"], recipes, pools)
+    return from_item(f"{found['depot']} {found['id']}", found["content"], orders, pools)
 
 
-def from_item(task_id: str, content: dict, recipes: Recipes | None = None, pools: dict | None = None) -> Task:
+def from_item(task_id: str, content: dict, orders: Orders | None = None, pools: dict | None = None) -> Task:
     """The Task of an item's content, named task_id; its image and pool of
-    tools read from recipes (default: the repository holding the current
+    tools read from orders (default: the repository holding the current
     folder), each pool once into pools when given. InvalidTask names a
     rule it breaks."""
     document = content["task"]
     where = f"task {task_id}"
     try:
-        recipes = recipes or Recipes.find()
-        recipes.check_image(document["image"])
+        orders = orders or Orders.find()
+        orders.check_image(document["image"])
         pools = {} if pools is None else pools
         if document["image"] not in pools:
-            pools[document["image"]] = recipes.image_tools(document["image"])
-    except RecipeError as error:
+            pools[document["image"]] = orders.image_tools(document["image"])
+    except OrderError as error:
         raise InvalidTask(f"{where}: {error}") from None
     container = {name: max(size, document.get("container", {}).get(name, 0)) for name, size in SIZES.items()}
     if 2 * container["disk"] + HEADROOM >= container["memory"]:

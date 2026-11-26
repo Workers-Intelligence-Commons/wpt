@@ -55,7 +55,7 @@ This model was trained only on the texts of the corpus its build record
 names. The corpus lists every text with the depot and id it came from, its
 licenses, its notice and the address it came from. Every text was admitted
 by a person whose declaration, a name and an email, is public in the depot.
-The recipes and the code are at
+The orders and the code are at
 https://github.com/Workers-Intelligence-Commons/wpt.
 
 A depot can change after a model was trained. An admitted erasure cuts a

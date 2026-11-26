@@ -13,10 +13,10 @@ import json
 import pytest
 
 from freight import api
-from wpt_depot import NewText
-from wpt_depot import api as depot_api
-from wpt_store import open_store
-from wpt_store.names import File
+from depot import NewText
+from depot import api as depot_api
+from dock import open_dock
+from dock.names import File
 from wpt_tokenizer import Tokenizer
 
 SAMPLE = 60_000  # bytes
@@ -65,7 +65,7 @@ def asked(built, folder, asking) -> dict:
 def vocabulary_of(folder, note) -> bytes:
     (file,) = note["files"]
     assert file["path"] == "vocabulary.json"
-    return open_store((folder / "dock").as_uri()).path(File.of(file)).read_bytes()
+    return open_dock((folder / "dock").as_uri()).path(File.of(file)).read_bytes()
 
 
 def test_each_share_holds_its_proportion_of_the_samples_bytes_and_the_same_request_gives_the_same_vocabulary(

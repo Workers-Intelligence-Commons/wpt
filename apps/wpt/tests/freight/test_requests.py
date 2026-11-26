@@ -1,5 +1,5 @@
 """A corpus asked of the freight, its program wpt-tokens preparing it,
-against the corpus wpt_depot.corpus.build builds from
+against the corpus corpus_build.build builds from
 the same snapshot, data section and vocabulary: the same token files, by
 their token hashes, and the same rows of the texts table (the bytes and
 weight of each beside them); and the same request with wpt-count, which
@@ -13,10 +13,10 @@ import pyarrow.parquet as pq
 import pytest
 
 from freight import api
-from wpt_depot import Declaration, NewText
-from wpt_depot.corpora import read_table
-from wpt_depot.corpus import build
-from wpt_store.names import File
+from depot import Declaration, NewText
+from freight.corpora import read_table
+from corpus_build import build
+from dock.names import File
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
 TASK = {"task": {"instructions": "Write hello into out.txt.", "image": "base",
@@ -147,7 +147,7 @@ def same(built, record: dict, note: dict):
     ([], [], None),                                  # every text
     (["plain", "conversation"], [("en", 1.0)], 1500),
 ])
-def test_a_corpus_request_gives_the_token_files_and_rows_wpt_depot_build_gives(built, tmp_path, kinds, shares, size):
+def test_a_corpus_request_gives_the_token_files_and_rows_depot_build_gives(built, tmp_path, kinds, shares, size):
     name = rich(built)
     key = vocabulary(built)
     record = build(built.depot, built.depot.snapshot(name)["id"], section(built, name, kinds, shares, size),
@@ -205,8 +205,8 @@ def test_the_command_queues_a_request_waits_for_it_and_finds_its_delivery(built,
                "selection": {"shares": [{"tag": "en", "share": 1.0}], "size": None},
                "preparation": {"name": "wpt-tokens", "inputs": {"vocabulary": key}}}
     (tmp_path / "request.json").write_text(json.dumps(request))
-    for name, value in (("FREIGHT_HOME", str(tmp_path / "freight")), ("WPT_DEPOT", built.depot.address),
-                        ("WPT_STORE", built.store.root.as_uri())):
+    for name, value in (("FREIGHT_HOME", str(tmp_path / "freight")), ("DEPOT", built.depot.address),
+                        ("DOCK", built.store.root.as_uri())):
         monkeypatch.setenv(name, value)
     assert main(["request", str(tmp_path / "request.json"), "--wait"]) == 0
     note = json.loads(capsys.readouterr().out)

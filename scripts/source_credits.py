@@ -2,7 +2,7 @@
 # requires-python = ">=3.14"
 # dependencies = []
 # ///
-"""Write the input files of `wpt depot credits-file` that give titles to
+"""Write the input files of `depot credits-file` that give titles to
 the texts of a depot that have none, and fix authors stored as the text of
 a Python dict, by the rules of docs/data-selection.md, "Titles from a
 text's source".
@@ -48,7 +48,7 @@ from compression import zstd
 from pathlib import Path
 from urllib.parse import urlparse
 
-CHUNK = 350_000  # lines per input file: what one `wpt depot credits-file` takes at most (wpt_depot.crediting.MOST)
+CHUNK = 350_000  # lines per input file: what one `depot credits-file` takes at most (depot.crediting.MOST)
 
 # a family by the start of its sources' names, the longest first; any other source has no rule
 FAMILIES = (

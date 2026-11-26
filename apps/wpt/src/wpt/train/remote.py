@@ -7,11 +7,11 @@ answers are the same for every worker, and only the run's main process
 
     ready             the job's device, processes, libraries' versions and pass-time setup; answered
                       with the plan: each step's fingerprint (on this side's code,
-                      wpt_utils.programs.code: the checkout the worker runs), the steps reused, the state the
+                      wic_utils.programs.code: the checkout the worker runs), the steps reused, the state the
                       run starts from, the scheduler's pass times to replay
     file.offer        a file of the run's corpus or of a state it starts from
     record.*          a file of the run's record folder (read, write, append), and only of it;
-                      flush: the lines the manager's store holds back, sent
+                      flush: the lines the manager's dock holds back, sent
     checkpoint.*      the run's checkpoint: exists, load, save (a file the job sent), remove
     env.call          a method of a step's environment part on the manager (the part made by
                       the step's first call from a process of a worker, dropped when the
@@ -31,9 +31,9 @@ import threading
 from dataclasses import asdict
 
 from wpt_inference import replayed_costs
-from wpt_store import File
+from dock.api import File
 from wpt_training import Context
-from wpt_utils.programs import code
+from wic_utils.programs import code
 from wpt_worker.writing import RemoteWriter
 
 def named_files(value) -> dict[str, File]:
@@ -61,7 +61,7 @@ class Training:
         self.lock = threading.Lock()  # around self.parts, which every worker's thread changes
         self.plan = self.ready_found = self.finished = None
         self.done, self.outputs = list(run.done), {}
-        self.offered = []  # the files of the store copied to this machine for the job, released at the end
+        self.offered = []  # the files of the dock copied to this machine for the job, released at the end
 
     def handlers(self, worker) -> dict:
         """The answers to worker's job."""
@@ -96,7 +96,7 @@ class Training:
         processes = header["processes"]
         run.log(f"device: {header['device']}" + (f", {processes} processes" if processes > 1 else ""))
         marks = run.fingerprints(code())  # the checkout this side sent the worker
-        telemetry.event("training.settings", recipe=run.recipe, model=asdict(run.model_config),
+        telemetry.event("training.settings", recipe=run.order, model=asdict(run.model_config),
                         parameters=run.parameters, device=header["device"], processes=processes,
                         strategy={"name": run.strategy_file.name, "file_sha256": run.strategy_file.sha256},
                         steps=[{**step.record(), "fingerprint": mark} for step, mark in zip(run.steps, marks)],
@@ -177,7 +177,7 @@ class Training:
         if part is None:
             run, step = self.run, self.run.steps[number - 1]
             context = Context(step.name, run.store, run.record, run.tokenizer, run.model_config, run.telemetry,
-                              run.log, run.recipe["seed"], number,
+                              run.log, run.order["seed"], number,
                               writer=functools.partial(RemoteWriter, worker, header.get("channel")))
             part = step.start_manager(context)
             if part is None:

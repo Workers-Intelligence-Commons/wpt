@@ -32,7 +32,7 @@ These rules apply to Workers' Intelligence Commons, to each of its models
    stays possible.
 7. **Competition.** It is welcome. Whoever improves WPT and serves it to the
    public must give the improvements back to the commons.
-8. **Transparency.** We publish the recipes, and a release of the models
+8. **Transparency.** We publish the orders, and a release of the models
    each month that brought enough progress, so that others can take over
    at their own scale ([publishing.md](publishing.md)).
 

@@ -132,7 +132,7 @@ def runnable_kernels():
 
 KERNELS = runnable_kernels()
 each_kernel = pytest.mark.parametrize("chosen", KERNELS, ids=lambda module: module.NAME)
-# (heads, head width, tokens, top k): the recipes' heads and head width over windows where the choice matters,
+# (heads, head width, tokens, top k): the orders' heads and head width over windows where the choice matters,
 # with the window and the top k of the model (128 and 1,024) in the last; 12 heads, the series' widest size, fill
 # more than the sparse kernels' 8 head columns; 2 heads take the sparse backward pass where each row gathers its
 # queries, more heads the one where each query adds its share to its rows

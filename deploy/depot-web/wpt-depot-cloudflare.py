@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Keep the public depot web app's host in step with Cloudflare's address
 ranges (docs/depot-web.md). Runs as root on the host, from the systemd timer
-wpt-depot-cloudflare.timer, and once by hand before the containers first start.
+depot-cloudflare.timer, and once by hand before the containers first start.
 
 It reads Cloudflare's IPv4 and IPv6 ranges, then:
 
 - writes nginx's list of the addresses it takes the real visitor's address
-  from, /etc/wpt-depot-web/cloudflare-real-ip.conf, which the nginx
+  from, /etc/depot-web/cloudflare-real-ip.conf, which the nginx
   container mounts read-only;
 - makes ufw allow ports 80 and 443 only from those ranges: it adds a rule for
   each range, then deletes every other rule that allows either port; a rule
@@ -29,11 +29,11 @@ import urllib.request
 from pathlib import Path
 
 SOURCES = {4: "https://www.cloudflare.com/ips-v4", 6: "https://www.cloudflare.com/ips-v6"}
-FOLDER = Path("/etc/wpt-depot-web")
+FOLDER = Path("/etc/depot-web")
 INCLUDE = FOLDER / "cloudflare-real-ip.conf"
 PORTS = {80, 443}
-COMMENT = "wpt-depot-web cloudflare"
-NGINX = ["--filter", "label=com.docker.compose.project=wpt-depot-web",
+COMMENT = "depot-web cloudflare"
+NGINX = ["--filter", "label=com.docker.compose.project=depot-web",
          "--filter", "label=com.docker.compose.service=nginx"]
 
 
@@ -41,7 +41,7 @@ def ranges(url: str, version: int) -> list:
     """The networks the answer at url lists, one per line. ValueError when it
     lists none or a line is not a network of that version."""
     # Cloudflare refuses Python's own User-Agent
-    request = urllib.request.Request(url, headers={"User-Agent": "wpt-depot-cloudflare"})
+    request = urllib.request.Request(url, headers={"User-Agent": "depot-cloudflare"})
     with urllib.request.urlopen(request, timeout=60) as answer:
         lines = answer.read(1_000_000).decode("ascii").split()
     if not lines:
@@ -55,7 +55,7 @@ def ranges(url: str, version: int) -> list:
 
 def write_include(networks: list) -> bool:
     """Write nginx's list; whether it differs from the one there before."""
-    text = ("# Cloudflare's address ranges, written by wpt-depot-cloudflare (deploy/depot-web)\n"
+    text = ("# Cloudflare's address ranges, written by depot-cloudflare (deploy/depot-web)\n"
             + "".join(f"set_real_ip_from {net};\n" for net in networks))
     if INCLUDE.is_file() and INCLUDE.read_text(encoding="utf-8") == text:
         return False

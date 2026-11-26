@@ -13,12 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from wpt_depot import About, Declaration, Depot, NewText
-from wpt_depot import corpora
-from wpt_depot.errors import NotFound
-from wpt_depot.corpus import build
+from depot import About, Declaration, Depot, NewText
+from freight import corpora
+from depot.errors import NotFound
+from corpus_build import build
 from freight import api as freight
-from wpt_store import open_store
+from dock import open_dock
 from wpt_tokenizer import Tokenizer
 from wpt.resources import main as build_resources
 from wpt.train import main as train
@@ -27,7 +27,7 @@ ME = Declaration("Ada Writer", "ada@example.org", True)
 LICENSE = ("MIT", "MIT License", "Copyright (c) 2026 Ada Writer\n\nPermission is hereby granted, free of charge, to "
            "any person.\n")
 NOTICE = "Fox Stories, copyright (c) 2026 Ada Writer"
-TAG = "en"  # every test text's tag, and the recipes' one share
+TAG = "en"  # every test text's tag, and the orders' one share
 TOKENIZER = "t"  # the tokenizer recipe every test corpus names as its vocabulary's
 VOCAB_SIZE = 556
 
@@ -36,7 +36,7 @@ TINY_MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_mod
               "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
               "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
               "engram_table_size": 31, "residual_groups": 3, "loops": 0}
-# the read-text step of the recipe "d": the optimizer, its settings, the step's text windows, the recipe's seed
+# the read-text step of the order "d": the optimizer, its settings, the step's text windows, the order's seed
 ONE_STEP = {"optimizer": "by-part", "settings": {}, "stages": [{"block_size": 16, "steps": 1, "batch_size": 4}],
             "eval_every": 2, "eval_batches": 20, "seed": 1337}
 # the drafter every run trains at its end, as small and short as still trains and calibrates one
@@ -47,15 +47,15 @@ TINY_DRAFTER = {"epochs": 1, "prompts": 4, "prompt_tokens": 8, "answer_tokens": 
 @pytest.fixture
 def built(tmp_path, monkeypatch):
     """A corpus of a depot's snapshot "d": 16 plain texts. The working folder tmp_path is the
-    repository, the store is WPT_STORE and the depot WPT_DEPOT. Gives store, depot (the Depot),
-    corpus_id (the corpus of every token of "d", which the model recipe "d", a tiny model
+    repository, the dock is DOCK and the depot DEPOT. Gives store, depot (the Depot),
+    corpus_id (the corpus of every token of "d", which the model order "d", a tiny model
     trained one step, names), tokenizer (the vocabulary every corpus here is built with), records(command) (the record folders of that
     command's runs, oldest first), notice (the texts' notice), vocabulary
     (the sha256 of the vocabulary every corpus here is built with),
-    data(name, size) (the data section of a recipe of the snapshot name at
-    that size, as recipe writes it),
-    recipe(name, model=..., training=..., drafter=..., steps=...,
-    snapshot="d"), which writes a model recipe of that snapshot (its data
+    data(name, size) (the data section of an order of the snapshot name at
+    that size, as order writes it),
+    order(name, model=..., training=..., drafter=..., steps=...,
+    snapshot="d"), which writes a model order of that snapshot (its data
     section: the depot by its name, the snapshot's change and digest, the
     one share TAG, the vocabulary, and as total_tokens the tokens of plain
     text of the snapshot's corpus of every token, 3000 before one is
@@ -69,7 +69,7 @@ def built(tmp_path, monkeypatch):
     size, url=None), which builds the corpus of the snapshot label at that
     size, its record naming the depot by url (default: its name), and
     returns its record."""
-    store = open_store((tmp_path / "store").as_uri())
+    store = open_dock((tmp_path / "store").as_uri())
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
     stories = [f"story {i}: the quick brown fox jumps over the lazy dog. " * 30 for i in range(16)]
@@ -79,11 +79,11 @@ def built(tmp_path, monkeypatch):
     names = {}  # the name the depot gave each snapshot, by the label the test calls it
 
     def data_of(label, size):
-        """The data section of a recipe of the snapshot label at that size."""
+        """The data section of an order of the snapshot label at that size."""
         name = names.get(label, label)
         try:
             snapshot = depot.snapshot(name)
-        except NotFound:  # a recipe of a snapshot not made: its change and digest are not known
+        except NotFound:  # an order of a snapshot not made: its change and digest are not known
             snapshot = {"at_change": 0, "digest": ""}
         return {"depot": depot.name(), "snapshot": name, "change": snapshot["at_change"],
                 "digest": snapshot["digest"], "shares": [{"tag": TAG, "share": 1.0}], "total_tokens": size,
@@ -95,7 +95,7 @@ def built(tmp_path, monkeypatch):
                      recipe=label, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
 
     def write(kind, name, document):
-        path = tmp_path / "data" / "recipes" / f"{kind}s" / f"{name}.json"
+        path = tmp_path / "data" / "orders" / f"{kind}s" / f"{name}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document))
         return name
@@ -108,7 +108,7 @@ def built(tmp_path, monkeypatch):
         names[label] = depot.create_snapshot()["name"]
         return sized(label, None)["id"]
 
-    def recipe(name="d", model=None, training=None, drafter=None, steps=(), snapshot="d"):
+    def order(name="d", model=None, training=None, drafter=None, steps=(), snapshot="d"):
         text = {**ONE_STEP, **(training or {})}
         whole = next((one for one in corpora.records(store)
                       if one.get("snapshot", {}).get("name") == names.get(snapshot, snapshot)
@@ -121,10 +121,10 @@ def built(tmp_path, monkeypatch):
                                      "steps": [read_text, *steps], "drafter": {**TINY_DRAFTER, **(drafter or {})}})
 
     corpus_id = snapshot("d", [NewText(text=story, notice=NOTICE) for story in stories])
-    recipe()
-    monkeypatch.setenv("WPT_STORE", store.root.as_uri())  # where each command run also writes its record
-    monkeypatch.setenv("WPT_DEPOT", depot.address)  # the depot the recipes name (by its name: it has no public address)
-    monkeypatch.delenv("WPT_DEPOT_URL", raising=False)
+    order()
+    monkeypatch.setenv("DOCK", store.root.as_uri())  # where each command run also writes its record
+    monkeypatch.setenv("DEPOT", depot.address)  # the depot the orders name (by its name: it has no public address)
+    monkeypatch.delenv("DEPOT_URL", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)  # no live backend, whatever this machine sets
     monkeypatch.setenv("WPT_MAX_RESTARTS", "0")  # wpt train runs in the test's own process, unless a test says
     monkeypatch.chdir(tmp_path)
@@ -141,7 +141,7 @@ def built(tmp_path, monkeypatch):
                     else None))
         return sorted(found, key=lambda run: run.start["started"])
 
-    return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, recipe=recipe,
+    return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, order=order,
                            records=records, snapshot=snapshot, sized=sized, vocabulary=vocabulary["sha256"],
                            tokenizer=tokenizer, data=data_of, names=names)
 
@@ -194,7 +194,7 @@ def trained(request, built, tmp_path, monkeypatch):
                        "tokenizer_version": json.loads(built.tokenizer.to_bytes())["tokenizer_version"]},
                       {"by": "the test", "recipe": TOKENIZER, "version": 1}, on_erasure="note", items=items)
     else:
-        path = tmp_path / "data" / "recipes" / "models" / "d.json"
+        path = tmp_path / "data" / "orders" / "models" / "d.json"
         order = json.loads(path.read_text())
         order["data"]["vocabulary"] = LEARNED
         path.write_text(json.dumps(order))
@@ -208,38 +208,38 @@ def trained(request, built, tmp_path, monkeypatch):
 
 @pytest.fixture
 def s3(tmp_path, monkeypatch):
-    """An S3 store that WPT_STORE now names (moto answers its requests inside
+    """An S3 dock that DOCK now names (moto answers its requests inside
     the test process).
-    Gives store, copy(local), which puts a local store's files into it (the
+    Gives store, copy(local), which puts a local dock's files into it (the
     built corpus, for a command that reads it), and refuse(marker), after which the bucket refuses every group of
     record lines that holds marker."""
     import boto3
     from moto import mock_aws
 
-    from wpt_store import S3Store
+    from dock import S3Dock
 
-    for name, value in {"WPT_STORE_ACCESS_KEY_ID": "test", "WPT_STORE_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
+    for name, value in {"DOCK_ACCESS_KEY_ID": "test", "DOCK_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
                         "XDG_CACHE_HOME": str(tmp_path / "cache"), "LOCALAPPDATA": str(tmp_path / "cache")}.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_store("s3://wpt-test/store")
-        monkeypatch.setenv("WPT_STORE", "s3://wpt-test/store")
+        store = open_dock("s3://wpt-test/store")
+        monkeypatch.setenv("DOCK", "s3://wpt-test/store")
 
         def copy(local):
             for key in local.kind.list(""):
                 store.kind.write(key, local.root / key)
 
         def refuse(marker):
-            real = S3Store._raw_flush_records
+            real = S3Dock._raw_flush_records
 
             def refusing(self):
                 if any(marker in data for additions in self._pending.values() for *_, data in additions):
                     raise OSError("the bucket refused the request")
                 real(self)
 
-            monkeypatch.setattr(S3Store, "_raw_flush_records", refusing)
+            monkeypatch.setattr(S3Dock, "_raw_flush_records", refusing)
 
         yield SimpleNamespace(store=store, copy=copy, refuse=refuse)

@@ -1,9 +1,9 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["wpt-utils"]
+# dependencies = ["wic-utils"]
 #
 # [tool.uv.sources]
-# wpt-utils = { path = "../packages/wpt-utils", editable = true }
+# wic-utils = { path = "../packages/wic-utils", editable = true }
 # ///
 """A sign-off on every commit of the range, what a push sends: each commit
 (merge commits aside) carries `Signed-off-by: <its author>`, by which the
@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 from common import ROOT, Part, always, base_of, main
-from wpt_utils.lines import ERROR, say
+from wic_utils.lines import ERROR, say
 
 
 def git(*args) -> str:

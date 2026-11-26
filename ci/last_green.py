@@ -1,9 +1,9 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["wpt-utils"]
+# dependencies = ["wic-utils"]
 #
 # [tool.uv.sources]
-# wpt-utils = { path = "../packages/wpt-utils", editable = true }
+# wic-utils = { path = "../packages/wic-utils", editable = true }
 # ///
 """The commit of the last successful ci run of a branch, which CI compares
 with, written as `commit=SHA` into the file GITHUB_OUTPUT names; no green run
@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 from common import ROOT
-from wpt_utils.lines import WARNING, say
+from wic_utils.lines import WARNING, say
 
 
 def last_green(repository, branch, event) -> str | None:

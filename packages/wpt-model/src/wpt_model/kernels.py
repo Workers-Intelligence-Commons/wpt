@@ -123,7 +123,7 @@ def _installed(name):
 
 def _try(chosen, device):
     """Both operations once, forward and backward, on a small input of the
-    recipes' shapes, with gradients on even when the first GPU pass runs
+    orders' shapes, with gradients on even when the first GPU pass runs
     under torch.no_grad (generation, evaluation)."""
     with torch.enable_grad():
         _try_both(chosen, device)

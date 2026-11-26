@@ -3,15 +3,17 @@
 api module, which erasures it carried out since the mark it saw last there,
 kept in the queue's file, and writes what each did into the note of every
 delivery whose items hold a text it reached (freight.deliveries.reached):
-stale, or the erasure noted, as the delivery's on_erasure says. It asks
-before every job and whenever `freight check` runs.
+stale, or the erasure noted, as the delivery's on_erasure says, and marks
+stale every corpus under corpora/ that holds such a text
+(freight.corpora.mark_stale). It asks before every job and whenever
+`freight check` runs.
 
-    check(queue, depot, dock)   {mark, erasures, stale, noted}
+    check(queue, depot, dock)   {mark, erasures, stale, noted, corpora}
 """
 
-from wpt_depot import api as depot_api
+from depot import api as depot_api
 
-from . import deliveries
+from . import corpora, deliveries
 
 
 def check(queue, depot: str, dock) -> dict:
@@ -19,13 +21,15 @@ def check(queue, depot: str, dock) -> dict:
     since the queue's mark for it, write what each did into the deliveries
     of dock, and keep the depot's mark now: {mark, erasures (their ids),
     stale (the keys of the deliveries marked stale), noted (those whose note
-    took an erasure in)}."""
+    took an erasure in), corpora (the ids of the corpora under corpora/
+    marked stale)}."""
     answer = depot_api.erasures(depot, queue.mark(depot))
-    stale, noted = set(), set()
+    stale, noted, built = set(), set(), set()
     for one in answer["erasures"]:
         marked = deliveries.mark_reached(dock, one["texts"], [one["id"]])
         stale.update(marked["stale"])
         noted.update(marked["noted"])
+        built.update(corpora.mark_stale(dock, one["texts"], [one["id"]]))
     queue.keep_mark(depot, answer["mark"])
     return {"mark": answer["mark"], "erasures": [one["id"] for one in answer["erasures"]],
-            "stale": sorted(stale), "noted": sorted(noted)}
+            "stale": sorted(stale), "noted": sorted(noted), "corpora": sorted(built)}

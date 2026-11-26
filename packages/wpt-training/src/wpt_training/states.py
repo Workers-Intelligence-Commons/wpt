@@ -1,5 +1,5 @@
 """A step's checkpoint state as a safetensors file, the only form a state
-takes on disk, in the store and on the link between the wpt manager and a
+takes on disk, on the dock and on the link between the wpt manager and a
 gpu worker: loading one never runs code.
 
 A state is what a step's parts hand to a checkpoint: dicts, lists, tuples,

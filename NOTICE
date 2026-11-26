@@ -1,13 +1,13 @@
 WPT notice
 
-This repository holds the code, documents and recipes of WPT (Workers'
+This repository holds the code, documents and orders of WPT (Workers'
 Pre-trained Transformer). It holds no training data and no weights: the
 texts a model trains on live in depots.
 
 
 Licenses
 
-- Code, documents and recipes: AGPL-3.0-or-later, see LICENSE.
+- Code, documents and orders: AGPL-3.0-or-later, see LICENSE.
 - Weights of a WPT model: AGPL-3.0-or-later.
 - Data built by WPT's tools (corpora and vocabularies): AGPL-3.0-or-later;
   each text's content inside keeps its own license.

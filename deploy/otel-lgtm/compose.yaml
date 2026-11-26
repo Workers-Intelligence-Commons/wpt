@@ -1,7 +1,7 @@
 # The live view of WPT's command runs: Grafana's otel-lgtm image (an
 # OpenTelemetry collector with Grafana, Tempo, Loki and Prometheus), one per
 # machine. docs/observability.md says how to start it and point the commands
-# at it; the record of every run is in the store either way.
+# at it; the record of every run is on the dock either way.
 #
 # Two settings, from the environment or the .env file at the repository's
 # root (never committed):

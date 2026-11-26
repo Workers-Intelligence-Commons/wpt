@@ -2,7 +2,7 @@
 step starts from, writing fewer tokens, on the tasks finish-tasks learns
 (texts of kind task tagged `finish-tasks`; docs/training.md, "The
 finish-tasks-with-less-writing step"). It comes after finish-tasks in a
-recipe. The model first makes 8 reference attempts at each task; then
+order. The model first makes 8 reference attempts at each task; then
 finish-tasks's learning, each task in its full form only, a passing
 attempt's reward growing as it gets shorter than the reference's."""
 

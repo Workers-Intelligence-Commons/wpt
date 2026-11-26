@@ -1,6 +1,6 @@
 """The gpu worker and its link to the wpt manager (docs/machines.md).
 
-A training run has three roles: the wpt manager, which holds the store,
+A training run has three roles: the wpt manager, which holds the dock,
 the tokenizer, the run's record and the sandboxes; a gpu worker, which does
 only the GPU work; sandboxes, the Docker containers attempts run in. The
 worker deals only in token ids, holds no store credentials, and runs the

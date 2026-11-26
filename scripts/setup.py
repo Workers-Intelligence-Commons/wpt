@@ -27,8 +27,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "wpt-utils" / "src"))  # no library here
-from wpt_utils.lines import WARNING, say
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "wic-utils" / "src"))  # no library here
+from wic_utils.lines import WARNING, say
 
 ROOT = Path(__file__).resolve().parent.parent
 # PCI vendor ids, in order of preference when a machine has several GPUs
@@ -38,7 +38,7 @@ KFD_NODES = Path("/sys/class/kfd/kfd/topology/nodes")  # what the AMD kernel dri
 # gfx_target_version: {chip: (its name, [(setting, value, why)])}
 AMD_SETTINGS = {110502: ("gfx1152, the Radeon 860M", [
     ("HSA_OVERRIDE_GFX_VERSION", "11.5.1", "the build holds no code for this chip; this runs the closest chip's"),
-    ("HIP_LAUNCH_BLOCKING", "1", "the recipes of 32 experts crash in their first update without it")])}
+    ("HIP_LAUNCH_BLOCKING", "1", "the orders of 32 experts crash in their first update without it")])}
 
 
 def gpu_vendors():
@@ -98,17 +98,17 @@ def amd_note(chips):
 
 
 def store_folder():
-    """The local folder WPT_STORE names (environment, else .env at the
-    root), as wpt_store reads it; None when it names no local folder."""
-    # mirrors wpt_store.store_from_settings, which this cannot import: it runs before anything is installed
-    url = os.environ.get("WPT_STORE")
+    """The local folder DOCK names (environment, else .env at the
+    root), as dock reads it; None when it names no local folder."""
+    # mirrors dock.dock_from_settings, which this cannot import: it runs before anything is installed
+    url = os.environ.get("DOCK")
     if not url:
         try:
             lines = (ROOT / ".env").read_text(encoding="utf-8").splitlines()
         except FileNotFoundError:
             lines = []
         for line in map(str.strip, lines):
-            if line and not line.startswith("#") and line.split("=", 1)[0].strip() == "WPT_STORE":
+            if line and not line.startswith("#") and line.split("=", 1)[0].strip() == "DOCK":
                 url = line.split("=", 1)[1].strip().strip("'\"")
     parsed = urlparse(url or "")
     if parsed.scheme != "file":
@@ -122,14 +122,14 @@ def defender_note():
     folders out of Microsoft Defender's scanning."""
     store = store_folder()
     folders = ([str(Path(store))] if store else []) + [tempfile.gettempdir()]
-    named = ("the store (WPT_STORE) and " if store else "") + "the temporary folder where fetches clone"
+    named = ("the dock (DOCK) and " if store else "") + "the temporary folder where fetches clone"
     quoted = ",".join("'" + folder.replace("'", "''") + "'" for folder in folders)
     say(f"\nMicrosoft Defender scans every file and process the fetches create, which can slow them. To leave "
         f"{named} out of its scanning, run in a PowerShell opened as administrator:\n\n"
         f"    Add-MpPreference -ExclusionPath {quoted}\n\n"
         f"Defender then never scans the files in these folders. This script changed nothing.")
     if not store:
-        say("WPT_STORE names no local folder (file://...), so only the temporary folder is listed.")
+        say("DOCK names no local folder (file://...), so only the temporary folder is listed.")
 
 
 def main():

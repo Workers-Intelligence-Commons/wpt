@@ -22,6 +22,13 @@ can become a route without its callers changing.
     check(...)                              mark what the erasures since the last check did to the deliveries
     adopt(key, files, result, about, ...)   files made elsewhere put on the dock as a delivery, with its items
     ADOPTED                                 the start of the key of an adopted delivery
+    corpora(), corpus(given)                the corpora the depot's build made before the freight, which the
+                                            dock keeps under corpora/: every record, the one of an id
+    dataset_corpus(depot, dataset, ...)     the latest such corpus of a dataset, before snapshots
+    corpus_rows(record, table)              the rows of one of such a corpus's tables
+    corpus_fresh(record), corpus_by_kind(record), corpus_triple(record), corpus_canonical(data), CORPUS_RULES
+                                            what such a record says: fresh, its token files by kind, what it was
+                                            built for, and the form of a data section its build key covers
     Refused, Busy, SettingMissing           what a call refuses: a request that cannot be met, a key with a job
                                             queued or running already, a setting named nowhere
 """
@@ -31,8 +38,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from wpt_store import open_store, read_env_file
+from dock.api import open_dock
+from wic_utils.env import read_env_file
 
+from . import corpora as legacy
 from . import deliveries, erasures
 from .jobs import ENDED, Busy, Queue
 from .job import Job
@@ -41,9 +50,11 @@ from .selection import canonical as canonical_selection
 
 ENV_FILE = ".env"
 ADOPTED = deliveries.ADOPTED
-__all__ = ["ADOPTED", "Busy", "Refused", "SettingMissing", "adopt", "cancel", "canonical", "check", "deliveries_on",
-           "delivery", "items", "job", "jobs", "key", "request", "settings", "settings_dock", "settings_home", "wait",
-           "work"]
+CORPUS_RULES = legacy.RULES
+__all__ = ["ADOPTED", "CORPUS_RULES", "Busy", "Refused", "SettingMissing", "adopt", "cancel", "canonical", "check",
+           "corpora", "corpus", "corpus_by_kind", "corpus_canonical", "corpus_fresh", "corpus_rows", "corpus_triple",
+           "dataset_corpus", "deliveries_on", "delivery", "items", "job", "jobs", "key", "request", "settings",
+           "settings_dock", "settings_home", "wait", "work"]
 
 
 class SettingMissing(Exception):
@@ -54,8 +65,8 @@ def settings(home: str | None = None, depot: str | None = None, dock: str | None
              cap: int | None = None, environ=None) -> dict:
     """{home, depot, dock, cap}: each given, else read from the environment,
     else from the .env file of the working folder: FREIGHT_HOME (the
-    freight's own folder: its queue and the jobs' work), WPT_DEPOT (the
-    depot it reads, by its address), WPT_STORE (the dock it delivers on, by
+    freight's own folder: its queue and the jobs' work), DEPOT (the
+    depot it reads, by its address), DOCK (the dock it delivers on, by
     its URL) and FREIGHT_CAP (the bytes the deliveries may take on the dock
     together; none by default). SettingMissing for a home, depot or dock
     named nowhere."""
@@ -64,9 +75,9 @@ def settings(home: str | None = None, depot: str | None = None, dock: str | None
 
     def setting(name):
         return environ.get(name) or file.get(name)
-    found = {"home": home or setting("FREIGHT_HOME"), "depot": depot or setting("WPT_DEPOT"),
-             "dock": dock or setting("WPT_STORE")}
-    for name, variable in (("home", "FREIGHT_HOME"), ("depot", "WPT_DEPOT"), ("dock", "WPT_STORE")):
+    found = {"home": home or setting("FREIGHT_HOME"), "depot": depot or setting("DEPOT"),
+             "dock": dock or setting("DOCK")}
+    for name, variable in (("home", "FREIGHT_HOME"), ("depot", "DEPOT"), ("dock", "DOCK")):
         if not found[name]:
             raise SettingMissing(f"{variable} is not set: put it in the environment or in .env")
     if cap is None and setting("FREIGHT_CAP"):
@@ -197,6 +208,58 @@ def adopt(key: str, files: dict[str, bytes], result: dict, about: dict, *, on_er
     return deliveries.adopt(_dock(settings_dock(dock)), key, files, result, about, on_erasure, items)
 
 
+def corpora(*, dock: str | None = None) -> list[dict]:
+    """The record of every corpus the dock keeps under corpora/, each
+    checked, the last built first (freight.corpora)."""
+    return legacy.records(_dock(settings_dock(dock)))
+
+
+def corpus(given: str, *, dock: str | None = None) -> dict | None:
+    """The record of the corpus under corpora/ whose id is given, or starts
+    with it when only one does; None when none does. ValueError when
+    several do."""
+    return legacy.find(_dock(settings_dock(dock)), given)
+
+
+def dataset_corpus(depot: str, dataset: str, vocabulary: str | None = None, size=legacy.ANY, *, fresh: bool = False,
+                   dock: str | None = None) -> dict | None:
+    """The record of the corpus last built from the dataset of id dataset
+    of the depot of that name, before snapshots, for that vocabulary
+    (sha256) and size (max_tokens) when they are given, a fresh one only
+    with fresh; None without one."""
+    found = _dock(settings_dock(dock))
+    return (legacy.latest_fresh if fresh else legacy.latest)(found, depot, dataset, vocabulary, size)
+
+
+def corpus_rows(record: dict, table: str, *, dock: str | None = None) -> list[dict]:
+    """The rows of one of the tables of the corpus of that record (texts,
+    licenses or notices), in order, each file checked."""
+    return legacy.read_table(_dock(settings_dock(dock)), record, table).to_pylist()
+
+
+def corpus_fresh(record: dict) -> bool:
+    """Whether the corpus of that record is neither stale nor deleted, and holds its token files by kind."""
+    return legacy.fresh(record)
+
+
+def corpus_by_kind(record: dict) -> bool:
+    """Whether the corpus of that record holds its token files by kind."""
+    return legacy.by_kind(record)
+
+
+def corpus_triple(record: dict) -> list:
+    """What the corpus of that record was built for: [its dataset's id or
+    None, its vocabulary's sha256, its size or None]."""
+    return list(legacy.triple(record))
+
+
+def corpus_canonical(data: dict) -> dict:
+    """A data section in the form the build key of a corpus under corpora/
+    covers (freight.corpora.canonical). Refused for one no corpus was built
+    for."""
+    return legacy.canonical(data)
+
+
 def settings_home(home: str | None) -> str:
     environ_home = home or os.environ.get("FREIGHT_HOME") or read_env_file(ENV_FILE).get("FREIGHT_HOME")
     if not environ_home:
@@ -205,15 +268,15 @@ def settings_home(home: str | None) -> str:
 
 
 def settings_dock(dock: str | None) -> str:
-    found = dock or os.environ.get("WPT_STORE") or read_env_file(ENV_FILE).get("WPT_STORE")
+    found = dock or os.environ.get("DOCK") or read_env_file(ENV_FILE).get("DOCK")
     if not found:
-        raise SettingMissing("WPT_STORE is not set: put it in the environment or in .env")
+        raise SettingMissing("DOCK is not set: put it in the environment or in .env")
     return found
 
 
 def _dock(url: str):
     """The dock of that URL, its keys read from the environment or .env."""
-    return open_store(url, env_file=ENV_FILE)
+    return open_dock(url, env_file=ENV_FILE)
 
 
 def _made(folder: Path) -> Path:

@@ -1,0 +1,21 @@
+[project]
+name = "depot-app"
+version = "0.1.0"
+description = "The depot command and the depot's web app: two controllers over the depot's services"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+# depot: the depot's services; dock: the backups (depot backup, depot restore), the corpora an upgrade from a
+# format before snapshots reads, and the corpora the frozen dataset routes send, each through dock.api only;
+# wic-utils: printed lines, the outside programs (Bun), every web request; jsonschema: the web app checks every
+# request and answer against its route's schema
+dependencies = ["depot", "dock", "wic-utils", "jsonschema>=4.23"]
+
+[project.scripts]
+depot = "depot_app:entry"
+
+[tool.uv.build-backend]
+module-name = "depot_app"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

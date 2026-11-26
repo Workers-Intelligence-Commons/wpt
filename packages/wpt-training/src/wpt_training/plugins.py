@@ -7,7 +7,7 @@
     a step       what is done to the model: a file (steps/) that chooses a method, an
                  environment, the kinds of texts it reads, an optimizer with its
                  settings, the parts it locks, and its settings' defaults; load_step
-                 reads a recipe's entry into a Step
+                 reads an order's entry into a Step
 
 Each is a Python file, a built-in by its name or any path:
 
@@ -32,7 +32,7 @@ Each is a Python file, a built-in by its name or any path:
 A method reads one kind of examples and an environment gives one; a step
 whose method reads what its environment does not give is refused, and so
 is any optimizer whose start refuses the model. A step names the kinds of
-texts it reads (wpt_depot.kinds: the format of a text, such as plain,
+texts it reads (depot.kinds: the format of a text, such as plain,
 conversation or task), each one its environment's KINDS can read, and
 its environment reads the corpus's texts of those kinds alone (data.kinds,
 context.kinds, check_corpus's kinds); a step that names none, or one its
@@ -43,7 +43,7 @@ A step trains on a gpu worker (wpt_worker; docs/machines.md), which has no
 tokenizer, no Docker and no store of its own: everything it reads comes
 from the wpt manager. An environment that needs what only the manager
 holds (the tokenizer, the sandboxes) has a part there: manager(settings,
-context), given a Context (the store, the corpus's record, the tokenizer,
+context), given a Context (the dock, the corpus's record, the tokenizer,
 the run's record, and writer(...), which has the model on the gpu worker
 write tokens), returns an object whose methods the environment's part on
 the worker calls through data.call(name, *arguments). Arguments and
@@ -64,7 +64,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from wpt_utils.files import sha256_file
+from wic_utils.files import sha256_file
 from wpt_utils.settings import typed
 
 HERE = Path(__file__).parent
@@ -309,9 +309,9 @@ class Stage:
 
 
 def step_seed(seed: int, number: int) -> int:
-    """The recipe's seed mixed with the step's number: what the step's
+    """The order's seed mixed with the step's number: what the step's
     draws (conversations' order, tasks' order, tools offered, sampled
-    tokens) are seeded by, so two identical steps of one recipe draw
+    tokens) are seeded by, so two identical steps of one order draw
     differently."""
     digest = hashlib.sha256(repr((seed, number)).encode()).digest()
     return int.from_bytes(digest[:8], "little") & (2**63 - 1)
@@ -320,12 +320,12 @@ def step_seed(seed: int, number: int) -> int:
 @dataclass
 class Data:
     """What an environment's part on the gpu worker reads its examples
-    from: the step's name, the store (the manager's, as the worker reads
+    from: the step's name, the dock (the manager's, as the worker reads
     it: wpt_worker.job.LinkStore), the corpus's record, the model's
     configuration, the strategy, the run's telemetry (its record), log (a
-    no-op except in the main process), the recipe's seed, the step's number
-    in the recipe (from 1), which the step's draws read with the seed
-    (step_seed) so that two steps of one recipe draw other windows,
+    no-op except in the main process), the order's seed, the step's number
+    in the order (from 1), which the step's draws read with the seed
+    (step_seed) so that two steps of one order draw other windows,
     conversations and tasks, the options that change how the examples are
     read (stream_shards: with --stream, the shards in use at once;
     micro_batch: the examples per pass in one process, 0 for its whole
@@ -357,8 +357,8 @@ class Data:
 @dataclass
 class Context:
     """What an environment's part on the wpt manager reads: the step's
-    name, the store, the corpus's record, the model's tokenizer and
-    configuration, the run's telemetry (its record), log, the recipe's seed
+    name, the dock, the corpus's record, the model's tokenizer and
+    configuration, the run's telemetry (its record), log, the order's seed
     and the step's number, and writer(prompt, rows, *, temperature, top_k,
     stops, routes), a writer (wpt_inference.Writer's write and routes) whose
     tokens the model writes on the gpu worker, drawn from the generator the
@@ -454,13 +454,13 @@ class Plugin:
     file: str     # a built-in by its package path, another file by its name only
     sha256: str
     module: object
-    given: str = None  # the path a recipe, a step's file or a command gave for it; None for a built-in
+    given: str = None  # the path an order, a step's file or a command gave for it; None for a built-in
 
     def record(self) -> dict:
         return {"name": self.name, "file": self.file, "file_sha256": self.sha256}
 
 
-# {a file a recipe or a command names: where this process reads it from}: the gpu worker's copies of
+# {a file an order or a command names: where this process reads it from}: the gpu worker's copies of
 # the files outside the repository that the manager sent (wpt_worker); empty elsewhere
 SENT = {}
 
@@ -511,7 +511,7 @@ def _typed(defaults, overrides, where):
 
 @dataclass(frozen=True)
 class Step:
-    """A recipe's step, every file read and every setting typed: its file
+    """An order's step, every file read and every setting typed: its file
     and name, its method, environment and optimizer (Plugins), its settings
     (all of them, then those of its method and of its environment), its
     optimizer's settings, the parts it locks, and the kinds of texts it
@@ -594,7 +594,7 @@ class Step:
 
 
 def load_step(entry: dict, parts) -> Step:
-    """The Step of a recipe's `steps` entry: {"step": NAME} with, optionally,
+    """The Step of an order's `steps` entry: {"step": NAME} with, optionally,
     "optimizer" ({"name", "settings"}), "settings" and "locked", each left
     out taking the step file's own (OPTIMIZER, SETTINGS, LOCKED). The kinds
     of texts it reads are its file's KINDS, each one its environment's

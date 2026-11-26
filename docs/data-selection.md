@@ -2,7 +2,7 @@
 
 This document covers what WPT trains on: the texts of a depot, the tags
 that group them, the snapshots that fix which texts a model may read, and
-the corpus a model recipe's data section is built into from a snapshot. How a depot stores them is in
+the corpus a model order's data section is built into from a snapshot. How a depot stores them is in
 [architecture.md](architecture.md), "The depot"; which licenses a text may
 carry and how decisions work is in [licenses.md](licenses.md).
 
@@ -58,11 +58,11 @@ changes but by an erasure, which cuts its passages from every version
 list of its parts, so a text of any size is one text
 ([architecture.md](architecture.md), "Contents").
 
-Its licenses change only through `wpt depot relicense`, which starts its
+Its licenses change only through `depot relicense`, which starts its
 decisions over ([licenses.md](licenses.md), "Who decides").
 
-Its content changes through `wpt depot content ID FILE` or the content of
-the Texts page of `wpt depot web`: a plain text in a text editor whose find
+Its content changes through `depot content ID FILE` or the content of
+the Texts page of `depot web`: a plain text in a text editor whose find
 and replace, by words or a regular expression, works inside that text
 only, an item through the form of its kind's schema, which its new content
 must still match. Saving is the content change alone, and says so before
@@ -80,7 +80,7 @@ read. The translation runs in the browser with Mozilla's models, from the
 language Firefox's detector finds in the text, else the one a tag names.
 Nothing of it is saved: it is never content, data or training material.
 
-The plain texts of many texts change at once through `wpt depot
+The plain texts of many texts change at once through `depot
 content-file FILE`, or `POST /api/texts/content`
 ([architecture.md](architecture.md), "Two interfaces"). FILE holds one
 JSON object per line, one line per text,
@@ -109,7 +109,7 @@ passage an erasure removed from that text. The depot reads the lines a few
 at a time and stores each text in turn, so the program's memory is that of
 one text whatever the number of texts.
 
-Its credits, tags and notice change through `wpt depot credits ID` or
+Its credits, tags and notice change through `depot credits ID` or
 "Edit credits" on the Texts page, whose review panel also toggles
 tags. The change is a decision under
 review, with the person's declaration, whose reason the depot writes,
@@ -118,7 +118,7 @@ counting, so the text keeps its status
 ([licenses.md](licenses.md), "Who decides"). A changed notice is stored
 once, as on an add.
 
-The credits of many texts change at once through `wpt depot credits-file
+The credits of many texts change at once through `depot credits-file
 FILE`, or `POST /api/texts/credits` ([architecture.md](architecture.md),
 "Two interfaces"). FILE holds one JSON object per line, one line per text,
 
@@ -203,7 +203,7 @@ parts that are not empty, in the order first, last. An author whose parts
 are both empty is dropped, and a text left with no author has none.
 
 `scripts/source_credits.py` reads a depot, read only, and writes the
-files of `wpt depot credits-file` by these rules, one family of sources
+files of `depot credits-file` by these rules, one family of sources
 at a time, in files of at most 350,000 lines. Each line names under
 `was` the title or authors it read, so a title set after the reading
 stays. It learns which source each text came from from the ledgers of the
@@ -216,7 +216,7 @@ such as `machine-made` 0.03 or `source-rank` 4. Each score also records the
 content version of the text it was made from. A text has at most one score
 of each name, and a text without scores has none at all.
 
-Scores change through `wpt depot scores FILE`, or `POST /api/texts/scores`
+Scores change through `depot scores FILE`, or `POST /api/texts/scores`
 ([architecture.md](architecture.md), "Two interfaces"). One change covers
 many texts: FILE holds one JSON object per line, one line per text,
 
@@ -241,13 +241,13 @@ depot takes no more of the program's memory and no larger record of the
 change than scoring a few.
 
 One score is set on, or removed from, every text a condition matches
-through `wpt depot score NAME (--value V | --remove) WHERE`, or `POST
+through `depot score NAME (--value V | --remove) WHERE`, or `POST
 /api/texts/score` on a selection. A score it sets is made from each text's
 current content version. It is recorded as a change of scores is, one
-decision under review on every text it changes. `wpt depot score-names`,
+decision under review on every text it changes. `depot score-names`,
 or `GET /api/scores`, lists every name of a score a text has, with how
 many texts have it, read from the depot's counts at once.
-`wpt depot score-values NAME`, or `GET /api/scores/{name}/values`, gives
+`depot score-values NAME`, or `GET /api/scores/{name}/values`, gives
 the values the score has across every current text, read at once from
 the depot's counts, each to three significant digits: how many have it,
 its smallest and largest value, and its most frequent values. The review
@@ -263,13 +263,13 @@ from.
 
 ### Measures
 
-`wpt depot measure WHERE --out FOLDER [--lines N]` measures how much of
+`depot measure WHERE --out FOLDER [--lines N]` measures how much of
 each plain text the SQL condition WHERE matches is writing, and writes
 the two values as scores files of at most N lines (1,000,000 by default)
 into the new folder FOLDER, each value made from the text's current
-content version; `wpt depot scores` records each file. It only reads the
+content version; `depot scores` records each file. It only reads the
 depot, and leaves items out. The measures read the text alone, never its
-tags, its kind or its language (`wpt_depot/measures.py`):
+tags, its kind or its language (`depot/measures.py`):
 
 - `symbols`: the share of the text's characters that are neither a
   letter, a mark, a digit nor white space, in any script. An underscore is
@@ -295,11 +295,11 @@ decision, a revision, a snapshot, an erasure. Each revision and each
 decision records the number of the change that made it, so the depot can
 be read as it was at any change number, which a snapshot names.
 
-`wpt depot add FILE` adds one text, under review, with its licenses,
-notice, tags and credits; `wpt depot show ID` shows it with its decisions
+`depot add FILE` adds one text, under review, with its licenses,
+notice, tags and credits; `depot show ID` shows it with its decisions
 and revisions, and `--from N --characters M` shows one passage of a plain
-text of any size; `wpt depot sql "SELECT ..."` answers any read query over
-the depot's tables. `wpt depot web` does the same as pages
+text of any size; `depot sql "SELECT ..."` answers any read query over
+the depot's tables. `depot web` does the same as pages
 ([architecture.md](architecture.md), "Two interfaces").
 
 Duplicate texts are kept. Nothing judges a text's content: people decide
@@ -397,7 +397,7 @@ Structure tags: whoever adds a text writes the tags it has, and the depot
 keeps them as written.
 
 A hand-picked selection of texts is a tag: tick the texts on the Texts
-page of `wpt depot web` and add a tag to them, or remove one, from its bulk
+page of `depot web` and add a tag to them, or remove one, from its bulk
 bar (`POST /api/texts/retag`). Existing tags are one click each, and only a
 new tag is typed. The change is one decision under review on every text it
 changes, whose reason the depot writes, `tags changed: added x; removed y`,
@@ -407,7 +407,7 @@ gains or loses, a row of its decisions, its rows in the tag listings and
 the copy of its tags on its current revision written again in place, and no
 new revision, so the page shows the texts changed, the rows and bytes written and the time
 before the confirming click, and refuses to write when that cost grew
-since it was shown. From the command line, `wpt depot retag WHERE --add T
+since it was shown. From the command line, `depot retag WHERE --add T
 --remove T` makes the same change over every text an SQL condition
 matches: it says the same cost and writes only with `--yes`. A text a
 change would leave as it is gets nothing. In a clone, a change that reaches a text the upstream owns is refused whole.
@@ -416,13 +416,13 @@ change would leave as it is gets nothing. In a clone, a change that reaches a te
 
 A snapshot is a change number, named by the UTC time it was made: the
 texts admitted at that change, each read at its revision as of it, so it reads the same whatever
-its texts did since. A model recipe names the snapshot its corpus is built
+its texts did since. A model order names the snapshot its corpus is built
 from ("Corpora", below), so a snapshot is what fixes the texts a model may
-read. A snapshot holds every admitted text of every kind; a recipe chooses
+read. A snapshot holds every admitted text of every kind; an order chooses
 among them by kind and by tag.
 
-`wpt depot snapshot new [--note TEXT]`, or "Make a snapshot" on the
-Snapshots page of `wpt depot web`, makes one of the texts admitted now.
+`depot snapshot new [--note TEXT]`, or "Make a snapshot" on the
+Snapshots page of `depot web`, makes one of the texts admitted now.
 The depot names it by the UTC time it makes it, `YYYY-MM-DDTHH-MM-SSZ`
 (`2026-11-26T14-03-27Z`): a second snapshot made in the same second waits
 for the next one, so a name is unique among the snapshots of the depot that
@@ -437,7 +437,7 @@ texts come from the index of the admitted texts and its summary from the
 depot's counts ([architecture.md](architecture.md), "Snapshots"), so it
 stores a fraction of a byte a text and reads several hundred thousand
 texts a second.
-`wpt depot snapshot list` lists them and `wpt depot snapshot show NAME`
+`depot snapshot list` lists them and `depot snapshot show NAME`
 shows one.
 
 A snapshot keeps its texts as sets of the numbers of their ids, one for
@@ -460,7 +460,7 @@ refused after a snapshot stays in it.
 
 The page of a snapshot shows its name, its change, its digest with a copy
 button, what it holds by kind and by tag, and the texts erased since: what
-a recipe's data section names it by.
+an order's data section names it by.
 
 ### A snapshot's digest
 
@@ -487,9 +487,9 @@ check every snapshot they receive against its digest, the freight checks
 the request's digest against the snapshot's, and a read checks the sets once in
 each process.
 
-## The data section of a model recipe
+## The data section of a model order
 
-A model recipe's data section ([model.md](model.md), "Model recipes")
+A model order's data section ([model.md](model.md), "Model orders")
 says what its corpus takes: the depot by its public address, the snapshot
 by its name with the change and digest it reads, the kinds it takes (none:
 every kind), its shares, its size (`total_tokens`) and its vocabulary:
@@ -499,12 +499,12 @@ snapshot, chosen with its shares ([tokenizer.md](tokenizer.md), "A
 vocabulary in an order"). It never picks single texts: a hand-picked
 selection is a tag, which a share names.
 
-`wpt build-resources RECIPE` asks the freight for the section's vocabulary
+`wpt build-resources ORDER` asks the freight for the section's vocabulary
 and corpus, which the freight chooses by the rules below
-([api/freight.md](api/freight.md)), and `wpt train RECIPE` finds both on
+([api/freight.md](api/freight.md)), and `wpt train ORDER` finds both on
 the dock.
 
-Recipes are files a person keeps; the depot reads no code repository. The
+Orders are files a person keeps; the depot reads no code repository. The
 snapshot's page gives the name, change and digest its data section
 writes.
 
@@ -588,7 +588,7 @@ one, but not the start of the larger one's texts.
 
 A plain text longer than 1,048,576 characters, such as a repository the
 depot holds as one text, comes into a corpus as pieces of about that
-length (`wpt_depot/pieces.py`). The depot keeps the text whole. A piece
+length (`depot/pieces.py`). The depot keeps the text whole. A piece
 ends right before a line that begins with `=== `, the line that begins
 each file of a repository, when one comes within the next piece's length;
 otherwise before the first line start there, or at the length itself when
@@ -608,22 +608,22 @@ every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
-`wpt build-resources RECIPE` asks the freight for the corpus of a model
-recipe, or of a series at its largest size, which it delivers on the dock
-(`WPT_STORE`): what training reads ([api/freight.md](api/freight.md)). The
+`wpt build-resources ORDER` asks the freight for the corpus of a model
+order, or of a series at its largest size, which it delivers on the dock
+(`DOCK`): what training reads ([api/freight.md](api/freight.md)). The
 depot builds no corpus. The rules below are the build's
-(`wpt_depot.corpus`), which the freight's choice follows, and the layout
-of a corpus the store's `corpora/` holds. The
-recipe names this depot, or the upstream it follows, by its public
+(`depot.corpus`), which the freight's choice follows, and the layout
+of a corpus the dock's `corpora/` holds. The
+order names this depot, or the upstream it follows, by its public
 address, and a snapshot of it by name. A rented GPU machine only reads the
 corpus and trains ([machines.md](machines.md)). What a build takes is a
-recipe's data section: the snapshot (its name, and the change number and
+order's data section: the snapshot (its name, and the change number and
 digest it reads, which the build checks), the kinds it takes (none: every
 kind), the shares, the size (`total_tokens`, none for every token) and the
 vocabulary (its sha256 and size). A snapshot whose change number or
 digest is not the section's, or a vocabulary whose sha256 or size is not,
 refuses the build and names both: "snapshot S of depot D reads change N
-with digest H; the recipe says M, G".
+with digest H; the order says M, G".
 
 The build is a stream. It first puts every text of the snapshot in the
 corpus's order, in memory (see "The order" below). It then reads the texts
@@ -634,7 +634,7 @@ share's texts by group (see "Filling a part"), which reads every text's
 row but only the contents of the texts whose tokens the choice needs.
 The build tokenizes its first 16 MiB of texts in its own process, and
 worker processes the rest, so a small size of a large snapshot never
-waits for workers to start; it takes their results in that order. It uploads each token file to the store as soon as it is
+waits for workers to start; it takes their results in that order. It uploads each token file to the dock as soon as it is
 full, with the part of the `texts` table that lists its texts, and
 deletes its local copies, so the local disk it takes stays bounded
 whatever the snapshot's size. A build cut short goes on from the first
@@ -698,7 +698,7 @@ The rows of a corpus name each text's depot by the name of the depot that
 made the snapshot, never by a file or an address, so the same snapshot
 builds the same bytes wherever its file is, and a clone holding its
 upstream's snapshot builds the same corpus. The record names the depot by
-the address the recipe's data section names, which on a clone is its
+the address the order's data section names, which on a clone is its
 upstream's, and the snapshot by its id, name, owner, change number and
 digest.
 
@@ -718,7 +718,7 @@ these tables:
 - `licenses` and `notices`: the license texts and notices those texts
   name, copied from the depot.
 
-Everything goes under `corpora/<build key>/` in the store, with the
+Everything goes under `corpora/<build key>/` on the dock, with the
 record, `corpus.json`, written last, so a build that fails leaves no
 corpus. The build key covers the snapshot's id and digest, the data
 section's kinds, shares and size, the vocabulary's sha256 and the build's
@@ -746,12 +746,12 @@ ends: when it reached a text the corpus took, the corpus is written stale
 and deletes no other corpus.
 
 `wpt train` reads the corpus it is given, or else the corpus delivery its
-recipe names on the dock, and without one the latest corpus the depot built
-for the recipe's snapshot, data section and size; with neither it refuses
+order names on the dock, and without one the latest corpus the depot built
+for the order's snapshot, data section and size; with neither it refuses
 and says to run `wpt build-resources` ([training.md](training.md),
-"Training"). Training never builds or queues anything. A corpus is a cache: building the same recipe
+"Training"). Training never builds or queues anything. A corpus is a cache: building the same order
 on the same snapshot gives it again, so a model's reproducibility rests on
-the depot's address, the snapshot and the recipe, never on a kept corpus.
+the depot's address, the snapshot and the order, never on a kept corpus.
 
 ### Conversations that quote texts
 
@@ -825,6 +825,6 @@ model").
 
 ## Model size
 
-The repository is recipes, scripts and environment setups usable for any
+The repository is orders, scripts and environment setups usable for any
 model size. Flags and features let a smaller model train on a subset (for
 example a computer-use subset for every training step).

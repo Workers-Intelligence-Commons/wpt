@@ -3,18 +3,18 @@
 ## Training
 
 ```sh
-uv run wpt depot snapshot new           # the texts admitted now, named by the UTC time ("Make a snapshot" on the Snapshots page)
-uv run wpt build-resources NAME         # the vocabulary and corpus of data/recipes/models/NAME.json (SERIES: for a series)
+uv run depot snapshot new           # the texts admitted now, named by the UTC time ("Make a snapshot" on the Snapshots page)
+uv run wpt build-resources NAME         # the vocabulary and corpus of data/orders/models/NAME.json (SERIES: for a series)
 uv run wpt train NAME
 ```
 
-The recipe's data section names the snapshot by its name, change and
+The order's data section names the snapshot by its name, change and
 digest, and its vocabulary by its sha256 or as one to learn
 ([tokenizer.md](tokenizer.md), "A vocabulary in an order"). The
-snapshot's page in `wpt depot web` gives its name, change and digest, to
-write in the data section of `data/recipes/models/NAME.json` and commit
+snapshot's page in `depot web` gives its name, change and digest, to
+write in the data section of `data/orders/models/NAME.json` and commit
 ([data-selection.md](data-selection.md), "The data section of a model
-recipe").
+order").
 
 A run takes minutes to days, so start it detached from the terminal or SSH
 session, which would otherwise end it and lose its output:
@@ -25,40 +25,40 @@ In a container, `scripts/detach.sh` also copies the log's lines to the
 standard output of the container's main process, which is what a rented
 machine's console shows, until the run ends.
 
-`wpt train` takes a model recipe (`data/recipes/models/<name>.json`,
+`wpt train` takes a model order (`data/orders/models/<name>.json`,
 `SERIES:SIZE`, a size of a model series, or `SERIES:SIZE:RUN`, another run
-of that size; see [model.md](model.md), "Model recipes") and the id of a
-corpus, or a start of it, and never builds. `wpt build-resources RECIPE`
+of that size; see [model.md](model.md), "Model orders") and the id of a
+corpus, or a start of it, and never builds. `wpt build-resources ORDER`
 (`SERIES:` for a series: the one corpus every size reads, at its largest
-size) asks the freight for the recipe's vocabulary, when it learns one,
-then for its corpus, which the freight delivers on the dock, the store
-`WPT_STORE` names ([api/freight.md](api/freight.md)). Without an id,
-`wpt train` reads the corpus delivery whose key the recipe gives: the key
+size) asks the freight for the order's vocabulary, when it learns one,
+then for its corpus, which the freight delivers on the dock, the dock
+`DOCK` names ([api/freight.md](api/freight.md)). Without an id,
+`wpt train` reads the corpus delivery whose key the order gives: the key
 of the request its data part makes (the snapshot's change and digest, its
 kinds, shares, `data.total_tokens` as the size in tokens, for a series the
 total tokens of its largest size, and the key of its vocabulary's
-delivery), worked out from the recipe alone (`wpt.resources`). It reads no
-depot. Without that delivery, a recipe that names its vocabulary by its
-sha256 reads the latest corpus the depot built into the store's
-`corpora/` from the recipe's snapshot (its name, change and digest), depot,
+delivery), worked out from the order alone (`wpt.resources`). It reads no
+depot. Without that delivery, an order that names its vocabulary by its
+sha256 reads the latest corpus the depot built onto the dock's
+`corpora/` from the order's snapshot (its name, change and digest), depot,
 kinds, shares and vocabulary, at its size, under the selection rules of
 now ([data-selection.md](data-selection.md), "Corpora"). With neither, or with a stale one, the run is refused, saying
 to run `wpt build-resources`, and nothing is built or queued. A corpus
 given by its id (`WPT_CORPUS` or the corpus option), of a delivery or of
-the store's `corpora/`, must be made from the recipe's snapshot (its name,
-change and digest) with the recipe's kinds, shares and vocabulary, at any
+the dock's `corpora/`, must be made from the order's snapshot (its name,
+change and digest) with the order's kinds, shares and vocabulary, at any
 size; any other is refused.
 
-A recipe of the legacy shape names a dataset of a depot of format 12 or
-older instead, and reads the corpus the store kept of it ("Models trained
+An order of the legacy shape names a dataset of a depot of format 12 or
+older instead, and reads the corpus the dock kept of it ("Models trained
 before snapshots", below). The vocabulary is the corpus's, so
 a size of a model series is derived for the vocabulary the corpus holds. Everything that changes the
-resulting model comes from the recipe: the architecture's numbers, the
+resulting model comes from the order: the architecture's numbers, the
 seed, the steps ("Steps", below) with their settings, and the drafter. The
 command-line options say only how the hardware runs it; each also comes
 from an environment variable (`WPT_` + the option name in capitals,
-`--micro-batch` -> `WPT_MICRO_BATCH`; the recipe and the corpus id from
-`WPT_RECIPE` and `WPT_CORPUS`). `uv run wpt train --help` lists them.
+`--micro-batch` -> `WPT_MICRO_BATCH`; the order and the corpus id from
+`WPT_ORDER` and `WPT_CORPUS`). `uv run wpt train --help` lists them.
 
 The corpus holds everything the steps read: the token files of its plain
 texts and of its conversations, each kind's apart, and its tasks. Its
@@ -70,17 +70,17 @@ corpus is built again.
 
 `wpt train` trains through gpu workers, one per machine
 ([machines.md](machines.md)): each worker's job runs the steps on its GPUs, and `wpt train` answers it from
-the store, the tokenizer and the run's record. The job's main process
-records the run in the store, through that link: what it read, every step
+the dock, the tokenizer and the run's record. The job's main process
+records the run on the dock, through that link: what it read, every step
 and every update's loss, duration and learning rates, every evaluation and
 checkpoint, every step result kept or reused, and every file it wrote
-([observability.md](observability.md)). A record the store refuses stops
+([observability.md](observability.md)). A record the dock refuses stops
 the run with exit code 3, which is never restarted. When the training
 process's record breaks (a record call refused, or on S3 a group of its
 lines refused in the background), it finishes its update unrecorded and
 every process stops after it, as for Ctrl+C: the checkpoint is saved, and
 `--resume` continues from it without losing an update. The broken record
-does not name that checkpoint (nor, with `--run`, the store's record of it). When
+does not name that checkpoint (nor, with `--run`, the dock's record of it). When
 `wpt train`'s own record breaks while the job trains (on S3, a group of
 its lines refused in the background), it stops the job as Ctrl+C does: its
 processes finish their update and save the checkpoint, and `wpt train`
@@ -88,10 +88,10 @@ exits with code 3.
 
 ## Steps
 
-A recipe's `steps` list says what is done to the model, in order, on one
-model: each step starts from the weights the one before it left. The recipe
+An order's `steps` list says what is done to the model, in order, on one
+model: each step starts from the weights the one before it left. The order
 has one `seed`; each step mixes its number in the list into it, so two
-identical steps in one recipe draw different windows, conversations and
+identical steps in one order draw different windows, conversations and
 tasks. A step that continues the one before it draws as that step does
 ("Continued steps").
 
@@ -162,9 +162,9 @@ The built-in steps:
 | `finish-tasks` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `routers`, `balancing` |
 | `finish-tasks-with-less-writing` | `grpo` | `agent-tasks` | `by-part`, lr 1e-6, no weight decay, constant schedule, early stop on (no evaluations, so it never fires), no average | `routers`, `balancing` |
 
-A recipe whose steps are `read-text` alone makes a base model. The model's
+An order whose steps are `read-text` alone makes a base model. The model's
 context (`config.json`'s `block_size`) is the last window length of the
-last step that reads text windows; a recipe with no such step is refused.
+last step that reads text windows; an order with no such step is refused.
 
 ### Locked parts
 
@@ -181,27 +181,27 @@ nothing to train is refused.
 
 ### Step results and reuse
 
-After each step, the store keeps its result as
+After each step, the dock keeps its result as
 `cache/steps/<fingerprint>`: a JSON record holding what the run recorded of the
 step and its state's file (`{"key", "sha256"}`), the weights (and those of its best
 evaluation) with the optimizer's, method's and environment's state: the
 step's last checkpoint, as it is. The fingerprint covers the fingerprint
 of the step before it (for the first step, the model's shape and
 vocabulary size, without the context `block_size`, which no weight
-depends on: a recipe that adds a later step reading longer windows still
+depends on: an order that adds a later step reading longer windows still
 reuses the first), the step as `provenance.json` records it, the
 fingerprints of the kinds it reads (the record's `fingerprints`:
 `plain` for `read-text`, `conversation` for `answer-as-assistant`, `task`
 for `finish-tasks` and `finish-tasks-with-less-writing`), the seed and the
 code (the commit it runs from and a hash of its uncommitted changes;
-[architecture.md](architecture.md), "The store"), so any
+[architecture.md](architecture.md), "The dock"), so any
 commit makes every kept result unknown. A change to the
 conversations leaves the fingerprint of `read-text` as it was, and so its kept result stands. The
 options, which only say how the hardware runs it, stay out, `--stream` and
 `--stream-shards` included.
 
 A run whose first steps have a kept result starts from the result of the
-last of them and runs the steps after it. So a recipe that shares its
+last of them and runs the steps after it. So an order that shares its
 first steps with an earlier run reuses them, and a run that failed after
 some steps continues from the first step not kept. The main process reads
 the result and sends its weights to every process. Reuse means the same
@@ -212,7 +212,7 @@ fingerprint, its result and whether this run reused it.
 A step that cannot do its part, such as one whose loss is not finite or
 whose attempts Docker drops every one, fails (`wpt_training.StepFailed`):
 the run stops with exit code 2 and the reason, the step keeps no result,
-and the results of the steps before it stay in the store. A checkpoint
+and the results of the steps before it stay on the dock. A checkpoint
 the step wrote before it failed stays, and the message names it: the
 same command with `--resume` continues the step from it, and deleting it
 starts the step over (a run with other settings for that step needs it
@@ -231,11 +231,11 @@ When the step before it is reused, it goes on from that step's kept
 state.
 
 It has the same step, method, environment, optimizer and locked parts as
-the step before it, and, both listing stages, more updates; a recipe that
+the step before it, and, both listing stages, more updates; an order that
 breaks this is refused before any step runs. It forgets the best
 evaluation of the steps before it, as a new stage does: it keeps the
 weights of its own best evaluation. Its fingerprint chains to the step
-before it as every step's does, so two recipes that share a step's whole
+before it as every step's does, so two orders that share a step's whole
 chain share its kept result. The decay branches of a model series are
 built this way ([model.md](model.md), "Model series").
 
@@ -287,7 +287,7 @@ following, window)` too, the share of a part of the windows (`following`:
 the token after `y`'s last, or None at the windows' end; `window`: the
 windows' length) in what `loss` gives over whole windows, or it trains
 whole windows only (the run refuses `--segment` and `split` with it).
-`--strategy split` is refused for a recipe with a step that reads
+`--strategy split` is refused for an order with a step that reads
 anything else than text windows.
 
 ### Environments
@@ -301,10 +301,10 @@ which returns a
 the window length the step leaves the model reading at, and
 `check_corpus(settings, record, store, kinds)`, which raises `ValueError`
 when the corpus holds nothing of those kinds for the step, before any step
-runs. `data` gives the step's name, the kinds it reads, the store, the
+runs. `data` gives the step's name, the kinds it reads, the dock, the
 corpus's record, the tokenizer, the
 model's configuration, the strategy, the run's record, the log, the seed
-and the step's number in the recipe. The
+and the step's number in the order. The
 environment gives its stages (one for most environments; text windows
 have one per window length), the tokens of its examples, each update's
 passes (or none, when the update has nothing to learn: it is then
@@ -423,7 +423,7 @@ schedule, without early stop. Its settings are `stages`,
 `eval_every` (200), `eval_batches` (20) and `prefix_tokens` (0, "Prefix"
 below), with the method's. Each update
 draws its windows at random places of the training tokens, seeded by the
-seed, the step's number in the recipe and the update only: a second
+seed, the step's number in the order and the update only: a second
 `read-text` step draws other windows than the first. Dropout reads the
 same three.
 
@@ -432,7 +432,7 @@ training's. The tokens are read from disk as training needs them, so a
 corpus larger than memory trains:
 before the step's first update, the shards are checked against their
 token hashes and their tokens written once into one file per part, in the
-store's `scratch/` folder (`<store folder>/scratch/` for a local store,
+dock's `scratch/` folder (`<dock folder>/scratch/` for a local dock,
 the cache for S3). A later run reuses that file without reading it while
 its size and modification time are those recorded when it was written;
 when either changed, it reuses it only if it still matches the sha256
@@ -449,11 +449,11 @@ are drawn from them alone, and the step learned from the texts of that
 start. With `--stream`, the walk over the shards starts again after the
 prefix. A corpus with fewer tokens than the prefix is refused before any
 step runs. A `read-text` step that sets no `prefix_tokens` trains on the
-first `total_tokens` of the recipe's data part, the same prefix. Each size
+first `total_tokens` of the order's data part, the same prefix. Each size
 of a model series reads its prefix of the series' one corpus (model.md,
 "Model series"), and the setting is part of the step's fingerprint.
 
-The recipe's `total_tokens` is the size of the corpus the recipe asks for
+The order's `total_tokens` is the size of the corpus the order asks for
 and a ceiling on what it reads. A corpus built at that size (its
 `max_tokens`) counts everything, its conversations and tasks taking their
 share of it, and never passes it, so it holds fewer tokens of plain text
@@ -476,7 +476,7 @@ update, the shard holding the next unused token and the shards after it,
 `--stream-shards` in all (8 by default, about 2 GB), are the ones in use,
 and the update draws its windows from them only. The shard after them is
 prepared while training goes on, and a shard that leaves the set loses
-its token file and, from an S3 store, its local copy. After the last shard
+its token file and, from an S3 dock, its local copy. After the last shard
 comes the first again.
 
 Which shards are in use depends only on the update, so a resumed run and
@@ -493,8 +493,8 @@ A step's batch is the number of examples in one update, over every process
 together: for text windows, each stage's `batch_size` ("Stages", below).
 Each process takes `--micro-batch` examples per pass (by default its whole
 share of the batch) and adds the passes up until the batch is complete.
-Which windows an update uses depends only on the recipe's `seed`, the
-step's number in the recipe and the update, never on the number of
+Which windows an update uses depends only on the order's `seed`, the
+step's number in the order and the update, never on the number of
 processes: one GPU with two passes and two
 GPUs with one pass each make the same updates. When a GPU runs out of
 memory, lower `--micro-batch`, then add `--recompute`; the training stays
@@ -508,7 +508,7 @@ multiple of `--micro-batch` times the number of processes (with
 Training targets 1M tokens and reaches it by stages of the `read-text`
 step; the window lengths follow DeepSeek-V4 (section 4.2.2: 4K, then 16K,
 64K and 1M tokens); V4 states no tokens or updates per stage, so each
-recipe sets them. The step's `stages` setting lists them in order, each
+order sets them. The step's `stages` setting lists them in order, each
 with its window length, its length in updates and its batch:
 
 ```json
@@ -520,7 +520,7 @@ with its window length, its length in updates and its batch:
 ]
 ```
 
-(an example of the shape, not a recipe's numbers). The stages are one
+(an example of the shape, not an order's numbers). The stages are one
 step: their updates are counted together, update 1 being the first
 stage's first, and the learning-rate schedule and the multi-token
 prediction weight's switch (model.md, "Training") run over them all. Each
@@ -529,7 +529,7 @@ a stage puts `batch_size` times `block_size` tokens in each update. A
 stage's `batch_size` is global, over every process together ("The batch is
 the same on any hardware", above), and its evaluations average
 `eval_batches` batches of its own size. A stage's evaluation windows are
-the same at every evaluation, for any seed and any step of a recipe: two
+the same at every evaluation, for any seed and any step of an order: two
 runs that read the same training tokens through the same stages are
 measured on the same windows, so their validation losses compare.
 
@@ -549,8 +549,8 @@ Each stage is a span of the run's record (`training.stage`, with its
 number, window length, first and last updates, and the update a resumed
 run started at), each update's event names its window length, and
 `provenance.json` lists, for the step, the stages with the last update
-each made (`stages`). The recipes keep one stage (model.md, "Model
-recipes").
+each made (`stages`). The orders keep one stage (model.md, "Model
+orders").
 
 The sparse layers read their chosen tokens from the first update, at every
 stage (model.md, "Attention").
@@ -566,7 +566,7 @@ backward pass, instead of keeping everything the sublayer computed. The
 exact and sparse layers' attention is not run again (model.md, "Memory"):
 it keeps what its backward pass reads. The result is the same bit for bit
 on the CPU; memory drops and each update takes longer. On an RTX 5090,
-with the recipes' 11 layers, a vocabulary of 65,536 and 32,768 tokens per
+with the orders' 11 layers, a vocabulary of 65,536 and 32,768 tokens per
 pass, a pass took 21.8 to 25.0 GiB at width 512 keeping every activation
 and 10.1 GiB recomputing, and 11.5 to 13.3 GiB against 5.6 GiB at width
 256, about the same for windows of 2,048, 8,192 or 32,768 tokens: memory
@@ -608,7 +608,7 @@ resume with another choice.
 
 On an integrated Radeon 860M (gfx1152, which ROCm supports only through
 `HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz steps on the
-32-expert recipes crash the process (a segmentation fault in the GPU
+32-expert orders crash the process (a segmentation fault in the GPU
 stack) in the first update unless `HIP_LAUNCH_BLOCKING=1` makes the CPU
 wait for each GPU kernel; 8 steps do not, and the small `classics-test`
 does not crash.
@@ -695,7 +695,7 @@ once (model.md, "Long windows"):
   process; the result stays exact. Windows whose slices are `N` tokens or
   fewer are split without segments.
 
-These are options of the hardware, not of the recipe: a run may resume with
+These are options of the hardware, not of the order: a run may resume with
 another `--segment`, or none. The training loss is the parts' share of the whole window's (`TextMethod.part_loss`, "Methods", above); the
 validation loss in parts is each part's validation loss weighted by its
 share of the window's tokens. The tests check, on the CPU, that 448 tokens
@@ -820,7 +820,7 @@ whose job is the training's processes; `--processes` starts them on the
 worker's machine:
 
 ```sh
-uv run wpt train <recipe> <corpus id> --strategy ddp --processes 2
+uv run wpt train <order> <corpus id> --strategy ddp --processes 2
 ```
 
 (`split` starts the same way.) A run on several gpu workers starts
@@ -854,7 +854,7 @@ the passes.
 
 Such a run ends by printing what it measured from the end of that first
 update, which is the short run that says what a whole one costs: its
-updates and seconds, the tokens per second, and how many hours the recipe's
+updates and seconds, the tokens per second, and how many hours the order's
 text windows take at that speed, in all and from where it stopped. The
 event `training.measured` records the same numbers in the run's record. Evaluations in that
 span are part of the speed. Longer windows run slower per token than the
@@ -881,10 +881,10 @@ goes on. The other updates run without any of it.
 
 `uv run scripts/compare_training.py --base REV` compares the training of
 the working tree with that of revision REV on synthetic tokens, with no
-corpus, depot or store: the fused kernels' tests, whether every commit
+corpus, depot or dock: the fused kernels' tests, whether every commit
 since REV trains the same small model as the one before it (bit for bit on
 the CPU, within the spread of two runs of REV on a GPU), and the tokens
-per second, first update and peak memory of the recipes' shapes at widths
+per second, first update and peak memory of the orders' shapes at widths
 256 and 512 with windows of 2,048, 8,192 and 32,768 tokens, recomputation
 and `--compile` on and off. It writes `results.json` and `results.txt`
 into a folder of its own; its docstring says what each part measures, and
@@ -900,7 +900,7 @@ update on, the weights its optimizer keeps, such as an average). After the step'
 update it always writes one, unless that update's own was just written,
 and that checkpoint, as it is, becomes the step's kept state ("Step
 results and reuse", above); the checkpoint's place is then emptied: the
-folder is removed, and a store checkpoint loses its record while its file
+folder is removed, and a dock checkpoint loses its record while its file
 stays as the step's state. The same command with `--resume`
 continues the step that stopped from its checkpoint, on other hardware
 too: the number of processes, `--micro-batch`, `--recompute` and
@@ -930,18 +930,18 @@ Where it lives, on the manager's side:
   wpt manager's machine; a run that fails leaves `checkpoint/` in an
   earlier folder at that place, and a model folder that did not exist
   before the run and holds nothing else goes with the checkpoint;
-- with `--run NAME` (or `WPT_RUN`), in the store: the record
+- with `--run NAME` (or `WPT_RUN`), on the dock: the record
   `models/NAME/checkpoint.json` names the state's file, which lies beside
-  it in `models/NAME/`. Any machine using the same `WPT_STORE` continues
+  it in `models/NAME/`. Any machine using the same `DOCK` continues
   the run with the same command, `--run NAME --resume` and any `--out`: a
   run can move from one machine to another. Each save
   replaces the previous record of that name, and the previous file is then
   deleted; a crash while saving leaves the previous one. The record's change and every
-  deletion are recorded with the file's key, and that line is in the
-  store before the deletion: a deletion whose record breaks leaves the
-  file in the store. A save once the record broke still writes the checkpoint's
+  deletion are recorded with the file's key, and that line is on the
+  dock before the deletion: a deletion whose record breaks leaves the
+  file on the dock. A save once the record broke still writes the checkpoint's
   record, unrecorded, and leaves the previous file beside the new one. With an
-  S3 store, every save is an upload of about four times the model's size.
+  S3 dock, every save is an upload of about four times the model's size.
 
 ### Stopping a run
 
@@ -980,7 +980,7 @@ rented ([machines.md](machines.md), "A lost gpu worker").
 After the last step, the gpu worker's main process trains the model's drafter
 ([model.md](model.md), "The drafter"): a model and its drafter are one
 unit, so a run trains one, against the final weights, the model frozen,
-with the recipe's `drafter` section, unless `--no-drafter` says otherwise
+with the order's `drafter` section, unless `--no-drafter` says otherwise
 (below). Its prompts are the beginnings of the
 documents of the training shards the run's steps read: when every step that
 reads text windows reads a prefix, the shards that hold the longest prefix,
@@ -994,7 +994,7 @@ that cannot be trained (too few prompts, a loss that is not finite, no
 draft verified) refuses the run (exit code 2) and writes no model folder;
 every step's result is kept, so the same command trains the drafter again
 without training. The drafter reads those shards once at the end of
-the run, one shard at a time, to draw its prompts; from a remote store,
+the run, one shard at a time, to draw its prompts; from a remote dock,
 each shard's local copy is released once read. The disk then holds at most
 one shard only when the shards were not already local: with `--stream`,
 which released each one once its tokens were in the token file, or when
@@ -1023,7 +1023,7 @@ without a drafter: `wpt chat` then writes with the model alone, slower,
 and says so when it starts; `wpt eval` reads it as any folder, since no
 measure uses the drafter; the model card says it has none; and
 `load_drafter` refuses it with the command that trains one. That command
-is the same `wpt train` without `--no-drafter`: the store keeps every
+is the same `wpt train` without `--no-drafter`: the dock keeps every
 step's result, so it reuses them all, trains nothing, and trains only the
 drafter, against the same weights. A run stopped before its last step
 ends resumes with `--resume` with or without the option, which changes
@@ -1055,7 +1055,7 @@ The model folder holds:
   the steps in order;
 - `drafter/`, the drafter for speculative decoding trained against these
   weights, with its `config.json`, weights (the same header) and
-  `provenance.json`, which names the command and recipe that trained it,
+  `provenance.json`, which names the command and order that trained it,
   the corpus, the sha256 of every weight file it was trained against, its
   settings, its losses, the calibration and the measure: `load_model`
   refuses a folder without it or whose drafter names other weights
@@ -1073,7 +1073,7 @@ that already exists still works, but replaces it as a whole: everything in
 it goes, not only the earlier weights and the `evals/` results, which
 describe other weights, but also its `checkpoint/` and any file put there
 by hand. Keep such files elsewhere. The checkpoint's removal is recorded
-before it is removed, and the record is in the store before the folder is
+before it is removed, and the record is on the dock before the folder is
 renamed. The earlier folder is first moved aside, then removed once the
 new one is in place. When the new one cannot take its place, or the run is
 interrupted meanwhile, the earlier folder is moved back; when that fails
@@ -1107,7 +1107,7 @@ with the chat template ([chat-format.md](chat-format.md)), and shows the
 model's thinking and tool calls with their tags, without running the
 calls. It measures the drafter scheduler's pass times when it loads the
 model; `--scheduler-costs FOLDER` reads instead those a run recorded in its
-record folder `FOLDER` of the store, refused when they were measured on
+record folder `FOLDER` of the dock, refused when they were measured on
 another setup ([model.md](model.md), "The drafter"). A folder saved with
 `--no-drafter` writes with the model alone, slower, which the start line
 says.
@@ -1115,7 +1115,7 @@ says.
 ### What a model records
 
 A model trained on a snapshot names, in `provenance.json`, what anyone needs
-to make its corpus again and check it: `data`, the recipe's data section (the
+to make its corpus again and check it: `data`, the order's data section (the
 depot's address, the snapshot's name, change and digest, the kinds, shares,
 size and vocabulary); `recipe_name` and `recipe`; and `repository_commit`
 with `repository_dirty`, the code (the commit pins the design-system
@@ -1127,10 +1127,10 @@ its corpus's, and in `corpus` the corpus delivery's id, its key
 change, digest) it read and `request`, the request that makes it again. A
 model trained on a corpus the depot built names in `corpus` its id, build
 key, rules, depot address, snapshot and `data`, the data section it was
-built with. Either size can be larger than the recipe's when the corpus
+built with. Either size can be larger than the order's when the corpus
 was given by its id (training then read its first part, and the model card
 says so). `NOTICE` and the model card say it in one line: "Trained on
-snapshot S (change N, digest H) of the depot D, recipe R, code at commit
+snapshot S (change N, digest H) of the depot D, order R, code at commit
 X"; the card names the corpus's delivery and the vocabulary's.
 
 The corpus is a cache, never kept for this. The same request to a freight
@@ -1140,15 +1140,15 @@ address, the repository and what ships with the weights checks a model so:
 
 ```sh
 git checkout COMMIT                                   # the repository_commit provenance.json names
-uv run wpt depot clone ADDRESS my-copy.sqlite --name NAME --maintainer M --takedown-contact C
-WPT_DEPOT=my-copy.sqlite uv run wpt build-resources RECIPE
+uv run depot clone ADDRESS my-copy.sqlite --name NAME --maintainer M --takedown-contact C
+DEPOT=my-copy.sqlite uv run wpt build-resources ORDER
 ```
 
 The clone holds the depot's snapshots, their sets checked against their
-digests as they arrive. The freight finds the recipe's snapshot in the
+digests as they arrive. The freight finds the order's snapshot in the
 clone, since the clone follows that address, checks that it reads the
-recipe's change and digest, refusing and naming both otherwise, and makes
-the deliveries of the recipe's request, whose ids and files then compare
+order's change and digest, refusing and naming both otherwise, and makes
+the deliveries of the order's request, whose ids and files then compare
 with what `provenance.json` names. To check only
 which texts a snapshot holds, without a copy of the depot, `GET
 /api/snapshots/{id}/sets` on the depot's web app gives its sets with its
@@ -1157,7 +1157,7 @@ digest, which anyone recomputes ([data-selection.md](data-selection.md),
 model's corpus for anyone.
 
 A folder written before snapshots names, in `corpus`, the corpus's id, its
-depot and the name of its dataset, and its recipe's data names that dataset.
+depot and the name of its dataset, and its order's data names that dataset.
 Every reader takes the three shapes through `wpt_model.provenance`
 (`corpus_id`, `corpus_label`, `deliveries`): `wpt eval` records that corpus as the run's input, and the
 `NOTICE` and the model card it writes again say "From corpus C, built from
@@ -1166,7 +1166,7 @@ dataset T of the depot D". Nothing rewrites such a folder's
 
 ### Models trained before snapshots
 
-A model trained before snapshots has a recipe of the legacy shape, which
+A model trained before snapshots has an order of the legacy shape, which
 names a dataset, and the code at the commit it records reads the depot's
 web app through the dataset routes: `GET /api/datasets` to find the
 dataset, `GET /api/datasets/{id}/download` for the corpus of its
@@ -1175,17 +1175,17 @@ vocabulary and size, `GET /api/tokenizers/{name}` and its vocabulary file
 and, for another depot's vocabulary training, `GET /api/datasets/{id or
 name}/sample`. Those routes stay, frozen and read-only: they answer from
 the depot's legacy tables what they answered for the depot of format 12
-(`wpt_depot/legacy.py`, [depot-web.md](depot-web.md), "Models trained
+(`depot/legacy.py`, [depot-web.md](depot-web.md), "Models trained
 before snapshots"), so the depot's address and the repository at that
-commit still check the model. Its corpus is read from the store that holds
+commit still check the model. Its corpus is read from the dock that holds
 it, since nothing builds a corpus of a dataset any more. The upgrade to
 format 13 also made a snapshot of each locked library and of each dataset
 revision a corpus was built from ([architecture.md](architecture.md),
-"Format"), so the same texts can be built again as a recipe of the
+"Format"), so the same texts can be built again as an order of the
 snapshot shape.
 
 The other way is the depot as it was: restore a backup made before the
-upgrade (`wpt depot restore TO --at MOMENT`) with the wpt of format 12,
+upgrade (`depot restore TO --at MOMENT`) with the wpt of format 12,
 checked out from a commit of then, since the code of format 13 refuses a
 depot of format 12, and serve or build from it with that code.
 
@@ -1262,7 +1262,7 @@ turns are context the model reads and does not learn to write. The multi-token p
 used, so it does not change, and the routers' balancing biases are locked.
 
 Each epoch (`epochs`, 3) goes over every conversation once, in an order
-drawn from the recipe's `seed` and the step's number in the recipe, `batch` conversations per update (8; the last
+drawn from the order's `seed` and the step's number in the order, `batch` conversations per update (8; the last
 update of an epoch may hold fewer). Conversation `j` of an update goes to
 process `j` modulo the number of processes, and a process left with fewer
 passes than the others makes passes that learn nothing, so that every
@@ -1486,8 +1486,8 @@ they are back at their place in its `/work`, as the tools' programs left
 them, in place of whatever the model put there.
 
 **Variation**. Every task lists the tools it absolutely needs (`needs`),
-and a needed tool may have variants. For each attempt the step draws, from a generator seeded with the recipe's `seed` and the
-step's number in the recipe, the task,
+and a needed tool may have variants. For each attempt the step draws, from a generator seeded with the order's `seed` and the
+step's number in the order, the task,
 the round, the group and the attempt, so runs are reproducible
 (`wpt_agent.offer`):
 
@@ -1536,7 +1536,7 @@ any other change.
 An image's pool of tools is `data/images/<name>/tools.json` (optional),
 written by people like the Dockerfile: `{"tools": [...]}`,
 each tool declared as a task declares its own, its program a file the
-Dockerfile puts in the image. The recipes' check (`ci/data.py`) checks it
+Dockerfile puts in the image. The orders' check (`ci/data.py`) checks it
 against `image-tools.schema.json` and refuses a tool declared twice or taking the
 name of a built-in tool or `ask`. A changed pool is a changed image
 folder, which needs a new build.
@@ -1550,7 +1550,7 @@ the version of every installed package) and `licenses.json` (every
 installed package, its version and its licenses; [licenses.md](licenses.md),
 "Container images of agentic tasks"). Commit both. It refuses to replace
 an existing lock unless given `--force`: locking again is the person's
-choice. The recipes' check checks both files against their schemas
+choice. The orders' check checks both files against their schemas
 (`image-lock.schema.json`, `image-licenses.schema.json`).
 
 Every build reads its packages from the dated archive of the base's
@@ -1927,8 +1927,8 @@ does not change.
 ### Runs
 
 The order of the tasks in each round and every sampled token come from
-generators seeded with the recipe's `seed` and the step's number in the
-recipe, so a run gives the same attempts again on
+generators seeded with the order's `seed` and the step's number in the
+order, so a run gives the same attempts again on
 the same machine and setup (the same model, tasks, images and devices); the
 checks themselves may differ, as any program may. The model alone writes
 the attempts, without a drafter: the weights change at every update, the
@@ -1942,7 +1942,7 @@ attempts and of updates.
 Every attempt is kept in the run's record folder
 ([observability.md](observability.md)), as one line of
 `<step>-attempts.jsonl` (`finish-tasks-attempts.jsonl`), written through
-the run's record as soon as the attempt is scored, so a line on a local store is on the disk before the next attempt
+the run's record as soon as the attempt is scored, so a line on a local dock is on the disk before the next attempt
 is scored. A group's attempts are written together, then scored one by one,
 in order, each attempt's container removed and its line kept before the
 next attempt is scored (each attempt's line is kept as soon as that attempt
@@ -2002,8 +2002,8 @@ inside it, each attempt's line is kept in a span `<step>.attempt` (`task`, `roun
 `round`, `group`, `terse`: whether it holds the one-line form's attempts too, `file`, `lines`, and `outcome`: `learned`, or why it was
 skipped); each round is an event `<step>.round` (`file`, `lines`: its first
 and last, `attempts`, `dropped`, `updates`, and the value `mean_reward`). A
-recipe that runs the step twice adds to the same file, and the line
-numbers go on. A line the store refuses stops the command at once with
+order that runs the step twice adds to the same file, and the line
+numbers go on. A line the dock refuses stops the command at once with
 exit code 3, as any part of the record does.
 
 Its settings are the `agent-tasks` environment's, their defaults: `rounds`
@@ -2015,14 +2015,14 @@ and the five weights ("Rewards", above). Its optimizer is
 `by-part` at a constant learning rate of 1e-6, without weight decay, with
 its early stop on ("Optimizers", above). The `agent-tasks` environment
 makes no evaluations, so the early stop never stops the step and it keeps
-its last weights. A recipe's
+its last weights. An order's
 entry changes them ("Steps", above). The containers' sizes are not among
 them: they belong to each task.
 
 ## The finish-tasks-with-less-writing step
 
 The `finish-tasks-with-less-writing` step comes after `finish-tasks` in a
-recipe's steps. Its goal is the same result as the model it starts from,
+order's steps. Its goal is the same result as the model it starts from,
 with fewer tokens. It trains on the tasks `finish-tasks` reads, those
 tagged `finish-tasks`, with the same images, containers, limits and
 checks, and the same learning (Attempts, Scores, Learning and Runs
@@ -2065,7 +2065,7 @@ every failing one, and of two passing attempts whose parts weigh the same
 the shorter one is worth more. The step prints one line per task for the
 reference (its best start score and reference length) and one line per
 round (the mean reward, the number of attempts and of updates). Sampling
-draws from one generator seeded with the recipe's `seed` and the step's number, for the reference and then
+draws from one generator seeded with the order's `seed` and the step's number, for the reference and then
 the rounds. Every attempt is kept as `finish-tasks` keeps its own (Runs,
 above), in `finish-tasks-with-less-writing-attempts.jsonl`, under the spans
 and events `finish-tasks-with-less-writing.attempt`, `.group` and
@@ -2083,7 +2083,7 @@ different bytes for the same tokens).
 
 **The corpus is built again exactly**: a snapshot names the change it
 reads and the texts it holds, its digest proves them, and a depot keeps
-every revision, so the depot's address, the snapshot and the recipe give
+every revision, so the depot's address, the snapshot and the order give
 the same corpus, its id included, on the server or on any clone, whenever
 it is built ("What a model records", above). Only an admitted erasure
 changes it: the texts it removes are gone and the passages it cuts are cut,
@@ -2115,8 +2115,8 @@ any program may. Around it, everything possible is checked:
 - before training, every input is checked against its hash: each shard
   (file sha256 and token hash) and the vocabulary;
 - `provenance.json` records what produced the model: the snapshot, the
-  depot and the recipe ("What a model records", above), how much of it the steps learned, the vocabulary, the
-  recipe's name and content, the command-line options, the strategy (file,
+  depot and the order ("What a model records", above), how much of it the steps learned, the vocabulary, the
+  order's name and content, the command-line options, the strategy (file,
   its sha256), the model shape and parameter count, each step (its files
   and their sha256, its settings, its optimizer's, its locked parts, its
   fingerprint and result, whether it was reused, its stages with the last

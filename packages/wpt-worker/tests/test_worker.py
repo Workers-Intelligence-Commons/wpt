@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import wpt_worker
-from wpt_utils.lines import bare
+from wic_utils.lines import bare
 from wpt_worker import certificate
 from wpt_worker.link import Connection, Key, LinkError, dial, pin, probe, receive, send, server_context
 from wpt_worker.job import Relay
@@ -42,7 +42,7 @@ def run(spec, link, work):
         tokenizer = "imported"
     except ModuleNotFoundError as error:
         tokenizer = str(error)
-    secrets = sorted(name for name in os.environ if name.startswith("WPT_STORE"))
+    secrets = sorted(name for name in os.environ if name.startswith("DOCK"))
     header, body = call(link, "report", json.dumps({"secrets": secrets, "tokenizer": tokenizer}).encode())
     return header["code"]
 '''
@@ -70,8 +70,8 @@ def fake_checkout(root: Path) -> Path:
 def worker():
     """A local gpu worker, started as the manager starts one, its
     environment holding store settings it must not pass on."""
-    found = Worker.local_worker({**os.environ, "WPT_STORE": "file:///nowhere",
-                                 "WPT_STORE_SECRET_ACCESS_KEY": "secret"})
+    found = Worker.local_worker({**os.environ, "DOCK": "file:///nowhere",
+                                 "DOCK_SECRET_ACCESS_KEY": "secret"})
     yield found
     found.close()
 

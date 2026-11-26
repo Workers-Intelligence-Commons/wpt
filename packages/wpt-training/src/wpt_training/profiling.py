@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from wpt_utils.lines import WARNING
+from wic_utils.lines import WARNING
 
 FILE = "profile.txt"
 ROWS = 40

@@ -31,7 +31,7 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
-from wpt_utils.files import sha256_file
+from wic_utils.files import sha256_file
 
 from .config import ModelConfig
 from .model import WPT
@@ -187,8 +187,8 @@ def weight_files(directory) -> list[str]:
 
 
 def weight_hashes(directory) -> dict[str, str]:
-    """{name: sha256} of each of weight_files(directory), hashed as the store
-    hashes files (wpt_utils.files), so that every command names the same weights alike.
+    """{name: sha256} of each of weight_files(directory), hashed as the dock
+    hashes files (wic_utils.files), so that every command names the same weights alike.
     OSError when one cannot be read."""
     directory = Path(directory)
     return {name: sha256_file(directory / name) for name in weight_files(directory)}

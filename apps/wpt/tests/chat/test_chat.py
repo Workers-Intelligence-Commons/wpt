@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from wpt_inference import COSTS_FILE, costs_file, costs_setup
-from wpt_store import LocalStore
+from dock import LocalDock
 
 from wpt_model import (WPT, Drafter, DrafterConfig, DrafterMismatch, ModelConfig, load_drafter, load_model, save_drafter, save_model,
                        tokenizer_identity, weight_hashes)
@@ -99,8 +99,8 @@ def test_the_scheduler_s_times_can_be_read_from_a_run_s_record_on_the_same_setup
     # --scheduler-costs reads a record's
     # times instead of measuring them; another setup is refused
     folder = model_folder(tmp_path / "model")
-    store = LocalStore(tmp_path / "store")
-    monkeypatch.setenv("WPT_STORE", store.root.as_uri())
+    store = LocalDock(tmp_path / "store")
+    monkeypatch.setenv("DOCK", store.root.as_uri())
     monkeypatch.chdir(tmp_path)
     config = load_model(folder).config
     block = load_drafter(folder).block
@@ -122,7 +122,7 @@ def test_the_scheduler_s_times_can_be_read_from_a_run_s_record_on_the_same_setup
 
 def test_a_chat_is_a_conversation_in_the_current_shape(tmp_path, monkeypatch):
     # what --chat holds is a chat-format conversation that a depot accepts as an item as it is
-    from wpt_depot.kinds import check_content, starting_rows
+    from depot.kinds import check_content, starting_rows
 
     folder = model_folder(tmp_path / "model")
     typed = iter(["hello", ""])

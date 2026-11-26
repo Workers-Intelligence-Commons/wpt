@@ -12,8 +12,8 @@ import torch
 from wpt_model import PARTS, ModelConfig, WPT
 from wpt_model.engram import Engram
 from wpt_model.experts import Experts
-from wpt_recipes import Recipes, series
-from wpt_store import LocalStore
+from wpt_orders import Orders, series
+from dock import LocalDock
 from wpt_corpus.shards import write_shard
 from wpt_telemetry import Telemetry
 from wpt_training import Data, Strategy, load_step
@@ -24,8 +24,8 @@ ROOT = Path(__file__).resolve().parents[3]
 def test_the_series_counts_the_parameters_of_the_model_it_derives():
     # the count without the vocabulary tables decides a size's compute and tokens: it must be
     # the model's own, so it is checked against the model wpt_model builds at every size
-    repo = Recipes(ROOT)
-    ladder = repo.recipe("series", "eldest-titmouse")
+    repo = Orders(ROOT)
+    ladder = repo.order("series", "eldest-titmouse")
     for size in series.sizes(ladder):
         model = series.shape(ladder, size)
         config = ModelConfig(vocab_size=32768, block_size=32768, **model)
@@ -46,8 +46,8 @@ def test_the_series_counts_the_parameters_of_the_model_it_derives():
 def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives_has_them():
     # the model's own count without the vocabulary tables, less the routed experts a token does not reach
     # (n_experts - top_k of each layer's stacked experts) and less Engram's lookup tables
-    repo = Recipes(ROOT)
-    ladder = repo.recipe("series", "eldest-titmouse")
+    repo = Orders(ROOT)
+    ladder = repo.order("series", "eldest-titmouse")
     for size in series.sizes(ladder):
         model = series.shape(ladder, size)
         with torch.device("meta"):
@@ -65,10 +65,10 @@ def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives
 
 @pytest.fixture
 def dataset(tmp_path):
-    """A store holding 4 token files of 100 tokens each, token i at place i
+    """A dock holding 4 token files of 100 tokens each, token i at place i
     of the corpus's plain text, each file its own text; and the corpus's
     record."""
-    store = LocalStore(tmp_path / "store")
+    store = LocalDock(tmp_path / "store")
     shards = []
     for i in range(4):
         path = tmp_path / f"{i}.parquet"

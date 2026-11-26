@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from wpt_utils.lines import bare
+from wic_utils.lines import bare
 
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "ci"
@@ -70,10 +70,10 @@ def test_a_change_is_what_differs_from_the_base_committed_or_not(ci, clone, monk
     ("packages/wpt-tokenizer/rust-toolchain.toml", {"rust"}),
     ("packages/wpt-model/pyproject.toml", {"lock"}),
     ("uv.lock", {"lock", "data"}),
-    ("data/recipes/models/one.json", {"data"}),
+    ("data/orders/models/one.json", {"data"}),
     ("data/images/agent/Dockerfile", {"data"}),
-    ("packages/wpt-recipes/src/wpt_recipes/recipes.py", {"data"}),
-    ("packages/wpt-recipes/tests/test_recipes.py", set()),
+    ("packages/wpt-orders/src/wpt_orders/orders.py", {"data"}),
+    ("packages/wpt-orders/tests/test_orders.py", set()),
     ("apps/wpt/src/wpt/__init__.py", set()),
     ("packages/wpt-model/src/wpt_model/attention.py", set()),
     ("docs/architecture.md", set()),

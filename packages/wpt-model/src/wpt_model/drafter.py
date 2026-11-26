@@ -35,7 +35,7 @@ The target's embedding and output head are shared and frozen: the drafter
 reads them from the model it drafts for, and saves only its own weights,
 in the model folder's `drafter/` folder (save_drafter, load_drafter), with
 its provenance, which names the sha256 of the weights it was trained
-against. Its settings come from the model recipe's `drafter` section
+against. Its settings come from the model order's `drafter` section
 (DrafterConfig.for_model; its training's, wpt_inference.drafting).
 
 The drafter only proposes: the model checks every draft it is given and
@@ -104,7 +104,7 @@ class DrafterConfig:
     @classmethod
     def for_model(cls, config: ModelConfig, features=None, layers=LAYERS, block=BLOCK, markov_rank=None):
         """The drafter of a model of that config, with the shape the model
-        recipe's `drafter` section gives (what it leaves out: the feature
+        order's `drafter` section gives (what it leaves out: the feature
         layers of feature_layers, LAYERS, BLOCK, the Markov rank of the
         model's width). ValueError when a feature layer is not one of the
         model's (numbered from 1 to n_layer), so a run refuses it before it
@@ -368,7 +368,7 @@ def load_drafter(folder, device="cpu") -> Drafter:
     directory = folder / DRAFTER_NAME
     if not check_drafter(folder):
         raise DrafterMismatch(f"{folder}: saved without a drafter (wpt train --no-drafter); the same wpt train "
-                              "command without --no-drafter trains one, reusing the steps the store keeps")
+                              "command without --no-drafter trains one, reusing the steps the dock keeps")
     with safe_open(directory / WEIGHTS_NAME, framework="pt") as weights:
         header = weights.metadata() or {}
     expected = tokenizer_identity(folder)

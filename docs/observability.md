@@ -3,7 +3,7 @@
 Every run of `wpt train`, `wpt eval` and `wpt manager` keeps a record of
 what it did, from its first input to its last
 file, so that afterwards one can know exactly what happened. The record is
-written into the store, as OpenTelemetry's three kinds of data (traces,
+written onto the dock, as OpenTelemetry's three kinds of data (traces,
 logs and metrics) and in a form anyone can read without a backend. When an
 OpenTelemetry backend is set, the same data is also sent to it live, to
 watch a run while it goes (`packages/wpt-telemetry`).
@@ -17,9 +17,9 @@ ended.
 
 | Command | Records |
 | --- | --- |
-| `wpt train` | the recipe and its steps (a span `inputs.steps`); the corpus read, its token counts and the conversations and tasks it holds (a span `inputs.corpus`); the settings; each step reused from an earlier run (the event `training.step_reused`: its number, fingerprint and result); each step trained (a span `step`: its name, number and fingerprint, and what it reached), and inside it each of its stages (a span `training.stage`: its number, window length, batch, first and last updates, and the update a resumed run started at), every update (the event `training.step`: its loss over the whole batch, its window length, its duration, the learning rate of each parameter group), every update skipped, every evaluation (validation loss, best or not, stop or not), every checkpoint written, a resume, a stop, and what the step's environment records itself (`answer-as-assistant`, `answer-as-assistant-dft` and `answer-as-assistant-neftune`: the conversations read and their tokens; `finish-tasks` and `finish-tasks-with-less-writing`: every attempt as a line of `<step>-attempts.jsonl` as soon as it is scored, a conversation in the chat format whose `metadata` identifies the attempt, with a span per group's attempts, a span per attempt inside it and an event per group and per round naming the lines, [training.md](training.md), "Runs"); each step's result kept in the store (a span `training.step_kept`: its fingerprint and the result's sha256); the drafter's training (a span `drafter`: the model's answers, its settings, every update's losses, the calibration and the share of drafts kept); the scheduler's pass times, measured or replayed (a span `scheduler.costs`), written as the file `scheduler-costs.json`, which `--scheduler-costs` replays in a later run; the weights, the drafter, `provenance.json`, the credits, `NOTICE`, `LICENSE` and the model card written, with the sha256 of every file of the model folder; the checkpoint's removal, and with `--run` every checkpoint file deleted from the store (the one each save replaces; a step's last one stays as its kept state), named by its sha256; the sample; a gpu worker lost (the event `gpu_worker.lost`, exit code 4). Inputs: the recipe, the corpus id, the vocabulary, the results of the steps reused. Outputs: the result of each step trained, the model folder, the sha256 of each weight file, of the drafter's weights and of `provenance.json` |
+| `wpt train` | the order and its steps (a span `inputs.steps`); the corpus read, its token counts and the conversations and tasks it holds (a span `inputs.corpus`); the settings; each step reused from an earlier run (the event `training.step_reused`: its number, fingerprint and result); each step trained (a span `step`: its name, number and fingerprint, and what it reached), and inside it each of its stages (a span `training.stage`: its number, window length, batch, first and last updates, and the update a resumed run started at), every update (the event `training.step`: its loss over the whole batch, its window length, its duration, the learning rate of each parameter group), every update skipped, every evaluation (validation loss, best or not, stop or not), every checkpoint written, a resume, a stop, and what the step's environment records itself (`answer-as-assistant`, `answer-as-assistant-dft` and `answer-as-assistant-neftune`: the conversations read and their tokens; `finish-tasks` and `finish-tasks-with-less-writing`: every attempt as a line of `<step>-attempts.jsonl` as soon as it is scored, a conversation in the chat format whose `metadata` identifies the attempt, with a span per group's attempts, a span per attempt inside it and an event per group and per round naming the lines, [training.md](training.md), "Runs"); each step's result kept on the dock (a span `training.step_kept`: its fingerprint and the result's sha256); the drafter's training (a span `drafter`: the model's answers, its settings, every update's losses, the calibration and the share of drafts kept); the scheduler's pass times, measured or replayed (a span `scheduler.costs`), written as the file `scheduler-costs.json`, which `--scheduler-costs` replays in a later run; the weights, the drafter, `provenance.json`, the credits, `NOTICE`, `LICENSE` and the model card written, with the sha256 of every file of the model folder; the checkpoint's removal, and with `--run` every checkpoint file deleted from the dock (the one each save replaces; a step's last one stays as its kept state), named by its sha256; the sample; a gpu worker lost (the event `gpu_worker.lost`, exit code 4). Inputs: the order, the corpus id, the vocabulary, the results of the steps reused. Outputs: the result of each step trained, the model folder, the sha256 of each weight file, of the drafter's weights and of `provenance.json` |
 | `wpt eval` | each test (its file and sha256, its result's data), each result file and the model card written. Inputs: the weights' sha256 and the corpus id. Outputs: the sha256 of each result file and of the model card |
-| `wpt manager` | each of its steps as a span (`manager.corpus` with the corpus id, `manager.images`, `manager.train`, `manager.evaluate`), every line they print, the run's gpu workers (a span `manager.workers`, and inside it a span `manager.rent` per rental: its name, its kind and the worker's key with its token hidden), the provider's price before each rental (the event `manager.price`), what stopped the run before its end, a person, a SIGTERM or the cost cap (`manager.stop`), a stop's deadline that passed (`manager.stop_deadline`), each lost gpu worker (the event `manager.worker_lost`) and its replacement (`manager.worker_replaced`), each rental stopped (`manager.rental_stopped`, recorded before the stop) or not (`manager.rental_stop_failed`), a record named `rentals` for each try to stop the rentals of runs that ended, and the model kept in the store (a span `manager.model` with how many files, and the event `store.model_kept`). Each command it runs keeps its own record too. Inputs: the recipe, the run's name, the corpus id. Outputs: the model's name |
+| `wpt manager` | each of its steps as a span (`manager.corpus` with the corpus id, `manager.images`, `manager.train`, `manager.evaluate`), every line they print, the run's gpu workers (a span `manager.workers`, and inside it a span `manager.rent` per rental: its name, its kind and the worker's key with its token hidden), the provider's price before each rental (the event `manager.price`), what stopped the run before its end, a person, a SIGTERM or the cost cap (`manager.stop`), a stop's deadline that passed (`manager.stop_deadline`), each lost gpu worker (the event `manager.worker_lost`) and its replacement (`manager.worker_replaced`), each rental stopped (`manager.rental_stopped`, recorded before the stop) or not (`manager.rental_stop_failed`), a record named `rentals` for each try to stop the rentals of runs that ended, and the model kept on the dock (a span `manager.model` with how many files, and the event `store.model_kept`). Each command it runs keeps its own record too. Inputs: the order, the run's name, the corpus id. Outputs: the model's name |
 
 The drafter scheduler's pass times are measured once per run of `wpt train`,
 and written into the run's record as
@@ -34,7 +34,7 @@ says exactly what a replay guarantees.
 
 Each command also records each step that cannot be undone just before it
 (such as `store.model_kept`, `training.checkpoint_saved`,
-`training.checkpoint_deleted`, `model.folder_replaced`, `eval.file_written`). A result the store keeps in `cache/`, which can be
+`training.checkpoint_deleted`, `model.folder_replaced`, `eval.file_written`). A result the dock keeps in `cache/`, which can be
 computed again (a step's result),
 is the event `store.result_set` (`stage`, `fingerprint`, `sha256`), which goes
 with the next group of lines instead of being sent first: a crash can leave
@@ -45,10 +45,10 @@ main process records (the first process of gpu worker 0):
 every process takes the same steps, and the main one averages the loss over
 all of them. The others record nothing.
 
-## The record in the store
+## The record on the dock
 
-Each run writes its own folder, `runs/<run>/`, in the store named by
-`WPT_STORE`, through the store's own interface (`wpt_store`: `write_record`,
+Each run writes its own folder, `runs/<run>/`, on the dock named by
+`DOCK`, through the dock's own interface (`dock`: `write_record`,
 `append_record`, `flush_records`, `end_records`, `read_record`, `record_files`,
 `record_folders`). Those calls and every command that takes a record folder
 name it `<run>`, named
@@ -64,7 +64,7 @@ about:
 | `wpt eval` | the first 8 characters of the measured weights' sha256 (its first weight file's) |
 | `wpt manager` | the run's name |
 
-A character the store does not allow in a name (it allows letters, digits,
+A character the dock does not allow in a name (it allows letters, digits,
 `.`, `_` and `-`) becomes `-`; `none` stands for weights that could not be
 read. The whole ids are in `ids.json`. Model folders, weights and model
 cards stay where they were; the record only names them and their sha256.
@@ -73,7 +73,7 @@ cards stay where they were; the record only names them and their sha256.
 | --- | --- |
 | `start.json` | the command, its arguments, when it started (UTC), the ids known at the start, the tool versions (Python, platform, torch), the code (`code`: the commit it runs from and a hash of its uncommitted changes), the repository commit and whether the working tree had changes, and `trace`: the trace id the live backend shows the run under |
 | `events.jsonl` | one JSON object per line, in the order things happened (below) |
-| `ids.json` | `{"inputs": {...}, "outputs": {...}}`: every id the run read and wrote, rewritten as each is learned (each process adds to the copy in the store, so no process writes back an older one) |
+| `ids.json` | `{"inputs": {...}, "outputs": {...}}`: every id the run read and wrote, rewritten as each is learned (each process adds to the copy on the dock, so no process writes back an older one) |
 | `end.json` | `status` (`succeeded` or `failed`), `exit_code`, `error`, `traceback` (where the failure came from, as Python prints it, with the error it was raised while handling; `null` when it succeeded), when it ended, and how many seconds it took |
 | other files | written by a part of the run, such as a training step |
 
@@ -110,9 +110,9 @@ these ids.
 
 ```python
 import json
-from wpt_store import store_from_settings
+from dock import dock_from_settings
 
-store = store_from_settings()
+store = dock_from_settings()
 for folder in store.record_folders():
     ids = json.loads(store.read_record(folder, "ids.json"))
     print(folder, ids["inputs"].get("corpus"), ids["outputs"].get("weights"))
@@ -127,52 +127,52 @@ launcher that starts the training processes and starts them again after a
 crash; the launcher records the restarts. The launcher and the main
 training process of each attempt join the same folder (the job hands them
 `WPT_RECORD_FOLDER` and `WPT_RECORD_PARENT`) and write it through the link
-to the manager, which writes the store: one command is one folder however
-many times it restarts, and the worker never holds the store's
-credentials. A line the job records goes to the manager's store before its
-call returns, and the job's flushes are the manager store's own: on S3,
+to the manager, which writes the dock: one command is one folder however
+many times it restarts, and the worker never holds the dock's
+credentials. A line the job records goes to the manager's dock before its
+call returns, and the job's flushes are the manager dock's own: on S3,
 the lines it holds back are sent when the job's flush returns.
 
 ### Durable on a local folder and on S3
 
 A record file is written whole (`start.json`, `ids.json`, `end.json`) or
-added to line by line (`events.jsonl`), never both: the store refuses the
+added to line by line (`events.jsonl`), never both: the dock refuses the
 other kind of write to a file, whichever process made it.
 
-- Every record file is compressed with zstd, but the plain file a local store adds lines to while the record runs (below). A file written whole is one
-  file of the store, `<id>/runs/<run>/<name>.zst`, replaced at once by
-  the store's own write. On a local store (`file://`) each write is put
+- Every record file is compressed with zstd, but the plain file a local dock adds lines to while the record runs (below). A file written whole is one
+  file of the dock, `<id>/runs/<run>/<name>.zst`, replaced at once by
+  the dock's own write. On a local dock (`file://`) each write is put
   on the disk (`fsync`), with its name, before the call returns; S3 has
   stored a file when it answers the upload.
-- On a local store (`file://`), a file added to line by line is one plain
+- On a local dock (`file://`), a file added to line by line is one plain
   file while the record runs, `<id>/runs/<run>/events.jsonl.open`: each
   line is appended to it at once, so a crash loses none that the call
   returned for, and the lines reach the disk (`fsync`) every 30 seconds,
   before the job starts and at the end of the run, and before a step that cannot be
-  undone (below). When the record ends, the store compresses that file
+  undone (below). When the record ends, the dock compresses that file
   into one part, `<id>/runs/<run>/events.jsonl/<time>-<writer>-<number>.zst`,
   and removes the plain file; a file that grew while it was compressed
   stays as it is. A run that crashed leaves its plain file, read as it is.
   Lines added to the file again later (a resumed run) go to a new plain
   file, read after the parts.
 - On S3, a file added to line by line is a folder of parts. An S3 file
-  cannot grow, and each request costs time and money, so the store holds
+  cannot grow, and each request costs time and money, so the dock holds
   the lines back and sends them in groups: every 30 seconds, before the
   job starts, and at the end of the run, so a run of many hours writes a
   few hundred parts. Each group is one part,
   `<id>/runs/<run>/events.jsonl/<time>-<writer>-<number>.zst`, holding
   its lines with the time each was added. A crash or a power cut loses the
   lines added since the last group was sent: at most the last 30 seconds.
-  A group that the store refuses
+  A group that the dock refuses
   stops the command as any record failure does (below), also when it was
   sent in the background. A group whose send was cut short (Ctrl+C) is
   sent again later under the same name, which replaces the part: no line
   is stored twice. Before a step that
   cannot be undone (a model folder renamed into place, an evaluation's
-  result file or model card written, a checkpoint saved in or deleted from the
-  store, a model kept in the store), the command
+  result file or model card written, a checkpoint saved on or deleted from the
+  dock, a model kept on the dock), the command
   records it as an event, sends the lines it holds and waits for
-  the store's answer: a refused group stops it before that step. The one
+  the dock's answer: a refused group stops it before that step. The one
   exception is a checkpoint saved once the record broke (below).
 - Reading a file added to line by line on S3 lists its files (one
   request per 1,000 files) and reads each one (one request each). A
@@ -180,7 +180,7 @@ other kind of write to a file, whichever process made it.
   groups instead of 100,000 lines, so reading its `events.jsonl` takes
   about 20,000 requests: read a long run's record once and keep the copy.
 
-The lines read back in the order they were added, on either store, even
+The lines read back in the order they were added, on either kind of dock, even
 when several processes added to one file (`wpt train`, then its job's
 launcher and training process, then the launcher again after a crash): in a local
 plain file, the order the lines were appended in; in S3's groups, each
@@ -189,7 +189,7 @@ group by that time, then by writer. A line one process left cut (it ended
 without its newline) is ended before another process's lines.
 
 A record file stored uncompressed, under its name without `.zst`, and a
-part without `.zst` are read as they are. A local store may hold a file
+part without `.zst` are read as they are. A local dock may hold a file
 added to line by line as one such file, next to a marker
 `.appended-<name>`: it reads as a file written whole, and adding lines to
 it is refused. Listing the record folders, or the files of one folder,
@@ -200,7 +200,7 @@ reads one level of names: it does not list every part of every file.
 - **The live backend is unreachable or fails**: one warning on stderr,
   and the run goes on. Each later batch is still sent, in the background
   and without a word, so the live view resumes when the backend is back;
-  a batch that fails is dropped. The store record is complete either way.
+  a batch that fails is dropped. The dock record is complete either way.
   At the end of the run, the command waits for what was left to be sent:
   with a backend that does not answer, up to the exporter's timeout
   (`OTEL_EXPORTER_OTLP_TIMEOUT`, 10 seconds by default) for each of the
@@ -212,7 +212,7 @@ reads one level of names: it does not list every part of every file.
   a backend that accepts the connection and never answers, the end of a
   run waited 20 seconds with the default timeout, and 3.6 seconds with a
   timeout of 2 seconds after 5,000 events.
-- **The store record cannot be written** (the store is unreachable, the
+- **The dock record cannot be written** (the dock is unreachable, the
   disk is full, permissions): the command stops at its next record call
   (or sooner, when a send in the background was refused: below), prints
   `RecordError: the record of this run could not be written ...`, and does
@@ -228,18 +228,18 @@ reads one level of names: it does not list every part of every file.
     step without recording it, and every process stops after that step,
     as for Ctrl+C: the checkpoint is saved (unless `--checkpoint-every
     0`), and the processes exit with code 3. The broken record does not
-    name that checkpoint, nor, with `--run`, the store's record of it;
+    name that checkpoint, nor, with `--run`, the dock's record of it;
     `--resume` continues from it and loses no step;
   - when `wpt train`'s own record breaks while the job runs (on S3, a
     group of its lines refused in the background), it asks the job to
     stop as Ctrl+C does, so its processes finish their step, save the
     checkpoint, and stop; `wpt train` then exits with code 3.
 
-  A checkpoint replaced in the store while the record broke stays there
+  A checkpoint replaced on the dock while the record broke stays there
   beside the new one, since its deletion is recorded first. The last
   checkpoint's deletion, once the model is saved, is also recorded and
   sent first: a record that breaks there turns a run whose model is
-  saved into exit code 3, and leaves that checkpoint in the store.
+  saved into exit code 3, and leaves that checkpoint on the dock.
 - **A group of lines sent in the background is refused** (S3): the
   sending thread interrupts the command's main thread the way Ctrl+C
   does, and the command stops with the same `RecordError` and code 3,
@@ -261,12 +261,12 @@ reads one level of names: it does not list every part of every file.
   Ctrl+C (one a shell that is not interactive started in the background,
   with `&`) is not interrupted: it stops at its next record call, at most
   one step or one line later.
-- **No store at all** (`WPT_STORE` unset or wrong): the command stops
+- **No dock at all** (`DOCK` unset or wrong): the command stops
   before it starts.
 
 ## Printed lines
 
-Every line a command prints has one form, which `wpt_utils/lines.py` alone
+Every line a command prints has one form, which `wic_utils/lines.py` alone
 writes:
 
 ```
@@ -288,7 +288,7 @@ them has its own.
 
 What a command gives as its result is a line like any other: a corpus id,
 a gpu worker's key. A program that reads
-such a line takes its text back with `wpt_utils.lines.bare`.
+such a line takes its text back with `wic_utils.lines.bare`.
 
 Four kinds of output are not lines of a log and keep their own form:
 
@@ -301,8 +301,8 @@ Four kinds of output are not lines of a log and keep their own form:
 
 ## Following a run
 
-`wpt store runs` lists the runs, the latest last: each one's
-folder, command, start, and whether it ended. `wpt store run FOLDER` shows
+`wpt runs` lists the runs, the latest last: each one's
+folder, command, start, and whether it ended. `wpt run FOLDER` shows
 one run: its stage, its counts, its last events and its errors. With
 `--follow`, it goes on printing the lines a live run adds until the run ends.
 
@@ -321,7 +321,7 @@ ports, and a volume, `otel-lgtm-data`, holding every component's data, so
 it survives restarts. Its licenses are in [licenses.md](licenses.md). Each
 component keeps data for its default time unless told otherwise, such as
 `PROMETHEUS_EXTRA_ARGS=--storage.tsdb.retention.time=90d` (the image's
-README lists one such setting per component). The store record is what
+README lists one such setting per component). The dock record is what
 lasts.
 
 Two settings, in the `.env` file at the repository's root (git-ignored:
@@ -360,7 +360,7 @@ docker compose --env-file .env -f deploy/otel-lgtm/compose.yaml up -d
 ```
 
 Point the commands at it, in the environment or in `.env` beside
-`WPT_STORE`:
+`DOCK`:
 
 ```
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
@@ -404,12 +404,12 @@ the line's level, time, span id and parent. A span goes once its `span_end`
 line is read, with its real start and end; a process that crashed leaves its
 open spans unsent. Lines of `wpt train`'s own spans are left out: it sent
 those itself. When the job ends or is stopped, the thread reads the last
-lines and ends. The end waits at most 10 seconds for that read: a store that
+lines and ends. The end waits at most 10 seconds for that read: a dock that
 does not answer gets one warning, and the run ends without those lines. A
 record that broke gets no last read. Without an endpoint, no thread starts.
 
 What a gpu worker records therefore arrives a little late: within 10
-seconds on a local store, and on S3 within 10 seconds of the store sending
+seconds on a local dock, and on S3 within 10 seconds of the dock sending
 the lines it holds back, every 30 seconds. A gauge carries the time it was
 sent, unlike a log record or a span. A backend that fails gets the one
 warning of "When something fails". A record that cannot be read gets one warning of its own,
@@ -417,7 +417,7 @@ the training goes on, and each later read tries again from the same line.
 A read that brings a backlog goes out as fast as the backend takes it: up to
 65,536 spans and as many log records wait in memory, and what passes that is
 dropped from the live view, with one line on stderr from OpenTelemetry's
-library. The store record keeps it.
+library. The dock record keeps it.
 
 To watch a run on another machine, start the backend there, set
 `WPT_OTEL_ADDRESS` as above, or forward its ports
@@ -439,7 +439,7 @@ def run(context):
     telemetry.append_file("attempts.jsonl", line.encode())  # a file of this run's folder, one line at a time
     telemetry.write_file("summary.json", data)               # or written whole
     telemetry.log("a line to print and record")
-    telemetry.log("a line that names a problem", WARNING)  # a level of wpt_utils.lines: INFO by default
+    telemetry.log("a line that names a problem", WARNING)  # a level of wic_utils.lines: INFO by default
 ```
 
 Attributes are anything JSON holds. A file's name uses letters, digits,
@@ -447,15 +447,15 @@ Attributes are anything JSON holds. A file's name uses letters, digits,
 record's own (`start.json`, `events.jsonl`, `ids.json`, `end.json`); a
 file is added to with `append_file` or written with `write_file`, never
 both. Breaking either rule is a mistake in the step or the test: the call
-raises `ValueError` (a name) or `MixedRecord` (from `wpt_store`, a file
+raises `ValueError` (a name) or `MixedRecord` (from `dock`, a file
 used both ways), writes nothing, and the record goes on.
-Every call is in the store when it returns (an added line within the next
-few seconds, as above), and raises `RecordError` when the store
+Every call is on the dock when it returns (an added line within the next
+few seconds, as above), and raises `RecordError` when the dock
 refused it: let it propagate, the command then stops.
 `telemetry.irreversible(name, **attributes)` records an event as
-`telemetry.event` does, then sends the lines the store holds and waits
+`telemetry.event` does, then sends the lines the dock holds and waits
 for its answer: call it just before a step that cannot be undone, which
-then happens only once its record is in the store.
+then happens only once its record is on the dock.
 Each thread records under the span it opened last, or under the run's own
 span when it opened none. Work handed to other threads records under a
 span of its own: `telemetry.begin(name, **attributes)` opens a span under

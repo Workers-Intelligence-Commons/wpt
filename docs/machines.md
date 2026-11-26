@@ -4,7 +4,7 @@ A training run has three roles, which may share one machine or each have
 their own:
 
 - the **wpt manager**: the machine that runs `wpt train` (or `wpt manager`,
-  below). It holds the store and its credentials, the tokenizer, the run's
+  below). It holds the dock and its credentials, the tokenizer, the run's
   record, the checkpoint and the model folder, and it plays every agentic
   attempt;
 - a **gpu worker**: a process that does only the GPU work of the training,
@@ -63,10 +63,10 @@ neither side ever runs what the other sends.
 Docker. The worker's server files are three things the person copies from the
 repository to the machine, beside the Compose file: `start.sh`
 (`deploy/gpu-worker/`), the folder `wpt_worker`
-(`packages/wpt-worker/src/`) and the folder `wpt_utils`
-(`packages/wpt-utils/src/`), for the form of its printed lines. Compose mounts
+(`packages/wpt-worker/src/`) and the folder `wic_utils`
+(`packages/wic-utils/src/`), for the form of its printed lines. Compose mounts
 them read-only from there into the container. Without `wpt_worker` or
-`wpt_utils`, `start.sh` says so and exits with code 2. There is no mount of a
+`wic_utils`, `start.sh` says so and exits with code 2. There is no mount of a
 checkout: the libraries the jobs need come from the manager's checkout, which
 the manager sends (below).
 
@@ -98,22 +98,22 @@ folder, for Python 3.14. The container's own Python and PyTorch are not
 used.
 
 A step's fingerprint holds the code it trains with, as the manager finds
-it (`wpt_utils.programs.code`: the commit of its checkout and a hash of
+it (`wic_utils.programs.code`: the commit of its checkout and a hash of
 its uncommitted changes), since the worker runs that checkout; it holds
 no version number. So a local and a remote worker give the same
-fingerprints for the same recipe. The worker gives its libraries'
+fingerprints for the same order. The worker gives its libraries'
 versions (`torch`, `numpy`, `pyarrow`) for the model's provenance only.
 
 ## The data path
 
-The worker never holds the store's settings or credentials: a local worker
-gets the manager's environment without `WPT_STORE` and the store's keys
-(`WPT_STORE_*`). Everything
+The worker never holds the dock's settings or credentials: a local worker
+gets the manager's environment without `DOCK` and the dock's keys
+(`DOCK_*`). Everything
 the job reads, the manager sends:
 
 - the files of the run's corpus and of the states it starts from,
   checked against their sha256 when they arrive, and no other file;
-- the files of the recipe's steps and strategy that live outside the
+- the files of the order's steps and strategy that live outside the
   repository.
 
 Everything the job writes goes back to the manager:
@@ -126,8 +126,8 @@ Everything the job writes goes back to the manager:
   `docker logs` show them; a failure to write there never stops the job or
   the lines sent to the manager. The local worker `wpt train` starts does not
   echo them, as the manager already prints them;
-- each line of the run's record, which goes to the manager's store before
-  the job's call returns; the job's flushes are that store's, so on S3 the
+- each line of the run's record, which goes to the manager's dock before
+  the job's call returns; the job's flushes are that dock's, so on S3 the
   lines it holds back are sent when the job's flush returns
   ([observability.md](observability.md));
 - the checkpoints, as `WPT_LINK_CHECKPOINTS` says (below);
@@ -154,7 +154,7 @@ state. No pickle is read from the link or from a file the link carried.
 - `every`: each one as it is written.
 
 A checkpoint that comes back is the run's checkpoint on the manager, in the
-model folder or, with `--run`, in the store ([training.md](training.md),
+model folder or, with `--run`, on the dock ([training.md](training.md),
 "Checkpoints and resuming"). With `step-ends`, a checkpoint written inside
 a step stays on the worker, and `--resume` on the manager starts a step
 that crashed or failed over. A stop is the exception: whatever
@@ -216,7 +216,7 @@ stop them, and say what they cost (`apps/wpt/src/wpt/manager/rental.py`). SkyPil
 (Apache-2.0, its `sky` command, in the manager's image) is one
 implementation, from `deploy/gpu-worker/skypilot.yaml`. It starts the
 worker with SkyPilot's own file mounts, which copy `start.sh`, `wpt_worker`
-and `wpt_utils` onto the machine. Code of our own for a provider SkyPilot
+and `wic_utils` onto the machine. Code of our own for a provider SkyPilot
 lacks or handles badly is another implementation of the same interface.
 
 Several workers at one provider are rented as one cluster in one request,
@@ -233,8 +233,8 @@ workers are in different places.
 SkyPilot gets only its own provider keys: the shell's basics, the names of
 the clouds it supports (`RUNPOD_`, `LAMBDA_`, `GOOGLE_` and the like), and
 `WPT_WORKER_WAIT`, which it passes on to the workers. Its clouds' keys
-include `AWS_*`, which the store never reads. It never gets the store's
-settings or keys (`WPT_STORE` and `WPT_STORE_*`).
+include `AWS_*`, which the dock never reads. It never gets the dock's
+settings or keys (`DOCK` and `DOCK_*`).
 
 The manager runs the training, and the evaluation with `WPT_EVALUATE=1`,
 on rented workers with `WPT_KERNELS=triton`, so the Triton kernels compute
@@ -256,7 +256,7 @@ their owner only. Without `RUNPOD_API_KEY`, the manager leaves the file
 alone. SkyPilot copies that file onto each machine it rents.
 
 The run's workers stay on the manager's disk (`WPT_MANAGER_STATE`, one file
-per run, readable by its owner only), never in the store: each worker's
+per run, readable by its owner only), never on the dock: each worker's
 key, its token included, and for a rented one its provider and rental
 name. A rental's name is kept before the provider rents it, so a rental a
 crash cuts short is one the manager can still stop. The rentals are
@@ -303,8 +303,8 @@ folder, `wpt manager stop RUN` names the run. It is refused (exit code 2)
 when no manager runs a run. The manager looks every 5 seconds, then sends
 `wpt train` one stop signal, which goes on to the worker's job: the job
 finishes its update, saves a checkpoint, even inside a step and with
-`--checkpoint-every 0`, and sends it to the manager, which keeps it in the
-store. Then the rentals are given back, and the run ends with exit code
+`--checkpoint-every 0`, and sends it to the manager, which keeps it on the
+dock. Then the rentals are given back, and the run ends with exit code
 130. `docker compose up` again, or `wpt manager` with the same `WPT_RUN`,
 goes on from that checkpoint, with `--resume`.
 
@@ -325,7 +325,7 @@ A stop gives the command it signals `WPT_STOP_DEADLINE` seconds (default
 600) to end. The manager then kills that command and gives the machines
 back, and its log says that the updates since the last checkpoint sent are
 lost (`manager.stop_deadline`). A checkpoint that had not fully reached the
-store does not count: the run's checkpoint stays the one before it. A gpu
+dock does not count: the run's checkpoint stays the one before it. A gpu
 worker that loses its manager stops the job. Sandboxes the killed command
 was running are left on their Docker host.
 
@@ -379,7 +379,7 @@ reached, refuses the link, or its link breaks. Its record names it
 answers on its port with its pinned certificate is there. Each worker it
 rented that is not there is reported (`manager.worker_lost`), stopped,
 and replaced by a new rental (`manager.worker_replaced`), and the training
-runs again with `--resume`, from the last checkpoint in the store. A
+runs again with `--resume`, from the last checkpoint on the dock. A
 rental of several workers is replaced whole.
 
 A crash of a training process on several workers (exit code 5) resumes the
@@ -394,7 +394,7 @@ run stops, and the message says to start it again.
 
 When it starts, the manager first goes on with each of its own runs that
 did not end: no other manager holds its lock, there is no model under the
-run's name in the store, and the run's last `wpt manager` record there has
+run's name on the dock, and the run's last `wpt manager` record there has
 no end. A run's file is marked ended once the run ends, whatever its
 outcome, and the manager reads only the others. It reconnects to that
 run's workers with the keys its disk holds; a rented worker that is gone
@@ -407,14 +407,14 @@ exit with code 0; the failure is in its output and its record). Compose
 restarts it only after a crash or a Docker restart (`restart: on-failure`),
 and it then goes on with the run the crash cut short. `docker compose up`
 again continues a failed run: with no `WPT_RUN`, the manager takes the name
-in `wpt-run.txt` when it is a run of the same recipe whose model is not in
-the store yet, and otherwise makes a new name.
+in `wpt-run.txt` when it is a run of the same order whose model is not in
+the dock yet, and otherwise makes a new name.
 
 ## Evaluation
 
 With `WPT_EVALUATE=1`, or by hand with `wpt eval FOLDER`, the evaluation
 runs its model on a gpu worker through the link. The tests stay on the
-manager, which holds the tokenizer, the store and the sandboxes. A job
+manager, which holds the tokenizer, the dock and the sandboxes. A job
 (`wpt_worker.evaluation`) loads the model folder's weights on the worker,
 which the manager offers as files, and answers what the tests ask of the
 model: a seeded generator, writers that write until a stop token or a limit
@@ -434,27 +434,27 @@ The sandboxes run wherever the `docker` command reaches its daemon: the
 manager's machine, or the Docker host `DOCKER_HOST` names. On a remote
 Docker host, the host's cores, memory and idle cores are measured there,
 through a short-lived container with no network
-(`wpt_agent.host`), for the sizing rule of `wpt_utils.parallel`.
+(`wpt_agent.host`), for the sizing rule of `wic_utils.parallel`.
 
 ## The manager's Compose file
 
-`wpt manager` trains a recipe on a corpus the store already holds, each
+`wpt manager` trains an order on a corpus the dock already holds, each
 step its own command:
 
-1. the corpus: `WPT_CORPUS`, or the recipe's, as `wpt train` finds it
-   (the corpus delivery its data section names on the dock; for a recipe
+1. the corpus: `WPT_CORPUS`, or the order's, as `wpt train` finds it
+   (the corpus delivery its data section names on the dock; for an order
    of the legacy dataset shape, the one last built for its depot and
    dataset, which no build makes again); the manager neither downloads nor
-   builds, so the corpus is made first (`wpt build-resources RECIPE`), and
+   builds, so the corpus is made first (`wpt build-resources ORDER`), and
    a run without one is refused,
    saying so; then `wpt agent build-image
    NAME` for each image the corpus's tasks name, where `DOCKER_HOST`
    reaches Docker (nothing without tasks);
-2. `wpt train RECIPE CORPUS_ID --run NAME --resume`: the training, through
+2. `wpt train ORDER CORPUS_ID --run NAME --resume`: the training, through
    the run's gpu workers (rented first when `WPT_GPU_WORKERS` is a
-   number), its checkpoint in the store under the run's name;
+   number), its checkpoint on the dock under the run's name;
 3. `wpt eval`, only with `WPT_EVALUATE=1`;
-4. the model folder into the store, under the run's name; the manager's
+4. the model folder onto the dock, under the run's name; the manager's
    own copy of the folder is then removed.
 
 A failed step stops the run with its exit code, and the same command with
@@ -474,17 +474,17 @@ The manager reads the same file again inside the container for what its
 environment leaves unset or empty, so `wpt train`'s options (such as
 `WPT_STRATEGY` and `WPT_PROCESSES`) come from there. Where a setting names
 a path of the host and the container has its own, the container's value
-wins (`WPT_STORE`, the manager's folders, `HOME`, `DOCKER_HOST`).
+wins (`DOCK`, the manager's folders, `HOME`, `DOCKER_HOST`).
 
 | Setting | Meaning |
 | --- | --- |
-| `WPT_RECIPE` | the model recipe, `SERIES:SIZE` for a size of a model series, or `SERIES:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
-| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus of the recipe's build key (a recipe written before snapshots: the corpus last built for its depot and dataset) |
-| `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the store |
+| `WPT_ORDER` | the model order, `SERIES:SIZE` for a size of a model series, or `SERIES:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
+| `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus of the order's build key (an order written before snapshots: the corpus last built for its depot and dataset) |
+| `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the dock |
 | `WPT_EVALUATE` | `1`: evaluate the model at the end; off by default |
-| `WPT_STORE` | the store; unset, a folder on the Compose volume `wpt-store`. A `file://` store must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |
-| `WPT_STORE_FOLDER` | a folder of the machine, mounted at the same path in the container in place of the volume `wpt-store`; set `WPT_STORE` to `file://` and that path |
-| `WPT_STORE_ACCESS_KEY_ID`, `WPT_STORE_SECRET_ACCESS_KEY`, `WPT_STORE_SESSION_TOKEN`, `WPT_STORE_ENDPOINT_URL`, `WPT_STORE_REGION` | an S3 store's keys and place; the store reads no `AWS_*` setting |
+| `DOCK` | the dock; unset, a folder on the Compose volume `dock`. A `file://` dock must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |
+| `DOCK_FOLDER` | a folder of the machine, mounted at the same path in the container in place of the volume `dock`; set `DOCK` to `file://` and that path |
+| `DOCK_ACCESS_KEY_ID`, `DOCK_SECRET_ACCESS_KEY`, `DOCK_SESSION_TOKEN`, `DOCK_ENDPOINT_URL`, `DOCK_REGION` | an S3 dock's keys and place; the dock reads no `AWS_*` setting |
 | `WPT_KERNELS` | `tilelang`, `triton` or `pytorch`: what computes the attention; unset, rented workers get `triton` for the training and the evaluation |
 | `WPT_GPU_WORKERS` | the gpu workers' keys, or how many to rent; unset, a local worker in the container |
 | `WPT_RENTAL_PROVIDER` | who rents the gpu workers; default `skypilot` |
@@ -507,21 +507,21 @@ it, and only then is `WPT_GRAFANA_PASSWORD` required. The file mounts the
 checkout at `/repo`:
 the manager runs that code and sends it to its gpu workers. The volume
 `wpt manager` holds the manager's own files: its runs' workers
-(`WPT_MANAGER_STATE`), the model folders before they go into the store,
+(`WPT_MANAGER_STATE`), the model folders before they go onto the dock,
 the libraries, and its `HOME`, where SkyPilot keeps its clusters and keys.
 
 ## The final model
 
-The model folder goes into the store under the run's name: its real files
+The model folder goes onto the dock under the run's name: its real files
 lie in `models/NAME/`, beside `files.json`, which lists each file's
 sha256 and size and is written last. At the end, the manager prints the line
 that copies it out:
 
 ```sh
-uv run wpt store copy-out NAME runs/NAME
+uv run wpt copy-out NAME runs/NAME
 ```
 
-`wpt store copy-out` writes the folder into a new folder, beside it first,
+`wpt copy-out` writes the folder into a new folder, beside it first,
 then renames it into place, and checks every file against its sha256 and
-size: a file that differs stops it and leaves no folder. `wpt store list`
-lists every corpus and model the store holds.
+size: a file that differs stops it and leaves no folder. `wpt list`
+lists every corpus and model the dock holds.

@@ -126,7 +126,7 @@ def part_of(name: str) -> str:
 
 class Layer(nn.Module):
     """Two sublayers: attention of the layer's kind (with Engram before it
-    in the layers the recipe names), then experts (with In-Place TTT in
+    in the layers the order names), then experts (with In-Place TTT in
     every sixth layer, ttt.py). Attention Residuals gives each its input
     (residuals.py)."""
 

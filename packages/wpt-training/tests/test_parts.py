@@ -22,7 +22,7 @@ from wpt_training.launch import launch
 # output) each choosing 8 tokens per query beyond the window of 128 (TOP_K below), sparse layers (5 and 7), Engram
 # (layers 2 and 5), the experts (hash-routed, then routed and balanced), In-Place TTT (layers 1 and 7) in chunks of 96
 # tokens (CHUNK below) over texts whose documents end here and there, Attention Residuals in its full form (the
-# recipes' form), two passes of the loop and the MTP block
+# orders' form), two passes of the loop and the MTP block
 MODEL = dict(vocab_size=300, block_size=448, loops=1, window_layers=1, sparse_groups=2, sparse_layers=1, d_model=16,
              attention_heads=2, attention_head_dim=64, n_experts=4, top_k=2, expert_width=8, latent_width=8,
              shared_width=16, engram_layers=[2, 5], engram_order=3, engram_heads=2, engram_dim=4,

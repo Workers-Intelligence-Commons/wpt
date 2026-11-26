@@ -77,7 +77,7 @@ def test_the_model_card_names_the_drafter_and_its_notice_adds_no_source(tmp_path
     texts = documents(tmp_path)
     assert "Talks, by Bo Speaker" in texts["NOTICE"] and texts["NOTICE"] == before
     card = texts["README.md"]
-    assert "## Drafter" in card and "`wpt train`, recipe `chat`" in card and "`dddddddddddd`" in card
+    assert "## Drafter" in card and "`wpt train`, order `chat`" in card and "`dddddddddddd`" in card
     assert "`model.safetensors` (sha256 `eeeeeeeeeeee`)" in card and "4 of 10 drafts kept" in card
 
 

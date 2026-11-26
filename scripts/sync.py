@@ -27,8 +27,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "wpt-utils" / "src"))  # no library here
-from wpt_utils.lines import ERROR, line, say
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "wic-utils" / "src"))  # no library here
+from wic_utils.lines import ERROR, line, say
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env"

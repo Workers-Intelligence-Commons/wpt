@@ -19,16 +19,19 @@ conflicts = [[
 
 [manifest]
 members = [
+    "depot",
+    "depot-app",
+    "dock",
+    "dock-app",
     "freight",
     "freight-app",
+    "wic-utils",
     "wpt",
     "wpt-agent",
     "wpt-corpus",
-    "wpt-depot",
     "wpt-inference",
     "wpt-model",
-    "wpt-recipes",
-    "wpt-store",
+    "wpt-orders",
     "wpt-telemetry",
     "wpt-tokenizer",
     "wpt-training",
@@ -566,43 +569,43 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux'" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-curand", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' or platform_machine == 'AMD64' and sys_platform == 'win32'" },
 ]
 
 [[package]]
@@ -625,6 +628,50 @@ wheels = [
 ]
 
 [[package]]
+name = "depot"
+version = "0.1.0"
+source = { editable = "packages/depot" }
+dependencies = [
+    { name = "apsw" },
+    { name = "deltalake" },
+    { name = "jsonschema" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "pyroaring" },
+    { name = "wic-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "apsw", specifier = ">=3.54" },
+    { name = "deltalake", specifier = ">=1.6" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "numpy", specifier = ">=2.5" },
+    { name = "pyarrow", specifier = ">=21" },
+    { name = "pyroaring", specifier = ">=1.2" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
+]
+
+[[package]]
+name = "depot-app"
+version = "0.1.0"
+source = { editable = "apps/depot" }
+dependencies = [
+    { name = "depot" },
+    { name = "dock" },
+    { name = "jsonschema" },
+    { name = "wic-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "depot", editable = "packages/depot" },
+    { name = "dock", editable = "packages/dock" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
+]
+
+[[package]]
 name = "deprecated"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -634,6 +681,36 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/61/46/f6958cdfa8a801fc845e981a8a958dba2e74a386b026a8fd5cae58423f1f/deprecated-3.0.1.tar.gz", hash = "sha256:2f5a9fecc9961e26462846cf1e57f73a612b1d0b79c27dceeed8de647beadcee", size = 1074378, upload-time = "2026-10-30T11:15:39.954Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/82/f0/07de837adfa09d592747b82fd74316e88285d2d7057551f30e4b5ef81bd8/deprecated-3.0.1-py3-none-any.whl", hash = "sha256:eda314c115e8bc0fe52b90a6869e19240ac3cedb7449adfdba5981cf9ef693e1", size = 22191, upload-time = "2026-10-30T11:15:38.08Z" },
+]
+
+[[package]]
+name = "dock"
+version = "0.1.0"
+source = { editable = "packages/dock" }
+dependencies = [
+    { name = "boto3" },
+    { name = "wic-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.40" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
+]
+
+[[package]]
+name = "dock-app"
+version = "0.1.0"
+source = { editable = "apps/dock" }
+dependencies = [
+    { name = "dock" },
+    { name = "wic-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dock", editable = "packages/dock" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
 ]
 
 [[package]]
@@ -673,20 +750,20 @@ name = "freight"
 version = "0.1.0"
 source = { editable = "packages/freight" }
 dependencies = [
+    { name = "depot" },
+    { name = "dock" },
     { name = "numpy" },
     { name = "pyarrow" },
-    { name = "wpt-depot" },
-    { name = "wpt-store" },
-    { name = "wpt-utils" },
+    { name = "wic-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "depot", editable = "packages/depot" },
+    { name = "dock", editable = "packages/dock" },
     { name = "numpy", specifier = ">=2" },
     { name = "pyarrow", specifier = ">=21" },
-    { name = "wpt-depot", editable = "packages/wpt-depot" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
 ]
 
 [[package]]
@@ -695,13 +772,13 @@ version = "0.1.0"
 source = { editable = "apps/freight" }
 dependencies = [
     { name = "freight" },
-    { name = "wpt-utils" },
+    { name = "wic-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "freight", editable = "packages/freight" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
 ]
 
 [[package]]
@@ -2030,7 +2107,7 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "cuda-bindings", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
-    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'group-13-wpt-workspace-cuda') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-cuda') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-rocm') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-xpu') or (extra == 'group-13-wpt-workspace-cuda' and extra == 'group-13-wpt-workspace-rocm') or (extra == 'group-13-wpt-workspace-cuda' and extra == 'group-13-wpt-workspace-xpu') or (extra == 'group-13-wpt-workspace-rocm' and extra == 'group-13-wpt-workspace-xpu')" },
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "sys_platform == 'linux' and extra == 'group-13-wpt-workspace-cuda' or extra == 'group-13-wpt-workspace-cpu' and (extra == 'group-13-wpt-workspace-cuda' or extra == 'group-13-wpt-workspace-rocm' or extra == 'group-13-wpt-workspace-xpu') or extra == 'group-13-wpt-workspace-cuda' and (extra == 'group-13-wpt-workspace-rocm' or extra == 'group-13-wpt-workspace-xpu') or extra == 'group-13-wpt-workspace-rocm' and extra == 'group-13-wpt-workspace-xpu'" },
     { name = "filelock" },
     { name = "fsspec" },
     { name = "jinja2" },
@@ -2231,20 +2308,25 @@ wheels = [
 ]
 
 [[package]]
+name = "wic-utils"
+version = "0.1.0"
+source = { editable = "packages/wic-utils" }
+
+[[package]]
 name = "wpt"
 version = "0.1.0"
 source = { editable = "apps/wpt" }
 dependencies = [
+    { name = "depot" },
+    { name = "dock" },
     { name = "freight" },
-    { name = "jsonschema" },
     { name = "numpy" },
+    { name = "wic-utils" },
     { name = "wpt-agent" },
     { name = "wpt-corpus" },
-    { name = "wpt-depot" },
     { name = "wpt-inference" },
     { name = "wpt-model" },
-    { name = "wpt-recipes" },
-    { name = "wpt-store" },
+    { name = "wpt-orders" },
     { name = "wpt-telemetry" },
     { name = "wpt-tokenizer" },
     { name = "wpt-training" },
@@ -2254,16 +2336,16 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "depot", editable = "packages/depot" },
+    { name = "dock", editable = "packages/dock" },
     { name = "freight", editable = "packages/freight" },
-    { name = "jsonschema", specifier = ">=4.23" },
     { name = "numpy", specifier = ">=2" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
     { name = "wpt-agent", editable = "packages/wpt-agent" },
     { name = "wpt-corpus", editable = "packages/wpt-corpus" },
-    { name = "wpt-depot", editable = "packages/wpt-depot" },
     { name = "wpt-inference", editable = "packages/wpt-inference" },
     { name = "wpt-model", editable = "packages/wpt-model" },
-    { name = "wpt-recipes", editable = "packages/wpt-recipes" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
+    { name = "wpt-orders", editable = "packages/wpt-orders" },
     { name = "wpt-telemetry", editable = "packages/wpt-telemetry" },
     { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
     { name = "wpt-training", editable = "packages/wpt-training" },
@@ -2276,18 +2358,18 @@ name = "wpt-agent"
 version = "0.1.0"
 source = { editable = "packages/wpt-agent" }
 dependencies = [
+    { name = "wic-utils" },
     { name = "wpt-inference" },
-    { name = "wpt-recipes" },
+    { name = "wpt-orders" },
     { name = "wpt-tokenizer" },
-    { name = "wpt-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "wic-utils", editable = "packages/wic-utils" },
     { name = "wpt-inference", editable = "packages/wpt-inference" },
-    { name = "wpt-recipes", editable = "packages/wpt-recipes" },
+    { name = "wpt-orders", editable = "packages/wpt-orders" },
     { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
 ]
 
 [[package]]
@@ -2295,51 +2377,20 @@ name = "wpt-corpus"
 version = "0.1.0"
 source = { editable = "packages/wpt-corpus" }
 dependencies = [
+    { name = "dock" },
     { name = "numpy" },
     { name = "pyarrow" },
-    { name = "wpt-store" },
+    { name = "wic-utils" },
     { name = "wpt-tokenizer" },
-    { name = "wpt-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "dock", editable = "packages/dock" },
     { name = "numpy", specifier = ">=2" },
     { name = "pyarrow", specifier = ">=21" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
     { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
-]
-
-[[package]]
-name = "wpt-depot"
-version = "0.1.0"
-source = { editable = "packages/wpt-depot" }
-dependencies = [
-    { name = "apsw" },
-    { name = "deltalake" },
-    { name = "jsonschema" },
-    { name = "numpy" },
-    { name = "pyarrow" },
-    { name = "pyroaring" },
-    { name = "wpt-corpus" },
-    { name = "wpt-store" },
-    { name = "wpt-tokenizer" },
-    { name = "wpt-utils" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "apsw", specifier = ">=3.54" },
-    { name = "deltalake", specifier = ">=1.6" },
-    { name = "jsonschema", specifier = ">=4.23" },
-    { name = "numpy", specifier = ">=2.5" },
-    { name = "pyarrow", specifier = ">=21" },
-    { name = "pyroaring", specifier = ">=1.2" },
-    { name = "wpt-corpus", editable = "packages/wpt-corpus" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
-    { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
 ]
 
 [[package]]
@@ -2366,6 +2417,7 @@ source = { editable = "packages/wpt-model" }
 dependencies = [
     { name = "numpy" },
     { name = "safetensors" },
+    { name = "wic-utils" },
     { name = "wpt-utils" },
 ]
 
@@ -2373,33 +2425,23 @@ dependencies = [
 requires-dist = [
     { name = "numpy", specifier = ">=2" },
     { name = "safetensors", specifier = ">=0.4" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
     { name = "wpt-utils", editable = "packages/wpt-utils" },
 ]
 
 [[package]]
-name = "wpt-recipes"
+name = "wpt-orders"
 version = "0.1.0"
-source = { editable = "packages/wpt-recipes" }
+source = { editable = "packages/wpt-orders" }
 dependencies = [
     { name = "jsonschema" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "jsonschema", specifier = ">=4.23" }]
-
-[[package]]
-name = "wpt-store"
-version = "0.1.0"
-source = { editable = "packages/wpt-store" }
-dependencies = [
-    { name = "boto3" },
-    { name = "wpt-utils" },
+    { name = "wic-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", specifier = ">=1.40" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
 ]
 
 [[package]]
@@ -2407,18 +2449,18 @@ name = "wpt-telemetry"
 version = "0.1.0"
 source = { editable = "packages/wpt-telemetry" }
 dependencies = [
+    { name = "dock" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
-    { name = "wpt-store" },
-    { name = "wpt-utils" },
+    { name = "wic-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "dock", editable = "packages/dock" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.30" },
     { name = "opentelemetry-sdk", specifier = ">=1.30" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
-    { name = "wpt-utils", editable = "packages/wpt-utils" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
 ]
 
 [[package]]
@@ -2430,11 +2472,12 @@ name = "wpt-training"
 version = "0.1.0"
 source = { editable = "packages/wpt-training" }
 dependencies = [
+    { name = "dock" },
     { name = "numpy" },
+    { name = "wic-utils" },
     { name = "wpt-agent" },
     { name = "wpt-corpus" },
     { name = "wpt-model" },
-    { name = "wpt-store" },
     { name = "wpt-telemetry" },
     { name = "wpt-tokenizer" },
     { name = "wpt-utils" },
@@ -2442,11 +2485,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dock", editable = "packages/dock" },
     { name = "numpy", specifier = ">=2" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
     { name = "wpt-agent", editable = "packages/wpt-agent" },
     { name = "wpt-corpus", editable = "packages/wpt-corpus" },
     { name = "wpt-model", editable = "packages/wpt-model" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
     { name = "wpt-telemetry", editable = "packages/wpt-telemetry" },
     { name = "wpt-tokenizer", editable = "packages/wpt-tokenizer" },
     { name = "wpt-utils", editable = "packages/wpt-utils" },
@@ -2456,6 +2500,12 @@ requires-dist = [
 name = "wpt-utils"
 version = "0.1.0"
 source = { editable = "packages/wpt-utils" }
+dependencies = [
+    { name = "wic-utils" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "wic-utils", editable = "packages/wic-utils" }]
 
 [[package]]
 name = "wpt-worker"
@@ -2463,12 +2513,13 @@ version = "0.1.0"
 source = { editable = "packages/wpt-worker" }
 dependencies = [
     { name = "cryptography" },
+    { name = "dock" },
     { name = "numpy" },
     { name = "psutil" },
+    { name = "wic-utils" },
     { name = "wpt-corpus" },
     { name = "wpt-inference" },
     { name = "wpt-model" },
-    { name = "wpt-store" },
     { name = "wpt-telemetry" },
     { name = "wpt-training" },
     { name = "wpt-utils" },
@@ -2477,12 +2528,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=46" },
+    { name = "dock", editable = "packages/dock" },
     { name = "numpy", specifier = ">=2" },
     { name = "psutil", specifier = ">=7" },
+    { name = "wic-utils", editable = "packages/wic-utils" },
     { name = "wpt-corpus", editable = "packages/wpt-corpus" },
     { name = "wpt-inference", editable = "packages/wpt-inference" },
     { name = "wpt-model", editable = "packages/wpt-model" },
-    { name = "wpt-store", editable = "packages/wpt-store" },
     { name = "wpt-telemetry", editable = "packages/wpt-telemetry" },
     { name = "wpt-training", editable = "packages/wpt-training" },
     { name = "wpt-utils", editable = "packages/wpt-utils" },
@@ -2495,8 +2547,8 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 cpu = [
-    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'group-13-wpt-workspace-cpu') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-cuda') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-rocm') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-xpu') or (extra == 'group-13-wpt-workspace-cuda' and extra == 'group-13-wpt-workspace-rocm') or (extra == 'group-13-wpt-workspace-cuda' and extra == 'group-13-wpt-workspace-xpu') or (extra == 'group-13-wpt-workspace-rocm' and extra == 'group-13-wpt-workspace-xpu')" },
-    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'group-13-wpt-workspace-cpu') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-cuda') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-rocm') or (extra == 'group-13-wpt-workspace-cpu' and extra == 'group-13-wpt-workspace-xpu') or (extra == 'group-13-wpt-workspace-cuda' and extra == 'group-13-wpt-workspace-rocm') or (extra == 'group-13-wpt-workspace-cuda' and extra == 'group-13-wpt-workspace-xpu') or (extra == 'group-13-wpt-workspace-rocm' and extra == 'group-13-wpt-workspace-xpu')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin' and extra == 'group-13-wpt-workspace-cpu' or extra == 'group-13-wpt-workspace-cpu' and (extra == 'group-13-wpt-workspace-cuda' or extra == 'group-13-wpt-workspace-rocm' or extra == 'group-13-wpt-workspace-xpu') or extra == 'group-13-wpt-workspace-cuda' and (extra == 'group-13-wpt-workspace-rocm' or extra == 'group-13-wpt-workspace-xpu') or extra == 'group-13-wpt-workspace-rocm' and extra == 'group-13-wpt-workspace-xpu'" },
+    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin' and extra == 'group-13-wpt-workspace-cpu' or extra == 'group-13-wpt-workspace-cpu' and (extra == 'group-13-wpt-workspace-cuda' or extra == 'group-13-wpt-workspace-rocm' or extra == 'group-13-wpt-workspace-xpu') or extra == 'group-13-wpt-workspace-cuda' and (extra == 'group-13-wpt-workspace-rocm' or extra == 'group-13-wpt-workspace-xpu') or extra == 'group-13-wpt-workspace-rocm' and extra == 'group-13-wpt-workspace-xpu'" },
 ]
 cuda = [
     { name = "apache-tvm-ffi", marker = "sys_platform == 'linux'" },
@@ -2505,6 +2557,8 @@ cuda = [
     { name = "triton-windows", marker = "sys_platform == 'win32'" },
 ]
 dev = [
+    { name = "depot-app" },
+    { name = "dock-app" },
     { name = "freight-app" },
     { name = "moto", extra = ["s3"] },
     { name = "pytest" },
@@ -2532,6 +2586,8 @@ cuda = [
     { name = "triton-windows", marker = "sys_platform == 'win32'", specifier = ">=3.8,<3.9" },
 ]
 dev = [
+    { name = "depot-app", editable = "apps/depot" },
+    { name = "dock-app", editable = "apps/dock" },
     { name = "freight-app", editable = "apps/freight" },
     { name = "moto", extras = ["s3"], specifier = ">=5" },
     { name = "pytest", specifier = ">=8" },

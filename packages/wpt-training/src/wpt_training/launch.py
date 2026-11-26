@@ -27,7 +27,7 @@ import threading
 import time
 
 from wpt_telemetry import RECORD_FAILED
-from wpt_utils.lines import WARNING, say
+from wic_utils.lines import WARNING, say
 
 REFUSED = 2
 STOPPED = 130

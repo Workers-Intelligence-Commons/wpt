@@ -43,7 +43,7 @@ import re
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from wpt_recipes import ASK as ASK_NAME
+from wpt_orders import ASK as ASK_NAME
 
 from .sandbox import TOOL
 from .tasks import prepared

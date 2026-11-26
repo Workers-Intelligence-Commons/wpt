@@ -1,6 +1,6 @@
 ---
 name: wpt-knowledge
-description: How to use and extend docs/knowledge, the folder of what is known about building and training language models, transformers above all. Use it before choosing a model's shape, a recipe, a training setting or the next trial, to read what is already known; after a trial or a reading of papers, to write down what it showed; and whenever asked what is settled, what is open, or what to try at a given model size.
+description: How to use and extend docs/knowledge, the folder of what is known about building and training language models, transformers above all. Use it before choosing a model's shape, an order, a training setting or the next trial, to read what is already known; after a trial or a reading of papers, to write down what it showed; and whenever asked what is settled, what is open, or what to try at a given model size.
 ---
 
 # The knowledge folder
@@ -24,7 +24,7 @@ before writing.
   source: compare it with the source before a decision rests on it alone.
 - A measure made once says less than its number suggests:
   [run-to-run-spread.md](../../../docs/knowledge/run-to-run-spread.md)
-  says how far two runs of one recipe differ and which gaps one run can
+  says how far two runs of one order differ and which gaps one run can
   show.
 
 ## What goes in
@@ -41,7 +41,7 @@ on another: "with routed experts", "with a lookup table read by the last
 tokens". A statement that holds only for one implementation stays out.
 
 What stays out: a speed, a memory use, a timing, anything whose value
-changes with the GPU or the commit; what the code or a recipe does today;
+changes with the GPU or the commit; what the code or an order does today;
 an account of what the project did or in what order. Where there is no
 knowledge there is no file.
 
@@ -77,7 +77,7 @@ knowledge there is no file.
 - Compare two models at the end of training, on the same tokens, never at
   an early update.
 - Read the gap in validation loss against the spread between two runs of
-  one recipe. A gap in a behavioural test, such as copying from the
+  one order. A gap in a behavioural test, such as copying from the
   context, needs more than one run of each model before it ranks them.
 - Say what differs between the two models besides the thing tested: the
   number of parameters, the tokens per parameter, the compute per token.

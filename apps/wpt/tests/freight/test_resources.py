@@ -18,20 +18,20 @@ from wpt import resources
 from wpt.adopt import main as adopt
 from wpt.resources import main as build_resources
 from wpt.train import main as train
-from wpt_depot import Declaration
+from depot import Declaration
 from wpt_model import load_tokenizer
-from wpt_utils.lines import bare
+from wic_utils.lines import bare
 
 ME = Declaration("Ada Writer", "ada@example.org", True)
 
 
 def order(tmp_path, name="d") -> dict:
-    return json.loads((tmp_path / "data" / "recipes" / "models" / f"{name}.json").read_text())
+    return json.loads((tmp_path / "data" / "orders" / "models" / f"{name}.json").read_text())
 
 
 def learn(tmp_path, sample_bytes=10**6, name="d") -> dict:
     """Rewrite the order so it learns its vocabulary, of the size it names, on sample_bytes bytes: its data."""
-    path = tmp_path / "data" / "recipes" / "models" / f"{name}.json"
+    path = tmp_path / "data" / "orders" / "models" / f"{name}.json"
     document = json.loads(path.read_text())
     document["data"]["vocabulary"] = {"size": document["data"]["vocabulary"]["size"], "sample_bytes": sample_bytes}
     path.write_text(json.dumps(document))
@@ -86,7 +86,7 @@ def test_an_erasure_is_written_into_the_vocabulary_s_note_and_the_corpus_is_made
     with pytest.raises(SystemExit) as refused:
         train(["d", "--out", "again"])
     said = bare(capsys.readouterr().err)
-    assert refused.value.code == 2 and f"corpus delivery {corpus['key']} of the recipe is stale" in said
+    assert refused.value.code == 2 and f"corpus delivery {corpus['key']} of the order is stale" in said
     assert "wpt build-resources" in said
 
     assert build_resources(["d"]) == 0
@@ -124,7 +124,7 @@ def test_wpt_train_given_a_corpus_delivery_by_its_id_or_key_trains_on_it_when_it
     with pytest.raises(SystemExit) as refused:
         train(["d", corpus["id"][:16], "--out", "other"])
     said = bare(capsys.readouterr().err)
-    assert refused.value.code == 2 and "with kinds, shares or vocabulary other than the recipe's" in said
+    assert refused.value.code == 2 and "with kinds, shares or vocabulary other than the order's" in said
 
 
 def test_wpt_build_resources_run_again_waits_for_the_job_a_stopped_run_left(built, tmp_path, monkeypatch, capsys):
@@ -141,19 +141,19 @@ def test_wpt_build_resources_run_again_waits_for_the_job_a_stopped_run_left(buil
 
 
 def test_wpt_adopt_vocabularies_puts_each_vocabulary_of_the_depot_on_the_dock_with_the_texts_it_read(built):
-    # a recipe and its vocabulary as a depot that trained them kept them in its tables, which nothing writes now
+    # an order and its vocabulary as a depot that trained them kept them in its tables, which nothing writes now
     listed = [row["id"] for row in built.depot.sql("SELECT id FROM texts ORDER BY id")]
     sample = json.dumps({"snapshot": built.depot.snapshot(built.names["d"])["id"], "kinds": ["plain"]})
     with built.depot.db.write("a kept vocabulary") as (con, number):
-        recipe = built.depot._id(built.depot._take(con, "tokenizers"))
+        order = built.depot._id(built.depot._take(con, "tokenizers"))
         con.execute("INSERT INTO tokenizers_revisions (id, revision, change, latest, name, version, depot, dataset, "
                     "sample_bytes, vocab_size, note, sample) VALUES (?, 1, ?, 1, 't', 1, NULL, '', ?, ?, NULL, ?)",
-                    (recipe, number, 10**6, built.tokenizer.vocab_size, sample))
+                    (order, number, 10**6, built.tokenizer.vocab_size, sample))
         con.execute("INSERT INTO vocabularies (recipe, version, change, sha256, merges, texts, bytes, made_at) "
                     "VALUES (?, 1, ?, ?, ?, ?, NULL, '2026-01-01T00:00:00+00:00')",
-                    (recipe, number, built.vocabulary, built.tokenizer.to_bytes().decode(), len(listed)))
+                    (order, number, built.vocabulary, built.tokenizer.to_bytes().decode(), len(listed)))
         con.executemany("INSERT INTO vocabulary_texts (recipe, version, position, depot, text, change) "
-                        "VALUES (?, 1, ?, '', ?, ?)", [(recipe, at, one, number) for at, one in enumerate(listed)])
+                        "VALUES (?, 1, ?, '', ?, ?)", [(order, at, one, number) for at, one in enumerate(listed)])
     assert adopt([]) == 0
     note = api.delivery(f"{api.ADOPTED}{built.vocabulary}")
     assert note["on_erasure"] == "note" and note["result"]["sha256"] == built.vocabulary

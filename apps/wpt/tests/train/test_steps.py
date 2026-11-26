@@ -17,10 +17,10 @@ from safetensors.torch import load_file
 import wpt_agent
 import wpt.train
 from wpt_agent import images, played
-from wpt_depot import NewText
-from wpt_depot import corpora
+from depot import NewText
+from freight import corpora
 from wpt_model import PARTS
-from wpt_store import LocalStore
+from dock import LocalDock
 from wpt_telemetry import RECORD_FAILED, Telemetry
 from wpt_tokenizer import chat
 from wpt_training import Context, Data, Strategy, in_process, load_step, step_seed
@@ -55,12 +55,12 @@ def test_a_step_learns_only_the_conversations_carrying_its_tag(built, capsys):
     # the corpus holds a conversation, tagged for another use: the step picks items by tag from the corpus's texts
     other = built.snapshot("other", [NewText(kind="conversation", content=json.dumps(TALK), tags=("review",))])
     chat_step = [{"step": "answer-as-assistant"}]
-    err = refused(capsys, [built.recipe("other", training=one_stage(1, 64), steps=chat_step, snapshot="other"), other,
+    err = refused(capsys, [built.order("other", training=one_stage(1, 64), steps=chat_step, snapshot="other"), other,
                            "--out", "model"])
     assert "no conversations: the corpus holds none tagged answer-as-assistant" in err
     tagged = [{"step": "answer-as-assistant", "settings": {"tag": "review"}}]
-    train([built.recipe("base", training=one_stage(1, 64), snapshot="other"), other, "--out", "base"])
-    train([built.recipe("tagged", training=one_stage(1, 64), steps=tagged, snapshot="other"), other, "--out", "model"])
+    train([built.order("base", training=one_stage(1, 64), snapshot="other"), other, "--out", "base"])
+    train([built.order("tagged", training=one_stage(1, 64), steps=tagged, snapshot="other"), other, "--out", "model"])
 
 
 def credited(folder) -> list[str]:
@@ -71,23 +71,23 @@ def credited(folder) -> list[str]:
 def test_answer_as_assistant_learns_from_the_corpus_s_conversations_and_credits_them(built, tmp_path, monkeypatch,
                                                                                      capsys):
     # the step learns the assistant's turns of the conversations of its
-    # corpus; a corpus without any is refused before any step trains. A recipe
+    # corpus; a corpus without any is refused before any step trains. An order
     # that shares its first step with an earlier run reuses that step's
     # result; the step changes the weights, but never the routers'
     # balancing biases, which it locks; the model's CREDITS name the conversation, and its drafter's
     # answers stop at the end of a turn too
     chat_step = [{"step": "answer-as-assistant"}]
-    err = refused(capsys, [built.recipe("no-talk", training=one_stage(1, 64), steps=chat_step), built.corpus_id,
+    err = refused(capsys, [built.order("no-talk", training=one_stage(1, 64), steps=chat_step), built.corpus_id,
                            "--out", "model"])
     assert "InputError: step 2 answer-as-assistant: no conversations: the corpus holds none tagged answer-as-assistant" in err
     assert not (tmp_path / "model").exists() and not (built.store.root / "cache" / "steps").exists()
 
     dataset = talks(built)
     assert corpora.find(built.store, dataset)["conversations"] == 1
-    recipe = built.recipe("chat", training=one_stage(1, 64), steps=chat_step, snapshot="chat")
-    train([built.recipe("base", training=one_stage(1, 64), snapshot="chat"), dataset, "--out", "base"])
+    order = built.order("chat", training=one_stage(1, 64), steps=chat_step, snapshot="chat")
+    train([built.order("base", training=one_stage(1, 64), snapshot="chat"), dataset, "--out", "base"])
 
-    train([recipe, dataset, "--out", "model"])
+    train([order, dataset, "--out", "model"])
     [drafter] = [event for event in built.records("wpt train")[-1].events
                  if event["kind"] == "span_start" and event["name"] == "drafter"]
     assert drafter["attributes"]["stops"] == [wpt.train.Tokenizer.END, chat.IM_END]
@@ -142,9 +142,9 @@ def test_each_step_s_fingerprint_names_only_the_kinds_of_texts_it_reads(built):
 def test_the_hardware_options_stay_out_of_a_step_s_fingerprint(built, tmp_path, capsys):
     # --stream and --stream-shards change how the windows are read, not the
     # step: a run with them reuses the step an earlier run kept without them
-    train([built.recipe("two", training=one_stage(2)), built.corpus_id, "--out", "base"])
+    train([built.order("two", training=one_stage(2)), built.corpus_id, "--out", "base"])
     capsys.readouterr()
-    train([built.recipe("two", training=one_stage(2)), built.corpus_id, "--out", "streamed", "--stream",
+    train([built.order("two", training=one_stage(2)), built.corpus_id, "--out", "streamed", "--stream",
            "--stream-shards", "1"])
     assert "step 1 read-text: reused" in capsys.readouterr().out
 
@@ -155,10 +155,10 @@ def test_the_steps_after_a_reused_one_train_as_in_a_run_of_every_step(built, on_
     # on a GPU differ even with no step reused (docs/training.md, "What is exactly repeatable")
     dataset = talks(built)
     steps = [{"step": "answer-as-assistant", "settings": {"epochs": 1}}]
-    train([built.recipe("base", training=one_stage(1, 64), snapshot="chat"), dataset, "--out", "base"])
-    train([built.recipe("chat", training=one_stage(1, 64), steps=steps, snapshot="chat"), dataset, "--out", "reused"])
-    shutil.rmtree(built.store.root / "cache" / "steps")  # a store that never saw these recipes
-    train([built.recipe("chat", training=one_stage(1, 64), steps=steps, snapshot="chat"), dataset, "--out", "fresh"])
+    train([built.order("base", training=one_stage(1, 64), snapshot="chat"), dataset, "--out", "base"])
+    train([built.order("chat", training=one_stage(1, 64), steps=steps, snapshot="chat"), dataset, "--out", "reused"])
+    shutil.rmtree(built.store.root / "cache" / "steps")  # a dock that never saw these orders
+    train([built.order("chat", training=one_stage(1, 64), steps=steps, snapshot="chat"), dataset, "--out", "fresh"])
 
     reused, fresh = (json.loads((tmp_path / name / "provenance.json").read_text())["steps"]
                      for name in ("reused", "fresh"))
@@ -169,20 +169,20 @@ def test_the_steps_after_a_reused_one_train_as_in_a_run_of_every_step(built, on_
     assert all(torch.equal(weights[0][name], weights[1][name]) for name in weights[0])
 
 
-def test_a_recipe_that_adds_a_text_step_with_longer_windows_reuses_the_first_one(built, tmp_path, capsys):
+def test_a_order_that_adds_a_text_step_with_longer_windows_reuses_the_first_one(built, tmp_path, capsys):
     # the model's context comes from the last step that reads text, but no
-    # weight depends on it: a recipe that goes on reading text at longer
+    # weight depends on it: an order that goes on reading text at longer
     # windows starts from the first step an earlier run kept
-    train([built.recipe("base", training=one_stage(1)), built.corpus_id, "--out", "base"])
+    train([built.order("base", training=one_stage(1)), built.corpus_id, "--out", "base"])
     longer = {"step": "read-text", "settings": one_stage(1, 32)}
-    train([built.recipe("long", training=one_stage(1), steps=[longer]), built.corpus_id, "--out", "long"])
+    train([built.order("long", training=one_stage(1), steps=[longer]), built.corpus_id, "--out", "long"])
     assert "step 1 read-text: reused" in capsys.readouterr().out
     steps = json.loads((tmp_path / "long" / "provenance.json").read_text())["steps"]
     assert [step["reused"] for step in steps] == [True, False]
     assert json.loads((tmp_path / "long" / "config.json").read_text())["block_size"] == 32
 
 
-def test_two_text_steps_of_one_recipe_draw_other_windows(built):
+def test_two_text_steps_of_one_order_draw_other_windows(built):
     # a second read-text step of the same settings goes on learning from
     # other windows than the first, while each step draws the same windows
     # on every run
@@ -226,8 +226,8 @@ def test_every_run_is_evaluated_on_the_same_windows_whatever_its_seed_step_and_u
     assert len({tuple(row.tolist()) for row in evaluated}) > 1  # each batch draws its own windows
 
 
-def test_two_identical_steps_of_one_recipe_draw_other_conversations_and_tasks(built, tmp_path):
-    # one seed per recipe; each step mixes its number in the list into it, so
+def test_two_identical_steps_of_one_order_draw_other_conversations_and_tasks(built, tmp_path):
+    # one seed per order; each step mixes its number in the list into it, so
     # a second answer-as-assistant or finish-tasks step of the same settings
     # goes through the conversations and the tasks in another order, while
     # one step draws the same order on every run
@@ -297,13 +297,13 @@ def test_a_step_that_fails_after_a_checkpoint_keeps_it_for_resume(built, tmp_pat
                                                  "KINDS = ('plain',)\nOPTIMIZER = {'name': 'by-part'}\n")
     (tmp_path / "fail").touch()
     monkeypatch.setenv("WPT_TEST_FAIL", str(tmp_path / "fail"))
-    recipe = built.recipe("fails", steps=[{"step": str(tmp_path / "fails-once-step.py"), "settings": one_stage(3)}])
-    command = [recipe, built.corpus_id, "--out", "model", "--checkpoint-every", "1"]
+    order = built.order("fails", steps=[{"step": str(tmp_path / "fails-once-step.py"), "settings": one_stage(3)}])
+    command = [order, built.corpus_id, "--out", "model", "--checkpoint-every", "1"]
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")  # the checkpoint the failure leaves comes to this machine
     err = refused(capsys, command)
     assert ("StepFailed: step 2 fails-once-step: the examples went away; its checkpoint stays in "
             f"{Path('model') / 'checkpoint'}: --resume continues the step from it, and deleting it starts the step "
-            "over; the results of the 1 steps before it stay in the store") in err
+            "over; the results of the 1 steps before it stay on the dock") in err
     assert (tmp_path / "model" / "checkpoint" / "checkpoint.safetensors").is_file()
     train([*command, "--resume"])
     out = capsys.readouterr().out
@@ -314,7 +314,7 @@ def test_a_step_that_fails_after_a_checkpoint_keeps_it_for_resume(built, tmp_pat
 
 def test_finish_tasks_says_so_when_the_corpus_holds_no_tasks(built, tmp_path, capsys):
     # before any step trains: the read-text step before it would be trained for nothing
-    err = refused(capsys, [built.recipe("agent", steps=[{"step": "finish-tasks"}]), built.corpus_id,
+    err = refused(capsys, [built.order("agent", steps=[{"step": "finish-tasks"}]), built.corpus_id,
                            "--out", "model"])
     assert "InputError: step 2 finish-tasks: no tasks: the corpus holds none tagged finish-tasks" in err
     assert not (tmp_path / "model").exists() and not (built.store.root / "cache" / "steps").exists()
@@ -366,8 +366,8 @@ def test_finish_tasks_fails_when_every_attempt_of_a_round_is_dropped(built, tmp_
     dataset, _ = task_corpus(built, tmp_path)
     assert corpora.find(built.store, dataset)["tasks"]["count"] == 1
     no_sandbox(monkeypatch)
-    recipe = built.recipe("agent", training=one_stage(1, 1024), steps=[{"step": "finish-tasks"}], snapshot="tasks")
-    err = refused(capsys, [recipe, dataset, "--out", "model"])
+    order = built.order("agent", training=one_stage(1, 1024), steps=[{"step": "finish-tasks"}], snapshot="tasks")
+    err = refused(capsys, [order, dataset, "--out", "model"])
     assert ("StepFailed: step 2 finish-tasks: round 1: every attempt was dropped, Docker failed 8 times; the last "
             "time: docker create: no space left on device; nothing of it is kept") in err
     assert not (tmp_path / "model").exists()
@@ -390,16 +390,16 @@ def test_a_refused_attempt_line_stops_the_run_with_the_record_error_code(built, 
     # part of the record does: exit code 3, no model written
     dataset, _ = task_corpus(built, tmp_path)
     no_sandbox(monkeypatch)  # a dropped attempt is kept too
-    real = LocalStore._raw_append_record
+    real = LocalDock._raw_append_record
 
     def disk_full(self, folder, name, data):
         if name == "finish-tasks-attempts.jsonl":
             raise OSError(28, "No space left on device")
         real(self, folder, name, data)
 
-    monkeypatch.setattr(LocalStore, "_raw_append_record", disk_full)
+    monkeypatch.setattr(LocalDock, "_raw_append_record", disk_full)
     with pytest.raises(SystemExit) as stopped:
-        train([built.recipe("agent", training=one_stage(1, 1024), steps=[{"step": "finish-tasks"}], snapshot="tasks"),
+        train([built.order("agent", training=one_stage(1, 1024), steps=[{"step": "finish-tasks"}], snapshot="tasks"),
                dataset, "--out", "model"])
     assert stopped.value.code == RECORD_FAILED
     assert not (tmp_path / "model" / "config.json").exists()
@@ -413,7 +413,7 @@ def test_finish_tasks_fails_when_no_group_ever_teaches_anything(docker_runs, bui
         subprocess.run(["docker", "pull", "-q", "ubuntu:24.04"], capture_output=True, check=True)
     monkeypatch.setattr(images, "built", lambda root, name: "ubuntu:24.04")  # a plain image is enough here
     step = {"step": "finish-tasks", "settings": {"rounds": 2, "group": 2, "tasks_per_update": 1}}
-    err = refused(capsys, [built.recipe("agent", training=one_stage(1, 1024), steps=[step], snapshot="tasks"),
+    err = refused(capsys, [built.order("agent", training=one_stage(1, 1024), steps=[step], snapshot="tasks"),
                            dataset, "--out", "model"])
     assert ("StepFailed: step 2 finish-tasks: no update in 2 rounds: every group was skipped, 2 because its rewards "
             "were all equal, 0 because it kept fewer than 2 attempts") in err
@@ -428,7 +428,7 @@ def test_finish_tasks_with_less_writing_fails_when_no_task_is_left(docker_runs, 
         subprocess.run(["docker", "pull", "-q", "ubuntu:24.04"], capture_output=True, check=True)
     monkeypatch.setattr(images, "built", lambda root, name: "ubuntu:24.04")
     step = {"step": "finish-tasks-with-less-writing", "settings": {"reference": 2}}
-    err = refused(capsys, [built.recipe("agent", training=one_stage(1, 1024), steps=[step], snapshot="tasks"),
+    err = refused(capsys, [built.order("agent", training=one_stage(1, 1024), steps=[step], snapshot="tasks"),
                            dataset, "--out", "model"])
     assert ("StepFailed: step 2 finish-tasks-with-less-writing: no task left of the 1 tasks tagged finish-tasks: each scored 0 "
             "on every reference attempt, or Docker failed every one") in err
@@ -500,14 +500,14 @@ def test_finish_tasks_learns_from_scored_attempts_at_the_corpus_s_tasks(docker_r
     dataset, task_id = task_corpus(built, tmp_path)
     (tmp_path / "data" / "images" / "tiny" / "lock.json").write_text(json.dumps(NEVER_BUILT))  # no image built yet
     answered(monkeypatch)
-    train([built.recipe("base", training=one_stage(1, 64), snapshot="tasks"), dataset, "--out", "base"])
+    train([built.order("base", training=one_stage(1, 64), snapshot="tasks"), dataset, "--out", "base"])
     step = {"step": "finish-tasks", "settings": {"rounds": 1, "group": 2, "tasks_per_update": 1},
             "optimizer": {"name": "by-part", "settings": {"lr": 1e-2, "weight_decay": 0.0}}}
-    recipe = built.recipe("agent", training=one_stage(1, 64), steps=[step], snapshot="tasks")
-    err = refused(capsys, [recipe, dataset, "--out", "model"])
+    order = built.order("agent", training=one_stage(1, 64), steps=[step], snapshot="tasks")
+    err = refused(capsys, [order, dataset, "--out", "model"])
     assert "image 'tiny' is not built on this machine" in err and "wpt agent build-image tiny" in err
     tiny_image(tmp_path)
-    train([recipe, dataset, "--out", "model"])
+    train([order, dataset, "--out", "model"])
 
     before, after = load_file(tmp_path / "base" / "model.safetensors"), load_file(tmp_path / "model" / "model.safetensors")
     assert unchanged_routers(before, after)
@@ -550,12 +550,12 @@ def test_finish_tasks_with_less_writing_learns_from_the_tasks_finish_tasks_reads
     dataset, task_id = task_corpus(built, tmp_path, check="#!/bin/bash\necho $((RANDOM % 2))\n")
     tiny_image(tmp_path)
     answered(monkeypatch)
-    train([built.recipe("base", training=one_stage(1, 1024), snapshot="tasks"), dataset, "--out", "base"])
+    train([built.order("base", training=one_stage(1, 1024), snapshot="tasks"), dataset, "--out", "base"])
     # 16 reference attempts all fail 1 time in 65536; 8 attempts all equal, in each of 2 rounds, 1 time in 16384
     step = {"step": "finish-tasks-with-less-writing",
             "settings": {"rounds": 2, "group": 8, "reference": 16, "tasks_per_update": 1},
             "optimizer": {"name": "by-part", "settings": {"lr": 1e-2, "weight_decay": 0.0}}}
-    train([built.recipe("agent", training=one_stage(1, 1024), steps=[step], snapshot="tasks"), dataset, "--out",
+    train([built.order("agent", training=one_stage(1, 1024), steps=[step], snapshot="tasks"), dataset, "--out",
            "model"])
 
     before, after = load_file(tmp_path / "base" / "model.safetensors"), load_file(tmp_path / "model" / "model.safetensors")
@@ -618,7 +618,7 @@ def test_an_attempt_s_parts_add_up_by_their_weights_and_a_broken_gate_or_no_answ
 def test_stating_a_low_confidence_may_never_pay_more_than_being_right_and_is_refused_before_any_step(built, tmp_path,
                                                                                                     capsys):
     step = {"step": "finish-tasks", "settings": {"weight_calibration": 2}}
-    err = refused(capsys, [built.recipe("agent", steps=[step]), built.corpus_id, "--out", "model"])
+    err = refused(capsys, [built.order("agent", steps=[step]), built.corpus_id, "--out", "model"])
     assert "finish-tasks.py: weight_correct (1.0) must be above weight_calibration (2.0)" in err
     assert not (tmp_path / "model").exists()
 

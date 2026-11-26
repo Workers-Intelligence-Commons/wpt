@@ -1,9 +1,9 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["wpt-utils"]
+# dependencies = ["wic-utils"]
 #
 # [tool.uv.sources]
-# wpt-utils = { path = "../packages/wpt-utils", editable = true }
+# wic-utils = { path = "../packages/wic-utils", editable = true }
 # ///
 """The tests of every package, chosen by what changed. Options: common.py.
 
@@ -36,8 +36,8 @@ import sys
 from pathlib import Path
 
 from common import ENVIRON, ROOT, UV, Part, always, base_of, changed_paths, execute, main
-from wpt_utils.lines import ERROR, line, say
-from wpt_utils.parallel import average, limit
+from wic_utils.lines import ERROR, line, say
+from wic_utils.parallel import average, limit
 
 SAMPLE_EVERY = 40  # every this many-th chosen test is in the sample whose memory sizes the test processes
 SLOWEST = 20  # how many of the slowest tests a run lists
@@ -52,11 +52,11 @@ AS_A_WORKER = {**NO_GPU, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 IMAGE_CODE = ("packages/wpt-agent/src/wpt_agent/images.py", "apps/wpt/tests/agent/test_images.py",
               "packages/wpt-agent/tests/test_agent_image.py",
               "conftest.py",  # the image fixture
-              "packages/wpt-recipes/src/wpt_recipes/recipes.py",  # Recipes.image_files: what the image's tag covers
-              "packages/wpt-recipes/src/wpt_recipes/schemas/image-lock.schema.json",
-              "packages/wpt-recipes/src/wpt_recipes/schemas/image-licenses.schema.json")
+              "packages/wpt-orders/src/wpt_orders/orders.py",  # Orders.image_files: what the image's tag covers
+              "packages/wpt-orders/src/wpt_orders/schemas/image-lock.schema.json",
+              "packages/wpt-orders/src/wpt_orders/schemas/image-licenses.schema.json")
 # whether an image's folder differs from the revision: only the service layer names the data folder
-IMAGES_DIFFER = "import sys; from wpt_recipes import Recipes; print(Recipes('.').images_differ(sys.argv[1]))"
+IMAGES_DIFFER = "import sys; from wpt_orders import Orders; print(Orders('.').images_differ(sys.argv[1]))"
 
 
 def record_folder() -> Path:

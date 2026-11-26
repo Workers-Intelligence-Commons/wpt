@@ -19,14 +19,14 @@ import pytest
 
 import wpt.manager
 from wpt.manager import RUN_FILE, Failed, main, rental, unfinished
-from wpt.train import LOST, StoreCheckpoint
+from wpt.train import LOST, DockCheckpoint
 from wpt.manager.machines import Workers
 from wpt.manager.rental import Address, Cap, Provider, RentalError
 from wpt.manager.skypilot import SkyPilot
 from wpt_training import load_state
-from wpt_utils.lines import INFO, bare
+from wic_utils.lines import INFO, bare
 from wpt_worker.link import Key
-from wpt_store.models import has_model
+from wpt.models import has_model
 
 
 class Fake(Provider):
@@ -85,9 +85,9 @@ Fake.cluster_of = {}
 
 @pytest.fixture
 def published(built, tmp_path) -> str:
-    """The id of the corpus wpt train finds for the recipe d: the one of its build key (its snapshot, data section
+    """The id of the corpus wpt train finds for the order d: the one of its build key (its snapshot, data section
     and vocabulary)."""
-    size = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())["data"]["total_tokens"]
+    size = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())["data"]["total_tokens"]
     return built.sized("d", size)["id"]
 
 
@@ -98,7 +98,7 @@ def fake(built, published, on_the_cpu, tmp_path, monkeypatch, worker_port):
     monkeypatch.setattr(rental, "providers", lambda: {"fake": Fake})
     monkeypatch.setenv("WPT_RENTAL_PROVIDER", "fake")
     monkeypatch.setenv("FAKE_FOLDER", str(tmp_path / "rented"))
-    monkeypatch.setenv("WPT_RECIPE", "d")
+    monkeypatch.setenv("WPT_ORDER", "d")
     monkeypatch.setenv("WPT_KERNELS", "pytorch")  # the fake's workers have no GPU
     yield Fake
     for group in Fake.cluster_of.values():
@@ -134,7 +134,7 @@ def test_the_manager_rents_its_gpu_workers_sets_their_tokens_never_shows_them_an
     assert has_model(built.store, "rented")
 
 
-def test_a_lost_rented_worker_is_reported_replaced_and_the_run_resumes_from_the_store(built, fake, tmp_path,
+def test_a_lost_rented_worker_is_reported_replaced_and_the_run_resumes_from_the_dock(built, fake, tmp_path,
                                                                                       monkeypatch):
     fake.lose = True
     monkeypatch.setenv("WPT_GPU_WORKERS", "1")
@@ -255,8 +255,8 @@ elif arguments[0] == "down" and arguments[-1] == "wpt-gone":
     (bin_folder / "sky").chmod(0o755)
     settings = {**os.environ, "PATH": f"{bin_folder}{os.pathsep}{os.environ['PATH']}", "WPT_RENTAL_GPUS": "H100:8",
                 "WPT_WORKER_WAIT": "600", "RUNPOD_API_KEY": "provider-key", "AWS_ACCESS_KEY_ID": "provider-key",
-                "WPT_STORE": "s3://bucket", "WPT_STORE_ACCESS_KEY_ID": "store-key",
-                "WPT_STORE_SECRET_ACCESS_KEY": "store-secret", "GITHUB_TOKEN": "x", "WPT_RECIPE": "d"}
+                "DOCK": "s3://bucket", "DOCK_ACCESS_KEY_ID": "store-key",
+                "DOCK_SECRET_ACCESS_KEY": "store-secret", "GITHUB_TOKEN": "x", "WPT_ORDER": "d"}
     sky = SkyPilot(settings, tmp_path)
     sky.rent("wpt-one", "secret-token-123", True)
     assert sky.address("wpt-one", lambda: None) == Address("34.0.0.9", 30123, pin)
@@ -271,10 +271,10 @@ elif arguments[0] == "down" and arguments[-1] == "wpt-gone":
     assert all("secret-token-123" not in " ".join(call["arguments"]) for call in seen)  # never on a command line
     assert seen[0]["token"] == "secret-token-123" and seen[0]["cwd"] == str(tmp_path)
     assert [call["arguments"][0] for call in seen] == ["launch", "logs", "status", "down", "down"]
-    # sky gets its own provider keys, the shell's basics and what the workers are given, never the store's
+    # sky gets its own provider keys, the shell's basics and what the workers are given, never the dock's
     for call in seen:
         assert {"PATH", "HOME", "RUNPOD_API_KEY", "AWS_ACCESS_KEY_ID", "WPT_WORKER_WAIT"} <= set(call["names"])
-        assert not ({"WPT_STORE", "WPT_STORE_ACCESS_KEY_ID", "WPT_STORE_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "WPT_RECIPE"}
+        assert not ({"DOCK", "DOCK_ACCESS_KEY_ID", "DOCK_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "WPT_ORDER"}
                     & set(call["names"]))
     assert "--num-nodes" not in launch and not any(argument.startswith("WPT_WORKER_PLACE") for argument in launch)
 
@@ -484,7 +484,7 @@ def test_a_crash_of_a_training_process_on_several_workers_resumes_the_run_within
     assert len(tried) == 2 and tried[0] == tried[1] and "--resume" in tried[0]
     assert has_model(built.store, "crashy")
     assert [call[0] for call in fake.calls] == ["rent", "stop"]  # nothing was lost: no new rental
-    assert "the run resumes from the last checkpoint in the store" in capsys.readouterr().out
+    assert "the run resumes from the last checkpoint on the dock" in capsys.readouterr().out
 
     crashes[:] = [5, 5]  # the same limit as for a lost worker: WPT_REPLACEMENTS
     tried.clear()
@@ -618,7 +618,7 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
         return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", failing)
-    monkeypatch.setenv("WPT_RECIPE", "d")
+    monkeypatch.setenv("WPT_ORDER", "d")
     monkeypatch.delenv("WPT_RUN", raising=False)
     with pytest.raises(SystemExit) as stopped:
         main([])
@@ -632,10 +632,10 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     assert has_model(built.store, name)
     assert f"run {name} (named in" in capsys.readouterr().out
 
-    main([])  # its model is in the store now: a new run under a new name
+    main([])  # its model is on the dock now: a new run under a new name
     assert (tmp_path / RUN_FILE).read_text() != written
-    # another recipe's run name is never taken over
-    (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the recipe not-d; once it is done\n")
+    # another order's run name is never taken over
+    (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the order not-d; once it is done\n")
     assert wpt.manager.previous_run(tmp_path, "d", built.store, None) is None
     assert wpt.manager.previous_run(tmp_path, "not-d", built.store, None) == "other-20260101T000000Z"
 
@@ -644,12 +644,12 @@ def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says
                                                                                     monkeypatch, capsys):
     # restart: on-failure then restarts only a crash or a Docker restart
     monkeypatch.setenv("WPT_MANAGER_CONTAINER", "1")
-    monkeypatch.delenv("WPT_RECIPE", raising=False)
+    monkeypatch.delenv("WPT_ORDER", raising=False)
     main([])  # returns: no SystemExit
     err = capsys.readouterr().err
-    assert "WPT_RECIPE is not set" in err and "exits with 0" in err
+    assert "WPT_ORDER is not set" in err and "exits with 0" in err
 
-    monkeypatch.setenv("WPT_RECIPE", "d")
+    monkeypatch.setenv("WPT_ORDER", "d")
 
     def failing(step, arguments, log, environ=None, stops=None):
         raise Failed(step, 3)
@@ -671,8 +671,8 @@ class Priced(Fake):
         return 2.5 * count
 
 
-def stopping_recipe(built, tmp_path, at_update_3):
-    """A model recipe of 5 updates whose optimizer does at_update_3 (Python
+def stopping_order(built, tmp_path, at_update_3):
+    """A model order of 5 updates whose optimizer does at_update_3 (Python
     code), when the environment names STOP_AT, then waits for the manager to
     pass the stop on."""
     optimizer = tmp_path / "stopping.py"
@@ -690,11 +690,11 @@ def stopping_recipe(built, tmp_path, at_update_3):
         "            time.sleep(3)\n\n"
         "def start(model, settings, run):\n    return Stopping(model, settings)\n")
     stages = [{"block_size": 16, "steps": 5, "batch_size": 4}]
-    return built.recipe("stopping", training={"stages": stages, "optimizer": str(optimizer)})
+    return built.order("stopping", training={"stages": stages, "optimizer": str(optimizer)})
 
 
 def checkpoint_step(built, name) -> int:
-    return load_state(built.store.path(StoreCheckpoint(built.store, name, None, set()).state_file()))["step"]
+    return load_state(built.store.path(DockCheckpoint(built.store, name, None, set()).state_file()))["step"]
 
 
 @pytest.mark.parametrize("reason, ask", [("wpt manager stop", lambda: main(["stop"])),
@@ -704,7 +704,7 @@ def test_a_stop_saves_the_checkpoint_gives_the_machines_back_and_the_same_comman
     # the machines go back with nothing lost, from the middle of a step, under the default WPT_LINK_CHECKPOINTS
     monkeypatch.setattr(wpt.manager, "WATCH", 0.1)
     update_3 = tmp_path / "update-3"
-    monkeypatch.setenv("WPT_RECIPE", stopping_recipe(built, tmp_path, "Path(os.environ['STOP_AT']).touch()"))
+    monkeypatch.setenv("WPT_ORDER", stopping_order(built, tmp_path, "Path(os.environ['STOP_AT']).touch()"))
     monkeypatch.setenv("STOP_AT", str(update_3))
     monkeypatch.setenv("WPT_GPU_WORKERS", "1")
     monkeypatch.setenv("WPT_RUN", "wanted")
@@ -751,7 +751,7 @@ def test_the_cost_cap_prints_the_projection_first_stops_the_run_like_a_stop_and_
     reached = tmp_path / "reached"
     real = Workers.spent
     monkeypatch.setattr(Workers, "spent", lambda self, now=None: (9.0, 3.6) if reached.exists() else real(self))
-    monkeypatch.setenv("WPT_RECIPE", stopping_recipe(built, tmp_path, "Path(os.environ['STOP_AT']).touch()"))
+    monkeypatch.setenv("WPT_ORDER", stopping_order(built, tmp_path, "Path(os.environ['STOP_AT']).touch()"))
     monkeypatch.setenv("STOP_AT", str(reached))
     monkeypatch.setenv("WPT_GPU_WORKERS", "1")
     monkeypatch.setenv("WPT_RUN", "capped")

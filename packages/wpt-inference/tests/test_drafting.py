@@ -160,7 +160,7 @@ def test_too_few_prompts_fail_the_drafter():
                       device=torch.device("cpu"), telemetry=Quiet())
 
 
-def test_the_recipe_s_drafter_section_gives_the_shape_and_the_training():
+def test_the_order_s_drafter_section_gives_the_shape_and_the_training():
     # what it leaves out keeps the defaults; a setting neither knows is refused
     shape, training = settings(CONFIG, {"block": 3, "epochs": 2})
     assert shape == DrafterConfig.for_model(CONFIG, block=3) and training == Settings(epochs=2)

@@ -1,18 +1,18 @@
-"""What a store's records say about its runs, read back for people.
+"""What a dock's records say about its runs, read back for people.
 
     runs(store)            every run, by its folder's name, with its command, its start
                            and how it ended, from its start.json and end.json
     summary(store, folder) one run: its stage (the spans open at the last
                            line read), how many spans, events and lines it
                            holds, its last events and its errors
-    follow(store, folder)  the lines of a run as they reach the store, until
+    follow(store, folder)  the lines of a run as they reach the dock, until
                            its end.json is there
 
-Each line read back for people is its text and the level of wpt_utils.lines
+Each line read back for people is its text and the level of wic_utils.lines
 it prints at (described).
 
 A run whose end.json is missing is running, or it crashed: its record cannot
-tell which. The lines of a run reach the store in groups (wpt_telemetry), so
+tell which. The lines of a run reach the dock in groups (wpt_telemetry), so
 a run that is going shows up to FLUSH_SECONDS late.
 """
 
@@ -22,8 +22,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from wpt_store import MissingFile
-from wpt_utils.lines import ERROR, INFO
+from dock.api import MissingFile
+from wic_utils.lines import ERROR, INFO
 
 from . import END, EVENTS, START
 
@@ -68,7 +68,7 @@ def run_of(store, folder) -> Run:
 
 
 def runs(store) -> list[Run]:
-    """Every run of the store, oldest first."""
+    """Every run of the dock, oldest first."""
     with ThreadPoolExecutor(READERS) as pool:
         return list(pool.map(lambda folder: run_of(store, folder), store.record_folders()))
 
@@ -134,7 +134,7 @@ def summary(store, folder) -> Summary:
 
 
 def follow(store, folder, seconds=FOLLOW_SECONDS, wait=time.sleep):
-    """Each line of the run as described gives it, as it reaches the store,
+    """Each line of the run as described gives it, as it reaches the dock,
     from the run's first; it ends once the run's end.json is there and every
     line is read."""
     reader = store.record_reader(folder, EVENTS)

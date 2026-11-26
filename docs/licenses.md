@@ -49,7 +49,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 
 | Package | Version | License | Note |
 | --- | --- | --- | --- |
-| apsw | 3.54.1.0 | any OSI-approved license, at the user's choice (its metadata: any-OSI); its compiled part includes SQLite (public domain) | the depot's SQLite file and the sessions that record each of its changes (wpt-depot) |
+| apsw | 3.54.1.0 | any OSI-approved license, at the user's choice (its metadata: any-OSI); its compiled part includes SQLite (public domain) | the depot's SQLite file and the sessions that record each of its changes (depot) |
 | arro3-core | 0.9.1 | MIT OR Apache-2.0 | through deltalake |
 | attrs | 26.1.0 | MIT | |
 | boto3 | 1.43.113 | Apache-2.0 | |
@@ -60,7 +60,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | colorama | 0.4.6 | BSD-3-Clause | Windows only, through pytest |
 | coverage | 7.17.2 | Apache-2.0 | tests, through pytest-testmon |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | the gpu worker's certificate (wpt-worker), and tests through moto; its compiled part includes OpenSSL (Apache-2.0), statically linked |
-| deltalake | 1.6.6 | Apache-2.0 | reading a depot of format 3 or older, which `wpt depot upgrade` writes into an SQLite file (wpt-depot) |
+| deltalake | 1.6.6 | Apache-2.0 | reading a depot of format 3 or older, which `depot upgrade` writes into an SQLite file (depot) |
 | deprecated | 3.0.1 | MIT | through deltalake |
 | execnet | 2.1.2 | MIT | tests, through pytest-xdist |
 | googleapis-common-protos | 1.75.5 | Apache-2.0 | through opentelemetry-exporter-otlp-proto-http |
@@ -86,7 +86,7 @@ packages must stay compatible with AGPL-3.0-or-later.
 | pyarrow | 26.0.0 | Apache-2.0 | |
 | pycparser | 3.11 | BSD-3-Clause | tests, through moto (cffi) |
 | pygments | 2.21.0 | BSD-2-Clause | through pytest |
-| pyroaring | 1.2.0 | MIT; its compiled part includes CRoaring (Apache-2.0 OR MIT) | the sets of text numbers a snapshot holds (wpt-depot) |
+| pyroaring | 1.2.0 | MIT; its compiled part includes CRoaring (Apache-2.0 OR MIT) | the sets of text numbers a snapshot holds (depot) |
 | pytest | 9.1.1 | MIT | tests |
 | pytest-testmon | 2.3.0 | MIT | tests: runs the ones a change touches (ci/tests.py); pinned, since ci/startup/child_files.py extends one of its internals |
 | pytest-xdist | 3.8.0 | MIT | tests: runs them in parallel (ci/tests.py) |
@@ -339,9 +339,9 @@ starts with a `Format:` field), the record lists the licenses its
 text instead. A package with no such
 file in the image has a record with its version only.
 
-### Word lists of recipe names (`scripts/names/`)
+### Word lists of order names (`scripts/names/`)
 
-`scripts/recipe_name.py` draws model recipe names from two lists taken
+`scripts/order_name.py` draws model order names from two lists taken
 from Princeton WordNet 3.0, under its own license (the WordNet License,
 kept in `scripts/names/LICENSE` as it asks):
 
@@ -361,8 +361,8 @@ check first, above all for the NVIDIA, Intel and AMD runtimes.
 
 ### The web interface (`bun.lock`)
 
-Bun installs these when `wpt depot web` builds its interface. The root
-`package.json` makes one workspace of the interface (`apps/wpt/ui`) and the
+Bun installs these when `depot web` builds its interface. The root
+`package.json` makes one workspace of the interface (`apps/depot/ui`) and the
 packages of the organization's design system, a git submodule at
 `vendor/wic-design-system` pinned to commit 99ca81f. React, React DOM,
 scheduler, the CodeMirror packages with what they use, and the design
@@ -372,13 +372,13 @@ MPL-2.0 names the AGPL as a Secondary License (its section 1.12).
 bergamot-translator's worker and WebAssembly are copied unchanged into the
 built files, under their own MPL-2.0. So is Firefox's language detector,
 CLD2 compiled to asm.js, which is not a package: the repository holds a
-copy of it in `apps/wpt/ui/vendor/cld2/`, with its Apache-2.0 license and
+copy of it in `apps/depot/ui/vendor/cld2/`, with its Apache-2.0 license and
 the Firefox commit it comes from.
 
 The translation models that the Texts page uses are Mozilla's, under
-MPL-2.0. WPT does not hold or distribute them: `wpt depot web` fetches each
-file from Mozilla the first time a page asks for it and keeps it in the
-store. A translation is shown only and never saved, so no output of these
+MPL-2.0. WPT does not hold or distribute them: `depot web` fetches each
+file from Mozilla the first time a page asks for it and keeps it on the
+dock. A translation is shown only and never saved, so no output of these
 models enters the data or the training.
 
 The design system's NOTICE gives three licenses. Its tokens, components and
@@ -410,7 +410,7 @@ through Mark, so its built files hold that drawing.
 | style-mod | 4.1.4 | MIT | through @codemirror/view |
 | w3c-keyname | 2.2.8 | MIT | through @codemirror/view |
 | @browsermt/bergamot-translator | 0.4.9 | MPL-2.0 | in the built files, unchanged (the Texts page's translation engine) |
-| CLD2, as Firefox builds it | Firefox commit 7557821 | Apache-2.0 | `apps/wpt/ui/vendor/cld2/`, in the built files, unchanged (the Texts page's language detector) |
+| CLD2, as Firefox builds it | Firefox commit 7557821 | Apache-2.0 | `apps/depot/ui/vendor/cld2/`, in the built files, unchanged (the Texts page's language detector) |
 | vite | 8.3.6 | MIT | builds the interface |
 | rolldown | 1.2.16 | MIT | through vite |
 | @rolldown/binding-* | 1.2.16 | MIT | one per platform (15), through rolldown |
@@ -547,7 +547,7 @@ Licenses that all apply to one text together, such as a repository with
 two license files and no statement that one may choose, are one combined
 license of the depot, its id the licenses joined by ` AND `, for example
 `MIT AND CC-BY-4.0`, like `Apache-2.0 WITH LLVM-exception`.
-`wpt depot license add` accepts such a row. A combined license is allowed
+`depot license add` accepts such a row. A combined license is allowed
 only when every part is, and its notice holds the statement of each part.
 
 ### Licenses and notices
@@ -557,9 +557,9 @@ its id is the license's SPDX name (`CC-BY-SA-4.0`,
 `LicenseRef-public-domain`, or a license with its exception), with its
 name and its official text. A text names the ids of its licenses, and the
 depot refuses a text that names a license it does not hold. Only licenses
-on the allowed list above go into that table. `wpt depot license add ID
+on the allowed list above go into that table. `depot license add ID
 NAME FILE` adds a license with its official text read from `FILE`, and
-the "Licenses" page of `wpt depot web` does the same; the depot refuses an
+the "Licenses" page of `depot web` does the same; the depot refuses an
 id it holds already.
 
 A text also points to a notice, stored once in the depot's `notices`
@@ -760,10 +760,10 @@ public, and is not verified; the form says so before anyone confirms.
   licenses are a choice.
 - Adding a text is a decision under review: every text added at once gets
   that decision.
-- `wpt depot decide admit|refuse WHERE` makes one decision, admitted or
+- `depot decide admit|refuse WHERE` makes one decision, admitted or
   refused, and appends it to every text the SQL condition `WHERE`
   matches.
-- `wpt depot decide back-to-review WHERE` (or "Back to review" on the
+- `depot decide back-to-review WHERE` (or "Back to review" on the
   Texts page, and its key U) puts admitted or refused texts back under
   review, to undo an admission or a refusal. It is a decision under review
   that carries the decider's declaration and a reason the depot writes
@@ -772,7 +772,7 @@ public, and is not verified; the form says so before anyone confirms.
   A depot that may hold such a decision is of format 8 or newer, so code
   that does not know the decision refuses it
   ([architecture.md](architecture.md), "Format").
-- `wpt depot relicense ID ... --license L ...` (or "Change licenses" beside
+- `depot relicense ID ... --license L ...` (or "Change licenses" beside
   a text on the Texts page, and "Change their licenses" in the review of an
   admission) changes the licenses of texts as a new revision of each, their
   ids kept ([data-selection.md](data-selection.md), "Texts"). Every new
@@ -783,7 +783,7 @@ public, and is not verified; the form says so before anyone confirms.
   licenses. Texts whose old lists differ get one decision each. A text
   that names the new licenses already is left out and reported, so a
   change never only wipes its decisions.
-- `wpt depot content ID FILE` (or saving a text's content on the Texts page) changes
+- `depot content ID FILE` (or saving a text's content on the Texts page) changes
   a text's content as a new content version and a new revision of it, its
   id kept ([data-selection.md](data-selection.md), "Texts"). A snapshot
   made before goes on reading the revision it read, with its content. The
@@ -791,11 +791,11 @@ public, and is not verified; the form says so before anyone confirms.
   declaration and a reason the depot writes itself, `content changed from
   version OLD to version NEW`. A content that changes nothing writes
   nothing.
-- `wpt depot content-file FILE` changes the plain texts of many texts the
+- `depot content-file FILE` changes the plain texts of many texts the
   same way, as one decision under review for each pair of old and new
   content versions, with that same reason, on the texts it moves. It
   starts each one's decisions over, as a change of one text's content does.
-- `wpt depot credits ID` (or "Edit credits" beside a text on the Texts page) changes a
+- `depot credits ID` (or "Edit credits" beside a text on the Texts page) changes a
   text's credits as a new revision of it: its title, authors, tags,
   address or notice. A snapshot made before goes on reading the revision
   it read. The change is a decision
@@ -805,14 +805,14 @@ public, and is not verified; the form says so before anyone confirms.
   z`); a notice is named by its id. Unlike a license or content change, it
   starts nothing over: the decisions before it keep counting, so an admitted text
   stays admitted.
-- `wpt depot credits-file FILE` changes the credits of many texts the same
+- `depot credits-file FILE` changes the credits of many texts the same
   way, as one decision under review on every text it changes, whose
   reason the depot writes naming the credits that changed (`credits
   changed: title, authors`). It starts nothing over either. A change of
   tags over a selection on the Texts page is the same, its reason `tags
   changed: added x; removed y`.
 - An erasure request is decided the same way, by
-  `wpt depot decide admit|refuse --erasure ID` or on the "Erasures" page
+  `depot decide admit|refuse --erasure ID` or on the "Erasures" page
   ([erasure.md](erasure.md)).
 - A decision recorded on no text and no erasure request is either a
   problem reported on a library of a depot of format 12 or older, or a
@@ -825,7 +825,7 @@ they decide nothing about a text ([data-selection.md](data-selection.md),
 "Snapshots").
 
 Anyone's decisions are appended. The depot keeps every decision on a text
-in order, and the app's policy (`wpt_depot.policy`), not the depot, says
+in order, and the app's policy (`depot.policy`), not the depot, says
 how they combine. A text starts over when its licenses change, when its
 content changes, or when it is put back under review. Only the decisions from its latest start over on count,
 so a refusal made before it no longer blocks the text, an admission made
@@ -843,7 +843,7 @@ declaration. An AI assistant may read and write a depot (add texts, query,
 build), but admitting a text is always a human decision.
 
 A decision may carry a public `reason`, written by its decider
-(`--reason` on `wpt depot decide`); `wpt depot show` and the web pages show
+(`--reason` on `depot decide`); `depot show` and the web pages show
 it. A reason that starts with `licenses changed from `, `content changed
 from version ` or `put back under review` is the depot's own record of a
 license change, a content change or a put back, which the policy

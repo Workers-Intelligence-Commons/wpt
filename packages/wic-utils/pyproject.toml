@@ -1,0 +1,11 @@
+[project]
+name = "wic-utils"
+version = "0.1.0"
+description = "Helpers every part shares, the depot, the freight, the dock and WPT alike: the outside programs a part starts, the repository commit, the sha256 of a file, a lock on a file between processes, how much parallel work the machine takes, the form of a printed line, every web request, the .env file"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

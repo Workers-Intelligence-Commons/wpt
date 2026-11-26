@@ -1,4 +1,4 @@
-"""Training: one runner, for every step of a model recipe.
+"""Training: one runner, for every step of a model order.
 
 A step is what is done to the model (steps/: `read-text`,
 `answer-as-assistant`, `answer-as-assistant-dft`,
@@ -11,7 +11,7 @@ model it locks (wpt_model.PARTS):
                    `next-token`, `assistant-tokens`, `assistant-tokens-dft`,
                    `assistant-tokens-neftune`, `grpo`)
     an optimizer   how the weights move, with its schedule and its verdict on
-                   each evaluation (optimizers/: `by-part`); a recipe may give
+                   each evaluation (optimizers/: `by-part`); an order may give
                    a step another one, so any loss runs with any optimizer
     an environment where the examples come from (environments/: `text-windows`,
                    `conversations`, `agent-tasks`)

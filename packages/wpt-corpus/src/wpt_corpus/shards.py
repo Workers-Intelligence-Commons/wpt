@@ -9,7 +9,7 @@ A shard is a Parquet file with one row per document pass:
     pool      string         the mixture pool it was drawn for ("held-out" for evaluation)
     pass      int32          which repetition of the pool this row belongs to
 
-A corpus's record names each shard by its key in the store and the sha256
+A corpus's record names each shard by its key on the dock and the sha256
 of its file (`key`, `sha256`), which every read checks. A shard is also
 identified by its token hash, which covers only the rows' content. A newer pyarrow
 may write different file bytes for the same rows; the token hash stays the
@@ -29,9 +29,9 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from wpt_store.errors import CorruptFile
-from wpt_store.names import File
-from wpt_utils.files import sha256_file
+from dock.api import CorruptFile
+from dock.api import File
+from wic_utils.files import sha256_file
 
 SCHEMA = pa.schema([
     ("tokens", pa.list_(pa.uint32())),
@@ -91,7 +91,7 @@ def shard_file(shard) -> File:
 
 def read_verified(store, shard) -> list:
     """The rows of a shard recorded as {"key": ..., "sha256": ...,
-    "token_sha256": ...}, in order. The store checks the file; this checks
+    "token_sha256": ...}, in order. The dock checks the file; this checks
     the rows against the token hash. Raises CorruptFile when they differ."""
     rows, digest = [], TokenHash()
     for row in read_shard(store.path(shard_file(shard))):
@@ -131,7 +131,7 @@ def token_file(store, shards) -> Path:
     little-endian uint32, for reading from disk on demand (np.memmap).
 
     It is built from the shards, each checked against its token hash, into
-    the store's scratch folder, and named after the shards. A later call
+    the dock's scratch folder, and named after the shards. A later call
     reuses it while its size and modification time are those recorded when
     it was built, without reading it; when they differ, only if it still
     matches the sha256 recorded then (and the size and time are recorded

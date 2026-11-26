@@ -14,8 +14,8 @@
     Files                    what the manager offers the job (file.range) and receives from it
                              (upload.start, upload.part, upload.end)
 
-A local worker gets this process's environment without WPT_STORE and the
-store's keys (WPT_STORE_*): a gpu worker never holds them, wherever it
+A local worker gets this process's environment without DOCK and the
+dock's keys (DOCK_*): a gpu worker never holds them, wherever it
 runs. What the job prints, the manager prints. Ctrl+C or SIGTERM to the
 manager is passed on to the job, which finishes its update, saves, and
 stops; a second one again, which stops it at once. On several workers, a
@@ -51,15 +51,15 @@ import threading
 from compression import zstd
 from pathlib import Path
 
-from wpt_utils.lines import bare, say
+from wic_utils.lines import bare, say
 import wpt_worker
-from wpt_utils.programs import MissingTool, program
+from wic_utils.programs import MissingTool, program
 
 from .link import PART, Connection, Key, LinkError, dial, is_loopback, is_private
 from .training import LINK, NCCL, ONE_MACHINE, STOPPED
 
 WORKERS = "WPT_GPU_WORKERS"
-SECRETS = re.compile(r"WPT_STORE\w*")  # what a local worker's environment never holds: the store and its keys
+SECRETS = re.compile(r"DOCK\w*")  # what a local worker's environment never holds: the dock and its keys
 
 
 class NoCheckout(Exception):
@@ -243,7 +243,7 @@ class Files:
         path = Path(path)
         self.offered[number] = path
         if sha256 is None:
-            from wpt_utils.files import sha256_file
+            from wic_utils.files import sha256_file
             sha256 = sha256_file(path)
         return {"file": number, "size": path.stat().st_size, "sha256": sha256}
 

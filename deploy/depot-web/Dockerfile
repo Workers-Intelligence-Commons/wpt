@@ -22,7 +22,7 @@ COPY . .
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
 RUN uv sync --frozen --no-default-groups --package wpt
 # the interface, built by the same code that serves it; then what only the build reads
-RUN .venv/bin/python -c "from wpt.depot.web import ui; ui.built()" \
+RUN .venv/bin/python -c "from depot_app.web import ui; ui.built()" \
     && find . \( -name node_modules -o -name target \) -prune -exec rm -rf {} +
 
 FROM python:3.14-slim-trixie@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8
@@ -31,5 +31,5 @@ WORKDIR /app
 ENV PATH=/app/.venv/bin:$PATH
 # Bun is not in this image: the build fails here if the interface counts as stale,
 # which would make the server try to build it when it starts
-RUN python -c "from wpt.depot.web import ui; ui.built()"
+RUN python -c "from depot_app.web import ui; ui.built()"
 CMD ["wpt", "depot", "web", "--port", "8780"]

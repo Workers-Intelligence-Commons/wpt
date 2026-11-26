@@ -15,7 +15,7 @@
 #     compose.yaml  and the file of the GPU kind (below)   from deploy/gpu-worker/
 #     start.sh                                             from deploy/gpu-worker/
 #     wpt_worker/                                          from packages/wpt-worker/src/
-#     wpt_utils/                                           from packages/wpt-utils/src/
+#     wic_utils/                                           from packages/wic-utils/src/
 #
 # This file asks for no GPU: it starts anywhere, with the CPU build of
 # PyTorch. A GPU kind adds a small file of its own, by the command or by a
@@ -42,7 +42,7 @@
 #
 # The worker's folder (its certificate, so its pin stays the same, the
 # manager's checkout and the libraries) is the volume wpt-worker. It never
-# holds the store's settings: everything it reads comes from the manager.
+# holds the dock's settings: everything it reads comes from the manager.
 # The image is pinned by digest (docs/licenses.md). Its own Python and
 # PyTorch are not what the jobs run: their environment is the repository's
 # Python 3.14 with the PyTorch build the checkout's uv.lock pins, which uv
@@ -64,7 +64,7 @@ services:
     volumes:
       - ./start.sh:/start/start.sh:ro
       - ./wpt_worker:/start/wpt_worker:ro
-      - ./wpt_utils:/start/wpt_utils:ro
+      - ./wic_utils:/start/wic_utils:ro
       - wpt-worker:/worker
     shm_size: 8gb  # the processes of a job share tensors through /dev/shm
     restart: on-failure

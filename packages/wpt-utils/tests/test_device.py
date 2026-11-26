@@ -5,7 +5,7 @@ import sys
 import torch
 
 import wpt_utils.device
-import wpt_utils.programs
+import wic_utils.programs
 from wpt_utils.device import cpuinfo_name, gpu_count, processor_name, select_device, train_in_tf32
 
 X86 = """processor\t: 0
@@ -63,13 +63,13 @@ def test_without_a_model_name_or_codes_the_name_is_left_to_the_architecture():
 def test_a_missing_sysctl_on_macos_names_the_architecture(monkeypatch):
     # a missing sysctl never stops a run
     def missing(name):
-        raise wpt_utils.programs.MissingTool(f"{name} is not installed (or not on the search path)")
+        raise wic_utils.programs.MissingTool(f"{name} is not installed (or not on the search path)")
 
     def never(*args, **kwargs):
         raise AssertionError("sysctl was started")
 
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(wpt_utils.programs, "program", missing)
+    monkeypatch.setattr(wic_utils.programs, "program", missing)
     monkeypatch.setattr(subprocess, "run", never)
     assert processor_name() == platform.machine()
 

@@ -57,14 +57,14 @@ maintainer's decision). Draft licenses, notices, credits and tags from
 the source's own files with a script, never from memory, and show the
 maintainer one full text's metadata as the pattern for the batch before
 preparing the rest. The depot must hold each license a text names
-(`wpt depot sql "SELECT id, name FROM licenses"`).
+(`depot sql "SELECT id, name FROM licenses"`).
 
 ## 4. Add the texts under review
 
 Adding a text records a person's declaration: a legal name, an email and
 the confirmation (`--accept`). Ask the maintainer whose declaration goes
 on the texts before adding any, and never give `--accept` for a person
-who did not confirm it. Then add each text with `wpt depot add`, as
+who did not confirm it. Then add each text with `depot add`, as
 `CONTRIBUTING.md` says; it joins the depot under review. Report to the
 maintainer what was added: the ids, and for each its licenses and tags.
 
@@ -78,6 +78,6 @@ some admits only those.
 
 An admission carries the maintainer's own declaration and confirmation,
 so the maintainer makes it: give them the exact
-`wpt depot decide admit WHERE` command, with the SQL condition that
-matches exactly the approved texts, and check with `wpt depot sql` that
+`depot decide admit WHERE` command, with the SQL condition that
+matches exactly the approved texts, and check with `depot sql` that
 the condition matches those texts and no other.

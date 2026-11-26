@@ -3,7 +3,7 @@ sent to it, and found again on the dock.
 
     wpt build-resources ORDER    send the order's requests to the freight in order and print both delivery notes
 
-ORDER is a model recipe's name, or SERIES: for the one corpus every size of
+ORDER is a model order's name, or SERIES: for the one corpus every size of
 a series reads (its largest size's). Its data section names a snapshot of a
 depot; the legacy shape, which names a dataset, makes no request.
 
@@ -27,8 +27,8 @@ waits for each job (running the freight's queue here while no other
 process does; a job of the same delivery already queued or running, such
 as one a stopped run left, is waited for, and goes on from its
 checkpoint), and prints the two notes, `{"vocabulary": ..., "corpus":
-...}`, as JSON. Settings (environment or .env): FREIGHT_HOME, WPT_DEPOT and
-WPT_STORE, as the freight reads them. Exit codes: 0 done, 1 refused or
+...}`, as JSON. Settings (environment or .env): FREIGHT_HOME, DEPOT and
+DOCK, as the freight reads them. Exit codes: 0 done, 1 refused or
 failed.
 
     vocabulary_request(data)            the vocabulary's request, None for a vocabulary named by its sha256
@@ -47,8 +47,8 @@ import sys
 from freight import api
 from wpt_corpus import programs
 from wpt_corpus import vocabulary as learning
-from wpt_recipes import Recipes
-from wpt_utils.lines import ERROR, say
+from wpt_orders import Orders
+from wic_utils.lines import ERROR, say
 
 TOKENS = "wpt-tokens"  # the program that writes a corpus
 
@@ -139,11 +139,11 @@ def label(note: dict) -> str:
 
 def corpus_record(corpus: dict, vocabulary: dict) -> dict:
     """A corpus delivery's note, with the note of the vocabulary it names,
-    in the shape training reads a corpus by (wpt_depot.corpus): its `id`,
+    in the shape training reads a corpus by: its `id`,
     `delivery` (its key), `vocabulary_delivery`, its token files by kind
     (`shards`, each the dock's reference with what the program said of it),
     its tables (`texts`: the items tables), `tasks`, `tokenizer` (the
-    vocabulary's file and size, named "RECIPE version N" for one adopted
+    vocabulary's file and size, named "ORDER version N" for one adopted
     from a depot's tokenizer recipe, else by label), `max_tokens` (the size in
     tokens it was asked for), `total_tokens`, `items_tokens`,
     `fingerprints`, and `stale` or `deleted` as its note says."""
@@ -240,10 +240,10 @@ def build(data: dict) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="wpt build-resources", description=__doc__.split("\n\n")[0])
-    parser.add_argument("order", help="a model recipe's name, or SERIES: for a series")
+    parser.add_argument("order", help="a model order's name, or SERIES: for a series")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        data = Recipes.find().data_part(args.order)
+        data = Orders.find().data_part(args.order)
         if "snapshot" not in data:
             raise Unanswered(f"{args.order} names a dataset, the legacy shape: the freight chooses in a snapshot")
         notes = build(data)

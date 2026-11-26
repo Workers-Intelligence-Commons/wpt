@@ -5,8 +5,8 @@ Each conversation whose text carries the tag is a row of the corpus's token file
 its tokens as the chat template wrote them (wpt_tokenizer.chat), and the
 tokens the assistant wrote are marked, read back from the template's
 special tokens (chat.marks): those are the only ones a method learns. Each
-epoch goes over every conversation once, in an order drawn from the recipe's seed
-and the step's number in the recipe,
+epoch goes over every conversation once, in an order drawn from the order's seed
+and the step's number in the order,
 `batch` conversations per update (the last update of an epoch may hold
 fewer). Conversation j of an update goes to process j % world_size, and
 each process takes --micro-batch of its conversations per pass (default:
@@ -33,7 +33,7 @@ from wpt_corpus.shards import read_verified, shard_file
 from wpt_training import Environment, Stage, StepFailed, tagged
 
 GIVES = "conversations"
-KINDS = ("conversation",)  # the kinds of texts it reads (wpt_depot.kinds)
+KINDS = ("conversation",)  # the kinds of texts it reads (depot.kinds)
 SETTINGS = {"tag": "answer-as-assistant", "epochs": 3, "batch": 8}
 IGNORED = -100  # the target of a token the model does not learn: PyTorch's cross_entropy leaves it out
 

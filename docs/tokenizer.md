@@ -40,7 +40,7 @@ hot loops in Rust (PyO3, built by maturin when the workspace is installed).
 ## Vocabularies
 
 A vocabulary (the list of merges) is learned once and shared by every
-recipe and model that names it, by its sha256.
+order and model that names it, by its sha256.
 
 The freight learns a vocabulary outside the depot: a request names a
 snapshot, its shares and a sample in bytes, and the program
@@ -62,9 +62,9 @@ its name, its sample (the snapshot whose plain texts trained its
 vocabulary, and the kinds it read) or, for a revision written before
 snapshots, a dataset, `sample_bytes`, `vocab_size` and a note, its
 `version` raised by each change of what trains it. `vocabularies` holds at
-most one vocabulary for each version of a recipe, and `vocabulary_texts`
+most one vocabulary for each version of an order, and `vocabulary_texts`
 every text it trained on, in the order they were read, by its depot (empty
-for the depot that holds the recipe, the web address for another depot)
+for the depot that holds the order, the web address for another depot)
 and its id there. `wpt adopt-vocabularies` puts each on the dock (below),
 and the web app's frozen routes `GET /api/tokenizers/{name}` and its
 vocabulary file serve the models trained before snapshots
@@ -72,19 +72,19 @@ vocabulary file serve the models trained before snapshots
 
 ### A vocabulary in an order
 
-A model recipe's data section names its vocabulary in one of two forms
+A model order's data section names its vocabulary in one of two forms
 ([data-selection.md](data-selection.md), "The data section of a model
-recipe"):
+order"):
 
 - `{"size": N, "sample_bytes": B}`: a vocabulary of N entries learned on B
   bytes of the plain texts of the section's own snapshot, chosen with its
-  shares. The recipe never holds its sha256: the vocabulary's delivery note
+  shares. The order never holds its sha256: the vocabulary's delivery note
   gives it.
 - `{"sha256": S, "size": N}`: the vocabulary of that sha256, which the dock
-  must hold. This is how a recipe keeps the vocabulary of an earlier model.
+  must hold. This is how an order keeps the vocabulary of an earlier model.
 
-`wpt build-resources RECIPE` (`SERIES:` for a series) sends the recipe's
-requests to the freight in order: the vocabulary first when the recipe
+`wpt build-resources ORDER` (`SERIES:` for a series) sends the order's
+requests to the freight in order: the vocabulary first when the order
 learns one, then the corpus, whose request names the vocabulary's delivery
 as its input. It waits for both jobs and prints both delivery notes
 (`wpt.resources`). Run again after it was stopped, it waits for the job of
@@ -93,8 +93,8 @@ checkpoint. A vocabulary named by its sha256 makes no request: the
 corpus names the delivery of that vocabulary the dock holds, the adopted
 one (`adopted-<sha256>`) when there is one, else the vocabulary delivery of
 that sha256 whose key comes first. The key of each delivery comes from the
-recipe alone, with the version of the program `wpt-corpus` holds, so `wpt
-train RECIPE` finds both on the dock with no depot and no freight at hand
+order alone, with the version of the program `wpt-corpus` holds, so `wpt
+train ORDER` finds both on the dock with no depot and no freight at hand
 ([training.md](training.md), "Training").
 
 A delivery is shown by what made it, never by a free name: `vocabulary
@@ -104,10 +104,10 @@ the `tokenizer` a model's weight files name for a vocabulary the freight
 learned (`wpt.resources.label`).
 
 `wpt adopt-vocabularies` puts every vocabulary the depot's tokenizer
-recipes trained on the dock, so a recipe naming one by its sha256 finds it:
+recipes trained on the dock, so an order naming one by its sha256 finds it:
 the delivery `adopted-<sha256>`, its file `vocabulary.json`, the result a
 `wpt-vocabulary` delivery gives (`sha256`, `size`, `tokenizer_version`),
-what the depot recorded of it (`adopted`: its recipe's name and version,
+what the depot recorded of it (`adopted`: its order's name and version,
 the dataset it named, its sample and sample bytes, its count of texts and
 their bytes), and as its items table the texts it trained on, in the order
 it read them (`depot`, `id`, `change`). It reads the depot without writing
@@ -116,23 +116,23 @@ files of a model trained on it name it as before (`classics version 1`).
 
 An erasure never makes a vocabulary delivery stale, adopted or learned: the
 freight writes it into the delivery's `erasures_since` and the delivery
-stays fresh, so every recipe and model that names the vocabulary keeps
+stays fresh, so every order and model that names the vocabulary keeps
 working and the merges learned from the erased text stay
 ([erasure.md](erasure.md)). The corpus that holds the text is stale, and
 `wpt build-resources` makes it again with the same vocabulary.
 
 ### One vocabulary, for good
 
-A vocabulary never changes once learned. Every recipe that names it by its
+A vocabulary never changes once learned. Every order that names it by its
 sha256 uses it:
 
-- **Adding or changing texts never retrains it.** Many recipes and
+- **Adding or changing texts never retrains it.** Many orders and
   models, whatever their training settings, share one vocabulary, so a
   model can keep training on new data. A text the vocabulary was not
   trained on still encodes exactly, since every byte has a token, only less
   compactly.
 - **A new vocabulary takes a new request.** For a big change (much more
-  data, another size), a recipe asks for another one to learn. A change of
+  data, another size), an order asks for another one to learn. A change of
   the tokenizer's code asks for none: the vocabulary stays.
 - **Erasure does not reach a vocabulary**: merges learned from text that
   was erased later stay in it (see [erasure.md](erasure.md)).
@@ -143,7 +143,7 @@ mean other tokens.
 
 ### Where the vocabulary is checked
 
-- A corpus the depot built into the store's `corpora/` names in its
+- A corpus the depot built onto the dock's `corpora/` names in its
   record its vocabulary's tokenizer recipe, version and sha256 and the
   vocabulary's file (`{"key", "sha256"}`, in the corpus's folder), and its
   id covers its sha256.

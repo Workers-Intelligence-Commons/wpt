@@ -25,10 +25,10 @@ from anywhere else than snapshot.debian.org or snapshot.ubuntu.com.
 import argparse
 import sys
 
-from wpt_recipes import RecipeError, Recipes
+from wpt_orders import OrderError, Orders
 
 from wpt_agent import images
-from wpt_utils.lines import say
+from wic_utils.lines import say
 
 
 def main(argv=None):
@@ -42,10 +42,10 @@ def main(argv=None):
     build.add_argument("name", help="a folder name in data/images/")
     args = parser.parse_args(argv)
     try:
-        root = Recipes.find().root
+        root = Orders.find().root
         if args.command == "lock-image":
             images.lock(root, args.name, force=args.force)
         else:
             say(images.build(root, args.name))
-    except (images.ImageError, RecipeError) as error:
+    except (images.ImageError, OrderError) as error:
         sys.exit(f"{type(error).__name__}: {error}")

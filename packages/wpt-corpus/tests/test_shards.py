@@ -2,7 +2,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from wpt_store import open_store
+from dock import open_dock
 
 
 def test_a_token_file_holds_the_shards_tokens_and_is_rebuilt_when_changed(tmp_path, monkeypatch):
@@ -16,7 +16,7 @@ def test_a_token_file_holds_the_shards_tokens_and_is_rebuilt_when_changed(tmp_pa
     from wpt_corpus import shards as shards_module
     from wpt_corpus.shards import token_file, write_shard
 
-    store = open_store((tmp_path / "store").as_uri())
+    store = open_dock((tmp_path / "store").as_uri())
     rows = [[([1, 2, 3], "s", "s/a", "p", 0), ([4, 5], "s", "s/b", "p", 0)], [([6, 7, 8, 9], "s", "s/c", "p", 0)]]
     shards = []
     for i, part in enumerate(rows):
@@ -46,14 +46,14 @@ def test_a_shard_stream_keeps_only_the_shards_in_use_on_disk(tmp_path, monkeypat
 
     from wpt_corpus.shards import ShardStream, write_shard
 
-    for name, value in {"WPT_STORE_ACCESS_KEY_ID": "test", "WPT_STORE_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
+    for name, value in {"DOCK_ACCESS_KEY_ID": "test", "DOCK_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
                         "XDG_CACHE_HOME": str(tmp_path / "cache"), "LOCALAPPDATA": str(tmp_path / "cache")}.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_store("s3://wpt-test/stream")
+        store = open_dock("s3://wpt-test/stream")
         shards = []
         for i in range(4):
             path = tmp_path / f"{i}.parquet"
@@ -76,19 +76,19 @@ def test_a_shard_stream_keeps_only_the_shards_in_use_on_disk(tmp_path, monkeypat
         assert on_disk() == []
 
 
-def test_reading_documents_from_a_remote_store_keeps_at_most_one_shard_on_disk(tmp_path, monkeypatch):
+def test_reading_documents_from_a_remote_dock_keeps_at_most_one_shard_on_disk(tmp_path, monkeypatch):
     # the drafter reads the training shards once at the end of a run: each
     # shard's local copy goes once its rows are read, as a shard stream's do
     from wpt_corpus.shards import documents, write_shard
 
-    for name, value in {"WPT_STORE_ACCESS_KEY_ID": "test", "WPT_STORE_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
+    for name, value in {"DOCK_ACCESS_KEY_ID": "test", "DOCK_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
                         "XDG_CACHE_HOME": str(tmp_path / "cache"), "LOCALAPPDATA": str(tmp_path / "cache")}.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_store("s3://wpt-test/documents")
+        store = open_dock("s3://wpt-test/documents")
         shards = []
         for i in range(3):
             path = tmp_path / f"{i}.parquet"

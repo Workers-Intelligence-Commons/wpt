@@ -1,14 +1,17 @@
 # The depot's api
 
-`wpt_depot.api` is what code outside the depot asks of it. The freight
-([freight.md](freight.md)) and the corpus build (`wpt_depot.corpus`) read
-the depot only through it. A change to the module changes this document in
-the same commit.
+`depot.api` is what code outside the depot asks of it, and the only
+module of the package `depot` that code outside it imports
+(`packages/wic-utils/tests/test_part_imports.py` checks it). The freight
+([freight.md](freight.md)) reads the depot only through it. The command
+`depot` and its web app (`apps/depot`) are the depot's own and may import
+all of it. A change to the module changes this document in the same
+commit.
 
 ## Rules of every call
 
 - The first argument is the depot asked, by its address: a `str`, the path
-  or `file://` address of its SQLite file, as `WPT_DEPOT` names it.
+  or `file://` address of its SQLite file, as `DEPOT` names it.
 - Every other argument, and every answer, is a value JSON can carry
   (`null`, a boolean, a number, a string, a list, an object with string
   keys), or a stream of bytes. No call hands out a connection, a row

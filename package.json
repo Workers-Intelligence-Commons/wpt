@@ -3,7 +3,7 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "workspaces": [
-    "apps/wpt/ui",
+    "apps/depot/ui",
     "vendor/wic-design-system/packages/*"
   ],
   "scripts": {

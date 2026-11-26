@@ -1,9 +1,9 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["wpt-utils"]
+# dependencies = ["wic-utils"]
 #
 # [tool.uv.sources]
-# wpt-utils = { path = "../packages/wpt-utils", editable = true }
+# wic-utils = { path = "../packages/wic-utils", editable = true }
 # ///
 """Run every part, each one even when an earlier one failed, and list what
 passed, what failed and what was left out, with the time each took. Exits with
@@ -17,7 +17,7 @@ import lock
 import rust
 import tests
 from common import base_of, changed_paths, duration, options, perform
-from wpt_utils.lines import ERROR, INFO, say
+from wic_utils.lines import ERROR, INFO, say
 
 PARTS = (lock.PART, tests.PART, rust.PART, data.PART, commits.PART)
 

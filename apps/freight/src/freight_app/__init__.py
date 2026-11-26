@@ -14,7 +14,7 @@
                                     deliveries (a job checks the same before it runs)
 
 Settings (environment or .env): FREIGHT_HOME, the freight's own folder;
-WPT_DEPOT, the depot it reads; WPT_STORE, the dock it delivers on;
+DEPOT, the depot it reads; DOCK, the dock it delivers on;
 FREIGHT_CAP, the bytes its deliveries may take on the dock (none by
 default). Exit codes: 1 refused or failed, 2 a wrong command line.
 """
@@ -25,7 +25,7 @@ import sys
 import time
 
 from freight import api
-from wpt_utils.lines import ERROR, say
+from wic_utils.lines import ERROR, say
 
 FOLLOW = 1.0  # seconds between two looks at a job followed
 

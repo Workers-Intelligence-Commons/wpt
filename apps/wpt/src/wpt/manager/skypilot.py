@@ -28,7 +28,7 @@ their keys give, so a run on them exchanges gradients through NCCL
 places of their own.
 
 SkyPilot gets its own provider keys only (environment()): never the
-store's settings or keys. It reads the clouds' keys from the environment
+dock's settings or keys. It reads the clouds' keys from the environment
 names of SKY_PROVIDERS, or as it always does, from its own files under HOME.
 SkyPilot enables RunPod only when ~/.runpod/config.toml exists, so
 runpod_config() writes RunPod's key from RUNPOD_API_KEY into that file.
@@ -55,8 +55,8 @@ ENDPOINT = re.compile(r"(?:\w+://)?(\[[0-9A-Fa-f:]+\]|[\w.\-]+):(\d+)/?$")
 NODE = re.compile(r"wpt-node (\d+) (\S+)")  # start.sh: a node's rank and private address
 # sky's plan: the COST ($) cell before the CHOSEN mark, which sky colours
 CHOSEN = re.compile(r"(\d+(?:\.\d+)?)(?:\s|\x1b\[[0-9;]*m)+\u2714")
-# what sky runs with: the shell's basics, and the names of the clouds' keys (AWS_* included). The store's names
-# (WPT_STORE and its keys, WPT_STORE_*) are not among them
+# what sky runs with: the shell's basics, and the names of the clouds' keys (AWS_* included). The dock's names
+# (DOCK and its keys, DOCK_*) are not among them
 BASICS = re.compile(r"PATH|HOME|USER|LOGNAME|SHELL|TERM|TZ|TMPDIR|LANG|LC_\w+|SSH_AUTH_SOCK|XDG_\w+|KUBECONFIG|"
                     r"(?i:http_proxy|https_proxy|no_proxy|all_proxy)")
 SKY_PROVIDERS = re.compile(r"(SKYPILOT|SKY|AWS|AZURE|ARM|GOOGLE|GCP|CLOUDSDK|LAMBDA|RUNPOD|VAST|FLUIDSTACK|PAPERSPACE|"

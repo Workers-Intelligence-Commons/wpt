@@ -1,11 +1,11 @@
 """The TileLang kernels' own cases (tilelang_kernels.py); test_kernels.py
-compares them with the PyTorch form on the recipes' shapes.
+compares them with the PyTorch form on the orders' shapes.
 
 - Every kernel builds for both GPUs it targets, an H100 (sm_90) and an RTX
   50 series laptop (sm_120), each with its tiles, wherever TileLang is
   installed: a GPU runs only its own, so the other is built here.
 - Where TileLang runs, the exact and sparse kernels match the PyTorch form
-  on what the recipes' shapes leave out: a pass after earlier tokens, a
+  on what the orders' shapes leave out: a pass after earlier tokens, a
   generation's padding query past the table, a head count that does not
   fill the matrix units' rows, 2 heads, whose selection blocks hold the
   most tokens and so the most shared memory, fewer columns of chosen
@@ -34,7 +34,7 @@ def runs_here():
 @needs_tilelang
 @pytest.mark.parametrize("arch, size", [("sm_90", "TILES_LARGE"), ("sm_120", "TILES_SMALL")])
 def test_every_kernel_builds_for_both_gpus(arch, size):
-    # the smallest recipe's 4 heads of 128; with the CUDA compiler there,
+    # the smallest order's 4 heads of 128; with the CUDA compiler there,
     # the source compiles to the GPU's code, as TileLang does when it runs
     import tilelang
     import tvm

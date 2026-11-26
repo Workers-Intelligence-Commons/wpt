@@ -13,7 +13,7 @@ drafter are one unit, and a folder whose drafter is missing or was
 trained against other weights is refused (wpt_model.load_model). The
 scheduler's pass times are measured once, when the model is loaded;
 --scheduler-costs RECORD_FOLDER reads instead those a run recorded
-(scheduler-costs.json in that record folder of the store WPT_STORE
+(scheduler-costs.json in that record folder of the dock DOCK
 names, environment or .env), refused when they were measured on another
 setup (the model's config, the drafter's block, the device). A folder
 that wpt train --no-drafter saved has no drafter and says so: the model
@@ -46,10 +46,10 @@ from wpt_inference import COSTS_FILE, costs_setup, measure_costs, next_message, 
 from wpt_model import TokenizerMismatch, check_drafter, load_drafter, load_model, load_tokenizer
 from wpt_model.kernels import FORMS, KernelUnavailable, kernels, named_form
 from wpt_model.notice import LICENSE, NOTICE_NAME, OUTPUT_LICENSE, REPOSITORY
-from wpt_store import StoreError, store_from_settings
+from dock.api import DockError, dock_from_settings
 from wpt_tokenizer import Tokenizer, chat
 from wpt_utils.device import describe, select_device
-from wpt_utils.lines import say
+from wic_utils.lines import say
 
 MAX_NEW_TOKENS = 200
 
@@ -114,7 +114,7 @@ def main(argv=None):
     parser.add_argument("--about", action="store_true", help="print the model's licenses and the texts it learned from, then quit")
     parser.add_argument("--scheduler-costs", metavar="RECORD_FOLDER",
                         help="read the drafter scheduler's pass times that a run recorded on the same setup: the name "
-                             f"of its record folder in the store, which holds {COSTS_FILE} (default: measure them)")
+                             f"of its record folder on the dock, which holds {COSTS_FILE} (default: measure them)")
     try:
         default = named_form(os.environ["WPT_KERNELS"]) if "WPT_KERNELS" in os.environ else None
     except argparse.ArgumentTypeError as error:
@@ -150,10 +150,10 @@ def main(argv=None):
     elif args.scheduler_costs:  # a run's recorded pass times, on this setup only
         try:
             env_file = Path.cwd() / ".env"
-            store = store_from_settings(env_file)
+            store = dock_from_settings(env_file)
             recorded = store.read_record(args.scheduler_costs, COSTS_FILE)
             costs = replayed_costs(recorded, costs_setup(model.config, 1, drafter.block, device))
-        except (StoreError, ValueError) as error:
+        except (DockError, ValueError) as error:
             sys.exit(f"{type(error).__name__}: {error}")
     else:
         costs = measure_costs(model, 1, drafter.block)  # this machine's pass times, once

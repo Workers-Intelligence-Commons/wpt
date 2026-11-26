@@ -6,8 +6,8 @@
 together (batch_size is global). The windows grow from one stage to the
 next, inside one step and one optimizer schedule. Every update draws
 batch_size windows of block_size + 1 tokens at random places of the
-training tokens, seeded by the recipe's seed, the step's number in the
-recipe and the update only; with
+training tokens, seeded by the order's seed, the step's number in the
+order and the update only; with
 --stream, from the shards in use once the updates before it have used
 their tokens (wpt_corpus.shards.ShardStream).
 
@@ -17,7 +17,7 @@ them: the windows, the token files copied or streamed and the texts the
 step learned from are those of that start. Each size of a model series
 reads its first part of the series' one corpus (docs/model.md, "Model
 series"). A corpus with fewer tokens is refused before any step runs;
-`wpt train` gives a step no more than a corpus built at the recipe's size
+`wpt train` gives a step no more than a corpus built at the order's size
 holds (docs/training.md, "Prefix"), so such a corpus is read
 whole.
 
@@ -31,7 +31,7 @@ Every eval_every updates, and at the first and last update of each stage,
 the model is evaluated on eval_batches batches of windows of the training
 tokens, at the stage's window length, drawn apart from the training's.
 A stage's evaluation windows are the same at every evaluation, and the
-same for any seed and any step of a recipe: they depend only on the
+same for any seed and any step of an order: they depend only on the
 training tokens, the window length, the batch size and eval_batches, so
 two runs that read the same tokens through the same stages are measured
 on the same windows. With --stream they are drawn from the shards in use,
@@ -48,7 +48,7 @@ from wpt_training import WINDOWS, Environment, Stage
 from wpt_training import parts as windows_in_parts
 
 GIVES = WINDOWS
-KINDS = ("plain",)  # the kinds of texts it reads (wpt_depot.kinds)
+KINDS = ("plain",)  # the kinds of texts it reads (depot.kinds)
 SETTINGS = {"stages": [], "eval_every": 200, "eval_batches": 20, "prefix_tokens": 0}
 STAGE = ("block_size", "steps", "batch_size")
 
@@ -71,7 +71,7 @@ def check(settings):
 
 
 def shards(record, kinds) -> list[dict]:
-    """The corpus's token files of the kinds the step reads, in order (wpt_depot.corpus)."""
+    """The corpus's token files of the kinds the step reads, in order."""
     return [one for kind in kinds for one in record["shards"].get(kind, [])]
 
 
@@ -176,7 +176,7 @@ class TextWindows(Environment):
     def evaluation_passes(self, step):
         """This process's passes of the current stage's evaluation batches:
         the same windows at every evaluation, for any seed and any step of
-        a recipe."""
+        an order."""
         return [one for i in range(self.settings["eval_batches"])
                 for one in self._passes(self.train_tokens, step, "eval", i)]
 

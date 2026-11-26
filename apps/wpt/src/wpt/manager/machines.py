@@ -1,5 +1,5 @@
 """The gpu workers of the manager's runs (docs/machines.md, "Rented gpu
-workers"), kept on the manager's own disk, never in the store: one file
+workers"), kept on the manager's own disk, never on the dock: one file
 per run, FOLDER/RUN.json, readable by its owner only, which holds each
 worker's key (its token included) and, for a worker the manager rents, its
 provider and the rental's name. Workers rented as one cluster (rental.py)
@@ -44,8 +44,8 @@ import secrets
 import time
 from pathlib import Path
 
-from wpt_utils.files import try_lock_file, unlock_file
-from wpt_utils.lines import ERROR, WARNING
+from wic_utils.files import try_lock_file, unlock_file
+from wic_utils.lines import ERROR, WARNING
 from wpt_worker.link import Key, probe
 from wpt_worker.manager import WORKERS, keys
 
@@ -99,7 +99,7 @@ class Workers:
             raise
 
     @classmethod
-    def new(cls, folder, run, recipe) -> "Workers | None":
+    def new(cls, folder, run, order) -> "Workers | None":
         """The run named run, started (again), its lock taken;
         None when another manager holds it."""
         path = Path(folder) / f"{run}.json"
@@ -107,9 +107,9 @@ class Workers:
         lock = try_lock_file(path.with_suffix(".lock"))
         if lock is None:
             return None
-        state = {"run": run, "recipe": recipe, "ended": False, "workers": [], "resumed": 0}
+        state = {"run": run, "recipe": order, "ended": False, "workers": [], "resumed": 0}
         if path.is_file():  # the same run started again (WPT_RUN): its workers are still its own
-            state = {**json.loads(path.read_text(encoding="utf-8")), "recipe": recipe, "ended": False,
+            state = {**json.loads(path.read_text(encoding="utf-8")), "recipe": order, "ended": False,
                      "resumed": 0}
         found = cls(path, state, lock)
         found.save()

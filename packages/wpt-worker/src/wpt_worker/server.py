@@ -86,7 +86,7 @@ from pathlib import Path
 from . import certificate
 from .link import PROTOCOL, Key, LinkError, keep_alive, pin, receive, send, server_context
 
-from wpt_utils.lines import ERROR, say
+from wic_utils.lines import ERROR, say
 
 PORT = 8470
 WAIT = 3600.0

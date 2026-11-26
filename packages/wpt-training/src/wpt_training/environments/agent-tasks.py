@@ -87,10 +87,10 @@ import torch
 
 from wpt_model import Routes
 from wpt_training import Environment, Stage, StepFailed, agentic, tagged
-from wpt_utils.lines import WARNING
+from wic_utils.lines import WARNING
 
 GIVES = "attempts"
-KINDS = ("task",)  # the kinds of texts it reads (wpt_depot.kinds)
+KINDS = ("task",)  # the kinds of texts it reads (depot.kinds)
 REWARDS = ("weighed", "shorter")
 SETTINGS = {
     "tag": "finish-tasks",  # the tasks it plays

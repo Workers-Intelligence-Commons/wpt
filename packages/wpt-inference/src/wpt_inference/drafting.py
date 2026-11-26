@@ -1,6 +1,6 @@
 """Training a model's drafter (docs/model.md, "The drafter";
 wpt_model.Drafter). A model and its drafter are one unit: wpt train trains
-one at the end of every run, after the recipe's last step, against the
+one at the end of every run, after the order's last step, against the
 final weights. The model is frozen while it does: only the drafter learns.
 
 The prompts are the beginnings of the dataset's training documents: of
@@ -49,7 +49,7 @@ Temperature Scaling sets each position's temperature on those real
 outcomes (drafter.calibrate), and the same rounds measure how many drafts
 the model keeps.
 
-The settings come from the model recipe's `drafter` section (settings);
+The settings come from the model order's `drafter` section (settings);
 what it leaves out keeps the defaults below. Every failure (too few
 prompts, a loss that is not finite) raises DrafterFailed: the run that
 asked fails and writes nothing.
@@ -77,7 +77,7 @@ class DrafterFailed(Exception):
 
 @dataclass(frozen=True)
 class Settings:
-    """How a drafter is trained: the model recipe's `drafter` section, but
+    """How a drafter is trained: the model order's `drafter` section, but
     its shape (DrafterConfig: features, layers, block, markov_rank)."""
     epochs: int = 10            # passes over the answers (DSpark trains each drafter for 10 epochs)
     learning_rate: float = 6e-4  # DFlash's
@@ -96,11 +96,11 @@ class Settings:
     seed: int = 0               # the drafter's starting weights, the prompts and their split, the anchors, the answers
 
 
-SHAPE = ("features", "layers", "block", "markov_rank")  # the recipe's drafter settings that are DrafterConfig's
+SHAPE = ("features", "layers", "block", "markov_rank")  # the order's drafter settings that are DrafterConfig's
 
 
 def settings(model_config, section) -> tuple[DrafterConfig, Settings]:
-    """(the drafter's shape, how it is trained) from a model recipe's
+    """(the drafter's shape, how it is trained) from a model order's
     `drafter` section; ValueError for a setting neither knows."""
     known = SHAPE + tuple(field.name for field in fields(Settings))
     unknown = sorted(set(section) - set(known))

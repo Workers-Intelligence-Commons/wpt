@@ -1,5 +1,5 @@
-# Workspace root: holds no code. Libraries live in packages/, the apps in apps/: wpt (the wpt command and its web
-# server) and freight (the freight command).
+# Workspace root: holds no code. Libraries live in packages/, the apps in apps/: wpt (the wpt command), depot (the
+# depot command and its web app), freight (the freight command) and dock (the dock command).
 # Never built itself; it exists to carry the groups below.
 [project]
 name = "wpt-workspace"
@@ -20,7 +20,7 @@ exclude = ["packages/__pycache__", "apps/__pycache__"]  # the pattern above matc
 [dependency-groups]
 # `uv sync` installs the apps, and through them every library (but not torch).
 # pytest-testmon is pinned exactly: ci/startup/child_files.py extends one of its internals.
-dev = ["wpt", "freight-app", "pytest>=8", "pytest-xdist>=3", "pytest-testmon==2.3.0", "moto[s3]>=5"]
+dev = ["wpt", "depot-app", "freight-app", "dock-app", "pytest>=8", "pytest-xdist>=3", "pytest-testmon==2.3.0", "moto[s3]>=5"]
 cpu = ["torch>=2.14"]
 # NVIDIA, CUDA 13.0: needs driver 580 or newer. The attention kernels: TileLang under Linux (DeepSeek's
 # version; apache-tvm-ffi 0.1.10 and later break it on Python 3.14), Triton on Windows through triton-windows
@@ -34,17 +34,20 @@ xpu = ["torch>=2.14", "triton-xpu"]
 
 [tool.uv.sources]
 wpt-tokenizer = { workspace = true }
-wpt-store = { workspace = true }
+dock = { workspace = true }
+dock-app = { workspace = true }
 wpt-corpus = { workspace = true }
 freight = { workspace = true }
 freight-app = { workspace = true }
 wpt-telemetry = { workspace = true }
-wpt-depot = { workspace = true }
-wpt-recipes = { workspace = true }
+depot = { workspace = true }
+depot-app = { workspace = true }
+wpt-orders = { workspace = true }
 wpt-model = { workspace = true }
 wpt-inference = { workspace = true }
 wpt-training = { workspace = true }
 wpt-utils = { workspace = true }
+wic-utils = { workspace = true }
 wpt-agent = { workspace = true }
 wpt-worker = { workspace = true }
 wpt = { workspace = true }
@@ -81,5 +84,8 @@ explicit = true
 testpaths = ["packages", "apps"]
 # test files in different members may share a name
 addopts = "--import-mode=importlib"
+# the corpus build of before the freight, which the tests build their corpora under corpora/ with and compare the
+# freight's deliveries against: test code, so no part's library holds it
+pythonpath = ["apps/wpt/tests/support"]
 # ci/tests.py runs it apart, and only when a change touches image code (docs/architecture.md, "Checks")
 markers = ["image_build: locks and builds a real image with Docker"]

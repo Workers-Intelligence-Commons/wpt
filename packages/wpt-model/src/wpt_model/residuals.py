@@ -261,7 +261,7 @@ def _kernels(values, partial):
     """Whether a sum runs through the Triton kernels (residual_kernels.py):
     on a GPU where they import, with no partial sum, in any pass. The
     kernels cover the full form, where every sum has none, which WPT's
-    recipes use; a sum with a partial sum runs through torch.compile in a
+    orders use; a sum with a partial sum runs through torch.compile in a
     compiled pass, else as written, open to review."""
     return partial is None and values.is_cuda and _residual_kernels() is not None
 

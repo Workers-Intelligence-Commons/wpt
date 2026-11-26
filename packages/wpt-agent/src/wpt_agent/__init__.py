@@ -24,7 +24,7 @@ attempt's conversation.
                                 step reads (played.ready: the images built;
                                 played.gated: whether the task's gates hold)
     host.machine(image)         the machine the containers run on (this one, or the Docker host
-                                DOCKER_HOST names), as wpt_utils.parallel's sizing rule reads it
+                                DOCKER_HOST names), as wic_utils.parallel's sizing rule reads it
 
 The tools are read, write, edit and bash, ask when the task holds the
 user's replies, and those the task or its image's pool declares, which

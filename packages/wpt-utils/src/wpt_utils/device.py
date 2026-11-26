@@ -121,7 +121,7 @@ def processor_name() -> str:
                                 r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
                 name = winreg.QueryValueEx(key, "ProcessorNameString")[0]
         elif sys.platform == "darwin":
-            from wpt_utils.programs import MissingTool, program
+            from wic_utils.programs import MissingTool, program
             try:
                 name = subprocess.run([program("sysctl"), "-n", "machdep.cpu.brand_string"], capture_output=True,
                                       text=True, check=True).stdout

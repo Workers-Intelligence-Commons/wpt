@@ -36,7 +36,7 @@ import json
 from collections.abc import Iterable, Iterator, Sequence
 from typing import NamedTuple
 
-from wpt_depot import api
+from depot import api
 
 PLAIN, CONVERSATION = "plain", "conversation"
 BYTES = "bytes"  # the unit of a size the freight measures itself, on the bytes the listing gives each entry

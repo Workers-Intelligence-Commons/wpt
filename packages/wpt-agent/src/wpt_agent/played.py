@@ -25,8 +25,8 @@ import hashlib
 import sys
 from dataclasses import dataclass
 
-from wpt_recipes import RecipeError, Recipes
-from wpt_utils.lines import WARNING, say
+from wpt_orders import OrderError, Orders
+from wic_utils.lines import WARNING, say
 
 from . import images
 from .check import CORRECT, score
@@ -71,10 +71,10 @@ def ready(names) -> tuple[dict, dict]:
     images, from the repository holding the working folder; Unready naming
     the command that builds a missing image, or what is broken."""
     try:
-        repo = Recipes.find()
+        repo = Orders.find()
         return ({name: images.built(repo.root, name) for name in names},
                 {name: repo.image_tools(name) for name in names})
-    except (ImageError, RecipeError) as error:
+    except (ImageError, OrderError) as error:
         raise Unready(str(error)) from None
 
 

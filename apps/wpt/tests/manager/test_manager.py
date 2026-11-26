@@ -1,44 +1,44 @@
-"""The wpt manager (docs/machines.md): one command that trains a recipe on
-its corpus, already built into the store, through a local gpu worker, and
-keeps the model in the store under the run's name."""
+"""The wpt manager (docs/machines.md): one command that trains an order on
+its corpus, already built onto the dock, through a local gpu worker, and
+keeps the model on the dock under the run's name."""
 
 import base64
 import json
 
 import pytest
 
-from wpt_depot import NewText
-from wpt_depot import corpora
+from depot import NewText
+from freight import corpora
 from wpt.manager import RUN_FILE, main, mount_point, task_images
-from wpt.store import main as store_command
+from wpt.docked import main as store_command
 from wpt_telemetry import file_hashes
 
 
-def test_the_manager_refuses_to_start_without_a_recipe(built, monkeypatch, capsys):
-    monkeypatch.delenv("WPT_RECIPE", raising=False)
+def test_the_manager_refuses_to_start_without_an_order(built, monkeypatch, capsys):
+    monkeypatch.delenv("WPT_ORDER", raising=False)
     with pytest.raises(SystemExit) as refused:
         main([])
-    assert refused.value.code == 2 and "WPT_RECIPE is not set" in capsys.readouterr().err
+    assert refused.value.code == 2 and "WPT_ORDER is not set" in capsys.readouterr().err
     assert not built.records("wpt manager")
 
 
-def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the_run_s_name(built, tmp_path,
+def test_one_command_trains_on_the_order_s_corpus_and_keeps_the_model_under_the_run_s_name(built, tmp_path,
                                                                                             monkeypatch, capsys):
     # with no run name, the manager makes one and writes it, with the
     # command to copy, into the git-ignored file; the model it trained comes
-    # back out of the store as the folder wpt train wrote, file for file,
+    # back out of the dock as the folder wpt train wrote, file for file,
     # and the manager's own copy of that folder is gone; it trains on the
-    # corpus of the recipe's build key: its snapshot, data section and
+    # corpus of the order's build key: its snapshot, data section and
     # vocabulary
-    size = json.loads((tmp_path / "data" / "recipes" / "models" / "d.json").read_text())["data"]["total_tokens"]
+    size = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())["data"]["total_tokens"]
     corpus = built.sized("d", size)["id"]
-    monkeypatch.setenv("WPT_RECIPE", "d")
+    monkeypatch.setenv("WPT_ORDER", "d")
     monkeypatch.delenv("WPT_RUN", raising=False)
     main([])
     [copy_out] = [line for line in (tmp_path / RUN_FILE).read_text().splitlines() if not line.startswith("#")]
-    name = copy_out.split()[5]
+    name = copy_out.split()[4]
     assert name.startswith("d-")
-    assert copy_out == f"uv run wpt store copy-out {name} runs/{name}"
+    assert copy_out == f"uv run wpt copy-out {name} runs/{name}"
     assert copy_out in capsys.readouterr().out
 
     assert not (tmp_path / "runs" / "manager" / name).exists()
@@ -58,8 +58,8 @@ def test_one_command_trains_on_the_recipe_s_corpus_and_keeps_the_model_under_the
 
 
 def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
-    other = built.snapshot("later")  # the corpus last built, of another snapshot than the recipe's
-    monkeypatch.setenv("WPT_RECIPE", "d")
+    other = built.snapshot("later")  # the corpus last built, of another snapshot than the order's
+    monkeypatch.setenv("WPT_ORDER", "d")
     monkeypatch.setenv("WPT_CORPUS", built.corpus_id[:12])
     main([])
     [run] = built.records("wpt manager")
@@ -68,9 +68,9 @@ def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
     assert built.corpus_id in train.start["arguments"] and other not in train.start["arguments"]
 
 
-def test_a_recipe_whose_corpus_is_not_built_stops_the_run_before_anything_starts(built, monkeypatch, capsys):
-    built.recipe("unbuilt")  # the snapshot d at the size of its whole corpus, a build key never built
-    monkeypatch.setenv("WPT_RECIPE", "unbuilt")
+def test_a_order_whose_corpus_is_not_built_stops_the_run_before_anything_starts(built, monkeypatch, capsys):
+    built.order("unbuilt")  # the snapshot d at the size of its whole corpus, a build key never built
+    monkeypatch.setenv("WPT_ORDER", "unbuilt")
     with pytest.raises(SystemExit) as refused:
         main([])
     err = capsys.readouterr().err
@@ -95,19 +95,19 @@ def test_the_images_to_build_are_those_the_corpus_s_tasks_name_each_once(built):
 
 def test_the_manager_reads_its_settings_from_dot_env_when_the_environment_leaves_them_unset(built, tmp_path,
                                                                                           monkeypatch, capsys):
-    monkeypatch.setenv("WPT_RECIPE", "")  # empty, as Compose passes an unset setting: the .env file's counts
-    (tmp_path / ".env").write_text("WPT_RECIPE=no-such-recipe\n", encoding="utf-8")
+    monkeypatch.setenv("WPT_ORDER", "")  # empty, as Compose passes an unset setting: the .env file's counts
+    (tmp_path / ".env").write_text("WPT_ORDER=no-such-order\n", encoding="utf-8")
     with pytest.raises(SystemExit) as refused:
         main([])
-    assert refused.value.code == 2 and "no-such-recipe" in capsys.readouterr().err
+    assert refused.value.code == 2 and "no-such-order" in capsys.readouterr().err
 
 
-def test_a_store_folder_counts_as_mounted_only_under_a_mount_point_other_than_the_root():
+def test_a_dock_folder_counts_as_mounted_only_under_a_mount_point_other_than_the_root():
     # /proc/self/mountinfo's fifth field is the mount point, with a space written as \040
     mountinfo = ("1 0 0:1 / / rw - overlay overlay rw\n"
                  "2 1 0:2 / /store rw - ext4 /dev/a rw\n"
                  "3 1 0:3 / /my\\040repo rw - ext4 /dev/b rw\n")
     assert mount_point("/store/objects", mountinfo) == "/store"
     assert mount_point("/my repo/store", mountinfo) == "/my repo"
-    assert mount_point("/home/user/wpt-store", mountinfo) == "/"  # in the container's own layer
+    assert mount_point("/home/user/dock", mountinfo) == "/"  # in the container's own layer
     assert mount_point("/storehouse", mountinfo) == "/"

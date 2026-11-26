@@ -9,7 +9,7 @@ uv run wpt eval runs/default path/to/my_test.py   # any Python file
 ```
 
 It reads the model folder that `wpt train` wrote, and the corpus the model
-was trained on from the store named by `WPT_STORE`, the one its
+was trained on from the dock named by `DOCK`, the one its
 `provenance.json` names. Each result goes to `<model folder>/evals/<name>.json`
 and the model card (`README.md`) is written again to show it. Training a new
 model into the same folder removes the old results: they describe other
@@ -18,7 +18,7 @@ weights.
 ## The model on a gpu worker
 
 The tests run on the machine that runs `wpt eval`, which holds the
-tokenizer, the store and the sandboxes. The model runs on a gpu worker
+tokenizer, the dock and the sandboxes. The model runs on a gpu worker
 (the first key of `WPT_GPU_WORKERS`, else a local worker), which the
 command sends the checkout and the folder's weight files; what a test asks
 of the model goes through the link, as token ids, and the losses come back
@@ -55,13 +55,13 @@ def run(context):
 - `device`: where the model runs, in words;
 - `tokenizer`, `folder`, and `provenance` (the folder's
   `provenance.json`);
-- `store`: the store holding the corpus;
+- `store`: the dock holding the corpus;
 - `telemetry`: the run's record, for the test's own events
   ([observability.md](observability.md)).
 
 Every test returns the same type, `Result`: `data`, numbers and names for
 programs (anything JSON can hold), and `text`, the same findings written for
-people, which the model card shows. A test is plain code, not a recipe file,
+people, which the model card shows. A test is plain code, not an order file,
 so it can measure whatever the question needs. The result file also records
 the test file's sha256, so a result names the exact code that produced it.
 

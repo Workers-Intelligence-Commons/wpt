@@ -1,5 +1,5 @@
-"""The wpt manager: one command that trains a model recipe on its corpus,
-already built into the store, then keeps the model in the store under the
+"""The wpt manager: one command that trains a model order on its corpus,
+already built onto the dock, then keeps the model on the dock under the
 run's name (docs/machines.md).
 
 Usage:
@@ -11,21 +11,21 @@ Usage:
 Settings, from the environment, else from the .env file at the
 repository's root (an empty value counts as unset):
 
-    WPT_RECIPE        the model recipe, a file name in data/recipes/models/ without .json, or
-                      SERIES:SIZE, a size of a series file of data/recipes/series/, or
+    WPT_ORDER        the model order, a file name in data/orders/models/ without .json, or
+                      SERIES:SIZE, a size of a series file of data/orders/series/, or
                       SERIES:SIZE:RUN, another run of that size;
                       required: the manager refuses to start without it
     WPT_CORPUS        the corpus the run trains on (its id, or a start of it); unset, the
-                      recipe's corpus, as wpt train finds it (a recipe written before
+                      order's corpus, as wpt train finds it (an order written before
                       snapshots: the one last built for its dataset, found by its id in its
                       depot)
     WPT_RUN           the run's name (letters, digits, '.', '_', '-'); unset, the manager goes on
                       with the run RUN_FILE names (at the repository's root, git-ignored) when
-                      it is a run of this recipe whose model is not in the store yet, else makes
+                      it is a run of this order whose model is not on the dock yet, else makes
                       a new name and writes it there, with the command to copy and paste that
-                      copies its model out of the store
+                      copies its model out of the dock
     WPT_EVALUATE      1: evaluate the model at the end (wpt eval); off by default
-    WPT_MANAGER_FOLDER  where the model folders are written before they go into the store
+    WPT_MANAGER_FOLDER  where the model folders are written before they go onto the dock
                       (default runs/manager in the repository)
     WPT_MANAGER_COMMAND  how a command is run where the manager runs, for the lines it prints
                       (default "uv run"; the Compose file sets its own)
@@ -49,20 +49,20 @@ repository's root (an empty value counts as unset):
     WPT_STOP_DEADLINE seconds a stop or a cap gives the command it stops, then the manager ends it
                       (default 600; rental.py)
     WPT_REPLACEMENTS  how many times a run resumes after a lost gpu worker (default 3)
-    WPT_STORE, WPT_LINK_CHECKPOINTS and every WPT_ option of wpt train
+    DOCK, WPT_LINK_CHECKPOINTS and every WPT_ option of wpt train
                       as each command reads them: from the environment, else from the same
                       .env file
 
-In a container (a /.dockerenv file), a file:// store must be on a mounted
+In a container (a /.dockerenv file), a file:// dock must be on a mounted
 volume or folder: one in the container's own layer would go with the
 container, so the manager refuses it.
 
 The steps, each its own command, in order, each stopping the run with its
 exit code when it fails:
 
-    1. the corpus                        WPT_CORPUS, or the recipe's fresh corpus: the corpus
+    1. the corpus                        WPT_CORPUS, or the order's fresh corpus: the corpus
                                          delivery its data section names on the dock, or a corpus
-                                         the depot built for it; for a recipe written before
+                                         the depot built for it; for an order written before
                                          snapshots, the latest fresh one of its dataset
                                          (wpt.train.find_corpus); the manager neither downloads nor
                                          builds: the corpus is made first, with `wpt
@@ -70,24 +70,24 @@ exit code when it fails:
                                          so (exit code 2)
        wpt agent build-image NAME        each image the corpus's tasks name, where DOCKER_HOST
                                          reaches Docker (the sandboxes' machine); none without tasks
-    2. wpt train RECIPE ID --run NAME --resume --out FOLDER/NAME
+    2. wpt train ORDER ID --run NAME --resume --out FOLDER/NAME
                                          through the run's gpu workers, rented first when
                                          WPT_GPU_WORKERS asks, with WPT_KERNELS=triton on rented
                                          ones unless the settings set WPT_KERNELS; the run's
-                                         checkpoint is the store's, under NAME, so the same command
+                                         checkpoint is the dock's, under NAME, so the same command
                                          with the same WPT_RUN continues it. A gpu worker lost
                                          (wpt train's exit code 4) that the manager rented is
                                          reported, given back and
                                          replaced, and the step runs again from the last
-                                         checkpoint in the store; so does a crash of a training
+                                         checkpoint on the dock; so does a crash of a training
                                          process on one of several workers (exit code 5), on the
                                          workers that answer; both count against the same limit,
                                          WPT_REPLACEMENTS times
     3. wpt eval FOLDER/NAME              with WPT_EVALUATE only, on the run's first gpu worker,
                                          with WPT_KERNELS=triton on a rented one unless the
                                          settings set WPT_KERNELS
-    4. the model folder into the store, as models/NAME (wpt_store.models), recorded first;
-       then the folder is removed: the store holds it
+    4. the model folder onto the dock, as models/NAME (wpt.models), recorded first;
+       then the folder is removed: the dock holds it
 
 The rentals are stopped once the evaluation (or, without one, the training)
 ends, whatever its outcome. A rental that cannot be stopped stays named in
@@ -99,7 +99,7 @@ seconds, each try recorded (stop_rentals()).
 several managers share WPT_MANAGER_STATE; refused, exit code 2, when no
 manager runs one). The manager passes the stop on to wpt train as a stop
 signal: the gpu worker finishes its update, saves a checkpoint, even inside
-a step, and sends it to the store, wpt train exits with code 130, and the
+a step, and sends it to the dock, wpt train exits with code 130, and the
 rentals are given back. The evaluation is stopped by the same signal.
 A run that holds no rental yet waits for the images to be built, and then
 rents nothing. A run that still holds rentals when it goes on after a
@@ -121,13 +121,13 @@ which the log says. rent() is outside the deadline: a provider's launch
 goes on after the command that asked for it is killed, so only its return
 can be waited for.
 
-The manager records its own run in the store's runs/ (command
+The manager records its own run on the dock's runs/ (command
 wpt manager), each step a span, and prints the line that copies the model
-out of the store (wpt store copy-out).
+out of the dock (wpt copy-out).
 
 When it starts, the manager first goes on with each run of its own
 (WPT_MANAGER_STATE) that did not end: its file is not marked ended, no
-other manager holds its lock, no model under its name is in the store,
+other manager holds its lock, no model under its name is on the dock,
 and its last record there has no end (unfinished()). It reconnects to
 that run's gpu workers, whose keys its own disk holds; a rented one that
 is gone by then is replaced as a lost one. Then it starts the run the
@@ -152,16 +152,16 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from wpt_recipes import RecipeError, Recipes
-from wpt_store import NAME as STORE_NAME
-from wpt_store import (MissingFile, StoreError, read_env_file,
-                       store_from_settings)
-from wpt_store.models import has_model, keep_model, put_model
-from wpt_store.names import as_record_name
+from wpt_orders import OrderError, Orders
+from dock.api import NAME as STORE_NAME
+from dock.api import MissingFile, DockError, dock_from_settings
+from wic_utils.env import read_env_file
+from wpt.models import has_model, keep_model, put_model
+from dock.api import as_record_name
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
 from wpt.train import CRASHED, LOST, InputError, find_corpus
 from wpt_training.launch import STOPPED, ask_to_stop
-from wpt_utils.lines import ERROR, WARNING, say
+from wic_utils.lines import ERROR, WARNING, say
 from wpt_worker.manager import WORKERS
 
 from . import machines, rental
@@ -174,7 +174,7 @@ CONTAINER_SETTING = "WPT_MANAGER_CONTAINER"
 KERNELS, RENTED_KERNELS = "WPT_KERNELS", "triton"  # wpt train's --kernels, on rented gpu workers
 SWEEP = 300.0  # seconds between two tries to stop the rentals that could not be stopped
 WATCH = 5.0  # seconds between two looks at whether a run must stop, while a command it runs goes on
-RUN_LINE = re.compile(r"# run (\S+) of the recipe (\S+);")  # the first line of RUN_FILE
+RUN_LINE = re.compile(r"# run (\S+) of the order (\S+);")  # the first line of RUN_FILE
 COMMAND = ["-m", "wpt"]  # the wpt command, by the Python that runs it: each step is one of its subcommands
 CONTAINER = Path("/.dockerenv")  # Docker's mark that this process runs in a container
 MOUNTS = Path("/proc/self/mountinfo")
@@ -188,17 +188,17 @@ class Failed(Exception):
         self.step, self.code = step, code
 
 
-def made_name(recipe, moment=None) -> str:
-    """A new run's name: the recipe's and the UTC time."""
+def made_name(order, moment=None) -> str:
+    """A new run's name: the order's and the UTC time."""
     moment = moment or datetime.now(UTC)
-    return f"{as_record_name(recipe)}-{moment:%Y%m%dT%H%M%SZ}"
+    return f"{as_record_name(order)}-{moment:%Y%m%dT%H%M%SZ}"
 
 
 def copy_out_line(name, environ) -> str:
     """The command a person copies to have the run's model in runs/NAME of
     the repository, once the run is done."""
     command = environ.get("WPT_MANAGER_COMMAND") or "uv run"
-    return f"{command} wpt store copy-out {name} runs/{name}"
+    return f"{command} wpt copy-out {name} runs/{name}"
 
 
 class StopSignal:
@@ -325,7 +325,7 @@ def mount_point(path, mountinfo: str) -> str:
 
 
 def store_in_layer(url) -> str | None:
-    """In a container, the folder of a file:// store that is in the
+    """In a container, the folder of a file:// dock that is in the
     container's own layer (no mount holds it, so it goes with the
     container); None otherwise."""
     if not url.startswith("file://") or not CONTAINER.exists() or not MOUNTS.is_file():
@@ -344,8 +344,8 @@ def main(argv=None):
 def _main(argv, signalled) -> int:
     """The command; its exit code."""
     try:
-        root = Recipes.find().root
-    except RecipeError as error:
+        root = Orders.find().root
+    except OrderError as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return REFUSED
     environ = settings(root)
@@ -364,15 +364,15 @@ def _main(argv, signalled) -> int:
             return 0
         return code
 
-    recipe = environ.get("WPT_RECIPE", "")
-    if not recipe:
-        say("WPT_RECIPE is not set: name the model recipe to train (a file name in data/recipes/models/, without "
-            ".json, or SERIES:SIZE[:RUN], a size of a series of data/recipes/series/ or another run of it), in the "
+    order = environ.get("WPT_ORDER", "")
+    if not order:
+        say("WPT_ORDER is not set: name the model order to train (a file name in data/orders/models/, without "
+            ".json, or SERIES:SIZE[:RUN], a size of a series of data/orders/series/ or another run of it), in the "
             "environment or in .env", ERROR)
         return leave(REFUSED)
     try:
-        Recipes(root).data_part(recipe)  # refused now, not after the workers are rented
-    except RecipeError as error:
+        Orders(root).data_part(order)  # refused now, not after the workers are rented
+    except OrderError as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
     name = environ.get("WPT_RUN") or None
@@ -388,18 +388,18 @@ def _main(argv, signalled) -> int:
     except (rental.RentalError, machines.WorkersError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
-    layer = store_in_layer(environ.get("WPT_STORE", ""))
+    layer = store_in_layer(environ.get("DOCK", ""))
     if layer is not None:
-        say(f"WPT_STORE names {layer}, which is in this container's own files, deleted with the container: name "
-            "a bucket, or leave WPT_STORE unset for the volume wpt-store, or set WPT_STORE_FOLDER to that folder "
+        say(f"DOCK names {layer}, which is in this container's own files, deleted with the container: name "
+            "a bucket, or leave DOCK unset for the volume dock, or set DOCK_FOLDER to that folder "
             "on this machine to mount it at the same path", ERROR)
         return leave(REFUSED)
     folder = Path(environ.get("WPT_MANAGER_FOLDER") or root / DEFAULT_FOLDER)
     kept = Path(environ.get("WPT_MANAGER_STATE") or root / DEFAULT_STATE)
     try:
-        store = store_from_settings(root / ".env")
-        previous = previous_run(root, recipe, store, name)
-    except (StoreError, ValueError) as error:
+        store = dock_from_settings(root / ".env")
+        previous = previous_run(root, order, store, name)
+    except (DockError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
     evaluate = environ.get("WPT_EVALUATE", "") in ("1", "true", "yes")
@@ -430,21 +430,21 @@ def _main(argv, signalled) -> int:
     elif wanted:
         if name is None and previous is not None:
             name = previous
-            say(f"run {name} (named in {root / RUN_FILE}, its model is not in the store yet)")
+            say(f"run {name} (named in {root / RUN_FILE}, its model is not on the dock yet)")
         elif name is None:
-            name = made_name(recipe)
-            (root / RUN_FILE).write_text(f"# run {name} of the recipe {recipe}; once it is done, this copies its "
-                                         f"model out of the store:\n{copy_out_line(name, environ)}\n",
+            name = made_name(order)
+            (root / RUN_FILE).write_text(f"# run {name} of the order {order}; once it is done, this copies its "
+                                         f"model out of the dock:\n{copy_out_line(name, environ)}\n",
                                          encoding="utf-8")
             say(f"run {name} (written into {root / RUN_FILE})")
-        workers = machines.Workers.new(kept, name, recipe)
+        workers = machines.Workers.new(kept, name, order)
         if workers is None:
             say(f"run {name} is another wpt manager's, which runs it now (its lock in {kept} is held): this "
                 "one leaves it", ERROR)
             code = REFUSED
         else:
             try:
-                code = one_run(recipe, name, folder, evaluate, store, environ, root, workers, arguments, signalled)
+                code = one_run(order, name, folder, evaluate, store, environ, root, workers, arguments, signalled)
             finally:
                 workers.release()
     left = stop_rentals(store, kept, environ, root, arguments)
@@ -470,16 +470,16 @@ def stop_command(arguments, kept) -> int:
     return 0
 
 
-def previous_run(root, recipe, store, name) -> str | None:
-    """The run RUN_FILE names when it is a run of recipe whose model is not
-    in the store: a run that did not end well, which the same command goes
+def previous_run(root, order, store, name) -> str | None:
+    """The run RUN_FILE names when it is a run of order whose model is not
+    on the dock: a run that did not end well, which the same command goes
     on with. name: what the settings name, which it must then be."""
     try:
         first = (root / RUN_FILE).read_text(encoding="utf-8").splitlines()[0]
     except (OSError, IndexError):
         return None
     found = RUN_LINE.match(first)
-    if (found and found[2] == recipe and STORE_NAME.fullmatch(found[1]) and name in (None, found[1])
+    if (found and found[2] == order and STORE_NAME.fullmatch(found[1]) and name in (None, found[1])
             and not has_model(store, found[1])):
         return found[1]
     return None
@@ -536,14 +536,14 @@ def unfinished(store, name) -> bool:
     return not found or "end.json" not in store.record_files(max(found)[1])
 
 
-def one_run(recipe, name, folder, evaluate, store, environ, root, workers, arguments, signalled) -> int:
+def one_run(order, name, folder, evaluate, store, environ, root, workers, arguments, signalled) -> int:
     """One run, recorded, its file then marked ended (whatever its
     outcome: a person starts it again with the same WPT_RUN); its exit
     code."""
     try:
-        with Telemetry.start(store, "wpt manager", arguments, name, inputs={"recipe": recipe, "run": name},
+        with Telemetry.start(store, "wpt manager", arguments, name, inputs={"recipe": order, "run": name},
                              env_file=root / ".env") as telemetry:
-            code = _run(recipe, name, folder / name, evaluate, store, telemetry, environ, root, workers, signalled)
+            code = _run(order, name, folder / name, evaluate, store, telemetry, environ, root, workers, signalled)
             if code:
                 raise SystemExit(code)  # recorded as the run's exit code
         code = 0
@@ -563,18 +563,18 @@ def task_images(store, record) -> list[str]:
     return sorted({json.loads(line)["content"]["task"]["image"] for line in lines if line.strip()})
 
 
-def _run(recipe, name, out, evaluate, store, telemetry, environ, root, workers, signalled) -> int:
+def _run(order, name, out, evaluate, store, telemetry, environ, root, workers, signalled) -> int:
     log = telemetry.log
     stops = Stops(workers, rental.cap(environ), rental.deadline(environ), telemetry, signalled)
     held = stops if workers.groups() else None  # rentals a crash left: the commands before training pay for them too
     try:
         if held is not None and signalled.asked:  # the run's file, marked ended, has its rentals given back
             held.halt("images")
-        with telemetry.span("manager.corpus", recipe=recipe) as span:
+        with telemetry.span("manager.corpus", recipe=order) as span:
             try:
-                record = find_corpus(store, environ.get("WPT_CORPUS") or None, Recipes(root).data_part(recipe), log)
-                Recipes(root).model_recipe(recipe, record["tokenizer"]["vocab_size"])  # a size of a series derives
-            except (InputError, RecipeError) as error:
+                record = find_corpus(store, environ.get("WPT_CORPUS") or None, Orders(root).data_part(order), log)
+                Orders(root).model_order(order, record["tokenizer"]["vocab_size"])  # a size of a series derives
+            except (InputError, OrderError) as error:
                 log(f"{type(error).__name__}: {error}", ERROR)
                 return REFUSED
             span.set(corpus=record["id"])
@@ -586,7 +586,7 @@ def _run(recipe, name, out, evaluate, store, telemetry, environ, root, workers, 
                 for image in images:
                     run_command("images", ["agent", "build-image", image], log, stops=held)
         try:
-            _train(recipe, name, out, record["id"], telemetry, environ, root, workers, stops)
+            _train(order, name, out, record["id"], telemetry, environ, root, workers, stops)
             if evaluate:  # on the run's gpu workers, rented ones included, which are given back after it
                 with telemetry.span("manager.evaluate", folder=str(out)):
                     run_command("evaluate", ["eval", str(out)], log,
@@ -602,13 +602,13 @@ def _run(recipe, name, out, evaluate, store, telemetry, environ, root, workers, 
         keep_model(store, name, files)
         span.set(files=len(files))
     telemetry.output(model=name)
-    shutil.rmtree(out)  # the store holds it: copy-out gives it back
+    shutil.rmtree(out)  # the dock holds it: copy-out gives it back
     log(f"model {name} kept in {store}; copy it out with:")
     log(copy_out_line(name, environ))
     return 0
 
 
-def _train(recipe, name, out, corpus, telemetry, environ, root, workers, stops):
+def _train(order, name, out, corpus, telemetry, environ, root, workers, stops):
     """wpt train through the run's gpu workers, rented when the settings
     ask, resumed when a gpu worker it rented is lost or a training process
     crashed on one of several workers, a lost rented worker replaced, up to
@@ -626,7 +626,7 @@ def _train(recipe, name, out, corpus, telemetry, environ, root, workers, stops):
     while True:
         try:
             with telemetry.span("manager.train", corpus=corpus, folder=str(out), workers=len(workers.keys())):
-                run_command("train", ["train", recipe, corpus, "--run", name, "--resume", "--out", str(out)],
+                run_command("train", ["train", order, corpus, "--run", name, "--resume", "--out", str(out)],
                             log, environ={WORKERS: workers.text(), **kernels(workers, environ)}, stops=stops)
             return
         except Failed as error:
@@ -638,7 +638,7 @@ def _train(recipe, name, out, corpus, telemetry, environ, root, workers, stops):
             except rental.RentalError as failed:
                 log(f"RentalError: {failed}", ERROR)
                 raise error from None
-            log("the run resumes from the last checkpoint in the store")
+            log("the run resumes from the last checkpoint on the dock")
 
 
 def kernels(workers, environ) -> dict:

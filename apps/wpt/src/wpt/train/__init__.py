@@ -1,14 +1,14 @@
-"""Train a model as a model recipe says, on the corpus of its dataset.
+"""Train a model as a model order says, on the corpus of its dataset.
 
 Usage:
-    wpt train RECIPE [CORPUS_ID] [options]
-    wpt train RECIPE [CORPUS_ID] --strategy ddp --processes N [options]
+    wpt train ORDER [CORPUS_ID] [options]
+    wpt train ORDER [CORPUS_ID] --strategy ddp --processes N [options]
     wpt train series NAME
 
-RECIPE is a file name in data/recipes/models/, without .json, in the
+ORDER is a file name in data/orders/models/, without .json, in the
 repository holding the current folder, or SERIES:SIZE, one size of the
-series file data/recipes/series/SERIES.json, whose model recipe the
-series derives (wpt_recipes.series; docs/model.md, "Model series"): every
+series file data/orders/series/SERIES.json, whose model order the
+series derives (wpt_orders.series; docs/model.md, "Model series"): every
 size of a series reads the same corpus, the smaller sizes its first part; or
 SERIES:SIZE:RUN, another run of that size (a decay branch, a learning
 rate of the check). Everything
@@ -20,22 +20,22 @@ answer-as-assistant-dft, answer-as-assistant-neftune, finish-tasks,
 finish-tasks-with-less-writing) or a .py file, with its
 method, environment, optimizer, settings and locked parts. The model's
 context is the last window length of the last step that reads text
-windows. The recipe's data part names a depot by its public address, a
+windows. The order's data part names a depot by its public address, a
 snapshot of it with the change and digest it reads, its kinds, shares,
 size (total_tokens) and vocabulary, named by its sha256 or learned for it
-from a sample of a number of bytes; `wpt build-resources RECIPE` asks the
+from a sample of a number of bytes; `wpt build-resources ORDER` asks the
 freight for its vocabulary and corpus, which it delivers on the dock, the
-store named by WPT_STORE (environment or .env) (wpt.resources); a size of a
+one named by DOCK (environment or .env) (wpt.resources); a size of a
 series is derived for the size of the corpus's vocabulary. CORPUS_ID is a
 corpus's id (or a start of it), of a corpus delivery or of a corpus the
-depot built into the store's corpora/; without it, the corpus delivery
-whose key the recipe's data part gives (wpt.resources.corpus_key), and
+depot built onto the dock's corpora/; without it, the corpus delivery
+whose key the order's data part gives (wpt.resources.corpus_key), and
 for a vocabulary named by its sha256 without one, the latest corpus the
 depot built from that snapshot with that data part. No depot is read. No
 fresh corpus refuses the run, saying to run `wpt build-resources`. The
 vocabulary is the corpus's: a delivery's is the file of the vocabulary
 delivery it names. A corpus given by its id must be made from that
-snapshot with the recipe's kinds, shares and vocabulary, at any size. A recipe written before snapshots
+snapshot with the order's kinds, shares and vocabulary, at any size. An order written before snapshots
 names a dataset instead, by id or name: without CORPUS_ID, the latest
 fresh corpus of the triple that dataset (found by its id), the vocabulary
 it publishes and the data part's total_tokens, read from the depot's file
@@ -51,14 +51,14 @@ token files of plain texts and of conversations, and the tasks. Training never b
 reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
 locked parts, and that the corpus holds something for each step to learn
 from are checked before any step runs. The data part's total_tokens is the
-size of the corpus the recipe asks for and a ceiling on what it reads: a
+size of the corpus the order asks for and a ceiling on what it reads: a
 corpus built at that size (its max_tokens) counts everything, its
 conversations and tasks taking their share of it, so it holds fewer tokens
 of plain text, and training reads what it holds. A corpus that is stale (an admitted
 erasure reached a text it was built from), or that holds fewer tokens of
 plain text than total_tokens and was built at another size, is refused. A
 step that reads text windows reads the first prefix_tokens of the corpus
-(without them, total_tokens), at most what a corpus built at the recipe's
+(without them, total_tokens), at most what a corpus built at the order's
 size holds; the run's record says how many it reads when that is fewer.
 
 `wpt train series NAME` prints the numbers of every size of a series.
@@ -70,8 +70,8 @@ link. On several workers, each runs --processes processes; workers in one
 place meet through NCCL, workers in different places exchange gradients
 over their TLS links (only --strategy ddp runs that way): the same synced
 training either way. This command is the
-wpt manager's side: it reads the recipe, the corpus, the tokenizer and
-the store, sends each worker its own checkout and everything the steps
+wpt manager's side: it reads the order, the corpus, the tokenizer and
+the dock, sends each worker its own checkout and everything the steps
 read, answers the environments' parts that run here (the tokenizer's
 work, the sandboxes of agentic tasks), keeps the checkpoints and the
 steps' results, and writes the model folder. The worker deals only in
@@ -86,7 +86,7 @@ gpu worker's machine, started by --processes), a built-in name or a .py
 file (see wpt_training), sent to the worker when it is not a built-in;
 `split` divides each
 text window between the processes instead, for windows too long for one
-GPU, and is refused for a recipe with a step that reads something else. On
+GPU, and is refused for an order with a step that reads something else. On
 one GPU, --segment runs a longer window as consecutive segments of that
 many tokens; with `split`, each process runs its slice of a longer window
 in segments of that many tokens. Each gives the same training as whole
@@ -100,7 +100,7 @@ compiler), and uncompiled elsewhere, which the log says in one line;
 (docs/training.md, "Compiling the passes").
 
 A step's batch is the number of examples per update over every process
-together, so the same recipe trains the same way on any hardware. Each
+together, so the same order trains the same way on any hardware. Each
 process takes --micro-batch examples per pass (default: all of its share of
 each batch) and adds passes up until the batch is complete. Lower
 --micro-batch when a GPU runs out of memory; the training does not change.
@@ -109,25 +109,25 @@ Every option can also come from an environment variable, WPT_ plus the
 option name in capitals with '_' for '-' (--micro-batch ->
 WPT_MICRO_BATCH; WPT_RESUME=1), or from the same line in the .env file of
 the current folder; the command line wins, then the environment. The
-recipe may come from WPT_RECIPE and the corpus id from WPT_CORPUS.
+order may come from WPT_ORDER and the corpus id from WPT_CORPUS.
 WPT_GPU_WORKERS and WPT_LINK_CHECKPOINTS are read the same way.
 
-After each step, the store keeps its result (cache/steps/<fingerprint>): the
+After each step, the dock keeps its result (cache/steps/<fingerprint>): the
 weights and the optimizer's state, under a fingerprint of the step before
 it, the step itself (method, optimizer, environment, settings, locked
 parts), the fingerprint of the part of the corpus it reads, the seed and
-the code (wpt_utils.programs.code: its commit and a hash of its
+the code (wic_utils.programs.code: its commit and a hash of its
 uncommitted changes, so any commit makes every kept result unknown); no
 option is part of it. A run whose first steps
 have a kept result starts from the result of the last of them and runs the
-steps after it: a recipe that shares its first steps with an earlier run
+steps after it: an order that shares its first steps with an earlier run
 reuses them, and a run that failed after some steps continues from the
 first step not kept. Reuse means the same inputs, not the same bits.
 
 Inside a step, every --checkpoint-every updates the main process writes
 a checkpoint; with WPT_LINK_CHECKPOINTS=every it comes to MODEL/checkpoint/,
-or with --run NAME to the store's checkpoint of that name, which any
-machine using the same store can continue. Run the same command
+or with --run NAME to the dock's checkpoint of that name, which any
+machine using the same dock can continue. Run the same command
 with --resume to continue the step that stopped (on other hardware too);
 the steps before it are reused. With step-ends (the default), a checkpoint
 inside a step stays on the gpu worker, where only that job's restarts read
@@ -146,7 +146,7 @@ After a crash, every process on the gpu worker starts again, up
 to --max-restarts times (default 3), and continues from the worker's own
 checkpoint; 0 starts no launcher there.
 
-This command records the run in its own folder of the store's runs/
+This command records the run in its own folder of the dock's runs/
 (wpt_telemetry; docs/observability.md), and the gpu worker's main
 process adds to the same folder through the link: what it read, every
 step, update, evaluation and checkpoint, every step result kept or reused,
@@ -156,7 +156,7 @@ checkpoint (which the broken record does not name), and stops with code 3.
 
 After the last step, the gpu worker trains the model's drafter for
 speculative decoding against the final weights, the model frozen, with the
-recipe's `drafter` section (wpt_inference.drafting; docs/model.md, "The
+order's `drafter` section (wpt_inference.drafting; docs/model.md, "The
 drafter"): its prompts are the beginnings of the plain texts the steps
 read, and the model alone writes the answers, which stop at the end
 of a text and, when a step trained on conversations or tasks, at
@@ -166,7 +166,7 @@ every step's result is kept, so the same command trains the drafter again
 without training. --no-drafter (WPT_DRAFTER=0) saves the model without a
 drafter, its weights the same: its provenance.json says so (options), and
 the same command without --no-drafter later trains the drafter from the
-steps the store keeps, without training them. Drafter settings no
+steps the dock keeps, without training them. Drafter settings no
 drafter can have (feature layers the model does not have, an unknown
 setting) are refused before training starts. Then it measures the
 scheduler's pass times once (wpt_inference.measure_costs) and writes them
@@ -196,12 +196,12 @@ drafter unless --no-drafter (drafter/: config.json, model.safetensors, and
 provenance.json, which names the sha256 of the weights it was trained
 against),
 provenance.json (what produced it: the depot, the snapshot with its
-change and digest, the recipe, the code's commit, the key, id and
+change and digest, the order, the code's commit, the key, id and
 preparation of the vocabulary's and the corpus's deliveries, each step,
 its fingerprint and result, and what of the corpus each one learned from;
 docs/training.md, "What a model records"), CREDITS (every
 text the steps learned from, one line each, from the corpus's tables:
-wpt_depot.notice), and LICENSE, NOTICE and README.md (the model card). It is written beside the target as a hidden folder,
+wpt.train.notice), and LICENSE, NOTICE and README.md (the model card). It is written beside the target as a hidden folder,
 recorded, then renamed into place: a run that fails before leaves the
 target as it was. A folder already there, with everything in it (an
 earlier model, its checkpoint, the results wpt eval wrote for other
@@ -224,36 +224,33 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from freight import api as freight
-from wpt_depot import corpora
-from wpt_depot.corpus import RULES, canonical
-from wpt_depot.errors import DepotError
-from wpt_depot.kinds import PLAIN
-from wpt_depot.notice import model_notice
 from wpt_inference import COSTS_FILE
 from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig, canonical_ids, save_drafter, save_model, weight_files, weight_hashes
 from wpt_model.drafter import Drafter
 from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
-from wpt_recipes import SIZE_OF, RecipeError, Recipes
-from wpt_recipes.series import layer_count
-from wpt_store import NAME as STORE_NAME
-from wpt_store import StoreError, StoreSettingError, read_env_file, store_from_settings
-from wpt_store.models import checkpoint_key, state_key
+from wpt_orders import SIZE_OF, OrderError, Orders
+from wpt_orders.series import layer_count
+from dock.api import NAME as STORE_NAME
+from dock.api import DockError, DockSettingError, dock_from_settings
+from wic_utils.env import read_env_file
+from wpt.models import checkpoint_key, state_key
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, file_hashes, set_result, short
 from wpt_tokenizer import RUSTC_VERSION, Tokenizer, chat
 from wpt_training import (WINDOWS, Checkpoint, FolderCheckpoint, PluginError, check_continuations, load_state,
                           load_step, save_state, strategy_plugin, weights)
 from wpt_training.launch import REFUSED, STOPPED
-from wpt_utils.files import sha256_file
-from wpt_utils.lines import ERROR, WARNING, say
-from wpt_utils.programs import code, fingerprint, repository
+from wic_utils.files import sha256_file
+from wic_utils.lines import ERROR, WARNING, say
+from wic_utils.programs import code, fingerprint, repository
 from wpt_worker.link import LinkError
 from wpt_worker.manager import Files, NoCheckout, code_root, keys, machines, run_jobs, start_workers
 from wpt_worker.training import CHECKPOINTS, STEP_ENDS
 
 from .. import resources
-from . import recipe_depot
+from . import order_depot
+from .notice import PLAIN, model_notice
 from .remote import Training
 
 SIZE_UNITS = {"": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9}
@@ -269,10 +266,10 @@ class Refused(Exception):
 
 class InputError(Exception):
     """The corpus is missing, it was built from another depot, dataset or
-    than the recipe's, the recipe's steps cannot run as
+    than the order's, the order's steps cannot run as
     asked, or the batch does not split over the processes. Nothing has been
     trained. (A token file or vocabulary that does not match its hash is the
-    store's CorruptFile.)"""
+    dock's CorruptFile.)"""
 
 
 def parse_size(text):
@@ -288,7 +285,7 @@ OPTIONS = [
     ("out", str, "runs/default", "model folder to write"),
     ("micro-batch", int, None, "examples per pass in one process (default: its whole share of each batch)"),
     ("checkpoint-every", int, 500, "write a checkpoint every N updates of a step (0: none during a step); each "
-                                   "step's result is kept in the store when it ends"),
+                                   "step's result is kept on the dock when it ends"),
     ("segment", int, 0, "run a window longer than this many tokens as consecutive segments (with --strategy split, "
                         "each process's slice): the same training with less memory, each segment but the last run "
                         "twice (a multiple of 128; 0: whole windows)"),
@@ -299,7 +296,7 @@ OPTIONS = [
     ("processes", int, 1, "start this many processes on this machine, one per GPU (with --strategy ddp or split)"),
     ("max-shard-size", parse_size, None, "split the weights into files of at most this size, e.g. 500MB"),
     ("stream-shards", int, 8, "with --stream: token files of the corpus in use at once (windows are drawn from them)"),
-    ("run", str, None, "keep the checkpoint in the store under this name, so any machine using the store can "
+    ("run", str, None, "keep the checkpoint on the dock under this name, so any machine using the dock can "
                        "continue the run"),
     ("scheduler-costs", str, None, "replay the drafter scheduler's pass times that an earlier run recorded on the "
                                    f"same setup: the name of its record folder, which holds {COSTS_FILE} (default: "
@@ -337,12 +334,12 @@ def switch(parser, environ, variable):
 def parse_args(argv=None, environ=None):
     environ = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="wpt train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("recipe", nargs="?", default=environ.get("WPT_RECIPE"),
-                        help="model recipe: a file name in data/recipes/models/, without .json, or SERIES:SIZE[:RUN], "
-                             "a size of a series file of data/recipes/series/ or another run of it (WPT_RECIPE)")
+    parser.add_argument("order", nargs="?", default=environ.get("WPT_ORDER"),
+                        help="model order: a file name in data/orders/models/, without .json, or SERIES:SIZE[:RUN], "
+                             "a size of a series file of data/orders/series/ or another run of it (WPT_ORDER)")
     parser.add_argument("corpus", nargs="?", default=environ.get("WPT_CORPUS"),
                         help="a corpus's id, or a start of it: a corpus delivery's (`wpt build-resources` prints it) "
-                             "or a corpus of the store's corpora/; default: the recipe's corpus (WPT_CORPUS)")
+                             "or a corpus of the dock's corpora/; default: the order's corpus (WPT_CORPUS)")
     for name, kind, default, text in OPTIONS:
         variable = "WPT_" + name.upper().replace("-", "_")
         if variable in environ:
@@ -372,14 +369,14 @@ def parse_args(argv=None, environ=None):
                         default=switch(parser, environ, "WPT_DRAFTER") is not False,
                         help="end the run by training the model's drafter for speculative decoding (the default); "
                              "--no-drafter saves the model without one, its weights the same, and the same command "
-                             "without it later trains the drafter from the steps the store keeps (WPT_DRAFTER=1 or "
+                             "without it later trains the drafter from the steps the dock keeps (WPT_DRAFTER=1 or "
                              "0)")
     parser.add_argument("--resume", action="store_true", default=environ.get("WPT_RESUME", "") in ("1", "true", "yes"),
                         help="continue the step that stopped from its checkpoint: the model folder's, or with --run "
-                             "the store's (WPT_RESUME)")
+                             "the dock's (WPT_RESUME)")
     args = parser.parse_args(argv)
-    if not args.recipe:
-        parser.error("give the model recipe (or set WPT_RECIPE)")
+    if not args.order:
+        parser.error("give the model order (or set WPT_ORDER)")
     if args.stop_after_minutes < 0 or args.stop_after_updates < 0:
         parser.error("--stop-after-minutes and --stop-after-updates: 0 (no limit) or more")
     if args.recompute_from < 0:
@@ -397,63 +394,63 @@ def parse_args(argv=None, environ=None):
 
 
 def load_data(name) -> dict:
-    """The data part of the model recipe of that name (or SERIES:SIZE[:RUN]):
+    """The data part of the model order of that name (or SERIES:SIZE[:RUN]):
     its depot, snapshot (or, written before snapshots, dataset) and total_tokens, from the repository holding the
     current folder."""
     try:
-        return Recipes.find().data_part(name)
-    except RecipeError as error:
+        return Orders.find().data_part(name)
+    except OrderError as error:
         raise InputError(str(error)) from None
 
 
-def load_recipe(name, record):
-    """The model recipe of that name (or SERIES:SIZE[:RUN]), checked against its
+def load_order(name, record):
+    """The model order of that name (or SERIES:SIZE[:RUN]), checked against its
     schema, from the repository holding the current folder; a size of a
     series is derived for the vocabulary of the corpus record."""
     try:
-        return Recipes.find().model_recipe(name, record["tokenizer"]["vocab_size"])
-    except RecipeError as error:
+        return Orders.find().model_order(name, record["tokenizer"]["vocab_size"])
+    except OrderError as error:
         raise InputError(str(error)) from None
 
 
-# how a recipe of a snapshot gets its corpus
+# how an order of a snapshot gets its corpus
 BUILD = ("run `wpt build-resources ORDER` (SERIES: for a series), which asks the freight for the order's vocabulary "
          "and corpus")
-# how a recipe of the legacy dataset shape gets another corpus: no build makes a corpus of a dataset
-LEGACY_AGAIN = ("no build makes a corpus of a dataset: give the recipe's data part a snapshot of the depot "
-                "(docs/data-selection.md, \"The data section of a model recipe\"), then " + BUILD)
+# how an order of the legacy dataset shape gets another corpus: no build makes a corpus of a dataset
+LEGACY_AGAIN = ("no build makes a corpus of a dataset: give the order's data part a snapshot of the depot "
+                "(docs/data-selection.md, \"The data section of a model order\"), then " + BUILD)
 
 
 def on_snapshot(data) -> bool:
-    """Whether a recipe's data part names a snapshot (else, in a recipe
+    """Whether an order's data part names a snapshot (else, in an order
     written before snapshots, a dataset)."""
     return "snapshot" in data
 
 
-def recipe_dataset(data, reader=None) -> dict:
-    """The current row of the dataset a recipe's data part written before
+def order_dataset(data, reader=None) -> dict:
+    """The current row of the dataset an order's data part written before
     snapshots names (its id or name), read from its depot without writing
-    to it (wpt.train.recipe_depot; reader: the depot already opened);
+    to it (wpt.train.order_depot; reader: the depot already opened);
     InputError when the depot cannot be read or holds no such dataset."""
     try:
-        return (reader or recipe_depot.opened(data, Path.cwd() / ".env")).dataset(data["dataset"])
-    except recipe_depot.Missing:
+        return (reader or order_depot.opened(data, Path.cwd() / ".env")).dataset(data["dataset"])
+    except order_depot.Missing:
         raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: {LEGACY_AGAIN}") from None
-    except (recipe_depot.Unreadable, DepotError) as error:
+    except order_depot.Unreadable as error:
         raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
                          f"({type(error).__name__}: {error}); give the corpus id instead") from None
 
 
 def find_corpus(store, given, data, log=say) -> dict:
     """The record of the corpus given (an id or a start of it: a corpus of
-    the store's corpora/, else a corpus delivery of the dock, by its id or
-    its key), or without one the corpus of the recipe's data part.
+    the dock's corpora/, else a corpus delivery of the dock, by its id or
+    its key), or without one the corpus of the order's data part.
 
     A data part that names a snapshot: the corpus delivery whose key the
     data part gives (wpt.resources.corpus_key, its vocabulary's delivery
     wpt.resources.vocabulary_key), as wpt.resources.corpus_record gives it;
     without one, for a vocabulary named by its sha256, the latest corpus of
-    the store's corpora/ built from that snapshot (name, change, digest),
+    the dock's corpora/ built from that snapshot (name, change, digest),
     depot, kinds, shares, vocabulary and size. No depot is read. InputError
     when neither is there fresh, saying to run `wpt build-resources`;
     nothing is built or queued.
@@ -462,54 +459,54 @@ def find_corpus(store, given, data, log=say) -> dict:
     fresh corpus of the triple its dataset (found by its id in its depot,
     so a dataset's corpora stay its own through a rename), the vocabulary
     that dataset publishes and the size total_tokens, read from the
-    depot's file or through its web app (recipe_depot.FileDepot.built,
+    depot's file or through its web app (order_depot.FileDepot.built,
     WebDepot.built), with a warning in the log when it was built from an
     older revision of the dataset than the current one. InputError when
-    the store holds no such corpus, the dataset publishes no vocabulary,
+    the dock holds no such corpus, the dataset publishes no vocabulary,
     or that triple is not built: the message names the triple and the
     dataset's listing of corpora, and says that no build makes a corpus
     of a dataset, as check_record does. InputError too when the freight
-    cannot read the dock store (a setting it needs is missing)."""
+    cannot read the dock (a setting it needs is missing)."""
     try:
         return _find_corpus(store, given, data, log)
-    except (freight.SettingMissing, StoreSettingError) as error:
+    except (freight.SettingMissing, DockSettingError) as error:
         raise InputError(f"the deliveries of the dock {store.url} cannot be read ({type(error).__name__}: "
                          f"{error})") from None
 
 
 def _find_corpus(store, given, data, log) -> dict:
-    """find_corpus, its freight's and store's errors aside."""
+    """find_corpus, its freight's and dock's errors aside."""
     if given is None and on_snapshot(data):
         return _snapshot_corpus(store, data)
     dataset = None
     try:
         if given is not None:
-            found = corpora.find(store, given) or _delivered(store, given)
+            found = freight.corpus(given, dock=store.url) or _delivered(store, given)
         else:
             try:
-                reader = recipe_depot.opened(data, Path.cwd() / ".env")
-            except recipe_depot.Unreadable as error:
+                reader = order_depot.opened(data, Path.cwd() / ".env")
+            except order_depot.Unreadable as error:
                 raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
                                  f"({type(error).__name__}: {error}); give the corpus id instead") from None
-            dataset = recipe_dataset(data, reader)
-            page = recipe_depot.download_page(data["depot"], dataset["id"])
+            dataset = order_dataset(data, reader)
+            page = order_depot.download_page(data["depot"], dataset["id"])
             vocabulary, size = dataset.get("vocabulary"), data["total_tokens"]
             if vocabulary is None:
                 raise InputError(f"the dataset {dataset['name']!r} ({dataset['id']}) of the depot {data['depot']!r} "
-                                 f"publishes no vocabulary, so no corpus is the recipe's: {LEGACY_AGAIN}")
+                                 f"publishes no vocabulary, so no corpus is the order's: {LEGACY_AGAIN}")
             try:
                 found = reader.built(store, data["depot"], dataset, vocabulary, size)
-            except (recipe_depot.Unreadable, recipe_depot.Missing) as error:
+            except (order_depot.Unreadable, order_depot.Missing) as error:
                 raise InputError(f"the corpus of the dataset {dataset['name']!r} cannot be found "
                                  f"({type(error).__name__}: {error})") from None
             if found is None:
-                older = corpora.latest(store, data["depot"], dataset["id"], vocabulary, size)
-                if older is not None and not corpora.by_kind(older) and not {"stale", "deleted"} & older.keys():
+                older = freight.dataset_corpus(data["depot"], dataset["id"], vocabulary, size, dock=store.url)
+                if older is not None and not freight.corpus_by_kind(older) and not {"stale", "deleted"} & older.keys():
                     raise InputError(f"corpus {older['id']} does not list its token files by kind, which each "
                                      f"training step reads: {LEGACY_AGAIN}")
                 raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
                                  f"{data['depot']!r} with its published vocabulary {vocabulary} at the size "
-                                 f"{size:,} (the recipe's total_tokens) in {store}, whose corpora the depot lists at "
+                                 f"{size:,} (the order's total_tokens) in {store}, whose corpora the depot lists at "
                                  f"{page}; {LEGACY_AGAIN}")
     except ValueError as error:
         raise InputError(str(error)) from None
@@ -523,7 +520,7 @@ def _find_corpus(store, given, data, log) -> dict:
 
 
 def _delivered(store, given) -> dict | None:
-    """The record of the corpus delivery of the dock store whose id or key
+    """The record of the corpus delivery of the dock whose id or key
     starts with given, None when none does. ValueError when several do."""
     found = [note for note in freight.deliveries_on(dock=store.url)
              if note.get("preparation", {}).get("name") == resources.TOKENS
@@ -543,7 +540,7 @@ def _record_of(store, note) -> dict:
 
 
 def _snapshot_corpus(store, data) -> dict:
-    """The record of the corpus a recipe's data part that names a snapshot
+    """The record of the corpus an order's data part that names a snapshot
     asks for (find_corpus)."""
     vocabulary = resources.vocabulary_key(data, store.url)
     key = None if vocabulary is None else resources.corpus_key(data, vocabulary)
@@ -551,15 +548,15 @@ def _snapshot_corpus(store, data) -> dict:
     if note is not None and "stale" not in note and "deleted" not in note:
         return _record_of(store, note)
     if note is not None:
-        raise InputError(f"corpus delivery {note['key']} of the recipe is "
+        raise InputError(f"corpus delivery {note['key']} of the order is "
                          + (f"stale: the depot carried out the erasures {', '.join(note['stale']['erasures'])} on "
                             "texts it holds" if "stale" in note else f"deleted: {note['deleted']['why']}")
                          + f"; {BUILD}, which makes it again")
     legacy = _built(store, data) if resources.vocabulary_named(data) else None
-    if legacy is not None and not corpora.by_kind(legacy) and not {"stale", "deleted"} & legacy.keys():
+    if legacy is not None and not freight.corpus_by_kind(legacy) and not {"stale", "deleted"} & legacy.keys():
         raise InputError(f"corpus {legacy['id']} does not list its token files by kind, which each training step "
                          f"reads: {BUILD}")
-    if legacy is not None and corpora.fresh(legacy):
+    if legacy is not None and freight.corpus_fresh(legacy):
         return legacy
     vocabulary_said = (f"the vocabulary {data['vocabulary']['sha256']}" if resources.vocabulary_named(data)
                        else f"its vocabulary learned on {data['vocabulary']['sample_bytes']:,} bytes")
@@ -570,15 +567,15 @@ def _snapshot_corpus(store, data) -> dict:
 
 
 def _built(store, data) -> dict | None:
-    """The latest corpus of the store's corpora/ built from the snapshot a
+    """The latest corpus of the dock's corpora/ built from the snapshot a
     data part names (name, change, digest), of its depot, with its kinds,
     shares and vocabulary, at its size, under the selection rules the depot
-    builds with now (RULES, which its build key covered): a fresh one
+    built with last (freight.api.CORPUS_RULES, which its build key covered): a fresh one
     first. None without one."""
-    found = [record for record in corpora.records(store)
-             if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == RULES
-             and _same_build(record, data) and corpora.triple(record)[2] == data["total_tokens"]]
-    return next((record for record in found if corpora.fresh(record)), found[0] if found else None)
+    found = [record for record in freight.corpora(dock=store.url)
+             if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == freight.CORPUS_RULES
+             and _same_build(record, data) and freight.corpus_triple(record)[2] == data["total_tokens"]]
+    return next((record for record in found if freight.corpus_fresh(record)), found[0] if found else None)
 
 
 def _source(record) -> str:
@@ -591,7 +588,7 @@ def _source(record) -> str:
 
 
 def _same_build(record, data) -> bool:
-    """Whether a corpus built from a snapshot is one the recipe's data part
+    """Whether a corpus built from a snapshot is one the order's data part
     asks for, its size aside: the same snapshot (name, change and digest,
     which names its owner too), kinds, shares and vocabulary. A corpus
     delivery's vocabulary is the delivery the data part names (its sha256,
@@ -600,11 +597,11 @@ def _same_build(record, data) -> bool:
     snapshot = record["snapshot"]
     try:
         if "build_key" in record:
-            ours, theirs = canonical(data), canonical(record["data"])
+            ours, theirs = freight.corpus_canonical(data), freight.corpus_canonical(record["data"])
         else:
             ours = freight.canonical({"kinds": data.get("kinds"), "shares": data.get("shares")})
             theirs = freight.canonical({**record["request"]["selection"], "size": None})
-    except (DepotError, freight.Refused):
+    except freight.Refused:
         return False
     if "delivery" in record:
         same_vocabulary = (record["vocabulary"]["sha256"] == data["vocabulary"]["sha256"]
@@ -618,49 +615,49 @@ def _same_build(record, data) -> bool:
             and (theirs["kinds"], theirs["shares"]) == (ours["kinds"], ours["shares"]) and same_vocabulary)
 
 
-def load_corpus(store, record, recipe):
+def load_corpus(store, record, order):
     """The corpus's tokenizer, its vocabulary checked, once the corpus is
-    known to be the recipe's. A recipe of a snapshot: a corpus built or
-    delivered from that snapshot (name, change, digest) with the recipe's
+    known to be the order's. An order of a snapshot: a corpus built or
+    delivered from that snapshot (name, change, digest) with the order's
     kinds, shares and vocabulary, at any size (check_record checks the
-    size). A recipe of a dataset: a corpus built from the depot the recipe
-    names, and a dataset of the id or name the recipe gives then, or,
-    renamed since, of the id the recipe's dataset has in its depot now."""
-    data = recipe["data"]
+    size). An order of a dataset: a corpus built from the depot the order
+    names, and a dataset of the id or name the order gives then, or,
+    renamed since, of the id the order's dataset has in its depot now."""
+    data = order["data"]
     snapshot = "build_key" in record or "delivery" in record
     if on_snapshot(data):
         if not snapshot or not _same_build(record, data):
             raise InputError(f"corpus {record['id']} was built from {_source(record)}"
-                             + (" with kinds, shares or vocabulary other than the recipe's" if snapshot
-                                else "") + f"; this recipe names snapshot {data['snapshot']} (change "
+                             + (" with kinds, shares or vocabulary other than the order's" if snapshot
+                                else "") + f"; this order names snapshot {data['snapshot']} (change "
                              f"{data['change']}, digest {data['digest']}) of the depot {data['depot']}")
     elif (snapshot or record["depot"] != data["depot"]
             or (data["dataset"] not in (record["dataset"]["name"], record["dataset"]["id"])
-                and record["dataset"]["id"] != recipe_dataset(data)["id"])):
-        raise InputError(f"corpus {record['id']} was built from {_source(record)}; this recipe names dataset "
+                and record["dataset"]["id"] != order_dataset(data)["id"])):
+        raise InputError(f"corpus {record['id']} was built from {_source(record)}; this order names dataset "
                          f"{data['dataset']!r} of the depot {data['depot']!r}")
-    return Tokenizer.from_bytes(store.get_bytes(record["tokenizer"]["vocabulary"]))  # sha256-checked by the store
+    return Tokenizer.from_bytes(store.get_bytes(record["tokenizer"]["vocabulary"]))  # sha256-checked by the dock
 
 
-def built_for(record, recipe) -> bool:
-    """Whether the corpus was built at the size the recipe asks for: its
-    max_tokens (wpt_depot.corpora.triple) is the data part's total_tokens."""
-    return corpora.triple(record)[2] == recipe["data"]["total_tokens"]
+def built_for(record, order) -> bool:
+    """Whether the corpus was built at the size the order asks for: its
+    max_tokens (freight.api.corpus_triple) is the data part's total_tokens."""
+    return freight.corpus_triple(record)[2] == order["data"]["total_tokens"]
 
 
-def check_record(record, recipe):
-    """InputError when the corpus cannot train the recipe: it is stale (an
+def check_record(record, order):
+    """InputError when the corpus cannot train the order: it is stale (an
     admitted erasure reached a text it was built from), or it holds fewer
     tokens of plain text than the data part's total_tokens and was not
     built at that size (built_for: such a corpus gives its conversations
     and tasks their share of the size, and training reads what it holds),
     or it does not list its token files by kind, which each step reads
-    (corpora.by_kind). The message says how to make it again: `wpt
+    (freight.api.corpus_by_kind). The message says how to make it again: `wpt
     build-resources` for a corpus of a snapshot; for one of a dataset, a
-    snapshot in the recipe first, since no build makes a corpus of a
+    snapshot in the order first, since no build makes a corpus of a
     dataset."""
     snapshot = "build_key" in record or "delivery" in record
-    if not corpora.by_kind(record):
+    if not freight.corpus_by_kind(record):
         again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} does not list its token files by kind, which each training step "
                          f"reads: {again}")
@@ -668,55 +665,55 @@ def check_record(record, recipe):
         again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
                          f"{', '.join(record['stale']['erasures'])} on texts it was built from; {again}")
-    wanted = recipe["data"]["total_tokens"]
-    if record["total_tokens"] < wanted and not built_for(record, recipe):
-        size = corpora.triple(record)[2]
-        raise InputError(f"the recipe trains on {wanted:,} tokens (data.total_tokens); corpus {record['id']} holds "
+    wanted = order["data"]["total_tokens"]
+    if record["total_tokens"] < wanted and not built_for(record, order):
+        size = freight.corpus_triple(record)[2]
+        raise InputError(f"the order trains on {wanted:,} tokens (data.total_tokens); corpus {record['id']} holds "
                          f"{record['total_tokens']:,} and was built at "
-                         f"{'no size' if size is None else f'the size {size:,}'}, not the recipe's {wanted:,}")
+                         f"{'no size' if size is None else f'the size {size:,}'}, not the order's {wanted:,}")
 
 
-def plan(recipe) -> tuple[list, int]:
-    """(the recipe's steps, each a wpt_training.Step, every setting typed
+def plan(order) -> tuple[list, int]:
+    """(the order's steps, each a wpt_training.Step, every setting typed
     and checked, the model's context: the last window length of the last
     step that reads text windows). PluginError for a step that cannot be;
     InputError for steps that cannot run together. (Whether they run with
     the strategy asked is the gpu worker's to check: it starts the
     strategy.)"""
-    steps = [load_step(entry, PARTS) for entry in recipe["steps"]]
+    steps = [load_step(entry, PARTS) for entry in order["steps"]]
     try:
         check_continuations(steps)
     except ValueError as error:
         raise InputError(str(error)) from None
     contexts = [step.context() for step in steps if step.context() is not None]
     if not contexts:
-        raise InputError("no step reads text windows, so nothing sets the model's context; start the recipe with "
+        raise InputError("no step reads text windows, so nothing sets the model's context; start the order with "
                          "read-text")
     return steps, contexts[-1]
 
 
-def with_prefixes(recipe, record, log=lambda text: None) -> dict:
-    """The recipe with each step that reads text windows given the prefix
+def with_prefixes(order, record, log=lambda text: None) -> dict:
+    """The order with each step that reads text windows given the prefix
     it reads: its prefix_tokens, or without them the data part's
-    total_tokens, and for a corpus built at the recipe's size (built_for)
+    total_tokens, and for a corpus built at the order's size (built_for)
     never more than the tokens of plain text the corpus holds. log gets a
     line for each step that reads fewer tokens than it asks for."""
-    held = record["total_tokens"] if built_for(record, recipe) else None
+    held = record["total_tokens"] if built_for(record, order) else None
     entries = []
-    for number, entry in enumerate(recipe["steps"], 1):
+    for number, entry in enumerate(order["steps"], 1):
         step = load_step(entry, PARTS)
         if step.reads == WINDOWS:
-            asked = step.settings["prefix_tokens"] or recipe["data"]["total_tokens"]
+            asked = step.settings["prefix_tokens"] or order["data"]["total_tokens"]
             prefix = asked if held is None else min(asked, held)
             if prefix < asked:
                 log(f"step {number} {step.name} reads the first {prefix:,} tokens of plain text, all that corpus "
-                    f"{record['id']} holds, not the {asked:,} it asks for: built at the recipe's size "
-                    f"{recipe['data']['total_tokens']:,} (data.total_tokens), the corpus counts its conversations "
+                    f"{record['id']} holds, not the {asked:,} it asks for: built at the order's size "
+                    f"{order['data']['total_tokens']:,} (data.total_tokens), the corpus counts its conversations "
                     "and tasks in it")
             if prefix != step.settings["prefix_tokens"]:
                 entry = {**entry, "settings": {**entry.get("settings", {}), "prefix_tokens": prefix}}
         entries.append(entry)
-    return {**recipe, "steps": entries}
+    return {**order, "steps": entries}
 
 
 def check_corpus(steps, record, store):
@@ -737,8 +734,8 @@ def fingerprints(steps, model_config, record, seed, code) -> list[str]:
     optimizer, settings, locked parts and kinds of texts), the fingerprints
     of what the corpus holds of each kind of texts it reads, in the order
     it names them (the record's `fingerprints`; InputError for a kind it
-    does not record), the recipe's seed
-    and the code (code, wpt_utils.programs.code()). The step's position in the list, which its draws
+    does not record), the order's seed
+    and the code (code, wic_utils.programs.code()). The step's position in the list, which its draws
     mix into the seed, is the length of the chain before it. No option is
     part of it."""
     shape = {key: value for key, value in asdict(model_config).items() if key != "block_size"}
@@ -759,7 +756,7 @@ def fingerprints(steps, model_config, record, seed, code) -> list[str]:
 
 
 class StepResults:
-    """The results of the steps runs made, in the store: the result
+    """The results of the steps runs made, on the dock: the result
     cache/steps/<the step's fingerprint> is a JSON record, {"about": what
     the run recorded of the step, "state": the file of its checkpoint
     state, {"key", "sha256"}} (the weights, those of its best evaluation, the optimizer's,
@@ -801,18 +798,18 @@ def learned(done) -> dict:
     return found
 
 
-def provenance(args, recipe, record, model_config, n_params, worker, strategy_file, done, texts):
+def provenance(args, order, record, model_config, n_params, worker, strategy_file, done, texts):
     """What produced the model; worker: what the gpu worker said of itself
     when it was ready (its device, its processes, its Python and the
     versions of the libraries it trained with); texts: how many texts of
     the corpus the steps learned from. A corpus the freight delivered
-    gives `data`, the recipe's data section (the depot's address, the
+    gives `data`, the order's data section (the depot's address, the
     snapshot's name, change and digest, the kinds, shares, size and
     vocabulary), `deliveries`, the key, id and preparation of the
     vocabulary's delivery and of the corpus's, and `corpus` its id,
     delivery key, rules, the snapshot it read (with its owner) and
     `request`, the request that makes it again: a corpus given by its id
-    may have been made at a larger size than the recipe's, and holds other
+    may have been made at a larger size than the order's, and holds other
     texts past the first one a smaller one leaves out. A corpus built by
     the depot from a snapshot gives `data` and `corpus` its id, build key,
     rules, snapshot and `data`, the data section it was built with. One
@@ -822,24 +819,24 @@ def provenance(args, recipe, record, model_config, n_params, worker, strategy_fi
     if "delivery" in record:
         corpus = {"id": record["id"], "delivery": record["delivery"], "rules": record["rules"],
                   "depot": record["depot"], "snapshot": record["snapshot"], "request": record["request"]}
-        source = {"data": recipe["data"], "deliveries": record["deliveries"]}
+        source = {"data": order["data"], "deliveries": record["deliveries"]}
     elif "build_key" in record:
         corpus = {"id": record["id"], "build_key": record["build_key"], "rules": record["rules"],
                   "depot": record["depot"], "snapshot": record["snapshot"], "data": record["data"]}
-        source = {"data": recipe["data"]}
+        source = {"data": order["data"]}
     else:
         corpus, source = {"id": record["id"], "depot": record["depot"], "dataset": record["dataset"]["name"]}, {}
     return {
         **source,
-        "recipe_name": args.recipe,
-        "recipe": recipe,  # everything that changes the model: data, architecture, seed, steps, drafter
+        "recipe_name": args.order,
+        "recipe": order,  # everything that changes the model: data, architecture, seed, steps, drafter
         "corpus": corpus,  # a cache: the snapshot, its data section and the code build it again
         "learned": learned(done),  # what of the corpus the steps learned from
         "texts": texts,
         "vocabulary": record["tokenizer"]["vocabulary"],
         "shards": [{name: s[name] for name in SHARD_FIELDS} for s in record["shards"][PLAIN]],
         # how the hardware ran it, and whether a drafter was trained (drafter: false with --no-drafter)
-        "options": {k: v for k, v in vars(args).items() if k not in ("recipe", "corpus")},
+        "options": {k: v for k, v in vars(args).items() if k not in ("order", "corpus")},
         "strategy": {"name": strategy_file.name, "file": strategy_file.file, "file_sha256": strategy_file.sha256,
                      "processes": processes},
         # each step in order: what it is, its fingerprint and kept result, whether this run reused it, what it
@@ -849,7 +846,7 @@ def provenance(args, recipe, record, model_config, n_params, worker, strategy_fi
         "parameters": n_params,
         **repository(),  # repository_commit, repository_dirty
         "device": worker["device"] + (f", {processes} processes" if processes > 1 else ""),
-        # the code (wpt_utils.programs.code), the gpu worker's Python and libraries, which trained it; the
+        # the code (wic_utils.programs.code), the gpu worker's Python and libraries, which trained it; the
         # tokenizer's compiler is the manager's
         "tools": {"code": code(), **worker["tools"], "rustc": RUSTC_VERSION},
     }
@@ -857,9 +854,9 @@ def provenance(args, recipe, record, model_config, n_params, worker, strategy_fi
 
 def print_series(name) -> int:
     """Print the numbers of every size of the series file of that name (wpt train series NAME)."""
-    recipes = Recipes.find()
+    orders = Orders.find()
     try:
-        data = recipes.data_part(f"{name}{SIZE_OF}")
+        data = orders.data_part(f"{name}{SIZE_OF}")
         if on_snapshot(data):  # the series names its vocabulary, with its size
             vocab_size = data["vocabulary"]["size"]
             said = (f"the vocabulary {data['vocabulary']['sha256'] or '(not named yet)'} its data part names"
@@ -867,19 +864,19 @@ def print_series(name) -> int:
                     f"the size of the vocabulary its data part learns on {data['vocabulary']['sample_bytes']:,} bytes")
         else:
             try:
-                depot = recipe_depot.opened(data, Path.cwd() / ".env")
-                # the size the trained vocabulary has, which a corpus's record gives training; the recipe's before
+                depot = order_depot.opened(data, Path.cwd() / ".env")
+                # the size the trained vocabulary has, which a corpus's record gives training; the order's before
                 vocab_size, trained = depot.vocab_size(depot.dataset(data["dataset"])["tokenizer"])
-            except (recipe_depot.Unreadable, recipe_depot.Missing, DepotError, OSError) as error:
+            except (order_depot.Unreadable, order_depot.Missing, OSError) as error:
                 say(f"InputError: series {name}: the vocabulary's size comes from the tokenizer recipe of the "
                     f"dataset {data['dataset']!r} of the depot {data['depot']!r}, which cannot be read "
                     f"({type(error).__name__}: {error})", ERROR)
                 return REFUSED
             said = (f"that of the tokenizer recipe of its dataset {data['dataset']!r}"
                     + ("" if trained else " (not trained yet: the size it asks for)"))
-        plans = recipes.series_plans(name, vocab_size)
+        plans = orders.series_plans(name, vocab_size)
         say(f"series {name}: a vocabulary of {vocab_size:,} tokens, {said}")
-        total = recipes.series_total_tokens(name)
+        total = orders.series_total_tokens(name)
         say(f"series {name}: one corpus of {total:,} training tokens; wpt train {name}:SIZE reads its first prefix tokens")
         for plan in plans:
             model = plan.model
@@ -891,11 +888,11 @@ def print_series(name) -> int:
                 f"learning rate {plan.learning_rate:g}, batch {plan.batch_size} windows of {plan.block_size:,} "
                 f"(the law: {plan.batch_tokens:,.0f} tokens), {plan.updates:,} updates, warm-up {plan.warmup:,}, "
                 f"prefix {plan.prefix_tokens:,} tokens")
-            for run in recipes.series_runs(name, plan):
+            for run in orders.series_runs(name, plan):
                 say(f"  {name}:{plan.size}:{run['run']}: {run['updates']:,} updates"
                     + (f", decaying after update {run['start']:,} of the trunk" if run["start"] is not None else "")
                     + f", learning rate {run['learning_rate']:g}")
-    except RecipeError as error:
+    except OrderError as error:
         say(f"InputError: {error}", ERROR)
         return REFUSED
     return 0
@@ -916,19 +913,19 @@ def main(argv=None):
     args = parse_args(argv, environ)
     arguments = sys.argv[1:] if argv is None else list(argv)
     try:
-        store = store_from_settings(Path.cwd() / ".env")
-        record = find_corpus(store, args.corpus, load_data(args.recipe))
-        check_record(record, load_recipe(args.recipe, record))
-    except (StoreError, InputError) as error:  # no store, no corpus: nothing has started, nothing is recorded
+        store = dock_from_settings(Path.cwd() / ".env")
+        record = find_corpus(store, args.corpus, load_data(args.order))
+        check_record(record, load_order(args.order, record))
+    except (DockError, InputError) as error:  # no store, no corpus: nothing has started, nothing is recorded
         say(f"{type(error).__name__}: {error}", ERROR)
         sys.exit(REFUSED)
     try:
         with Telemetry.start(store, "wpt train", arguments, short(record["id"]),
-                             inputs={"recipe": args.recipe, "corpus": record["id"]},
+                             inputs={"recipe": args.order, "corpus": record["id"]},
                              env_file=Path.cwd() / ".env") as telemetry:
             code = _run(args, record, store, telemetry, environ)
             if code == RECORD_FAILED:  # the gpu worker's lines of the record could not be written
-                raise RecordError("the store refused a line of this run's record that the gpu worker sent")
+                raise RecordError("the dock refused a line of this run's record that the gpu worker sent")
             if code:
                 sys.exit(code)
     except RecordError as error:
@@ -939,23 +936,23 @@ def main(argv=None):
 def settings() -> dict:
     """The settings this command reads: the environment, and for what it
     leaves unset or empty, the .env file of the current folder (as
-    WPT_STORE)."""
+    DOCK)."""
     return {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
 
 
 def _run(args, record, store, telemetry, environ) -> int:
     """The run; its exit code."""
     try:
-        with telemetry.span("inputs.recipe", recipe=args.recipe):
-            recipe = with_prefixes(load_recipe(args.recipe, record), record,
+        with telemetry.span("inputs.recipe", recipe=args.order):
+            order = with_prefixes(load_order(args.order, record), record,
                                    lambda text: telemetry.log(text, WARNING))
             strategy_file = strategy_plugin(args.strategy)
-        with telemetry.span("inputs.steps", steps=len(recipe["steps"])):
-            steps, context = plan(recipe)
+        with telemetry.span("inputs.steps", steps=len(order["steps"])):
+            steps, context = plan(order)
     except (InputError, PluginError) as error:
         return _refuse(f"{type(error).__name__}: {error}", telemetry)
     try:
-        return _train(args, record, recipe, strategy_file, steps, context, store, telemetry, environ)
+        return _train(args, record, order, strategy_file, steps, context, store, telemetry, environ)
     except Refused as error:
         return _refuse(str(error), telemetry)
 
@@ -965,14 +962,14 @@ def _refuse(text, telemetry) -> int:
     return REFUSED
 
 
-class StoreCheckpoint(Checkpoint):
-    """The checkpoint of a named run in the store: a record beside the
-    model NAME (wpt_store.models.CHECKPOINT) names the state's file
+class DockCheckpoint(Checkpoint):
+    """The checkpoint of a named run on the dock: a record beside the
+    model NAME (wpt.models.CHECKPOINT) names the state's file
     ({"state": {"key", "sha256"}}), which lies in the same folder, so any
-    machine using the same store continues it and emptying the store's
+    machine using the same dock continues it and emptying the dock's
     cache folder loses nothing of it. Each save replaces the record and
     deletes the file it named. Every change of the record and every deletion are recorded in
-    the run's record, naming the file, and that line is in the store before
+    the run's record, naming the file, and that line is on the dock before
     the step (RecordError otherwise). When the record breaks, a save still
     writes the checkpoint's, unrecorded, then raises the RecordError;
     nothing is deleted then: the previous file stays. kept: the keys of the
@@ -1096,15 +1093,15 @@ class _Run:
     worker read (wpt.train.remote.Training)."""
 
     args: argparse.Namespace
-    recipe: dict
+    order: dict
     steps: list
     record: dict
     store: object
     telemetry: Telemetry
     tokenizer: Tokenizer
     model_config: ModelConfig
-    checkpoint: Checkpoint  # a StoreCheckpoint with --run, else a FolderCheckpoint in the model folder
-    kept_states: set  # the keys of the kept steps' state files, which a store checkpoint never deletes
+    checkpoint: Checkpoint  # a DockCheckpoint with --run, else a FolderCheckpoint in the model folder
+    kept_states: set  # the keys of the kept steps' state files, which a dock checkpoint never deletes
     results: StepResults
     strategy_file: object
     replayed: bytes | None  # the scheduler's pass times an earlier run recorded, with --scheduler-costs
@@ -1114,27 +1111,27 @@ class _Run:
     parameters: int | None = None
 
     def fingerprints(self, code) -> list[str]:
-        return fingerprints(self.steps, self.model_config, self.record, self.recipe["seed"], code)
+        return fingerprints(self.steps, self.model_config, self.record, self.order["seed"], code)
 
     def checkpoint_state(self) -> dict | None:
-        """With a store checkpoint, the reference of its saved state's file
+        """With a dock checkpoint, the reference of its saved state's file
         (None when none is saved); with a folder checkpoint, None: its file
         is checkpoint_file()."""
-        return self.checkpoint.state_file() if isinstance(self.checkpoint, StoreCheckpoint) else None
+        return self.checkpoint.state_file() if isinstance(self.checkpoint, DockCheckpoint) else None
 
     def checkpoint_file(self) -> Path | None:
         """With a folder checkpoint, its saved file (None when none is
-        saved); with a store checkpoint, None."""
-        if isinstance(self.checkpoint, StoreCheckpoint) or not self.checkpoint.path.is_file():
+        saved); with a dock checkpoint, None."""
+        if isinstance(self.checkpoint, DockCheckpoint) or not self.checkpoint.path.is_file():
             return None
         return self.checkpoint.path
 
     def kept_state(self) -> dict:
         """The reference of the file of the step's last checkpoint, which
-        becomes its kept state: a store checkpoint's own file, or a folder
-        checkpoint's file put into the store's cache folder (where a state
+        becomes its kept state: a dock checkpoint's own file, or a folder
+        checkpoint's file put onto the dock's cache folder (where a state
         lies that nothing but the step's result names)."""
-        if isinstance(self.checkpoint, StoreCheckpoint):
+        if isinstance(self.checkpoint, DockCheckpoint):
             return self.checkpoint.state_file()
         return self.store.file(self.store.put_file(self.checkpoint.path)).reference()
 
@@ -1150,7 +1147,7 @@ def link_checkpoints(environ) -> str:
 
 
 def sent_files(steps, strategy_file) -> dict:
-    """{the path a recipe or an option gave: its text} of every file of the
+    """{the path an order or an option gave: its text} of every file of the
     run's parts that is not a built-in: what the gpu worker loads them from."""
     files = [plugin for step in steps for plugin in step.files()]
     if strategy_file.given is not None:
@@ -1158,39 +1155,39 @@ def sent_files(steps, strategy_file) -> dict:
     return {plugin.given: Path(plugin.given).read_text(encoding="utf-8") for plugin in files}
 
 
-def _train(args, record, recipe, strategy_file, steps, context, store, telemetry, environ) -> int:
+def _train(args, record, order, strategy_file, steps, context, store, telemetry, environ) -> int:
     log = telemetry.log
     out = Path(args.out)
     out_was_there = out.exists()  # a failed step then leaves the target as it was
     mode = link_checkpoints(environ)
     try:
         with telemetry.span("inputs.corpus", corpus=record["id"], stream=args.stream) as span:
-            kept_states = set()  # the keys of the kept steps' state files, which a store checkpoint never deletes
-            checkpoint = (StoreCheckpoint(store, args.run, telemetry, kept_states) if args.run
+            kept_states = set()  # the keys of the kept steps' state files, which a dock checkpoint never deletes
+            checkpoint = (DockCheckpoint(store, args.run, telemetry, kept_states) if args.run
                           else FolderCheckpoint(out / CHECKPOINT_FOLDER))
             if checkpoint.exists() and not args.resume:
                 raise Refused(f"{checkpoint} holds an unfinished step: add --resume to continue it, or delete it")
-            tokenizer = load_corpus(store, record, recipe)
+            tokenizer = load_corpus(store, record, order)
             check_corpus(steps, record, store)  # what every step reads is there before the first one trains
             span.set(shards=len(record["shards"][PLAIN]), conversations=record["conversations"],
                      tasks=record.get("tasks", {}).get("count", 0))
-        telemetry.input(recipe=args.recipe, corpus=record["id"], vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
-    except (StoreError, InputError) as error:
+        telemetry.input(recipe=args.order, corpus=record["id"], vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
+    except (DockError, InputError) as error:
         raise Refused(f"{type(error).__name__}: {error}") from None
     log(f"corpus {record['id']}: vocabulary {tokenizer.vocab_size:,} tokens")
 
-    model_config = ModelConfig(vocab_size=tokenizer.vocab_size, block_size=context, **recipe["model"])
+    model_config = ModelConfig(vocab_size=tokenizer.vocab_size, block_size=context, **order["model"])
     try:  # the drafter trained at the end, and the scheduler's pass times replayed: refused now, not after training
-        drafter_config, _ = drafter_settings(model_config, recipe["drafter"])  # its feature layers included
+        drafter_config, _ = drafter_settings(model_config, order["drafter"])  # its feature layers included
         replayed = store.read_record(args.scheduler_costs, COSTS_FILE) if args.scheduler_costs else None
         files = sent_files(steps, strategy_file)
-    except (ValueError, StoreError, OSError) as error:
+    except (ValueError, DockError, OSError) as error:
         raise Refused(f"{type(error).__name__}: {error}") from None
-    run = _Run(args=args, recipe=recipe, steps=steps, record=record, store=store, telemetry=telemetry,
+    run = _Run(args=args, order=order, steps=steps, record=record, store=store, telemetry=telemetry,
                tokenizer=tokenizer, model_config=model_config, checkpoint=checkpoint, kept_states=kept_states,
                results=StepResults(store, telemetry), strategy_file=strategy_file, replayed=replayed, log=log)
-    spec = {"task": "wpt-train", "files": files, "steps": recipe["steps"], "record": record,
-            "model": asdict(model_config), "seed": recipe["seed"], "drafter": recipe["drafter"],
+    spec = {"task": "wpt-train", "files": files, "steps": order["steps"], "record": record,
+            "model": asdict(model_config), "seed": order["seed"], "drafter": order["drafter"],
             "canonical": canonical_ids(tokenizer.decode, tokenizer.vocab_size).tolist(),
             "tokens": {"end": Tokenizer.END, "im_end": chat.IM_END}, "checkpoints": mode,
             "checkpoint": str(checkpoint), "join": telemetry.child_environment(live=False),
@@ -1216,14 +1213,14 @@ def _train(args, record, recipe, strategy_file, steps, context, store, telemetry
     try:
         with telemetry.span("gpu_worker.checkout", workers=len(workers)):
             for worker in workers:
-                worker.send_checkout(Recipes(checkout_root).data_folder(), checkout_root)
+                worker.send_checkout(Orders(checkout_root).data_folder(), checkout_root)
         with telemetry.span("gpu_worker.job", checkpoints=mode, workers=len(workers),
                             transport=placed[0]["transport"]), telemetry.relay():
             code = run_jobs(workers, [{**spec, "machines": where} for where in placed], answers.handlers)
         if len(workers) > 1 and code not in (0, REFUSED, RECORD_FAILED, STOPPED):
             code = _crashed(code, len(workers), telemetry)
         if code == 0:
-            _finish(args, recipe, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
+            _finish(args, order, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
                     telemetry, log)
     except LinkError as error:
         code = _lost(error, telemetry)
@@ -1255,7 +1252,7 @@ def _lost(error, telemetry) -> int:
     return LOST
 
 
-def _finish(args, recipe, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
+def _finish(args, order, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
             telemetry, log):
     """The model folder, from the last step's kept state and what the gpu
     worker sent at the end (the drafter, none with --no-drafter, and a
@@ -1272,7 +1269,7 @@ def _finish(args, recipe, record, model_config, drafter_config, answers, tokeniz
             drafter = Drafter(model_config, drafter_config)
             drafter.load_state_dict(found["state"])
             drafter.provenance = {**found["provenance"], "corpus": record["id"],
-                                  "trained_by": {"command": "wpt train", "recipe_name": args.recipe}}
+                                  "trained_by": {"command": "wpt train", "recipe_name": args.order}}
             answers.finished["drafter"].unlink()
     n_params = sum(p.numel() for p in model.parameters())
     done = answers.done
@@ -1299,7 +1296,7 @@ def _finish(args, recipe, record, model_config, drafter_config, answers, tokeniz
                 texts = sum(1 for line in credits.split("\n\n", 1)[0].splitlines() if line)
                 span.set(texts=texts)
             with telemetry.span("model.provenance"):
-                written = provenance(args, recipe, record, model_config, n_params, answers.ready_found,
+                written = provenance(args, order, record, model_config, n_params, answers.ready_found,
                                      answers.run.strategy_file, done, texts)
                 (staging / "provenance.json").write_text(json.dumps(written, indent=2) + "\n", encoding="utf-8",
                                                          newline="\n")

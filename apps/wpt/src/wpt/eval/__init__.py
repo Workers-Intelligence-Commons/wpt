@@ -10,7 +10,7 @@ defines
     def run(context: wpt.eval.Context) -> wpt.eval.Result
 
 The context gives the model, its tokenizer, the folder's provenance and
-the store named by WPT_STORE (environment or .env). The result carries data for programs and the same findings as text for
+the dock named by DOCK (environment or .env). The result carries data for programs and the same findings as text for
 people. The model is on a gpu worker (wpt.eval.remote, docs/machines.md,
 "Evaluation"): the first of WPT_GPU_WORKERS, or a local one; a test reaches
 it through the context only: context.model.config, .device (where it runs,
@@ -24,7 +24,7 @@ Each result goes to MODEL_FOLDER/evals/<name>.json, and the model card
 (README.md) is written again to show it. A test that fails stops the run;
 results already written stay.
 
-The run is recorded in its own folder of the store's runs/ (wpt_telemetry; docs/observability.md): the weights it measured, each test
+The run is recorded in its own folder of the dock's runs/ (wpt_telemetry; docs/observability.md): the weights it measured, each test
 with its file's sha256 and its result, and every file written. A test can
 record its own events through context.telemetry. When the record cannot be
 written, the run stops (at its next record call, or sooner when a send
@@ -46,12 +46,13 @@ from wpt_model import DrafterMismatch, TokenizerMismatch, check_drafter, load_to
 from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CARD_NAME, EVALS_NAME, documents
 from wpt_model.provenance import corpus_id
-from wpt_store import Store, StoreError, read_env_file, store_from_settings
+from dock.api import Dock, DockError, dock_from_settings
+from wic_utils.env import read_env_file
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry, short
 from wpt_tokenizer import Tokenizer
-from wpt_utils.files import sha256_file
-from wpt_utils.lines import ERROR, say
-from wpt_utils.programs import code
+from wic_utils.files import sha256_file
+from wic_utils.lines import ERROR, say
+from wic_utils.programs import code
 from wpt_worker.link import LinkError
 
 from .remote import Remote, WorkerError
@@ -78,7 +79,7 @@ class Context:
     tokenizer: Tokenizer
     device: str  # where the model runs, in words
     provenance: dict
-    store: Store
+    store: Dock
     telemetry: Telemetry = field(default_factory=Telemetry.off)  # the run's record, for a test's own events
 
 
@@ -118,7 +119,7 @@ def run_eval(context, eval_) -> dict:
         folder = context.folder / EVALS_NAME
         text = json.dumps(record, indent=2) + "\n"
         with telemetry.span("eval.write", file=f"{EVALS_NAME}/{name}.json"):
-            # each file is in the record, sent to the store, before it is written
+            # each file is in the record, sent to the dock, before it is written
             telemetry.output(**{f"eval_{name}": hashlib.sha256(text.encode()).hexdigest()})
             telemetry.irreversible("eval.file_written", file=f"{EVALS_NAME}/{name}.json")
             folder.mkdir(exist_ok=True)
@@ -193,8 +194,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     environ = {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
     try:
-        store = store_from_settings(Path.cwd() / ".env")
-    except StoreError as error:  # no store, no record: nothing has started
+        store = dock_from_settings(Path.cwd() / ".env")
+    except DockError as error:  # no store, no record: nothing has started
         sys.exit(f"{type(error).__name__}: {error}")
     evals = args.evals or built_in_names()
     try:
@@ -218,7 +219,7 @@ def main(argv=None):
                     for eval_ in evals:
                         record = run_eval(context, eval_)
                         telemetry.log(f"\n{record['name']}\n{record['text'].rstrip()}")
-            except (StoreError, EvalError, LinkError, WorkerError) as error:
+            except (DockError, EvalError, LinkError, WorkerError) as error:
                 sys.exit(f"{type(error).__name__}: {error}")  # end.json records it
             telemetry.log(f"\nresults in {Path(args.model) / EVALS_NAME}, model card {Path(args.model) / 'README.md'}")
     except RecordError as error:

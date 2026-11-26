@@ -47,7 +47,7 @@ stop ends the stage: the next one starts, with its own count. A step
 without evaluations never stops early and keeps its last weights.
 
 lr and weight_decay default to Kimi Linear's smallest model (2.006e-3) and
-Moonlight (0.1); a recipe sets its own.
+Moonlight (0.1); an order sets its own.
 """
 
 import torch

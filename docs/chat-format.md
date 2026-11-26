@@ -186,7 +186,7 @@ abstain: "I don't know" is never a way out that costs nothing.
 A conversation is a depot item of kind `conversation`, its content the
 object above ([data-selection.md](data-selection.md), "Items"). The depot
 checks it against the kind's JSON Schema when it is added
-(`packages/wpt-depot/src/wpt_depot/kinds/conversation.schema.json`): only
+(`packages/depot/src/depot/kinds/conversation.schema.json`): only
 an `assistant` message holds `thinking` or `tool_call` blocks or a
 `draft`, only a `tool` message holds `tool_result` blocks, and only a
 `user` message or a tool result holds `excerpt` blocks.

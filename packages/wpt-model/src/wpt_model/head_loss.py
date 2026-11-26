@@ -44,7 +44,7 @@ def _loss_kernel(scores_ptr, targets_ptr, losses_ptr, V, BLOCK: tl.constexpr):
     scores = scores_ptr + row * V
     target = tl.load(targets_ptr + row)
     kept = target != IGNORED
-    # read before the first loop: its reductions order this load before the stores below
+    # read before the first loop: its reductions order this load before the docks below
     x_target = tl.load(scores + target, mask=kept, other=0.0).to(tl.float32) * LOG2E
     columns = tl.arange(0, BLOCK)
     top = tl.full([BLOCK], float("-inf"), tl.float32)  # each column's running maximum, and the sum below it

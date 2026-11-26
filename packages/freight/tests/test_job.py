@@ -14,8 +14,8 @@ from freight import api, deliveries
 from freight import job
 from freight.exchange import PreparationFailed
 from freight.job import Job
-from wpt_store import open_store
-from wpt_store.names import File
+from dock import open_dock
+from dock.names import File
 
 
 class Stop(Exception):
@@ -29,7 +29,7 @@ def items(store, note) -> list[dict]:
 @pytest.mark.parametrize("cut", [1, 2, 3])
 def test_a_job_cut_short_goes_on_from_its_checkpoint_to_the_same_delivery(freight, cut):
     request = freight.request()
-    whole_dock = open_store((freight.tmp_path / "whole").as_uri())
+    whole_dock = open_dock((freight.tmp_path / "whole").as_uri())
     whole = Job(request, freight.depot.address, whole_dock, freight.tmp_path / "whole-work").run()
     assert len(whole["files"]) > cut  # a file is a checkpoint: the cut falls inside the job
     saved = []
@@ -74,7 +74,7 @@ def test_an_erasure_makes_a_delivery_stale_or_is_noted_in_it_as_its_program_says
     assert answered["state"] == "done" and answered["answer"]["erasures_since"] == [erased]
     assert api.delivery(stale["key"], dock=freight.dock)["stale"] == {"erasures": [erased]}
     assert "stale" not in api.delivery(noted["key"], dock=freight.dock)
-    assert api.check(**where) | {"mark": None} == {"mark": None, "erasures": [], "stale": [], "noted": []}
+    assert api.check(**where) | {"mark": None} == {"mark": None, "erasures": [], "stale": [], "noted": [], "corpora": []}
 
 
 def test_the_cap_never_deletes_an_adopted_delivery_nor_an_input(freight):
@@ -127,7 +127,7 @@ def test_the_rows_of_a_part_held_in_local_files_past_the_bound_give_the_same_par
     request = freight.request(per_file=100)  # one file, so one part of every row
     held = Job(request, freight.depot.address, freight.store, freight.tmp_path / "a").run()
     monkeypatch.setattr(job, "SPILL_ROWS", 2)
-    dock = open_store((freight.tmp_path / "spilled").as_uri())
+    dock = open_dock((freight.tmp_path / "spilled").as_uri())
     spilled = Job(request, freight.depot.address, dock, freight.tmp_path / "b").run()
     assert len(held["tables"]["items"]) == 1 and held["tables"]["items"][0]["rows"] > 2
     assert (spilled["key"], spilled["id"], spilled["tables"]["items"][0]["fingerprint"]) == (

@@ -1,4 +1,4 @@
-# Starts wpt-depot-cloudflare.service every week (docs/depot-web.md).
+# Starts depot-cloudflare.service every week (docs/depot-web.md).
 [Unit]
 Description=Weekly update of Cloudflare's address ranges for the public depot web app
 

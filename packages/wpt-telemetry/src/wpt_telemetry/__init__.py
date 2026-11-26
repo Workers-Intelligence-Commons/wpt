@@ -2,11 +2,11 @@
 wrote, so that afterwards one can know exactly what happened.
 
 wpt train, wpt eval and wpt manager each open one Telemetry per run. Its
-record is its own folder in the store named by WPT_STORE, runs/<run>/ (see
-wpt_store), named
+record is its own folder on the dock named by DOCK, runs/<run>/ (see
+dock), named
 <UTC start>-<command>-<main id>-<8 random hex digits>, where the command is
 the one that ran (`wpt train`; as_record_name turns each space into a '-':
-`wpt-train`) and the main id is what the run is about (a recipe name, a short
+`wpt-train`) and the main id is what the run is about (an order name, a short
 corpus id, a short weights hash: the command chooses). The run's `folder`
 is that name, which every read of the record takes:
 
@@ -25,14 +25,14 @@ is that name, which every read of the record takes:
                    error and its traceback
     other files    written by a part of the command (write_file, append_file)
 
-Each file written whole is in the store before the call that makes it
-returns; a run with no end.json did not reach its end. The store holds
-added lines back (see wpt_store): they are sent every FLUSH_SECONDS, before
+Each file written whole is on the dock before the call that makes it
+returns; a run with no end.json did not reach its end. The dock holds
+added lines back (see dock): they are sent every FLUSH_SECONDS, before
 every step that cannot be undone (irreversible) and at the end of the run,
 so a crash loses at most the lines of the last FLUSH_SECONDS, and a long
 run writes a few large parts instead of one small part per span or result.
 Keeping a result the build can compute again (set_result) waits for the
-next group of lines. When the store does not take a part,
+next group of lines. When the dock does not take a part,
 RecordError is raised, and every later call raises it again without
 writing anything: the command stops, since without its record it must do
 nothing more (wpt train's training process still saves its checkpoint
@@ -55,20 +55,20 @@ interruption and the next call raises RecordError. A record that broke
 always ends in RecordError when the with block ends, even when the block
 itself ended without an error.
 
-A file name that the store does not allow, or a file both written whole
-and added to, is a mistake of the caller: ValueError or the store's
+A file name that the dock does not allow, or a file both written whole
+and added to, is a mistake of the caller: ValueError or the dock's
 MixedRecord, raised as itself, and the record goes on.
 
 After close(), every recording call raises RuntimeError: the run is over,
 and a call then is a mistake in the command's code.
 
 When OTEL_EXPORTER_OTLP_ENDPOINT is set (environment, or the .env file the
-command reads WPT_STORE from), the same spans, the events and printed lines
+command reads DOCK from), the same spans, the events and printed lines
 (as log records) and the events' values (as gauges) also go to that
 OpenTelemetry backend over OTLP/HTTP, in the background. A backend that
 fails gets one warning on stderr; the run goes on and each later batch is
 tried again quietly, so the live view resumes when the backend is back.
-The store record is the account; the live view is a convenience.
+The dock record is the account; the live view is a convenience.
 
 A process started by another one for the same run (wpt train's launcher
 starts the training processes) joins its record: the launcher writes
@@ -90,7 +90,7 @@ progress() gives a long stage's Progress: every PROGRESS_SECONDS while the
 stage's with block runs, one printed line says how much is done out of the
 total, the rate, an estimate of the time left and the memory in use.
 
-wpt_telemetry.runs reads a store's records back.
+wpt_telemetry.runs reads a dock's records back.
 """
 
 import _thread
@@ -123,18 +123,20 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, Spa
 from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
 from opentelemetry.trace import NonRecordingSpan, SpanContext, Status, StatusCode, TraceFlags
 
-from wpt_store import MissingFile, MixedRecord, as_record_name, check_record_name, read_env_file
-from wpt_utils.files import sha256_file
-from wpt_utils.lines import ERROR, INFO, WARNING, say
-from wpt_utils.parallel import memory
-from wpt_utils.programs import code, code_name, repository
+from dock.api import MissingFile, MixedRecord, as_record_name, check_record_name
+
+from wic_utils.env import read_env_file
+from wic_utils.files import sha256_file
+from wic_utils.lines import ERROR, INFO, WARNING, say
+from wic_utils.parallel import memory
+from wic_utils.programs import code, code_name, repository
 
 RECORD_FAILED = 3  # the exit code of a command whose record could not be written; never restarted
 ENDPOINT = "OTEL_EXPORTER_OTLP_ENDPOINT"
 JOIN_FOLDER = "WPT_RECORD_FOLDER"  # set by a launcher for the processes that join its record
 JOIN_PARENT = "WPT_RECORD_PARENT"  # <trace id>-<span id> of the launcher's span they belong under
 START, EVENTS, IDS, END = "start.json", "events.jsonl", "ids.json", "end.json"
-FLUSH_SECONDS = 30  # the store is sent the lines it holds back at least this often
+FLUSH_SECONDS = 30  # the dock is sent the lines it holds back at least this often
 PROGRESS_SECONDS = 180  # a long stage prints how far it is at most this often
 FLUSH_THREAD = "wpt-telemetry-flush"
 PROGRESS_THREAD = "wpt-telemetry-progress"
@@ -149,7 +151,7 @@ PACKAGES = ("torch",)  # the outside packages whose version start.json names; th
 
 
 class RecordError(Exception):
-    """The store did not take a part of the record; nothing more is written
+    """The dock did not take a part of the record; nothing more is written
     and the command must stop. The record keeps every part written before."""
 
 
@@ -246,7 +248,7 @@ class Telemetry:
         # re-entrant: an interruption (the flush thread's, or Ctrl+C) can land just after the main
         # thread took it and leave it taken; the main thread can then still take it again in close()
         self._lock = threading.RLock()
-        self._broken = None  # why the store refused a part; then everything is refused
+        self._broken = None  # why the dock refused a part; then everything is refused
         self._started, self._clock = time.time(), time.monotonic()
         self._closed = False
         self._closing = False  # close() has begun: the flush thread no longer interrupts (under _lock)
@@ -257,7 +259,7 @@ class Telemetry:
             self._root = Span(_span_id(root), root, command)
             self.trace = f"{root.get_span_context().trace_id:032x}"
         self._stop = threading.Event()
-        self._flusher = None  # started by start() and join() once their first parts are in the store
+        self._flusher = None  # started by start() and join() once their first parts are on the dock
         self.reused_results = {}  # {(stage, name): what made it} of the results another commit made (note_reused)
 
     # -- making one ----------------------------------------------------------------
@@ -265,8 +267,8 @@ class Telemetry:
     @classmethod
     def start(cls, store, command, arguments, main_id, inputs=None, env_file=".env", environ=None, echo=None):
         """A new run's record, in a new folder named after main_id (what the
-        run is about: a recipe name, short(corpus id)...): start.json and
-        ids.json are written before it returns (RecordError when the store
+        run is about: an order name, short(corpus id)...): start.json and
+        ids.json are written before it returns (RecordError when the dock
         refuses them)."""
         moment = datetime.now(UTC)
         run = f"{moment:%Y%m%dT%H%M%SZ}-{as_record_name(command)}-{as_record_name(main_id)}-{secrets.token_hex(4)}"
@@ -315,7 +317,7 @@ class Telemetry:
     @classmethod
     def off(cls, echo=None):
         """Records nothing; log() still prints, through echo (default:
-        wpt_utils.lines.say). For a process whose events the main
+        wic_utils.lines.say). For a process whose events the main
         one records, and for code run outside a command."""
         return cls(None, None, "", None, echo or say, owner=False)
 
@@ -338,8 +340,8 @@ class Telemetry:
     # the names before / are positional only, so any attribute name is free
 
     def log(self, text, level=INFO, /, **attributes):
-        """Record a printed line at a level of wpt_utils.lines, then print
-        it (wpt_utils.lines.say, or echo(text, level) when given): the
+        """Record a printed line at a level of wic_utils.lines, then print
+        it (wic_utils.lines.say, or echo(text, level) when given): the
         time and level the line prints with stay out of the record, whose
         line has its own."""
         self._check_open()
@@ -422,7 +424,7 @@ class Telemetry:
         self._end_span(span, span.name, span.started, error)
 
     def input(self, **ids):
-        """Ids this run read (dataset id, weights' sha256, recipe name...)."""
+        """Ids this run read (dataset id, weights' sha256, order name...)."""
         self._check_open()
         self._add_ids("inputs", "input", ids)
 
@@ -477,9 +479,9 @@ class Telemetry:
 
     def irreversible(self, name, /, values=None, **attributes):
         """Record, as event() does, a step that cannot be undone, just before
-        taking it, and send it with every line the store holds back: the
-        step happens only once its record is in the store. RecordError when
-        the store refuses it, and the caller must not take the step."""
+        taking it, and send it with every line the dock holds back: the
+        step happens only once its record is on the dock. RecordError when
+        the dock refuses it, and the caller must not take the step."""
         self.event(name, values, **attributes)
         self._flush()
 
@@ -488,7 +490,7 @@ class Telemetry:
         """For the with block's length, send live what the processes joined
         with live=False add to this record; see the module's docstring. When
         it ends, the last lines are read and sent, and its thread is gone,
-        unless the store does not answer in RELAY_END_SECONDS: one warning,
+        unless the dock does not answer in RELAY_END_SECONDS: one warning,
         and the thread ends with the process. A record that broke gets no
         last read. Without a live backend, it does nothing."""
         if self._live is None or self._live.failure is None:
@@ -499,7 +501,7 @@ class Telemetry:
             yield
         finally:
             try:
-                self._flush()  # the last lines a store holds back become readable
+                self._flush()  # the last lines a dock holds back become readable
             except BaseException:
                 relay.end(last_read=False)
                 raise
@@ -575,7 +577,7 @@ class Telemetry:
             self._live.end(span.otel, span.attributes, line.get("error"))
 
     def _add_ids(self, part, kind, ids):
-        """Add ids to ids.json as the store holds it now, so that a process
+        """Add ids to ids.json as the dock holds it now, so that a process
         never writes back an older copy than another process left."""
         self._line({"kind": kind, "span": self._span(), "ids": ids})
 
@@ -590,8 +592,8 @@ class Telemetry:
         self._store_call(IDS, merge)
 
     def _check_name(self, name):
-        """ValueError for a name the record keeps for itself or the store does
-        not allow, before anything reaches the store."""
+        """ValueError for a name the record keeps for itself or the dock does
+        not allow, before anything reaches the dock."""
         if name in (START, EVENTS, IDS, END):
             raise ValueError(f"{name} is the record's own file; give another name")
         check_record_name(name)
@@ -609,7 +611,7 @@ class Telemetry:
         self._store_call(name, lambda: self.store.write_record(self.folder, name, data))
 
     def _end_records(self):
-        """The record ended: a local store compresses the file it added the
+        """The record ended: a local dock compresses the file it added the
         events to into one part."""
         if self.store is not None:
             self._store_call(EVENTS, lambda: self.store.end_records(self.folder))
@@ -619,7 +621,7 @@ class Telemetry:
             self._store_call(EVENTS, self.store.flush_records)
 
     def _start_flushing(self):
-        """Send the lines a store holds back every FLUSH_SECONDS, from now on:
+        """Send the lines a dock holds back every FLUSH_SECONDS, from now on:
         only once the record's first parts are written, so that an
         interruption never reaches start() or join() before they return."""
         self._flusher = threading.Thread(target=self._flush_regularly, name=FLUSH_THREAD, daemon=True)
@@ -645,7 +647,7 @@ class Telemetry:
             self._flusher.join()
 
     def _abandon(self):
-        """Give up a record whose start the store refused."""
+        """Give up a record whose start the dock refused."""
         self._closed = True
         self._stop_flushing()
         if self._live:
@@ -861,7 +863,7 @@ class _Failure:
                     self.given_up.add(success)
             if not warned:
                 self.echo(f"warning: the OpenTelemetry backend at {self.endpoint} failed ({reason}); the run goes "
-                          "on with its record in the store, and the live data is sent again quietly while it fails",
+                          "on with its record on the dock, and the live data is sent again quietly while it fails",
                           WARNING)
         return result
 
@@ -1047,7 +1049,7 @@ def _ending(error) -> tuple[str, int, str | None]:
 
 
 def _where() -> dict:
-    """The tools, the code (wpt_utils.programs.code) and the repository
+    """The tools, the code (wic_utils.programs.code) and the repository
     commit; no machine name."""
     versions = {"python": platform.python_version(), "platform": platform.platform()}
     for package in PACKAGES:
@@ -1060,7 +1062,7 @@ def _where() -> dict:
 
 def file_hashes(folder) -> dict:
     """{path under folder: sha256} of every file in it, with / between
-    folder names: what a run read or wrote in a folder outside the store."""
+    folder names: what a run read or wrote in a folder outside the dock."""
     folder = Path(folder)
     return {path.relative_to(folder).as_posix(): sha256_file(path) for path in sorted(folder.rglob("*"))
             if path.is_file()}

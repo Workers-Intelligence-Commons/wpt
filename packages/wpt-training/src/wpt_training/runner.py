@@ -14,7 +14,7 @@ from pathlib import Path
 import torch
 
 from wpt_telemetry import RecordError, Telemetry
-from wpt_utils.lines import WARNING, say
+from wic_utils.lines import WARNING, say
 
 from .plugins import PluginError, Run
 from .profiling import profiled
@@ -182,7 +182,7 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
           save_last=False, start: Checkpoint | None = None, limit: Limit | None = None,
           signals: "StopSignals | None" = None) -> Trained:
     """Run one step (a wpt_training.Step, its method and environment
-    started; number, its place in the recipe from 1, which dropout reads
+    started; number, its place in the order from 1, which dropout reads
     with the seed) on model, in place, then load the weights its optimizer
     keeps (Optimizer.kept), else those of the evaluation it judged best, back
     into it; returns a Trained. The parts

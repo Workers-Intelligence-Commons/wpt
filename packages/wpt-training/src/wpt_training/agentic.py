@@ -26,7 +26,7 @@ the loop built from the model's reply to its confidence question
 (wpt_agent.opening). The reply to that question is written by the model,
 so it is learned and counted in `written`, as every token the model
 writes. The attempt's span, its group's event and its round's event name
-the file and the line numbers. A line the store refuses raises
+the file and the line numbers. A line the dock refuses raises
 wpt_telemetry.RecordError, which stops the command (exit code 3).
 
 This runs on the wpt manager, where the sandboxes and the tokenizer are;
@@ -40,7 +40,7 @@ import random
 from dataclasses import dataclass
 
 from wpt_telemetry import Telemetry
-from wpt_utils.lines import WARNING
+from wic_utils.lines import WARNING
 
 CORRECT = "correct"  # the check's part for the task's own judgement (wpt_agent.check)
 
@@ -153,7 +153,7 @@ class Player:
         task), and each attempt is numbered from 1, offered the same tools in
         both forms; reward(task, index, played) is what an attempt is worth,
         None for one never trained on. A dropped attempt (Docker failed) is
-        kept too. RecordError when the store refuses a line."""
+        kept too. RecordError when the dock refuses a line."""
         import wpt_agent
 
         settings = self.settings

@@ -100,7 +100,7 @@ def test_with_its_queries_at_zero_every_sum_is_the_plain_average_of_its_sources(
                     reason="needs a GPU where Triton runs")
 @pytest.mark.parametrize("groups", [6, 3])
 def test_a_pass_s_sums_on_a_gpu_are_as_close_to_the_paper_s_as_the_sums_written_in_pytorch(groups, monkeypatch):
-    # the full form, as the recipes have it, through the Triton kernels of
+    # the full form, as the orders have it, through the Triton kernels of
     # a pass compiled or not, its sources in BF16: against the formula in
     # FP32 on the same inputs, every input and gradient is within twice
     # the distance of the same pass written in PyTorch, in BF16 too (plus

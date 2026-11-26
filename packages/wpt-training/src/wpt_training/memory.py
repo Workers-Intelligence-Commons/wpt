@@ -11,7 +11,7 @@ stage's windows) and one of half as many, give the memory a pass takes per token
 grow with the tokens (the head's gradient, the loss's buffers). The pass
 of the stage is extrapolated from them, its activations given MARGIN more
 (the memory of a pass follows its tokens, whether they come as more
-windows or longer ones, and for the recipes' shapes the extrapolation
+windows or longer ones, and for the orders' shapes the extrapolation
 alone stood 4 % to 27 % above the peak of a pass of 32,768 tokens), the
 optimizer's state added while it does not exist yet (two FP32 numbers per
 trained weight, as AdamW keeps), and the whole compared with the memory

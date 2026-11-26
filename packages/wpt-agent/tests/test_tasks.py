@@ -11,7 +11,7 @@ import pytest
 from wpt_agent.files import FILE
 from wpt_agent.repository import BRANCH, RepositoryFailed, fetch
 from wpt_agent.tasks import InvalidTask, from_item, from_line, prepared
-from wpt_recipes import Recipes
+from wpt_orders import Orders
 
 GIT = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "A. Keeper",
        "GIT_AUTHOR_EMAIL": "keeper@example.org", "GIT_COMMITTER_NAME": "A. Keeper",
@@ -31,10 +31,10 @@ def content(files=None, **fields) -> dict:
 
 
 @pytest.fixture
-def recipes(tmp_path):
+def orders(tmp_path):
     (tmp_path / "data" / "images" / "tiny").mkdir(parents=True)
     (tmp_path / "data" / "images" / "tiny" / "Dockerfile").write_text("FROM ubuntu:24.04\n")
-    return Recipes(tmp_path)
+    return Orders(tmp_path)
 
 
 def commits(folder) -> list[str]:
@@ -54,7 +54,7 @@ def commits(folder) -> list[str]:
     return made
 
 
-def test_a_repository_task_starts_from_its_commit_with_its_own_files_laid_over_it(tmp_path, recipes):
+def test_a_repository_task_starts_from_its_commit_with_its_own_files_laid_over_it(tmp_path, orders):
     # the line of a corpus's tasks.jsonl names the task "<depot> <id>"; once
     # prepared, /work is the repository checked out at the task's commit on
     # BRANCH, its .git folder included, and the task's files win over the
@@ -63,7 +63,7 @@ def test_a_repository_task_starts_from_its_commit_with_its_own_files_laid_over_i
     found = content({"lamps.py": b"LAMPS = 3\n", "notes.txt": b"count them\n"},
                     repository={"address": str(tmp_path / "upstream"), "commit": first})
     line = json.dumps({"depot": "https://depot.example.org", "id": "lamps/1", "content": found})
-    task = from_line(line, recipes)
+    task = from_line(line, orders)
     assert task.id == "https://depot.example.org lamps/1"
     assert task.repository == (str(tmp_path / "upstream"), first)
     started = prepared(task)
@@ -88,7 +88,7 @@ def test_a_commit_the_repository_does_not_hold_is_refused_by_name(tmp_path):
     ({"tool_files": ["pages"]}, {"notes.txt": b""}, "tool_files names 'pages', which is no file or folder"),
     ({"image": "missing"}, {}, "task d t: "),
 ])
-def test_a_task_that_breaks_a_rule_across_its_fields_is_refused_naming_the_rule(recipes, fields, files, said):
+def test_a_task_that_breaks_a_rule_across_its_fields_is_refused_naming_the_rule(orders, fields, files, said):
     with pytest.raises(InvalidTask) as refused:
-        from_item("d t", content(files, **fields), recipes)
+        from_item("d t", content(files, **fields), orders)
     assert said in str(refused.value) and str(refused.value).startswith("task d t: ")

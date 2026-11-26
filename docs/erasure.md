@@ -10,8 +10,8 @@ restored to a moment before the erasure holds the passage again ([architecture.m
 
 ## How to ask
 
-- Through the depot: `wpt depot erase ID [START END] [--field POINTER] --reason TEXT` with
-  the asker's declaration, or `wpt depot web`: the "Ask for an erasure"
+- Through the depot: `depot erase ID [START END] [--field POINTER] --reason TEXT` with
+  the asker's declaration, or `depot web`: the "Ask for an erasure"
   action of the "Erasures" page, which finds the text by words of its
   title or by its exact id, or "Ask to erase" beside the text on
   the Texts page. Both show the text, where a selection with the mouse fills the positions, which can
@@ -50,7 +50,7 @@ content version and for an item the same field, and that overlap or touch are on
 the first start to the last end. The request is carried out on that
 passage, so no character of any of its needles remains.
 
-The "Erasures" page of `wpt depot web` shows what a request asks to
+The "Erasures" page of `depot web` shows what a request asks to
 erase, as a code review shows a removal: its needles grouped by text, and
 for each one its place and the text around it, at most 300 characters on
 each side, the passage struck through, read from the content version the
@@ -67,10 +67,10 @@ never a whole text.
 A request is decided like a text: it starts with one decision under
 review, the asker's, and it is admitted when at least one decision admits
 it and none refuses it ([licenses.md](licenses.md), "Who decides").
-`wpt depot erasures` lists every request.
+`depot erasures` lists every request.
 
-`wpt depot decide admit|refuse --erasure ID` decides a request, with the
-decider's declaration, and so does the "Erasures" page of `wpt depot web`.
+`depot decide admit|refuse --erasure ID` decides a request, with the
+decider's declaration, and so does the "Erasures" page of `depot web`.
 Both call `Depot.decide_erasure`, which refuses a request that was carried
 out already.
 
@@ -141,10 +141,10 @@ The depot carries out an admitted request at once:
 - The erasure's change file, like every change file, holds the rows it
   removed as they were, the passage included. It waits in the waiting
   folder beside the depot's file (`<file>.waiting`) until the next
-  `wpt depot backup` sends it to the store and deletes it from the
+  `depot backup` sends it to the dock and deletes it from the
   folder. The
   backups keep it for good. A depot marked as backed up by nothing
-  (`wpt depot backup --off`) writes no change file.
+  (`depot backup --off`) writes no change file.
 
 A depot that follows an upstream carries out the upstream's admitted
 erasures when it pulls, with their recorded places ([architecture.md](architecture.md), "The depot").
@@ -162,8 +162,8 @@ the pull brings the result.
 
 Erasure applies to the depot and to every corpus built after it, never
 to the depot's backups. A corpus
-already in the store is not rewritten: it keeps the passage until its
-recipe is built again, and it is marked stale (its record names the
+already on the dock is not rewritten: it keeps the passage until its
+order is built again, and it is marked stale (its record names the
 erasures), so `wpt train` refuses it and its download link gives
 nothing until someone builds it again; nothing builds it by itself. A
 corpus being built when the erasure is carried out is written stale when
@@ -171,10 +171,10 @@ its build ends, if it took a text the erasure reached. A corpus is marked
 stale by the texts it holds, whichever depot's numbering their ids carry,
 and its record names the erasures carried out on the texts its snapshot
 holds. An erasure decided
-through `wpt depot web` is recorded as being checked before it is carried
+through `depot web` is recorded as being checked before it is carried
 out, and the web app sends no corpus until every corpus holding one of its
 texts is marked stale, which it does in the background. Built again, a
-recipe gives what its snapshot held at its change, less what the erasure
+order gives what its snapshot held at its change, less what the erasure
 removed or cut, its plan unchanged since it comes from the snapshot's
 summary ([data-selection.md](data-selection.md), "Building a snapshot
 again"). The legacy tables of a depot brought up from format 12 hold no
@@ -197,8 +197,8 @@ A trained vocabulary is not retrained when a text changes (see
 pieces of a rare name, stay in it. A vocabulary
 delivery, learned by the freight or adopted from the depot, is never made
 stale: the freight writes the erasure into its delivery note
-(`erasures_since`), and every recipe and model that names the vocabulary
-keeps working. To leave the erased text's merges behind, a recipe learns a
+(`erasures_since`), and every order and model that names the vocabulary
+keeps working. To leave the erased text's merges behind, an order learns a
 new vocabulary, on another sample or snapshot.
 
 ## The repository's history

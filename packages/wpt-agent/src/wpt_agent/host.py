@@ -1,9 +1,9 @@
-"""The machine the sandboxes run on, as wpt_utils.parallel's sizing rule
+"""The machine the sandboxes run on, as wic_utils.parallel's sizing rule
 reads it.
 
 The sandboxes run wherever the docker command reaches its daemon: this
 machine, or the Docker host DOCKER_HOST names (docs/machines.md). On this
-machine the rule reads this machine (wpt_utils.parallel.Machine); on a
+machine the rule reads this machine (wic_utils.parallel.Machine); on a
 remote Docker host (DOCKER_HOST naming anything but a local socket), it is
 measured there, each measure through a short-lived container of an image
 the host holds, with no network: its cores (nproc), its memory
@@ -16,7 +16,7 @@ the host holds, with no network: its cores (nproc), its memory
 import os
 import time
 
-from wpt_utils import parallel
+from wic_utils import parallel
 
 from . import docker
 

@@ -1,0 +1,16 @@
+[project]
+name = "depot"
+version = "0.1.0"
+description = "The depot: texts, items, decisions, erasures and snapshots in one SQLite file, what people gave and decided"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+# apsw: the SQLite file, with the sessions that record each change (database.py); deltalake and pyarrow: reading a
+# depot of format 3 or older, which `depot upgrade` brings to format 4; jsonschema: the content of an item against
+# its kind; numpy: the arrays of a snapshot's digest; pyroaring: the sets of text numbers a snapshot holds
+# (snapshots.py); wic-utils: printed lines, parallel work, the .env file
+dependencies = ["apsw>=3.54", "deltalake>=1.6", "pyarrow>=21", "jsonschema>=4.23", "numpy>=2.5", "pyroaring>=1.2",
+                "wic-utils"]
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

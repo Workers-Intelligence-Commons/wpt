@@ -3,14 +3,14 @@ from dataclasses import asdict
 import pytest
 import torch
 
-from wpt_store import LocalStore
+from dock import LocalDock
 from wpt_corpus.shards import write_shard
 
 
 @pytest.fixture
 def dataset(tmp_path):
-    """A store with 2 token files of 300 random tokens; and the corpus's record."""
-    store = LocalStore(tmp_path / "store")
+    """A dock with 2 token files of 300 random tokens; and the corpus's record."""
+    store = LocalDock(tmp_path / "store")
     generator = torch.Generator().manual_seed(0)
 
     def shard(name, part):

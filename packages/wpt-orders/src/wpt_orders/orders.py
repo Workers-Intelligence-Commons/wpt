@@ -1,0 +1,469 @@
+"""The service layer of the orders and the task images.
+
+Every file of these kinds is opened here and nowhere else
+(docs/architecture.md, "The service layer"):
+
+    data/orders/models/<name>.json       data, architecture and training steps of one model
+    data/orders/series/<name>.json       a model series: the rules its sizes share and the sizes
+    data/images/<name>/Dockerfile         a container image of agentic tasks (and any file it copies)
+                      + lock.json, licenses.json (written by `wpt agent lock-image`)
+                      + tools.json, the shared pool of tools its programs answer (optional)
+
+A Orders hands out documents and bytes, never a path under data/; docker
+gets an image's files as a tar archive made from image_files. People write
+the orders and tools.json themselves; the generated files (image locks and
+image license lists) are written only through
+write_generated, by the command that makes them. The audit hook of
+guard.py refuses any other code that reaches these files.
+
+Every read is checked: an order against its schema (InvalidOrder), and
+check() and problems() add the rules across files. An order's data part
+has the snapshot shape (a snapshot of a depot, its change and digest, the
+kinds and shares by tag, the size and the vocabulary, named by its sha256
+or learned for the data part from a sample of a number of bytes) or the
+legacy dataset
+shape of the orders written before snapshots (a dataset of a depot); the
+schema accepts either. An order whose depot, snapshot, digest, vocabulary
+or dataset is still empty passes its schema, so it reads, and the check
+names it for a person to fill in; the check also refuses shares that name
+a tag twice or sum above 1.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from functools import cache
+from importlib import resources
+from pathlib import Path
+
+import jsonschema
+
+from . import series
+from .errors import InvalidOrder, NotFound, OrderError
+from .guard import guard
+
+DATA_FOLDER = "data"  # the repository's data, a top-level folder of its root
+NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
+ORDER_FOLDERS = {"model": "models", "series": "series"}
+IMAGE_FILES = {"dockerfile": "Dockerfile", "image-lock": "lock.json", "image-licenses": "licenses.json",
+               "image-tools": "tools.json"}
+# every kind of file, by its name: its JSON schema (None for a text kind), and the command that writes a
+# generated kind (None: people write it)
+KINDS = {
+    "model": ("model", None),
+    "series": ("series", None),
+    "dockerfile": (None, None),
+    "image-lock": ("image-lock", "wpt agent lock-image"),
+    "image-licenses": ("image-licenses", "wpt agent lock-image"),
+    "image-tools": ("image-tools", None),
+}
+SIZE_OF = ":"  # SERIES:SIZE[:RUN] names one size of a series (or another run of it) wherever a model order's
+#                name goes (Orders.model_order)
+BUILT_IN_TOOLS = ("read", "write", "edit", "bash")  # the tools every task can offer (wpt_agent.tools)
+ASK = "ask"  # the tool a task with replies offers
+# characters str.splitlines() splits on that JSON may hold raw inside a string
+LINE_BREAKS = {" ": "\\u2028", " ": "\\u2029", "\x85": "\\u0085"}
+
+
+@cache
+def schema(name: str) -> dict:
+    """The JSON schema of that name (a kind's, KINDS)."""
+    return json.loads(resources.files(__package__).joinpath(f"schemas/{name}.schema.json").read_text())
+
+
+@cache
+def _validator(name: str):
+    """One validator per schema: jsonschema.validate checks the schema itself
+    on every call, which costs more than checking a small document."""
+    document = schema(name)
+    jsonschema.validators.validator_for(document).check_schema(document)
+    return jsonschema.validators.validator_for(document)(document)
+
+
+def validate(document, kind: str, where: str):
+    """InvalidOrder unless the document is a valid file of that kind; where
+    names it in the message."""
+    error = jsonschema.exceptions.best_match(_validator(KINDS[kind][0]).iter_errors(document))
+    while error is not None and error.validator == "oneOf" and error.context:
+        error = _nearest_shape(error)
+    if error is not None:
+        place = "/".join(map(str, error.absolute_path)) or "(top level)"
+        raise InvalidOrder(f"{where}: at {place}: {error.message}")
+
+
+def _nearest_shape(error):
+    """The error to report for a value that matches none of the shapes a
+    oneOf offers (a data section of neither the snapshot nor the legacy
+    dataset shape): the best of the shape that failed with the fewest
+    errors (the first shape on a tie), so the message names a field
+    instead of the whole value."""
+    by_shape = {}
+    for found in error.context:
+        by_shape.setdefault(found.schema_path[0], []).append(found)
+    nearest = min(sorted(by_shape), key=lambda shape: len(by_shape[shape]))
+    return jsonschema.exceptions.best_match(by_shape[nearest])
+
+
+def dump_json(document) -> str:
+    """How every file of these kinds is written: 2-space indent, UTF-8
+    characters kept, U+2028, U+2029 and U+0085 as escapes so that no line
+    splitter cuts a line of JSON, final newline."""
+    text = json.dumps(document, indent=2, ensure_ascii=False)
+    for character, escape in LINE_BREAKS.items():
+        text = text.replace(character, escape)
+    return text + "\n"
+
+
+def check_declared(where: str, names: list[str]):
+    """InvalidOrder when a declared tool takes the name of a tool every task
+    has, or is declared twice (a task's tools, an image's pool)."""
+    for name in names:
+        if name in BUILT_IN_TOOLS or name == ASK or names.count(name) > 1:
+            raise InvalidOrder(f"{where}: the tool {name!r} is declared twice, or takes the name of a tool every "
+                                f"task has ({', '.join(BUILT_IN_TOOLS)}, {ASK})")
+
+
+def _empty_data(where: str, data: dict, place: str):
+    """InvalidOrder naming the fields of a data part that a person has not
+    filled in yet: in the snapshot shape, the depot's public address, the
+    snapshot's name and digest and the sha256 of a vocabulary named by it;
+    in the legacy
+    dataset shape, the depot's public address and the dataset's id or name."""
+    if "dataset" in data:
+        empty = [key for key in ("depot", "dataset") if not data[key]]
+        if empty:
+            raise InvalidOrder(f"{where}: {' and '.join(f'{place}{key}' for key in empty)} empty: a person names "
+                                f"the depot's public address and the id or name of its dataset")
+        return
+    empty = [key for key in ("depot", "snapshot", "digest") if not data[key]]
+    empty += ["vocabulary.sha256"] if "sha256" in data["vocabulary"] and not data["vocabulary"]["sha256"] else []
+    if empty:
+        raise InvalidOrder(f"{where}: {', '.join(f'{place}{key}' for key in empty)} empty: a person names the "
+                            f"depot's public address and its snapshot, with the snapshot's digest and, for a "
+                            f"vocabulary named by its sha256, that sha256")
+
+
+def _shares(where: str, data: dict, place: str):
+    """InvalidOrder for shares a corpus cannot be built with: a tag named
+    twice, shares summing above 1, or shares all 0 (give none instead)."""
+    shares = data.get("shares") or []
+    tags = [one["tag"] for one in shares]
+    repeated = sorted({tag for tag in tags if tags.count(tag) > 1})
+    if repeated:
+        raise InvalidOrder(f"{where}: {place}shares name a tag more than once: {', '.join(repeated)}")
+    total = sum(one["share"] for one in shares)
+    if total > 1 + 1e-9:
+        raise InvalidOrder(f"{where}: {place}shares sum to {total:g}, above 1: each is a part of the plain text")
+    if shares and not total:
+        raise InvalidOrder(f"{where}: {place}shares are all 0: give one a share above 0, or give no shares")
+
+
+def data_section(document, where: str) -> tuple[str, dict]:
+    """(the kind, "model" or "series", and the data part) of an order
+    handed over whole as JSON, never read from data/ (a file a person gives
+    a depot's build): a series (a document with sizes), checked whole
+    against its schema and its rules, gives its data part at its largest
+    size (series.data_part), the one corpus every size reads; any other
+    document is read as a model order, of which only the data section is
+    checked, so a document holding a data section alone reads too. The
+    data section passes the check's rules on shares and on fields left
+    empty. InvalidOrder otherwise; where names the document in messages."""
+    if not isinstance(document, dict) or not isinstance(document.get("data"), dict):
+        raise InvalidOrder(f"{where}: no data section: give a model order or a series, a JSON object with data")
+    if "sizes" in document:
+        validate(document, "series", where)
+        try:
+            series.check(document)
+            data = series.data_part(document)
+        except ValueError as error:
+            raise InvalidOrder(f"{where}: {error}") from None
+        kind = "series"
+    else:
+        error = jsonschema.exceptions.best_match(_data_validator().iter_errors(document["data"]))
+        while error is not None and error.validator == "oneOf" and error.context:
+            error = _nearest_shape(error)
+        if error is not None:
+            place = "/".join(["data", *map(str, error.absolute_path)])
+            raise InvalidOrder(f"{where}: at {place}: {error.message}")
+        data, kind = document["data"], "model"
+    _shares(where, data, "data.")
+    _empty_data(where, data, "data.")
+    return kind, data
+
+
+@cache
+def _data_validator():
+    """The validator of a model order's data section alone."""
+    whole = schema("model")
+    part = {"$schema": whole.get("$schema"), "$defs": whole["$defs"], **whole["properties"]["data"]}
+    part = {key: value for key, value in part.items() if value is not None}
+    return jsonschema.validators.validator_for(part)(part)
+
+
+class Orders:
+    """The orders and task images of the repository at root."""
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self._data = self.root / DATA_FOLDER
+        guard(self._data, __file__)
+
+    @classmethod
+    def find(cls, start=None) -> "Orders":
+        """The nearest folder at or above start (default: the current folder)
+        holding data/orders; NotFound when there is none."""
+        here = Path(start or Path.cwd()).resolve()
+        for folder in (here, *here.parents):
+            if (folder / DATA_FOLDER / "orders").is_dir():
+                return cls(folder)
+        raise NotFound(f"no data/orders folder at or above {here}")
+
+    def data_folder(self) -> str:
+        """The data folder's path from the repository's root, with /: what a
+        copy of the repository's code leaves out (wpt_worker.manager)."""
+        return self._data.relative_to(self.root).as_posix()
+
+    # -- where each kind lives ---------------------------------------------------
+    def _path(self, kind: str, name: str) -> Path:
+        """The file of that kind and name; NotFound for an unknown kind or a
+        name that is not one (so no name reaches outside its folder)."""
+        if kind not in KINDS:
+            raise NotFound(f"no kind of file named {kind!r}; the kinds are {', '.join(KINDS)}")
+        if not NAME.fullmatch(name):
+            raise NotFound(f"no {kind} {name!r}: a name is lowercase a-z, 0-9, '.', '_' and '-'")
+        if kind in ORDER_FOLDERS:
+            return self._data / "orders" / ORDER_FOLDERS[kind] / f"{name}.json"
+        return self._data / "images" / name / IMAGE_FILES[kind]
+
+    def relative(self, kind: str, name: str) -> str:
+        """The file's place in the repository, for messages and records:
+        data/... with forward slashes."""
+        return self._path(kind, name).relative_to(self.root).as_posix()
+
+    def exists(self, kind: str, name: str) -> bool:
+        return self._path(kind, name).is_file()
+
+    def names(self, kind: str) -> list[str]:
+        """The names of the existing files of a kind, sorted."""
+        if kind in ORDER_FOLDERS:
+            folder = self._data / "orders" / ORDER_FOLDERS[kind]
+            return sorted(p.stem for p in folder.glob("*.json")) if folder.is_dir() else []
+        if kind not in KINDS:
+            raise NotFound(f"no kind of file named {kind!r}; the kinds are {', '.join(KINDS)}")
+        return [name for name in self.image_names() if (self._data / "images" / name / IMAGE_FILES[kind]).is_file()]
+
+    def _load(self, kind: str, name: str) -> dict:
+        """The JSON file of that kind, validated; NotFound when it does not exist."""
+        path = self._path(kind, name)
+        if not path.is_file():
+            raise NotFound(f"no {kind} {name!r} ({self.relative(kind, name)} does not exist)")
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise InvalidOrder(f"{self.relative(kind, name)}: {error}") from error
+        validate(document, kind, self.relative(kind, name))
+        return document
+
+    # -- orders -----------------------------------------------------------------
+    def order(self, kind: str, name: str) -> dict:
+        """The model or series order of that name, validated
+        against its schema; NotFound when it does not exist."""
+        if kind not in ORDER_FOLDERS:
+            raise NotFound(f"no kind of order named {kind!r}; the kinds are {', '.join(ORDER_FOLDERS)}")
+        return self._load(kind, name)
+
+    def data_part(self, given: str) -> dict:
+        """The data part of the model order a name gives (model_order), of
+        either shape, with total_tokens for a size of a series too; read
+        without deriving a size, so without the vocabulary's size. NotFound
+        as model_order."""
+        name, separated, _ = given.partition(SIZE_OF)
+        if not separated:
+            return self.order("model", given)["data"]
+        return series.data_part(self.order("series", name))
+
+    def model_order(self, given: str, vocab_size: int | None = None) -> dict:
+        """The model order a name gives: NAME, the file of
+        data/orders/models/; SERIES:SIZE, that size of the series file
+        data/orders/series/SERIES.json, derived from it (series.py) for a
+        vocabulary of vocab_size tokens (the size its data part's vocabulary
+        names, or for the legacy dataset shape the vocabulary of the
+        dataset's tokenizer recipe), which a series needs;
+        SERIES:SIZE:RUN, another run of that size (a decay branch, a
+        learning rate of the check: series.runs). NotFound when there is no
+        such order, series, size or run; InvalidOrder when the series'
+        sizes cannot be derived, or no vocab_size is given for one."""
+        name, separated, rest = given.partition(SIZE_OF)
+        if not separated:
+            return self.order("model", given)
+        size, _, run = rest.partition(SIZE_OF)
+        document = self.order("series", name)
+        if vocab_size is None:
+            raise InvalidOrder(f"series {name}: a size is derived for the vocabulary's size, which its data part "
+                                "names, or its dataset's tokenizer recipe gives")
+        if size not in series.sizes(document):
+            raise NotFound(f"no size {size!r} in the series {name}; its sizes are {', '.join(series.sizes(document))}")
+        try:
+            if run and run not in series.runs(document, size):
+                listed = series.runs(document, size)
+                raise NotFound(f"series {name}: no run {run!r} of the size {size}; "
+                               + (f"its runs are {', '.join(listed)}" if listed else "it has no other run"))
+            return series.run_order(document, series.plan(document, size, vocab_size), run)
+        except ValueError as error:
+            raise InvalidOrder(f"series {name}: {error}") from None
+
+    def series_plans(self, name: str, vocab_size: int) -> list[series.Plan]:
+        """Every size's numbers in the series file of that name (series.Plan), for a vocabulary of vocab_size tokens."""
+        return series.plans(self.order("series", name), vocab_size)
+
+    def series_total_tokens(self, name: str) -> int:
+        """The training tokens of the one corpus of the series file of that name (series.data_part)."""
+        return series.data_part(self.order("series", name))["total_tokens"]
+
+    def series_runs(self, name: str, found: series.Plan) -> list[dict]:
+        """What each other run of a size of the series file of that name does (series.run_numbers)."""
+        return series.run_numbers(self.order("series", name), found)
+
+    def generated(self, kind: str, name: str) -> dict | None:
+        """A generated file (image-lock, image-licenses), validated; None
+        when it does not exist."""
+        if not KINDS.get(kind, (None, None))[1]:
+            raise NotFound(f"{kind!r} is not a kind of generated file")
+        return self._load(kind, name) if self.exists(kind, name) else None
+
+    def write_generated(self, kind: str, name: str, document: dict) -> str:
+        """Write a generated file (image-lock, image-licenses) after its
+        schema and the image's folder it belongs to existing; only the
+        command that makes it calls this. Nothing is
+        written when a check refuses it. Returns its place in the
+        repository."""
+        if not KINDS.get(kind, (None, None))[1]:
+            raise NotFound(f"{kind!r} is not a kind of generated file: people write it")
+        self._image_folder(name)
+        validate(document, kind, self.relative(kind, name))
+        self._write_file(self._path(kind, name), dump_json(document).encode("utf-8"))
+        return self.relative(kind, name)
+
+    def _write_file(self, path: Path, data: bytes):
+        """Write data as path's bytes, through a temporary file renamed into
+        place; InvalidOrder when path, through a symbolic link, leads
+        outside the repository: then nothing is written."""
+        target = Path(os.path.realpath(path))
+        if not target.is_relative_to(Path(os.path.realpath(self.root))):
+            raise InvalidOrder(f"{path.relative_to(self.root).as_posix()} leads to {target}, outside the repository "
+                                f"(through a symbolic link)")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.writing")
+        temporary.unlink(missing_ok=True)  # a link left there would be written through
+        temporary.write_bytes(data)
+        os.replace(temporary, target)
+
+    # -- images ------------------------------------------------------------------
+    def image_names(self) -> list[str]:
+        folder = self._data / "images"
+        return sorted(p.name for p in folder.iterdir() if p.is_dir()) if folder.is_dir() else []
+
+    def _image_folder(self, name: str) -> Path:
+        """data/images/<name>/; NotFound unless the name is valid and the
+        folder holds a Dockerfile."""
+        if not NAME.fullmatch(name):
+            raise NotFound(f"no image {name!r}: an image name is lowercase a-z, 0-9, '.', '_' and '-'")
+        folder = self._data / "images" / name
+        if not (folder / IMAGE_FILES["dockerfile"]).is_file():
+            raise NotFound(f"no image {name!r}: data/images/{name}/Dockerfile does not exist")
+        return folder
+
+    def check_image(self, name: str):
+        """NotFound unless data/images/<name>/ holds a Dockerfile."""
+        self._image_folder(name)
+
+    def image_tools(self, name: str) -> list[dict]:
+        """The declarations of data/images/<name>/tools.json, the image's
+        shared pool of tools ([] without the file), validated; NotFound as
+        check_image, InvalidOrder for a pool the check refuses."""
+        self._image_folder(name)
+        if not self.exists("image-tools", name):
+            return []
+        tools = self._load("image-tools", name)["tools"]
+        check_declared(self.relative("image-tools", name), [tool["name"] for tool in tools])
+        return tools
+
+    def image_files(self, name: str) -> dict[str, tuple[bool, bytes]]:
+        """{path in the image's folder: (executable, content)} of every file
+        there, the Dockerfile, its lock and licenses included, but none git
+        ignores (a __pycache__ a Python run left): the image, and its tag,
+        come from the files the repository can hold; NotFound as
+        check_image."""
+        folder = self._image_folder(name)
+        found = [p for p in sorted(folder.rglob("*")) if p.is_file()]
+        ignored = self._ignored([p.relative_to(self.root).as_posix() for p in found])
+        return {p.relative_to(folder).as_posix(): (bool(p.stat().st_mode & 0o100), p.read_bytes())
+                for p in found if p.relative_to(self.root).as_posix() not in ignored}
+
+    def images_differ(self, revision: str) -> bool:
+        """Whether the files under data/images/ as they are differ from the
+        git revision, the new files git does not track yet included."""
+        changed = self._git("diff", "--name-only", revision, "--", "data/images").stdout
+        new = self._git("ls-files", "--others", "--exclude-standard", "--", "data/images").stdout
+        return bool(changed.strip() or new.strip())
+
+    def _git(self, *args) -> subprocess.CompletedProcess:
+        git = shutil.which("git")
+        if git is None:
+            raise OrderError("git is not installed")
+        return subprocess.run([git, "-C", str(self.root), *args], capture_output=True, check=True)
+
+    def _ignored(self, paths) -> set[str]:
+        """Those of the paths (relative to the root) that git ignores and does
+        not track; none when the repository is not a git working tree, or git
+        is not installed, so nothing tells what it ignores."""
+        git = shutil.which("git")
+        if not paths or git is None:
+            return set()
+        result = subprocess.run([git, "-C", str(self.root), "check-ignore", "-z", "--stdin"],
+                                input="\0".join(paths).encode() + b"\0", capture_output=True, check=False)
+        if result.returncode not in (0, 1):  # 1: none ignored; otherwise not a git working tree
+            return set()
+        return {path.decode() for path in result.stdout.split(b"\0") if path}
+
+    # -- the rules -----------------------------------------------------------------
+    def problems(self, kind: str, name: str) -> list[str]:
+        """What the check finds in that one file: [] or its problem."""
+        try:
+            if kind in ORDER_FOLDERS:
+                self._check_order(kind, name)
+            elif kind == "dockerfile":
+                self._image_folder(name)
+            elif kind == "image-tools":
+                self.image_tools(name)
+            else:
+                self._load(kind, name)
+        except OrderError as error:
+            return [str(error)]
+        return []
+
+    def check(self) -> list[str]:
+        """Every rule on every order and every image; one line per problem."""
+        found = []
+        for kind in ORDER_FOLDERS:
+            for name in self.names(kind):
+                found += self.problems(kind, name)
+        for name in self.image_names():
+            found += self.problems("dockerfile", name)
+            for kind in ("image-lock", "image-licenses", "image-tools"):
+                if self.exists(kind, name):
+                    found += self.problems(kind, name)
+        return found
+
+    def _check_order(self, kind: str, name: str):
+        document = self.order(kind, name)
+        where = self.relative(kind, name)
+        if kind == "series":
+            try:
+                series.check(document)
+            except ValueError as error:
+                raise InvalidOrder(f"{where}: {error}") from None
+        _shares(where, document["data"], "data.")
+        _empty_data(where, document["data"], "data.")

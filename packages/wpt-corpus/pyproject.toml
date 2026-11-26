@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "WPT's preparations, the programs the freight runs (wpt-vocabulary, wpt-tokens, wpt-count), and the token file format training reads"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.14"
-# wpt-tokenizer: the vocabulary and the chat template; wpt-store: the files a corpus's record names (shards.py);
-# wpt-utils: the one sha256 of a file; pyarrow, numpy: the token file format (shards.py)
-dependencies = ["wpt-tokenizer", "wpt-store", "wpt-utils", "pyarrow>=21", "numpy>=2"]
+# wpt-tokenizer: the vocabulary and the chat template; dock: the files a corpus's record names (shards.py);
+# wic-utils: the one sha256 of a file; pyarrow, numpy: the token file format (shards.py)
+dependencies = ["wpt-tokenizer", "dock", "wic-utils", "pyarrow>=21", "numpy>=2"]
 
 [project.scripts]
 wpt-vocabulary = "wpt_corpus.vocabulary:wpt_vocabulary"

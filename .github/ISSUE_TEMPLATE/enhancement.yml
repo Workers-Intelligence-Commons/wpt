@@ -53,10 +53,10 @@ body:
     validations:
       required: true
   - type: textarea
-    id: recipe_shapes
+    id: order_shapes
     attributes:
-      label: "What it changes for recipe shapes"
-      description: "Which recipe, depot item kind or other data file shapes change, and how the existing files are carried over. Write \"nothing\" if nothing changes."
+      label: "What it changes for order shapes"
+      description: "Which order, depot item kind or other data file shapes change, and how the existing files are carried over. Write \"nothing\" if nothing changes."
     validations:
       required: true
   - type: textarea
@@ -83,10 +83,10 @@ body:
     validations:
       required: true
   - type: input
-    id: recipe
+    id: order
     attributes:
-      label: "Recipe"
-      description: "The name of the model recipe (`data/recipes/models/NAME.json`), tokenizer recipe or dataset involved. Write \"none\" if no recipe was involved."
+      label: "Order"
+      description: "The name of the model order (`data/orders/models/NAME.json`), tokenizer recipe or dataset involved. Write \"none\" if no order was involved."
       placeholder: "unimpaired-axolotl"
     validations:
       required: true
@@ -101,7 +101,7 @@ body:
     id: record
     attributes:
       label: "Run record's folder"
-      description: "The folder under `records/` in the store (such as `20261017T120501Z-wpt-train-5d41402a-3fa2b1c9`). Its `start.json`, `events.jsonl` and `end.json` say what the run did. Write \"none\" if the run left no record."
+      description: "The folder under `records/` on the dock (such as `20261017T120501Z-wpt-train-5d41402a-3fa2b1c9`). Its `start.json`, `events.jsonl` and `end.json` say what the run did. Write \"none\" if the run left no record."
     validations:
       required: true
   - type: textarea

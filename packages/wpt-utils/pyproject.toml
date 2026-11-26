@@ -1,10 +1,10 @@
 [project]
 name = "wpt-utils"
 version = "0.1.0"
-description = "Helpers several WPT packages share: the PyTorch device to run on, the outside programs WPT starts, the repository commit, the sha256 of a file, a lock on a file between processes, how much parallel work the machine takes, the form of a printed line"
+description = "Helpers only WPT uses: the PyTorch device to run on, and a plug-in's settings typed from its defaults"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.14"
-dependencies = []  # wpt_utils.device needs torch, which comes from the root group that scripts/setup.py picks
+dependencies = ["wic-utils"]  # wic-utils: the outside programs wpt_utils.device starts; it needs torch, which comes from the root group that scripts/setup.py picks
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]

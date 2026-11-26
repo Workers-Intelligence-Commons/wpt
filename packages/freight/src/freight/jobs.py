@@ -35,8 +35,8 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-from wpt_utils.files import try_lock_file, unlock_file
-from wpt_utils.lines import say
+from wic_utils.files import try_lock_file, unlock_file
+from wic_utils.lines import say
 
 RESTARTS = 3  # stops of the runner a running job lives through before it fails
 KEPT = 1000  # jobs that ended the queue keeps; the older ones go
@@ -267,8 +267,8 @@ def _work(home: str, job: str):
     (freight.job.Job), its progress, then its answer or its failure, written
     to the queue while the job is still running there (a cancelled job keeps
     its state)."""
-    from wpt_store import open_store
-    from wpt_utils.programs import code
+    from dock.api import open_dock
+    from wic_utils.programs import code
 
     from . import erasures
     from .deliveries import DeliveryError
@@ -300,7 +300,7 @@ def _work(home: str, job: str):
 
     key = row["key"]
     try:
-        dock = open_store(row["dock"], env_file=".env")
+        dock = open_dock(row["dock"], env_file=".env")
         erasures.check(queue, row["depot"], dock)
         found = Job(json.loads(row["request"]), row["depot"], dock, queue.work_folder(key),
                     checkpoint=queue.checkpoint(key), save=lambda state: queue.save(key, state), progress=progress,

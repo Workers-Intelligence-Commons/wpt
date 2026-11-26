@@ -297,15 +297,15 @@ def test_every_parameter_takes_a_step():
     assert still == []
 
 
-def test_the_classics_test_recipe_trains_with_a_falling_loss():
-    # the test recipe's architecture (data/recipes/models/classics-test.json),
+def test_the_classics_test_order_trains_with_a_falling_loss():
+    # the test order's architecture (data/orders/models/classics-test.json),
     # on a repeating text it can learn in a few steps: the loss stays finite
     # and falls, through every part
-    path = Path(__file__).parents[3] / "data/recipes/models/classics-test.json"
-    recipe = json.loads(path.read_text(encoding="utf-8"))
+    path = Path(__file__).parents[3] / "data/orders/models/classics-test.json"
+    order = json.loads(path.read_text(encoding="utf-8"))
     torch.manual_seed(0)
-    model = WPT(ModelConfig(vocab_size=64, **{**recipe["model"], "block_size": 128})).train()
-    method = by_part(model, steps=20, **{**recipe["steps"][0]["optimizer"]["settings"], "warmup": 2})
+    model = WPT(ModelConfig(vocab_size=64, **{**order["model"], "block_size": 128})).train()
+    method = by_part(model, steps=20, **{**order["steps"][0]["optimizer"]["settings"], "warmup": 2})
     loss_of = read_text().start_method()  # next-token, with its multi-token prediction schedule
     text = torch.arange(129).remainder(13)[None].expand(4, -1)  # a period of 13 tokens
     x, y = text[:, :-1], text[:, 1:]

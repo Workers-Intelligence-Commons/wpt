@@ -12,7 +12,7 @@ modified version must share it. The principles are in the
 This repository is everything needed to build a WPT model from nothing:
 the code of the depot that holds the texts and the decisions on them, the
 code that builds a corpus from it, trains, evaluates and runs the model, and the
-recipes of the models. No checkpoint has been published yet.
+orders of the models. No checkpoint has been published yet.
 
 ## How it works
 
@@ -21,14 +21,14 @@ SQLite file, known by its address, that holds texts and items (conversations,
 tasks), each of one kind and with its license, credit, notice and tags,
 the human decisions that admit or refuse it, and its snapshots, each a
 change number, named by the UTC time it was made, and the texts admitted
-then (`wpt depot`). A model recipe names a depot by its public address, a
+then (`depot`). A model order names a depot by its public address, a
 snapshot of it with the change and digest it reads, the kinds and the
 shares by tag it takes, its size and its vocabulary. `wpt build-resources
-RECIPE` asks the freight to learn that vocabulary and prepare that corpus,
+ORDER` asks the freight to learn that vocabulary and prepare that corpus,
 which it delivers on a dock you control (a folder or an S3 bucket): the
 token files, with copies of every text's credits, licenses and notices.
 `wpt train` reads that corpus from the dock. A corpus is a cache: the
-depot's address, the snapshot and the recipe make it again, the same. A depot can follow
+depot's address, the snapshot and the order make it again, the same. A depot can follow
 another and pull its updates, the way a Git clone follows its remote.
 WPT hosts no data.
 
@@ -58,14 +58,14 @@ through Docker Desktop.
 
 ```sh
 uv run scripts/setup.py                            # the PyTorch build for this machine's GPU
-echo "WPT_STORE=file://$HOME/wpt-store" >> .env    # where corpora, models and runs live
-echo "WPT_DEPOT=$HOME/wpt-depot.sqlite" >> .env    # the depot the wpt depot commands work on
+echo "DOCK=file://$HOME/dock" >> .env    # where corpora, models and runs live
+echo "DEPOT=$HOME/depot.sqlite" >> .env    # the depot the depot commands work on
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
-uv run wpt depot snapshot new                      # the texts admitted now, named by the UTC time
-cp data/recipes/models/classics-test.json data/recipes/models/first.json
-uv run wpt depot web                               # the snapshot's page gives its name, change and digest
-# put them in the "data" of data/recipes/models/first.json with a vocabulary to learn, then commit the file
+uv run depot snapshot new                      # the texts admitted now, named by the UTC time
+cp data/orders/models/classics-test.json data/orders/models/first.json
+uv run depot web                               # the snapshot's page gives its name, change and digest
+# put them in the "data" of data/orders/models/first.json with a vocabulary to learn, then commit the file
 uv run wpt build-resources first                   # its vocabulary and corpus, from the freight, on the dock
 scripts/detach.sh uv run wpt train first --stream --out runs/first
 uv run wpt eval runs/first                         # the tests, into the model card
@@ -74,25 +74,25 @@ uv run wpt chat runs/first                         # continue text with the mode
 
 Every job is a subcommand of one command, `wpt` (`uv run wpt --help`
 lists them, and `uv run wpt SUBCOMMAND --help` gives each one's options).
-The store holds plain named things: `corpora/`, `models/` and `runs/`
-(`wpt store list` lists the corpora and models).
+The dock holds plain named things: `corpora/`, `models/` and `runs/`
+(`wpt list` lists the corpora and models).
 
-A model recipe (`data/recipes/models/RECIPE.json`) holds everything that
+A model order (`data/orders/models/ORDER.json`) holds everything that
 changes the model: its data, architecture and training steps
 ([model.md](docs/model.md)); the command-line options only say how the
 hardware runs it. Its data section names the depot, the snapshot (its
 name, change number and digest) and the vocabulary (its sha256 and size,
 or the size and sample of one to learn), so it is made only from the depot
-it names: a snapshot's page in `wpt depot web` gives its name, change and
-digest, to put in the recipe file and commit, since the corpus and the
+it names: a snapshot's page in `depot web` gives its name, change and
+digest, to put in the order file and commit, since the corpus and the
 model name the commit they were built from. `classics-test` is a
-small model recipe, enough to see every step work on one machine, which
-the quick start copies for its model part. Like every recipe of the repository, it names the dataset
+small model order, enough to see every step work on one machine, which
+the quick start copies for its model part. Like every order of the repository, it names the dataset
 `test1` (id `wic-1`) of the public depot
 https://depot.workers-intelligence-commons.org, in the legacy shape of
-recipes written before snapshots ([model.md](docs/model.md), "Model
-recipes"), which `wpt build-resources` refuses: it trains only on a corpus
-of that dataset a store holds.
+orders written before snapshots ([model.md](docs/model.md), "Model
+orders"), which `wpt build-resources` refuses: it trains only on a corpus
+of that dataset a dock holds.
 
 **Streaming** keeps disk use small at each step, for data larger than the
 disk:
@@ -110,18 +110,18 @@ the same command with `--resume` continues.
 
 | To | Use |
 | --- | --- |
-| share data and runs between machines | `WPT_STORE=s3://bucket/prefix` (any S3-compatible service) |
-| move a run to another machine | `--run NAME`: the checkpoint lives in the store; `--run NAME --resume` there |
+| share data and runs between machines | `DOCK=s3://bucket/prefix` (any S3-compatible service) |
+| move a run to another machine | `--run NAME`: the checkpoint lives on the dock; `--run NAME --resume` there |
 | use several GPUs | `--strategy ddp --processes N`, on the gpu worker's machine |
 | train on another machine's GPUs | a gpu worker on each machine (`deploy/gpu-worker/compose.yaml`, with `compose.nvidia.yaml` or `compose.amd.yaml` for GPUs), their keys in `WPT_GPU_WORKERS` ([machines](docs/machines.md)) |
 | rent the GPUs | `WPT_GPU_WORKERS=N` and `WPT_RENTAL_GPUS` for `wpt manager`, which rents N gpu workers through SkyPilot (as one cluster in one request), replaces a lost one and gives them back at the end ([machines](docs/machines.md)) |
-| train on a built corpus in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_RECIPE` set in `.env`; then `wpt store copy-out NAME runs/NAME` ([machines](docs/machines.md)) |
-| teach the model to chat | conversations in the snapshot, the corpus built again, and a recipe whose `steps` add `answer-as-assistant` after `read-text`: `wpt train RECIPE CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
-| teach the model to finish tasks as an agent | tasks in the snapshot, the corpus built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and a recipe whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
-| teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the recipe's `steps`: it trains on the same tasks ([training](docs/training.md)) |
+| train on a built corpus in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_ORDER` set in `.env`; then `wpt copy-out NAME runs/NAME` ([machines](docs/machines.md)) |
+| teach the model to chat | conversations in the snapshot, the corpus built again, and an order whose `steps` add `answer-as-assistant` after `read-text`: `wpt train ORDER CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
+| teach the model to finish tasks as an agent | tasks in the snapshot, the corpus built again, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and an order whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
+| teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the order's `steps`: it trains on the same tasks ([training](docs/training.md)) |
 | train long windows on a small GPU | nothing: each stage whose pass does not fit the GPU's memory runs its layers again in the backward pass instead of keeping their values; `--recompute` does it in every stage, `--no-recompute` in none |
 | train without `torch.compile` | `--no-compile`: the passes over whole text windows, compiled by default on a CUDA device (an NVIDIA or AMD GPU) with Triton and a C++ compiler, run uncompiled ([training](docs/training.md), "Compiling the passes") |
-| add texts, conversations and tasks, decide on them, tag them, make snapshots, compose recipes and build their corpora, in a browser | `wpt depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `wpt depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
+| add texts, conversations and tasks, decide on them, tag them, make snapshots, compose orders and build their corpora, in a browser | `depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
 
 Every option also comes from the environment (`--micro-batch` is
 `WPT_MICRO_BATCH`), and `--help` lists them all. Details:
@@ -146,8 +146,9 @@ settle alone are listed for legal review in
 - [The depot's api: what code outside the depot asks of it](docs/api/depot.md)
 - [The freight's api: requests, deliveries and the `freight` command](docs/api/freight.md)
 - [A preparation and its messages: the programs the freight runs](docs/api/preparation.md)
+- [The dock's api: find, fetch, put and the `dock` command](docs/api/dock.md)
 - [Tokenizer](docs/tokenizer.md)
-- [Model architecture: the research it comes from and the recipes that size it](docs/model.md)
+- [Model architecture: the research it comes from and the orders that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)
 - [Knowledge: what sizes a model, the evidence and what is open](docs/knowledge/README.md)
 - [Machines for training: the wpt manager, gpu workers, sandboxes](docs/machines.md)

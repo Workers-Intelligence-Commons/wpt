@@ -1,19 +1,10 @@
-"""Small helpers that several WPT packages share, one submodule each:
+"""Small helpers only WPT uses, one submodule each:
 
     wpt_utils.device     the most capable PyTorch device on this machine,
                          and the processor's name (imports torch)
-    wpt_utils.programs   the outside programs WPT runs, with a clear error
-                         when one is missing, and the repository commit
-    wpt_utils.files      the sha256 of a file, the one way WPT hashes one,
-                         and a lock the operating system holds on a file
     wpt_utils.settings   a plug-in's settings, typed from the defaults its file declares
-    wpt_utils.parallel   how much parallel work this machine takes, measured
-                         again before each new item, and items run that way
-                         with their results in the items' order
-    wpt_utils.lines      the form of every printed line: its time, its level,
-                         its text
-    wpt_utils.web        every web request, under the program name wpt
 
-Import the submodule you need: this package itself imports nothing, so
-wpt_utils.programs works where PyTorch is not installed (wpt depot, wpt agent).
+The helpers every part shares are wic_utils's. Import the submodule you
+need: this package itself imports nothing, so wpt_utils.settings works where
+PyTorch is not installed.
 """

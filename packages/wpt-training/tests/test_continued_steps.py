@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from wpt_model import PARTS, WPT, ModelConfig
-from wpt_recipes import series
+from wpt_orders import series
 from wpt_telemetry import Telemetry
 from wpt_training import (Data, FolderCheckpoint, Strategy, check_continuations, draw_numbers, load_state, load_step,
                           train)
@@ -20,7 +20,7 @@ CPU = Strategy(torch.device("cpu"))
 
 
 def read_text(updates, drops=True, continues=False, **settings):
-    """A read-text step as a series' recipe holds it: 2 windows of 16 tokens per update, a warm-up of 2;
+    """A read-text step as a series' order holds it: 2 windows of 16 tokens per update, a warm-up of 2;
     without drops, a trunk: no drop, no switch of the multi-token prediction's weight."""
     optimizer = {"lr": 0.01, "warmup": 2}
     if not drops:

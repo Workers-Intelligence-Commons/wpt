@@ -97,9 +97,9 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-from wpt_depot import api
-from wpt_store.names import File
-from wpt_utils.lines import say
+from depot import api
+from dock.api import File
+from wic_utils.lines import say
 
 from . import deliveries, groups
 from .exchange import Preparation, PreparationFailed

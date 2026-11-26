@@ -14,7 +14,7 @@ from wpt_agent.sandbox import ROOT
 from wpt_agent.tools import ASK, NOT_KNOWN, OTHER_NAMES, TOOLS, call
 from wpt_agent.files import EXECUTABLE, FILE, SYMLINK
 from wpt_agent.tasks import Task, Variant
-from wpt_recipes import ASK as ASK_NAME, BUILT_IN_TOOLS
+from wpt_orders import ASK as ASK_NAME, BUILT_IN_TOOLS
 from wpt_tokenizer import Tokenizer, chat
 
 TOKENIZER = Tokenizer([])  # bytes only: any text encodes

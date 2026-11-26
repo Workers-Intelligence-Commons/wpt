@@ -13,7 +13,7 @@ tokens or back by mistake; it deals only in the token ids the manager sends.
     LinkStore     the manager's store as the job reads it: files the manager allows, fetched
                   part by part into the job's folder and checked against their sha256, and the
                   run's record, each write and line given to the manager's store before the call
-                  returns, and sent on from there when flush_records() returns (an S3 store holds
+                  returns, and sent on from there when flush_records() returns (an S3 dock holds
                   lines back until then, as on the manager)
     download()    a file the manager offers, into a local file, checked against its sha256
     upload()      a local file to the manager, part by part: its upload id
@@ -103,9 +103,9 @@ def connect(environ=None) -> Connection:
 
 def remote(error: RemoteError):
     """The exception of this side that a RemoteError stands for: the
-    store's own errors and RecordError as themselves (so a store call fails
+    dock's own errors and RecordError as themselves (so a dock call fails
     here as it would on the manager), the rest as the RemoteError."""
-    from wpt_store import CorruptFile, MissingFile
+    from dock.api import CorruptFile, MissingFile
     from wpt_telemetry import RecordError
 
     known = {"MissingFile": MissingFile, "CorruptFile": CorruptFile, "RecordError": RecordError}
@@ -125,7 +125,7 @@ def download(link, offer, target: Path) -> Path:
     """The file the manager offers ({"file": its id, "size", "sha256"}) into
     target, part by part, checked against its sha256 before it takes
     target's name. CorruptFile when it differs."""
-    from wpt_store import CorruptFile
+    from dock.api import CorruptFile
 
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
@@ -160,7 +160,7 @@ def upload(link, path) -> str:
 
 
 def _sha(what) -> str:
-    """The sha256 of what names a file: a wpt_store.File, a record's
+    """The sha256 of what names a file: a dock.File, a record's
     reference to one ({"key", "sha256"}), or the sha256."""
     return what["sha256"] if isinstance(what, dict) else getattr(what, "sha256", what)
 
@@ -170,7 +170,7 @@ class LinkStore:
     wpt_corpus.shards, the environments and wpt_telemetry call): files by
     their sha256, which only the manager holds and gives part by part; the
     record folder of the run, whose every write goes to the manager's store
-    before the call returns, and whose lines that store holds back are sent
+    before the call returns, and whose lines that dock holds back are sent
     when flush_records() returns. Copies of files go into folder/files
     (path(), until release()), files derived from them into folder/scratch.
     The manager answers only for the files of the run's corpus and

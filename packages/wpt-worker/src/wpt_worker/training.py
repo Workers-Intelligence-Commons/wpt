@@ -10,7 +10,7 @@ worker only: across machines, a crash ends the job on every one, and the
 manager resumes the run from its checkpoint, wpt.train.CRASHED); each of
 them, or the first process alone otherwise:
 
-    1. loads the strategy and the recipe's steps (the files outside the
+    1. loads the strategy and the order's steps (the files outside the
        repository from what the manager sent: wpt_training.SENT)
     2. tells the manager it is ready (ready: its device, its Python and
        libraries' versions for the provenance, the setup the scheduler's pass times are measured on) and gets the
@@ -75,7 +75,7 @@ from wpt_inference.drafting import settings as drafter_settings
 from wpt_model import PARTS, WPT, ModelConfig
 from wpt_model.kernels import KernelUnavailable, kernels
 from wpt_model.model import compile_failure, fused_loss_failure
-from wpt_store import StoreError
+from dock.api import DockError
 from wpt_corpus.shards import documents, prefix_shards
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
 from wpt_training import (SENT, WINDOWS, Checkpoint, Data, FolderCheckpoint, Interrupted, Limit, Options, PluginError,
@@ -83,7 +83,7 @@ from wpt_training import (SENT, WINDOWS, Checkpoint, Data, FolderCheckpoint, Int
                           save_state, train, weights, window_tokens_left)
 from wpt_training.launch import REFUSED, STOPPED, launch
 from wpt_utils.device import describe, train_in_tf32
-from wpt_utils.lines import ERROR, WARNING, say
+from wic_utils.lines import ERROR, WARNING, say
 
 from .job import LinkStore, call, download, remote, upload
 from .link import RemoteError, addresses, is_private
@@ -96,7 +96,7 @@ NCCL, LINK = "nccl", "link"  # spec["machines"]["transport"]: how a run's gpu wo
 ONE_MACHINE = {"index": 0, "count": 1, "transport": None}
 BRIDGED = "WPT_BRIDGED"  # set for the processes of a run across places: their strategy is wpt_worker.peers.Bridged
 # the outside libraries the gpu worker trains with, whose versions the model's provenance names; a step's
-# fingerprint holds the code instead (wpt_utils.programs.code, on the manager, whose checkout the worker runs)
+# fingerprint holds the code instead (wic_utils.programs.code, on the manager, whose checkout the worker runs)
 LIBRARIES = ("torch", "numpy", "pyarrow")
 
 
@@ -196,7 +196,7 @@ def interface_of(host) -> str | None:
 
 
 def sent(files: dict, folder: Path):
-    """The files outside the repository the manager sent ({the path a recipe
+    """The files outside the repository the manager sent ({the path an order
     or an option gave: its text}), written into folder under their own
     names, and named in wpt_training.SENT."""
     for number, (given, text) in enumerate(sorted(files.items()), 1):
@@ -235,7 +235,7 @@ class LinkCheckpoint(Checkpoint):
     machine (local, a folder of the job's own for the run's record), where
     a restart of the job's processes finds it; with every, each save is
     also sent to the manager, which keeps it in its own checkpoint (the
-    model folder's or the store's). exists() and remove() are the
+    model folder's or the dock's). exists() and remove() are the
     manager's; load() reads the local one first."""
 
     def __init__(self, link, local: FolderCheckpoint, every: bool, shown: str):
@@ -425,9 +425,9 @@ def _train(spec, link, store, work, strategy, telemetry):
                     raise Refused(f"StepFailed: step {number} {step.name}: {error.reason}; "
                                   + (f"its checkpoint stays in {checkpoint}: --resume continues the step from it, and "
                                      "deleting it starts the step over" if left else "nothing of it is kept")
-                                  + (f"; the results of the {number - 1} steps before it stay in the store"
+                                  + (f"; the results of the {number - 1} steps before it stay on the dock"
                                      if number > 1 else "")) from None
-                except (ValueError, SettingsMismatch, PluginError, StoreError) as error:
+                except (ValueError, SettingsMismatch, PluginError, DockError) as error:
                     raise Refused(f"{type(error).__name__}: step {number} {step.name}: {error}") from None
                 if strategy.is_main:
                     about = {"number": number, "reached": _reached(trained), "learned": dict(sorted(learned.items()))}
@@ -541,7 +541,7 @@ def _finish(spec, link, store, work, model, model_config, drafter_config, drafti
                                     drafter_config, drafting, end=end, stops=stops, device=strategy.device,
                                     telemetry=telemetry)
     except DrafterFailed as error:
-        raise Refused(f"DrafterFailed: {error}; nothing was written; every step's result is kept in the store: "
+        raise Refused(f"DrafterFailed: {error}; nothing was written; every step's result is kept on the dock: "
                       "the same command trains the drafter again without training") from None
     # the scheduler's pass times, once per run, in the record; or those an earlier run recorded, replayed
     with telemetry.span("scheduler.costs", replayed=spec["options"]["scheduler_costs"]):

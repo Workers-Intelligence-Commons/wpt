@@ -1,6 +1,6 @@
 """wpt-eval's model as a gpu worker's job (docs/machines.md, "Evaluation"):
 the part of an evaluation that needs the GPUs. The wpt manager runs the
-tests, which hold the tokenizer, the store, the sandboxes and the model
+tests, which hold the tokenizer, the dock, the sandboxes and the model
 folder; the job holds the model and answers what the tests ask of it,
 through the link. It deals only in token ids, as every job does.
 
@@ -39,7 +39,7 @@ from wpt_model import WPT, ModelConfig
 from wpt_model.kernels import KernelUnavailable, kernels
 from wpt_training.launch import REFUSED
 from wpt_utils.device import describe, select_device
-from wpt_utils.lines import ERROR, say
+from wic_utils.lines import ERROR, say
 
 from .job import call, download
 from .writing import LocalWriter, Writers, Writing

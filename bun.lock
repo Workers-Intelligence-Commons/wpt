@@ -5,7 +5,7 @@
     "": {
       "name": "wpt-workspace",
     },
-    "apps/wpt/ui": {
+    "apps/depot/ui": {
       "name": "wpt-web-ui",
       "dependencies": {
         "@browsermt/bergamot-translator": "0.4.9",
@@ -223,6 +223,6 @@
 
     "w3c-keyname": ["w3c-keyname@2.2.8", "", {}, "sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ=="],
 
-    "wpt-web-ui": ["wpt-web-ui@workspace:apps/wpt/ui"],
+    "wpt-web-ui": ["wpt-web-ui@workspace:apps/depot/ui"],
   }
 }

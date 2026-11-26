@@ -20,13 +20,13 @@ belong here.
 
 A statement whose value changes with the GPU or with a commit does not
 belong here: a speed in tokens per second, a memory in GiB, a timing, what
-the code or a recipe does. Neither does an account of what the project did.
+the code or an order does. Neither does an account of what the project did.
 
 Where there is no knowledge there is no file. A question stays here while
 published sources or measures say something about it, whether they close it
 or not; its file then says what a measure would have to show to close it.
 
-It serves two readers: someone who writes a recipe or changes the model and
+It serves two readers: someone who writes an order or changes the model and
 wants the relation to apply, and someone who wants to know what is settled,
 what is disputed and what nobody has measured.
 
@@ -43,7 +43,7 @@ Every file has the same parts, in this order:
    (below). An open question says so here.
 3. **Evidence**: what supports the answer and what speaks against it, source
    by source. A published source is named by its title, its year and its
-   arXiv id or address. A measure made with WPT names the recipe's numbers,
+   arXiv id or address. A measure made with WPT names the order's numbers,
    how many runs support it, and the machine and the commit it was made
    with. The machine and the commit say where the measure comes from: the
    statement does not depend on them.

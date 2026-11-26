@@ -14,7 +14,7 @@ from wpt.eval import main
 from wpt.eval.remote import Remote
 from wpt_model import load_model
 from wpt_tokenizer import END
-from wpt_utils.lines import bare
+from wic_utils.lines import bare
 from wpt_worker.evaluation import Served
 from wpt_worker.link import Key
 

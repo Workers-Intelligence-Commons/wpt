@@ -10,8 +10,8 @@ is how a run is started and looked after.
 
 ## Before the run
 
-- The recipe's vocabulary and corpus are on the dock: `uv run wpt
-  build-resources RECIPE` asks the freight for both and prints their
+- The order's vocabulary and corpus are on the dock: `uv run wpt
+  build-resources ORDER` asks the freight for both and prints their
   delivery notes.
 - PyTorch is installed for this machine's GPU: a plain `uv sync` removes
   it, `uv run scripts/setup.py` puts it back.
@@ -27,12 +27,12 @@ from the repository folder:
 
 | System | Command |
 | --- | --- |
-| Windows (PowerShell) | `.\scripts\detach.ps1 uv run wpt train RECIPE [CORPUS_ID] --out runs/NAME [options]` |
-| Linux, macOS | `scripts/detach.sh uv run wpt train RECIPE [CORPUS_ID] --out runs/NAME [options]` |
+| Windows (PowerShell) | `.\scripts\detach.ps1 uv run wpt train ORDER [CORPUS_ID] --out runs/NAME [options]` |
+| Linux, macOS | `scripts/detach.sh uv run wpt train ORDER [CORPUS_ID] --out runs/NAME [options]` |
 
 Without a corpus id, `wpt train` reads the latest fresh corpus of the
-recipe's dataset; `uv run wpt store list` lists the corpora the
-store holds.
+order's dataset; `uv run wpt list` lists the corpora the
+dock holds.
 
 On a Windows machine, use the Windows row from PowerShell, never a WSL
 shell (the `wpt` skill, "Setting up a machine").
@@ -80,7 +80,7 @@ an unfinished run is never overwritten by mistake.
 
 ## Long windows
 
-A recipe's stages grow the window (docs/training.md, "Stages"); a stage
+An order's stages grow the window (docs/training.md, "Stages"); a stage
 whose window does not fit the GPU, even with `--recompute --micro-batch
 1`, needs one of these options, which change nothing in the training
 (docs/training.md, "Long windows"):
@@ -97,12 +97,12 @@ Any of them may be added or changed when resuming.
 
 ## A run over several machines
 
-With `--run NAME`, the checkpoint is kept in the store (`WPT_STORE`)
-instead of the model folder: any machine using the same store continues
+With `--run NAME`, the checkpoint is kept on the dock (`DOCK`)
+instead of the model folder: any machine using the same dock continues
 the run with the same command plus `--run NAME --resume`. Use it when a run
 may move to another machine.
 
-The GPUs may be on another machine than the store: start a gpu worker
-there (`docker compose -f compose.yaml -f compose.nvidia.yaml up` with the files of `deploy/gpu-worker/` and `wpt_worker/` and `wpt_utils/` copied beside them, or `compose.amd.yaml`) and give its
+The GPUs may be on another machine than the dock: start a gpu worker
+there (`docker compose -f compose.yaml -f compose.nvidia.yaml up` with the files of `deploy/gpu-worker/` and `wpt_worker/` and `wic_utils/` copied beside them, or `compose.amd.yaml`) and give its
 key to `wpt train` as `WPT_GPU_WORKERS` (docs/machines.md). The run is
 started, followed, stopped and resumed on the manager's machine, as above.

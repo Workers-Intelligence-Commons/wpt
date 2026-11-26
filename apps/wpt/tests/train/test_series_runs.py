@@ -32,7 +32,7 @@ TINY = {
 
 
 def series_data(built) -> dict:
-    """The series' data part: the snapshot d of the test's depot, as a model recipe names it, without a size."""
+    """The series' data part: the snapshot d of the test's depot, as a model order names it, without a size."""
     return {key: value for key, value in built.data("d", None).items() if key != "total_tokens"}
 
 
@@ -43,7 +43,7 @@ def steps_of(folder):
 
 
 def test_branches_share_the_trunk_and_the_full_branch_trains_as_the_size_s_own_run(built, tmp_path):
-    folder = tmp_path / "data" / "recipes" / "series"
+    folder = tmp_path / "data" / "orders" / "series"
     folder.mkdir(parents=True)
     (folder / "tiny.json").write_text(json.dumps({**TINY, "data": series_data(built)}))
     corpus = built.corpus_id

@@ -25,8 +25,8 @@ import sys
 import threading
 from pathlib import Path
 
-from wpt_utils.lines import say
-from wpt_utils.programs import program
+from wic_utils.lines import say
+from wic_utils.programs import program
 
 from . import messages
 

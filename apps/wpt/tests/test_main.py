@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import wpt
-from wpt_utils.lines import bare
+from wic_utils.lines import bare
 
 
 def test_a_command_stopped_by_a_text_prints_it_as_an_error_line_and_ends_with_code_1(monkeypatch, capsys):

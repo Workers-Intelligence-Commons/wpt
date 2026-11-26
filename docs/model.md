@@ -7,9 +7,9 @@ Every component comes from published research (cited at the end) and is
 trained from scratch: no weights or outputs of those models are used.
 
 The design is one family for every size: a mixture-of-experts model that
-reads long texts, aiming at a context of 1M tokens, which a recipe reaches
+reads long texts, aiming at a context of 1M tokens, which an order reaches
 by stages of growing windows (training.md, "Stages"). The numbers of a given size (layers, width, experts, table
-sizes) are not fixed here: each size is a model recipe, or a size of a
+sizes) are not fixed here: each size is a model order, or a size of a
 model series (below), since a small model may not want the ratios of a
 large one.
 
@@ -20,10 +20,10 @@ token ids
   -> embedding
   -> layer 1 .. L, each:
        attention sublayer: a window, exact or sparse layer, in the layout
-         the recipe names (first half: window layers on each side of an
+         the order names (first half: window layers on each side of an
          exact layer; second half: groups of an exact layer and sparse
          layers); Engram memory added to its input in the layers the
-         recipe names
+         order names
        feed-forward sublayer: experts (hash-routed in the first 3 expert
          layers, router-chosen after), 2 shared experts, whose down
          projection changes while the text is read in every sixth layer
@@ -40,7 +40,7 @@ token ids
 
 The attention is [HySparse2][hysparse2]'s, as published, with a window of
 128 tokens, aiming at a context of 1M tokens. Its layers are of three
-kinds, and the recipe sets their layout with three numbers
+kinds, and the order sets their layout with three numbers
 (`window_layers`, `sparse_groups`, `sparse_layers`):
 
 - **the first half**: `window_layers` window layers, one exact layer, then
@@ -161,17 +161,17 @@ never a switch to the PyTorch form.
 Tests check the PyTorch form against the formulas, and each kind of layer
 against HySparse2's formulas one token at a time. The tests of a kernel
 form against the PyTorch form sit in one place
-(`packages/wpt-model/tests/test_kernels.py`), at the recipes' head widths
+(`packages/wpt-model/tests/test_kernels.py`), at the orders' head widths
 and 1,024 chosen tokens, and run for every form that runs on the machine.
 
 ## Long windows
 
-Training targets 1M tokens and reaches it by stages in the recipe, with
+Training targets 1M tokens and reaches it by stages in the order, with
 segments on one GPU, windows split across several GPUs, and sparse layers
 from the start (above). The stages are in training.md, "Stages".
 A window too long for one GPU runs in parts, and both ways give exactly the
 loss and gradients of the whole window at once, so they are hardware
-options (training.md, "Long windows"), never part of the recipe:
+options (training.md, "Long windows"), never part of the order:
 
 - **Segments**, on one GPU (`wpt train --segment N`): the window runs as
   consecutive segments of `N` tokens, each passing to the next what its
@@ -352,7 +352,7 @@ never tested with a window of 128 tokens or with HySparse2.
 
 ## Loops
 
-A recipe number, `loops`, sets how many more times the text passes
+An order number, `loops`, sets how many more times the text passes
 through every layer with the same weights, as in [Ouro][ouro]. At 0 the
 model is one pass: nothing of the loop is in its weights or its cost.
 
@@ -380,7 +380,7 @@ pass ("Model series").
 ## One vocabulary table
 
 A model has two vocabulary tables, the embedding and the output head, each
-of the vocabulary's size times the width. A recipe number, `tied_tables`,
+of the vocabulary's size times the width. An order number, `tied_tables`,
 makes them one: the output head keeps its table, and a token's embedding is
 its row of that table times a fixed number, the square root of 3 times the
 width. The head starts as it does with two tables, and that number gives
@@ -394,7 +394,7 @@ the layers an input of the scale a separate embedding has.
   does not change.
 
 Why, and how sure: [knowledge/vocabulary-tables.md](knowledge/vocabulary-tables.md).
-No recipe sets it.
+No order sets it.
 
 ## Engram memory
 
@@ -410,7 +410,7 @@ hidden state through a learned gate.
   heads (8 in Engram-27B), the suffix N-gram's canonical ids are hashed into
   a table of prime size and one row is read. In WPT, each (order, head)
   pair has its own table, of a distinct prime size: the smallest primes at
-  or above the recipe's table size. The rows are concatenated into
+  or above the order's table size. The rows are concatenated into
   `e_t`. DeepSeek describes its hash only as multiplicative-XOR; WPT's
   constants are in the code.
 - Gate: `k_t = W_K e_t`, `v_t = W_V e_t`,
@@ -422,7 +422,7 @@ hidden state through a learned gate.
   `Y` plus the attention's output, the share a residual sum would add
   (the papers place Engram on a residual stream, never between
   Attention Residuals' sums).
-- The recipe names the layers (Engram-27B: layers 2 and 15; the 3B
+- The order names the layers (Engram-27B: layers 2 and 15; the 3B
   reference: 2 and 6).
 
 DeepSeek found a U-shaped law: at fixed parameters, moving 20 to 25% of the
@@ -448,12 +448,12 @@ of the sources, as the paper requires. The RMSNorm keeps a source of large
 magnitude from taking every weight. The first sublayer has one source,
 the embedding, and reads it as it is.
 
-The sublayers are cut into `residual_groups` consecutive groups, a recipe
+The sublayers are cut into `residual_groups` consecutive groups, an order
 number (the paper's Block AttnRes). A sublayer's sources are the
 embedding, the sum of the outputs of each earlier group, and the sum of
 the outputs of its own group so far, when the group already holds one.
 With twice as many groups as layers, one per sublayer, every output is a source of
-its own: the paper's full form, which WPT's recipes use. Sublayer `j` (from
+its own: the paper's full form, which WPT's orders use. Sublayer `j` (from
 0) belongs to group `j x groups // sublayers`, so groups differ by at most
 one sublayer; the paper leaves the split of uneven groups open. The output
 head reads one more sum, with its own query, over every group. Each sum
@@ -494,7 +494,7 @@ experts together, on one stream. Its attention is a window layer's
 (above); [MiMo-V2-Flash][mimo] chose a sliding window for its MTP
 block too, so that the block stays light when it drafts tokens. It never
 sees further back than 128 tokens. Its loss is added with weight 0.3,
-then 0.1 (DeepSeek-V3 switched after 10T of 14.8T tokens; the recipe sets
+then 0.1 (DeepSeek-V3 switched after 10T of 14.8T tokens; the order sets
 the switch). The model works without it at generation time; speculative
 decoding uses a separate drafter instead ("The drafter", below), and the
 block's window is kept in the generation cache for a drafter that reads
@@ -588,7 +588,7 @@ folder's `drafter/` (`config.json`, `model.safetensors`,
 with separate weights:
 
 - `wpt train` trains a drafter at the end of every run, after the
-  recipe's last step, against the final weights, the model frozen
+  order's last step, against the final weights, the model frozen
   (training.md, "The drafter"). The drafter is not a training step.
   `--no-drafter` saves the model without one, the weights the same.
 - The drafter's `provenance.json` names the sha256 of every weight file it
@@ -607,13 +607,13 @@ with separate weights:
   conversations or tasks, also up to `<|im_end|>`, the end of a turn. A
   test checks that no text past a prompt reaches the drafter's training.
 
-**Settings.** The model recipe's `drafter` section ("Model
-recipes") gives the drafter's shape (`features`, `layers`, `block`,
+**Settings.** The model order's `drafter` section ("Model
+orders") gives the drafter's shape (`features`, `layers`, `block`,
 `markov_rank`) and its training (`epochs`, `learning_rate`, `weight_decay`,
 `warm_up`, `clip`, `anchors`, `batch`, `prompts`, `prompt_tokens`,
 `answer_tokens`, `temperature`, `top_k`, `held_out`, `ece_bins`, `seed`); a
-setting left out keeps its default below. The three recipes state the
-training values explicitly ("Model recipes"), equal to today's defaults, so
+setting left out keeps its default below. The three orders state the
+training values explicitly ("Model orders"), equal to today's defaults, so
 a later change of a default does not change their drafters. `features`
 numbers the model's layers from 1 to its last;
 `DrafterConfig.for_model` checks them against the model's layers when a run
@@ -855,7 +855,7 @@ IMU-1 measured its 430M model's mean benchmark score rising from 0.560 to
 0.574 with it. The steps after it keep no average.
 
 **Schedule.** Multi-step for `read-text` ([DeepSeek LLM][llm], also used in the [mHC paper][mhc]): linear
-warm-up to the maximum over the recipe's `warmup` updates (2,000 by
+warm-up to the maximum over the order's `warmup` updates (2,000 by
 default; 4% of the updates at every size of a model series), then 31.6% of
 it after 80% of the training tokens and 10% after 90%. DeepSeek reports final results matching
 cosine decay, and a run can be extended by continuing from a checkpoint
@@ -889,13 +889,13 @@ The sublayers' second run records no balancing counts.
 (training.md): routing ties, balancing quantiles and expert gradient sums
 are computed in a fixed order, over the whole global batch.
 
-## Model recipes
+## Model orders
 
-A model recipe, `data/recipes/models/<name>.json`, says everything that
+A model order, `data/orders/models/<name>.json`, says everything that
 changes the resulting model, so a release model is rebuilt from one file
 and the repository, or from a series file, the name of one of its sizes
 (and of that size's run, when it is another than its own) and the
-repository ("Model series", below). A model recipe holds:
+repository ("Model series", below). A model order holds:
 
 - the data, in one of two shapes. The snapshot shape: a depot (`depot`, its
   public address, [data-selection.md](data-selection.md)), the name of one of
@@ -904,11 +904,11 @@ repository ("Model series", below). A model recipe holds:
   kind), the share of the plain text each tag takes (`shares`, in order, a tag
   once, summing to at most 1; left out: the snapshot's own proportions), the
   total tokens (`total_tokens`) and the vocabulary (`vocabulary`, its file's
-  `sha256` and its `size`). The legacy dataset shape, of the recipes written
+  `sha256` and its `size`). The legacy dataset shape, of the orders written
   before snapshots: the depot, a dataset there by id or name (`dataset`) and
   the total tokens, the vocabulary the one the corpus was built with, from the
-  dataset's tokenizer recipe; such a recipe trains on a corpus of that
-  dataset a store holds, found through the depot's frozen dataset routes,
+  dataset's tokenizer recipe; such an order trains on a corpus of that
+  dataset a dock holds, found through the depot's frozen dataset routes,
   and is never built ([training.md](training.md), "Models trained before
   snapshots");
 - the architecture's numbers: the layout of the layers (`window_layers`,
@@ -916,7 +916,7 @@ repository ("Model series", below). A model recipe holds:
   and head width, expert counts and widths, top `k`, latent width,
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
-  "Loops"; every recipe sets 0), and optionally one vocabulary table in
+  "Loops"; every order sets 0), and optionally one vocabulary table in
   place of two (`tied_tables`, "One vocabulary table");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
@@ -929,14 +929,14 @@ repository ("Model series", below). A model recipe holds:
 - the drafter (`drafter`): its shape and how it is trained ("The
   drafter"; an empty section keeps every default).
 
-Settings that change the result come only from the recipe. Command-line
+Settings that change the result come only from the order. Command-line
 options remain only for what does not: device strategy (splitting windows
 across processes included), number of processes, streaming, output folder,
 run name, resuming, micro-batch, recomputing, segments, checkpoints, weight
 file size and restarts. Tokenizer recipes stay separate files, since
 several models share them. A model has at least 5 layers: one window
 layer on each side of an exact layer, then one exact and one sparse layer.
-A head is at least 64 wide and even, for the 64 rotary dimensions. The recipes' `drafter` sections
+A head is at least 64 wide and even, for the 64 rotary dimensions. The orders' `drafter` sections
 state the same training values: 256 prompts of at most 64 tokens, answers
 of at most 256 tokens, 10 epochs, learning rate 6e-4, 10% held out, 512
 anchors, 8 answers per update, seed 0; the settings a section leaves out
@@ -946,10 +946,10 @@ anchors, 8 answers per update, seed 0; the settings a section leaves out
 A step whose optimizer is `muon` or `adamw` is named `by-part`; the
 entry keeps its own settings and gains none.
 
-A new recipe's or series' name is an adjective and an animal drawn by `uv run
-scripts/recipe_name.py`, among about 11.5 million names, so the name says
-nothing about the GPU or size it was made for; the recipe's `note` says
-that. Four recipes exist, each of one stage (none yet sets V4's 4K, 16K,
+A new order's or series' name is an adjective and an animal drawn by `uv run
+scripts/order_name.py`, among about 11.5 million names, so the name says
+nothing about the GPU or size it was made for; the order's `note` says
+that. Four orders exist, each of one stage (none yet sets V4's 4K, 16K,
 64K and 1M stages). The first three read the admitted public-domain books
 (about 4.3M tokens); `interstitial-pecker` reads every admitted document:
 
@@ -969,27 +969,27 @@ that. Four recipes exist, each of one stage (none yet sets V4's 4K, 16K,
   watching behaviors appear as size grows, not for release. It keeps
   `watery-tardigrade`'s width of 512 and its experts and has the full
   layout, 21 layers laid out `(4, 2, 5)`. Its vocabulary is the `admitted`
-  recipe's 32,768 tokens, whose two tables take 33.6M parameters. It reads
+  order's 32,768 tokens, whose two tables take 33.6M parameters. It reads
   about 2.93B tokens as 2,790 updates of 32 windows of 32K tokens. Both
   heads' scores over one 32K window take about 8 GiB in 32-bit, so one
   16 GB GPU is estimated to need `--recompute --micro-batch 1 --segment
   8192`; nothing is measured yet. No full run yet.
 
-Every recipe of the repository has the legacy dataset shape, naming the
-dataset `wic-1` or `wic-2` of the public depot. Every recipe uses
+Every order of the repository has the legacy dataset shape, naming the
+dataset `wic-1` or `wic-2` of the public depot. Every order uses
 attention heads 128 wide, of which the window layers rotate the last 64.
 
 ### Model series
 
-A model series, `data/recipes/series/<name>.json`, is one file for several
+A model series, `data/orders/series/<name>.json`, is one file for several
 sizes of one model, so the rules of a scaling test are written once and
 each size follows them. It holds the rules every size shares and the list
 of sizes, each a name and a width. `SERIES:SIZE` names one size wherever a
-model recipe's name goes (`wpt train`, `WPT_RECIPE`). Every size reads
+model order's name goes (`wpt train`, `WPT_ORDER`). Every size reads
 the same corpus, the one of the series' snapshot and data part at its
 largest size, and a smaller
 size its first part (its prefix). The code derives
-each size's model recipe (`wpt_recipes.series`):
+each size's model order (`wpt_orders.series`):
 
 - the shape: the series' `reference` model scaled to the size's width.
   Every width inside the model scales with it (attention heads, expert,
@@ -1031,10 +1031,10 @@ each size's model recipe (`wpt_recipes.series`):
   least 1, and the updates read `D` tokens. The warm-up is the series'
   `warmup_share` of the updates, at least 1; the drops stay at 80% and 90%.
 - the data: one corpus for the whole series. Its data part holds the
-  series' own (a model recipe's data part of either shape without
+  series' own (a model order's data part of either shape without
   `total_tokens`), and the most tokens any
   size's run reads (its own, or its trunk's, below), so every size's
-  recipe has the same data part and reads the same corpus. Each size's
+  order has the same data part and reads the same corpus. Each size's
   `read-text` step reads only the start of its training tokens
   (`prefix_tokens`: its updates times its batch times the window plus one,
   training.md, "Prefix"), so every size sees the same texts in the same
@@ -1042,11 +1042,11 @@ each size's model recipe (`wpt_recipes.series`):
   and its vocabulary when the series learns one.
 
 The seed and the drafter are the series' own, the same at every size. The
-model's provenance holds the size's derived recipe and the name
+model's provenance holds the size's derived order and the name
 `SERIES:SIZE`.
 
 A size has other runs, each named `SERIES:SIZE:RUN` wherever a model
-recipe's name goes:
+order's name goes:
 
 - `branch-SHARE`, a decay branch, one per share of the series' `branches`:
   SHARE times the size's updates, rounded half up. Every branch of a size
@@ -1054,7 +1054,7 @@ recipe's name goes:
   after its warm-up, with no drop and the early weight of multi-token
   prediction. A branch starts its decay after its last update at the peak,
   80% of its updates, so its decay's schedule is the one the multi-step
-  schedule gives a run of its updates ("Schedule"). Its recipe is the
+  schedule gives a run of its updates ("Schedule"). Its order is the
   trunk cut into consecutive steps that end at the starts of the size's
   branches, up to its own start, then its decay; each of them continues
   the one before it ([training.md](training.md), "Continued steps"). Two
@@ -1066,9 +1066,9 @@ recipe's name goes:
   the warm-up is refused, and so are two branches of a size with the same
   updates. The multi-token prediction's weight switches in the decay, at
   its first update, which is where the size's own run switches it: after
-  80% of its updates (`mtp_switch` 0.8 in every size's recipe), so a size's
-  own run and its full-length branch are the same recipe up to the cut of
-  the trunk into steps. The step defaults of other model recipes are their
+  80% of its updates (`mtp_switch` 0.8 in every size's order), so a size's
+  own run and its full-length branch are the same order up to the cut of
+  the trunk into steps. The step defaults of other model orders are their
   own (`mtp_switch`, [training.md](training.md), "Steps").
 - `lr-FACTOR`, at the smallest size only (the fewest parameters), one per
   factor of the series' `learning_rate_check`: the size's own run at
@@ -1109,7 +1109,7 @@ trained yet.
 
 Every result above was measured on models of 3B parameters or more, most at
 27B to 2.8T, by the labs that built them; none was measured at the sizes a
-single 16 GB GPU trains. A first recipe sized for such a GPU carries the
+single 16 GB GPU trains. A first order sized for such a GPU carries the
 papers' ratios untested, and its first runs are the first check of whether
 they hold small. HySparse2 in particular was built for long contexts at
 larger sizes; WPT trains it at 32K tokens and fewer, at sizes no paper has
@@ -1118,7 +1118,7 @@ measured. No WPT model has yet trained beyond 32K tokens: the stages to
 steps on random tokens (training.md, "Long windows"). The drafter's
 production values were set for V4-Flash and V4-Pro; WPT scales its Markov
 head with the width ("The drafter"), and no drafter has yet been measured
-on a real WPT run. The memory of the 32K recipes is not measured. The
+on a real WPT run. The memory of the 32K orders is not measured. The
 details
 the papers leave out (the hash routing function, Engram's hash constants
 and tables, how uneven groups of Attention Residuals split, the histogram behind Quantile

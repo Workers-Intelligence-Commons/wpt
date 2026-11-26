@@ -16,7 +16,7 @@ from safetensors.torch import load_file
 
 from wpt.train import LOST, main
 from wpt_training import load_state
-from wpt_utils.lines import bare
+from wic_utils.lines import bare
 from wpt_worker.link import Key, LinkError
 
 pytestmark = pytest.mark.usefixtures("on_the_cpu")  # gloo on every system, no GPU needed
@@ -38,8 +38,8 @@ def start_worker(stack, tmp_path, name, port) -> Key:
     return Key.parse(bare(process.stdout.readline()))
 
 
-def train(built, tmp_path, recipe, out, workers="", *options):
-    subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.corpus_id, "--out", out, "--strategy", "ddp",
+def train(built, tmp_path, order, out, workers="", *options):
+    subprocess.run([sys.executable, "-m", "wpt", "train", order, built.corpus_id, "--out", out, "--strategy", "ddp",
                     *options], cwd=tmp_path, env={**os.environ, "WPT_GPU_WORKERS": workers}, check=True)
     return load_file(tmp_path / out / "model.safetensors")
 
@@ -50,15 +50,15 @@ def test_two_gpu_workers_train_the_same_model_as_two_processes_on_one_in_one_pla
     # meet through gloo here (NCCL on GPUs); across places (each key names
     # another place), they exchange gradients over their links: either way
     # the same synced training as two processes of one worker
-    recipe = built.recipe("four", training=one_stage(4))
-    one = train(built, tmp_path, recipe, "one", "", "--processes", "2")  # one local worker
+    order = built.order("four", training=one_stage(4))
+    one = train(built, tmp_path, order, "one", "", "--processes", "2")  # one local worker
     transports = []
     for out, places in (("near", ("", "")), ("far", ("?place=a", "?place=b"))):
         shutil.rmtree(built.store.root / "cache" / "steps")  # the hardware is no part of a step: each run trains
         with ExitStack() as stack:
             found = [start_worker(stack, tmp_path, f"{out}-{index}", worker_port()) for index in range(2)]
             text = " ".join(str(key).replace("#", places[index] + "#") for index, key in enumerate(found))
-            two = train(built, tmp_path, recipe, out, text, "--processes", "1")
+            two = train(built, tmp_path, order, out, text, "--processes", "1")
         assert one.keys() == two.keys()
         # the processes add gradients up in another order: a few bits apart
         assert all(torch.allclose(one[name], two[name], atol=1e-4) for name in one)
@@ -118,8 +118,8 @@ def test_a_training_process_that_crashes_on_one_of_several_gpu_workers_ends_the_
     assert [e["attributes"] for e in crashes] == [{"exit_code": 1, "workers": 2}]
 
 
-def patched_recipe(built, tmp_path, name, steps, patch):
-    """A recipe whose optimizer file runs patch (Python code, with job the
+def patched_order(built, tmp_path, name, steps, patch):
+    """An order whose optimizer file runs patch (Python code, with job the
     module wpt_worker.training) in each training process that has STOP set."""
     optimizer = tmp_path / f"{name}.py"
     optimizer.write_text(
@@ -135,11 +135,11 @@ def patched_recipe(built, tmp_path, name, steps, patch):
         + "".join(f"        {line}\n" for line in patch.splitlines())
         + "    return Plain(model, settings)\n")
     stages = [{"block_size": 16, "steps": steps, "batch_size": 4}]
-    return built.recipe(name, training={"stages": stages, "optimizer": str(optimizer)})
+    return built.order(name, training={"stages": stages, "optimizer": str(optimizer)})
 
 
-def started(built, tmp_path, recipe, *options, **environ):
-    return subprocess.run([sys.executable, "-m", "wpt", "train", recipe, built.corpus_id, "--out", "model",
+def started(built, tmp_path, order, *options, **environ):
+    return subprocess.run([sys.executable, "-m", "wpt", "train", order, built.corpus_id, "--out", "model",
                            "--strategy", "ddp", "--processes", "2", *options], cwd=tmp_path, capture_output=True,
                           text=True, env={**os.environ, **environ})
 
@@ -150,8 +150,8 @@ def test_a_limit_on_two_processes_waits_for_the_main_one_to_send_its_checkpoint(
     patch = ("torch.distributed.destroy_process_group = lambda: None\n"
              "send = job.LinkCheckpoint.send\n"
              "job.LinkCheckpoint.send = lambda self: (time.sleep(3), send(self))[1]")
-    recipe = patched_recipe(built, tmp_path, "limited", 5, patch)
-    done = started(built, tmp_path, recipe, "--stop-after-updates", "3", STOP="1")
+    order = patched_order(built, tmp_path, "limited", 5, patch)
+    done = started(built, tmp_path, order, "--stop-after-updates", "3", STOP="1")
     assert done.returncode == 130, done.stderr
     assert "measured 2 updates in " in done.stdout
     assert load_state(tmp_path / "model" / "checkpoint" / "checkpoint.safetensors")["step"] == 3
@@ -165,12 +165,12 @@ def test_a_stop_during_a_step_s_end_keeps_its_result_stops_every_process_and_the
              "    time.sleep(0.2)\n"
              "    return upload(link, path)\n"
              "job.upload = stopped")
-    recipe = patched_recipe(built, tmp_path, "ending", 2, patch)
-    done = started(built, tmp_path, recipe, "--max-restarts", "0", STOP="1")
+    order = patched_order(built, tmp_path, "ending", 2, patch)
+    done = started(built, tmp_path, order, "--max-restarts", "0", STOP="1")
     assert done.returncode == 130, done.stderr
     assert not (tmp_path / "model" / "config.json").exists()
 
-    done = started(built, tmp_path, recipe, "--max-restarts", "0", "--resume")
+    done = started(built, tmp_path, order, "--max-restarts", "0", "--resume")
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "model" / "config.json").is_file()
     events = built.records("wpt train")[-1].events

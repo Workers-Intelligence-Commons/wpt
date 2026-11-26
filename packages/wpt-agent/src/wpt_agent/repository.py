@@ -17,7 +17,7 @@ import functools
 import subprocess
 import tempfile
 
-from wpt_utils.programs import program
+from wic_utils.programs import program
 
 from .files import read_folder
 

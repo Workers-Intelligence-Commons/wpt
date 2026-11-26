@@ -17,7 +17,7 @@ in this order:
               kernels with the PyTorch reference (they skip off an NVIDIA
               GPU), through pytest, in this checkout; and whether wpt
               train compiles its passes here when not told
-    sameness  about 20 updates of a small model with the recipes' layers,
+    sameness  about 20 updates of a small model with the orders' layers,
               trained by REV, by every commit from REV to HEAD and by the
               working tree's changes, each compared with the one before it:
               the largest difference of their weights, training and
@@ -81,11 +81,11 @@ import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "packages" / "wpt-utils" / "src"))  # no library here
-from wpt_utils.lines import ERROR, INFO, WARNING, say  # noqa: E402
+sys.path.insert(0, str(ROOT / "packages" / "wic-utils" / "src"))  # no library here
+from wic_utils.lines import ERROR, INFO, WARNING, say  # noqa: E402
 SOURCES = ["apps/wpt/src", *[f"packages/{name}/src" for name in (
-    "wpt-model", "wpt-training", "wpt-utils", "wpt-store", "wpt-telemetry", "wpt-recipes", "wpt-tokenizer",
-    "wpt-inference", "wpt-depot", "wpt-worker", "wpt-agent")]]
+    "wpt-model", "wpt-training", "wpt-utils", "wic-utils", "dock", "wpt-telemetry", "wpt-orders", "wpt-tokenizer",
+    "wpt-inference", "depot", "wpt-worker", "wpt-agent")]]
 CHECKS = ["packages/wpt-model/tests/test_kernels.py", "packages/wpt-model/tests/test_triton_kernels.py",
           "packages/wpt-model/tests/test_tilelang_kernels.py",
           "packages/wpt-model/tests/test_residuals.py", "packages/wpt-model/tests/test_model.py",
@@ -99,8 +99,8 @@ WARMUP, TIMED = 3, 4  # updates before the timed ones (the first among them time
 
 def shape(width, vocab=65536):
     """A model of 11 layers (2 window layers each side of an exact layer,
-    then an exact layer and 5 sparse ones) as the recipes of
-    data/recipes/models/ make them: watery-tardigrade at width 512, and
+    then an exact layer and 5 sparse ones) as the orders of
+    data/orders/models/ make them: watery-tardigrade at width 512, and
     unimpaired-axolotl's settings (4 heads) scaled to width 256."""
     return dict(vocab_size=vocab, block_size=max(WINDOWS), window_layers=2, sparse_groups=1, sparse_layers=5,
                 d_model=width, attention_heads=8 if width >= 512 else 4, attention_head_dim=128, n_experts=32,
@@ -111,7 +111,7 @@ def shape(width, vocab=65536):
 SMALL = dict(vocab_size=512, block_size=512, window_layers=2, sparse_groups=1, sparse_layers=5, d_model=64,
              attention_heads=2, attention_head_dim=128, n_experts=8, top_k=4, expert_width=32, latent_width=32,
              shared_width=64, engram_layers=[2], engram_order=3, engram_heads=2, engram_dim=8, engram_table_size=97,
-             residual_groups=22)  # the sameness runs' model: the recipes' layers and full Attention Residuals, small
+             residual_groups=22)  # the sameness runs' model: the orders' layers and full Attention Residuals, small
 
 
 # -- the child: runs in a process of its own, with one revision's code first on sys.path --
@@ -468,9 +468,10 @@ class Battery:
 
     def gpu(self):
         if not hasattr(self, "_gpu"):
-            probe = ("import sys; sys.path[:0] = [sys.argv[1]]; from wpt_utils.device import select_device; "
+            probe = ("import sys; sys.path[:0] = sys.argv[1:]; from wpt_utils.device import select_device; "
                      "print(select_device().type)")
-            found = subprocess.run([sys.executable, "-c", probe, str(ROOT / "packages/wpt-utils/src")],
+            found = subprocess.run([sys.executable, "-c", probe, str(ROOT / "packages/wpt-utils/src"),
+                                    str(ROOT / "packages/wic-utils/src")],
                                    capture_output=True, text=True)
             self._gpu = found.stdout.strip() == "cuda"
         return self._gpu

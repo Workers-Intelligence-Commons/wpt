@@ -22,7 +22,7 @@ import pytest
 from wpt_agent import AGENT, Limits, Sandbox, attempt, images, offer, score
 from wpt_agent.files import FILE
 from wpt_agent.tasks import Task, Variant, looks
-from wpt_recipes import Recipes
+from wpt_orders import Orders
 from wpt_tokenizer import Tokenizer, chat
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -284,7 +284,7 @@ def test_a_pool_tool_names_the_real_cause_of_a_refusal(tmp_path, capsys):
 @pytest.fixture(scope="module")
 def agent(docker_runs, tmp_path_factory):
     """(a repository holding a copy of the agent image's folder, the image
-    built from it and its lock, at once when this machine has it): a Recipes
+    built from it and its lock, at once when this machine has it): a Orders
     of the real repository would make its audit hook refuse pytest's own
     clean-up of folders named data."""
     root = tmp_path_factory.mktemp("repository")
@@ -311,7 +311,7 @@ def test_in_the_agent_image_the_tools_answer_and_the_check_library_scores(agent)
     # task's hidden files, and a check started as python3 -I imports the
     # library and reads the conversation
     root, image = agent
-    pool = Recipes(root).image_tools("agent")
+    pool = Orders(root).image_tools("agent")
     hidden = {"web/example.org/lighthouse": (FILE, LAMP)}
     made = Task("example/lamp", "When is the lamp lit?", "agent", 8, 10_000, 10, {"notes.txt": (FILE, b"start\n")},
                 b"#!/usr/bin/python3 -I\nimport wpt_check\nc = wpt_check.load()\n"

@@ -1,5 +1,5 @@
 """Which texts of a corpus carry a tag: the corpus's texts table holds each
-text's tags (wpt_depot.corpus), in parts, and a step that learns from conversations or
+text's tags (wpt_corpus.encoding), in parts, and a step that learns from conversations or
 tasks picks the ones with its `tag` setting."""
 
 import pyarrow.parquet as pq

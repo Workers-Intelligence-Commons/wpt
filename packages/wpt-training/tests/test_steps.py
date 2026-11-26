@@ -1,4 +1,4 @@
-"""A recipe's step entry read into a wpt_training.Step (docs/training.md, "Steps")."""
+"""An order's step entry read into a wpt_training.Step (docs/training.md, "Steps")."""
 
 import pytest
 
@@ -6,7 +6,7 @@ from wpt_model import PARTS
 from wpt_training import PluginError, load_step
 
 
-def test_a_step_s_settings_are_its_parts_defaults_then_its_file_s_then_the_recipe_s_each_typed():
+def test_a_step_s_settings_are_its_parts_defaults_then_its_file_s_then_the_order_s_each_typed():
     step = load_step({"step": "finish-tasks", "settings": {"rounds": 2, "weight_rule": 1}}, PARTS)
     assert (step.method.name, step.environment.name, step.optimizer.name) == ("grpo", "agent-tasks", "by-part")
     environment = step.environment.module.SETTINGS
@@ -23,7 +23,7 @@ def test_a_step_s_settings_are_its_parts_defaults_then_its_file_s_then_the_recip
 
 def test_a_step_s_optimizer_is_chosen_apart_from_its_method(tmp_path):
     # the step's own optimizer takes the step file's settings for it, then the
-    # recipe's; another one takes its own defaults, then the recipe's
+    # order's; another one takes its own defaults, then the order's
     own = load_step({"step": "answer-as-assistant", "optimizer": {"name": "by-part", "settings": {"lr": 3e-5}}},
                     PARTS)
     assert own.optimizer_settings["lr"] == 3e-5 and own.optimizer_settings["weight_decay"] == 0.0

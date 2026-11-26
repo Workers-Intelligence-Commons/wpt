@@ -1,30 +1,33 @@
 """wpt: every WPT job, each a subcommand with its own options (`wpt
 SUBCOMMAND --help`).
 
-    wpt depot ...                the depot: texts, decisions, snapshots, erasures, corpora, and its web pages
-    wpt store ...                what the store holds, its runs, a kept model copied out
+    wpt list                     every corpus and model the dock keeps
+    wpt copy-out NAME FOLDER     a model the dock keeps, copied out
+    wpt runs, wpt run FOLDER     the runs recorded on the dock, and one of them
     wpt agent ...                the images of agentic tasks, locked and built
     wpt build-resources ORDER    ask the freight for an order's vocabulary and corpus
     wpt adopt-vocabularies       put the depot's vocabularies on the dock
-    wpt train ...                train a model recipe on its corpus
+    wpt train ...                train a model order on its corpus
     wpt eval ...                 run tests on a trained model, into its model card
     wpt chat ...                 continue text with a trained model, or chat with one
-    wpt manager                  train a model recipe on its corpus in the store, through rented machines
+    wpt manager                  train a model order on its corpus on the dock, through rented machines
     wpt doctor                   check this machine: what is missing and how to fix it
 
 The subcommands are controllers over the services, the libraries of
-packages/; `wpt depot web` serves the depot's operations as pages too. A
-subcommand's module is imported only when it runs, so a light one (`wpt
-store`) never loads PyTorch.
+packages/. The depot, the freight and the dock have commands of their own:
+`depot`, `freight` and `dock`. A subcommand's module is imported only when
+it runs, so a light one (`wpt list`) never loads PyTorch.
 """
 
 import importlib
 import sys
 
-from wpt_utils.lines import ERROR, say
+from wic_utils.lines import ERROR, say
 
+DOCKED = "wpt.docked"  # its main takes the subcommand's name first
 # each subcommand: the module whose main(argv) runs it
-COMMANDS = {"depot": "wpt.depot", "store": "wpt.store", "agent": "wpt.agent", "train": "wpt.train",
+COMMANDS = {"list": "wpt.docked", "copy-out": "wpt.docked", "runs": "wpt.docked", "run": "wpt.docked",
+            "agent": "wpt.agent", "train": "wpt.train",
             "eval": "wpt.eval", "chat": "wpt.chat", "manager": "wpt.manager",
             "doctor": "wpt.doctor", "build-resources": "wpt.resources", "adopt-vocabularies": "wpt.adopt"}
 
@@ -42,7 +45,7 @@ def main(argv=None):
         return 2
     name, *rest = argv
     try:
-        return importlib.import_module(COMMANDS[name]).main(rest)
+        return importlib.import_module(COMMANDS[name]).main([name, *rest] if COMMANDS[name] == DOCKED else rest)
     except SystemExit as stopped:
         if isinstance(stopped.code, str):  # a refusal's text, which Python would print as it is
             say(stopped.code, ERROR)

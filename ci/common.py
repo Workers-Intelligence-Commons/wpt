@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from wpt_utils.lines import ERROR, INFO, line, say
+from wic_utils.lines import ERROR, INFO, line, say
 
 ROOT = Path(__file__).resolve().parent.parent
 UV = os.environ.get("UV", "uv")  # uv tells the scripts it runs where it is

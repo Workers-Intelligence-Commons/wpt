@@ -49,8 +49,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from wpt_store import PACKED
-from wpt_store.names import File
+from dock.api import PACKED, File
 
 from .selection import fingerprint
 

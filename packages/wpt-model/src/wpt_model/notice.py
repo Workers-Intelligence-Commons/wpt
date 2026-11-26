@@ -5,7 +5,7 @@ Next to its weights, a model folder carries:
     LICENSE       the GNU AGPL, version 3: the license of the weights
     CREDITS       every text the model learned from, one line each, with its
                   credit and licenses, then the notices and license texts
-                  they name (wpt_depot.notice, written by wpt train from the
+                  they name (wpt.train.notice, written by wpt train from the
                   corpus)
     NOTICE        the licenses of the weights and of generated text, the
                   texts the model learned from (CREDITS), and the output
@@ -19,7 +19,7 @@ CREDITS, evals/*.json, drafter/config.json and drafter/provenance.json), so
 they cannot disagree with what the folder holds. What they say of the
 corpus comes from wpt_model.provenance, which reads a folder trained on a
 snapshot ("Trained on snapshot S (change N, digest H) of the depot D,
-recipe R, code at commit X"; the model card names the corpus's delivery
+order R, code at commit X"; the model card names the corpus's delivery
 and the vocabulary's, for one trained on deliveries of the freight) and
 one written before snapshots ("From corpus C, built from dataset T of the
 depot D") alike. The drafter's weights are
@@ -37,7 +37,7 @@ import json
 from importlib.resources import files
 from pathlib import Path
 
-from wpt_utils.programs import code_name
+from wic_utils.programs import code_name
 
 from .config import layer_kinds
 from .provenance import corpus_id, corpus_label, deliveries, on_snapshot
@@ -145,7 +145,7 @@ def card(config, provenance, evals, drafter=None) -> str:
 
 
 def _eval_code(result) -> str:
-    """The code a result was measured with: code() of wpt_utils.programs
+    """The code a result was measured with: code() of wic_utils.programs
     in a result that names its code, wpt eval's package version in an
     older one that names it."""
     return f"code {code_name(result['code'])}" if "code" in result else f"wpt eval {result['wpt_eval']}"
@@ -167,7 +167,7 @@ def _drafter(drafter, provenance):
     trained, target = provenance.get("trained_by"), (provenance.get("target") or {}).get("weights")
     if trained:
         corpus = provenance.get("corpus")
-        lines.append(f"- Trained by `{trained['command']}`, recipe `{trained['recipe_name']}`, the model frozen, on "
+        lines.append(f"- Trained by `{trained['command']}`, order `{trained['recipe_name']}`, the model frozen, on "
                      "answers the model wrote itself to the beginnings of the plain texts of corpus "
                      f"`{(corpus or 'unknown')[:12]}`")
     if target:
@@ -227,7 +227,7 @@ def _corpus_lines(provenance):
         built, wanted = size.get("amount"), (provenance.get("data") or {}).get("total_tokens")
         again = "the same request to the freight makes it again"
         if built != wanted:
-            again = (f"made at {_tokens(built)} tokens, not the recipe's {_tokens(wanted)}: the same request to the "
+            again = (f"made at {_tokens(built)} tokens, not the order's {_tokens(wanted)}: the same request to the "
                      "freight makes it again, `corpus.request` in provenance.json")
         vocabulary = delivered["vocabulary"]
         return [f"- Trained on {corpus_label(provenance)}",
@@ -239,9 +239,9 @@ def _corpus_lines(provenance):
     if on_snapshot(provenance):
         built = (provenance["corpus"].get("data") or {}).get("total_tokens")
         wanted = (provenance.get("data") or {}).get("total_tokens")
-        again = "the same snapshot, recipe and code build it again"
+        again = "the same snapshot, order and code build it again"
         if built is not None and built != wanted:
-            again = (f"built at {built:,} tokens, not the recipe's {_tokens(wanted)}: the same snapshot and code "
+            again = (f"built at {built:,} tokens, not the order's {_tokens(wanted)}: the same snapshot and code "
                      "build it again from its own data section, `corpus.data` in provenance.json")
         return [f"- Trained on {corpus_label(provenance)}", f"- Corpus: `{corpus_id(provenance)}` (a cache: {again})"]
     corpus = provenance["corpus"]

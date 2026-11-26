@@ -1,5 +1,5 @@
-# Runs wpt-depot-cloudflare once (wpt-depot-cloudflare.py beside this file,
-# installed as /usr/local/sbin/wpt-depot-cloudflare; docs/depot-web.md).
+# Runs depot-cloudflare once (depot-cloudflare.py beside this file,
+# installed as /usr/local/sbin/depot-cloudflare; docs/depot-web.md).
 [Unit]
 Description=Cloudflare's address ranges for the public depot web app: nginx's real-IP list and ufw's rules for ports 80 and 443
 Wants=network-online.target
@@ -7,4 +7,4 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/wpt-depot-cloudflare
+ExecStart=/usr/local/sbin/depot-cloudflare

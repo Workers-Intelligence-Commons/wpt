@@ -1,6 +1,6 @@
 """A plug-in's settings: the defaults its file declares (SETTINGS), changed
-by those a recipe gives, each of its default's type. A training step's
-come from its entry in the recipe's `steps`, and so do its optimizer's
+by those an order gives, each of its default's type. A training step's
+come from its entry in the order's `steps`, and so do its optimizer's
 (docs/training.md, "Steps")."""
 
 
