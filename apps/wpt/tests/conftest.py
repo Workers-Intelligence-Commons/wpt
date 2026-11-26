@@ -47,7 +47,7 @@ TINY_DRAFTER = {"epochs": 1, "prompts": 4, "prompt_tokens": 8, "answer_tokens": 
 @pytest.fixture
 def built(tmp_path, monkeypatch):
     """A corpus of a depot's snapshot "d": 16 plain texts. The working folder tmp_path is the
-    repository, the dock is DOCK and the depot DEPOT. Gives store, depot (the Depot),
+    repository, the dock is DOCK and the depot DEPOT. Gives dock, depot (the Depot),
     corpus_id (the corpus of every token of "d", which the model order "d", a tiny model
     trained one step, names), tokenizer (the vocabulary every corpus here is built with), records(command) (the record folders of that
     command's runs, oldest first), notice (the texts' notice), vocabulary

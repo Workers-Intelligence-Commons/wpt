@@ -342,7 +342,7 @@ def test_a_replace_larger_than_one_part_goes_up_in_parts_under_its_condition(tmp
     with mock_aws():
         client = boto3.client("s3")
         client.create_bucket(Bucket="wpt-test")
-        bucket = kinds.Bucket(client, "wpt-test", "store", part=5 << 20)
+        bucket = kinds.Bucket(client, "wpt-test", "dock", part=5 << 20)
         first = bucket.replace("index", big, None)
         assert bucket.read("index") == (big.read_bytes(), first)
         assert first.strip('"').endswith("-3")  # three parts, not one upload
@@ -472,9 +472,9 @@ def test_a_ranged_read_whose_answer_is_cut_while_read_is_asked_again_up_to_the_f
     with mock_aws():
         client = boto3.client("s3")
         client.create_bucket(Bucket="wpt-test")
-        etag = client.put_object(Bucket="wpt-test", Key="store/file", Body=b"0123456789")["ETag"]
+        etag = client.put_object(Bucket="wpt-test", Key="dock/file", Body=b"0123456789")["ETag"]
         cut = CutBodies(client, cuts)
-        bucket = kinds.Bucket(cut, "wpt-test", "store")
+        bucket = kinds.Bucket(cut, "wpt-test", "dock")
         assert kinds.TRIES == 5
         if cuts < kinds.TRIES:
             assert bucket.read("file", 2, 4) == (b"2345", etag)

@@ -83,7 +83,7 @@ class Workers:
     def __init__(self, path, state, lock):
         self.path, self.state, self.lock = Path(path), state, lock
         state.setdefault("rentals", [])
-        if "recipe" in state:  # a file written before the key order
+        if "recipe" in state:  # an older file names the order "recipe"
             state.setdefault("order", state.pop("recipe"))
 
     @classmethod

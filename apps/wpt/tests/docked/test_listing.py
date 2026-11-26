@@ -26,9 +26,10 @@ def test_the_dock_lists_its_corpora_models_and_runs(built, tmp_path, capsys):
     record = corpora.find(built.dock, built.corpus_id)
     assert (f"{built.corpus_id}: build key {record['build_key']}, snapshot {built.names['d']} (change {record['snapshot']['change']}) "
             f"of {built.depot.name()}, order d, every token" in listed and "  fox-1" in listed)
-    # a corpus.json written before the key order names the order recipe, and lists the same
-    older = {"recipe" if key == "order" else key: value for key, value in record.items()}
-    assert "order" not in older and _source(older) == _source(record)
+    # a corpus.json names the order recipe, as the depot wrote it; under the key order it lists the same
+    assert "order" not in record and record["recipe"] == "d"
+    named = {"order" if key == "recipe" else key: value for key, value in record.items()}
+    assert _source(named) == _source(record)
 
     assert main(["runs"]) == 0
     assert "wpt train" in capsys.readouterr().out

@@ -1,0 +1,325 @@
+{
+ "data": {
+  "depot": "fox",
+  "snapshot": "2026-11",
+  "change": 4,
+  "digest": "b82e7de57dfa6b26f3f08bb27c180d6b6580c886d3eb83a9959ddff7bb2c0f7f",
+  "shares": [
+   {
+    "tag": "en",
+    "share": 1.0
+   }
+  ],
+  "total_tokens": 6002,
+  "vocabulary": {
+   "sha256": "ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b",
+   "size": 556
+  }
+ },
+ "deliveries": {
+  "vocabulary": {
+   "key": "adopted-ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b",
+   "id": "50ae7cd548a9835819fc412bbac94974e7df9a650a3ff2700d4edc2d63ebcc2a",
+   "adopted": {
+    "by": "the test",
+    "recipe": "t",
+    "version": 1
+   }
+  },
+  "corpus": {
+   "key": "3de6162a2dd9b72d007968fbfb6bc3d985ceb9840929082ebec859970513f1d2",
+   "id": "164cd6a0545fa99845f5940a6829ae29a440f586f3c36b73fdfc4ce908171f34",
+   "preparation": {
+    "name": "wpt-tokens",
+    "version": "1",
+    "settings": {}
+   }
+  }
+ },
+ "recipe_name": "d",
+ "recipe": {
+  "data": {
+   "depot": "fox",
+   "snapshot": "2026-11",
+   "change": 4,
+   "digest": "b82e7de57dfa6b26f3f08bb27c180d6b6580c886d3eb83a9959ddff7bb2c0f7f",
+   "shares": [
+    {
+     "tag": "en",
+     "share": 1.0
+    }
+   ],
+   "total_tokens": 6002,
+   "vocabulary": {
+    "sha256": "ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b",
+    "size": 556
+   }
+  },
+  "model": {
+   "window_layers": 1,
+   "sparse_groups": 1,
+   "sparse_layers": 1,
+   "d_model": 16,
+   "attention_heads": 2,
+   "attention_head_dim": 64,
+   "n_experts": 4,
+   "top_k": 2,
+   "expert_width": 8,
+   "latent_width": 8,
+   "shared_width": 16,
+   "engram_layers": [
+    2
+   ],
+   "engram_order": 3,
+   "engram_heads": 2,
+   "engram_dim": 4,
+   "engram_table_size": 31,
+   "residual_groups": 3,
+   "loops": 0
+  },
+  "seed": 1337,
+  "steps": [
+   {
+    "step": "read-text",
+    "optimizer": {
+     "name": "by-part",
+     "settings": {}
+    },
+    "settings": {
+     "stages": [
+      {
+       "block_size": 16,
+       "steps": 1,
+       "batch_size": 4
+      }
+     ],
+     "eval_every": 2,
+     "eval_batches": 20,
+     "prefix_tokens": 6002
+    }
+   }
+  ],
+  "drafter": {
+   "epochs": 1,
+   "prompts": 4,
+   "prompt_tokens": 8,
+   "answer_tokens": 8,
+   "batch": 2,
+   "anchors": 4,
+   "held_out": 0.25
+  }
+ },
+ "corpus": {
+  "id": "164cd6a0545fa99845f5940a6829ae29a440f586f3c36b73fdfc4ce908171f34",
+  "delivery": "3de6162a2dd9b72d007968fbfb6bc3d985ceb9840929082ebec859970513f1d2",
+  "rules": 1,
+  "depot": "fox",
+  "snapshot": {
+   "change": 4,
+   "digest": "b82e7de57dfa6b26f3f08bb27c180d6b6580c886d3eb83a9959ddff7bb2c0f7f",
+   "id": "fox-1",
+   "name": "2026-11",
+   "owner": "fox"
+  },
+  "request": {
+   "depot": "fox",
+   "preparation": {
+    "inputs": {
+     "vocabulary": "adopted-ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b"
+    },
+    "name": "wpt-tokens"
+   },
+   "selection": {
+    "kinds": [],
+    "shares": [
+     {
+      "share": 1.0,
+      "tag": "en"
+     }
+    ],
+    "size": {
+     "amount": 6002,
+     "unit": "tokens"
+    }
+   },
+   "snapshot": {
+    "change": 4,
+    "digest": "b82e7de57dfa6b26f3f08bb27c180d6b6580c886d3eb83a9959ddff7bb2c0f7f",
+    "name": "2026-11"
+   }
+  }
+ },
+ "learned": {
+  "plain": 6002
+ },
+ "texts": 16,
+ "vocabulary": {
+  "key": "deliveries/adopted-ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b/files/vocabulary.json",
+  "sha256": "ce981d9b73a00452bab7b5c9ffd9a2059bebca443ffce2de773a060cd397716b",
+  "bytes": 467
+ },
+ "shards": [
+  {
+   "key": "deliveries/3de6162a2dd9b72d007968fbfb6bc3d985ceb9840929082ebec859970513f1d2/files/plain-00000.parquet",
+   "sha256": "c10d1145f9686f57fdd1c81d43ebabbacc7e7a1f8ca5a8a164426d60499431fe",
+   "token_sha256": "f0bbe01958de87c1a918b58c8628466ea40f215bdf1e9243950cd5981f72a117"
+  }
+ ],
+ "options": {
+  "out": "model",
+  "micro_batch": null,
+  "checkpoint_every": 500,
+  "segment": 0,
+  "recompute_from": 0,
+  "strategy": "single",
+  "processes": 1,
+  "max_shard_size": null,
+  "stream_shards": 8,
+  "run": null,
+  "scheduler_costs": null,
+  "max_restarts": 0,
+  "stop_after_minutes": 0,
+  "stop_after_updates": 0,
+  "profile_update": 0,
+  "kernels": null,
+  "stream": false,
+  "recompute": null,
+  "compile": null,
+  "drafter": true,
+  "resume": false
+ },
+ "strategy": {
+  "name": "single",
+  "file": "wpt_training/strategies/single.py",
+  "file_sha256": "25e7f3b2155d31aebaf6567ed347f1bd47cb77fdcf09545bb1b8fca1633c93cb",
+  "processes": 1
+ },
+ "steps": [
+  {
+   "number": 1,
+   "step": {
+    "name": "read-text",
+    "file": "wpt_training/steps/read-text.py",
+    "file_sha256": "d940c2006b43f829d86870810be0304e9ca3e90d9b799c151b3507df56783b74"
+   },
+   "method": {
+    "name": "next-token",
+    "file": "wpt_training/methods/next-token.py",
+    "file_sha256": "3215a452b68a97b60eff60c5cb615d5372257380688312194b9677c48ebfddc3"
+   },
+   "environment": {
+    "name": "text-windows",
+    "file": "wpt_training/environments/text-windows.py",
+    "file_sha256": "a2c344566ea1a38827b3962d2ebe136d04ad784e7de3f91bff8f54a9af02cb97"
+   },
+   "reads": "windows",
+   "kinds": [
+    "plain"
+   ],
+   "optimizer": {
+    "name": "by-part",
+    "file": "wpt_training/optimizers/by-part.py",
+    "file_sha256": "67e0031bff14f35716ea4ddb94f4a2619fd7f26e693b319613ff51ae9fad739e",
+    "settings": {
+     "lr": 0.002,
+     "weight_decay": 0.1,
+     "momentum": 0.95,
+     "beta1": 0.9,
+     "beta2": 0.95,
+     "eps": 1e-08,
+     "table_lr_factor": 5.0,
+     "schedule": "steps",
+     "warmup": 2000,
+     "first_drop": 0.8,
+     "first_factor": 0.316,
+     "second_drop": 0.9,
+     "second_factor": 0.1,
+     "average_states": 10,
+     "average_every": 500,
+     "average_beta": 0.8,
+     "patience": 0,
+     "min_improve": 0.01,
+     "smoothing": 3,
+     "chinchilla": 20
+    }
+   },
+   "settings": {
+    "mtp_weight": 0.3,
+    "mtp_late_weight": 0.1,
+    "mtp_switch": 0.676,
+    "stages": [
+     {
+      "block_size": 16,
+      "steps": 1,
+      "batch_size": 4
+     }
+    ],
+    "eval_every": 2,
+    "eval_batches": 20,
+    "prefix_tokens": 6002
+   },
+   "locked": [],
+   "continues": false,
+   "fingerprint": "bac7f854ebae3fff885fcc52b56129a3438a214d6d7566b6793d262658247c41",
+   "best_validation_loss": null,
+   "updates": 1,
+   "stages": [
+    {
+     "block_size": 16,
+     "steps": 1,
+     "batch_size": 4,
+     "first_step": 1,
+     "last_step": 1
+    }
+   ],
+   "weights_update": 1,
+   "skipped": 0,
+   "learned": {
+    "plain": 6002
+   },
+   "result": "8e9781f82a192dc24272b1fa9b651782ce75f212d82004a1a487bd364f4cd36f",
+   "reused": false
+  }
+ ],
+ "model": {
+  "vocab_size": 556,
+  "block_size": 16,
+  "window_layers": 1,
+  "sparse_groups": 1,
+  "sparse_layers": 1,
+  "d_model": 16,
+  "attention_heads": 2,
+  "attention_head_dim": 64,
+  "n_experts": 4,
+  "top_k": 2,
+  "expert_width": 8,
+  "latent_width": 8,
+  "shared_width": 16,
+  "engram_layers": [
+   2
+  ],
+  "engram_order": 3,
+  "engram_heads": 2,
+  "engram_dim": 4,
+  "engram_table_size": 31,
+  "residual_groups": 3,
+  "loops": 0,
+  "tied_tables": false
+ },
+ "parameters": 78672,
+ "repository_commit": "0123456789abcdef0123456789abcdef01234567",
+ "repository_dirty": false,
+ "device": "cpu",
+ "tools": {
+  "code": {
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "changes": null
+  },
+  "python": "3.14.9",
+  "platform": "Linux-x86_64",
+  "torch": "2.9.0",
+  "numpy": "2.5.4",
+  "pyarrow": "26.0.0",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+ }
+}

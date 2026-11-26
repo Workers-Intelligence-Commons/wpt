@@ -214,14 +214,18 @@ def cut_run(built, tmp_path) -> Workers:
     return workers
 
 
+@pytest.mark.parametrize("key", ["order", "recipe"])  # "recipe": the key a file an older manager wrote holds
 def test_a_manager_that_comes_back_goes_on_with_its_unfinished_run_on_its_workers_and_starts_no_other(
-        built, fake, tmp_path, monkeypatch, capsys):
+        built, fake, tmp_path, monkeypatch, capsys, key):
     # Docker starts the same container again after a crash: its run has a
     # record with no end, and its rented worker is still there; the manager
     # reconnects to it with the key its disk holds and goes on; with no
     # WPT_RUN it starts no other run
     monkeypatch.delenv("WPT_RUN", raising=False)
-    cut_run(built, tmp_path)
+    cut = cut_run(built, tmp_path)
+    written = json.loads(cut.path.read_text())
+    written[key] = written.pop("order")
+    cut.path.write_text(json.dumps(written))
     assert unfinished(built.dock, "cut")
 
     main([])
@@ -639,6 +643,9 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     # another order's run name is never taken over
     (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the order not-d; once it is done\n")
     assert wpt.manager.previous_run(tmp_path, "d", built.dock, None) is None
+    assert wpt.manager.previous_run(tmp_path, "not-d", built.dock, None) == "other-20260101T000000Z"
+    # a file an older manager wrote says "of the recipe": its run is still found
+    (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the recipe not-d; once it is done\n")
     assert wpt.manager.previous_run(tmp_path, "not-d", built.dock, None) == "other-20260101T000000Z"
 
 

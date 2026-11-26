@@ -301,7 +301,8 @@ def build(depot: Depot, snapshot: str, data: dict, dock, tokenizer: Tokenizer, *
     data section data (the module says what it holds) into dock with
     tokenizer, whose sha256 and size the section names: the corpus's
     record. address: the depot's address the record names (the order's);
-    order: the order's name; tokenizer_recipe and tokenizer_version: the
+    order: the order's name, which the record names `recipe`, as the
+    depot's corpus.json does; tokenizer_recipe and tokenizer_version: the
     depot's tokenizer recipe and version the vocabulary is of, when known;
     code_commit: the code's commit, recorded only.
 
@@ -1280,7 +1281,7 @@ class _Build:
             "id": corpus_id, "folder": self.folder, "depot": self.address,
             "snapshot": {"id": self.snapshot["id"], "name": self.snapshot["name"], "owner": self.holder,
                          "change": self.snapshot["at_change"], "digest": self.snapshot["digest"]},
-            "order": self.order, "data": self.data, "build_key": self.key, "code_commit": self.code_commit,
+            "recipe": self.order, "data": self.data, "build_key": self.key, "code_commit": self.code_commit,
             "rules": RULES, "erasures": self.erasures, "built_at": built_at.isoformat(),
             "texts": state["taken"] - state["pieces"] + long_taken, "pieces": state["pieces"],
             "conversations": state["conversations"],

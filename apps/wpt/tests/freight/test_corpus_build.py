@@ -102,7 +102,7 @@ def test_a_corpus_holds_its_snapshot_s_texts_tokenized_with_their_credits_and_a_
     assert record["depot"] == HERE  # the order's address, recorded only
     assert record["snapshot"] == {"id": snapshot["id"], "name": snapshot["name"], "owner": "depot",
                                   "change": snapshot["at_change"], "digest": snapshot["digest"]}
-    assert (record["order"], record["code_commit"], record["rules"]) == ("first", "abc123", 8)
+    assert (record["recipe"], record["code_commit"], record["rules"]) == ("first", "abc123", 8)
     assert record["vocabulary"] == vocabulary() and record["max_tokens"] is None
     assert record["build_key"] == build_key(snapshot, section(snapshot), vocabulary()["sha256"])
     assert record["folder"] == f"corpora/{record['build_key']}"

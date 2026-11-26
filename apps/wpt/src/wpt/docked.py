@@ -43,8 +43,8 @@ def cmd_list(args, dock):
 
 def _source(record) -> str:
     """What a corpus was built for: its build key, snapshot and order (its
-    corpus.json's `order`, or `recipe` in an older one), or for a corpus
-    built before snapshots, its dataset."""
+    corpus.json's `recipe`, the key the depot wrote, or `order`), or for a
+    corpus built before snapshots, its dataset."""
     if "build_key" not in record:
         return f"dataset {record['dataset']['name']} of {record['depot']}"
     snapshot, size = record["snapshot"], record.get("max_tokens")

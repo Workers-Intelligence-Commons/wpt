@@ -33,7 +33,7 @@ recorded on another setup are refused. [model.md](model.md), "The drafter",
 says exactly what a replay guarantees.
 
 Each command also records each step that cannot be undone just before it
-(such as `store.model_kept`, `training.checkpoint_saved`,
+(such as `dock.model_kept`, `training.checkpoint_saved`,
 `training.checkpoint_deleted`, `model.folder_replaced`, `eval.file_written`). A result the dock keeps in `cache/`, which can be
 computed again (a step's result),
 is the event `dock.result_set` (`stage`, `fingerprint`, `sha256`), which goes

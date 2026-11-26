@@ -1,0 +1,77 @@
+{
+ "drafter": {
+  "features": [
+   2,
+   3
+  ],
+  "layers": 3,
+  "block": 5,
+  "markov_rank": 1
+ },
+ "settings": {
+  "epochs": 1,
+  "learning_rate": 0.0006,
+  "weight_decay": 0.0,
+  "warm_up": 0.04,
+  "clip": 1.0,
+  "anchors": 4,
+  "batch": 2,
+  "prompts": 4,
+  "prompt_tokens": 8,
+  "answer_tokens": 8,
+  "temperature": 1.0,
+  "top_k": null,
+  "held_out": 0.25,
+  "ece_bins": 15,
+  "seed": 0
+ },
+ "prompts": {
+  "count": 4,
+  "training": 3,
+  "held_out": 1,
+  "answer_tokens": 32
+ },
+ "losses": [
+  5.24260950088501
+ ],
+ "calibration": {
+  "temperatures": [
+   20.0,
+   20.0,
+   0.05000000074505806,
+   0.05000000074505806,
+   0.05000000074505806
+  ],
+  "ece_before": [
+   0.5341639518737793,
+   0.7767354249954224,
+   0.86217200756073,
+   0.8668577075004578,
+   0.8592492341995239
+  ],
+  "ece_after": [
+   0.01116594672203064,
+   0.7576278448104858,
+   0.7585872411727905,
+   0.7623869776725769,
+   0.7625217437744141
+  ],
+  "rounds": 2
+ },
+ "acceptance": {
+  "verified": 6,
+  "accepted": 5,
+  "rounds": 3,
+  "tokens_per_round": 2.6666666666666665
+ },
+ "corpus": "164cd6a0545fa99845f5940a6829ae29a440f586f3c36b73fdfc4ce908171f34",
+ "trained_by": {
+  "command": "wpt train",
+  "recipe_name": "d"
+ },
+ "target": {
+  "weights": {
+   "model.safetensors": "d679d3f026e4bfa9195490f0fec50896c06616addbc4e03868d7d341858d4be2"
+  }
+ }
+}
