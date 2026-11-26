@@ -289,8 +289,8 @@ class Telemetry:
     start(), join() or off(); a with block closes it and records how the
     run ended."""
 
-    def __init__(self, store, folder, command, live, echo, owner, parent=None):
-        self.store = DockRecords(store) if isinstance(store, str) else store
+    def __init__(self, dock, folder, command, live, echo, owner, parent=None):
+        self.dock = DockRecords(dock) if isinstance(dock, str) else dock
         self.folder, self.command = folder, command
         self._live, self._echo, self._owner = live, echo, owner
         # re-entrant: an interruption (the flush thread's, or Ctrl+C) can land just after the main
@@ -313,7 +313,7 @@ class Telemetry:
     # -- making one ----------------------------------------------------------------
 
     @classmethod
-    def start(cls, store, command, arguments, main_id, inputs=None, env_file=".env", environ=None, echo=None):
+    def start(cls, dock, command, arguments, main_id, inputs=None, env_file=".env", environ=None, echo=None):
         """A new run's record, in a new folder named after main_id (what the
         run is about: an order name, short(corpus id)...): start.json and
         ids.json are written before it returns (RecordError when the dock
@@ -322,7 +322,7 @@ class Telemetry:
         run = f"{moment:%Y%m%dT%H%M%SZ}-{as_record_name(command)}-{as_record_name(main_id)}-{secrets.token_hex(4)}"
         folder = run
         live = _Live(command, folder, _endpoint(env_file, environ), echo or say)
-        telemetry = cls(store, folder, command, live, echo or say, owner=True)
+        telemetry = cls(dock, folder, command, live, echo or say, owner=True)
         try:
             telemetry._write(START, _json({"command": command, "arguments": list(arguments),
                                            "started": _iso(moment), "trace": telemetry.trace,
@@ -337,7 +337,7 @@ class Telemetry:
         return telemetry
 
     @classmethod
-    def join(cls, store, command, environ, env_file=".env", echo=None, live=True):
+    def join(cls, dock, command, environ, env_file=".env", echo=None, live=True):
         """The record a launcher opened for this run (environ[JOIN_FOLDER]),
         under its span; this process writes events and ids, not start.json
         nor end.json. With live=False, it sends nothing live, whatever the
@@ -345,14 +345,14 @@ class Telemetry:
         folder = environ[JOIN_FOLDER]
         trace_id, span_id = (int(part, 16) for part in environ[JOIN_PARENT].split("-"))
         parent = SpanContext(trace_id, span_id, is_remote=True, trace_flags=TraceFlags(TraceFlags.SAMPLED))
-        store = DockRecords(store) if isinstance(store, str) else store
+        dock = DockRecords(dock) if isinstance(dock, str) else dock
         try:
-            store.read_record(folder, START)
+            dock.read_record(folder, START)
         except Exception as error:
-            raise RecordError(f"the record {folder} of this run could not be read from {store}: "
+            raise RecordError(f"the record {folder} of this run could not be read from {dock}: "
                               f"{type(error).__name__}: {error}") from None
         endpoint = _endpoint(env_file, environ) if live else None
-        telemetry = cls(store, folder, command, _Live(command, folder, endpoint, echo or say), echo or say,
+        telemetry = cls(dock, folder, command, _Live(command, folder, endpoint, echo or say), echo or say,
                         owner=False, parent=parent)
         try:
             telemetry._line({"kind": "span_start", "span": telemetry._root.id, "parent": f"{span_id:016x}",
@@ -376,7 +376,7 @@ class Telemetry:
         live backend. With flush, the lines held back are sent first, so the
         record is whole up to here."""
         self._check_open()
-        if self.store is None:
+        if self.dock is None:
             return {}
         if flush:
             self._flush()
@@ -433,7 +433,7 @@ class Telemetry:
         anything under it yet (within, finish); it stays open until end()
         or finish() ends it."""
         self._check_open()
-        if self.store is None and self._live is None:
+        if self.dock is None and self._live is None:
             return Span(None, None, name)
         live = self._live.start(name, self._top(), attributes)
         span = Span(_span_id(live), live, name)
@@ -545,7 +545,7 @@ class Telemetry:
         if self._live is None or self._live.failure is None:
             yield
             return
-        relay = _Relay(self.store, self.folder, self.trace, self._live, self._echo)
+        relay = _Relay(self.dock, self.folder, self.trace, self._live, self._echo)
         try:
             yield
         finally:
@@ -577,7 +577,7 @@ class Telemetry:
         try:
             self._stop_flushing()
             try:
-                if self.store is not None and self._broken is None and not isinstance(error, RecordError):
+                if self.dock is not None and self._broken is None and not isinstance(error, RecordError):
                     status, code, text = _ending(error)
                     self._end_span(self._root, self.command, self._clock, error if status != "succeeded" else None)
                     self._flush()
@@ -632,13 +632,13 @@ class Telemetry:
 
         def merge():
             try:
-                known = json.loads(self.store.read_record(self.folder, IDS))
+                known = json.loads(self.dock.read_record(self.folder, IDS))
             except MissingFile:
                 known = {"inputs": {}, "outputs": {}}
             known[part].update(ids)
-            self.store.write_record(self.folder, IDS, _json(known))
+            self.dock.write_record(self.folder, IDS, _json(known))
 
-        self._store_call(IDS, merge)
+        self._dock_call(IDS, merge)
 
     def _check_name(self, name):
         """ValueError for a name the record keeps for itself or the dock does
@@ -648,26 +648,26 @@ class Telemetry:
         check_record_name(name)
 
     def _line(self, line):
-        if self.store is None:
+        if self.dock is None:
             return
         self._append(EVENTS, (json.dumps({"time": _iso(datetime.now(UTC)), **line}, ensure_ascii=False,
                                          default=str) + "\n").encode())
 
     def _append(self, name, data):
-        self._store_call(name, lambda: self.store.append_record(self.folder, name, data))
+        self._dock_call(name, lambda: self.dock.append_record(self.folder, name, data))
 
     def _write(self, name, data):
-        self._store_call(name, lambda: self.store.write_record(self.folder, name, data))
+        self._dock_call(name, lambda: self.dock.write_record(self.folder, name, data))
 
     def _end_records(self):
         """The record ended: a local dock compresses the file it added the
         events to into one part."""
-        if self.store is not None:
-            self._store_call(EVENTS, lambda: self.store.end_records(self.folder))
+        if self.dock is not None:
+            self._dock_call(EVENTS, lambda: self.dock.end_records(self.folder))
 
     def _flush(self):
-        if self.store is not None:
-            self._store_call(EVENTS, self.store.flush_records)
+        if self.dock is not None:
+            self._dock_call(EVENTS, self.dock.flush_records)
 
     def _start_flushing(self):
         """Send the lines a dock holds back every FLUSH_SECONDS, from now on:
@@ -706,8 +706,8 @@ class Telemetry:
         if self._closed:
             raise RuntimeError(f"the record {self.folder} of {self.command} is closed: nothing more can be recorded")
 
-    def _store_call(self, name, call):
-        if self.store is None:
+    def _dock_call(self, name, call):
+        if self.dock is None:
             return
         with self._lock:
             if self._broken is not None:
@@ -717,7 +717,7 @@ class Telemetry:
             except MixedRecord:  # the caller's mistake, refused before anything was written: the record goes on
                 raise
             except Exception as error:  # whatever the folder or the bucket raised: the part is not stored
-                self._broken = (f"the record of this run could not be written to {self.store} "
+                self._broken = (f"the record of this run could not be written to {self.dock} "
                                 f"({self.folder}/{name}): {type(error).__name__}: {error}")
                 raise RecordError(self._broken) from error
 
@@ -820,9 +820,9 @@ class _Relay:
     """The thread of Telemetry.relay: it follows the record from its first
     line, until end()."""
 
-    def __init__(self, store, folder, trace_id, live, echo):
+    def __init__(self, dock, folder, trace_id, live, echo):
         self.folder, self.trace, self.live, self.echo = folder, int(trace_id, 16), live, echo
-        self.reader = store.record_reader(folder, EVENTS)
+        self.reader = dock.record_reader(folder, EVENTS)
         self.spans = {}  # the open spans of the lines read, by id
         self.cut = b""  # the start of a line whose end the next read brings
         self.warned = False
@@ -1014,12 +1014,12 @@ def _interrupt_main():
 def set_result(dock, stage, fingerprint, data, telemetry):
     """Keep data, a result the build can compute again, as
     cache/<stage>/<fingerprint> (dock.api.put_result): the event
-    "store.result_set" goes with the next group of lines, so a run that
+    "dock.result_set" goes with the next group of lines, so a run that
     keeps one result per source writes no part of the record for each. A
     crash may leave such a result unrecorded; it then only saves work. The
     result holds the commit that made it."""
     sha = dock_api.put_result(dock, stage, fingerprint, data, made_by=code_name())
-    telemetry.event("store.result_set", stage=stage, fingerprint=fingerprint, sha256=sha)
+    telemetry.event("dock.result_set", stage=stage, fingerprint=fingerprint, sha256=sha)
     return sha
 
 

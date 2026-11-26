@@ -29,8 +29,8 @@ repository's root (an empty value counts as unset):
                       (default runs/manager in the repository)
     WPT_MANAGER_COMMAND  how a command is run where the manager runs, for the lines it prints
                       (default "uv run"; the Compose file sets its own)
-    WPT_MANAGER_STATE where the manager keeps its runs' gpu workers, tokens included, never in the
-                      store, and the lock of each run it runs (default runs/manager-state in the
+    WPT_MANAGER_STATE where the manager keeps its runs' gpu workers, tokens included, never on the
+                      dock, and the lock of each run it runs (default runs/manager-state in the
                       repository; machines.py)
     WPT_MANAGER_CONTAINER
                       1 (the Compose file sets it): the manager is the container's one process;
@@ -153,7 +153,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from wpt_orders import OrderError, Orders
-from dock.api import NAME as STORE_NAME
+from dock.api import NAME as DOCK_NAME
 from dock import api as dock_api
 from dock.api import MissingFile, DockError
 from wic_utils.env import read_env_file
@@ -325,7 +325,7 @@ def mount_point(path, mountinfo: str) -> str:
                key=len, default="/")
 
 
-def store_in_layer(url) -> str | None:
+def dock_in_layer(url) -> str | None:
     """In a container, the folder of a file:// dock that is in the
     container's own layer (no mount holds it, so it goes with the
     container); None otherwise."""
@@ -377,7 +377,7 @@ def _main(argv, signalled) -> int:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
     name = environ.get("WPT_RUN") or None
-    if name is not None and not STORE_NAME.fullmatch(name):
+    if name is not None and not DOCK_NAME.fullmatch(name):
         say(f"WPT_RUN={name!r}: use letters, digits, '.', '_' and '-' only", ERROR)
         return leave(REFUSED)
     try:
@@ -389,7 +389,7 @@ def _main(argv, signalled) -> int:
     except (rental.RentalError, machines.WorkersError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
-    layer = store_in_layer(environ.get("DOCK", ""))
+    layer = dock_in_layer(environ.get("DOCK", ""))
     if layer is not None:
         say(f"DOCK names {layer}, which is in this container's own files, deleted with the container: name "
             "a bucket, or leave DOCK unset for the volume wpt-store, or set DOCK_FOLDER to that folder "
@@ -398,26 +398,26 @@ def _main(argv, signalled) -> int:
     folder = Path(environ.get("WPT_MANAGER_FOLDER") or root / DEFAULT_FOLDER)
     kept = Path(environ.get("WPT_MANAGER_STATE") or root / DEFAULT_STATE)
     try:
-        store = dock_api.url(root / ".env")
-        previous = previous_run(root, order, store, name)
+        dock = dock_api.url(root / ".env")
+        previous = previous_run(root, order, dock, name)
     except (DockError, ValueError) as error:
         say(f"{type(error).__name__}: {error}", ERROR)
         return leave(REFUSED)
     evaluate = environ.get("WPT_EVALUATE", "") in ("1", "true", "yes")
     code, continued, postponed = 0, [], False
-    stop_rentals(store, kept, environ, root, arguments)  # those a run that ended could not stop
+    stop_rentals(dock, kept, environ, root, arguments)  # those a run that ended could not stop
     for path in machines.files(kept):  # the runs a crash or a stop cut short go on first
         workers = machines.Workers.claim(path)
         if workers is None:  # another manager runs it now
             continue
         try:
-            if not unfinished(store, workers.run):
+            if not unfinished(dock, workers.run):
                 workers.end()
             elif signalled.asked and not workers.groups():
                 postponed = True  # it costs nothing: the next start goes on with it
             else:  # after a SIGTERM, one_run() starts no command and its rentals are given back
                 say(f"run {workers.run} did not end: it goes on, reconnecting to its gpu workers")
-                code = one_run(workers.state["recipe"], workers.run, folder, evaluate, store, environ, root,
+                code = one_run(workers.state["order"], workers.run, folder, evaluate, dock, environ, root,
                                workers, arguments, signalled)
                 continued.append(workers.run)
         finally:
@@ -445,15 +445,15 @@ def _main(argv, signalled) -> int:
             code = REFUSED
         else:
             try:
-                code = one_run(order, name, folder, evaluate, store, environ, root, workers, arguments, signalled)
+                code = one_run(order, name, folder, evaluate, dock, environ, root, workers, arguments, signalled)
             finally:
                 workers.release()
-    left = stop_rentals(store, kept, environ, root, arguments)
+    left = stop_rentals(dock, kept, environ, root, arguments)
     while left:  # money is spent while a rental runs: the manager stays, trying
         say(f"{left} rental(s) are still rented: the manager tries to stop them again in {SWEEP:.0f} s", WARNING,
             sys.stdout)
         time.sleep(SWEEP)
-        left = stop_rentals(store, kept, environ, root, arguments)
+        left = stop_rentals(dock, kept, environ, root, arguments)
     return leave(code)
 
 
@@ -471,7 +471,7 @@ def stop_command(arguments, kept) -> int:
     return 0
 
 
-def previous_run(root, order, store, name) -> str | None:
+def previous_run(root, order, dock, name) -> str | None:
     """The run RUN_FILE names when it is a run of order whose model is not
     on the dock: a run that did not end well, which the same command goes
     on with. name: what the settings name, which it must then be."""
@@ -480,13 +480,13 @@ def previous_run(root, order, store, name) -> str | None:
     except (OSError, IndexError):
         return None
     found = RUN_LINE.match(first)
-    if (found and found[2] == order and STORE_NAME.fullmatch(found[1]) and name in (None, found[1])
-            and not has_model(store, found[1])):
+    if (found and found[2] == order and DOCK_NAME.fullmatch(found[1]) and name in (None, found[1])
+            and not has_model(dock, found[1])):
         return found[1]
     return None
 
 
-def stop_rentals(store, kept, environ, root, arguments) -> int:
+def stop_rentals(dock, kept, environ, root, arguments) -> int:
     """Try to stop every rental still named in the file of a run that ended
     (machines.with_rentals): the manager could not stop them when the run
     ended. Each try is in a record of its own (command wpt manager). Returns
@@ -497,7 +497,7 @@ def stop_rentals(store, kept, environ, root, arguments) -> int:
         return 0
     left = 0
     try:
-        with Telemetry.start(store, "wpt manager", arguments, "rentals",
+        with Telemetry.start(dock, "wpt manager", arguments, "rentals",
                              inputs={"stop_rentals": [path.stem for path in waiting]},
                              env_file=root / ".env") as telemetry:
             for path in waiting:
@@ -518,33 +518,33 @@ def stop_rentals(store, kept, environ, root, arguments) -> int:
     return left
 
 
-def unfinished(store, name) -> bool:
-    """Whether the run name did not end: no model of that name in the
-    store, and no record of a wpt manager run of it, or the last one has no
+def unfinished(dock, name) -> bool:
+    """Whether the run name did not end: no model of that name on the
+    dock, and no record of a wpt manager run of it, or the last one has no
     end (a crash or a stop cut it short)."""
-    if has_model(store, name):
+    if has_model(dock, name):
         return False
     found = []
-    for folder in dock_api.record_folders(store):
+    for folder in dock_api.record_folders(dock):
         if "-wpt-manager-" not in folder:
             continue
         try:
-            start = json.loads(dock_api.read_record(store, folder, "start.json"))
+            start = json.loads(dock_api.read_record(dock, folder, "start.json"))
         except (MissingFile, ValueError):
             continue
         if start.get("command") == "wpt manager" and start.get("inputs", {}).get("run") == name:
             found.append((start.get("started", ""), folder))
-    return not found or "end.json" not in dock_api.record_files(store, max(found)[1])
+    return not found or "end.json" not in dock_api.record_files(dock, max(found)[1])
 
 
-def one_run(order, name, folder, evaluate, store, environ, root, workers, arguments, signalled) -> int:
+def one_run(order, name, folder, evaluate, dock, environ, root, workers, arguments, signalled) -> int:
     """One run, recorded, its file then marked ended (whatever its
     outcome: a person starts it again with the same WPT_RUN); its exit
     code."""
     try:
-        with Telemetry.start(store, "wpt manager", arguments, name, inputs={"recipe": order, "run": name},
+        with Telemetry.start(dock, "wpt manager", arguments, name, inputs={"order": order, "run": name},
                              env_file=root / ".env") as telemetry:
-            code = _run(order, name, folder / name, evaluate, store, telemetry, environ, root, workers, signalled)
+            code = _run(order, name, folder / name, evaluate, dock, telemetry, environ, root, workers, signalled)
             if code:
                 raise SystemExit(code)  # recorded as the run's exit code
         code = 0
@@ -557,24 +557,24 @@ def one_run(order, name, folder, evaluate, store, environ, root, workers, argume
     return code
 
 
-def task_images(store, record) -> list[str]:
+def task_images(dock, record) -> list[str]:
     """The images the corpus's tasks name, each once, in order."""
     part = record.get("tasks")
-    lines = [] if part is None else dock_api.fetch(store, part["file"]["key"],
+    lines = [] if part is None else dock_api.fetch(dock, part["file"]["key"],
                                                     part["file"]["sha256"]).decode("utf-8").splitlines()
     return sorted({json.loads(line)["content"]["task"]["image"] for line in lines if line.strip()})
 
 
-def _run(order, name, out, evaluate, store, telemetry, environ, root, workers, signalled) -> int:
+def _run(order, name, out, evaluate, dock, telemetry, environ, root, workers, signalled) -> int:
     log = telemetry.log
     stops = Stops(workers, rental.cap(environ), rental.deadline(environ), telemetry, signalled)
     held = stops if workers.groups() else None  # rentals a crash left: the commands before training pay for them too
     try:
         if held is not None and signalled.asked:  # the run's file, marked ended, has its rentals given back
             held.halt("images")
-        with telemetry.span("manager.corpus", recipe=order) as span:
+        with telemetry.span("manager.corpus", order=order) as span:
             try:
-                record = find_corpus(store, environ.get("WPT_CORPUS") or None, Orders(root).data_part(order), log)
+                record = find_corpus(dock, environ.get("WPT_CORPUS") or None, Orders(root).data_part(order), log)
                 Orders(root).model_order(order, record["tokenizer"]["vocab_size"])  # a size of a series derives
             except (InputError, OrderError) as error:
                 log(f"{type(error).__name__}: {error}", ERROR)
@@ -582,7 +582,7 @@ def _run(order, name, out, evaluate, store, telemetry, environ, root, workers, s
             span.set(corpus=record["id"])
         telemetry.input(corpus=record["id"])
         log(f"corpus {record['id']}: the run trains on it")
-        images = task_images(store, record)
+        images = task_images(dock, record)
         if images:  # the sandboxes' images, built where the sandboxes run
             with telemetry.span("manager.images", images=images):
                 for image in images:
@@ -599,13 +599,13 @@ def _run(order, name, out, evaluate, store, telemetry, environ, root, workers, s
         log(f"{error}: the run stops here; the same command goes on from what is kept", ERROR)
         return error.code
     with telemetry.span("manager.model", folder=str(out)) as span:
-        files = put_model(store, name, out)
-        telemetry.irreversible("store.model_kept", model=name, files=len(files))
-        keep_model(store, name, files)
+        files = put_model(dock, name, out)
+        telemetry.irreversible("dock.model_kept", model=name, files=len(files))
+        keep_model(dock, name, files)
         span.set(files=len(files))
     telemetry.output(model=name)
     shutil.rmtree(out)  # the dock holds it: copy-out gives it back
-    log(f"model {name} kept in {store}; copy it out with:")
+    log(f"model {name} kept in {dock}; copy it out with:")
     log(copy_out_line(name, environ))
     return 0
 

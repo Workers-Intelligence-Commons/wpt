@@ -83,7 +83,7 @@ while (found := read()) is not None:
 @pytest.fixture
 def freight(tmp_path, monkeypatch):
     """A depot at depot (its Depot; me, the declaration its decisions take), with one snapshot of 12 plain
-    texts tagged en and 6 tagged de, of several lengths; a dock, by its URL (store, and dock, the same); a freight home; the program fake; and request(**settings),
+    texts tagged en and 6 tagged de, of several lengths; a dock, by its URL (dock); a freight home; the program fake; and request(**settings),
     the request of that snapshot with shares en 0.7 / de 0.3 and a size of 1,500 bytes
     of text, prepared by fake with those settings."""
     monkeypatch.chdir(tmp_path)  # no .env of the checkout is read
@@ -100,7 +100,7 @@ def freight(tmp_path, monkeypatch):
     added = depot.add(texts, ME)
     depot.decide("admitted", f"id IN ({', '.join(repr(one) for one in added)})", ME)
     name = depot.create_snapshot()["name"]
-    store = (tmp_path / "dock").as_uri()
+    dock = (tmp_path / "dock").as_uri()
 
     def request(**settings) -> dict:
         snapshot = depot.snapshot(name)
@@ -110,5 +110,5 @@ def freight(tmp_path, monkeypatch):
                               "size": {"unit": "bytes-of-text", "amount": 1500}},
                 "preparation": {"name": "fake", "settings": settings, "inputs": {}}}
 
-    return SimpleNamespace(me=ME, depot=depot, texts=added, store=store, dock=store,
+    return SimpleNamespace(me=ME, depot=depot, texts=added, dock=dock,
                            home=str(tmp_path / "home"), request=request, tmp_path=tmp_path)

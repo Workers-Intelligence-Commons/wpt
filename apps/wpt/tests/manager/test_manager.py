@@ -10,7 +10,7 @@ import pytest
 from depot import NewText
 from wpt_corpus import corpora
 from wpt.manager import RUN_FILE, main, mount_point, task_images
-from wpt.docked import main as store_command
+from wpt.docked import main as dock_command
 from wpt_telemetry import file_hashes
 
 
@@ -42,7 +42,7 @@ def test_one_command_trains_on_the_order_s_corpus_and_keeps_the_model_under_the_
     assert copy_out in capsys.readouterr().out
 
     assert not (tmp_path / "runs" / "manager" / name).exists()
-    assert store_command(["copy-out", name, str(tmp_path / "copy")]) == 0
+    assert dock_command(["copy-out", name, str(tmp_path / "copy")]) == 0
     [train] = built.records("wpt train")
     [written] = [e["attributes"]["files"] for e in train.events if e.get("name") == "model.files"]
     assert file_hashes(tmp_path / "copy") == written
@@ -53,7 +53,7 @@ def test_one_command_trains_on_the_order_s_corpus_and_keeps_the_model_under_the_
     assert run.end["status"] == "succeeded"
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
         "manager.corpus", "manager.workers", "manager.train", "manager.model"]
-    assert [e["attributes"]["model"] for e in run.events if e.get("name") == "store.model_kept"] == [name]
+    assert [e["attributes"]["model"] for e in run.events if e.get("name") == "dock.model_kept"] == [name]
     assert train.start["arguments"][:2] == ["d", corpus] and "--run" in train.start["arguments"]
 
 
@@ -88,9 +88,9 @@ def test_the_images_to_build_are_those_the_corpus_s_tasks_name_each_once(built):
             "instructions": "Say hello.", "image": image, "needs": [],
             "limits": {"max_turns": 2, "max_tokens": 6, "command_seconds": 5}}, "files": {}, "check": check}))
 
-    assert task_images(built.store, corpora.find(built.store, built.corpus_id)) == []
+    assert task_images(built.dock, corpora.find(built.dock, built.corpus_id)) == []
     found = built.snapshot("tasks", [task("tiny"), task("agent"), task("tiny")])
-    assert task_images(built.store, corpora.find(built.store, found)) == ["agent", "tiny"]
+    assert task_images(built.dock, corpora.find(built.dock, found)) == ["agent", "tiny"]
 
 
 def test_the_manager_reads_its_settings_from_dot_env_when_the_environment_leaves_them_unset(built, tmp_path,

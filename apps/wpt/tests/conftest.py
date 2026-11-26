@@ -69,7 +69,7 @@ def built(tmp_path, monkeypatch):
     size, url=None), which builds the corpus of the snapshot label at that
     size, its record naming the depot by url (default: its name), and
     returns its record."""
-    store = (tmp_path / "store").as_uri()
+    dock = (tmp_path / "dock").as_uri()
     depot = Depot.new(str(tmp_path / "depot"), About("fox", "Ada Writer", "ada@example.org"))
     depot.add_license(*LICENSE)
     stories = [f"story {i}: the quick brown fox jumps over the lazy dog. " * 30 for i in range(16)]
@@ -91,8 +91,8 @@ def built(tmp_path, monkeypatch):
 
     def sized(label, size, url=None) -> dict:
         snapshot = depot.snapshot(names[label])
-        return build(depot, snapshot["id"], data_of(label, size), store, tokenizer, address=url or depot.name(),
-                     recipe=label, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
+        return build(depot, snapshot["id"], data_of(label, size), dock, tokenizer, address=url or depot.name(),
+                     order=label, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
 
     def write(kind, name, document):
         path = tmp_path / "data" / "orders" / f"{kind}s" / f"{name}.json"
@@ -110,7 +110,7 @@ def built(tmp_path, monkeypatch):
 
     def order(name="d", model=None, training=None, drafter=None, steps=(), snapshot="d"):
         text = {**ONE_STEP, **(training or {})}
-        whole = next((one for one in corpora.records(store)
+        whole = next((one for one in corpora.records(dock)
                       if one.get("snapshot", {}).get("name") == names.get(snapshot, snapshot)
                       and one["max_tokens"] is None), None)
         total = whole["total_tokens"] if whole else 3000
@@ -122,7 +122,7 @@ def built(tmp_path, monkeypatch):
 
     corpus_id = snapshot("d", [NewText(text=story, notice=NOTICE) for story in stories])
     order()
-    monkeypatch.setenv("DOCK", store)  # where each command run also writes its record
+    monkeypatch.setenv("DOCK", dock)  # where each command run also writes its record
     monkeypatch.setenv("DEPOT", depot.address)  # the depot the orders name (by its name: it has no public address)
     monkeypatch.delenv("DEPOT_URL", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)  # no live backend, whatever this machine sets
@@ -131,18 +131,18 @@ def built(tmp_path, monkeypatch):
 
     def records(command):
         found = []
-        for folder in dock_api.record_folders(store):
-            start = json.loads(dock_api.read_record(store, folder, "start.json"))
+        for folder in dock_api.record_folders(dock):
+            start = json.loads(dock_api.read_record(dock, folder, "start.json"))
             if start["command"] == command:
                 found.append(SimpleNamespace(
-                    folder=folder, start=start, ids=json.loads(dock_api.read_record(store, folder, "ids.json")),
+                    folder=folder, start=start, ids=json.loads(dock_api.read_record(dock, folder, "ids.json")),
                     events=[json.loads(line) for line in
-                            dock_api.read_record(store, folder, "events.jsonl").splitlines()],
-                    end=json.loads(dock_api.read_record(store, folder, "end.json"))
-                    if "end.json" in dock_api.record_files(store, folder) else None))
+                            dock_api.read_record(dock, folder, "events.jsonl").splitlines()],
+                    end=json.loads(dock_api.read_record(dock, folder, "end.json"))
+                    if "end.json" in dock_api.record_files(dock, folder) else None))
         return sorted(found, key=lambda run: run.start["started"])
 
-    return SimpleNamespace(store=store, depot=depot, corpus_id=corpus_id, notice=NOTICE, order=order,
+    return SimpleNamespace(dock=dock, depot=depot, corpus_id=corpus_id, notice=NOTICE, order=order,
                            records=records, snapshot=snapshot, sized=sized, vocabulary=vocabulary["sha256"],
                            tokenizer=tokenizer, data=data_of, names=names)
 
@@ -211,7 +211,7 @@ def trained(request, built, tmp_path, monkeypatch):
 def s3(tmp_path, monkeypatch):
     """An S3 dock that DOCK now names (moto answers its requests inside
     the test process).
-    Gives store, copy(local), which puts a local dock's files into it, its
+    Gives dock, copy(local), which puts a local dock's files into it, its
     run records left out (the built corpus, for a command that reads it),
     and refuse(marker), after which the bucket refuses every group of
     record lines that holds marker: once such a line is added, every send
@@ -227,28 +227,28 @@ def s3(tmp_path, monkeypatch):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = "s3://wpt-test/store"
-        monkeypatch.setenv("DOCK", store)
+        dock = "s3://wpt-test/dock"
+        monkeypatch.setenv("DOCK", dock)
 
         def copy(local):
             for found in dock_api.find(local, ""):
                 if not found["key"].startswith("runs/"):
-                    dock_api.put(store, found["key"], dock_api.stream(local, found["key"]))
+                    dock_api.put(dock, found["key"], dock_api.stream(local, found["key"]))
 
         def refuse(marker):
             append, flush, held = dock_api.append_record, dock_api.flush_records, []
 
-            def appending(dock, run, name, data):
-                append(dock, run, name, data)
-                if dock == store and marker in data:
+            def appending(url, run, name, data):
+                append(url, run, name, data)
+                if url == dock and marker in data:
                     held.append(name)
 
-            def refusing(dock):
-                if dock == store and held:
+            def refusing(url):
+                if url == dock and held:
                     raise OSError("the bucket refused the request")
-                flush(dock)
+                flush(url)
 
             monkeypatch.setattr(dock_api, "append_record", appending)
             monkeypatch.setattr(dock_api, "flush_records", refusing)
 
-        yield SimpleNamespace(store=store, copy=copy, refuse=refuse)
+        yield SimpleNamespace(dock=dock, copy=copy, refuse=refuse)

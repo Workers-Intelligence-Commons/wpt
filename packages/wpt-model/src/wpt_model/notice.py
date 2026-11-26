@@ -40,7 +40,7 @@ from pathlib import Path
 from wic_utils.programs import code_name
 
 from .config import layer_kinds
-from .provenance import corpus_id, corpus_label, deliveries, on_snapshot
+from .provenance import corpus_id, corpus_label, deliveries, on_snapshot, order_name
 
 LICENSE = "AGPL-3.0-or-later"
 OUTPUT_LICENSE = "CC0-1.0"
@@ -167,7 +167,7 @@ def _drafter(drafter, provenance):
     trained, target = provenance.get("trained_by"), (provenance.get("target") or {}).get("weights")
     if trained:
         corpus = provenance.get("corpus")
-        lines.append(f"- Trained by `{trained['command']}`, order `{trained['recipe_name']}`, the model frozen, on "
+        lines.append(f"- Trained by `{trained['command']}`, order `{order_name(trained)}`, the model frozen, on "
                      "answers the model wrote itself to the beginnings of the plain texts of corpus "
                      f"`{(corpus or 'unknown')[:12]}`")
     if target:

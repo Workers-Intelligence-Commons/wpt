@@ -39,19 +39,19 @@ def one_stage(steps, block_size=16, batch_size=4):
     return {"stages": [{"block_size": block_size, "steps": steps, "batch_size": batch_size}]}
 
 
-def checkpoint(store, name):
+def checkpoint(dock, name):
     """The file of the checkpoint of the run name, None without one."""
-    return DockCheckpoint(store, name, None, set()).state_file()
+    return DockCheckpoint(dock, name, None, set()).state_file()
 
 
-def forget_steps(store):
+def forget_steps(dock):
     """Forget every step result the dock keeps, as a dock that never saw
     these orders: the next run trains every step again."""
-    shutil.rmtree(dock_files.folder(store) / "cache" / "steps", ignore_errors=True)
+    shutil.rmtree(dock_files.folder(dock) / "cache" / "steps", ignore_errors=True)
 
 
 def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatch, capsys):
-    store, corpus_id = built.store, built.corpus_id
+    dock, corpus_id = built.dock, built.corpus_id
     order = built.order("three", training=one_stage(3))
     monkeypatch.setenv("WPT_ORDER", order)  # the order and the corpus come from the environment too
     monkeypatch.setenv("WPT_CORPUS", corpus_id)
@@ -59,7 +59,7 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
 
     model = load_model(tmp_path / "model")
     assert model.config.n_layer == 5 and model.config.block_size == 16  # the order's numbers
-    record = readers.find(store, corpus_id)
+    record = readers.find(dock, corpus_id)
     # the weights name the corpus's vocabulary, and only that file loads with them
     assert tokenizer_identity(tmp_path / "model") == ("t version 1", record["tokenizer"]["vocabulary"]["sha256"])
     tokenizer = Tokenizer.from_bytes(load_tokenizer(tmp_path / "model"))
@@ -75,12 +75,12 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     assert provenance["repository_commit"] is not None
     assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
     assert provenance["learned"] == {"plain": record["total_tokens"]}  # the order trains on the whole corpus
-    assert provenance["recipe_name"] == "three"
-    assert provenance["recipe"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
+    assert provenance["order_name"] == "three"
+    assert provenance["order"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
     [step] = provenance["steps"]
     assert step["step"]["name"] == "read-text" and step["updates"] == 3 and not step["reused"]
     # the step's result is kept on the dock, under its fingerprint
-    assert hashlib.sha256(dock_api.get_result(store, "steps", step["fingerprint"])[0]).hexdigest() == step["result"]
+    assert hashlib.sha256(dock_api.get_result(dock, "steps", step["fingerprint"])[0]).hexdigest() == step["result"]
     assert [s["token_sha256"] for s in provenance["shards"]] == [s["token_sha256"] for s in record["shards"]["plain"]]
 
 
@@ -101,7 +101,7 @@ def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built,
 
     [run] = built.records("wpt train")
     assert run.end["status"] == "succeeded" and run.end["exit_code"] == 0
-    assert run.ids["inputs"]["recipe"] == "three" and run.ids["inputs"]["corpus"] == built.corpus_id
+    assert run.ids["inputs"]["order"] == "three" and run.ids["inputs"]["corpus"] == built.corpus_id
     assert f"-wpt-train-{built.corpus_id[:8]}-" in run.folder  # its folder is found by the corpus it trained on
     steps = [e for e in run.events if e.get("name") == "training.step"]
     assert [e["attributes"]["step"] for e in steps] == [1, 2, 3]
@@ -145,14 +145,14 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
     folder = tmp_path / "model"
     drafter = load_drafter(folder).provenance
     assert drafter["target"] == {"weights": weight_hashes(folder)}
-    assert drafter["trained_by"] == {"command": "wpt train", "recipe_name": "three"}
+    assert drafter["trained_by"] == {"command": "wpt train", "order_name": "three"}
     assert drafter["corpus"] == built.corpus_id and drafter["prompts"]["count"] == 4
     [run] = built.records("wpt train")
     names = [e.get("name") for e in run.events]
     assert names.index("drafter.settings") > max(i for i, name in enumerate(names) if name == "training.step")
     assert run.ids["outputs"]["drafter"] == hashlib.sha256((folder / "drafter" / "model.safetensors").read_bytes()
                                                            ).hexdigest()
-    recorded = dock_api.read_record(built.store, run.folder, COSTS_FILE)
+    recorded = dock_api.read_record(built.dock, run.folder, COSTS_FILE)
     # the times carry the setup they were measured on
     setup = costs_setup(load_model(folder).config, 1, DRAFT, select_device())
     assert json.loads(recorded)["setup"] == setup
@@ -162,7 +162,7 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "again", "--scheduler-costs",
           run.folder])
     replayed = built.records("wpt train")[-1]
-    assert dock_api.read_record(built.store, replayed.folder, COSTS_FILE) == recorded
+    assert dock_api.read_record(built.dock, replayed.folder, COSTS_FILE) == recorded
     # refused before training, not after: no such record, or times measured on another setup
     for order, record, why in ((built.order("three", training=one_stage(3)), "no-such-run", "MissingFile"),
                                 (built.order("block", training=one_stage(3), drafter={"block": 4}), run.folder,
@@ -183,7 +183,7 @@ def test_a_run_without_its_drafter_saves_the_same_weights_and_the_same_command_t
     # and the same command without the option reuses every step and trains only the drafter
     order = built.order("three", training=one_stage(3))
     main([order, built.corpus_id, "--out", "with"])
-    forget_steps(built.store)  # trained again from the start, not reused
+    forget_steps(built.dock)  # trained again from the start, not reused
     main([order, built.corpus_id, "--out", "without", "--no-drafter"])
     with_drafter, without = tmp_path / "with", tmp_path / "without"
     same = lambda: all(torch.equal(value, weights(with_drafter)[name]) for name, value in weights(without).items())
@@ -194,13 +194,13 @@ def test_a_run_without_its_drafter_saves_the_same_weights_and_the_same_command_t
     with pytest.raises(DrafterMismatch, match="saved without a drafter"):
         load_drafter(without)
     assert "`wpt train --no-drafter` saved the model without one" in (without / "README.md").read_text()
-    open_context(without, built.store)  # wpt eval reads it
+    open_context(without, built.dock)  # wpt eval reads it
     run = built.records("wpt train")[-1]
     assert [e["attributes"]["step"] for e in run.events if e.get("name") == "training.step"] == [1, 2, 3]
     assert not [e for e in run.events if e.get("name", "").startswith("drafter")]
     assert run.ids["outputs"]["drafter"] is None
     with pytest.raises(Exception):
-        dock_api.read_record(built.store, run.folder, COSTS_FILE)  # nothing is measured for a scheduler
+        dock_api.read_record(built.dock, run.folder, COSTS_FILE)  # nothing is measured for a scheduler
     assert "drafter: none (--no-drafter)" in capsys.readouterr().out
 
     main([order, built.corpus_id, "--out", "without", "--resume"])
@@ -248,7 +248,7 @@ def test_a_run_that_cannot_compile_trains_uncompiled_and_says_why_in_one_line(bu
     main([built.order("two", training=one_stage(2)), built.corpus_id, "--out", "model"])
     said = [line for line in bare(capsys.readouterr().out).splitlines() if "compile:" in line]
     assert len(said) == 1 and "compile: off, since the passes compile on a CUDA device only" in said[0]
-    forget_steps(built.store)  # it trains again
+    forget_steps(built.dock)  # it trains again
     main([built.order("two", training=one_stage(2)), built.corpus_id, "--out", "other", "--no-compile"])
     assert "compile:" not in capsys.readouterr().out
     from wpt.train import parse_args
@@ -291,7 +291,7 @@ def test_a_drafter_that_cannot_be_trained_refuses_the_run_and_its_steps_stay_kep
     assert not (tmp_path / "model" / "config.json").exists() and not (tmp_path / "model" / "checkpoint").exists()
     [run] = built.records("wpt train")
     names = [e.get("name") for e in run.events if e["kind"] != "span_start"]
-    assert names.count("training.checkpoint") == 1 and names.count("store.result_set") == 1  # the step's result
+    assert names.count("training.checkpoint") == 1 and names.count("dock.result_set") == 1  # the step's result
     assert names.index("training.checkpoint") > max(i for i, name in enumerate(names) if name == "training.step")
     # the drafter's section takes no part in a step's fingerprint: a fixed one reuses the kept step
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
@@ -346,7 +346,7 @@ def test_a_send_refused_in_the_background_keeps_the_step_in_the_dock_checkpoint(
     options = [*interrupting(built, tmp_path, "if os.environ.get('REFUSE'): open(os.environ['REFUSE'], 'w').close(); "
                                               "__import__('time').sleep(2)"), "--checkpoint-every", "1"]
     main([*options, "--out", "whole"])
-    forget_steps(built.store)
+    forget_steps(built.dock)
 
     monkeypatch.setenv("REFUSE", str(now))
     with pytest.raises(SystemExit) as stopped:
@@ -354,17 +354,17 @@ def test_a_send_refused_in_the_background_keeps_the_step_in_the_dock_checkpoint(
     monkeypatch.delenv("REFUSE")
     now.unlink()
     assert stopped.value.code == 3 and "No space left on device" in capsys.readouterr().err
-    saved = checkpoint(built.store, "fox-1")
-    assert load_state(dock_files.into(built.store, saved, tmp_path / "saved"))["step"] == 3
+    saved = checkpoint(built.dock, "fox-1")
+    assert load_state(dock_files.into(built.dock, saved, tmp_path / "saved"))["step"] == 3
     run = built.records("wpt train")[-1]
     named = [e["attributes"]["state"] for e in run.events
              if e.get("name") == "training.checkpoint_saved"]
-    assert len(named) == 2 and saved["key"] not in named and dock_files.has(built.store, named[-1])  # steps 1 and 2; 2's file stays
+    assert len(named) == 2 and saved["key"] not in named and dock_files.has(built.dock, named[-1])  # steps 1 and 2; 2's file stays
 
     main([*options, "--out", "there", "--run", "fox-1", "--resume"])
     whole, there = weights(tmp_path / "whole"), weights(tmp_path / "there")
     assert all(torch.equal(whole[k], there[k]) for k in whole)
-    assert checkpoint(built.store, "fox-1") is None and dock_files.has(built.store, named[-1])
+    assert checkpoint(built.dock, "fox-1") is None and dock_files.has(built.dock, named[-1])
 
 
 def test_training_into_a_model_folder_replaces_it_whole_and_only_once_recorded(built, tmp_path, monkeypatch):
@@ -398,7 +398,7 @@ def test_training_into_a_model_folder_replaces_it_whole_and_only_once_recorded(b
 
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert not (folder / "evals").exists() and not (folder / "notes.txt").exists()
-    assert json.loads((folder / "provenance.json").read_text())["recipe_name"] == "three"
+    assert json.loads((folder / "provenance.json").read_text())["order_name"] == "three"
     run = built.records("wpt train")[-1]
     assert run.ids["outputs"]["weights"] == {
         "model.safetensors": hashlib.sha256((folder / "model.safetensors").read_bytes()).hexdigest()}
@@ -409,7 +409,7 @@ def test_on_s3_the_model_folder_is_replaced_only_once_its_record_is_in_the_bucke
     # S3 holds record lines back: the lines naming the new files must be in
     # the bucket before the earlier folder goes, so a refused send leaves it
     # as it was
-    s3.copy(built.store)
+    s3.copy(built.dock)
     folder = tmp_path / "model"
     folder.mkdir()
     (folder / "notes.txt").write_text("mine\n")
@@ -440,17 +440,17 @@ def test_every_checkpoint_deleted_from_the_dock_is_named_in_the_record_first(bui
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model", "--checkpoint-every", "1",
           "--run", "fox-1"])
     assert len({sha for sha, _ in deleted}) == 2 and all(named for _, named in deleted)
-    assert checkpoint(built.store, "fox-1") is None
+    assert checkpoint(built.dock, "fox-1") is None
     [step] = json.loads((tmp_path / "model" / "provenance.json").read_text())["steps"]
-    state = json.loads(dock_api.get_result(built.store, "steps", step["fingerprint"])[0])["state"]
-    assert dock_files.has(built.store, state) and state["key"] not in {key for key, _ in deleted}
+    state = json.loads(dock_api.get_result(built.dock, "steps", step["fingerprint"])[0])["state"]
+    assert dock_files.has(built.dock, state) and state["key"] not in {key for key, _ in deleted}
     assert state["key"].startswith("models/fox-1/")  # beside the run's checkpoint record
 
 
 def test_on_s3_a_checkpoint_is_deleted_only_once_its_deletion_is_in_the_bucket(built, s3, tmp_path, monkeypatch):
     # S3 holds record lines back: a deletion the bucket did not record must
     # not happen, so the previous checkpoint stays
-    s3.copy(built.store)
+    s3.copy(built.dock)
     deleted, real = [], dock_api.delete
     monkeypatch.setattr(dock_api, "delete", lambda dock, key: deleted.append(key) if "/state-" in key else real(dock, key))
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")
@@ -459,7 +459,7 @@ def test_on_s3_a_checkpoint_is_deleted_only_once_its_deletion_is_in_the_bucket(b
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model",
               "--checkpoint-every", "1", "--run", "fox-1"])
     assert stopped.value.code == 3 and deleted == []
-    assert checkpoint(s3.store, "fox-1") is not None
+    assert checkpoint(s3.dock, "fox-1") is not None
 
 
 @pytest.mark.parametrize("error", [PermissionError(13, "Permission denied"), KeyboardInterrupt()],
@@ -528,7 +528,7 @@ def test_an_earlier_folder_that_cannot_be_put_back_is_named_with_the_new_one(bui
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert not (tmp_path / "model").exists() and str(failed.value.aside) in str(failed.value)
     assert (failed.value.aside / "model.safetensors").read_bytes() == earlier
-    assert json.loads((failed.value.new / "provenance.json").read_text())["recipe_name"] == "three"
+    assert json.loads((failed.value.new / "provenance.json").read_text())["order_name"] == "three"
 
 
 def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from(built, tmp_path):
@@ -540,13 +540,13 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
     credits = (folder / "CREDITS").read_text()
     learned = credits.split("\n\n", 1)[0].splitlines()
     texts = {(one["depot"], one["id"]): one
-             for one in readers.rows(built.store, readers.find(built.store, built.corpus_id), "texts")}
+             for one in readers.rows(built.dock, readers.find(built.dock, built.corpus_id), "texts")}
     assert len(learned) == len(texts) == 16  # the step read every token of the plain texts
     assert all(line.startswith(f"{built.depot.name()} ") and "; MIT; notice " in line for line in learned)
     assert f"\n{built.notice}\n" in credits and "MIT (MIT License)\nCopyright (c) 2026 Ada Writer" in credits
     notice = (folder / "NOTICE").read_text()
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
-    snapshot = readers.find(built.store, built.corpus_id)["snapshot"]
+    snapshot = readers.find(built.dock, built.corpus_id)["snapshot"]
     trained_on = (f"Trained on snapshot {built.names['d']} (change {snapshot['change']}, digest {snapshot['digest']}) of the depot "
                   f"{built.depot.name()}, order d, code at commit ")
     assert trained_on in notice and f"corpus {built.corpus_id}:" in notice
@@ -563,10 +563,10 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
 
 
 def test_a_damaged_shard_stops_training_before_it_starts(built, tmp_path, capsys):
-    store, corpus_id = built.store, built.corpus_id
-    record = readers.find(store, corpus_id)
+    dock, corpus_id = built.dock, built.corpus_id
+    record = readers.find(dock, corpus_id)
     shard = shard_file(record["shards"]["plain"][0])
-    [path] = (dock_files.folder(store) / shard["key"]).parent.glob(shard["key"].rsplit("/", 1)[1] + "*")  # as it is, or compressed
+    [path] = (dock_files.folder(dock) / shard["key"]).parent.glob(shard["key"].rsplit("/", 1)[1] + "*")  # as it is, or compressed
     path.write_bytes(path.read_bytes()[:-10] + b"0123456789")
     with pytest.raises(SystemExit) as refused:
         main(["d", corpus_id, "--out", "model"])
@@ -602,7 +602,7 @@ def test_two_processes_train_the_same_model_as_one(built, on_the_cpu, tmp_path):
     # 2 passes of 2 windows, must take the same steps, dropout included
     order = built.order("four", training=one_stage(4))
     for out, command in [("one", ["-m", "wpt", "train", "--micro-batch", "2"]), ("two", ["-m", "wpt", "train", "--processes", "2", "--strategy", "ddp"])]:
-        forget_steps(built.store)  # the hardware is no part of a step's fingerprint: each run trains
+        forget_steps(built.dock)  # the hardware is no part of a step's fingerprint: each run trains
         subprocess.run([sys.executable, *command, order, built.corpus_id, "--out", out], cwd=tmp_path, check=True)
 
     one, two = weights(tmp_path / "one"), weights(tmp_path / "two")
@@ -621,7 +621,7 @@ def test_split_windows_in_segments_train_the_same_model_as_one_process(built, on
     order = built.order("split", training=one_stage(2, 512, 2))
     for out, options in [("one", []), ("two", ["--processes", "2", "--strategy", "split", "--micro-batch", "1",
                                               "--segment", "128"])]:
-        forget_steps(built.store)
+        forget_steps(built.dock)
         subprocess.run([sys.executable, "-m", "wpt", "train", order, built.corpus_id, "--out", out, *options],
                        cwd=tmp_path, check=True)
 
@@ -674,7 +674,7 @@ def test_a_crashed_run_resumes_where_its_checkpoint_left_it(built, tmp_path, mon
                "--checkpoint-every", "2"]
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")  # the checkpoint the crash leaves is on this machine
     main([*options, "--out", "whole"])
-    forget_steps(built.store)
+    forget_steps(built.dock)
 
     monkeypatch.setenv("CRASH", "1")
     crash(capsys, [*options, "--out", "resumed"])
@@ -721,7 +721,7 @@ def test_stages_train_in_order_and_a_run_resumes_across_their_boundary(built, tm
     options = staged(built, tmp_path, 3)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")
     main([*options, "--out", "whole", "--segment", "128"])
-    forget_steps(built.store)
+    forget_steps(built.dock)
     monkeypatch.setenv("CRASH", "1")
     crash(capsys, [*options, "--out", "resumed"])
     monkeypatch.delenv("CRASH")
@@ -751,7 +751,7 @@ def test_a_run_resumed_in_the_middle_of_a_later_stage_keeps_its_best_weights(bui
     options = staged(built, tmp_path, 5, best=4)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")
     main([*options, "--out", "whole"])
-    forget_steps(built.store)
+    forget_steps(built.dock)
     monkeypatch.setenv("CRASH", "1")
     crash(capsys, [*options, "--out", "resumed"])
     monkeypatch.delenv("CRASH")
@@ -844,14 +844,14 @@ def test_the_update_asked_for_is_profiled_into_the_record_and_training_goes_on(b
     order = built.order("three", training=one_stage(3))
     main([order, built.corpus_id, "--out", "model", "--profile-update", "2"])
     [run] = built.records("wpt train")
-    text = dock_api.read_record(built.store, run.folder, "profile.txt").decode()
+    text = dock_api.read_record(built.dock, run.folder, "profile.txt").decode()
     assert text.startswith("update 2: ") and "seconds by part:" in text and "data (environment.batch)" in text
     assert "learn 1" in text and "optimizer step" in text and "everything after" in text
     assert "top 40 by self CPU time:" in text and "os.cpu_count()" in text
     assert load_model(tmp_path / "model").config.block_size == 16  # the run finished
 
     main([order, built.corpus_id, "--out", "other"])
-    assert "profile.txt" not in dock_api.record_files(built.store, built.records("wpt train")[-1].folder)
+    assert "profile.txt" not in dock_api.record_files(built.dock, built.records("wpt train")[-1].folder)
 
 
 def test_a_dock_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_one_line(built, monkeypatch, capsys):
@@ -895,11 +895,11 @@ def test_a_order_whose_snapshot_reads_another_change_or_digest_or_is_missing_fin
     from wpt.train import InputError, find_corpus, load_data
     data = load_data(built.order("three", training=one_stage(3)))
     built.sized("d", data["total_tokens"])
-    assert find_corpus(built.store, None, data)["build_key"]
+    assert find_corpus(built.dock, None, data)["build_key"]
     for wrong in ({"change": data["change"] + 1}, {"digest": "0" * 64}, {"snapshot": "never"},
                   {"depot": "elsewhere"}):
         with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources ORDER`"):
-            find_corpus(built.store, None, {**data, **wrong})
+            find_corpus(built.dock, None, {**data, **wrong})
 
 
 def test_a_corpus_the_depot_built_under_other_selection_rules_is_not_the_order_s(built):
@@ -908,9 +908,9 @@ def test_a_corpus_the_depot_built_under_other_selection_rules_is_not_the_order_s
     from corpus_build import RULES
     data = load_data(built.order("three", training=one_stage(3)))
     record = built.sized("d", data["total_tokens"])
-    dock_api.put_json(built.store, f"{corpora.folder_of(record)}/{corpora.RECORD}", {**record, "rules": RULES - 1})
+    dock_api.put_json(built.dock, f"{corpora.folder_of(record)}/{corpora.RECORD}", {**record, "rules": RULES - 1})
     with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources ORDER`"):
-        find_corpus(built.store, None, data)
+        find_corpus(built.dock, None, data)
 
 
 def test_a_order_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the_build_that_makes_one(built):
@@ -918,20 +918,20 @@ def test_a_order_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the
     from wpt.train import InputError, find_corpus, load_data
     data = load_data(built.order("old-layout", training=one_stage(3)))
     record = built.sized("d", data["total_tokens"])
-    dock_api.put_json(built.store, f"{corpora.folder_of(record)}/{corpora.RECORD}",
+    dock_api.put_json(built.dock, f"{corpora.folder_of(record)}/{corpora.RECORD}",
                          {**record, "shards": [one for kept in record["shards"].values() for one in kept]})
 
     with pytest.raises(InputError, match=r"does not list its token files by kind.*wpt build-resources"):
-        find_corpus(built.store, None, data)
+        find_corpus(built.dock, None, data)
 
 
 def test_a_order_written_before_snapshots_trains_on_its_dataset_s_corpus_and_its_folder_says_so(built, tmp_path):
     # an order of a dataset (the legacy shape) still trains on a corpus built from that dataset, given by its id,
     # and the model folder names that corpus, its dataset and its depot as such folders always did
-    record = readers.find(built.store, built.corpus_id)
+    record = readers.find(built.dock, built.corpus_id)
     legacy = {key: value for key, value in record.items() if key not in ("build_key", "snapshot", "data")}
     legacy.update(id="1e9acy" + record["id"][6:], dataset={"id": "fox-1", "name": "classics", "revision": 1})
-    dock_api.put_json(built.store, f"{corpora.FOLDER}/classics-1e9acy00/{corpora.RECORD}", legacy)  # its files stay where they are
+    dock_api.put_json(built.dock, f"{corpora.FOLDER}/classics-1e9acy00/{corpora.RECORD}", legacy)  # its files stay where they are
     folder = tmp_path / "data" / "orders" / "models"
     order = json.loads((folder / "d.json").read_text())
     order["data"] = {"depot": built.depot.name(), "dataset": "classics", "total_tokens": record["total_tokens"]}
@@ -960,16 +960,16 @@ def test_a_order_naming_its_depot_by_a_web_address_finds_its_corpus_without_read
     monkeypatch.setattr(order_depot.WebDepot, "_json", unreachable)
     monkeypatch.delenv("DEPOT")
     address = "https://depot.example.org"
-    size = readers.find(built.store, built.corpus_id)["total_tokens"]
+    size = readers.find(built.dock, built.corpus_id)["total_tokens"]
     data = {**built.data("d", size), "depot": address}
     public = built.sized("d", size, url=address)
 
-    record = find_corpus(built.store, None, data)
+    record = find_corpus(built.dock, None, data)
 
     assert record["id"] == public["id"] and record["depot"] == address
-    load_corpus(built.store, record, {"data": data})
+    load_corpus(built.dock, record, {"data": data})
     with pytest.raises(InputError, match="wpt build-resources"):
-        find_corpus(built.store, None, {**data, "total_tokens": size - 1})  # that size is not built
+        find_corpus(built.dock, None, {**data, "total_tokens": size - 1})  # that size is not built
 
 
 def test_a_stopped_run_saves_its_step_and_continues_on_another_machine(built, tmp_path, monkeypatch):
@@ -982,20 +982,20 @@ def test_a_stopped_run_saves_its_step_and_continues_on_another_machine(built, tm
     options = [*interrupting(built, tmp_path, "if os.environ.get('STOP'): signal.raise_signal(signal.SIGTERM)"),
                "--checkpoint-every", "100"]
     main([*options, "--out", "whole"])
-    forget_steps(built.store)
+    forget_steps(built.dock)
 
     monkeypatch.setenv("STOP", "1")
     with pytest.raises(SystemExit) as stopped:
         main([*options, "--out", "here", "--run", "fox-1"])
     monkeypatch.delenv("STOP")
     assert stopped.value.code == 130 and not (tmp_path / "here" / "checkpoint").exists()
-    saved = checkpoint(built.store, "fox-1")
-    assert load_state(dock_files.into(built.store, saved, tmp_path / "saved"))["step"] == 3  # not a multiple of 100: the signal
+    saved = checkpoint(built.dock, "fox-1")
+    assert load_state(dock_files.into(built.dock, saved, tmp_path / "saved"))["step"] == 3  # not a multiple of 100: the signal
     main([*options, "--out", "there", "--run", "fox-1", "--resume"])
 
     whole, there = weights(tmp_path / "whole"), weights(tmp_path / "there")
     assert all(torch.equal(whole[k], there[k]) for k in whole)
-    assert checkpoint(built.store, "fox-1") is None and not dock_files.has(built.store, saved)
+    assert checkpoint(built.dock, "fox-1") is None and not dock_files.has(built.dock, saved)
 
 
 def test_a_crashed_run_starts_again_on_its_own(built, on_the_cpu, tmp_path):
@@ -1005,7 +1005,7 @@ def test_a_crashed_run_starts_again_on_its_own(built, on_the_cpu, tmp_path):
         built, tmp_path, "if os.environ.get('CRASH') and os.environ['TORCHELASTIC_RESTART_COUNT'] == '0': "
                          "raise RuntimeError('power cut')"), "--checkpoint-every", "2"]
     subprocess.run([sys.executable, "-m", "wpt", "train", *options, "--out", "whole"], cwd=tmp_path, check=True)
-    forget_steps(built.store)
+    forget_steps(built.dock)
     run = subprocess.run([sys.executable, "-m", "wpt", "train", *options, "--out", "restarted"],
                          cwd=tmp_path, env={**os.environ, "CRASH": "1", "WPT_MAX_RESTARTS": "1"},
                          capture_output=True, text=True)
@@ -1039,7 +1039,7 @@ def test_a_new_model_that_cannot_take_an_empty_place_is_kept_and_named(built, tm
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model", "--run", "fox-2"])
     [kept] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-")]
     assert not (tmp_path / "model").exists()
-    assert json.loads((kept / "provenance.json").read_text())["recipe_name"] == "three"
+    assert json.loads((kept / "provenance.json").read_text())["order_name"] == "three"
     assert str(kept) in capsys.readouterr().err
 
 
@@ -1061,7 +1061,7 @@ def test_a_new_model_that_cannot_take_the_place_of_its_own_checkpoint_folder_is_
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert list((tmp_path / "model").iterdir()) == []
     [kept] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-")]
-    assert json.loads((kept / "provenance.json").read_text())["recipe_name"] == "three"
+    assert json.loads((kept / "provenance.json").read_text())["order_name"] == "three"
     assert f"it is kept in {kept}" in capsys.readouterr().err
     monkeypatch.setattr(os, "replace", real)
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])  # reuses the step
@@ -1098,7 +1098,7 @@ def test_a_restore_failure_inside_a_broken_record_still_keeps_both_models(built,
     [aside] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-replaced-")]
     [new] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-") and path != aside]
     assert (aside / "model.safetensors").read_bytes() == earlier
-    assert json.loads((new / "provenance.json").read_text())["recipe_name"] == "three"
+    assert json.loads((new / "provenance.json").read_text())["order_name"] == "three"
     err = capsys.readouterr().err
     assert str(new) in err and str(aside) in err
 
@@ -1106,12 +1106,12 @@ def test_a_restore_failure_inside_a_broken_record_still_keeps_both_models(built,
 def test_only_each_step_s_end_comes_back_from_the_gpu_worker_unless_every_checkpoint_is_asked(built, tmp_path,
                                                                                               monkeypatch, capsys):
     # by default (an empty value too, as a copied .env.example gives) the
-    # store gets no checkpoint during a step, only the step's result at its
+    # dock gets no checkpoint during a step, only the step's result at its
     # end; WPT_LINK_CHECKPOINTS=every sends each checkpoint; another value is
     # refused before the gpu worker starts
     def checkpoints_set(out, mode):
         monkeypatch.setenv("WPT_LINK_CHECKPOINTS", mode)
-        forget_steps(built.store)
+        forget_steps(built.dock)
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", out, "--checkpoint-every",
               "1", "--run", "fox-1"])
         run = built.records("wpt train")[-1]
@@ -1140,9 +1140,9 @@ def refusal(capsys, argv) -> str:
 
 def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, capsys):
     # an admitted erasure reached a text the corpus holds (docs/erasure.md): training on it would learn the erased passage
-    record = readers.find(built.store, built.corpus_id)
-    text = readers.rows(built.store, record, "texts")[0]["id"]
-    corpora.mark_stale(built.store, [text], [f"{built.depot.name()}-1"])
+    record = readers.find(built.dock, built.corpus_id)
+    text = readers.rows(built.dock, record, "texts")[0]["id"]
+    corpora.mark_stale(built.dock, [text], [f"{built.depot.name()}-1"])
 
     said = refusal(capsys, [built.order("stale"), built.corpus_id, "--out", "model"])
     assert "is stale" in said
@@ -1162,7 +1162,7 @@ def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the
 
 
 def test_a_corpus_with_fewer_tokens_than_the_order_s_total_is_refused(built, tmp_path, capsys):
-    record = readers.find(built.store, built.corpus_id)
+    record = readers.find(built.dock, built.corpus_id)
     order = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())
     order["data"]["total_tokens"] = record["total_tokens"] + 1
     (tmp_path / "data" / "orders" / "models" / "long.json").write_text(json.dumps(order))
@@ -1173,7 +1173,7 @@ def test_a_corpus_with_fewer_tokens_than_the_order_s_total_is_refused(built, tmp
 def test_a_corpus_built_at_the_order_s_size_trains_on_what_it_holds_and_the_record_says_how_much(built, tmp_path):
     # total_tokens is the size the order asks for and a ceiling: a corpus built at that size never passes it, so
     # it may hold fewer tokens of plain text, and training reads them all, found by its triple or given by its id
-    whole = readers.find(built.store, built.corpus_id)["total_tokens"]
+    whole = readers.find(built.dock, built.corpus_id)["total_tokens"]
     asked = whole + 500  # more than the dataset holds: the corpus built at that size holds every token, fewer
     folder = tmp_path / "data" / "orders" / "models"
     order = json.loads((folder / "d.json").read_text())
@@ -1222,7 +1222,7 @@ def test_a_plain_order_trains_on_the_first_total_tokens_of_its_corpus(built, tmp
     main(["short", built.corpus_id, "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["learned"]["plain"] == 3000 < readers.find(built.store, built.corpus_id)["total_tokens"]
+    assert provenance["learned"]["plain"] == 3000 < readers.find(built.dock, built.corpus_id)["total_tokens"]
 
 
 def test_recompute_from_narrows_recompute_and_is_refused_alone(capsys):

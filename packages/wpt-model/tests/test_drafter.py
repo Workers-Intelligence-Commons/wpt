@@ -71,7 +71,7 @@ def test_the_model_card_names_the_drafter_and_its_notice_adds_no_source(tmp_path
     (tmp_path / "CREDITS").write_text("file:///depot test-1: Talks, by Bo Speaker; CC0-1.0\n")
     before = documents(tmp_path)["NOTICE"]
     save_drafter(Drafter(config, DrafterConfig.for_model(config)), tmp_path, "test version 1", "0" * 64, provenance={
-        "trained_by": {"command": "wpt train", "recipe_name": "chat"}, "corpus": "d" * 64,
+        "trained_by": {"command": "wpt train", "order_name": "chat"}, "corpus": "d" * 64,
         "target": {"weights": {"model.safetensors": "e" * 64}},
         "acceptance": {"verified": 10, "accepted": 4, "rounds": 6, "tokens_per_round": 10 / 6}})
     texts = documents(tmp_path)

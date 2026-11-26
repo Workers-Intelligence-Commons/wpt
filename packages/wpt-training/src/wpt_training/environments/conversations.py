@@ -44,21 +44,21 @@ def check(settings):
             raise ValueError(f"{key}: at least 1")
 
 
-def rows(record, store, tag, kinds):
+def rows(record, dock, tag, kinds):
     """(depot, text id, tokens) of each of the corpus's texts of kinds tagged tag, in
     order, each token file checked (read_verified) and its local copy
     released once read."""
-    wanted = tagged(record, store, tag)
+    wanted = tagged(record, dock, tag)
     for shard in (one for kind in kinds for one in record["shards"].get(kind, [])):
-        found = read_verified(store, shard)
-        store.release(shard_file(shard))
+        found = read_verified(dock, shard)
+        dock.release(shard_file(shard))
         for tokens, depot, text, _, _ in found:
             if (depot, text) in wanted:
                 yield depot, text, tokens
 
 
-def check_corpus(settings, record, store, kinds):
-    if not any(True for _ in rows(record, store, settings["tag"], kinds)):
+def check_corpus(settings, record, dock, kinds):
+    if not any(True for _ in rows(record, dock, settings["tag"], kinds)):
         raise ValueError(f"no conversations: the corpus holds none tagged {settings['tag']}")
 
 
@@ -72,7 +72,7 @@ class Encoded:
 
         limit = context.config.block_size + 1
         examples = []
-        for depot, text, tokens in rows(context.record, context.store, settings["tag"], context.kinds):
+        for depot, text, tokens in rows(context.record, context.dock, settings["tag"], context.kinds):
             ids = [int(token) for token in tokens]
             learn = chat.marks(context.tokenizer, ids)
             if len(ids) > limit:

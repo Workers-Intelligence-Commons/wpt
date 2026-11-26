@@ -36,12 +36,12 @@ def read_text(updates, drops=True, continues=False, **settings):
 
 def run(steps, dataset, folder):
     """The steps trained in order on one model as the gpu worker trains them; each step's last state."""
-    store, record = dataset
+    dock, record = dataset
     torch.manual_seed(1337)
     model = WPT(ModelConfig(**TINY))
     states, previous = [], None
     for number, (step, draws) in enumerate(zip(steps, draw_numbers(steps)), 1):
-        data = Data(step.name, store, record, None, CPU, Telemetry.off(), lambda _: None, 1337, draws)
+        data = Data(step.name, dock, record, None, CPU, Telemetry.off(), lambda _: None, 1337, draws)
         environment = step.start_environment(data)
         checkpoint = FolderCheckpoint(folder / str(number))
         try:

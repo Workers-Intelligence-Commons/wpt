@@ -75,7 +75,7 @@ def replacements(settings) -> int:
 
 class Workers:
     """One run's gpu workers and their file (path), the run's lock held;
-    see the module's docstring. state: {"run", "recipe", "ended",
+    see the module's docstring. state: {"run", "order", "ended",
     "workers": [{"key", "rental": {"provider", "name", "kind"} or null}],
     "resumed", "rentals": [{"name", "price": dollars an hour or null,
     "started", "stopped": seconds since 1970, null while it is rented}]}."""
@@ -83,6 +83,8 @@ class Workers:
     def __init__(self, path, state, lock):
         self.path, self.state, self.lock = Path(path), state, lock
         state.setdefault("rentals", [])
+        if "recipe" in state:  # a file written before the key order
+            state.setdefault("order", state.pop("recipe"))
 
     @classmethod
     def claim(cls, path) -> "Workers | None":
@@ -107,9 +109,9 @@ class Workers:
         lock = try_lock_file(path.with_suffix(".lock"))
         if lock is None:
             return None
-        state = {"run": run, "recipe": order, "ended": False, "workers": [], "resumed": 0}
+        state = {"run": run, "order": order, "ended": False, "workers": [], "resumed": 0}
         if path.is_file():  # the same run started again (WPT_RUN): its workers are still its own
-            state = {**json.loads(path.read_text(encoding="utf-8")), "recipe": order, "ended": False,
+            state = {**json.loads(path.read_text(encoding="utf-8")), "order": order, "ended": False,
                      "resumed": 0}
         found = cls(path, state, lock)
         found.save()

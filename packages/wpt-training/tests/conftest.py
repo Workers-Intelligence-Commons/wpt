@@ -10,7 +10,7 @@ from wpt_corpus.shards import write_shard
 def dataset(tmp_path):
     """A dock with 2 token files of 300 random tokens, as training reads its
     files (wpt_corpus.files); and the corpus's record."""
-    dock = (tmp_path / "store").as_uri()
+    dock = (tmp_path / "dock").as_uri()
     generator = torch.Generator().manual_seed(0)
 
     def shard(name, part):

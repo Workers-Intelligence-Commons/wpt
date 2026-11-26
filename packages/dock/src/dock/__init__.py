@@ -932,15 +932,15 @@ class RecordReader:
     file becomes a part that repeats what was read of it, which is left out.
     A read that raises moves nothing: the next one fetches the same lines."""
 
-    def __init__(self, store, folder, name):
-        self.store, self.seen, self.plain = store, set(), 0
+    def __init__(self, dock, folder, name):
+        self.dock, self.seen, self.plain = dock, set(), 0
         prefix = _run_prefix(folder)
         self.prefix, self.open_key = f"{prefix}{name}/", f"{prefix}{name}{OPEN}"
 
     def read(self) -> bytes:
-        kind = self.store.kind
+        kind = self.dock.kind
         new = [key for key in kind.list(self.prefix) if key not in self.seen]
-        data = b"".join(self.store._joined_parts(new))
+        data = b"".join(self.dock._joined_parts(new))
         try:
             more = kind.read(self.open_key, self.plain)[0]
         except Absent:

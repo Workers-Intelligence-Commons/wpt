@@ -196,7 +196,7 @@ def test_the_rule_refuses_each_import_it_names():
     assert refused("depot.backup", "dock.api")
     assert refused("dock", "wpt_utils.device")
     assert refused("wic_utils.lines", "depot.Depot")
-    assert refused("wpt.store", "depot")
+    assert refused("wpt.docked", "depot")
     assert not refused("depot_app.web", "depot.errors")
     assert not refused("wpt.train", "wic_utils.lines")
     assert not refused("wpt.train", "json")

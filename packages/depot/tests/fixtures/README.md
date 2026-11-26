@@ -9,7 +9,7 @@ ada@example.org.
 | --- | --- |
 | `format-11.sqlite` | a depot of format 11, written by the depot of commit d0d454b22b, the last at format 11 |
 | `format-12.sqlite` | a depot of format 12, written by the depot of commit 6b470328c7 |
-| `format-11-store/`, `format-12-store/` | the dock of each, holding two corpora of the dataset ds-two |
+| `format-11-dock/`, `format-12-dock/` | the dock of each, holding two corpora of the dataset ds-two |
 | `make_fixtures.py` | the script that writes a depot and its dock; its docstring lists every step |
 | `../test_fixtures.py` | checks, in plain SQL, that each depot still holds the cases below |
 
@@ -42,4 +42,4 @@ again, and so do the golden answers of `apps/depot/tests/legacy-golden/`.
    `UV_PROJECT_ENVIRONMENT=VENV-N uv sync --frozen`.
 3. From each extract, run the script into an empty folder OUT. Port 8531 must be free.
    `UV_PROJECT_ENVIRONMENT=VENV-N uv run --frozen --no-sync python -I PATH/make_fixtures.py OUT`
-4. Copy `OUT/format-N.sqlite` and `OUT/format-N-store/` here.
+4. Copy `OUT/format-N.sqlite` and `OUT/format-N-dock/` here.

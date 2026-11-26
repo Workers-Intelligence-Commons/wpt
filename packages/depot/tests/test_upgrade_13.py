@@ -25,10 +25,10 @@ def copied(tmp_path: Path, format_: int, name: str = "depot") -> tuple[Path, lis
     """(a copy of the fixture depot of that format in tmp_path, the records of its dock's corpora)."""
     path = tmp_path / f"{name}.sqlite"
     shutil.copy(FIXTURES / f"format-{format_}.sqlite", path)
-    store = tmp_path / f"{name}-store"
-    if not store.exists():
-        shutil.copytree(FIXTURES / f"format-{format_}-store", store)
-    return path, records(store.as_uri())
+    dock = tmp_path / f"{name}-dock"
+    if not dock.exists():
+        shutil.copytree(FIXTURES / f"format-{format_}-dock", dock)
+    return path, records(dock.as_uri())
 
 
 def connected(path: Path) -> apsw.Connection:

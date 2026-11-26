@@ -38,10 +38,10 @@ def main(fixtures: Path, out: Path, port: int):
     work = Path(tempfile.mkdtemp(prefix="wpt-golden-"))
     try:
         shutil.copy(fixtures / "format-12.sqlite", work / "depot.sqlite")
-        shutil.copytree(fixtures / "format-12-store", work / "store")
+        shutil.copytree(fixtures / "format-12-dock", work / "dock")
         (work / "static").mkdir()
         os.chdir(work)  # no .env but this empty folder's
-        os.environ.update({"DEPOT": str(work / "depot.sqlite"), "DOCK": (work / "store").as_uri()})
+        os.environ.update({"DEPOT": str(work / "depot.sqlite"), "DOCK": (work / "dock").as_uri()})
         os.environ.pop("DEPOT_URL", None)
 
         from depot_app.jobs import Jobs

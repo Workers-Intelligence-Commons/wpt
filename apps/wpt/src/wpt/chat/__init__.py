@@ -151,8 +151,8 @@ def main(argv=None):
     elif args.scheduler_costs:  # a run's recorded pass times, on this setup only
         try:
             env_file = Path.cwd() / ".env"
-            store = dock_api.url(env_file)
-            recorded = dock_api.read_record(store, args.scheduler_costs, COSTS_FILE)
+            dock = dock_api.url(env_file)
+            recorded = dock_api.read_record(dock, args.scheduler_costs, COSTS_FILE)
             costs = replayed_costs(recorded, costs_setup(model.config, 1, drafter.block, device))
         except (DockError, ValueError) as error:
             sys.exit(f"{type(error).__name__}: {error}")

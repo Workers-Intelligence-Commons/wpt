@@ -3,7 +3,7 @@
 A training run has three roles: the wpt manager, which holds the dock,
 the tokenizer, the run's record and the sandboxes; a gpu worker, which does
 only the GPU work; sandboxes, the Docker containers attempts run in. The
-worker deals only in token ids, holds no store credentials, and runs the
+worker deals only in token ids, holds no dock credentials, and runs the
 manager's own checkout, which the manager sends it at the start.
 
     link.py         the frames between the manager and a worker, over TLS with the worker's

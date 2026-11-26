@@ -77,7 +77,7 @@ def test_tokenizer_recipes_a_vocabulary_and_erasures_one_carried_out(fixture):
 
 def test_each_dock_holds_corpora_of_two_revisions_of_ds_two(fixture):
     form, con = fixture
-    folders = sorted((FIXTURES / f"format-{form}-store" / "corpora").iterdir())
+    folders = sorted((FIXTURES / f"format-{form}-dock" / "corpora").iterdir())
     assert [folder.name.rsplit("-", 1)[0] for folder in folders] == ["ds-two", "ds-two"]
     records = [json.loads(zstd.decompress((folder / "corpus.json.zst").read_bytes())) for folder in folders]
     [current] = rows(con, "SELECT revision FROM datasets_revisions WHERE latest AND name = 'ds-two'")

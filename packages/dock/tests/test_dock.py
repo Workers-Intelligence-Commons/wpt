@@ -13,65 +13,65 @@ from dock import (CorruptFile, MissingFile, MixedRecord, DockSettingError, block
                        s3_settings)
 
 
-def exercise(store):
-    sha = store.put_bytes(b"some text\n")
-    assert store.get_bytes(sha) == b"some text\n"
-    assert store.put_bytes(b"some text\n") == sha  # same bytes, same file
+def exercise(dock):
+    sha = dock.put_bytes(b"some text\n")
+    assert dock.get_bytes(sha) == b"some text\n"
+    assert dock.put_bytes(b"some text\n") == sha  # same bytes, same file
     with pytest.raises(MissingFile):
-        store.get_bytes("0" * 64)
+        dock.get_bytes("0" * 64)
     # a result is found from its inputs by its fingerprint, and says what made it at no further read
-    assert store.get_result("builds", "abc") == (None, None) and not store.has_result("builds", "abc")
-    store.put_result("builds", "abc", b"what the stage gave\n")
-    assert store.get_result("builds", "abc") == (b"what the stage gave\n", None) and store.has_result("builds", "abc")
-    store.put_result("results", "abc", b"another stage\n", made_by="the-commit")
-    assert store.get_result("results", "abc") == (b"another stage\n", "the-commit")
+    assert dock.get_result("builds", "abc") == (None, None) and not dock.has_result("builds", "abc")
+    dock.put_result("builds", "abc", b"what the stage gave\n")
+    assert dock.get_result("builds", "abc") == (b"what the stage gave\n", None) and dock.has_result("builds", "abc")
+    dock.put_result("results", "abc", b"another stage\n", made_by="the-commit")
+    assert dock.get_result("results", "abc") == (b"another stage\n", "the-commit")
     # a file a record names is read back through what the record says, and a replaced one is the new one
-    file = store.put_named("corpora/d/shard-0", b"first bytes\n")
-    assert store.get_bytes(file) == b"first bytes\n"
-    again = store.put_named("corpora/d/shard-0", b"other bytes\n" * 1000)  # compressed now: the plain one goes
-    assert store.get_bytes(again) == b"other bytes\n" * 1000
-    assert store.get_json("corpora/d/dataset.json") is None
-    store.put_json("corpora/d/dataset.json", {"id": "d", "shards": [file.key]})
-    assert store.get_json("corpora/d/dataset.json")["shards"] == [file.key]
+    file = dock.put_named("corpora/d/shard-0", b"first bytes\n")
+    assert dock.get_bytes(file) == b"first bytes\n"
+    again = dock.put_named("corpora/d/shard-0", b"other bytes\n" * 1000)  # compressed now: the plain one goes
+    assert dock.get_bytes(again) == b"other bytes\n" * 1000
+    assert dock.get_json("corpora/d/dataset.json") is None
+    dock.put_json("corpora/d/dataset.json", {"id": "d", "shards": [file.key]})
+    assert dock.get_json("corpora/d/dataset.json")["shards"] == [file.key]
     # a checkpoint replaced by a newer one is removed, or a long run fills the dock
-    old = store.put_bytes(b"checkpoint at step 500\n")
-    store.get_bytes(old)  # leaves a local copy for S3
-    store.delete(old)
-    assert not store.has(old)
-    store.delete(old)  # absent: nothing to do
-    assert store.get_bytes(sha) == b"some text\n"
+    old = dock.put_bytes(b"checkpoint at step 500\n")
+    dock.get_bytes(old)  # leaves a local copy for S3
+    dock.delete(old)
+    assert not dock.has(old)
+    dock.delete(old)  # absent: nothing to do
+    assert dock.get_bytes(sha) == b"some text\n"
     return sha
 
 
-def exercise_records(store, reopen):
+def exercise_records(dock, reopen):
     # a command's record: files written whole, and a file added to line by
     # line, by one process and then by another (a restarted training process)
-    assert store.record_folders() == [] and store.record_files("run-1") == []
-    store.write_record("run-1", "start.json", b"{}\n")
-    store.write_record("run-1", "start.json", b'{"command": "x"}\n')  # replaced whole
+    assert dock.record_folders() == [] and dock.record_files("run-1") == []
+    dock.write_record("run-1", "start.json", b"{}\n")
+    dock.write_record("run-1", "start.json", b'{"command": "x"}\n')  # replaced whole
     for line in (b"one\n", b"two\n"):
-        store.append_record("run-1", "events.jsonl", line)
-    store.flush_records()
+        dock.append_record("run-1", "events.jsonl", line)
+    dock.flush_records()
     later = reopen()
     later.append_record("run-1", "events.jsonl", b"three\n")
     later.flush_records()
-    assert store.read_record("run-1", "start.json") == b'{"command": "x"}\n'
-    assert store.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
-    assert store.record_files("run-1") == ["events.jsonl", "start.json"]
-    store.append_record("run-2", "events.jsonl", b"other\n")
-    store.flush_records()
-    assert store.record_folders() == ["run-1", "run-2"]
+    assert dock.read_record("run-1", "start.json") == b'{"command": "x"}\n'
+    assert dock.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
+    assert dock.record_files("run-1") == ["events.jsonl", "start.json"]
+    dock.append_record("run-2", "events.jsonl", b"other\n")
+    dock.flush_records()
+    assert dock.record_folders() == ["run-1", "run-2"]
     with pytest.raises(MissingFile):
-        store.read_record("run-1", "end.json")
+        dock.read_record("run-1", "end.json")
 
     # a file is written whole or added to, never both, whichever process made it
-    for writer in (store, reopen()):
+    for writer in (dock, reopen()):
         with pytest.raises(MixedRecord):
             writer.write_record("run-1", "events.jsonl", b"replaced\n")
         with pytest.raises(MixedRecord):
             writer.append_record("run-1", "start.json", b"added\n")
-    assert store.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
-    assert store.read_record("run-1", "start.json") == b'{"command": "x"}\n'
+    assert dock.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
+    assert dock.read_record("run-1", "start.json") == b'{"command": "x"}\n'
 
     # wpt train's launcher and its training process add to one file in turn;
     # reading gives their lines in the order they were added, even when each
@@ -82,87 +82,87 @@ def exercise_records(store, reopen):
         writer.append_record("run-3", "events.jsonl", line)
     child.flush_records()
     launcher.flush_records()
-    assert store.read_record("run-3", "events.jsonl") == b"launcher 1\nchild 1\nlauncher 2\nchild 2\nlauncher 3\n"
+    assert dock.read_record("run-3", "events.jsonl") == b"launcher 1\nchild 1\nlauncher 2\nchild 2\nlauncher 3\n"
 
 
 def test_local_dock_round_trip_and_refuses_damaged_objects(tmp_path):
-    store = open_dock((tmp_path / "store").as_uri())
-    sha = exercise(store)
-    exercise_records(store, lambda: open_dock((tmp_path / "store").as_uri()))
+    dock = open_dock((tmp_path / "dock").as_uri())
+    sha = exercise(dock)
+    exercise_records(dock, lambda: open_dock((tmp_path / "dock").as_uri()))
 
     # a process that left its last line cut (it stopped before the line's
     # end): the next process's lines start on their own, whole and readable
-    cut = open_dock((tmp_path / "store").as_uri())
+    cut = open_dock((tmp_path / "dock").as_uri())
     cut.append_record("run-1", "events.jsonl", b'{"kind": "ev')
     cut.flush_records()
-    after = open_dock((tmp_path / "store").as_uri())
+    after = open_dock((tmp_path / "dock").as_uri())
     after.append_record("run-1", "events.jsonl", b"four\n")
     after.flush_records()
-    assert store.read_record("run-1", "events.jsonl").splitlines()[-2:] == [b'{"kind": "ev', b"four"]
+    assert dock.read_record("run-1", "events.jsonl").splitlines()[-2:] == [b'{"kind": "ev', b"four"]
 
-    (tmp_path / "store" / "cache" / "files" / sha).write_bytes(b"tampered\n")
+    (tmp_path / "dock" / "cache" / "files" / sha).write_bytes(b"tampered\n")
     with pytest.raises(CorruptFile):
-        store.get_bytes(sha)
+        dock.get_bytes(sha)
 
     # a result and a record each check themselves, whatever a damaged disk gives
-    packed = tmp_path / "store" / "cache" / "builds" / "abc"
+    packed = tmp_path / "dock" / "cache" / "builds" / "abc"
     packed.write_bytes(packed.read_bytes().replace(b"what", b"that"))
     with pytest.raises(CorruptFile):
-        store.get_result("builds", "abc")
-    [record] = (tmp_path / "store" / "corpora" / "d").glob("dataset.json*")
-    plain = store.get_json("corpora/d/dataset.json")
+        dock.get_result("builds", "abc")
+    [record] = (tmp_path / "dock" / "corpora" / "d").glob("dataset.json*")
+    plain = dock.get_json("corpora/d/dataset.json")
     record.unlink()
-    (tmp_path / "store" / "corpora" / "d" / "dataset.json").write_text(
+    (tmp_path / "dock" / "corpora" / "d" / "dataset.json").write_text(
         json.dumps({**plain, "id": "another"}), encoding="utf-8")
     with pytest.raises(CorruptFile):
-        store.get_json("corpora/d/dataset.json")
+        dock.get_json("corpora/d/dataset.json")
 
 
 def test_a_local_record_file_is_added_to_at_once_and_compressed_into_one_part_when_the_record_ends(tmp_path):
     # a local dock appends each line to one plain file while the record runs, so a crash loses none; the end
     # of the record compresses that file into one part; whole files are compressed and on the disk at once
-    root = tmp_path / "store"
-    store = open_dock(root.as_uri())
+    root = tmp_path / "dock"
+    dock = open_dock(root.as_uri())
     text = b"".join(b'{"kind": "event", "number": %d}\n' % i for i in range(1000))
-    store.write_record("run-1", "start.json", text)
-    store.append_record("run-1", "events.jsonl", text[:500])
-    store.append_record("run-1", "events.jsonl", text[500:])
+    dock.write_record("run-1", "start.json", text)
+    dock.append_record("run-1", "events.jsonl", text[:500])
+    dock.append_record("run-1", "events.jsonl", text[500:])
     # in the file already, before any flush, for this dock object and for another process
     assert (root / "runs" / "run-1" / "events.jsonl.open").read_bytes() == text
-    assert store.record_files("run-1") == ["events.jsonl", "start.json"]
+    assert dock.record_files("run-1") == ["events.jsonl", "start.json"]
     assert open_dock(root.as_uri()).read_record("run-1", "events.jsonl") == text
-    store.flush_records()
-    assert set(store.kind.list("runs/run-1/")) == {"runs/run-1/start.json.zst", "runs/run-1/events.jsonl.open"}
+    dock.flush_records()
+    assert set(dock.kind.list("runs/run-1/")) == {"runs/run-1/start.json.zst", "runs/run-1/events.jsonl.open"}
     assert zstd.decompress((root / "runs" / "run-1" / "start.json.zst").read_bytes()) == text
 
-    store.end_records("run-1")
-    stored = store.kind.list("runs/run-1/")
+    dock.end_records("run-1")
+    stored = dock.kind.list("runs/run-1/")
     [part] = [key for key in stored if key.startswith("runs/run-1/events.jsonl/")]
     assert set(stored) == {"runs/run-1/start.json.zst", part} and part.endswith(".zst")  # one part, no plain file
     assert stored[part] < len(text) / 4
-    assert store.record_files("run-1") == ["events.jsonl", "start.json"]
+    assert dock.record_files("run-1") == ["events.jsonl", "start.json"]
     assert open_dock(root.as_uri()).read_record("run-1", "events.jsonl") == text
-    store.end_records("run-1")  # nothing left to compress
-    assert len(store.kind.list("runs/run-1/events.jsonl/")) == 1
+    dock.end_records("run-1")  # nothing left to compress
+    assert len(dock.kind.list("runs/run-1/events.jsonl/")) == 1
 
 
 def test_lines_added_to_a_local_record_file_after_its_record_ended_read_after_the_part(tmp_path):
-    root = tmp_path / "store"
-    store = open_dock(root.as_uri())
-    store.append_record("run-1", "events.jsonl", b"one\ntwo\n")
-    store.end_records("run-1")
+    root = tmp_path / "dock"
+    dock = open_dock(root.as_uri())
+    dock.append_record("run-1", "events.jsonl", b"one\ntwo\n")
+    dock.end_records("run-1")
     again = open_dock(root.as_uri())  # a resumed run
     again.append_record("run-1", "events.jsonl", b"three\n")
-    assert store.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
+    assert dock.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
     again.end_records("run-1")
-    assert len(store.kind.list("runs/run-1/events.jsonl/")) == 2
-    assert store.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
+    assert len(dock.kind.list("runs/run-1/events.jsonl/")) == 2
+    assert dock.read_record("run-1", "events.jsonl") == b"one\ntwo\nthree\n"
     with pytest.raises(MixedRecord):
-        store.write_record("run-1", "events.jsonl", b"replaced\n")
+        dock.write_record("run-1", "events.jsonl", b"replaced\n")
 
 
 def test_a_line_a_crash_left_cut_in_a_local_record_file_is_ended_by_the_next_writer(tmp_path):
-    root = tmp_path / "store"
+    root = tmp_path / "dock"
     first = open_dock(root.as_uri())
     first.append_record("run-1", "events.jsonl", b'{"kind": "ev')  # the process stops here
     second, third = open_dock(root.as_uri()), open_dock(root.as_uri())
@@ -172,9 +172,9 @@ def test_a_line_a_crash_left_cut_in_a_local_record_file_is_ended_by_the_next_wri
 
 
 def test_a_local_record_file_that_grew_while_it_was_compressed_stays_as_it_is(tmp_path, monkeypatch):
-    root = tmp_path / "store"
-    store = open_dock(root.as_uri())
-    store.append_record("run-1", "events.jsonl", b"one\n")
+    root = tmp_path / "dock"
+    dock = open_dock(root.as_uri())
+    dock.append_record("run-1", "events.jsonl", b"one\n")
     compressed = blocks.compressed
 
     def with_a_line_added_meanwhile(data):
@@ -182,10 +182,10 @@ def test_a_local_record_file_that_grew_while_it_was_compressed_stays_as_it_is(tm
         return compressed(data)
 
     monkeypatch.setattr(blocks, "compressed", with_a_line_added_meanwhile)
-    store.end_records("run-1")
+    dock.end_records("run-1")
     monkeypatch.undo()
-    assert list(store.kind.list("runs/run-1/")) == ["runs/run-1/events.jsonl.open"]  # no part, nothing lost
-    assert store.read_record("run-1", "events.jsonl") == b"one\ntwo\n"
+    assert list(dock.kind.list("runs/run-1/")) == ["runs/run-1/events.jsonl.open"]  # no part, nothing lost
+    assert dock.read_record("run-1", "events.jsonl") == b"one\ntwo\n"
 
 
 def test_an_s3_record_file_is_sent_in_one_part_at_each_flush_and_ending_the_record_changes_nothing(tmp_path, monkeypatch):
@@ -196,24 +196,24 @@ def test_an_s3_record_file_is_sent_in_one_part_at_each_flush_and_ending_the_reco
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_dock("s3://wpt-test/records")
-        store.append_record("run-1", "events.jsonl", b"one\n")
-        store.append_record("run-1", "events.jsonl", b"two\n")
-        assert store.record_files("run-1") == []  # held back until the flush
-        store.flush_records()
-        [part] = store.kind.list("runs/run-1/events.jsonl/")
-        store.end_records("run-1")
-        assert list(store.kind.list("runs/run-1/")) == [part]  # the parts it keeps, none plain
-        assert store.read_record("run-1", "events.jsonl") == b"one\ntwo\n"
+        dock = open_dock("s3://wpt-test/records")
+        dock.append_record("run-1", "events.jsonl", b"one\n")
+        dock.append_record("run-1", "events.jsonl", b"two\n")
+        assert dock.record_files("run-1") == []  # held back until the flush
+        dock.flush_records()
+        [part] = dock.kind.list("runs/run-1/events.jsonl/")
+        dock.end_records("run-1")
+        assert list(dock.kind.list("runs/run-1/")) == [part]  # the parts it keeps, none plain
+        assert dock.read_record("run-1", "events.jsonl") == b"one\ntwo\n"
 
 
 def test_a_one_level_listing_gives_the_files_and_folders_right_under_a_prefix(tmp_path):
-    store = open_dock((tmp_path / "store").as_uri())
+    dock = open_dock((tmp_path / "dock").as_uri())
     for key in ("a/x", "a/b/y", "a/b/c/z", "ab"):
-        store.kind.write(key, b"1")
-    assert store.kind.list("a/", deep=False) == {"a/x": 1, "a/b/": None}
-    assert store.kind.list("a", deep=False) == {"a/": None, "ab": 1}
-    assert sorted(store.kind.list("a/")) == ["a/b/c/z", "a/b/y", "a/x"]
+        dock.kind.write(key, b"1")
+    assert dock.kind.list("a/", deep=False) == {"a/x": 1, "a/b/": None}
+    assert dock.kind.list("a", deep=False) == {"a/": None, "ab": 1}
+    assert sorted(dock.kind.list("a/")) == ["a/b/c/z", "a/b/y", "a/x"]
 
 
 def test_an_s3_dock_reads_its_own_settings_and_no_aws_setting(tmp_path, monkeypatch):
@@ -258,13 +258,13 @@ def test_an_s3_dock_signs_its_requests_with_its_own_keys(tmp_path, monkeypatch):
         # neither an AWS endpoint nor an AWS profile (missing here) reaches the dock
         monkeypatch.setenv("AWS_ENDPOINT_URL", "https://other.example")
         monkeypatch.setenv("AWS_PROFILE", "missing")
-        store = open_dock("s3://wpt-test/store")
-        credentials = store.kind.client._request_signer._credentials
+        dock = open_dock("s3://wpt-test/dock")
+        credentials = dock.kind.client._request_signer._credentials
         assert (credentials.access_key, credentials.secret_key) == ("the-id", "the-secret")
-        assert store.kind.client.meta.region_name == "eu-west-1"
-        assert store.kind.client.meta.endpoint_url == "https://s3.eu-west-1.amazonaws.com"
-        store.kind.write("a", b"1")
-        assert store.kind.read("a")[0] == b"1"
+        assert dock.kind.client.meta.region_name == "eu-west-1"
+        assert dock.kind.client.meta.endpoint_url == "https://s3.eu-west-1.amazonaws.com"
+        dock.kind.write("a", b"1")
+        assert dock.kind.read("a")[0] == b"1"
 
 
 def test_s3_dock_round_trip(tmp_path, monkeypatch):
@@ -277,52 +277,52 @@ def test_s3_dock_round_trip(tmp_path, monkeypatch):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
-        store = open_dock("s3://wpt-test/some/prefix")
-        sha = exercise(store)
-        exercise_records(store, lambda: open_dock("s3://wpt-test/some/prefix"))
+        dock = open_dock("s3://wpt-test/some/prefix")
+        sha = exercise(dock)
+        exercise_records(dock, lambda: open_dock("s3://wpt-test/some/prefix"))
 
         shutil.rmtree(tmp_path / "cache")  # a fresh machine: the object comes from the bucket again
-        assert store.get_bytes(sha) == b"some text\n"
+        assert dock.get_bytes(sha) == b"some text\n"
 
         # a flush interrupted once S3 had stored its group (Ctrl+C, or the
         # record's own interruption) sends it again later: each line once
-        real = store.client.put_object
+        real = dock.client.put_object
 
         def stored_then_interrupted(**request):
             real(**request)
-            monkeypatch.setattr(store.client, "put_object", real)
+            monkeypatch.setattr(dock.client, "put_object", real)
             raise KeyboardInterrupt
 
-        store.append_record("run-4", "events.jsonl", b"one\n")
-        monkeypatch.setattr(store.client, "put_object", stored_then_interrupted)
+        dock.append_record("run-4", "events.jsonl", b"one\n")
+        monkeypatch.setattr(dock.client, "put_object", stored_then_interrupted)
         with pytest.raises(KeyboardInterrupt):
-            store.flush_records()
-        store.append_record("run-4", "events.jsonl", b"two\n")
-        store.flush_records()
+            dock.flush_records()
+        dock.append_record("run-4", "events.jsonl", b"two\n")
+        dock.flush_records()
         assert open_dock("s3://wpt-test/some/prefix").read_record("run-4", "events.jsonl") == b"one\ntwo\n"
 
 
 def test_a_refused_replace_of_a_file_already_stored_counts_as_stored(tmp_path, monkeypatch):
     # on Windows, two processes storing the same file at once: replacing a file
     # another process has open is refused, and the name is the content's hash
-    store = open_dock((tmp_path / "store").as_uri())
+    dock = open_dock((tmp_path / "dock").as_uri())
     source = tmp_path / "data.bin"
     source.write_bytes(b"same bytes\n")
-    sha = store.put_file(source)
-    target = tmp_path / "store" / "cache" / "files" / sha
+    sha = dock.put_file(source)
+    target = tmp_path / "dock" / "cache" / "files" / sha
 
     def refuse(tmp, to):
         raise PermissionError(5, "Access denied")
 
     monkeypatch.setattr("dock.kinds.os.replace", refuse)
-    store._put(sha, source)  # what put_file does when both workers saw no file
+    dock._put(sha, source)  # what put_file does when both workers saw no file
     assert target.read_bytes() == b"same bytes\n"
     assert [p.name for p in target.parent.iterdir()] == [sha]
 
     # nothing stored under that name: the refusal is a real failure
     target.unlink()
     with pytest.raises(PermissionError):
-        store.put_file(source)
+        dock.put_file(source)
     assert list(target.parent.iterdir()) == []
 
 
@@ -530,9 +530,9 @@ def stored_text(tmp_path, monkeypatch, **slow):
     text = " ".join(generator.choice(words) for _ in range(2_000_000)).encode()[:12 << 20]
     sha = S3Dock("wpt-test", "p", tmp_path / "writer", client=raw).put_bytes(text)
     slow_client = SlowAnswers(raw, **slow)
-    store = S3Dock("wpt-test", "p", tmp_path / "reader", client=slow_client)
-    store._ahead = ahead.Ahead(requests=4, limit=3 << 20, frames=1)
-    return slow_client, store, sha, text
+    dock = S3Dock("wpt-test", "p", tmp_path / "reader", client=slow_client)
+    dock._ahead = ahead.Ahead(requests=4, limit=3 << 20, frames=1)
+    return slow_client, dock, sha, text
 
 
 def test_a_stored_file_read_in_order_over_a_slow_link_gives_the_same_bytes_with_requests_in_flight_together(
@@ -540,12 +540,12 @@ def test_a_stored_file_read_in_order_over_a_slow_link_gives_the_same_bytes_with_
     # R2 answers each request slowly: reading a file in order must keep several requests in flight, and the
     # bytes ahead of the reader must stay within the limit, whatever the timing
     with mock_aws():
-        client, store, sha, text = stored_text(tmp_path, monkeypatch)
+        client, dock, sha, text = stored_text(tmp_path, monkeypatch)
         read = []
         for start in range(0, len(text), 256 << 10):
-            read.append(store.read_range(sha, start, min(256 << 10, len(text) - start)))
-            held = sum(size for _, size in store._ahead._held.values())
-            assert held <= store._ahead.limit
+            read.append(dock.read_range(sha, start, min(256 << 10, len(text) - start)))
+            held = sum(size for _, size in dock._ahead._held.values())
+            assert held <= dock._ahead.limit
         assert b"".join(read) == text
         assert 2 <= client.most <= 4  # more than one at once, never more than the fixed number
 
@@ -555,13 +555,13 @@ def test_an_error_on_a_range_fetched_ahead_is_raised_at_the_read_that_needs_it(t
         pass
 
     with mock_aws():
-        client, store, sha, text = stored_text(tmp_path, monkeypatch)
-        table = store._table(store._found(store._file(sha)))
+        client, dock, sha, text = stored_text(tmp_path, monkeypatch)
+        table = dock._table(dock._found(dock._file(sha)))
         client.fail_from, client.fail = table.stored[8], LinkDown("the link dropped")  # from the 9th frame on
         frame = table.original[1]  # the original bytes of one frame, about 1 MB
         for start in range(0, 6 * frame, frame):  # the reads before: fine, though blocks ahead already failed
-            assert store.read_range(sha, start, frame) == text[start:start + frame]
+            assert dock.read_range(sha, start, frame) == text[start:start + frame]
         with pytest.raises(LinkDown):
             for start in range(6 * frame, len(text), frame):
-                store.read_range(sha, start, frame)
+                dock.read_range(sha, start, frame)
         assert start + frame > table.original[8]  # the read that needed the failed block, not an earlier one

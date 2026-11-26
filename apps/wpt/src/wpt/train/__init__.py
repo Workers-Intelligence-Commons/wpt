@@ -191,8 +191,8 @@ same command with --resume continues from the checkpoint the manager holds,
 as after a lost worker; on one gpu worker a crash is the process's own exit
 code, after its restarts), 130 stopped by a signal or a limit, others a crash. A step that fails keeps no result;
 a checkpoint it wrote stays, which --resume continues and deleting it
-starts the step over; the results of the steps before it stay in the
-store.
+starts the step over; the results of the steps before it stay on the
+dock.
 
 The model folder gets config.json, the weights (their headers name the
 licenses), tokenizer.json (the corpus's vocabulary, for wpt chat), the
@@ -238,7 +238,7 @@ from wpt_corpus import corpora
 from wpt_corpus.files import DockFiles
 from wpt_orders import SIZE_OF, OrderError, Orders
 from wpt_orders.series import layer_count
-from dock.api import NAME as STORE_NAME
+from dock.api import NAME as DOCK_NAME
 from dock import api as dock_api
 from dock.api import DockError, DockSettingError
 from wic_utils.env import read_env_file
@@ -400,7 +400,7 @@ def parse_args(argv=None, environ=None):
     if args.scheduler_costs and not args.drafter:
         parser.error("--scheduler-costs replays the pass times of the drafter's scheduler, and --no-drafter trains "
                      "no drafter")
-    if args.run is not None and not STORE_NAME.fullmatch(args.run):
+    if args.run is not None and not DOCK_NAME.fullmatch(args.run):
         parser.error(f"--run {args.run!r}: use letters, digits, '.', '_' and '-' only")
     return args
 
@@ -453,7 +453,7 @@ def order_dataset(data, reader=None) -> dict:
                          f"({type(error).__name__}: {error}); give the corpus id instead") from None
 
 
-def find_corpus(store, given, data, log=say) -> dict:
+def find_corpus(dock, given, data, log=say) -> dict:
     """The record of the corpus given (an id or a start of it: a corpus of
     the dock's corpora/, else a corpus delivery of the dock, by its id or
     its key), or without one the corpus of the order's data part.
@@ -480,20 +480,20 @@ def find_corpus(store, given, data, log=say) -> dict:
     of a dataset, as check_record does. InputError too when the freight
     cannot read the dock (a setting it needs is missing)."""
     try:
-        return _find_corpus(store, given, data, log)
+        return _find_corpus(dock, given, data, log)
     except (freight.SettingMissing, DockSettingError) as error:
-        raise InputError(f"the deliveries of the dock {store} cannot be read ({type(error).__name__}: "
+        raise InputError(f"the deliveries of the dock {dock} cannot be read ({type(error).__name__}: "
                          f"{error})") from None
 
 
-def _find_corpus(store, given, data, log) -> dict:
+def _find_corpus(dock, given, data, log) -> dict:
     """find_corpus, its freight's and dock's errors aside."""
     if given is None and on_snapshot(data):
-        return _snapshot_corpus(store, data)
+        return _snapshot_corpus(dock, data)
     dataset = None
     try:
         if given is not None:
-            found = corpora.find(store, given) or _delivered(store, given)
+            found = corpora.find(dock, given) or _delivered(dock, given)
         else:
             try:
                 reader = order_depot.opened(data, Path.cwd() / ".env")
@@ -507,23 +507,23 @@ def _find_corpus(store, given, data, log) -> dict:
                 raise InputError(f"the dataset {dataset['name']!r} ({dataset['id']}) of the depot {data['depot']!r} "
                                  f"publishes no vocabulary, so no corpus is the order's: {LEGACY_AGAIN}")
             try:
-                found = reader.built(store, data["depot"], dataset, vocabulary, size)
+                found = reader.built(dock, data["depot"], dataset, vocabulary, size)
             except (order_depot.Unreadable, order_depot.Missing) as error:
                 raise InputError(f"the corpus of the dataset {dataset['name']!r} cannot be found "
                                  f"({type(error).__name__}: {error})") from None
             if found is None:
-                older = next(iter(corpora.built_from(store, data["depot"], dataset["id"], vocabulary, size)), None)
+                older = next(iter(corpora.built_from(dock, data["depot"], dataset["id"], vocabulary, size)), None)
                 if older is not None and not corpora.by_kind(older) and not {"stale", "deleted"} & older.keys():
                     raise InputError(f"corpus {older['id']} does not list its token files by kind, which each "
                                      f"training step reads: {LEGACY_AGAIN}")
                 raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
                                  f"{data['depot']!r} with its published vocabulary {vocabulary} at the size "
-                                 f"{size:,} (the order's total_tokens) in {store}, whose corpora the depot lists at "
+                                 f"{size:,} (the order's total_tokens) in {dock}, whose corpora the depot lists at "
                                  f"{page}; {LEGACY_AGAIN}")
     except ValueError as error:
         raise InputError(str(error)) from None
     if found is None:
-        raise InputError(f"no corpus {given} in {store}")
+        raise InputError(f"no corpus {given} in {dock}")
     if dataset is not None and found["dataset"]["revision"] < dataset["revision"]:
         log(f"corpus {found['id']} was built from revision {found['dataset']['revision']} of the dataset "
             f"{dataset['name']!r} ({dataset['id']}), whose current revision is {dataset['revision']}: this run "
@@ -531,40 +531,40 @@ def _find_corpus(store, given, data, log) -> dict:
     return found
 
 
-def _delivered(store, given) -> dict | None:
+def _delivered(dock, given) -> dict | None:
     """The record of the corpus delivery of the dock whose id or key
     starts with given, None when none does. ValueError when several do."""
-    found = [note for note in freight.deliveries_on(dock=store)
+    found = [note for note in freight.deliveries_on(dock=dock)
              if note.get("preparation", {}).get("name") == resources.TOKENS
              and (note["id"].startswith(given) or note["key"].startswith(given))]
     if len(found) > 1:
         raise ValueError(f"{given!r} starts the ids or keys of {len(found)} corpus deliveries: give more of it")
-    return _record_of(store, found[0]) if found else None
+    return _record_of(dock, found[0]) if found else None
 
 
-def _record_of(store, note) -> dict:
-    """A corpus delivery's note as training reads it, with the note of its vocabulary on the dock store."""
-    vocabulary = freight.delivery(note["preparation"]["inputs"]["vocabulary"], dock=store)
+def _record_of(dock, note) -> dict:
+    """A corpus delivery's note as training reads it, with the note of its vocabulary on the dock."""
+    vocabulary = freight.delivery(note["preparation"]["inputs"]["vocabulary"], dock=dock)
     if vocabulary is None:
         raise InputError(f"corpus delivery {note['key']} names the vocabulary delivery "
                          f"{note['preparation']['inputs']['vocabulary']}, which the dock does not hold")
     return resources.corpus_record(note, vocabulary)
 
 
-def _snapshot_corpus(store, data) -> dict:
+def _snapshot_corpus(dock, data) -> dict:
     """The record of the corpus an order's data part that names a snapshot
     asks for (find_corpus)."""
-    vocabulary = resources.vocabulary_key(data, store)
+    vocabulary = resources.vocabulary_key(data, dock)
     key = None if vocabulary is None else resources.corpus_key(data, vocabulary)
-    note = None if key is None else freight.delivery(key, dock=store)
+    note = None if key is None else freight.delivery(key, dock=dock)
     if note is not None and "stale" not in note and "deleted" not in note:
-        return _record_of(store, note)
+        return _record_of(dock, note)
     if note is not None:
         raise InputError(f"corpus delivery {note['key']} of the order is "
                          + (f"stale: the depot carried out the erasures {', '.join(note['stale']['erasures'])} on "
                             "texts it holds" if "stale" in note else f"deleted: {note['deleted']['why']}")
                          + f"; {BUILD}, which makes it again")
-    legacy = _built(store, data) if resources.vocabulary_named(data) else None
+    legacy = _built(dock, data) if resources.vocabulary_named(data) else None
     if legacy is not None and not corpora.by_kind(legacy) and not {"stale", "deleted"} & legacy.keys():
         raise InputError(f"corpus {legacy['id']} does not list its token files by kind, which each training step "
                          f"reads: {BUILD}")
@@ -575,16 +575,16 @@ def _snapshot_corpus(store, data) -> dict:
     missing = (f"the dock holds no vocabulary {data['vocabulary']['sha256']}" if vocabulary is None
                else f"the dock holds no corpus delivery {key}")
     raise InputError(f"no fresh corpus of snapshot {data['snapshot']} of the depot {data['depot']} with "
-                     f"{vocabulary_said} at the size {data['total_tokens']:,} in {store} ({missing}): {BUILD}")
+                     f"{vocabulary_said} at the size {data['total_tokens']:,} in {dock} ({missing}): {BUILD}")
 
 
-def _built(store, data) -> dict | None:
+def _built(dock, data) -> dict | None:
     """The latest corpus of the dock's corpora/ built from the snapshot a
     data part names (name, change, digest), of its depot, with its kinds,
     shares and vocabulary, at its size, under the selection rules the depot
     built with last (wpt_corpus.corpora.RULES, which its build key covered): a fresh one
     first. None without one."""
-    found = [record for record in corpora.records(store)
+    found = [record for record in corpora.records(dock)
              if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == corpora.RULES
              and _same_build(record, data) and corpora.triple(record)[2] == data["total_tokens"]]
     return next((record for record in found if corpora.fresh(record)), found[0] if found else None)
@@ -627,7 +627,7 @@ def _same_build(record, data) -> bool:
             and (theirs["kinds"], theirs["shares"]) == (ours["kinds"], ours["shares"]) and same_vocabulary)
 
 
-def load_corpus(store, record, order):
+def load_corpus(dock, record, order):
     """The corpus's tokenizer, its vocabulary checked, once the corpus is
     known to be the order's. An order of a snapshot: a corpus built or
     delivered from that snapshot (name, change, digest) with the order's
@@ -649,7 +649,7 @@ def load_corpus(store, record, order):
         raise InputError(f"corpus {record['id']} was built from {_source(record)}; this order names dataset "
                          f"{data['dataset']!r} of the depot {data['depot']!r}")
     vocabulary = record["tokenizer"]["vocabulary"]
-    return Tokenizer.from_bytes(dock_api.fetch(store, vocabulary["key"], vocabulary["sha256"]))  # checked by the dock
+    return Tokenizer.from_bytes(dock_api.fetch(dock, vocabulary["key"], vocabulary["sha256"]))  # checked by the dock
 
 
 def built_for(record, order) -> bool:
@@ -776,18 +776,18 @@ class StepResults:
     state, {"key", "sha256"}} (the weights, those of its best evaluation, the optimizer's,
     method's and environment's state, and the step's fingerprint as its
     signature; wpt_training.train), the bytes of the step's last checkpoint
-    as they are. The main process alone reads and writes them. store: the
+    as they are. The main process alone reads and writes them. dock: the
     dock's URL."""
 
     STAGE = "steps"
 
-    def __init__(self, store, telemetry):
-        self.store, self.telemetry = store, telemetry
+    def __init__(self, dock, telemetry):
+        self.dock, self.telemetry = dock, telemetry
 
     def found(self, mark) -> dict | None:
         """The result of the step of fingerprint mark, its own sha256 in
         "result"; None when none is kept."""
-        found = dock_api.get_result(self.store, self.STAGE, mark)
+        found = dock_api.get_result(self.dock, self.STAGE, mark)
         if found is None:
             return None
         data = found[0]
@@ -796,7 +796,7 @@ class StepResults:
     def keep(self, mark, state, about) -> str:
         """Keep a step's checkpoint state, the file state (a reference {"key",
         "sha256"}); the sha256 of its result."""
-        return set_result(self.store, self.STAGE, mark, json.dumps({"about": about, "state": state},
+        return set_result(self.dock, self.STAGE, mark, json.dumps({"about": about, "state": state},
                                                                    sort_keys=True).encode(), self.telemetry)
 
 
@@ -841,8 +841,8 @@ def provenance(args, order, record, model_config, n_params, worker, strategy_fil
         corpus, source = {"id": record["id"], "depot": record["depot"], "dataset": record["dataset"]["name"]}, {}
     return {
         **source,
-        "recipe_name": args.order,
-        "recipe": order,  # everything that changes the model: data, architecture, seed, steps, drafter
+        "order_name": args.order,
+        "order": order,  # everything that changes the model: data, architecture, seed, steps, drafter
         "corpus": corpus,  # a cache: the snapshot, its data section and the code build it again
         "learned": learned(done),  # what of the corpus the steps learned from
         "texts": texts,
@@ -926,17 +926,17 @@ def main(argv=None):
     args = parse_args(argv, environ)
     arguments = sys.argv[1:] if argv is None else list(argv)
     try:
-        store = dock_api.url(Path.cwd() / ".env")
-        record = find_corpus(store, args.corpus, load_data(args.order))
+        dock = dock_api.url(Path.cwd() / ".env")
+        record = find_corpus(dock, args.corpus, load_data(args.order))
         check_record(record, load_order(args.order, record))
     except (DockError, InputError) as error:  # no dock, no corpus: nothing has started, nothing is recorded
         say(f"{type(error).__name__}: {error}", ERROR)
         sys.exit(REFUSED)
     try:
-        with Telemetry.start(store, "wpt train", arguments, short(record["id"]),
-                             inputs={"recipe": args.order, "corpus": record["id"]},
+        with Telemetry.start(dock, "wpt train", arguments, short(record["id"]),
+                             inputs={"order": args.order, "corpus": record["id"]},
                              env_file=Path.cwd() / ".env") as telemetry:
-            code = _run(args, record, store, telemetry, environ)
+            code = _run(args, record, dock, telemetry, environ)
             if code == RECORD_FAILED:  # the gpu worker's lines of the record could not be written
                 raise RecordError("the dock refused a line of this run's record that the gpu worker sent")
             if code:
@@ -953,10 +953,10 @@ def settings() -> dict:
     return {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
 
 
-def _run(args, record, store, telemetry, environ) -> int:
+def _run(args, record, dock, telemetry, environ) -> int:
     """The run; its exit code."""
     try:
-        with telemetry.span("inputs.recipe", recipe=args.order):
+        with telemetry.span("inputs.order", order=args.order):
             order = with_prefixes(load_order(args.order, record), record,
                                    lambda text: telemetry.log(text, WARNING))
             strategy_file = strategy_plugin(args.strategy)
@@ -965,7 +965,7 @@ def _run(args, record, store, telemetry, environ) -> int:
     except (InputError, PluginError) as error:
         return _refuse(f"{type(error).__name__}: {error}", telemetry)
     try:
-        return _train(args, record, order, strategy_file, steps, context, store, telemetry, environ)
+        return _train(args, record, order, strategy_file, steps, context, dock, telemetry, environ)
     except Refused as error:
         return _refuse(str(error), telemetry)
 
@@ -975,15 +975,15 @@ def _refuse(text, telemetry) -> int:
     return REFUSED
 
 
-def fetched_state(store, state: dict, folder, only=None) -> dict:
-    """The checkpoint state the dock of URL store holds as the file state
+def fetched_state(dock, state: dict, folder, only=None) -> dict:
+    """The checkpoint state the dock (its URL, dock) holds as the file state
     ({"key", "sha256"}), fetched into folder (a local folder of the
     caller's own) and checked against its sha256, loaded (only: as
     wpt_training.load_state takes it), and its local file removed."""
     folder = Path(folder)
     local = folder / f"state-{state['sha256']}.{os.getpid()}"
     try:
-        dock_api.fetch_into(store, state["key"], local, state["sha256"])
+        dock_api.fetch_into(dock, state["key"], local, state["sha256"])
         return load_state(local, only=only)
     finally:
         local.unlink(missing_ok=True)
@@ -1001,21 +1001,21 @@ class DockCheckpoint(Checkpoint):
     writes the checkpoint's, unrecorded, then raises the RecordError;
     nothing is deleted then: the previous file stays. kept: the keys of the
     files that are also a kept step's state (StepResults), which only stop
-    being named, and are never deleted. store: the dock's URL; folder: a
+    being named, and are never deleted. dock: the dock's URL; folder: a
     local folder of the caller's own, where a state is written before it
     goes to the dock and fetched before it is loaded (default: the system's
     temporary folder)."""
 
-    def __init__(self, store, name, telemetry, kept: set, folder=None):
-        self.store, self.name, self.telemetry, self.kept = store, name, telemetry, kept
+    def __init__(self, dock, name, telemetry, kept: set, folder=None):
+        self.dock, self.name, self.telemetry, self.kept = dock, name, telemetry, kept
         self.folder = Path(folder) if folder is not None else Path(tempfile.gettempdir())
         self.key = checkpoint_key(name)
 
     def __str__(self):
-        return f"{self.store} as {self.key}"
+        return f"{self.dock} as {self.key}"
 
     def _named(self, state):
-        dock_api.put_json(self.store, self.key, {"state": state})
+        dock_api.put_json(self.dock, self.key, {"state": state})
 
     def exists(self):
         return self.state_file() is not None
@@ -1024,7 +1024,7 @@ class DockCheckpoint(Checkpoint):
         state = self.state_file()
         if state is None:
             return None
-        return fetched_state(self.store, state, self.folder)
+        return fetched_state(self.dock, state, self.folder)
 
     def save(self, state):
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -1036,7 +1036,7 @@ class DockCheckpoint(Checkpoint):
             partial.unlink(missing_ok=True)
 
     def save_file(self, path):
-        stored = dock_api.put_from(self.store, state_key(self.name, sha256_file(path)), path)
+        stored = dock_api.put_from(self.dock, state_key(self.name, sha256_file(path)), path)
         state = {"key": stored["key"], "sha256": stored["sha256"]}
         previous = self.state_file()
         try:
@@ -1047,20 +1047,20 @@ class DockCheckpoint(Checkpoint):
         self._named(state)  # the previous one stays until this
         if previous and previous != state and previous["key"] not in self.kept:
             self._record_deletion(previous)
-            dock_api.delete(self.store, previous["key"])
+            dock_api.delete(self.dock, previous["key"])
 
     def remove(self):
         state = self.state_file()
         deleted = state if state and state["key"] not in self.kept else None
         if deleted:
             self._record_deletion(deleted)
-        dock_api.delete(self.store, self.key)
+        dock_api.delete(self.dock, self.key)
         if deleted:
-            dock_api.delete(self.store, deleted["key"])
+            dock_api.delete(self.dock, deleted["key"])
 
     def state_file(self) -> dict | None:
         """The reference of the file of the saved state, None when none is saved."""
-        record = dock_api.get_json(self.store, self.key)
+        record = dock_api.get_json(self.dock, self.key)
         return None if record is None else record["state"]
 
     def _record_deletion(self, state):
@@ -1126,7 +1126,7 @@ class _Run:
     order: dict
     steps: list
     record: dict
-    store: str  # the dock's URL
+    dock: str  # the dock's URL
     files: DockFiles  # the corpus's files and the states, read from the dock into the run's work folder
     telemetry: Telemetry
     tokenizer: Tokenizer
@@ -1164,7 +1164,7 @@ class _Run:
         lies that nothing but the step's result names)."""
         if isinstance(self.checkpoint, DockCheckpoint):
             return self.checkpoint.state_file()
-        stored = dock_api.put_content_from(self.store, self.checkpoint.path)
+        stored = dock_api.put_content_from(self.dock, self.checkpoint.path)
         return {"key": stored["key"], "sha256": stored["sha256"]}
 
 
@@ -1187,7 +1187,7 @@ def sent_files(steps, strategy_file) -> dict:
     return {plugin.given: Path(plugin.given).read_text(encoding="utf-8") for plugin in files}
 
 
-def _train(args, record, order, strategy_file, steps, context, store, telemetry, environ) -> int:
+def _train(args, record, order, strategy_file, steps, context, dock, telemetry, environ) -> int:
     """The run, with its work folder: beside the model folder's target, for
     the files it fetches from the dock (the corpus's files the gpu workers
     read, the states it loads) and the checkpoints it writes before they go
@@ -1196,29 +1196,29 @@ def _train(args, record, order, strategy_file, steps, context, store, telemetry,
     out.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f".{out.name}-work-", dir=out.parent))
     try:
-        return _train_in(args, record, order, strategy_file, steps, context, store, telemetry, environ, work)
+        return _train_in(args, record, order, strategy_file, steps, context, dock, telemetry, environ, work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _train_in(args, record, order, strategy_file, steps, context, store, telemetry, environ, work) -> int:
+def _train_in(args, record, order, strategy_file, steps, context, dock, telemetry, environ, work) -> int:
     log = telemetry.log
     out = Path(args.out)
     out_was_there = out.exists()  # a failed step then leaves the target as it was
     mode = link_checkpoints(environ)
-    corpus_files = DockFiles(store, work)
+    corpus_files = DockFiles(dock, work)
     try:
         with telemetry.span("inputs.corpus", corpus=record["id"], stream=args.stream) as span:
             kept_states = set()  # the keys of the kept steps' state files, which a dock checkpoint never deletes
-            checkpoint = (DockCheckpoint(store, args.run, telemetry, kept_states, work) if args.run
+            checkpoint = (DockCheckpoint(dock, args.run, telemetry, kept_states, work) if args.run
                           else FolderCheckpoint(out / CHECKPOINT_FOLDER))
             if checkpoint.exists() and not args.resume:
                 raise Refused(f"{checkpoint} holds an unfinished step: add --resume to continue it, or delete it")
-            tokenizer = load_corpus(store, record, order)
+            tokenizer = load_corpus(dock, record, order)
             check_corpus(steps, record, corpus_files)  # what every step reads is there before the first one trains
             span.set(shards=len(record["shards"][PLAIN]), conversations=record["conversations"],
                      tasks=record.get("tasks", {}).get("count", 0))
-        telemetry.input(recipe=args.order, corpus=record["id"], vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
+        telemetry.input(order=args.order, corpus=record["id"], vocabulary=record["tokenizer"]["vocabulary"]["sha256"])
     except (DockError, InputError) as error:
         raise Refused(f"{type(error).__name__}: {error}") from None
     log(f"corpus {record['id']}: vocabulary {tokenizer.vocab_size:,} tokens")
@@ -1226,13 +1226,13 @@ def _train_in(args, record, order, strategy_file, steps, context, store, telemet
     model_config = ModelConfig(vocab_size=tokenizer.vocab_size, block_size=context, **order["model"])
     try:  # the drafter trained at the end, and the scheduler's pass times replayed: refused now, not after training
         drafter_config, _ = drafter_settings(model_config, order["drafter"])  # its feature layers included
-        replayed = dock_api.read_record(store, args.scheduler_costs, COSTS_FILE) if args.scheduler_costs else None
+        replayed = dock_api.read_record(dock, args.scheduler_costs, COSTS_FILE) if args.scheduler_costs else None
         files = sent_files(steps, strategy_file)
     except (ValueError, DockError, OSError) as error:
         raise Refused(f"{type(error).__name__}: {error}") from None
-    run = _Run(args=args, order=order, steps=steps, record=record, store=store, files=corpus_files, telemetry=telemetry,
+    run = _Run(args=args, order=order, steps=steps, record=record, dock=dock, files=corpus_files, telemetry=telemetry,
                tokenizer=tokenizer, model_config=model_config, checkpoint=checkpoint, kept_states=kept_states,
-               results=StepResults(store, telemetry), strategy_file=strategy_file, replayed=replayed, log=log)
+               results=StepResults(dock, telemetry), strategy_file=strategy_file, replayed=replayed, log=log)
     spec = {"task": "wpt-train", "files": files, "steps": order["steps"], "record": record,
             "model": asdict(model_config), "seed": order["seed"], "drafter": order["drafter"],
             "canonical": canonical_ids(tokenizer.decode, tokenizer.vocab_size).tolist(),
@@ -1267,7 +1267,7 @@ def _train_in(args, record, order, strategy_file, steps, context, store, telemet
         if len(workers) > 1 and code not in (0, REFUSED, RECORD_FAILED, STOPPED):
             code = _crashed(code, len(workers), telemetry)
         if code == 0:
-            _finish(args, order, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
+            _finish(args, order, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, dock,
                     telemetry, log, work)
     except LinkError as error:
         code = _lost(error, telemetry)
@@ -1299,14 +1299,14 @@ def _lost(error, telemetry) -> int:
     return LOST
 
 
-def _finish(args, order, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, store,
+def _finish(args, order, record, model_config, drafter_config, answers, tokenizer, checkpoint, out, dock,
             telemetry, log, work):
     """The model folder, from the last step's kept state and what the gpu
     worker sent at the end (the drafter, none with --no-drafter, and a
     sample's token ids)."""
     with telemetry.span("model.load", state=answers.last_state):
         model = WPT(model_config)  # on this machine's CPU: only written to the folder
-        state = fetched_state(store, answers.last_state, work, only=("model", "best_model"))
+        state = fetched_state(dock, answers.last_state, work, only=("model", "best_model"))
         model.load_state_dict(weights(state))
         del state
         drafter = None
@@ -1315,7 +1315,7 @@ def _finish(args, order, record, model_config, drafter_config, answers, tokenize
             drafter = Drafter(model_config, drafter_config)
             drafter.load_state_dict(found["state"])
             drafter.provenance = {**found["provenance"], "corpus": record["id"],
-                                  "trained_by": {"command": "wpt train", "recipe_name": args.order}}
+                                  "trained_by": {"command": "wpt train", "order_name": args.order}}
             answers.finished["drafter"].unlink()
     n_params = sum(p.numel() for p in model.parameters())
     done = answers.done
@@ -1327,7 +1327,7 @@ def _finish(args, order, record, model_config, drafter_config, answers, tokenize
     try:
         with telemetry.span("model.write", folder=str(out)):
             with telemetry.span("model.weights"):
-                vocabulary = dock_api.fetch(store, named["vocabulary"]["key"], named["vocabulary"]["sha256"])
+                vocabulary = dock_api.fetch(dock, named["vocabulary"]["key"], named["vocabulary"]["sha256"])
                 tokenizer_name = named["recipe"] + (f" version {named['recipe_version']}"
                                                     if named.get("recipe_version") is not None else "")
                 save_model(model, staging, vocabulary, tokenizer_name, max_shard_bytes=args.max_shard_size,
@@ -1337,7 +1337,7 @@ def _finish(args, order, record, model_config, drafter_config, answers, tokenize
                                  metadata=WEIGHT_METADATA,
                                  provenance={**drafter.provenance, "target": {"weights": weight_hashes(staging)}})
             with telemetry.span("model.notice") as span:  # every text learned from, NOTICE, LICENSE, the model card
-                credits = model_notice(store, record, learned(done))
+                credits = model_notice(dock, record, learned(done))
                 (staging / CREDITS_NAME).write_text(credits, encoding="utf-8", newline="\n")
                 texts = sum(1 for line in credits.split("\n\n", 1)[0].splitlines() if line)
                 span.set(texts=texts)

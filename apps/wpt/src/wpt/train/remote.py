@@ -108,7 +108,7 @@ class Training:
         processes = header["processes"]
         run.log(f"device: {header['device']}" + (f", {processes} processes" if processes > 1 else ""))
         marks = run.fingerprints(code())  # the checkout this side sent the worker
-        telemetry.event("training.settings", recipe=run.order, model=asdict(run.model_config),
+        telemetry.event("training.settings", order=run.order, model=asdict(run.model_config),
                         parameters=run.parameters, device=header["device"], processes=processes,
                         strategy={"name": run.strategy_file.name, "file_sha256": run.strategy_file.sha256},
                         steps=[{**step.record(), "fingerprint": mark} for step, mark in zip(run.steps, marks)],
@@ -145,16 +145,16 @@ class Training:
         return header["folder"]
 
     def _read(self, header, body):
-        return {}, dock_api.read_record(self.run.store, self._folder(header), header["name"])
+        return {}, dock_api.read_record(self.run.dock, self._folder(header), header["name"])
 
     def _write(self, header, body):
-        dock_api.write_record(self.run.store, self._folder(header), header["name"], body)
+        dock_api.write_record(self.run.dock, self._folder(header), header["name"], body)
 
     def _append(self, header, body):
-        dock_api.append_record(self.run.store, self._folder(header), header["name"], body)
+        dock_api.append_record(self.run.dock, self._folder(header), header["name"], body)
 
     def _flush(self, header, body):
-        dock_api.flush_records(self.run.store)
+        dock_api.flush_records(self.run.dock)
 
     def _exists(self, header, body):
         return {"exists": self.run.checkpoint.exists()}, b""
@@ -212,7 +212,7 @@ class Training:
             if header.get("state") is not None:  # the job sent the step's last checkpoint with its end
                 path = self.files.received(header["state"])
                 try:
-                    stored = dock_api.put_content_from(run.store, path)
+                    stored = dock_api.put_content_from(run.dock, path)
                     state = _reference(stored)
                 finally:
                     path.unlink(missing_ok=True)

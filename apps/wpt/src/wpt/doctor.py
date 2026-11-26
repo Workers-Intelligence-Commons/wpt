@@ -37,14 +37,14 @@ SETUP = "run `uv run scripts/setup.py`, which installs the build for this machin
 def check_dock(root, environ) -> tuple[list, object]:
     """(its findings, the dock, None when it does not answer)."""
     try:
-        store = dock_api.url(root / ".env", environ)
-        dock_api.ready(store)  # a read: the dock has to answer
+        dock = dock_api.url(root / ".env", environ)
+        dock_api.ready(dock)  # a read: the dock has to answer
     except dock_api.NoDockFolder as error:
         return [(False, f"dock: {error}", "correct DOCK, or create that folder for a new dock")], None
     except Exception as error:  # noqa: BLE001: whatever the dock fails with is what this command reports
         return [(False, f"dock: {type(error).__name__}: {error}",
                  "set DOCK and its keys (DOCK_*) in the environment or in .env")], None
-    return [(True, f"dock: {store}", None)], store
+    return [(True, f"dock: {dock}", None)], dock
 
 
 def check_torch(environ) -> tuple[list, object]:
@@ -136,7 +136,7 @@ def _main(argv) -> int:
         say(f"{type(error).__name__}: {error}", ERROR)
         return REFUSED
     environ = {**read_env_file(root / ".env"), **{key: value for key, value in os.environ.items() if value}}
-    found, store = check_dock(root, environ)
+    found, dock = check_dock(root, environ)
     torch_found, device = check_torch(environ)
     found += torch_found
     if device is not None and not environ.get("WPT_GPU_WORKERS"):

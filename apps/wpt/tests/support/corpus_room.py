@@ -9,9 +9,9 @@ downloaded least recently, a file at a time, as it needs room, never one
 being built or downloaded; a build that alone needs more than the cap fails
 (TooBig), and so does one that finds nothing it may delete (NoRoom).
 
-    missing(store, folder, uploaded)     the uploaded files a folder no longer holds
-    delete(store, record, why)           delete a corpus's files, its record kept and marked
-    Room(store, cap, own, ...)           the room a cap leaves for the corpus being built
+    missing(dock, folder, uploaded)      the uploaded files a folder no longer holds
+    delete(dock, record, why)            delete a corpus's files, its record kept and marked
+    Room(dock, cap, own, ...)            the room a cap leaves for the corpus being built
 """
 
 from datetime import UTC, datetime
@@ -44,29 +44,29 @@ class FilesGone(CorpusError):
     the same build started again starts over."""
 
 
-def missing(store, folder: str, uploaded: list[dict]) -> list[str]:
+def missing(dock, folder: str, uploaded: list[dict]) -> list[str]:
     """The keys of the files uploaded ({key, ...}) that the folder of the dock no longer holds, from one listing."""
-    held = {one["key"] for one in dock_api.find(store, f"{folder}/")}
+    held = {one["key"] for one in dock_api.find(dock, f"{folder}/")}
     return [one["key"] for one in uploaded if one["key"] not in held]
 
 
-def delete(store, record: dict, why: str) -> dict:
+def delete(dock, record: dict, why: str) -> dict:
     """Delete every file of the corpus but its record, which says deleted
     from the first file on, and whole once the last file is gone: the record
     as stored."""
     if "deleted" not in record:
-        record = mark_deleted(store, record, why)
+        record = mark_deleted(dock, record, why)
     for one in files(record):
-        dock_api.delete(store, one["key"])
-    return mark_deleted(store, record, record["deleted"]["why"], whole=True)
+        dock_api.delete(dock, one["key"])
+    return mark_deleted(dock, record, record["deleted"]["why"], whole=True)
 
 
-def mark_deleted(store, record: dict, why: str, whole: bool = False) -> dict:
+def mark_deleted(dock, record: dict, why: str, whole: bool = False) -> dict:
     """The corpus's record marked deleted for that reason, whole when none
     of its files is left: the record as stored. The time is the first
     mark's."""
     at = record.get("deleted", {}).get("at") or datetime.now(UTC).isoformat()
-    return dock_api.put_json(store, f"{folder_of(record)}/{RECORD}",
+    return dock_api.put_json(dock, f"{folder_of(record)}/{RECORD}",
                              {**record, "deleted": {"at": at, "why": why, "whole": whole}})
 
 
@@ -83,9 +83,9 @@ class Room:
     files are listed once, when the first room is asked for, and only this
     Room deletes any while the build runs."""
 
-    def __init__(self, store, cap: int | None, own: str, last_download=lambda corpus: 0.0, busy=lambda: set(),
+    def __init__(self, dock, cap: int | None, own: str, last_download=lambda corpus: 0.0, busy=lambda: set(),
                  log=lambda line: None):
-        self.store, self.cap, self.own = store, cap, own
+        self.dock, self.cap, self.own = dock, cap, own
         self.last_download, self.busy, self.log = last_download, busy, log
         self.used = 0  # the bytes the corpus being built uploaded so far
         # {corpus id, or the folder of one without a record: (its record or None, [its files left, each with
@@ -97,27 +97,27 @@ class Room:
         if "bytes" in one:
             return one["bytes"]
         try:
-            return dock_api.size(self.store, one["key"])
+            return dock_api.size(self.dock, one["key"])
         except Exception:  # a file the dock no longer holds takes no room
             return 0
 
     def _listed(self) -> dict:
         if self._kept is None:
             self._kept = {}
-            for name in dock_api.folders(self.store, f"{FOLDER}/"):
+            for name in dock_api.folders(self.dock, f"{FOLDER}/"):
                 folder = f"{FOLDER}/{name}"
                 if folder == self.own:
                     continue
-                record = dock_api.get_json(self.store, f"{folder}/{RECORD}")
+                record = dock_api.get_json(self.dock, f"{folder}/{RECORD}")
                 if record is None:
-                    left = dock_api.find(self.store, f"{folder}/")
+                    left = dock_api.find(self.dock, f"{folder}/")
                     if left:
                         self._kept[folder] = (None, left)
                     continue
                 if record.get("deleted", {}).get("whole", "deleted" in record):
                     continue
                 left = [one for one in files(record)
-                        if "deleted" not in record or dock_api.has(self.store, one["key"])]
+                        if "deleted" not in record or dock_api.has(self.dock, one["key"])]
                 self._kept[record["id"]] = (record, [{**one, "bytes": self._size(one)} for one in left])
         return self._kept
 
@@ -202,14 +202,14 @@ class Room:
                     self._said.add(free[0])
                     self.log(f"the files of {free[0]} deleted, a file at a time as this build needs room: no corpus "
                              "record names them")
-                dock_api.delete(self.store, one["key"])
+                dock_api.delete(self.dock, one["key"])
             else:
                 if "deleted" not in record:
-                    record = mark_deleted(self.store, record, CAPPED)
+                    record = mark_deleted(self.dock, record, CAPPED)
                     self.log(f"corpus {record['id']} deleted, a file at a time as this build needs room: {CAPPED}")
-                dock_api.delete(self.store, one["key"])
+                dock_api.delete(self.dock, one["key"])
                 if not left:
-                    record = mark_deleted(self.store, record, record["deleted"]["why"], whole=True)
+                    record = mark_deleted(self.dock, record, record["deleted"]["why"], whole=True)
             taken -= one["bytes"]
             kept[free[0]] = (record, left)
         self.used += size

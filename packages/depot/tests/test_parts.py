@@ -86,12 +86,12 @@ def test_a_text_bigger_than_a_part_is_added_from_a_file_read_shown_and_built_int
     assert depot.passage(one, len(text) + 10, 5000)["text"] == ""
     depot.decide("admitted", "true", me)
     snapshot = depot.create_snapshot()
-    store = (tmp_path / "store").as_uri()
+    dock = (tmp_path / "dock").as_uri()
     vocabulary = {"sha256": hashlib.sha256(TOKENIZER.to_bytes()).hexdigest(), "size": TOKENIZER.vocab_size}
 
-    record = build(depot, snapshot["id"], {"vocabulary": vocabulary}, store, TOKENIZER, log=lambda *_: None)
+    record = build(depot, snapshot["id"], {"vocabulary": vocabulary}, dock, TOKENIZER, log=lambda *_: None)
 
-    [(tokens, _, document, _, _)] = [row for shard in record["shards"]["plain"] for row in read_verified(DockFiles(store, tmp_path / "reader"), shard)]
+    [(tokens, _, document, _, _)] = [row for shard in record["shards"]["plain"] for row in read_verified(DockFiles(dock, tmp_path / "reader"), shard)]
     assert document == one
     assert list(tokens) == [*TOKENIZER.encode(text.encode()), END]  # read in parts, tokenized as one text
 

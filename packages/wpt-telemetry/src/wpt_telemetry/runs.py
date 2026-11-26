@@ -13,6 +13,11 @@ dock is the dock's URL, read through dock.api.
 Each line read back for people is its text and the level of wic_utils.lines
 it prints at (described).
 
+A record written before the current names holds older ones: the events
+store.model_kept and store.result_set, the span inputs.recipe and the
+attribute recipe. Every line is read under the current names (current), so
+an older record reads as a new one does.
+
 A run whose end.json is missing is running, or it crashed: its record cannot
 tell which. The lines of a run reach the dock in groups (wpt_telemetry), so
 a run that is going shows up to FLUSH_SECONDS late.
@@ -33,6 +38,9 @@ from . import END, EVENTS, START
 READERS = 16  # record folders read at once
 LAST = 20  # the last events and errors a summary keeps
 FOLLOW_SECONDS = 5  # how often follow looks for new lines
+NAMES = {"store.model_kept": "dock.model_kept", "store.result_set": "dock.result_set",
+         "inputs.recipe": "inputs.order"}  # an older record's names of events and spans: the current ones
+ATTRIBUTES = {"recipe": "order"}  # an older record's names of attributes: the current ones
 
 
 @dataclass(frozen=True)
@@ -88,9 +96,22 @@ def find(dock, given: str) -> str:
     return found[0]
 
 
+def current(line: dict) -> dict:
+    """A recorded line under the current names of its event or span and
+    of its attributes (NAMES, ATTRIBUTES), whatever names its record was
+    written with."""
+    name, attributes = line.get("name"), line.get("attributes")
+    if name in NAMES:
+        line = {**line, "name": NAMES[name]}
+    if isinstance(attributes, dict) and any(key in ATTRIBUTES for key in attributes):
+        line = {**line, "attributes": {ATTRIBUTES.get(key, key): value for key, value in attributes.items()}}
+    return line
+
+
 def described(line: dict) -> tuple[str, str] | None:
     """One recorded line as one line for people and the level it prints at,
     None for a line that only opens or closes a span without a failure."""
+    line = current(line)
     time_ = line.get("time", "")
     match line.get("kind"):
         case "log":
@@ -113,7 +134,7 @@ def summary(dock, folder) -> Summary:
     last, errors = collections.deque(maxlen=LAST), collections.deque(maxlen=LAST)
     for raw in data.splitlines():
         try:
-            line = json.loads(raw)
+            line = current(json.loads(raw))
         except ValueError:
             continue  # a line a crash left cut
         kind = line.get("kind")

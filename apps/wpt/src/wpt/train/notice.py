@@ -24,11 +24,11 @@ from wpt_corpus import corpora
 PLAIN = "plain"
 
 
-def model_notice(store, record: dict, learned: dict | None = None) -> str:
+def model_notice(dock, record: dict, learned: dict | None = None) -> str:
     """The notice of a model trained on the corpus whose record is given,
     learning what `learned` says ({"plain": tokens, "conversation": count,
     "task": count}, each part optional)."""
-    rows = corpora.rows(store, record, "texts")
+    rows = corpora.rows(dock, record, "texts")
     quoted = {(one["depot"], text) for one in rows if one.get("quotes") and _learned(one, learned)
               for text in one["quotes"]}
     texts, seen = [], set()
@@ -38,9 +38,9 @@ def model_notice(store, record: dict, learned: dict | None = None) -> str:
             texts.append(one)
     lines = [_line(one) for one in texts]
     named = {one["notice"] for one in texts}
-    notices = [one for one in corpora.rows(store, record, "notices") if one["id"] in named]
+    notices = [one for one in corpora.rows(dock, record, "notices") if one["id"] in named]
     used = {license_id for one in texts for license_id in one["licenses"]}
-    licenses = [one for one in corpora.rows(store, record, "licenses") if one["id"] in used]
+    licenses = [one for one in corpora.rows(dock, record, "licenses") if one["id"] in used]
     parts = ["\n".join(lines)]
     if notices:
         parts.append("Notices\n\n" + "\n\n".join(f"[{one['id']}]\n{one['text']}" for one in notices))

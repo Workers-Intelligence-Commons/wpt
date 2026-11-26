@@ -121,9 +121,9 @@ def routing():
 
 
 @pytest.fixture
-def store(tmp_path):
+def dock(tmp_path):
     """A dock in the test's folder, by its URL."""
-    return (tmp_path / "store").as_uri()
+    return (tmp_path / "dock").as_uri()
 
 
 @pytest.fixture(autouse=True)

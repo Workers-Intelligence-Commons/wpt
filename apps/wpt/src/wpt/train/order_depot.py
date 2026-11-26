@@ -84,7 +84,7 @@ class WebDepot:
             raise Missing(f"no dataset {dataset!r} at {self.url}")
         return next((row for row in found if row.get("id") == dataset), found[0])
 
-    def built(self, store, address: str, dataset: dict, vocabulary: str, size: int | None) -> dict | None:
+    def built(self, dock, address: str, dataset: dict, vocabulary: str, size: int | None) -> dict | None:
         """The record of the latest fresh corpus of the dataset (its row),
         the vocabulary of that sha256 and that size, through the listing of
         the dataset's downloads: the record, read from the dock, of the
@@ -100,10 +100,10 @@ class WebDepot:
                       if one["vocabulary"]["sha256"] == vocabulary and one["max_tokens"] == size), None)
         if named is None:
             return None
-        record = corpora.find(store, named["id"])
+        record = corpora.find(dock, named["id"])
         if record is None:
             raise Unreadable(f"{self.url} names the corpus {named['id']} for that dataset, vocabulary and size, "
-                             f"which the dock {store} does not hold")
+                             f"which the dock {dock} does not hold")
         return record
 
     def vocab_size(self, recipe: str) -> tuple[int, bool]:

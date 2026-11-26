@@ -237,7 +237,7 @@ BACK = "back-to-review"  # the status of decide that puts texts back under revie
 
 class DockBackups:
     """Where `depot backup` and `depot restore` keep the depot's backups:
-    the calls depot.backup makes of its `store`, each on the dock named by
+    the calls depot.backup makes of its `dock`, each on the dock named by
     its URL, through dock.api (depot.backup knows nothing of the dock)."""
 
     def __init__(self, dock: str):

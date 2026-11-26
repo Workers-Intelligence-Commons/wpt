@@ -118,24 +118,24 @@ def sample_lines(texts: Iterator[tuple[str, str, bytes]]) -> Iterator[bytes]:
     yield (json.dumps({"end": True, "texts": count, "bytes": total}) + "\n").encode()
 
 
-def legacy(address: str, downloads: Downloads, refusals, store: str | None = None,
+def legacy(address: str, downloads: Downloads, refusals, dock: str | None = None,
            public_url=shared.public_url) -> list[Route]:
     """The frozen dataset routes over the depot whose file is at address,
     read through its own read-only connections (depot.legacy.Legacy),
     whatever its format; downloads: the web app's (depot_app.downloads),
     where the streams being sent and the sizes of export parts are kept;
     refusals wraps a handler so that it answers each failure with its
-    status (depot_app.web.routes.refusals); store: the URL of the dock of
+    status (depot_app.web.routes.refusals); dock: the URL of the dock of
     the corpora (dock.api), by default the one DOCK names, read from the
     settings when first asked;
     public_url: the depot's public address, None without one."""
     read = Legacy(address)
-    held = {} if store is None else {"store": store}
+    held = {} if dock is None else {"dock": dock}
 
-    def opened_store():
-        if "store" not in held:
-            held["store"] = dock_api.url(shared.env_file())
-        return held["store"]
+    def opened_dock():
+        if "dock" not in held:
+            held["dock"] = dock_api.url(shared.env_file())
+        return held["dock"]
 
     def wrapped(handler):
         """refusals for a handler that gets the Request too."""
@@ -166,7 +166,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
             libraries.append({**ref, "local": mine, "name": libraries_held[ref["library"]]["name"] if mine else None,
                               "locked_at": libraries_held[ref["library"]]["locked_at"] if mine else None})
         try:
-            built, unreachable = corpora.built_from(opened_store(), corpus_depot(found), found["id"]), None
+            built, unreachable = corpora.built_from(opened_dock(), corpus_depot(found), found["id"]), None
         except (DockSettingError, DockError, OSError) as error:
             built, unreachable = None, f"{type(error).__name__}: {error}"
         return 200, shared.jsonable({
@@ -252,7 +252,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
         if known is None:
             asked = [i for i, one in enumerate(files) if "bytes" not in one]
             with ThreadPoolExecutor(min(SIZING, len(asked) or 1)) as pool:
-                found = dict(zip(asked, pool.map(lambda i: dock_api.size(opened_store(), references[i]), asked)))
+                found = dict(zip(asked, pool.map(lambda i: dock_api.size(opened_dock(), references[i]), asked)))
             known = [found[i] if i in found else one["bytes"] for i, one in enumerate(files)]
             with sizing:
                 sizes[record["id"]] = known
@@ -318,7 +318,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
         row = read.dataset_by_id(values["id"])
         shown = {"dataset": shared.jsonable(row), "job": None, "corpora": []}
         try:
-            found = corpora.built_from(opened_store(), corpus_depot(row), row["id"])
+            found = corpora.built_from(opened_dock(), corpus_depot(row), row["id"])
         except (DockSettingError, DockError, OSError) as error:
             return 200, {**shown, "state": "no store", "problem": f"{type(error).__name__}: {error}"}
         triples = {}
@@ -340,7 +340,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
         shown = {"dataset": shared.jsonable(row), "vocabulary": read.vocabulary_named(vocabulary), "max_tokens": size,
                  "size": size_name(size), "link": link(row, vocabulary, size), "job": None}
         try:
-            records = corpora.built_from(opened_store(), corpus_depot(row), row["id"], vocabulary, size)
+            records = corpora.built_from(opened_dock(), corpus_depot(row), row["id"], vocabulary, size)
         except (DockSettingError, DockError, OSError) as error:
             return 200, {**shown, "state": "no store", "problem": f"{type(error).__name__}: {error}"}
         state, fresh, last = state_of(row, records)
@@ -364,7 +364,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
         """(the dataset's row, the fresh corpus its download address names). Refused or NotFound without one."""
         row = read.dataset_by_id(values["id"])
         vocabulary, size = vocabulary_given(values["vocabulary"]), size_of(values["size"])
-        records = corpora.built_from(opened_store(), corpus_depot(row), row["id"], vocabulary, size)
+        records = corpora.built_from(opened_dock(), corpus_depot(row), row["id"], vocabulary, size)
         _, found, _ = state_of(row, records)
         if found is None:
             raise errors.NotFound(f"the dataset {row['name']} has no corpus of the vocabulary {vocabulary[:12]} at "
@@ -378,7 +378,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
         if chosen is None:
             raise errors.NotFound(f"corpus {record['id']} has no file {values['name']}")
         reference = chosen["key"]
-        size = dock_api.size(opened_store(), reference)
+        size = dock_api.size(opened_dock(), reference)
         start, end, status = ranged(request, size, f'"{chosen["sha256"]}"')
         if status is None:
             return start, end
@@ -390,7 +390,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
             at = start
             while at < end:
                 length = min(CHUNK, end - at)
-                yield dock_api.fetch_range(opened_store(), reference, at, length)
+                yield dock_api.fetch_range(opened_dock(), reference, at, length)
                 at += length
         saved = download_names(row, record, vocabulary_given(values["vocabulary"]), size_of(values["size"]))
         headers = {"Accept-Ranges": "bytes", "ETag": f'"{chosen["sha256"]}"',
@@ -413,7 +413,7 @@ def legacy(address: str, downloads: Downloads, refusals, store: str | None = Non
         references = whole["references"]
 
         def read_piece(index: int, at: int, length: int) -> bytes:
-            return dock_api.fetch_range(opened_store(), references[index], at, length)
+            return dock_api.fetch_range(opened_dock(), references[index], at, length)
         headers = {"Accept-Ranges": "bytes", "ETag": whole["etag"],
                    "Content-Disposition": f'attachment; filename="{whole["download"]}"'}
         if status == 206:

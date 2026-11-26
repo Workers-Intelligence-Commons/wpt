@@ -3,7 +3,7 @@ corpora, for the upgrade tests and the legacy API's golden answers (README.md be
 
     python make_fixtures.py OUT_FOLDER
 
-writes OUT_FOLDER/format-<N>.sqlite and OUT_FOLDER/format-<N>-store/ (one corpus folder per build); neither may
+writes OUT_FOLDER/format-<N>.sqlite and OUT_FOLDER/format-<N>-dock/ (one corpus folder per build); neither may
 exist yet. Every text is made of words drawn from a fixed list with a fixed seed; no text is anyone's writing. The
 steps, in order:
 
@@ -198,11 +198,11 @@ def make(out: Path):
     row = depot.dataset_by_id(two)
     libraries = [(None, one["library"]) for one in row["libraries"]]
     depot.edit_dataset(two, "ds-two", libraries, [("en", 0.5), ("poem", None)], vocabulary=sha)
-    store = (out / f"format-{FORMAT}-store").resolve().as_uri()
+    dock = (out / f"format-{FORMAT}-dock").resolve().as_uri()
     quiet = lambda *_: None  # noqa: E731
-    build(depot, "ds-two", store, vocabulary, 1, max_tokens=SMALL, log=quiet)
+    build(depot, "ds-two", dock, vocabulary, 1, max_tokens=SMALL, log=quiet)
     depot.edit_dataset(two, "ds-two", libraries, [("en", 0.3), ("letter", None)], vocabulary=sha)
-    build(depot, "ds-two", store, vocabulary, 1, max_tokens=LARGE, log=quiet)
+    build(depot, "ds-two", dock, vocabulary, 1, max_tokens=LARGE, log=quiet)
 
     final = out / f"format-{FORMAT}.sqlite"
     con = apsw.Connection(str(work / "fixture.sqlite"))

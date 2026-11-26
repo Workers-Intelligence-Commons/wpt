@@ -105,7 +105,7 @@ def test_a_step_stopped_and_resumed_keeps_the_average_of_its_states(dataset, tmp
     # through the runner: a step of 6 updates averaging 3 states 2 updates apart, stopped after updates 2, 4 and
     # 6 and resumed each time from its checkpoint (the average with it); its result, the state its checkpoint
     # keeps, holds the average of the weights at updates 2, 4 and 6, and so does the model
-    store, record = dataset
+    dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {
         "lr": 0.01, "warmup": 2, "average_states": 3, "average_every": 2}}, "settings": {
         "stages": [{"block_size": 16, "steps": 6, "batch_size": 2}], "prefix_tokens": 500}}, PARTS)
@@ -113,7 +113,7 @@ def test_a_step_stopped_and_resumed_keeps_the_average_of_its_states(dataset, tmp
     model = WPT(ModelConfig(**TINY))
     checkpoint, states = FolderCheckpoint(tmp_path / "checkpoint"), []
     for resume in (False, True, True, True):
-        environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(),
+        environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(),
                                                   lambda _: None, 1337, 1))
         try:
             train(model, CPU, step, step.start_method(), environment, 1337, 1, checkpoint=checkpoint, resume=resume,
@@ -137,7 +137,7 @@ def test_recompute_from_keeps_every_activation_in_the_shorter_stages_and_trains_
     # the stage of 16 tokens keeps every activation and the stage of 32 runs its layers again; the weights
     # are those of a run that recomputes every stage and of one that recomputes none, bit for bit, and the
     # model recomputes again once the step is over
-    store, record = dataset
+    dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
                       "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
                                               {"block_size": 32, "steps": 2, "batch_size": 2}],
@@ -155,7 +155,7 @@ def test_recompute_from_keeps_every_activation_in_the_shorter_stages_and_trains_
             return run_pass(first, idx, *args)
 
         model._pass = counted
-        environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(),
+        environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(),
                                                   lambda _: None, 1337, 1))
         try:
             train(model, CPU, step, step.start_method(), environment, 1337, 1,
@@ -200,7 +200,7 @@ def stages_run(dataset, monkeypatch, stages, usable, automatic=True, micro_batch
     recomputed), the log's lines)."""
     from wpt_training import memory
 
-    store, record = dataset
+    dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
                       "settings": {"stages": [{"block_size": length, "steps": 2, "batch_size": batch}
                                               for length, batch in stages], "prefix_tokens": 500}}, PARTS)
@@ -215,7 +215,7 @@ def stages_run(dataset, monkeypatch, stages, usable, automatic=True, micro_batch
         return run_pass(first, idx, *args)
 
     model._pass = counted
-    environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(), lambda _: None,
+    environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(), lambda _: None,
                                               1337, 1, micro_batch=micro_batch))
     try:
         train(model, CPU, step, step.start_method(), environment, 1337, 1,
@@ -233,7 +233,7 @@ def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_
     # those of a run that recomputes none, and of one that recomputes every stage: the probes leave no trace
     from wpt_training import memory
 
-    store, record = dataset
+    dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
                       "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
                                               {"block_size": 32, "steps": 2, "batch_size": 2}],
@@ -254,7 +254,7 @@ def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_
             return run_pass(first, idx, *args)
 
         model._pass = counted
-        environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(),
+        environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(),
                                                   lambda _: None, 1337, 1))
         try:
             train(model, CPU, step, step.start_method(), environment, 1337, 1,
@@ -360,14 +360,14 @@ def test_fewer_windows_per_pass_add_up_to_the_gradient_of_the_whole_pass(dataset
     # docs/training.md, "The batch is the same on any hardware": a stage's batch of 4 windows in passes of
     # 4, 2 or 1 windows (TextWindows.per_pass, the runner's choice) holds the same windows in the same
     # order, and the passes' gradients add up to the whole pass's within rounding
-    store, record = dataset
+    dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01}},
                       "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}],
                                    "prefix_tokens": 500}}, PARTS)
     torch.manual_seed(0)
     model = WPT(ModelConfig(**TINY)).train()
     method = step.start_method()
-    environment = step.start_environment(Data(step.name, store, record, None, CPU, Telemetry.off(), lambda _: None,
+    environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(), lambda _: None,
                                               1337, 1))
     try:
         found = []

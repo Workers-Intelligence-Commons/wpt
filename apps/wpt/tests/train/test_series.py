@@ -55,16 +55,16 @@ def test_every_size_of_a_series_reads_one_corpus_and_a_size_trains_on_its_start(
     folder.mkdir(parents=True)
     (folder / "tiny.json").write_text(json.dumps({**TINY, "data": series_data(built)}))
     orders = Orders(tmp_path)
-    vocabulary = corpora.find(built.store, built.corpus_id)["tokenizer"]["vocab_size"]  # the size training plans for
+    vocabulary = corpora.find(built.dock, built.corpus_id)["tokenizer"]["vocab_size"]  # the size training plans for
     data = orders.model_order("tiny:small", vocabulary)["data"]
     assert data == orders.model_order("tiny:large", vocabulary)["data"]
     assert data["total_tokens"] == 13 * 4 * 17  # the large size's prefix
     corpus = built.sized("d", data["total_tokens"])["id"]  # the corpus of the series' largest prefix
     train(["tiny:small", "--out", "model"])  # found by the build key of the snapshot, data part and largest prefix
     provenance = json.loads((Path("model") / "provenance.json").read_text())
-    assert provenance["recipe_name"] == "tiny:small" and provenance["corpus"]["id"] == corpus
-    assert provenance["recipe"] == orders.model_order("tiny:small", vocabulary)
-    [step] = provenance["recipe"]["steps"]
+    assert provenance["order_name"] == "tiny:small" and provenance["corpus"]["id"] == corpus
+    assert provenance["order"] == orders.model_order("tiny:small", vocabulary)
+    [step] = provenance["order"]["steps"]
     assert step["settings"]["stages"] == [{"block_size": 16, "steps": 4, "batch_size": 4}]
     assert step["settings"]["prefix_tokens"] == 4 * 4 * 17 == provenance["learned"]["plain"]  # the corpus's start
     assert step["optimizer"]["settings"] == {"lr": 0.002, "warmup": 1}

@@ -133,7 +133,7 @@ def test_the_manager_rents_its_gpu_workers_sets_their_tokens_never_shows_them_an
     # the workers' keys stay on the manager's disk, readable by its owner only; a run that ended has none left
     path = tmp_path / "runs" / "manager-state" / "rented.json"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600 and state(tmp_path, "rented")["workers"] == []
-    assert has_model(built.store, "rented")
+    assert has_model(built.dock, "rented")
 
 
 def test_a_lost_rented_worker_is_reported_replaced_and_the_run_resumes_from_the_dock(built, fake, tmp_path,
@@ -165,7 +165,7 @@ def test_a_run_stops_once_its_replacements_are_used_up_and_its_rentals_are_given
     assert stopped.value.code == 4
     [name] = [call[1] for call in fake.calls if call[0] == "rent"]
     assert ("stop", name) in fake.calls and "resumed 0 times already" in capsys.readouterr().err
-    assert not has_model(built.store, "spent")
+    assert not has_model(built.dock, "spent")
 
 
 def test_a_lost_worker_a_person_started_is_not_replaced(built, fake, tmp_path, monkeypatch, capsys):
@@ -207,10 +207,10 @@ def cut_run(built, tmp_path) -> Workers:
     workers.save()
     workers.release()  # the manager that ran it crashed: the system gave its lock back
     folder = "20261025T120000Z-wpt-manager-cut-0000aaaa"
-    dock_api.write_record(built.store, folder, "start.json", json.dumps({"command": "wpt manager", "started": "2026-10-25T12:00:00Z",
+    dock_api.write_record(built.dock, folder, "start.json", json.dumps({"command": "wpt manager", "started": "2026-10-25T12:00:00Z",
                                                                "arguments": [], "inputs": {"run": "cut"}}).encode())
-    dock_api.write_record(built.store, folder, "ids.json", json.dumps({"inputs": {"run": "cut"}, "outputs": {}}).encode())
-    dock_api.append_record(built.store, folder, "events.jsonl", b"")
+    dock_api.write_record(built.dock, folder, "ids.json", json.dumps({"inputs": {"run": "cut"}, "outputs": {}}).encode())
+    dock_api.append_record(built.dock, folder, "events.jsonl", b"")
     return workers
 
 
@@ -222,14 +222,14 @@ def test_a_manager_that_comes_back_goes_on_with_its_unfinished_run_on_its_worker
     # WPT_RUN it starts no other run
     monkeypatch.delenv("WPT_RUN", raising=False)
     cut_run(built, tmp_path)
-    assert unfinished(built.store, "cut")
+    assert unfinished(built.dock, "cut")
 
     main([])
     assert not (tmp_path / RUN_FILE).exists()  # no new run was made
     cut, went_on = built.records("wpt manager")
     assert cut.end is None and went_on.start["inputs"]["run"] == "cut" and went_on.end["status"] == "succeeded"
     assert [call for call in fake.calls if call[0] == "rent"] == [("rent", "wpt-cut-1", False)]  # no new rental
-    assert ("stop", "wpt-cut-1") in fake.calls and not unfinished(built.store, "cut")
+    assert ("stop", "wpt-cut-1") in fake.calls and not unfinished(built.dock, "cut")
     assert "it goes on, reconnecting to its gpu workers" in capsys.readouterr().out
 
 
@@ -257,8 +257,8 @@ elif arguments[0] == "down" and arguments[-1] == "wpt-gone":
     (bin_folder / "sky").chmod(0o755)
     settings = {**os.environ, "PATH": f"{bin_folder}{os.pathsep}{os.environ['PATH']}", "WPT_RENTAL_GPUS": "H100:8",
                 "WPT_WORKER_WAIT": "600", "RUNPOD_API_KEY": "provider-key", "AWS_ACCESS_KEY_ID": "provider-key",
-                "DOCK": "s3://bucket", "DOCK_ACCESS_KEY_ID": "store-key",
-                "DOCK_SECRET_ACCESS_KEY": "store-secret", "GITHUB_TOKEN": "x", "WPT_ORDER": "d"}
+                "DOCK": "s3://bucket", "DOCK_ACCESS_KEY_ID": "dock-key",
+                "DOCK_SECRET_ACCESS_KEY": "dock-secret", "GITHUB_TOKEN": "x", "WPT_ORDER": "d"}
     sky = SkyPilot(settings, tmp_path)
     sky.rent("wpt-one", "secret-token-123", True)
     assert sky.address("wpt-one", lambda: None) == Address("34.0.0.9", 30123, pin)
@@ -318,7 +318,7 @@ def test_a_run_another_manager_runs_is_left_to_it(built, fake, tmp_path, monkeyp
     busy = Workers.new(kept, "busy", "d")  # the other manager, holding the run's lock
     busy.state["workers"] = [{"key": None, "rental": {"provider": "fake", "name": "wpt-busy-1", "kind": "on-demand"}}]
     busy.save()
-    assert unfinished(built.store, "busy")  # no record yet: it looks cut short
+    assert unfinished(built.dock, "busy")  # no record yet: it looks cut short
     monkeypatch.setenv("WPT_RUN", "busy")
     with pytest.raises(SystemExit) as refused:
         main([])
@@ -484,7 +484,7 @@ def test_a_crash_of_a_training_process_on_several_workers_resumes_the_run_within
     monkeypatch.setenv("WPT_RUN", "crashy")
     main([])
     assert len(tried) == 2 and tried[0] == tried[1] and "--resume" in tried[0]
-    assert has_model(built.store, "crashy")
+    assert has_model(built.dock, "crashy")
     assert [call[0] for call in fake.calls] == ["rent", "stop"]  # nothing was lost: no new rental
     assert "the run resumes from the last checkpoint on the dock" in capsys.readouterr().out
 
@@ -495,7 +495,7 @@ def test_a_crash_of_a_training_process_on_several_workers_resumes_the_run_within
     with pytest.raises(SystemExit) as stopped:
         main([])
     assert stopped.value.code == 5 and len(tried) == 2
-    assert "resumed 1 times already" in capsys.readouterr().err and not has_model(built.store, "crashier")
+    assert "resumed 1 times already" in capsys.readouterr().err and not has_model(built.dock, "crashier")
 
 
 def test_rentals_that_could_not_be_stopped_are_tried_again_at_each_start_and_every_few_minutes_each_try_recorded(
@@ -627,19 +627,19 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     assert stopped.value.code == 1
     written = (tmp_path / RUN_FILE).read_text()
     [name] = [line.split()[2] for line in written.splitlines() if line.startswith("# run ")]
-    assert not has_model(built.store, name)
+    assert not has_model(built.dock, name)
 
     main([])  # the same command again: the same run, from what was kept
     assert (tmp_path / RUN_FILE).read_text() == written
-    assert has_model(built.store, name)
+    assert has_model(built.dock, name)
     assert f"run {name} (named in" in capsys.readouterr().out
 
     main([])  # its model is on the dock now: a new run under a new name
     assert (tmp_path / RUN_FILE).read_text() != written
     # another order's run name is never taken over
     (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the order not-d; once it is done\n")
-    assert wpt.manager.previous_run(tmp_path, "d", built.store, None) is None
-    assert wpt.manager.previous_run(tmp_path, "not-d", built.store, None) == "other-20260101T000000Z"
+    assert wpt.manager.previous_run(tmp_path, "d", built.dock, None) is None
+    assert wpt.manager.previous_run(tmp_path, "not-d", built.dock, None) == "other-20260101T000000Z"
 
 
 def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says_why(built, published, tmp_path,
@@ -696,8 +696,8 @@ def stopping_order(built, tmp_path, at_update_3):
 
 
 def checkpoint_step(built, name) -> int:
-    state = DockCheckpoint(built.store, name, None, set()).state_file()
-    return load_state(dock_files.into(built.store, state, dock_files.folder(built.store).parent / f"state-{state['sha256']}"))["step"]
+    state = DockCheckpoint(built.dock, name, None, set()).state_file()
+    return load_state(dock_files.into(built.dock, state, dock_files.folder(built.dock).parent / f"state-{state['sha256']}"))["step"]
 
 
 @pytest.mark.parametrize("reason, ask", [("wpt manager stop", lambda: main(["stop"])),
@@ -729,14 +729,14 @@ def test_a_stop_saves_the_checkpoint_gives_the_machines_back_and_the_same_comman
     [(_, name, _), stop] = fake.calls
     assert stop == ("stop", name) and fake.cluster_of[name][0][0].poll() is not None
     assert checkpoint_step(built, "wanted") == 3
-    assert not has_model(built.store, "wanted")
+    assert not has_model(built.dock, "wanted")
     [run] = built.records("wpt manager")
     assert [e["attributes"]["reason"] for e in run.events if e.get("name") == "manager.stop"] == [reason]
     assert not (tmp_path / "runs" / "manager-state" / "wanted.stop").exists()  # the next start is not stopped by it
 
     monkeypatch.delenv("STOP_AT")
     main([])
-    assert has_model(built.store, "wanted")
+    assert has_model(built.dock, "wanted")
     assert [e["attributes"]["step"] for e in built.records("wpt train")[-1].events
             if e.get("name") == "training.resumed"] == [3]
 
@@ -780,7 +780,7 @@ def test_the_cost_cap_prints_the_projection_first_stops_the_run_like_a_stop_and_
     assert stopped.value.code == 130 and len(fake.calls) == 2
     monkeypatch.setenv("WPT_BUDGET", "10")
     main([])
-    assert has_model(built.store, "capped")
+    assert has_model(built.dock, "capped")
 
 
 def test_a_lost_worker_is_not_replaced_once_a_stop_is_under_way(built, fake, tmp_path, monkeypatch):
@@ -867,7 +867,7 @@ def test_a_sigterm_before_a_run_went_on_gives_its_rentals_back_and_leaves_a_run_
         main([])
     assert stopped.value.code == 130 and ("stop", "wpt-cut-1") in fake.calls
     assert state(tmp_path, "cut")["workers"] == [] and state(tmp_path, "cut")["ended"]
-    assert not state(tmp_path, "idle")["ended"] and unfinished(built.store, "idle")
+    assert not state(tmp_path, "idle")["ended"] and unfinished(built.dock, "idle")
     assert not (tmp_path / RUN_FILE).exists()
     run = [record for record in built.records("wpt manager") if record.end is not None
            and record.start["inputs"].get("run") == "cut"][-1]
@@ -905,7 +905,7 @@ def test_a_sigterm_after_a_run_s_training_keeps_its_exit_code_unless_it_keeps_an
         assert stopped.value.code == code
     else:
         main([])
-    assert has_model(built.store, "cut")
+    assert has_model(built.dock, "cut")
     assert built.records("wpt manager")[-1].end["exit_code"] == 0
     assert not (tmp_path / "runs" / "manager-state" / "next.json").exists()
 

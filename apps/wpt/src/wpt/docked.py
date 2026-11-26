@@ -28,13 +28,13 @@ from wpt_telemetry import runs
 from wic_utils.lines import ERROR, say
 
 
-def cmd_list(args, store):
-    found = corpora.records(store)
+def cmd_list(args, dock):
+    found = corpora.records(dock)
     say(f"{len(found)} corpora:")
     for record in found:
         say(f"  {record['id']}: {_source(record)}, built {record['built_at']}, {record['total_tokens']:,} tokens of "
             f"plain text, {record['texts']:,} texts" + ("" if corpora.fresh(record) else ", not fresh"))
-    models = names(store)
+    models = names(dock)
     say(f"{len(models)} models:")
     for name in models:
         say(f"  {name}")
@@ -42,24 +42,25 @@ def cmd_list(args, store):
 
 
 def _source(record) -> str:
-    """What a corpus was built for: its build key, snapshot and order, or
-    for a corpus built before snapshots, its dataset."""
+    """What a corpus was built for: its build key, snapshot and order (its
+    corpus.json's `order`, or `recipe` in an older one), or for a corpus
+    built before snapshots, its dataset."""
     if "build_key" not in record:
         return f"dataset {record['dataset']['name']} of {record['depot']}"
     snapshot, size = record["snapshot"], record.get("max_tokens")
     return (f"build key {record['build_key']}, snapshot {snapshot['name']} (change {snapshot['change']}) of "
-            f"{record['depot']}, order {record.get('recipe') or '(none)'}, "
+            f"{record['depot']}, order {record.get('order', record.get('recipe')) or '(none)'}, "
             + ("every token" if size is None else f"size {size:,}"))
 
 
-def cmd_copy_out(args, store):
-    count = copy_out(store, args.name, args.folder)
+def cmd_copy_out(args, dock):
+    count = copy_out(dock, args.name, args.folder)
     say(f"model {args.name}: {count} files in {args.folder}")
     return 0
 
 
-def cmd_runs(args, store):
-    found = runs.runs(store)
+def cmd_runs(args, dock):
+    found = runs.runs(dock)
     for run in found:
         took = f" in {run.seconds:,.0f} s" if run.seconds is not None else ""
         say(f"{run.started or '?'} {run.command or '?'}: {run.status}{took}: {run.folder}")
@@ -67,16 +68,16 @@ def cmd_runs(args, store):
     return 0
 
 
-def cmd_run(args, store):
+def cmd_run(args, dock):
     try:
-        folder = runs.find(store, args.folder)
+        folder = runs.find(dock, args.folder)
     except ValueError as error:
         say(f"wpt run: {error}", ERROR)
         return 2
     if args.follow:
-        for text, level in runs.follow(store, folder):
+        for text, level in runs.follow(dock, folder):
             say(text, level, sys.stdout)
-    found = runs.summary(store, folder)
+    found = runs.summary(dock, folder)
     say(f"{found.run.folder}: {found.run.command or '?'} {' '.join(found.arguments)}")
     say(f"started {found.run.started or '?'}; {found.run.status}"
         + (f" in {found.run.seconds:,.0f} s" if found.run.seconds is not None else ""))

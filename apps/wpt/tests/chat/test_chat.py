@@ -99,13 +99,13 @@ def test_the_scheduler_s_times_can_be_read_from_a_run_s_record_on_the_same_setup
     # --scheduler-costs reads a record's
     # times instead of measuring them; another setup is refused
     folder = model_folder(tmp_path / "model")
-    store = (tmp_path / "store").as_uri()
-    monkeypatch.setenv("DOCK", store)
+    dock = (tmp_path / "dock").as_uri()
+    monkeypatch.setenv("DOCK", dock)
     monkeypatch.chdir(tmp_path)
     config = load_model(folder).config
     block = load_drafter(folder).block
-    dock_api.write_record(store, "run", COSTS_FILE, costs_file([1.0] * (block + 1), costs_setup(config, 1, block, "cpu")))
-    dock_api.write_record(store, "other", COSTS_FILE, costs_file([1.0] * 5, costs_setup(config, 1, block - 1, "cpu")))
+    dock_api.write_record(dock, "run", COSTS_FILE, costs_file([1.0] * (block + 1), costs_setup(config, 1, block, "cpu")))
+    dock_api.write_record(dock, "other", COSTS_FILE, costs_file([1.0] * 5, costs_setup(config, 1, block - 1, "cpu")))
     monkeypatch.setattr("wpt.chat.measure_costs", lambda *args: pytest.fail("the times are read, not measured"))
     monkeypatch.setattr("wpt.chat.select_device", lambda: torch.device("cpu"))
     answers = iter(["the", ""])

@@ -16,20 +16,20 @@ def model_folder(root):
 
 
 def test_a_model_kept_under_its_run_s_name_is_copied_out_whole_and_a_damaged_file_is_refused(tmp_path):
-    store = (tmp_path / "store").as_uri()
+    dock = (tmp_path / "dock").as_uri()
     files = model_folder(tmp_path / "model")
-    keep_model(store, "fox-1", put_model(store, "fox-1", tmp_path / "model"))
+    keep_model(dock, "fox-1", put_model(dock, "fox-1", tmp_path / "model"))
 
-    copy_out(store, "fox-1", tmp_path / "copy")
+    copy_out(dock, "fox-1", tmp_path / "copy")
     assert {path.relative_to(tmp_path / "copy").as_posix(): path.read_bytes()
             for path in (tmp_path / "copy").rglob("*") if path.is_file()} == files
     with pytest.raises(FileExistsError):  # never into a folder that exists
-        copy_out(store, "fox-1", tmp_path / "copy")
+        copy_out(dock, "fox-1", tmp_path / "copy")
 
-    [stored] = (tmp_path / "store" / "models" / "fox-1").glob("model.safetensors*")  # as it is, or compressed
+    [stored] = (tmp_path / "dock" / "models" / "fox-1").glob("model.safetensors*")  # as it is, or compressed
     stored.write_bytes(b"tampered\n")
     with pytest.raises(CorruptFile):
-        copy_out(store, "fox-1", tmp_path / "damaged")
+        copy_out(dock, "fox-1", tmp_path / "damaged")
     assert not (tmp_path / "damaged").exists() and not list(tmp_path.glob(".damaged-*"))
     with pytest.raises(MissingFile):
-        copy_out(store, "fox-2", tmp_path / "other")
+        copy_out(dock, "fox-2", tmp_path / "other")

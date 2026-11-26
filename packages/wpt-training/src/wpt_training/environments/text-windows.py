@@ -76,7 +76,7 @@ def shards(record, kinds) -> list[dict]:
     return [one for kind in kinds for one in record["shards"].get(kind, [])]
 
 
-def check_corpus(settings, record, store, kinds):
+def check_corpus(settings, record, dock, kinds):
     """ValueError when the corpus holds fewer tokens of the kinds the step reads than the prefix it reads."""
     held = sum(one["tokens"] for one in shards(record, kinds))
     if settings["prefix_tokens"] > held:
@@ -126,7 +126,7 @@ class TextWindows(Environment):
         self.sharing = 1 if strategy.splits_windows else strategy.world_size
         self.batches = batching(self.stage_list, data.micro_batch, self.sharing)
         self.prefix = settings["prefix_tokens"] or None
-        self.train_tokens = _token_array(data.store, shards(data.record, data.kinds), strategy, data.stream_shards,
+        self.train_tokens = _token_array(data.dock, shards(data.record, data.kinds), strategy, data.stream_shards,
                                          self.prefix)
         longest = max(stage.block_size for stage in self.stage_list)
         if len(self.train_tokens) <= longest + 1:
@@ -200,7 +200,7 @@ class TextWindows(Environment):
             self.train_tokens.close()
 
 
-def _token_array(store, files, strategy, stream_shards=None, prefix=None):
+def _token_array(dock, files, strategy, stream_shards=None, prefix=None):
     """The training tokens of the token files files as an array read from
     disk on demand. One process per machine builds the file, checking every
     token file. With stream_shards, a ShardStream that keeps only that many
@@ -208,11 +208,11 @@ def _token_array(store, files, strategy, stream_shards=None, prefix=None):
     from the token files that hold them alone."""
     held = prefix_shards(files, prefix)
     if stream_shards:
-        return ShardStream(store, files, stream_shards, prefix)
+        return ShardStream(dock, files, stream_shards, prefix)
     if strategy.is_local_main:
-        token_file(store, held)
+        token_file(dock, held)
     strategy.barrier()
-    training = (np.memmap(token_file(store, held), dtype="<u4", mode="r") if held else np.zeros(0, dtype="<u4"))
+    training = (np.memmap(token_file(dock, held), dtype="<u4", mode="r") if held else np.zeros(0, dtype="<u4"))
     return training[:prefix]
 
 

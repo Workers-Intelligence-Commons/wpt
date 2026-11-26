@@ -66,7 +66,7 @@ def served(tmp_path, monkeypatch):
     DEPOT_URL the depot's public address PUBLIC. Each server and queue stops when the test ends."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DEPOT_URL", PUBLIC + "/")
-    monkeypatch.setenv("DOCK", (tmp_path / "store").as_uri())
+    monkeypatch.setenv("DOCK", (tmp_path / "dock").as_uri())
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
     static = tmp_path / "static"

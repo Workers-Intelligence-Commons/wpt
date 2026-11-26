@@ -272,7 +272,7 @@ path given to `wpt eval`:
 from wpt.eval import Result
 
 def run(context):  # context: model (on a gpu worker: config, generator,
-                   # writer, greedy, losses), tokenizer, device, folder, provenance, store,
+                   # writer, greedy, losses), tokenizer, device, folder, provenance, dock,
                    # telemetry (the run's record)
     ...
     return Result(data={...}, text="the same findings, for people")
@@ -312,10 +312,10 @@ SETTINGS = {...}
 def start(settings, data): ...  # a wpt_training.Environment: stage_list, tokens, learned, batch (None: the update
                                 # is skipped), evaluates, evaluate, after_update, finished, state_dict, close;
                                 # learned: by kind, {kind: how much}; data: the step's name, the kinds it
-                                # reads, store, corpus record, tokenizer, config, strategy,
+                                # reads, dock, corpus record, tokenizer, config, strategy,
                                 # telemetry, log, seed, the step's number, step_seed (both mixed:
                                 # what the step's draws are seeded by); optionally check(settings),
-                                # context(settings) and check_corpus(settings, record, store, kinds):
+                                # context(settings) and check_corpus(settings, record, dock, kinds):
                                 # ValueError when the corpus holds nothing of those kinds for it, before
                                 # any step runs
 

@@ -218,7 +218,7 @@ deleted its folder, which had no record yet) starts over, or fails
 (FilesGone) without a record. Before its first upload, the build hands the
 cap its estimated size (Room.expect).
 
-    build(depot, snapshot, data, store, tokenizer, ...)   the corpus of a snapshot and data section, its record
+    build(depot, snapshot, data, dock, tokenizer, ...)    the corpus of a snapshot and data section, its record
     check(depot, snapshot, data, tokenizer)               the snapshot's row, refused when the section does not match
     canonical(data)                                       the kinds, shares and size of a data section, as keyed
     build_key(snapshot, data, vocabulary)                 the key of a build
@@ -292,13 +292,13 @@ TRAINING_KINDS = ("conversation", "task")  # the kinds beside plain a corpus tak
 REBUILT = "built again over its stale record"  # why the files of a record a build replaces are deleted
 
 
-def build(depot: Depot, snapshot: str, data: dict, store, tokenizer: Tokenizer, *, address: str | None = None,
-          recipe: str | None = None, tokenizer_recipe: str | None = None, tokenizer_version: int | None = None,
+def build(depot: Depot, snapshot: str, data: dict, dock, tokenizer: Tokenizer, *, address: str | None = None,
+          order: str | None = None, tokenizer_recipe: str | None = None, tokenizer_version: int | None = None,
           code_commit: str | None = None, work: Path | None = None, checkpoint: dict | None = None,
           save=lambda state: None, progress=lambda state: None, room=None, shard_tokens: int = SHARD_TOKENS,
           log=say) -> dict:
     """Build the corpus of depot's snapshot whose id is snapshot with the
-    data section data (the module says what it holds) into store with
+    data section data (the module says what it holds) into dock with
     tokenizer, whose sha256 and size the section names: the corpus's
     record. address: the depot's address the record names (the order's);
     order: the order's name; tokenizer_recipe and tokenizer_version: the
@@ -319,7 +319,7 @@ def build(depot: Depot, snapshot: str, data: dict, store, tokenizer: Tokenizer, 
     with ExitStack() as stack:
         if work is None:
             work = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="wpt-corpus-")))
-        return _Build(depot, snapshot, data, store, tokenizer, address, recipe, tokenizer_recipe, tokenizer_version,
+        return _Build(depot, snapshot, data, dock, tokenizer, address, order, tokenizer_recipe, tokenizer_version,
                       code_commit, Path(work), checkpoint or {}, save, progress, room, shard_tokens, log).run()
 
 
@@ -752,10 +752,10 @@ def mixed(found: dict, shares: list[dict]) -> dict:
 class _Build:
     """One build, as build() says: its state, the files it writes and uploads, and its stages."""
 
-    def __init__(self, depot, snapshot, data, store, tokenizer, address, recipe, tokenizer_recipe, tokenizer_version,
+    def __init__(self, depot, snapshot, data, dock, tokenizer, address, order, tokenizer_recipe, tokenizer_version,
                  code_commit, work, checkpoint, save, progress, room, shard_tokens, log):
-        self.source, self.store, self.tokenizer = depot.address, store, tokenizer  # the depot, read through api
-        self.data, self.address, self.recipe, self.code_commit = data, address, recipe, code_commit
+        self.source, self.dock, self.tokenizer = depot.address, dock, tokenizer  # the depot, read through api
+        self.data, self.address, self.order, self.code_commit = data, address, order, code_commit
         self.tokenizer_recipe, self.tokenizer_version = tokenizer_recipe, tokenizer_version
         self.snapshot = check(depot, snapshot, data, tokenizer)
         self.wanted = canonical(data)
@@ -770,10 +770,10 @@ class _Build:
         self.erasures = _erasures(self.source, snapshot)
         self.key = build_key(self.snapshot, data, self.vocabulary_sha256)
         self.folder = f"{FOLDER}/{self.key}"
-        self.room = room(self.folder) if room is not None else corpus_room.Room(store, None, self.folder)
+        self.room = room(self.folder) if room is not None else corpus_room.Room(dock, None, self.folder)
 
     def run(self) -> dict:
-        known = dock_api.get_json(self.store, f"{self.folder}/{RECORD}")
+        known = dock_api.get_json(self.dock, f"{self.folder}/{RECORD}")
         if known is not None and fresh(known):
             self.log(f"corpus {known['id']} of snapshot {self.snapshot['name']} is already built")
             return known
@@ -802,7 +802,7 @@ class _Build:
 
     def _stream(self, named_file) -> dict:
         state = self.state
-        if state.get("key") == self.key and (gone := corpus_room.missing(self.store, self.folder, _uploaded(state))):
+        if state.get("key") == self.key and (gone := corpus_room.missing(self.dock, self.folder, _uploaded(state))):
             self.log(f"{len(gone)} files this build uploaded are no longer on the dock: it starts over")
             state = {}
         if state.get("key") == self.key and state.get("erasures") != self.erasures:
@@ -892,7 +892,7 @@ class _Build:
         def upload(path: Path, key: str) -> dict:
             size = path.stat().st_size
             self.room.make(size)
-            file = dock_api.put_from(self.store, key, path)
+            file = dock_api.put_from(self.dock, key, path)
             path.unlink()
             return {"key": file["key"], "sha256": file["sha256"], "bytes": size}
 
@@ -1264,12 +1264,12 @@ class _Build:
             pq.write_table(pa.Table.from_pylist(rows, schema=CORPUS_SCHEMAS[table]), path, compression="zstd")
             size = path.stat().st_size
             self.room.make(size)
-            reference = dock_api.put_from(self.store, f"{self.folder}/{table}.parquet", path)
+            reference = dock_api.put_from(self.dock, f"{self.folder}/{table}.parquet", path)
             path.unlink()
             return reference
 
         self.room.make(len(self.vocabulary))
-        vocabulary = dock_api.put(self.store, f"{self.folder}/vocabulary", self.vocabulary)
+        vocabulary = dock_api.put(self.dock, f"{self.folder}/vocabulary", self.vocabulary)
         items_taken = state["conversations"] + state["tasks_count"]
         unquoted = sum(state["unquoted"].values())
         left_out = {"no share": self.census["no_share"],
@@ -1280,7 +1280,7 @@ class _Build:
             "id": corpus_id, "folder": self.folder, "depot": self.address,
             "snapshot": {"id": self.snapshot["id"], "name": self.snapshot["name"], "owner": self.holder,
                          "change": self.snapshot["at_change"], "digest": self.snapshot["digest"]},
-            "recipe": self.recipe, "data": self.data, "build_key": self.key, "code_commit": self.code_commit,
+            "order": self.order, "data": self.data, "build_key": self.key, "code_commit": self.code_commit,
             "rules": RULES, "erasures": self.erasures, "built_at": built_at.isoformat(),
             "texts": state["taken"] - state["pieces"] + long_taken, "pieces": state["pieces"],
             "conversations": state["conversations"],
@@ -1310,9 +1310,9 @@ class _Build:
         if state["tasks_count"]:
             size = tasks_path.stat().st_size
             self.room.make(size)
-            record["tasks"] = {"file": dock_api.put_from(self.store, f"{self.folder}/tasks.jsonl", tasks_path),
+            record["tasks"] = {"file": dock_api.put_from(self.dock, f"{self.folder}/tasks.jsonl", tasks_path),
                                "count": state["tasks_count"]}
-        gone = corpus_room.missing(self.store, self.folder, [*_uploaded(state), *(
+        gone = corpus_room.missing(self.dock, self.folder, [*_uploaded(state), *(
             [record["tasks"]["file"]] if "tasks" in record else []), vocabulary,
             *(one for one in record["tables"].values() if isinstance(one, dict))])
         if gone:
@@ -1324,10 +1324,10 @@ class _Build:
         now, hit = self._erased_since(self.erasures, record)
         if hit:
             record["stale"] = {"erasures": hit}
-        record = dock_api.put_json(self.store, f"{self.folder}/{RECORD}", record)
+        record = dock_api.put_json(self.dock, f"{self.folder}/{RECORD}", record)
         _, hit = self._erased_since(now, record)
         if hit:
-            record = corpora.marked_stale(self.store, record, hit)
+            record = corpora.marked_stale(self.dock, record, hit)
         self.log(f"corpus {corpus_id} of snapshot {self.snapshot['name']}: {record['texts']:,} texts"
                  + (f" ({state['pieces']:,} pieces of {long_taken:,} of them)" if state["pieces"] else "") + ", "
                  f"{record['total_tokens']:,} tokens of plain text in {len(record['shards'][PLAIN])} token files, "
@@ -1345,8 +1345,8 @@ class _Build:
             return
         kept = {one["key"] for one in corpora.files(record)}
         for one in corpora.files(self.replaced):
-            if one["key"] not in kept and dock_api.has(self.store, one["key"]):
-                dock_api.delete(self.store, one["key"])
+            if one["key"] not in kept and dock_api.has(self.dock, one["key"]):
+                dock_api.delete(self.dock, one["key"])
                 self.log(f"{one['key']} deleted: {REBUILT}")
 
     def _not_taken(self) -> dict[str, int]:
@@ -1362,7 +1362,7 @@ class _Build:
         now = _erasures(self.source, self.snapshot["id"])
         new = set(now) - set(before)
         hit = [one["id"] for one in api.erasures(self.source)["erasures"] if one["id"] in new
-               and corpora.holds(self.store, record, set(one["texts"]))]
+               and corpora.holds(self.dock, record, set(one["texts"]))]
         return now, sorted(hit)
 
 

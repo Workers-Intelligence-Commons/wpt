@@ -38,7 +38,7 @@ A change file holds the rows its change removed as they were, so an
 erased passage stays in the waiting folder until the next backup sends it,
 and in the backups for good (docs/erasure.md).
 
-The depot knows nothing of the dock: backup and restore take `store`, the
+The depot knows nothing of the dock: backup and restore take `dock`, the
 place the backups go, which answers put_from(key, path) and put_json(key,
 record) (each giving the reference {key, sha256} of what it stored),
 get_json(key), folders(prefix) (the folders right under a key prefix) and
@@ -63,7 +63,7 @@ RESTORING = ".restoring"
 READ = 1 << 20  # bytes of a change file read at a time while it applies
 
 
-def backup(depot: Depot, store, full: bool = False) -> dict:
+def backup(depot: Depot, dock, full: bool = False) -> dict:
     """Send the depot's waiting change files, and a full copy when one is
     due, onto the dock: the run's record (the module's docstring)."""
     name = depot.name()
@@ -76,7 +76,7 @@ def backup(depot: Depot, store, full: bool = False) -> dict:
     timeline = db.timeline()
     waiting = sorted(db.waiting_files(), key=lambda path: parse_waiting(path.name)[0])
     marker = db.waiting / FULL_COPY_NEXT
-    full = full or marker.exists() or not any(one["timeline"] == timeline for one in _records(store, name))
+    full = full or marker.exists() or not any(one["timeline"] == timeline for one in _records(dock, name))
     made_at = now()
     stamp = _stamp(made_at)
     record = {"depot": name, "timeline": timeline, "made_at": made_at, "full": None, "changes": []}
@@ -84,14 +84,14 @@ def backup(depot: Depot, store, full: bool = False) -> dict:
         with tempfile.TemporaryDirectory(prefix=f".{db.path.name}.backup-", dir=db.path.parent) as folder:
             copy = Path(folder) / "depot.sqlite"
             change = db.copy_to(copy)
-            stored = store.put_from(f"{base}/full/{change:012d}-{stamp}.sqlite", copy)
+            stored = dock.put_from(f"{base}/full/{change:012d}-{stamp}.sqlite", copy)
             record["full"] = {"key": stored["key"], "sha256": stored["sha256"], "change": change, "made_at": made_at}
     for path in waiting:
         number, previous, at = parse_waiting(path.name)
-        stored = store.put_from(f"{base}/changes/{path.name}", path)
+        stored = dock.put_from(f"{base}/changes/{path.name}", path)
         record["changes"].append({"key": stored["key"], "sha256": stored["sha256"], "number": number, "previous": previous,
                                   "made_at": at.isoformat()})
-    record = store.put_json(f"{base}/runs/{stamp}/record.json", record)
+    record = dock.put_json(f"{base}/runs/{stamp}/record.json", record)
     for path in waiting:
         path.unlink()
     if full:
@@ -99,7 +99,7 @@ def backup(depot: Depot, store, full: bool = False) -> dict:
     return record
 
 
-def restore(store, to: str, at: str | None = None, name: str | None = None) -> Depot:
+def restore(dock, to: str, at: str | None = None, name: str | None = None) -> Depot:
     """A new depot at `to` made from the backups of the depot called name
     (the only one the dock holds backups of, by default) as of at: a
     change number, a UTC time (ISO 8601), or None for the latest change
@@ -109,8 +109,8 @@ def restore(store, to: str, at: str | None = None, name: str | None = None) -> D
     target = location(to)
     if target.exists():
         raise DepotExists(f"{target} already exists: a restore writes a new file")
-    name = name or _only_name(store)
-    records = _records(store, name)
+    name = name or _only_name(dock)
+    records = _records(dock, name)
     if not records:
         raise NotFound(f"the dock holds no backup of a depot called {name}")
     number, moment = _moment(at)
@@ -145,7 +145,7 @@ def restore(store, to: str, at: str | None = None, name: str | None = None) -> D
     _remove(working, copies)
     try:
         copies.mkdir(parents=True)
-        store.fetch_into(chosen, working)
+        dock.fetch_into(chosen, working)
         found_format = format_of(str(working))
         if found_format != FORMAT:
             raise OtherFormat(f"the backups of {name} are of format {found_format}, and this depot restores format "
@@ -156,7 +156,7 @@ def restore(store, to: str, at: str | None = None, name: str | None = None) -> D
                 con.execute(f"PRAGMA {pragma}").fetchall()
             for change in chain:
                 local = copies / f"{change['number']}"
-                store.fetch_into(change, local)
+                dock.fetch_into(change, local)
                 with open(local, "rb") as file, con:
                     apsw.Changeset.apply(file.read, con, conflict=_conflict)
                 local.unlink()
@@ -217,17 +217,17 @@ _KINDS = {apsw.SQLITE_CHANGESET_DATA: "a row that differs", apsw.SQLITE_CHANGESE
           apsw.SQLITE_CHANGESET_FOREIGN_KEY: "a foreign key"}
 
 
-def _records(store, name: str) -> list[dict]:
+def _records(dock, name: str) -> list[dict]:
     """The record of every backup run of the depot called name, in order."""
     found = []
-    for run in store.folders(f"{FOLDER}/{name}/runs/"):
-        if (record := store.get_json(f"{FOLDER}/{name}/runs/{run}/record.json")) is not None:
+    for run in dock.folders(f"{FOLDER}/{name}/runs/"):
+        if (record := dock.get_json(f"{FOLDER}/{name}/runs/{run}/record.json")) is not None:
             found.append(record)
     return sorted(found, key=lambda one: one["made_at"])
 
 
-def _only_name(store) -> str:
-    names = store.folders(f"{FOLDER}/")
+def _only_name(dock) -> str:
+    names = dock.folders(f"{FOLDER}/")
     if len(names) != 1:
         raise BackupRefused(f"the dock holds backups of {len(names)} depots ({', '.join(sorted(names)) or 'none'}): "
                             "name the one to restore")

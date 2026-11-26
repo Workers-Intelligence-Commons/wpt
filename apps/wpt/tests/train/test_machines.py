@@ -55,7 +55,7 @@ def test_two_gpu_workers_train_the_same_model_as_two_processes_on_one_in_one_pla
     one = train(built, tmp_path, order, "one", "", "--processes", "2")  # one local worker
     transports = []
     for out, places in (("near", ("", "")), ("far", ("?place=a", "?place=b"))):
-        shutil.rmtree(dock_files.folder(built.store) / "cache" / "steps")  # the hardware is no part of a step: each run trains
+        shutil.rmtree(dock_files.folder(built.dock) / "cache" / "steps")  # the hardware is no part of a step: each run trains
         with ExitStack() as stack:
             found = [start_worker(stack, tmp_path, f"{out}-{index}", worker_port()) for index in range(2)]
             text = " ".join(str(key).replace("#", places[index] + "#") for index, key in enumerate(found))

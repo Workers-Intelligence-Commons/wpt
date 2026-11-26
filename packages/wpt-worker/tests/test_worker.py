@@ -69,7 +69,7 @@ def fake_checkout(root: Path) -> Path:
 @pytest.fixture
 def worker():
     """A local gpu worker, started as the manager starts one, its
-    environment holding store settings it must not pass on."""
+    environment holding dock settings it must not pass on."""
     found = Worker.local_worker({**os.environ, "DOCK": "file:///nowhere",
                                  "DOCK_SECRET_ACCESS_KEY": "secret"})
     yield found
@@ -80,7 +80,7 @@ def test_a_job_runs_from_the_checkout_the_manager_sent_and_its_requests_and_prin
         worker, tmp_path, capfd):
     # the job's process asks the manager through the worker's server and the
     # manager answers; what it prints the manager prints; its exit code
-    # comes back; it holds no store settings and cannot import the tokenizer
+    # comes back; it holds no dock settings and cannot import the tokenizer
     root = fake_checkout(tmp_path / "checkout")
     assert worker.send_checkout("data", root) > 0
     reports = []

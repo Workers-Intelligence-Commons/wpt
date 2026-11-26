@@ -61,8 +61,8 @@ def test_every_gap_is_named_with_its_fix_in_one_pass(clean, built, tmp_path, mon
 
 
 def test_a_file_dock_whose_folder_does_not_exist_is_missing_and_stays_absent(clean, tmp_path, monkeypatch, capsys):
-    # opening a dock creates its folders: a mistyped path must not read as a healthy, empty store
-    absent = tmp_path / "typed-wrong" / "store"
+    # opening a dock creates its folders: a mistyped path must not read as a healthy, empty dock
+    absent = tmp_path / "typed-wrong" / "dock"
     monkeypatch.setenv("DOCK", f"file://{absent}")
     with pytest.raises(SystemExit) as gaps:
         main([])

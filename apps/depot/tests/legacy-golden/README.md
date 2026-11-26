@@ -46,5 +46,5 @@ Run the script with the code of 6b470328c7, extracted as the fixtures' README sa
 
 `UV_PROJECT_ENVIRONMENT=VENV-12 uv run --frozen --no-sync python -I PATH/record_golden.py FIXTURES THIS-FOLDER PORT`
 
-It serves copies of the depot and store on 127.0.0.1 and stops the server when it ends. Two runs on the same
+It serves copies of the depot and dock on 127.0.0.1 and stops the server when it ends. Two runs on the same
 fixtures give the same files.

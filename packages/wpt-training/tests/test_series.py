@@ -68,7 +68,7 @@ def dataset(tmp_path):
     """A dock holding 4 token files of 100 tokens each, token i at place i
     of the corpus's plain text, each file its own text; and the corpus's
     record."""
-    dock = (tmp_path / "store").as_uri()
+    dock = (tmp_path / "dock").as_uri()
     shards = []
     for i in range(4):
         path = tmp_path / f"{i}.parquet"
@@ -80,12 +80,12 @@ def dataset(tmp_path):
     return DockFiles(dock, tmp_path / "reader"), record
 
 
-def windows(store, record, prefix, stream_shards=None, updates=40):
+def windows(dock, record, prefix, stream_shards=None, updates=40):
     """Every window the read-text step draws in `updates` updates of 8 windows of 16 tokens."""
     step = load_step({"step": "read-text", "settings": {
         "stages": [{"block_size": 16, "steps": updates, "batch_size": 8}], "prefix_tokens": prefix}}, PARTS)
-    step.check_corpus(record, store)
-    data = Data(step.name, store, record, None, Strategy(torch.device("cpu")), Telemetry.off(), lambda _: None, 1337,
+    step.check_corpus(record, dock)
+    data = Data(step.name, dock, record, None, Strategy(torch.device("cpu")), Telemetry.off(), lambda _: None, 1337,
                 1, stream_shards=stream_shards)
     environment = step.start_environment(data)
     try:
@@ -100,21 +100,21 @@ def test_a_smaller_size_reads_exactly_the_start_of_the_corpus_built_for_a_larger
     # a prefix of 250 tokens ends inside the third token file: every window is a run of the first
     # 250 tokens (a stream walks them over and over: after token 249 comes token 0), the windows
     # reach its end, and the step learned from those 250 tokens alone; the same windows on every run
-    store, record = dataset
-    found, learned = windows(store, record, 250, stream_shards)
+    dock, record = dataset
+    found, learned = windows(dock, record, 250, stream_shards)
     following = np.roll(found, -1, axis=1)[:, :-1]
     assert ((following == found[:, :-1] + 1) | (stream_shards is not None) & (found[:, :-1] == 249)
             & (following == 0)).all()
     assert found.min() >= 0 and found.max() <= 249 and found.max() >= 240
     assert learned == {"plain": 250}
-    again, _ = windows(store, record, 250, stream_shards)
+    again, _ = windows(dock, record, 250, stream_shards)
     assert (found == again).all()
     # without a prefix, the whole corpus
-    everything, learned = windows(store, record, 0, stream_shards)
+    everything, learned = windows(dock, record, 0, stream_shards)
     assert everything.max() >= 250 and learned == {"plain": 400}
 
 
 def test_a_prefix_longer_than_the_corpus_is_refused_before_any_step_runs(dataset):
-    store, record = dataset
+    dock, record = dataset
     with pytest.raises(ValueError, match="reads the first 401 tokens; the corpus has 400"):
-        windows(store, record, 401)
+        windows(dock, record, 401)

@@ -897,7 +897,7 @@ def test_each_pair_gets_its_newest_complete_model_that_every_firefox_gets():
 def test_a_model_file_is_fetched_once_checked_kept_in_the_dock_and_served_from_it(web, tmp_path, monkeypatch):
     request, _ = web
     monkeypatch.chdir(tmp_path)  # no .env: the settings are the test's alone
-    monkeypatch.setenv("DOCK", (tmp_path / "store").as_uri())
+    monkeypatch.setenv("DOCK", (tmp_path / "dock").as_uri())
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
     good = record("de", "en", "1.0", "model", b"the model's bytes")

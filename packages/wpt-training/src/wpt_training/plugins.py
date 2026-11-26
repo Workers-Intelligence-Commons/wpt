@@ -21,7 +21,7 @@ Each is a Python file, a built-in by its name or any path:
                        def start(settings, data) -> Environment, on the gpu worker; optional
                        check(settings), context(settings): the window length it trains at,
                        which a model's context comes from, check_corpus(settings, record,
-                       store, kinds): ValueError when the corpus holds nothing for it, before
+                       dock, kinds): ValueError when the corpus holds nothing for it, before
                        any step runs, and manager(settings, context) -> its part on the wpt
                        manager (below)
     step file:         METHOD, ENVIRONMENT, KINDS = ("<kind of texts>", ...),
@@ -320,7 +320,7 @@ def step_seed(seed: int, number: int) -> int:
 @dataclass
 class Data:
     """What an environment's part on the gpu worker reads its examples
-    from: the step's name, the corpus's files (store: a reader of
+    from: the step's name, the corpus's files (dock: a reader of
     wpt_corpus.files, the manager's dock as the worker reads it,
     wpt_worker.job.LinkDock), the corpus's record, the model's
     configuration, the strategy, the run's telemetry (its record), log (a
@@ -336,7 +336,7 @@ class Data:
     write with that model (module docstring), and the kinds of texts the
     step reads (Step.kinds, which Step.start_environment sets)."""
     step: str
-    store: object
+    dock: object
     record: dict
     config: object
     strategy: Strategy
@@ -358,7 +358,7 @@ class Data:
 @dataclass
 class Context:
     """What an environment's part on the wpt manager reads: the step's
-    name, the corpus's files (store: a reader of wpt_corpus.files,
+    name, the corpus's files (dock: a reader of wpt_corpus.files,
     wpt_corpus.files.DockFiles on the manager), the corpus's record, the model's tokenizer and
     configuration, the run's telemetry (its record), log, the order's seed
     and the step's number, and writer(prompt, rows, *, temperature, top_k,
@@ -368,7 +368,7 @@ class Context:
     which the worker's part turns back into the row's routes; and the kinds
     of texts the step reads (Step.kinds, which Step.start_manager sets)."""
     step: str
-    store: object
+    dock: object
     record: dict
     tokenizer: object
     config: object
@@ -558,13 +558,13 @@ class Step:
         environment file's context(settings); None when it has none."""
         return getattr(self.environment.module, "context", lambda settings: None)(self.environment_settings)
 
-    def check_corpus(self, record: dict, store):
-        """ValueError when the corpus (its record, and its files, store: a
+    def check_corpus(self, record: dict, dock):
+        """ValueError when the corpus (its record, and its files, dock: a
         reader of wpt_corpus.files) holds nothing the step can learn from, from its environment
-        file's check_corpus(settings, record, store, kinds); nothing when it
+        file's check_corpus(settings, record, dock, kinds); nothing when it
         has none."""
-        getattr(self.environment.module, "check_corpus", lambda settings, record, store, kinds: None)(
-            self.environment_settings, record, store, self.kinds)
+        getattr(self.environment.module, "check_corpus", lambda settings, record, dock, kinds: None)(
+            self.environment_settings, record, dock, self.kinds)
 
     def start_method(self) -> Method:
         method = self.method.module.start(self.method_settings)

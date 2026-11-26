@@ -80,7 +80,7 @@ def vocabulary(built) -> str:
     key = f"adopted-{built.vocabulary}"
     api.adopt(key, {"vocabulary.json": built.tokenizer.to_bytes()},
               {"sha256": built.vocabulary, "size": built.tokenizer.vocab_size}, {"by": "a test"}, on_erasure="note",
-              dock=built.store)
+              dock=built.dock)
     return key
 
 
@@ -94,7 +94,7 @@ def asked(built, tmp_path, name, kinds, shares, size, vocabulary_key, program="w
                              "size": None if size is None else {"unit": "tokens", "amount": size}},
                "preparation": {"name": program, "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": vocabulary_key}}}
-    where = {"home": str(tmp_path / "freight"), "depot": built.depot.address, "dock": built.store}
+    where = {"home": str(tmp_path / "freight"), "depot": built.depot.address, "dock": built.dock}
     state = api.request(request, **where)
     done = api.wait(state["id"], home=where["home"])
     assert done["state"] == "done", done["problem"]
@@ -104,12 +104,12 @@ def asked(built, tmp_path, name, kinds, shares, size, vocabulary_key, program="w
 
 def same(built, record: dict, note: dict):
     """The corpus record and the delivery note hold the same corpus."""
-    store, result = built.store, note["result"]
+    dock, result = built.dock, note["result"]
     for kind in ("plain", "conversation"):
         assert [one["token_sha256"] for one in result["shards"][kind]] == [
             one["token_sha256"] for one in record["shards"][kind]], kind
-    built_rows = corpus_rows(store, record, "texts")
-    rows = api.items(note["key"], dock=store)
+    built_rows = corpus_rows(dock, record, "texts")
+    rows = api.items(note["key"], dock=dock)
     # the rows of the corpus's texts table, with the bytes the freight counted each at and its weight beside them
     assert [{key: value for key, value in row.items() if key not in ("bytes", "weight")} for row in rows] == built_rows
     assert result["total_tokens"] == record["total_tokens"] and result["items_tokens"] == record["items_tokens"]
@@ -119,8 +119,8 @@ def same(built, record: dict, note: dict):
     if tasks is not None:
         assert tasks["sha256"] == record["tasks"]["file"]["sha256"] and result["tasks"]["count"] == record["tasks"]["count"]
     for table in ("licenses", "notices"):
-        assert pq.read_table(io.BytesIO(dock_files.fetch(store, note["tables"][table]))).to_pylist() == \
-            corpus_rows(store, record, table)
+        assert pq.read_table(io.BytesIO(dock_files.fetch(dock, note["tables"][table]))).to_pylist() == \
+            corpus_rows(dock, record, table)
     assert (note["items"]["texts"], note["items"]["pieces"], note["items"]["kinds"].get("conversation", 0)) == (
         record["texts"], record["pieces"], record["conversations"])
     assert note["left_out"] == record["left_out"]
@@ -152,7 +152,7 @@ def test_a_corpus_request_gives_the_token_files_and_rows_depot_build_gives(built
     name = rich(built)
     key = vocabulary(built)
     record = build(built.depot, built.depot.snapshot(name)["id"], section(built, name, kinds, shares, size),
-                   built.store, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT,
+                   built.dock, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT,
                    log=lambda *_: None)
     note = asked(built, tmp_path, name, kinds, shares, size, key)
     assert len(record["shards"]["plain"]) > 1
@@ -166,7 +166,7 @@ def test_the_same_request_again_is_answered_at_once_with_its_delivery(built, tmp
     key = vocabulary(built)
     first = asked(built, tmp_path, "d", [], [("en", 1.0)], 700, key)
     record = build(built.depot, built.depot.snapshot(built.names["d"])["id"], section(built, "d", [], [("en", 1.0)], 700),
-                   built.store, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT, log=lambda *_: None)
+                   built.dock, built.tokenizer, address=built.depot.name(), shard_tokens=SHORT, log=lambda *_: None)
     same(built, record, first)
     snapshot = built.depot.snapshot(built.names["d"])
     request = {"depot": built.depot.name(),
@@ -175,7 +175,7 @@ def test_the_same_request_again_is_answered_at_once_with_its_delivery(built, tmp
                "preparation": {"name": "wpt-tokens", "settings": {"shard_tokens": SHORT},
                                "inputs": {"vocabulary": key}}}
     state = api.request(request, home=str(tmp_path / "freight"), depot=built.depot.address,
-                        dock=built.store)
+                        dock=built.dock)
     assert state["state"] == "done" and state["answer"]["id"] == first["id"]
 
 
@@ -189,7 +189,7 @@ def test_wpt_count_weighs_as_wpt_tokens_and_writes_no_file(built, tmp_path):
     result = tokens["result"]
     assert counted["result"] == {"total": result["total_tokens"] + result["items_tokens"],
                                  "plain": result["total_tokens"], "items": result["items_tokens"]}
-    dock = built.store
+    dock = built.dock
     assert [{**row, "tokens": None} for row in api.items(tokens["key"], dock=dock)] == [
         {**row, "tokens": None} for row in api.items(counted["key"], dock=dock)]
     assert (counted["items"], counted["shares"], counted["left_out"]) == (
@@ -207,7 +207,7 @@ def test_the_command_queues_a_request_waits_for_it_and_finds_its_delivery(built,
                "preparation": {"name": "wpt-tokens", "inputs": {"vocabulary": key}}}
     (tmp_path / "request.json").write_text(json.dumps(request))
     for name, value in (("FREIGHT_HOME", str(tmp_path / "freight")), ("DEPOT", built.depot.address),
-                        ("DOCK", built.store)):
+                        ("DOCK", built.dock)):
         monkeypatch.setenv(name, value)
     assert main(["request", str(tmp_path / "request.json"), "--wait"]) == 0
     note = json.loads(capsys.readouterr().out)

@@ -104,15 +104,15 @@ def test_only_the_freight_s_check_marks_stale_a_corpus_the_depot_built_before_it
     # an erasure the depot carried out leaves the corpus under corpora/ fresh until the freight checks, which marks
     # it once (docs/erasure.md, "What it covers"); apps/depot/tests/test_legacy.py shows that the depot's commands
     # and web app leave it as it was
-    text = readers.rows(built.store, readers.find(built.store, built.corpus_id), "texts")[0]["id"]
+    text = readers.rows(built.dock, readers.find(built.dock, built.corpus_id), "texts")[0]["id"]
     erased = built.depot.ask_erasure("a passage", [(text, 0, 5)], ME)
     built.depot.decide_erasure(erased, "admitted", ME)
-    assert "stale" not in readers.find(built.store, built.corpus_id)
+    assert "stale" not in readers.find(built.dock, built.corpus_id)
 
     home = str(tmp_path / "freight")
     checked = api.check(home=home)
     assert checked["erasures"] == [erased] and built.corpus_id in checked["corpora"]
-    assert readers.find(built.store, built.corpus_id)["stale"] == {"erasures": [erased]}
+    assert readers.find(built.dock, built.corpus_id)["stale"] == {"erasures": [erased]}
     assert api.check(home=home)["corpora"] == []  # each erasure is checked once
 
 

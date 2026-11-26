@@ -21,8 +21,8 @@ class Stop(Exception):
     """A job cut short."""
 
 
-def items(store, note) -> list[dict]:
-    return deliveries.read_items(store, note).to_pylist()
+def items(dock, note) -> list[dict]:
+    return deliveries.read_items(dock, note).to_pylist()
 
 
 @pytest.mark.parametrize("cut", [1, 2, 3])
@@ -39,21 +39,21 @@ def test_a_job_cut_short_goes_on_from_its_checkpoint_to_the_same_delivery(freigh
             raise Stop()
     work = freight.tmp_path / "work"
     with pytest.raises(Stop):
-        Job(request, freight.depot.address, freight.store, work, save=save).run()
-    note = Job(request, freight.depot.address, freight.store, work, checkpoint=saved[-1]).run()
+        Job(request, freight.depot.address, freight.dock, work, save=save).run()
+    note = Job(request, freight.depot.address, freight.dock, work, checkpoint=saved[-1]).run()
     assert (note["key"], note["id"], note["result"]) == (whole["key"], whole["id"], whole["result"])
-    assert items(freight.store, note) == items(whole_dock, whole)
+    assert items(freight.dock, note) == items(whole_dock, whole)
     assert [one["sha256"] for one in note["files"]] == [one["sha256"] for one in whole["files"]]
 
 
 def test_the_note_keeps_the_programs_file_messages_apart_from_the_docks_references(freight):
-    note = Job(freight.request(), freight.depot.address, freight.store, freight.tmp_path / "work").run()
+    note = Job(freight.request(), freight.depot.address, freight.dock, freight.tmp_path / "work").run()
     for one in note["files"]:
         said = one["said"]
         assert (said["bytes"], said["key"], said["sha256"]) == (1 << 20, "mine", "mine")
         assert one["key"] == f"deliveries/{note['key']}/files/{one['path']}" and one["sha256"] != "mine"
-        assert one["bytes"] == dock_api.size(freight.store, one["key"])
-    rows = items(freight.store, note)
+        assert one["bytes"] == dock_api.size(freight.dock, one["key"])
+    rows = items(freight.dock, note)
     assert [row["line"] for row in rows] == list(range(len(rows)))
     assert sum(one["said"]["items"] for one in note["files"]) == len(rows) == note["result"]["lines"]
 
@@ -61,10 +61,10 @@ def test_the_note_keeps_the_programs_file_messages_apart_from_the_docks_referenc
 def test_an_erasure_makes_a_delivery_stale_or_is_noted_in_it_as_its_program_says(freight):
     where = {"home": freight.home, "depot": freight.depot.address, "dock": freight.dock}
     stale_request, noted_request = freight.request(), freight.request(on_erasure="note")
-    stale = Job(stale_request, freight.depot.address, freight.store, freight.tmp_path / "a").run()
-    noted = Job(noted_request, freight.depot.address, freight.store, freight.tmp_path / "b").run()
+    stale = Job(stale_request, freight.depot.address, freight.dock, freight.tmp_path / "a").run()
+    noted = Job(noted_request, freight.depot.address, freight.dock, freight.tmp_path / "b").run()
     assert api.check(**where)["erasures"] == []
-    taken = items(freight.store, stale)[0]["id"]
+    taken = items(freight.dock, stale)[0]["id"]
     erased = freight.depot.ask_erasure("a word", [(taken, 0, 5)], freight.me)
     freight.depot.decide_erasure(erased, "admitted", freight.me)
     # a request asks the depot first: its delivery, stale now, is made again; the noted one is answered at once
@@ -77,7 +77,7 @@ def test_an_erasure_makes_a_delivery_stale_or_is_noted_in_it_as_its_program_says
 
 
 def test_the_cap_never_deletes_an_adopted_delivery_nor_an_input(freight):
-    dock = freight.store
+    dock = freight.dock
 
     def put(key, made_at, inputs=None):
         file = dock_api.put(dock, f"deliveries/{key}/files/f", b"x" * 100)
@@ -109,13 +109,13 @@ def test_adopted_files_come_as_bytes_and_a_second_adoption_keeps_the_first(freig
 
 def test_a_size_in_bytes_is_the_freights_own_measure_whatever_the_programs_unit(freight):
     # fake weighs a text by its bytes, which are those the listing gives a whole text: the same choice either way
-    weighed = Job(freight.request(), freight.depot.address, freight.store, freight.tmp_path / "a").run()
+    weighed = Job(freight.request(), freight.depot.address, freight.dock, freight.tmp_path / "a").run()
     request = freight.request()
     request["selection"]["size"]["unit"] = "bytes"
-    measured = Job(request, freight.depot.address, freight.store, freight.tmp_path / "b").run()
+    measured = Job(request, freight.depot.address, freight.dock, freight.tmp_path / "b").run()
     assert measured["key"] != weighed["key"]
-    rows = items(freight.store, measured)
-    assert rows == items(freight.store, weighed) and [row["bytes"] for row in rows] == [row["weight"] for row in rows]
+    rows = items(freight.dock, measured)
+    assert rows == items(freight.dock, weighed) and [row["bytes"] for row in rows] == [row["weight"] for row in rows]
     assert [share["tag"] for share in measured["shares"]] == ["en", "de"]
     assert all(0 < share["weight"] <= part for share, part in zip(measured["shares"], (1050, 450)))  # 0.7, 0.3 of 1,500
     assert [share["bytes"] for share in measured["shares"]] == [
@@ -124,18 +124,18 @@ def test_a_size_in_bytes_is_the_freights_own_measure_whatever_the_programs_unit(
 
 def test_the_rows_of_a_part_held_in_local_files_past_the_bound_give_the_same_part(freight, monkeypatch):
     request = freight.request(per_file=100)  # one file, so one part of every row
-    held = Job(request, freight.depot.address, freight.store, freight.tmp_path / "a").run()
+    held = Job(request, freight.depot.address, freight.dock, freight.tmp_path / "a").run()
     monkeypatch.setattr(job, "SPILL_ROWS", 2)
     dock = (freight.tmp_path / "spilled").as_uri()
     spilled = Job(request, freight.depot.address, dock, freight.tmp_path / "b").run()
     assert len(held["tables"]["items"]) == 1 and held["tables"]["items"][0]["rows"] > 2
     assert (spilled["key"], spilled["id"], spilled["tables"]["items"][0]["fingerprint"]) == (
         held["key"], held["id"], held["tables"]["items"][0]["fingerprint"])
-    assert items(dock, spilled) == items(freight.store, held)
+    assert items(dock, spilled) == items(freight.dock, held)
     assert not list((freight.tmp_path / "b").glob("items-spill-*"))
 
 
 @pytest.mark.parametrize("name", ["bytes", "weight", "id"])
 def test_an_at_field_named_as_a_field_the_freight_fills_fails_the_job(freight, name):
     with pytest.raises(PreparationFailed, match=f"at fields {name}"):
-        Job(freight.request(at_name=name), freight.depot.address, freight.store, freight.tmp_path / "work").run()
+        Job(freight.request(at_name=name), freight.depot.address, freight.dock, freight.tmp_path / "work").run()

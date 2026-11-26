@@ -302,9 +302,10 @@ which returns a
 `wpt_training.Environment`, and optionally `check(settings)`, which raises
 `ValueError` on settings that cannot go together, `context(settings)`,
 the window length the step leaves the model reading at, and
-`check_corpus(settings, record, store, kinds)`, which raises `ValueError`
+`check_corpus(settings, record, dock, kinds)`, which raises `ValueError`
 when the corpus holds nothing of those kinds for the step, before any step
-runs. `data` gives the step's name, the kinds it reads, the dock, the
+runs. `data` gives the step's name, the kinds it reads, `dock` (the
+reader of the corpus's files on the dock, `wpt_corpus.files`), the
 corpus's record, the tokenizer, the
 model's configuration, the strategy, the run's record, the log, the seed
 and the step's number in the order. The
@@ -1159,7 +1160,7 @@ says.
 A model trained on a snapshot names, in `provenance.json`, what anyone needs
 to make its corpus again and check it: `data`, the order's data section (the
 depot's address, the snapshot's name, change and digest, the kinds, shares,
-size and vocabulary); `recipe_name` and `recipe`, the order's name and the
+size and vocabulary); `order_name` and `order`, the order's name and the
 order itself; and `repository_commit`
 with `repository_dirty`, the code (the commit pins the design-system
 submodule too). A model trained on deliveries of the freight names too
@@ -1201,8 +1202,12 @@ model's corpus for anyone.
 
 A folder written before snapshots names, in `corpus`, the corpus's id, its
 depot and the name of its dataset, and its order's data names that dataset.
-Every reader takes the three shapes through `wpt_model.provenance`
-(`corpus_id`, `corpus_label`, `deliveries`): `wpt eval` records that corpus as the run's input, and the
+A folder written before the keys `order_name` and `order` names them
+`recipe_name` and `recipe`, and a drafter's `trained_by` names its order
+`recipe_name` there.
+Every reader takes the three shapes, and both names of those keys, through
+`wpt_model.provenance` (`corpus_id`, `corpus_label`, `deliveries`,
+`order_name`, `order`): `wpt eval` records that corpus as the run's input, and the
 `NOTICE` and the model card it writes again say "From corpus C, built from
 dataset T of the depot D". Nothing rewrites such a folder's
 `provenance.json`.

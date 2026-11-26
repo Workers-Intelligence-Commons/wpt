@@ -7,15 +7,19 @@ model records") names, in `data`, the data section of its order: the
 depot's address, the snapshot's name, its change and digest; in
 `deliveries`, the key, id and preparation of its vocabulary's delivery and
 of its corpus's; in `corpus`, the corpus delivery's id, key and rules; and
-`recipe_name` and `repository_commit`. A model trained on a corpus the
+`order_name` and `repository_commit`. A model trained on a corpus the
 depot built from a snapshot names the same `data`, and in `corpus` the
 corpus's id, build key and rules. A model trained before snapshots names,
 in `corpus`, the corpus's id, its depot and the name of its dataset.
+A folder written before the keys `order_name` and `order` names them
+`recipe_name` and `recipe`, which every reader here takes as well.
 
     corpus_id(provenance)      what names the corpus: its id, or its build key when the folder names no id
     corpus_label(provenance)   one sentence of what the model learned from, in any shape
     on_snapshot(provenance)    whether the folder names a snapshot (the two newer shapes)
     deliveries(provenance)     {vocabulary, corpus: {key, id, preparation or adopted}}, {} for the older shapes
+    order_name(named)          the order's name a provenance, or a drafter's trained_by, gives, under either key
+    order(provenance)          the order the model was trained by, under either key; {} without one
 """
 
 
@@ -46,13 +50,26 @@ def corpus_label(provenance: dict) -> str:
     code = (f"code at commit {commit}" + (" with uncommitted changes" if provenance.get("repository_dirty") else "")
             if commit else "code outside a git checkout")
     return (f"snapshot {data['snapshot']} (change {data['change']}, digest {data['digest']}) of the depot "
-            f"{data['depot']}, order {provenance.get('recipe_name')}, {code}")
+            f"{data['depot']}, order {order_name(provenance)}, {code}")
 
 
 def _data(provenance: dict) -> dict:
     """The data section the model's order gave: provenance's own `data`,
     else the order's."""
-    return provenance.get("data") or (provenance.get("recipe") or {}).get("data") or {}
+    return provenance.get("data") or order(provenance).get("data") or {}
+
+
+def order_name(named: dict) -> str | None:
+    """The name of the order a provenance.json, or a drafter's
+    `trained_by`, names: `order_name`, or `recipe_name` in a folder
+    written before it."""
+    return named.get("order_name", named.get("recipe_name"))
+
+
+def order(provenance: dict) -> dict:
+    """The order the model was trained by: `order`, or `recipe` in a
+    folder written before it; {} when the folder names neither."""
+    return provenance.get("order") or provenance.get("recipe") or {}
 
 
 def deliveries(provenance: dict) -> dict:

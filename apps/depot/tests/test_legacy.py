@@ -76,11 +76,11 @@ def fixture_depot(request, tmp_path, monkeypatch):
     brought it to the code's format; the settings the golden answers were recorded with (no public address)."""
     address = tmp_path / "depot.sqlite"
     shutil.copy(FIXTURES / "format-12.sqlite", address)
-    shutil.copytree(FIXTURES / "format-12-store", tmp_path / "store")
+    shutil.copytree(FIXTURES / "format-12-dock", tmp_path / "dock")
     if request.param == "brought up":
         Depot.upgrade(str(address))
     monkeypatch.chdir(tmp_path)  # no .env but this folder's
-    monkeypatch.setenv("DOCK", (tmp_path / "store").as_uri())
+    monkeypatch.setenv("DOCK", (tmp_path / "dock").as_uri())
     monkeypatch.delenv("DEPOT_URL", raising=False)
     monkeypatch.delenv("DEPOT", raising=False)
     return address
@@ -136,11 +136,11 @@ def test_an_erasure_the_depot_carries_out_leaves_the_corpora_on_the_dock_and_the
     # stays fresh and the frozen routes still send it until the freight's next check, whether the erasure is
     # decided by `depot decide admit --erasure` or through POST /api/erasures/decisions
     monkeypatch.setenv("DEPOT", str(fixture_depot))
-    store = dock_api.url(tmp_path / ".env")
-    [record, *_] = [one for one in corpora.records(store) if corpora.fresh(one)]
+    dock = dock_api.url(tmp_path / ".env")
+    [record, *_] = [one for one in corpora.records(dock) if corpora.fresh(one)]
     texts = record["tables"]["texts"]
     table = texts[0] if isinstance(texts, list) else texts
-    held = pq.read_table(io.BytesIO(dock_api.fetch(store, table["key"], table["sha256"])), columns=["id"])["id"]
+    held = pq.read_table(io.BytesIO(dock_api.fetch(dock, table["key"], table["sha256"])), columns=["id"])["id"]
     first, second = held.to_pylist()[:2]
     depot = Depot.open(str(fixture_depot))
     declaration = Declaration("Ada Lovelace", "ada@example.org", True)
@@ -153,7 +153,7 @@ def test_an_erasure_the_depot_carries_out_leaves_the_corpora_on_the_dock_and_the
     base = f"http://127.0.0.1:{server.server_address[1]}"
     listing = f"/api/datasets/{record['dataset']['id']}/download"
     try:
-        dock_before, listed_before = every_file(tmp_path / "store"), ask(base, listing, {})
+        dock_before, listed_before = every_file(tmp_path / "dock"), ask(base, listing, {})
 
         assert depot_app.main(["decide", "admit", "--erasure", asked[0], "--name", "Ada Lovelace", "--email",
                                "ada@example.org", "--accept"]) == 0
@@ -166,7 +166,7 @@ def test_an_erasure_the_depot_carries_out_leaves_the_corpora_on_the_dock_and_the
             assert json.loads(answer.read()) == {"carried_out": {asked[1]: True}}
 
         assert [row["erased"] is not None for row in depot.erasures() if row["id"] in asked] == [True, True]
-        assert every_file(tmp_path / "store") == dock_before
+        assert every_file(tmp_path / "dock") == dock_before
         listed = ask(base, listing, {})
         assert listed[0] == 200 and listed[2] == listed_before[2]
     finally:

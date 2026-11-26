@@ -123,18 +123,18 @@ def check(settings):
             raise ValueError(f"{key}: at least 1")
 
 
-def lines(record, store, tag) -> list[str]:
+def lines(record, dock, tag) -> list[str]:
     """The lines of the corpus's tasks.jsonl, one task each, of the tasks tagged tag; [] without one."""
     part = record.get("tasks")
     if part is None:
         return []
-    wanted = tagged(record, store, tag)
-    found = [(line, json.loads(line)) for line in store.get_bytes(part["file"]).decode("utf-8").splitlines()]
+    wanted = tagged(record, dock, tag)
+    found = [(line, json.loads(line)) for line in dock.get_bytes(part["file"]).decode("utf-8").splitlines()]
     return [line for line, task in found if (task["depot"], task["id"]) in wanted]
 
 
-def check_corpus(settings, record, store, kinds):
-    if not lines(record, store, settings["tag"]):
+def check_corpus(settings, record, dock, kinds):
+    if not lines(record, dock, settings["tag"]):
         raise ValueError(f"no tasks: the corpus holds none tagged {settings['tag']}")
 
 
@@ -151,7 +151,7 @@ class AgentTasks:
         self.settings, self.data = settings, context
         try:
             pools = {}
-            self.tasks = [from_line(line, pools=pools) for line in lines(context.record, context.store, settings["tag"])]
+            self.tasks = [from_line(line, pools=pools) for line in lines(context.record, context.dock, settings["tag"])]
             self.built, self.pools = wpt_agent.ready(sorted({task.image for task in self.tasks}))
         except (InvalidTask, wpt_agent.Unready) as error:
             raise StepFailed(str(error)) from None

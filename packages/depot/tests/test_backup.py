@@ -29,39 +29,39 @@ def table_rows(path) -> dict[str, list[tuple]]:
 
 
 @pytest.fixture
-def store(tmp_path):
-    return DockBackups((tmp_path / "store").as_uri())
+def dock(tmp_path):
+    return DockBackups((tmp_path / "dock").as_uri())
 
 
 def test_a_restore_holds_every_row_the_depot_held_after_a_full_copy_and_its_changes(make_depot, me, tmp_path,
-                                                                                        store):
+                                                                                        dock):
     depot = make_depot()
     texts = depot.add([plain("one"), plain("two")], me)
-    first = backup(depot, store)
+    first = backup(depot, dock)
     depot.decide("admitted", texts, me)
     depot.retag(texts, ["all"], [], me)
     depot.edit_credits(texts[0], {"title": "One"}, me)
-    second = backup(depot, store)
+    second = backup(depot, dock)
 
-    restored = restore(store, str(tmp_path / "restored.sqlite"))
+    restored = restore(dock, str(tmp_path / "restored.sqlite"))
 
     assert first["full"] is not None and second["full"] is None and len(second["changes"]) == 3
     assert table_rows(restored.address) == table_rows(depot.address)
     assert list(depot.db.waiting.glob("*.changeset")) == []
 
 
-def test_a_restore_holds_the_taggings_of_tags_given_and_taken_after_the_full_copy(make_depot, me, tmp_path, store):
+def test_a_restore_holds_the_taggings_of_tags_given_and_taken_after_the_full_copy(make_depot, me, tmp_path, dock):
     depot = make_depot()
     texts = depot.add([NewText(text="one", licenses=("CC0-1.0",), tags=("a",)), plain("two")], me)
-    backup(depot, store)
+    backup(depot, dock)
     depot.retag(texts, ["b"], ["a"], me)
     depot.edit_credits_many([{"id": texts[1], "tags": ["c"]}], me)  # b, given by the retag, taken back
     at = depot.change()
     depot.retag(texts, ["d"], [], me)
-    backup(depot, store)
+    backup(depot, dock)
 
-    restored = restore(store, str(tmp_path / "restored.sqlite"))
-    then = restore(store, str(tmp_path / "then.sqlite"), at=str(at))
+    restored = restore(dock, str(tmp_path / "restored.sqlite"))
+    then = restore(dock, str(tmp_path / "then.sqlite"), at=str(at))
 
     assert table_rows(restored.address)["taggings"] == table_rows(depot.address)["taggings"]
     assert [restored.show(one)["text"]["tags"] for one in texts] == [["b", "d"], ["c", "d"]]
@@ -69,95 +69,95 @@ def test_a_restore_holds_the_taggings_of_tags_given_and_taken_after_the_full_cop
     assert then.search(Filter(tags=("d",)))["rows"] == []
 
 
-def test_a_restore_holds_the_title_index_the_depot_held(make_depot, me, tmp_path, store, title_index):
+def test_a_restore_holds_the_title_index_the_depot_held(make_depot, me, tmp_path, dock, title_index):
     # the index is an FTS5 table, whose own tables the change files carry like any other
     depot = make_depot()
     texts = depot.add([NewText(text=n, licenses=("CC0-1.0",), title=f"Old title {n}") for n in ("one", "two")], me)
-    backup(depot, store)
+    backup(depot, dock)
     depot.edit_credits_many([{"id": texts[0], "title": "New name"}, {"id": texts[1], "title": None}], me)
     depot.add([NewText(text="three", licenses=("CC0-1.0",), title="Another name")], me)
-    backup(depot, store)
+    backup(depot, dock)
 
-    restored = restore(store, str(tmp_path / "restored.sqlite"))
+    restored = restore(dock, str(tmp_path / "restored.sqlite"))
 
     assert title_index(restored) == title_index(depot) and title_index(restored)["unfound"] == []
     assert [one["id"] for one in restored.search(Filter(search="name"))["rows"]] == [texts[0], "depot-3"]
     assert restored.search(Filter(search="old"))["rows"] == []
 
 
-def test_a_restore_at_a_change_number_holds_the_depot_as_it_was_then(make_depot, me, tmp_path, store):
+def test_a_restore_at_a_change_number_holds_the_depot_as_it_was_then(make_depot, me, tmp_path, dock):
     depot = make_depot()
     texts = depot.add([plain("one")], me)
-    backup(depot, store)
+    backup(depot, dock)
     held = depot.sql(READ)
     then = depot.change()
     depot.decide("refused", texts, me)
-    backup(depot, store)
+    backup(depot, dock)
 
-    restored = restore(store, str(tmp_path / "then.sqlite"), at=str(then))
+    restored = restore(dock, str(tmp_path / "then.sqlite"), at=str(then))
 
     assert restored.sql(READ) == held
     assert restored.change() == then
 
 
-def test_a_restored_depot_backs_up_on_a_timeline_of_its_own(make_depot, me, tmp_path, store):
+def test_a_restored_depot_backs_up_on_a_timeline_of_its_own(make_depot, me, tmp_path, dock):
     # the restored depot numbers its changes on from an earlier one, as its origin did: the restore never mixes them
     depot = make_depot()
     depot.add([plain("text 1")], me)
     early = depot.change()
-    backup(depot, store)
+    backup(depot, dock)
     depot.add([plain("text 2")], me)
     depot.add([plain("text 3")], me)
-    backup(depot, store)
+    backup(depot, dock)
 
-    branch = restore(store, str(tmp_path / "branch.sqlite"), at=str(early))
+    branch = restore(dock, str(tmp_path / "branch.sqlite"), at=str(early))
     branch.add([plain("only in the branch")], me)
-    backup(branch, store)
-    latest = restore(store, str(tmp_path / "latest.sqlite"))
+    backup(branch, dock)
+    latest = restore(dock, str(tmp_path / "latest.sqlite"))
 
     assert branch.change() < depot.change()
     assert table_rows(latest.address) == table_rows(branch.address)
 
 
-def test_a_restore_keeps_no_copy_of_a_passage_erased_after_the_full_copy(make_depot, me, tmp_path, store):
+def test_a_restore_keeps_no_copy_of_a_passage_erased_after_the_full_copy(make_depot, me, tmp_path, dock):
     depot = make_depot()
     [text] = depot.add([plain("alpha secret beta " * 50)], me)
-    backup(depot, store)
+    backup(depot, dock)
     depot.decide_erasure(depot.ask_erasure("asked", [(text, 6, 12)], me), "admitted", me)
-    backup(depot, store)
+    backup(depot, dock)
 
-    restored = restore(store, str(tmp_path / "restored.sqlite"))
+    restored = restore(dock, str(tmp_path / "restored.sqlite"))
     restored.db.close()
 
     assert table_rows(restored.address) == table_rows(depot.address)
     assert b"secret" not in Path(restored.address).read_bytes()
 
 
-def test_a_restore_without_a_change_of_the_chain_is_refused_and_writes_nothing(make_depot, me, tmp_path, store):
+def test_a_restore_without_a_change_of_the_chain_is_refused_and_writes_nothing(make_depot, me, tmp_path, dock):
     depot = make_depot()
     depot.add([plain("one")], me)
-    backup(depot, store)
+    backup(depot, dock)
     depot.add([plain("two")], me)
     lost = depot.change()
     depot.add([plain("three")], me)
     [missing] = [path for path in depot.db.waiting_files() if path.name.startswith(f"{lost:012d}-")]
     missing.unlink()
-    backup(depot, store)
+    backup(depot, dock)
 
     with pytest.raises(BackupRefused):
-        restore(store, str(tmp_path / "restored.sqlite"))
+        restore(dock, str(tmp_path / "restored.sqlite"))
     assert not (tmp_path / "restored.sqlite").exists()
 
 
-def test_a_restore_never_overwrites_a_file(make_depot, me, tmp_path, store):
+def test_a_restore_never_overwrites_a_file(make_depot, me, tmp_path, dock):
     depot = make_depot()
     depot.add([plain("one")], me)
-    backup(depot, store)
+    backup(depot, dock)
     taken = tmp_path / "taken.sqlite"
     taken.write_text("mine", encoding="utf-8")
 
     with pytest.raises(DepotExists):
-        restore(store, str(taken))
+        restore(dock, str(taken))
     assert taken.read_text(encoding="utf-8") == "mine"
 
 
@@ -177,7 +177,7 @@ def test_a_pending_change_file_stays_when_its_change_is_in_the_depot_and_goes_ot
 
 
 def test_a_depot_backed_up_by_nothing_records_no_change_file_until_its_next_backup_sends_a_full_copy(
-        make_depot, me, tmp_path, store):
+        make_depot, me, tmp_path, dock):
     depot = make_depot()
     texts = depot.add([plain("one")], me)
     assert depot.db.waiting_files()
@@ -187,11 +187,11 @@ def test_a_depot_backed_up_by_nothing_records_no_change_file_until_its_next_back
     depot.add([plain("two")], me)
     assert depot.db.waiting_files() == []
 
-    record = backup(depot, store)
+    record = backup(depot, dock)
     assert record["full"] is not None and record["full"]["change"] == depot.change()
     assert depot.db.recording()
     depot.add([plain("three")], me)
     assert len(depot.db.waiting_files()) == 1
-    backup(depot, store)
-    restored = restore(store, str(tmp_path / "restored.sqlite"))
+    backup(depot, dock)
+    restored = restore(dock, str(tmp_path / "restored.sqlite"))
     assert table_rows(restored.db.path) == table_rows(depot.db.path)

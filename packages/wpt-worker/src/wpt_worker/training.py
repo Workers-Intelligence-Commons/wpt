@@ -119,12 +119,12 @@ def tools() -> dict:
 def run(spec, link, work: Path) -> int:
     options = spec["options"]
     machines = spec.get("machines") or ONE_MACHINE
-    store = LinkDock(link, work)
+    dock = LinkDock(link, work)
     environ = {**spec["join"], **os.environ}  # a process the job's launcher started joins under its span
     try:
         several = machines["count"] > 1
         if (options["processes"] > 1 or options["max_restarts"] > 0 or several) and "LOCAL_RANK" not in os.environ:
-            with Telemetry.join(store, "wpt train", environ, live=False) as telemetry:
+            with Telemetry.join(dock, "wpt train", environ, live=False) as telemetry:
                 log = telemetry.log
                 try:
                     placed = placement(machines, options)
@@ -142,8 +142,8 @@ def run(spec, link, work: Path) -> int:
                               first_rank=placed["first_rank"], world_size=placed["world_size"],
                               master=placed["master"])
         main = os.environ.get("RANK", "0") == "0"
-        with (Telemetry.join(store, "wpt train", environ, live=False) if main else Telemetry.off()) as telemetry:
-            return _run(spec, link, store, work, telemetry)
+        with (Telemetry.join(dock, "wpt train", environ, live=False) if main else Telemetry.off()) as telemetry:
+            return _run(spec, link, dock, work, telemetry)
     except RecordError as error:
         say(f"RecordError: {error}; stopped, nothing more was recorded", ERROR)
         return RECORD_FAILED
@@ -206,7 +206,7 @@ def sent(files: dict, folder: Path):
         SENT[given] = str(path)
 
 
-def _run(spec, link, store, work, telemetry) -> int:
+def _run(spec, link, dock, work, telemetry) -> int:
     sent(spec["files"], work / "files")
     try:
         if os.environ.get(BRIDGED):  # gpu workers in different places: ddp, bridged over their links
@@ -218,7 +218,7 @@ def _run(spec, link, store, work, telemetry) -> int:
         telemetry.log(f"PluginError: {error}", ERROR)
         return REFUSED
     try:
-        _train(spec, link, store, work, strategy, telemetry)
+        _train(spec, link, dock, work, strategy, telemetry)
         return 0
     except Refused as error:
         if strategy.is_main:
@@ -304,7 +304,7 @@ def _asked(strategy, ask):
     return value
 
 
-def _train(spec, link, store, work, strategy, telemetry):
+def _train(spec, link, dock, work, strategy, telemetry):
     options = spec["options"]
     log = telemetry.log if strategy.is_main else (lambda *_: None)
     try:
@@ -399,7 +399,7 @@ def _train(spec, link, store, work, strategy, telemetry):
             for number, (step, mark) in enumerate(zip(steps, marks), 1):
                 if number <= reused:
                     continue
-                data = Data(step.name, store, record, model_config, strategy, telemetry, log, seed, draws[number - 1],
+                data = Data(step.name, dock, record, model_config, strategy, telemetry, log, seed, draws[number - 1],
                             **data_options, call=environment_call(link, number), writing=writing)
                 try:
                     with telemetry.span("step", step=step.name, number=number, fingerprint=mark) as span:
@@ -453,7 +453,7 @@ def _train(spec, link, store, work, strategy, telemetry):
                 strategy.barrier()  # one process's end stops the others, so none ends while the main one sends
             raise
     if strategy.is_main:
-        _finish(spec, link, store, work, model, model_config, drafter_config, drafting, setup, plan, steps,
+        _finish(spec, link, dock, work, model, model_config, drafter_config, drafting, setup, plan, steps,
                 strategy, telemetry)
 
 
@@ -520,14 +520,14 @@ def drafter_shards(spec, steps) -> list:
     return prefix_shards(spec["record"]["shards"]["plain"], max(prefixes) if prefixes and all(prefixes) else None)
 
 
-def _finish(spec, link, store, work, model, model_config, drafter_config, drafting, setup, plan, steps, strategy,
+def _finish(spec, link, dock, work, model, model_config, drafter_config, drafting, setup, plan, steps, strategy,
             telemetry):
     """The drafter, the scheduler's pass times and a sample, sent to the
     manager; with --no-drafter, the sample alone."""
     end, im_end = spec["tokens"]["end"], spec["tokens"]["im_end"]
     if not spec["options"]["drafter"]:
         telemetry.log("drafter: none (--no-drafter); the same command without it trains one from the steps the "
-                      "store keeps")
+                      "dock keeps")
         model.eval()  # a sample, so the manager shows at once what it learned
         sample = list(sample_tokens(model, [end], max_new_tokens=120))
         call(link, "finished", json.dumps({"sample": sample}).encode())
@@ -537,7 +537,7 @@ def _finish(spec, link, store, work, model, model_config, drafter_config, drafti
     stops = (end, im_end) if turns else (end,)
     try:
         with telemetry.span("drafter", **asdict(drafter_config), stops=list(stops)):
-            drafter = train_drafter(model, (tokens for _, _, tokens in documents(store, drafter_shards(spec, steps))),
+            drafter = train_drafter(model, (tokens for _, _, tokens in documents(dock, drafter_shards(spec, steps))),
                                     drafter_config, drafting, end=end, stops=stops, device=strategy.device,
                                     telemetry=telemetry)
     except DrafterFailed as error:

@@ -105,12 +105,12 @@ def request(request: dict, *, home: str | None = None, depot: str | None = None,
     running."""
     found = settings(home, depot, dock, cap)
     queue = Queue(found["home"])
-    store = found["dock"]
-    erasures.check(queue, found["depot"], store)
+    dock = found["dock"]
+    erasures.check(queue, found["depot"], dock)
     with tempfile.TemporaryDirectory(prefix="probe-", dir=_made(Path(found["home"]))) as folder:
-        planned = Job(request, found["depot"], store, Path(folder))
+        planned = Job(request, found["depot"], dock, Path(folder))
         delivery = planned.plan()
-    known = deliveries.of_key(store, delivery)
+    known = deliveries.of_key(dock, delivery)
     if known is not None and deliveries.fresh(known):
         return queue.answered(request, delivery, found["depot"], found["dock"], known)
     return queue.add(request, delivery, found["depot"], found["dock"], found["cap"])
@@ -171,11 +171,11 @@ def deliveries_on(*, dock: str | None = None) -> list[dict]:
 
 def items(key: str, *, dock: str | None = None) -> list[dict]:
     """The rows of the items tables of the delivery of that key, in order."""
-    store = settings_dock(dock)
-    note = deliveries.of_key(store, key)
+    dock = settings_dock(dock)
+    note = deliveries.of_key(dock, key)
     if note is None:
         raise deliveries.DeliveryError(f"the dock holds no delivery {key}")
-    return deliveries.read_items(store, note).to_pylist()
+    return deliveries.read_items(dock, note).to_pylist()
 
 
 def check(*, home: str | None = None, depot: str | None = None, dock: str | None = None) -> dict:

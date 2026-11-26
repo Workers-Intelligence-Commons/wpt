@@ -97,7 +97,7 @@ def amd_note(chips):
         say("\nThis script changed nothing.")
 
 
-def store_folder():
+def dock_folder():
     """The local folder DOCK names (environment, else .env at the
     root), as dock reads it; None when it names no local folder."""
     # mirrors dock.api.url, which this cannot import: it runs before anything is installed
@@ -120,15 +120,15 @@ def store_folder():
 def defender_note():
     """Where fetches write many files on Windows, and how to leave those
     folders out of Microsoft Defender's scanning."""
-    store = store_folder()
-    folders = ([str(Path(store))] if store else []) + [tempfile.gettempdir()]
-    named = ("the dock (DOCK) and " if store else "") + "the temporary folder where fetches clone"
+    dock = dock_folder()
+    folders = ([str(Path(dock))] if dock else []) + [tempfile.gettempdir()]
+    named = ("the dock (DOCK) and " if dock else "") + "the temporary folder where fetches clone"
     quoted = ",".join("'" + folder.replace("'", "''") + "'" for folder in folders)
     say(f"\nMicrosoft Defender scans every file and process the fetches create, which can slow them. To leave "
         f"{named} out of its scanning, run in a PowerShell opened as administrator:\n\n"
         f"    Add-MpPreference -ExclusionPath {quoted}\n\n"
         f"Defender then never scans the files in these folders. This script changed nothing.")
-    if not store:
+    if not dock:
         say("DOCK names no local folder (file://...), so only the temporary folder is listed.")
 
 

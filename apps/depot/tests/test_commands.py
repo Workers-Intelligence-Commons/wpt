@@ -32,7 +32,7 @@ def depot(tmp_path, monkeypatch):
     assert depot_command("new", address, "--name", "test-depot", "--maintainer", "Ada Lovelace",
                          "--takedown-contact", "ada@example.org") == 0
     monkeypatch.setenv("DEPOT", address)
-    monkeypatch.setenv("DOCK", (tmp_path / "store").as_uri())
+    monkeypatch.setenv("DOCK", (tmp_path / "dock").as_uri())
     (tmp_path / "cc0.txt").write_text("The CC0 text.", encoding="utf-8")
     assert depot_command("license", "add", "CC0-1.0", "Creative Commons Zero v1.0 Universal",
                          str(tmp_path / "cc0.txt")) == 0
@@ -520,9 +520,9 @@ def older_depot(tmp_path, monkeypatch):
     monkeypatch.delenv("DEPOT_URL", raising=False)
     path = tmp_path / "depot.sqlite"
     shutil.copy(FIXTURES / "format-12.sqlite", path)
-    shutil.copytree(FIXTURES / "format-12-store", tmp_path / "store")
+    shutil.copytree(FIXTURES / "format-12-dock", tmp_path / "dock")
     monkeypatch.setenv("DEPOT", str(path))
-    monkeypatch.setenv("DOCK", (tmp_path / "store").as_uri())
+    monkeypatch.setenv("DOCK", (tmp_path / "dock").as_uri())
     return path
 
 

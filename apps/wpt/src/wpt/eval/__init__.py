@@ -80,7 +80,7 @@ class Context:
     tokenizer: Tokenizer
     device: str  # where the model runs, in words
     provenance: dict
-    store: str  # the dock's URL, read through dock.api
+    dock: str  # the dock's URL, read through dock.api
     telemetry: Telemetry = field(default_factory=Telemetry.off)  # the run's record, for a test's own events
 
 
@@ -151,7 +151,7 @@ def _write_documents(folder, telemetry):
         raise
 
 
-def open_context(folder, store, telemetry=None) -> Context:
+def open_context(folder, dock, telemetry=None) -> Context:
     """The context of the model folder, with no model yet (main puts the
     gpu worker's there). EvalError when the folder is not one wpt train
     wrote, its drafter was trained against other weights, or its tokenizer
@@ -170,7 +170,7 @@ def open_context(folder, store, telemetry=None) -> Context:
     # ValueError: a vocabulary of another tokenizer version; DrafterMismatch is one too
     except (TokenizerMismatch, DrafterMismatch, ValueError) as error:
         raise EvalError(str(error)) from None
-    return Context(folder, None, tokenizer, "", provenance, store, telemetry or Telemetry.off())
+    return Context(folder, None, tokenizer, "", provenance, dock, telemetry or Telemetry.off())
 
 
 def _setting(parser, name, parse, default):
@@ -195,7 +195,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     environ = {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
     try:
-        store = dock_api.url(Path.cwd() / ".env")
+        dock = dock_api.url(Path.cwd() / ".env")
     except DockError as error:  # no dock, no record: nothing has started
         sys.exit(f"{type(error).__name__}: {error}")
     evals = args.evals or built_in_names()
@@ -204,7 +204,7 @@ def main(argv=None):
     except OSError:  # no model there: open_context names the problem, in the record
         weights = {}
     try:
-        with Telemetry.start(store, "wpt eval", sys.argv[1:] if argv is None else list(argv),
+        with Telemetry.start(dock, "wpt eval", sys.argv[1:] if argv is None else list(argv),
                              short(next(iter(weights.values()), "none")),
                              inputs={"model_folder": args.model, "evals": evals,
                                      "kernels": args.kernels},
@@ -213,7 +213,7 @@ def main(argv=None):
                 with telemetry.span("inputs"):
                     for eval_ in evals:
                         find(eval_)  # an unknown test stops the run before any other has run
-                    context = open_context(args.model, store, telemetry)
+                    context = open_context(args.model, dock, telemetry)
                     telemetry.input(weights=weights, corpus=corpus_id(context.provenance))
                 with telemetry.span("gpu_worker.model"), Remote(args.model, environ, telemetry.log, args.kernels) as model:
                     context.model, context.device = model, model.device

@@ -10,10 +10,10 @@ from wpt.docked import main
 
 
 def test_a_run_s_lines_print_at_the_level_of_its_record(tmp_path, monkeypatch, capsys):
-    store = (tmp_path / "store").as_uri()
-    monkeypatch.setenv("DOCK", store)
+    dock = (tmp_path / "dock").as_uri()
+    monkeypatch.setenv("DOCK", dock)
     with pytest.raises(ValueError, match="boom"):
-        with Telemetry.start(store, "wpt train", [], "failed", env_file=tmp_path / ".env", environ={},
+        with Telemetry.start(dock, "wpt train", [], "failed", env_file=tmp_path / ".env", environ={},
                              echo=lambda *_: None) as telemetry:
             telemetry.log("all is well")
             telemetry.log("it broke", ERROR)
