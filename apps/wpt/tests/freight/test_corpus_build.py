@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from dock import open_dock
+from dock.names import File
 from wpt_corpus.shards import read_verified
 from wpt_tokenizer import END, Tokenizer, chat
 from depot import About, Depot, NewText, clone, ids, pull, snapshots
@@ -207,7 +208,7 @@ def test_a_conversation_comes_with_the_passages_it_quotes_and_only_when_the_corp
     assert "brown" not in chat.show(TOKENIZER, list(row[0])) and " fox" in chat.show(TOKENIZER, list(row[0]))
     # the files of the record it replaced that it does not name are gone
     named = {one["key"] for one in corpora.files(again)}
-    assert all(store.has(corpora.File.of(one)) == (one["key"] in named) for one in corpora.files(record))
+    assert all(store.has(File.of(one)) == (one["key"] in named) for one in corpora.files(record))
 
 
 def test_a_build_of_quoting_conversations_cut_short_anywhere_goes_on_to_the_same_corpus(make_depot, me, tmp_path):
