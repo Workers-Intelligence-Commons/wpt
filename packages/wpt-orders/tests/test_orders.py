@@ -39,17 +39,21 @@ def model(depot=DEPOT, dataset="first"):
 def snapshot_model(**data):
     """An order of the snapshot shape; data replaces fields of its data part."""
     return {"data": {"depot": DEPOT, "snapshot": "2026-11", "change": 1234, "digest": DIGEST,
-                     "kinds": ["plain", "conversation"],
+                     "roles": ["held_out", "pretrain", "finetune"],
                      "shares": [{"tag": "fiction", "share": 0.3}, {"tag": "law", "share": 0.2}],
-                     "total_tokens": 100, "vocabulary": {"sha256": SHA256, "size": 4096}, **data},
+                     "total_tokens": 100, "finetune_tokens": 40, "vocabulary": {"sha256": SHA256, "size": 4096},
+                     **data},
             "model": MODEL, "seed": 1, "steps": STEPS, "drafter": {}}
 
 
-def test_a_model_order_names_a_snapshot_of_a_depot_its_kinds_shares_size_and_vocabulary(orders):
+def test_a_model_order_names_a_snapshot_of_a_depot_its_roles_shares_sizes_and_vocabulary(orders):
     write(orders, "model", "m", snapshot_model())
-    write(orders, "model", "bare", snapshot_model(kinds=[], shares=[]))
+    pretrain = snapshot_model(roles=["pretrain"], shares=[])
+    del pretrain["data"]["finetune_tokens"]
+    write(orders, "model", "bare", pretrain)
     bare = snapshot_model()
-    del bare["data"]["kinds"], bare["data"]["shares"]  # left out: every kind, the snapshot's own proportions
+    # left out: the roles held_out and pretrain, the snapshot's own proportions, every conversation and task
+    del bare["data"]["roles"], bare["data"]["shares"], bare["data"]["finetune_tokens"]
     write(orders, "model", "least", bare)
     # 0.33 + 0.56 + 0.11 is 1.0000000000000002 in floats: a share of the whole is still at most 1
     write(orders, "model", "whole", snapshot_model(shares=[{"tag": "a", "share": 0.33}, {"tag": "b", "share": 0.56},
@@ -68,7 +72,10 @@ def test_a_model_order_names_a_snapshot_of_a_depot_its_kinds_shares_size_and_voc
     ({"change": -1}, "data/change", "less than the minimum of 0"),
     ({"shares": [{"tag": "law", "share": 1.5}]}, "data/shares/0/share", "greater than the maximum of 1"),
     ({"shares": [{"tag": "law"}]}, "data/shares/0", "'share' is a required property"),
-    ({"kinds": ["plain", "plain"]}, "data/kinds", "non-unique elements"),
+    ({"roles": ["pretrain", "pretrain"]}, "data/roles", "non-unique elements"),
+    ({"roles": ["held_out", "finetune"]}, "data/roles", "does not contain items matching"),
+    ({"roles": ["pretrain", "test"]}, "data/roles/1", "'test' is not one of"),
+    ({"kinds": ["plain"]}, "data", "Additional properties are not allowed ('kinds' was unexpected)"),
     ({"dataset": "first"}, "data", "Additional properties are not allowed ('dataset' was unexpected)"),
 ])
 def test_a_snapshot_data_part_of_the_wrong_shape_is_refused_naming_its_field(orders, data, place, message):
@@ -120,6 +127,14 @@ def test_the_check_refuses_shares_a_corpus_cannot_be_built_with(orders, shares, 
     write(orders, "model", "m", snapshot_model(shares=shares))
     assert orders.model_order("m")["data"]["shares"] == shares  # the schema takes them: the check refuses them
     assert orders.problems("model", "m") == [f"data/orders/models/m.json: {message}"]
+
+
+def test_the_check_refuses_a_size_of_the_finetune_portion_its_roles_leave_out(orders):
+    write(orders, "model", "m", snapshot_model(roles=["held_out", "pretrain"]))
+    assert orders.model_order("m")["data"]["finetune_tokens"] == 40  # the schema takes it: the check refuses it
+    assert orders.problems("model", "m") == [
+        "data/orders/models/m.json: data.finetune_tokens sizes the finetune portion, which data.roles leave out: add "
+        "finetune to the roles, or give no finetune_tokens"]
 
 
 def test_a_legacy_model_order_names_a_depot_a_dataset_there_and_its_tokens(orders):

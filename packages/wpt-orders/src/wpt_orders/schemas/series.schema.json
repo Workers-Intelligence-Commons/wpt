@@ -56,14 +56,20 @@
           "$ref": "#/$defs/hex64",
           "description": "the snapshot's digest (depot.snapshots.digest_of), the proof of the texts it holds; checked at build and at training"
         },
-        "kinds": {
+        "roles": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1
+            "enum": [
+              "held_out",
+              "pretrain",
+              "finetune"
+            ]
           },
           "uniqueItems": true,
-          "description": "the kinds of text the corpus takes (plain, conversation, task); left out or empty: every kind"
+          "contains": {
+            "const": "pretrain"
+          },
+          "description": "the roles of the portions the corpus is cut into (wpt_corpus.roles; docs/data-selection.md, \"The portions of a corpus\"): held_out (plain texts no training reads, filled first with the shares below, on a size in bytes fixed in WPT's code), pretrain (plain texts, what the steps that read text windows learn from, sized by total_tokens) and finetune (conversations and tasks, sized by finetune_tokens); pretrain always; left out: held_out and pretrain"
         },
         "shares": {
           "type": "array",
@@ -87,6 +93,11 @@
               }
             }
           }
+        },
+        "finetune_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "the size of the finetune portion in tokens, its conversations and tasks; left out: every conversation and task the portions before it leave; only with the role finetune"
         },
         "vocabulary": {
           "$ref": "#/$defs/vocabulary"

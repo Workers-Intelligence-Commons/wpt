@@ -10,7 +10,7 @@
     "settings": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array"]}},
     "depot": {"type": "string", "description": "the depot's public address: the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each order to fill in"},
     "hex64": {"type": "string", "pattern": "^([0-9a-f]{64})?$", "description": "64 lowercase hexadecimal digits; empty until a person fills it in, and the check names each order to fill in"},
-    "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the corpus the order asks for (the max_tokens it is built at) and a ceiling on the tokens of plain text it reads: a corpus built at that size gives its conversations and tasks their share of it, and training reads what it holds"},
+    "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the pretraining portion the order asks for, in tokens of plain text (the max_tokens it is built at), and a ceiling on what the steps that read text windows read: training reads what the portion holds"},
     "snapshot_data": {
       "type": "object",
       "additionalProperties": false,
@@ -20,7 +20,7 @@
         "snapshot": {"type": "string", "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*)?$", "description": "the name of a snapshot of that depot (letters, digits, '.', '_' and '-'); empty until a person names it"},
         "change": {"type": "integer", "minimum": 0, "description": "the change number the snapshot reads, for a person to read; checked against the snapshot at build and at training"},
         "digest": {"$ref": "#/$defs/hex64", "description": "the snapshot's digest (depot.snapshots.digest_of), the proof of the texts it holds; checked at build and at training"},
-        "kinds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "description": "the kinds of text the corpus takes (plain, conversation, task); left out or empty: every kind"},
+        "roles": {"type": "array", "items": {"enum": ["held_out", "pretrain", "finetune"]}, "uniqueItems": true, "contains": {"const": "pretrain"}, "description": "the roles of the portions the corpus is cut into (wpt_corpus.roles; docs/data-selection.md, \"The portions of a corpus\"): held_out (plain texts no training reads, filled first with the shares below, on a size in bytes fixed in WPT's code), pretrain (plain texts, what the steps that read text windows learn from, sized by total_tokens) and finetune (conversations and tasks, sized by finetune_tokens); pretrain always; left out: held_out and pretrain"},
         "shares": {
           "type": "array",
           "description": "the share of the plain text each tag takes, in order (a text counts for the first share whose tag it has); shares sum to at most 1 and name a tag once; left out or empty: the snapshot's own proportions",
@@ -35,6 +35,7 @@
           }
         },
         "total_tokens": {"$ref": "#/$defs/total_tokens"},
+        "finetune_tokens": {"type": "integer", "minimum": 1, "description": "the size of the finetune portion in tokens, its conversations and tasks; left out: every conversation and task the portions before it leave; only with the role finetune"},
         "vocabulary": {"$ref": "#/$defs/vocabulary"}
       }
     },

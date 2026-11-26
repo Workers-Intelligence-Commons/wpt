@@ -589,7 +589,7 @@ def test_a_corpus_of_another_snapshot_or_other_shares_than_the_order_s_is_refuse
     (folder / "half.json").write_text(json.dumps(order))
     with pytest.raises(SystemExit) as refused:
         main(["half", built.corpus_id, "--out", "model"])
-    assert refused.value.code == 2 and "with kinds, shares or vocabulary other than the order's" in capsys.readouterr().err
+    assert refused.value.code == 2 and "with portions, shares or vocabulary other than the order's" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
 
 

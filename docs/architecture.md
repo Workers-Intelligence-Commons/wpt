@@ -17,14 +17,19 @@ depots, and everything built or trained lives in a dock.
   dock: the token files, the conversations and tasks, and copies of every
   text's credits, licenses and notices, so it says everything about what it
   holds even once the depots it read change or vanish (the freight's
-  delivery, [api/freight.md](api/freight.md)).
+  delivery, [api/freight.md](api/freight.md)). It is cut into portions,
+  each named after its role, which WPT gives it: the held-out portion,
+  filled first, that no training reads; the pretraining one; the
+  fine-tuning one ([data-selection.md](data-selection.md), "The portions of
+  a corpus").
   A corpus is a cache: the same build gives it again, so nothing keeps one
   for reproducibility.
 - A model order names a depot by its public address, a snapshot of it (with the change
-  and digest it reads), its kinds, shares, size and vocabulary; training reads the
-  corpus of that request's delivery key from the dock, and every size of a model series reads
-  the same corpus, the one of its largest size, the smaller sizes its first part;
-  `total_tokens` is the size the corpus is made at and a ceiling on what training
+  and digest it reads), the roles of its corpus's portions, its shares, sizes and vocabulary;
+  training reads the corpus of that request's delivery key from the dock, and every size of a
+  model series reads the same corpus, the one of its largest size, the smaller sizes the first
+  part of its pretraining portion;
+  `total_tokens` is the size the pretraining portion is made at and a ceiling on what training
   reads, and training reads what a corpus made at that size holds. An order of
   the older dataset shape names a dataset of a depot of format 12 or older, read
   through the frozen legacy reader ([training.md](training.md), "Models trained

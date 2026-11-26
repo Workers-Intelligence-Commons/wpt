@@ -27,7 +27,7 @@ and a corpus of a build key belongs to no dataset.
                                          its size)
     built_from(dock, depot, dataset)     every corpus built for that depot's dataset (by id), latest first
     latest_fresh(dock, depot, dataset)   the fresh one built last
-    rows(dock, record, table)            the rows of one of a corpus's tables
+    rows(dock, record, table)            the rows of one of a corpus's tables, of the portions it trains on
 
 dock is the dock's URL, read through dock.api.
 """
@@ -142,13 +142,19 @@ def latest_fresh(dock, depot: str, dataset: str, vocabulary: str | None = None, 
 def rows(dock, record: dict, table: str) -> list[dict]:
     """The rows of one of a corpus's tables (texts, licenses, notices), in
     order, each file checked by the dock: the texts table is the
-    concatenation of its parts."""
+    concatenation of its parts. A record that names the portions training
+    reads (`trains_on`: a corpus delivery cut into portions, as
+    wpt.resources.corpus_record gives it) gives only the texts of those
+    portions, never one of its held-out portion."""
     found = record["tables"][table]
     if isinstance(found, list):
         read = pa.concat_tables([_table(dock, one) for one in found]) if found else pa.table({})
     else:
         read = _table(dock, found)
-    return read.to_pylist()
+    found = read.to_pylist()
+    if table == "texts" and "trains_on" in record:
+        found = [one for one in found if one["portion"] in record["trains_on"]]
+    return found
 
 
 def _table(dock, one: dict) -> pa.Table:

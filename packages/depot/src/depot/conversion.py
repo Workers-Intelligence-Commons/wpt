@@ -491,14 +491,14 @@ def set_bytes(measured: Measured) -> int:
 def order_data(planned: Planned, measured: Measured, depot: str, vocab_size: int | None) -> dict:
     """The data section of a model order (wpt-orders, the snapshot shape)
     that builds what the dataset revision built: its snapshot, change and
-    digest, the kinds a dataset's corpus took, its shares, its max_tokens as
-    total_tokens and its vocabulary (sha256 '' and size 0 when it named
-    none: a vocabulary has to be chosen)."""
+    digest, its shares, its max_tokens as total_tokens and its vocabulary
+    (sha256 '' and size 0 when it named none: a vocabulary has to be
+    chosen); it names no roles, so its corpus has the default ones of an
+    order's data section."""
     row = planned.row or {}
     found = {"depot": depot, "snapshot": planned.name, "change": planned.at_change, "digest": measured.digest,
              "total_tokens": row.get("max_tokens"), "vocabulary": {"sha256": row.get("vocabulary") or "",
-                                                                   "size": vocab_size or 0},
-             "kinds": ["conversation", PLAIN, "task"]}
+                                                                   "size": vocab_size or 0}}
     if row.get("shares"):
         found["shares"] = [{"tag": one["tag"], "share": one["share"]} for one in row["shares"]]
     return found

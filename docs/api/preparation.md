@@ -12,10 +12,11 @@ The freight finds a program by its name: an executable of that name beside
 the Python the freight runs on (the console scripts installed with it),
 else on the search path (`freight.exchange.find`). WPT's programs,
 `wpt-vocabulary`, `wpt-tokens` and `wpt-count`, are console scripts of the
-package `wpt-corpus` (`wpt_corpus.vocabulary`, `wpt_corpus.programs`). They read neither `portions`
-nor `portion` (below): they prepare the items of every portion into the
-same files. A change to these messages changes this document in the same
-commit.
+package `wpt-corpus` (`wpt_corpus.vocabulary`, `wpt_corpus.programs`).
+`wpt-tokens` writes each portion of a delivery cut into portions (below)
+into files of its own; `wpt-vocabulary` and `wpt-count` read neither
+`portions` nor `portion`. A change to these messages changes this
+document in the same commit.
 
 ## The format
 
@@ -149,13 +150,27 @@ prepares conversations, plain texts and tasks.
   `rows`, `tokens`, `sources`), `tasks` (`path`, `count`, or null),
   `fingerprints` (by kind, as a training step reading that kind names it)
   and `vocabulary` (`sha256`, `size`).
+- In a delivery cut into portions, each portion gets those files apart,
+  under the folder of its name: `<portion>/plain-NNNNN.parquet`,
+  `<portion>/conversation-NNNNN.parquet`, `<portion>/tasks.jsonl`. An
+  item's `at` counts within its portion. A portion's files close once its
+  last item is taken, before the first item of the next, and each `file`
+  message names its `portion`; a portion's `tasks.jsonl` carries `so_far`
+  too, which a resume reads back. The result is `{"portions": {"<name>":
+  {total_tokens, items_tokens, shards, tasks, fingerprints}}, "vocabulary"}`,
+  every portion `start` names, one that took nothing included.
 
-The files and hashes are those the reference corpus build of the tests
-(`apps/wpt/tests/support/corpus_build.py`) writes for the same snapshot,
-data section and vocabulary (`apps/wpt/tests/freight/test_requests.py`).
+Without portions, the files and hashes are those the reference corpus
+build of the tests (`apps/wpt/tests/support/corpus_build.py`) writes for
+the same snapshot, data section and vocabulary
+(`apps/wpt/tests/freight/test_requests.py`), and they stay the same
+whatever this program does with portions. With portions, a portion's
+files hold its items rows, in order (`apps/wpt/tests/freight/test_portions.py`).
+WPT names the portions of a corpus after their roles
+([data-selection.md](../data-selection.md), "The portions of a corpus").
 
 ## wpt-count
 
 `wpt-count` weighs as `wpt-tokens` does and writes nothing: no `at`, no
 file. Its result is `{"total", "plain", "items"}`, the tokens of what it
-took.
+took, every portion together.

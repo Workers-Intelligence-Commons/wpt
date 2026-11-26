@@ -68,7 +68,8 @@ def test_a_model_trains_from_an_order_whose_vocabulary_is_named_by_its_sha256_or
     assert {role: (one["key"], one["id"]) for role, one in provenance["deliveries"].items()} == {
         "vocabulary": (vocabulary["key"], vocabulary["id"]), "corpus": (corpus["key"], corpus["id"])}
     assert (provenance["corpus"]["id"], provenance["corpus"]["delivery"]) == (corpus["id"], corpus["key"])
-    assert len((trained.folder / "CREDITS").read_text().split("\n\n", 1)[0].splitlines()) == 16
+    # every story but the two of the held-out portion (conftest.HELD_OUT), which no training reads
+    assert len((trained.folder / "CREDITS").read_text().split("\n\n", 1)[0].splitlines()) == 14
     assert f"delivery `{corpus['key']}`" in (trained.folder / "README.md").read_text()
 
 
@@ -142,7 +143,7 @@ def test_wpt_train_given_a_corpus_delivery_by_its_id_or_key_trains_on_it_when_it
     with pytest.raises(SystemExit) as refused:
         train(["d", corpus["id"][:16], "--out", "other"])
     said = bare(capsys.readouterr().err)
-    assert refused.value.code == 2 and "with kinds, shares or vocabulary other than the order's" in said
+    assert refused.value.code == 2 and "with portions, shares or vocabulary other than the order's" in said
 
 
 def test_wpt_build_resources_run_again_waits_for_the_job_a_stopped_run_left(built, tmp_path, monkeypatch, capsys):

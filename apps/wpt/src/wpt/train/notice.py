@@ -14,6 +14,8 @@ step's, added up, by kind of texts: wpt_training.Environment.learned): the
 plain texts and pieces whose first token lies in the first `plain` tokens
 of the plain texts' token files, and every text of another kind when a
 step read texts of that kind. Without `learned`, every text of the corpus.
+Of a corpus cut into portions, only the texts of the portions training
+reads count (wpt_corpus.corpora.rows): never one of the held-out portion.
 A conversation learned from also credits every text it quotes (its row's
 `quotes`: the texts of its depot whose passages its excerpts put in its
 tokens), each under its own credits, licenses and notice.

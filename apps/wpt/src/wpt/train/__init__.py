@@ -21,9 +21,10 @@ finish-tasks-with-less-writing) or a .py file, with its
 method, environment, optimizer, settings and locked parts. The model's
 context is the last window length of the last step that reads text
 windows. The order's data part names a depot by its public address, a
-snapshot of it with the change and digest it reads, its kinds, shares,
-size (total_tokens) and vocabulary, named by its sha256 or learned for it
-from a sample of a number of bytes; `wpt build-resources ORDER` asks the
+snapshot of it with the change and digest it reads, the roles of its
+corpus's portions (wpt_corpus.roles), its shares, the size of its
+pretraining portion (total_tokens) and its vocabulary, named by its sha256
+or learned for it from a sample of a number of bytes; `wpt build-resources ORDER` asks the
 freight for its vocabulary and corpus, which it delivers on the dock, the
 one named by DOCK (environment or .env) (wpt.resources); a size of a
 series is derived for the size of the corpus's vocabulary. CORPUS_ID is a
@@ -35,7 +36,10 @@ depot built from that snapshot with that data part. No depot is read. No
 fresh corpus refuses the run, saying to run `wpt build-resources`. The
 vocabulary is the corpus's: a delivery's is the file of the vocabulary
 delivery it names. A corpus given by its id must be made from that
-snapshot with the order's kinds, shares and vocabulary, at any size. An order written before snapshots
+snapshot with the order's portions, shares and vocabulary, at any size; a
+corpus without portions (a delivery made without them, or one of the
+dock's corpora/) is all of it its pretraining portion and needs the
+order's shares and plain texts. An order written before snapshots
 names a dataset instead, by id or name: without CORPUS_ID, the latest
 fresh corpus of the triple that dataset (found by its id), the vocabulary
 it publishes and the data part's total_tokens, read from the depot's file
@@ -47,14 +51,21 @@ corpus built from an older
 revision of the dataset is used with a warning; a corpus of another depot
 or dataset, or one built from a snapshot, is refused. The corpus holds everything the
 steps read, by kind of texts, each step reading the kinds it names: the
-token files of plain texts and of conversations, and the tasks. Training never builds anything and writes nothing to the depot: it
+token files of plain texts and of conversations, and the tasks. Of a corpus
+cut into portions, each step reads its role's portion, the steps that read
+text windows the pretraining one and those that read conversations and
+tasks the fine-tuning one, and nothing reads the held-out portion: the
+record training is given names none of its files
+(wpt.resources.corpus_record), and the texts the model learned from never
+name one of its texts. Training never builds anything and writes nothing to the depot: it
 reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
 locked parts, and that the corpus holds something for each step to learn
 from are checked before any step runs. The data part's total_tokens is the
-size of the corpus the order asks for and a ceiling on what it reads: a
-corpus built at that size (its max_tokens) counts everything, its
-conversations and tasks taking their share of it, so it holds fewer tokens
-of plain text, and training reads what it holds. A corpus that is stale (an admitted
+size of the pretraining portion the order asks for and a ceiling on what it
+reads: a corpus built at that size (its max_tokens) may hold fewer tokens of
+plain text (what the snapshot leaves the pretraining portion; for a corpus
+without portions, its conversations and tasks took their share of that
+size), and training reads what it holds. A corpus that is stale (an admitted
 erasure reached a text it was built from), or that holds fewer tokens of
 plain text than total_tokens and was built at another size, is refused. A
 step that reads text windows reads the first prefix_tokens of the corpus
@@ -234,7 +245,7 @@ from wpt_model import PARTS, WPT, ModelConfig, canonical_ids, save_drafter, save
 from wpt_model.drafter import Drafter
 from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
-from wpt_corpus import corpora
+from wpt_corpus import corpora, roles
 from wpt_corpus.files import DockFiles
 from wpt_orders import SIZE_OF, OrderError, Orders
 from wpt_orders.series import layer_count
@@ -463,7 +474,7 @@ def find_corpus(dock, given, data, log=say) -> dict:
     wpt.resources.vocabulary_key), as wpt.resources.corpus_record gives it;
     without one, for a vocabulary named by its sha256, the latest corpus of
     the dock's corpora/ built from that snapshot (name, change, digest),
-    depot, kinds, shares, vocabulary and size. No depot is read. InputError
+    depot, shares (taking plain texts), vocabulary and size. No depot is read. InputError
     when neither is there fresh, saying to run `wpt build-resources`;
     nothing is built or queued.
 
@@ -580,8 +591,8 @@ def _snapshot_corpus(dock, data) -> dict:
 
 def _built(dock, data) -> dict | None:
     """The latest corpus of the dock's corpora/ built from the snapshot a
-    data part names (name, change, digest), of its depot, with its kinds,
-    shares and vocabulary, at its size, under the selection rules the depot
+    data part names (name, change, digest), of its depot, with its shares
+    (taking plain texts) and vocabulary, at its size, under the selection rules the depot
     built with last (wpt_corpus.corpora.RULES, which its build key covered): a fresh one
     first. None without one."""
     found = [record for record in corpora.records(dock)
@@ -601,19 +612,30 @@ def _source(record) -> str:
 
 def _same_build(record, data) -> bool:
     """Whether a corpus built from a snapshot is one the order's data part
-    asks for, its size aside: the same snapshot (name, change and digest,
-    which names its owner too), kinds, shares and vocabulary. A corpus
-    delivery's vocabulary is the delivery the data part names (its sha256,
-    or the key of the vocabulary it learns), its kinds and shares compared
-    in the freight's canonical form."""
+    asks for, its sizes aside: the same snapshot (name, change and digest,
+    which names its owner too) and vocabulary, and the same selection. A
+    corpus delivery's vocabulary is the delivery the data part names (its
+    sha256, or the key of the vocabulary it learns). A delivery cut into
+    portions has the portions of the data part's roles (wpt_corpus.roles), in
+    the freight's canonical form, each with its kinds and shares and the
+    held-out one with its size. A corpus without portions (a delivery made
+    without them, or one the depot built onto corpora/) is all of it the
+    pretraining portion: it has the data part's shares and takes plain
+    texts."""
     snapshot = record["snapshot"]
     try:
         if "build_key" in record:
-            ours, theirs = corpora.canonical(data), corpora.canonical(record["data"])
+            theirs = corpora.canonical(record["data"])
+            same_selection = (theirs["shares"] == corpora.canonical({"shares": data.get("shares")})["shares"]
+                              and (not theirs["kinds"] or PLAIN in theirs["kinds"]))
+        elif record["request"]["selection"].get("portions"):
+            same_selection = (_cut(freight.canonical(record["request"]["selection"]))
+                              == _cut(freight.canonical({"portions": roles.portions(data)})))
         else:
-            ours = freight.canonical({"kinds": data.get("kinds"), "shares": data.get("shares")})
             theirs = freight.canonical({**record["request"]["selection"], "size": None})
-    except (freight.Refused, corpora.Refused):
+            same_selection = (theirs["shares"] == freight.canonical({"shares": data.get("shares")})["shares"]
+                              and (not theirs["kinds"] or PLAIN in theirs["kinds"]))
+    except (freight.Refused, corpora.Refused, roles.Refused):
         return False
     if "delivery" in record:
         same_vocabulary = (record["vocabulary"]["sha256"] == data["vocabulary"]["sha256"]
@@ -624,14 +646,20 @@ def _same_build(record, data) -> bool:
                            and record["vocabulary"]["sha256"] == data["vocabulary"]["sha256"])
     return ((snapshot["name"], snapshot["change"], snapshot["digest"]) == (data["snapshot"], data["change"],
                                                                          data["digest"])
-            and (theirs["kinds"], theirs["shares"]) == (ours["kinds"], ours["shares"]) and same_vocabulary)
+            and same_selection and same_vocabulary)
+
+
+def _cut(selection: dict) -> list[dict]:
+    """The portions of a canonical selection with the sizes training lets vary set aside: every one's but the
+    held-out portion's, which is the same for every corpus."""
+    return [{**one, "size": one["size"] if one["name"] == roles.HELD_OUT else None} for one in selection["portions"]]
 
 
 def load_corpus(dock, record, order):
     """The corpus's tokenizer, its vocabulary checked, once the corpus is
     known to be the order's. An order of a snapshot: a corpus built or
     delivered from that snapshot (name, change, digest) with the order's
-    kinds, shares and vocabulary, at any size (check_record checks the
+    portions, shares and vocabulary (_same_build), at any size (check_record checks the
     size). An order of a dataset: a corpus built from the depot the order
     names, and a dataset of the id or name the order gives then, or,
     renamed since, of the id the order's dataset has in its depot now."""
@@ -640,7 +668,7 @@ def load_corpus(dock, record, order):
     if on_snapshot(data):
         if not snapshot or not _same_build(record, data):
             raise InputError(f"corpus {record['id']} was built from {_source(record)}"
-                             + (" with kinds, shares or vocabulary other than the order's" if snapshot
+                             + (" with portions, shares or vocabulary other than the order's" if snapshot
                                 else "") + f"; this order names snapshot {data['snapshot']} (change "
                              f"{data['change']}, digest {data['digest']}) of the depot {data['depot']}")
     elif (snapshot or record["depot"] != data["depot"]
@@ -721,8 +749,9 @@ def with_prefixes(order, record, log=lambda text: None) -> dict:
             if prefix < asked:
                 log(f"step {number} {step.name} reads the first {prefix:,} tokens of plain text, all that corpus "
                     f"{record['id']} holds, not the {asked:,} it asks for: built at the order's size "
-                    f"{order['data']['total_tokens']:,} (data.total_tokens), the corpus counts its conversations "
-                    "and tasks in it")
+                    f"{order['data']['total_tokens']:,} (data.total_tokens), the corpus holds no more: a corpus "
+                    "without portions counts its conversations and tasks in that size, and a corpus with portions "
+                    "holds what its snapshot leaves its pretraining portion")
             if prefix != step.settings["prefix_tokens"]:
                 entry = {**entry, "settings": {**entry.get("settings", {}), "prefix_tokens": prefix}}
         entries.append(entry)
@@ -817,7 +846,7 @@ def provenance(args, order, record, model_config, n_params, worker, strategy_fil
     versions of the libraries it trained with); texts: how many texts of
     the corpus the steps learned from. A corpus the freight delivered
     gives `data`, the order's data section (the depot's address, the
-    snapshot's name, change and digest, the kinds, shares, size and
+    snapshot's name, change and digest, the roles, shares, sizes and
     vocabulary), `deliveries`, the key, id and preparation of the
     vocabulary's delivery and of the corpus's, and `corpus` its id,
     delivery key, rules, the snapshot it read (with its owner) and

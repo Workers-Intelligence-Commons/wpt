@@ -19,14 +19,16 @@ guard.py refuses any other code that reaches these files.
 Every read is checked: an order against its schema (InvalidOrder), and
 check() and problems() add the rules across files. An order's data part
 has the snapshot shape (a snapshot of a depot, its change and digest, the
-kinds and shares by tag, the size and the vocabulary, named by its sha256
-or learned for the data part from a sample of a number of bytes) or the
+roles of its corpus's portions, the shares by tag, the sizes and the
+vocabulary, named by its sha256 or learned for the data part from a sample
+of a number of bytes) or the
 legacy dataset
 shape of the orders written before snapshots (a dataset of a depot); the
 schema accepts either. An order whose depot, snapshot, digest, vocabulary
 or dataset is still empty passes its schema, so it reads, and the check
 names it for a person to fill in; the check also refuses shares that name
-a tag twice or sum above 1.
+a tag twice or sum above 1, and a size of the finetune portion in a data
+part whose roles leave it out.
 """
 
 import json
@@ -158,6 +160,15 @@ def _shares(where: str, data: dict, place: str):
         raise InvalidOrder(f"{where}: {place}shares sum to {total:g}, above 1: each is a part of the plain text")
     if shares and not total:
         raise InvalidOrder(f"{where}: {place}shares are all 0: give one a share above 0, or give no shares")
+
+
+def _finetune(where: str, data: dict, place: str):
+    """InvalidOrder for a size of the finetune portion (finetune_tokens) in a
+    data part whose roles leave that portion out (the schema checks the
+    roles themselves)."""
+    if "finetune_tokens" in data and "finetune" not in (data.get("roles") or []):
+        raise InvalidOrder(f"{where}: {place}finetune_tokens sizes the finetune portion, which {place}roles leave "
+                            "out: add finetune to the roles, or give no finetune_tokens")
 
 
 class Orders:
@@ -425,3 +436,4 @@ class Orders:
                 raise InvalidOrder(f"{where}: {error}") from None
         _shares(where, document["data"], "data.")
         _empty_data(where, document["data"], "data.")
+        _finetune(where, document["data"], "data.")

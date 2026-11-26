@@ -37,20 +37,22 @@ then for its corpus, which the freight delivers on the dock, the dock
 that queue itself while no other process does
 ([api/freight.md](api/freight.md)). Without an id,
 `wpt train` reads the corpus delivery whose key the order gives: the key
-of the request its data part makes (the snapshot's change and digest, its
-kinds, shares, `data.total_tokens` as the size in tokens, for a series the
-total tokens of its largest size, and the key of its vocabulary's
-delivery), worked out from the order alone (`wpt.resources`). It reads no
+of the request its data part makes (the snapshot's change and digest, the
+portions of its roles with their kinds, shares and sizes, `data.total_tokens`
+the pretraining portion's in tokens, for a series the total tokens of its
+largest size, and the key of its vocabulary's delivery), worked out from
+the order alone (`wpt.resources`). It reads no
 depot. Without that delivery, an order that names its vocabulary by its
 sha256 reads the latest corpus the depot built onto the dock's
 `corpora/` from the order's snapshot (its name, change and digest), depot,
-kinds, shares and vocabulary, at its size, under the selection rules
+shares (taking plain texts) and vocabulary, at its size, under the selection rules
 `wpt_corpus.corpora.RULES` names ([data-selection.md](data-selection.md), "Corpora"). With neither, or with a stale one, the run is refused, saying
 to run `wpt build-resources`, and nothing is built or queued. A corpus
 given by its id (`WPT_CORPUS` or the corpus option), of a delivery or of
 the dock's `corpora/`, must be made from the order's snapshot (its name,
-change and digest) with the order's kinds, shares and vocabulary, at any
-size; any other is refused.
+change and digest) with the order's portions, shares and vocabulary, at
+any size; a corpus without portions needs the order's shares and plain
+texts; any other is refused.
 
 An order of the legacy shape names a dataset of a depot of format 12 or
 older instead, and reads the corpus the dock kept of it ("Models trained
@@ -67,7 +69,24 @@ The corpus holds everything the steps read: the token files of its plain
 texts and of its conversations, each kind's apart, and its tasks. Its
 record, or its delivery's result, gives a fingerprint (a sha256) of what it holds of each kind,
 `plain`, `conversation` and `task`, which the steps' fingerprints read
-("Step results and reuse", below). A
+("Step results and reuse", below).
+
+A corpus cut into the portions of its order's roles
+([data-selection.md](data-selection.md), "The portions of a corpus") gives
+training its portions of the roles training reads alone
+(`wpt.resources.corpus_record`): the token files, tasks and fingerprint of
+each kind are those of the portion whose role holds that kind, plain
+texts the pretraining portion's, conversations and tasks the fine-tuning
+one's, so a step that reads text windows reads the pretraining portion and
+a step that reads conversations or tasks the fine-tuning one. The record
+names no file of the held-out portion, the rows of the items tables it
+reads (the texts a step picks by tag, the model's `CREDITS`) are those of
+its portions alone (`trains_on`), and no step can read the held-out
+portion (`apps/wpt/tests/train/test_portions.py`). A step whose role's
+portion the corpus does not hold finds nothing to read and refuses the
+run. A corpus without portions, delivered without them or one of the
+corpora under `corpora/`, is all of it its pretraining portion, each step
+reading its kinds there as a whole. A
 text added to the depot after the snapshot reaches training only through a
 later snapshot and the corpus made from it.
 
@@ -447,8 +466,8 @@ the size and the time, such as a fault of the disk, goes unseen.
 ### Prefix
 
 `prefix_tokens`, when above 0, makes the step's training tokens the first
-`prefix_tokens` of the corpus's, in the shards' order, and nothing after
-them. Only the shards that hold them are copied (or streamed), the windows
+`prefix_tokens` of the corpus's (of its pretraining portion, in a corpus
+cut into portions), in the shards' order, and nothing after them. Only the shards that hold them are copied (or streamed), the windows
 are drawn from them alone, and the step learned from the texts of that
 start. With `--stream`, the walk over the shards starts again after the
 prefix. A corpus with fewer tokens than the prefix is refused before any
@@ -457,11 +476,12 @@ first `total_tokens` of the order's data part, the same prefix. Each size
 of a model series reads its prefix of the series' one corpus (model.md,
 "Model series"), and the setting is part of the step's fingerprint.
 
-The order's `total_tokens` is the size of the corpus the order asks for
-and a ceiling on what it reads. A corpus built at that size (its
-`max_tokens`) counts everything, its conversations and tasks taking their
-share of it, and never passes it, so it holds fewer tokens of plain text
-than `total_tokens` when the snapshot holds items.
+The order's `total_tokens` is the size of the pretraining portion the
+order asks for and a ceiling on what it reads. A corpus built at that size
+(its `max_tokens`) never passes it, and may hold fewer tokens of plain text
+than `total_tokens`: the pretraining portion holds what the snapshot leaves
+it after the held-out portion, and a corpus without portions counts its
+conversations and tasks in that size.
 Training reads what such a corpus holds: each step that reads text windows
 reads the smaller of its prefix and the corpus's tokens of plain text, from
 the start, and the run's record says how many it reads when that is fewer
@@ -1159,8 +1179,8 @@ says.
 
 A model trained on a snapshot names, in `provenance.json`, what anyone needs
 to make its corpus again and check it: `data`, the order's data section (the
-depot's address, the snapshot's name, change and digest, the kinds, shares,
-size and vocabulary); `order_name` and `order`, the order's name and the
+depot's address, the snapshot's name, change and digest, the roles,
+shares, sizes and vocabulary); `order_name` and `order`, the order's name and the
 order itself; and `repository_commit`
 with `repository_dirty`, the code (the commit pins the design-system
 submodule too). A model trained on deliveries of the freight names too

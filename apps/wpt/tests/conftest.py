@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from depot import About, Declaration, Depot, NewText
-from wpt_corpus import corpora
+from wpt_corpus import corpora, roles
 from depot.errors import NotFound
 from corpus_build import build
 from freight import api as freight
@@ -169,6 +169,7 @@ def worker_port():
 
 
 LEARNED = {"size": VOCAB_SIZE, "sample_bytes": 10**6}  # every byte of the 16 stories
+HELD_OUT = 3500  # the held-out portion's bytes in the app's tests: two of the 16 stories
 
 
 @pytest.fixture(params=["named"])
@@ -181,10 +182,13 @@ def trained(request, built, tmp_path, monkeypatch):
     freight.api.adopt, its items every text of the depot, as the tokenizer
     recipe TOKENIZER version 1 read them); with the parameter "learned"
     (indirect), the order learns its vocabulary of VOCAB_SIZE entries from
-    the stories instead (LEARNED). Gives what built gives, folder, notes
-    (the two delivery notes `wpt build-resources` printed) and corpus_id,
-    the corpus delivery's id."""
+    the stories instead (LEARNED). The order's corpus has the default roles,
+    its held-out portion HELD_OUT bytes. Gives what built gives, folder,
+    notes (the two delivery notes `wpt build-resources` printed),
+    corpus_id, the corpus delivery's id, and fetched, the keys of every
+    file `wpt train` fetched from the dock."""
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
+    monkeypatch.setattr(roles, "HELD_OUT_BYTES", HELD_OUT)
     printed = request.getfixturevalue("capsys")
     if request.param == "named":
         change = built.depot.snapshot(built.names["d"])["at_change"]
@@ -202,9 +206,16 @@ def trained(request, built, tmp_path, monkeypatch):
     assert build_resources(["d"]) == 0
     out = printed.readouterr().out
     notes = json.loads(out[out.index("\n{\n") + 1:])  # printed last, after the lines of the jobs
-    train(["d", "--out", "model"])
+    fetched = []
+    with monkeypatch.context() as watched:
+        for name in ("fetch", "fetch_into", "fetch_range", "stream"):
+            def reading(dock, key, *args, _read=getattr(dock_api, name), **kwargs):
+                fetched.append(key)
+                return _read(dock, key, *args, **kwargs)
+            watched.setattr(dock_api, name, reading)
+        train(["d", "--out", "model"])
     return SimpleNamespace(**{**vars(built), "corpus_id": notes["corpus"]["id"]}, folder=tmp_path / "model",
-                           notes=notes)
+                           notes=notes, fetched=fetched)
 
 
 @pytest.fixture

@@ -5,8 +5,16 @@ even once the depot it read changes or vanishes. The freight
 deliveries hold; this module builds the corpora the tests compare it
 with.
 
+It builds a corpus without portions, the shape of the corpora under the
+dock's corpora/: training reads all of it as its pretraining portion, with
+no held-out one (wpt_corpus.roles). So it is the reference of a delivery
+made without portions, and the corpora under corpora/ the tests train on;
+the portions of a delivery are checked against the freight's own rules
+(freight/test_portions.py).
+
 A build reads one snapshot of a depot (depot.snapshots), each text at
-its revision as of its bound, and the data section of an order: the kinds
+its revision as of its bound, and a data section of the shape of the
+corpus it builds (not that of an order, which names roles): the kinds
 it takes (kinds; none named: every kind), its shares by tag (shares, [{tag,
 share}] in order; none: every plain text, in the snapshot's own
 proportions), its size (total_tokens, a number of tokens, or None for every

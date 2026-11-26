@@ -491,8 +491,10 @@ each process.
 
 A model order's data section ([model.md](model.md), "Model orders")
 says what its corpus takes: the depot by its public address, the snapshot
-by its name with the change and digest it reads, the kinds it takes (none:
-every kind), its shares, its size (`total_tokens`) and its vocabulary:
+by its name with the change and digest it reads, the roles of the portions
+its corpus is cut into (`roles`, see "The portions of a corpus"), its
+shares, the size of its pretraining portion (`total_tokens`), the size of
+its fine-tuning portion (`finetune_tokens`) and its vocabulary:
 `{"sha256", "size"}`, one the dock holds, or `{"size", "sample_bytes"}`,
 one learned for the section from that many bytes of the plain texts of its
 snapshot, chosen with its shares ([tokenizer.md](tokenizer.md), "A
@@ -645,6 +647,54 @@ never names portions.
 The rule reads texts by their id: two editions of one work held as two
 texts of the depot can fall in two portions.
 
+### The portions of a corpus
+
+WPT cuts the corpus of an order into portions (see "Portions"), each named
+after its role, and gives each role its rules in its code
+(`wpt_corpus.roles`), never in an order. An order's data section only says
+which roles its corpus has (`roles`; left out: `held_out` and `pretrain`)
+and the sizes the rules leave to it. The freight fills them in this order:
+
+| Role | What it holds | Its shares | Its size |
+| --- | --- | --- | --- |
+| `held_out` | plain texts that no training reads, to measure a model on | the section's | `HELD_OUT_BYTES`, 2 MiB of the bytes the depot's listing gives its texts, the same for every corpus |
+| `pretrain` | plain texts, what the steps that read text windows learn from | the section's | `total_tokens`, in tokens |
+| `finetune` | conversations and tasks, what the steps that read them learn from | none | `finetune_tokens`, in tokens; left out: every conversation and task left |
+
+`pretrain` is always one of the roles, so `total_tokens` keeps meaning the
+plain text the model reads; `finetune_tokens` without `finetune` is
+refused.
+
+The held-out portion comes first, is sized in bytes and names its kinds,
+so it reads nothing of the vocabulary, the sizes or the portions after it:
+two corpora of one snapshot and one set of shares hold exactly the same
+held-out texts, whatever their vocabulary and their sizes, and a model is
+measured on texts it never read. 2 MiB is about half a million tokens
+of every share, enough for a measure that moves little from one corpus
+to another, and under a fifth of the smallest corpus
+the orders ask for (4.3 million tokens, some 17 MB of text at about four
+bytes a token).
+
+Training reads only its portions ([training.md](training.md), "Steps"):
+the steps that read text windows the pretraining portion, as they read the
+start of the corpus (a size of a model series reads the first part of it),
+the steps that read conversations and tasks the fine-tuning one. The
+record training is given names no file of the held-out portion, and the
+texts a model learned from (`CREDITS`, `provenance.json`) never name one of
+its texts. A corpus made without portions, a delivery made without them or
+one of the corpora the depot built under `corpora/`, is all of it its
+pretraining portion, read as a whole, every step reading its kinds there,
+and has no held-out portion.
+
+A conversation is taken in a portion only with every passage it quotes in
+the same portion (see "Portions"). The fine-tuning portion holds no plain
+text, so a conversation that quotes a text is left out of it
+(`quoted text left out`): only conversations that quote nothing reach it.
+
+The rule reads texts by their id: two editions of one work held as two
+texts of the depot can fall in two portions, one held out and one trained
+on.
+
 ### Choosing in a snapshot again
 
 A snapshot names the change number it reads and the texts it holds, and a
@@ -664,9 +714,11 @@ order names this depot, or the upstream it follows, by its public address,
 and a snapshot of it by name. A rented GPU machine only reads the corpus
 and trains ([machines.md](machines.md)). The request carries the order's
 data section: the snapshot (its name, and the change number and digest it
-reads, which the freight checks), the kinds it takes (none: every kind),
-the shares, the size (`total_tokens` in tokens, none for every token) and
-the vocabulary, the delivery the request names as its input. A snapshot
+reads, which the freight checks), the portions of the section's roles in
+order, each with its kinds, shares and size (see "The portions of a
+corpus"), and the vocabulary, the delivery the request names as its input.
+What follows describes how the freight fills one portion, or a delivery
+made without portions. A snapshot
 whose change number or digest is not the request's refuses the request
 and names both: "snapshot S of depot D reads change N with digest H; the
 request says M, G".
@@ -717,8 +769,10 @@ The freight chooses nothing by score. `wpt-tokens` keeps:
 - every task, as one line of `tasks.jsonl`.
 
 Its result lists the token files by kind (`shards`, `{"plain": [...],
-"conversation": [...]}`), so a step finds the files of the kinds it reads
-and nothing else. Items of other kinds, and of the kinds the data section
+"conversation": [...]}`), and for a delivery cut into portions by portion
+first (`portions`, `{"pretrain": {"shards": {"plain": [...]}, ...}, ...}`),
+each portion's files under the folder of its name, so a reader finds the
+files of one portion and one kind and nothing else. Items of other kinds, and of the kinds the data section
 leaves out, are not taken: the delivery note counts them by kind
 (`left_out`, `kinds not taken`).
 
@@ -768,7 +822,7 @@ Everything goes under `deliveries/<delivery key>/` on the dock, with the
 delivery note, `delivery.json`, written last, so a job that fails leaves
 no delivery ([api/freight.md](api/freight.md), "A delivery on the dock").
 The delivery key covers the snapshot's digest and change, the selection
-(kinds, shares and size), the program's name, version and settings, the
+(each portion's name, kinds, shares and size), the program's name, version and settings, the
 vocabulary's delivery key and the version of the selection rules, never
 the address the request came from, so a clone and the server key the same
 corpus, and another vocabulary or size goes into another folder. Each
@@ -791,9 +845,11 @@ when it reached a text the corpus took, the delivery is written stale.
 
 `wpt train` reads the corpus it is given, or else the corpus delivery its
 order names on the dock, and without one the latest corpus under the
-dock's `corpora/` made for the order's snapshot, data section and size,
+dock's `corpora/` made for the order's snapshot, shares and size,
 which the depot built before the freight; with neither it refuses and says
 to run `wpt build-resources` ([training.md](training.md), "Training").
+A corpus without portions, delivered without them or under `corpora/`, is
+all of it its pretraining portion and has no held-out one.
 Training never builds or queues anything. A corpus is a cache: the same
 request on the same snapshot gives it again, so a model's reproducibility
 rests on the depot's address, the snapshot and the order, never on a kept

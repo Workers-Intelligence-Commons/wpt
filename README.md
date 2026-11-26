@@ -26,8 +26,10 @@ tasks), each of one kind and with its license, credit, notice and tags,
 the human decisions that admit or refuse it, and its snapshots, each a
 change number, named by the UTC time it was made, and the texts admitted
 then (`depot`). A model order names a depot by its public address, a
-snapshot of it with the change and digest it reads, the kinds and the
-shares by tag it takes, its size and its vocabulary. `wpt build-resources
+snapshot of it with the change and digest it reads, the roles of the
+portions its corpus is cut into (a held-out portion no training reads, the
+pretraining one, the fine-tuning one), the shares by tag it takes, its
+sizes and its vocabulary. `wpt build-resources
 ORDER` asks the freight to learn that vocabulary and prepare that corpus,
 which it delivers on a dock you control (a folder or an S3 bucket): the
 token files, with copies of every text's credits, licenses and notices.

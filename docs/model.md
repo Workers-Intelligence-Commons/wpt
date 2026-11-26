@@ -900,10 +900,15 @@ repository ("Model series", below). A model order holds:
 - the data, in one of two shapes. The snapshot shape: a depot (`depot`, its
   public address, [data-selection.md](data-selection.md)), the name of one of
   its snapshots (`snapshot`) with the change number it reads (`change`) and
-  its digest (`digest`), the kinds of text it takes (`kinds`, left out: every
-  kind), the share of the plain text each tag takes (`shares`, in order, a tag
-  once, summing to at most 1; left out: the snapshot's own proportions), the
-  total tokens (`total_tokens`) and the vocabulary (`vocabulary`: its
+  its digest (`digest`), the roles of the portions its corpus is cut into
+  (`roles`: `held_out`, `pretrain`, `finetune`; `pretrain` always; left out:
+  `held_out` and `pretrain`; [data-selection.md](data-selection.md), "The
+  portions of a corpus"), the share of the plain text each tag takes
+  (`shares`, in order, a tag once, summing to at most 1; left out: the
+  snapshot's own proportions), the size of the pretraining portion in
+  tokens (`total_tokens`), the size of the fine-tuning one
+  (`finetune_tokens`; left out: every conversation and task left; only with
+  `finetune`) and the vocabulary (`vocabulary`: its
   file's `sha256` and its `size`, or the `size` and `sample_bytes` of one
   the freight learns, [tokenizer.md](tokenizer.md), "A vocabulary in an
   order"). The legacy dataset shape, of the orders of models trained
@@ -991,7 +996,7 @@ of sizes, each a name and a width. `SERIES:SIZE` names one size wherever a
 model order's name goes (`wpt train`, `WPT_ORDER`). Every size reads
 the same corpus, the one of the series' snapshot and data part at its
 largest size, and a smaller
-size its first part (its prefix). The code derives
+size the first part of its pretraining portion (its prefix). The code derives
 each size's model order (`wpt_orders.series`):
 
 - the shape: the series' `reference` model scaled to the size's width.

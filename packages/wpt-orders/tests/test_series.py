@@ -94,7 +94,7 @@ def test_each_size_is_a_model_order_and_every_size_shares_the_data_of_the_larges
     largest = max(plans, key=lambda plan: plan.parameters)
     assert largest.size == "768x15"
     data = {**ladder["data"], "total_tokens": largest.prefix_tokens}
-    assert set(data) == {"depot", "snapshot", "change", "digest", "kinds", "total_tokens", "vocabulary"}
+    assert set(data) == {"depot", "snapshot", "change", "digest", "roles", "total_tokens", "vocabulary"}
     assert repo.data_part(f"{SERIES}:{largest.size}") == data
     for plan in plans:
         order = repo.model_order(f"{SERIES}:{plan.size}", VOCABULARY)
@@ -125,7 +125,7 @@ def test_a_size_or_a_series_that_does_not_exist_is_refused(repo, ladder):
 
 
 SNAPSHOT_DATA = {"depot": "https://depot.example", "snapshot": "2026-11", "change": 1234, "digest": "d" * 64,
-                 "kinds": ["plain"], "shares": [{"tag": "fiction", "share": 0.5}],
+                 "roles": ["held_out", "pretrain"], "shares": [{"tag": "fiction", "share": 0.5}],
                  "vocabulary": {"sha256": "5" * 64, "size": VOCABULARY}}
 
 

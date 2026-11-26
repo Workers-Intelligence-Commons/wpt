@@ -2,8 +2,9 @@
 
 A model order (data/orders/models/<name>.json) says everything that
 changes a model: its data (the address of a depot, a snapshot there with
-its change and digest, the kinds and shares by tag it takes, its total
-tokens and its vocabulary: its sha256 and size, or its size and the bytes
+its change and digest, the roles of its corpus's portions, the shares by
+tag it takes, the sizes of its pretraining portion (total_tokens) and of its
+finetune one, and its vocabulary: its sha256 and size, or its size and the bytes
 of the sample it is learned from; orders written before
 snapshots name a dataset of the depot instead, whose tokenizer recipe
 gives the vocabulary), its architecture, its seed, its training steps and its
