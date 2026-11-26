@@ -172,8 +172,13 @@ def test_bits_per_byte_measures_the_model_on_the_held_out_portion_of_its_corpus(
     assert data["delivery"] == note["key"] and (data["texts"], data["bytes"]) == (held["texts"], held["bytes"]) == (
         2, sum(one["bytes"] for one in note["portions"] if one["name"] == "held_out"))
     assert data["tokens"] == held["total_tokens"] and data["bits_per_byte"] > 0 and data["nats_per_token"] > 0
-    assert set(data["by_share"]) == {"en"} and data["by_share"]["en"]["bits_per_byte"] == data["bits_per_byte"]
-    assert "bits per byte" in (trained.folder / "README.md").read_text()
+    # in windows of the model's context, 16 tokens here, with the error the spread between them gives
+    assert data["block_size"] == 16 and data["windows"] == -(-data["tokens"] // 16) and data["texts_left_out"] == 0
+    assert 0 < data["bits_per_byte_error"] < data["bits_per_byte_spread"]
+    assert set(data["by_share"]) == {"en"} and data["by_share"]["en"]["bits_per_byte"] == pytest.approx(
+        data["bits_per_byte"])
+    assert f"{data['bits_per_byte']:.4f} ± {data['bits_per_byte_error']:.4f} bits per byte" in (
+        trained.folder / "README.md").read_text()
 
 
 @pytest.mark.parametrize("change, refused", [

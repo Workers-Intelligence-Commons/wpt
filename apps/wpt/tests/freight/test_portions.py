@@ -4,16 +4,21 @@ held-out portion first, on HELD_OUT_BYTES bytes with the order's shares;
 wpt-tokens writes each portion's files under the folder of its name, by
 kind, and lists them by portion; training's view of the delivery names no
 file of the held-out portion; two corpora of one snapshot and one set of
-shares hold the same held-out texts whatever their vocabulary and sizes;
+shares hold the same held-out texts whatever their vocabulary and sizes,
+and wpt eval's bits_per_byte measures two vocabularies on the same bytes;
 a job cut short goes on to the same delivery; and the order schemas of
 wpt-orders, which cannot import wpt_corpus, name the roles as
 wpt_corpus.roles does."""
 
 import base64
+import importlib.util
 import io
 import json
+import math
 from importlib.resources import files
+from types import SimpleNamespace
 
+import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
@@ -21,6 +26,7 @@ from depot import Declaration, NewText
 from freight import api
 from freight.job import LEFT_OUT, Job
 from wpt import resources
+from wpt.eval import BUILT_IN
 from wpt_corpus import corpora, programs, roles
 from wpt_orders import orders
 from wpt_tokenizer import Tokenizer
@@ -164,6 +170,34 @@ def test_two_corpora_of_one_snapshot_and_shares_hold_the_same_held_out_texts_wha
               for note in (small, large, elsewhere)]
     assert hashes[0] == hashes[1] != hashes[2]  # the same tokens with the same vocabulary
     assert len({small["key"], large["key"], elsewhere["key"]}) == 3
+
+
+def test_bits_per_byte_measures_two_vocabularies_on_the_same_bytes(cut, tmp_path):
+    other = Tokenizer.train([f"Geschichte {n}: der schnelle Fuchs. ".encode() * 40 for n in range(30)], vocab_size=700)
+    key = f"{api.ADOPTED}{'7' * 64}"
+    api.adopt(key, {"vocabulary.json": other.to_bytes()}, {"sha256": "7" * 64, "size": other.vocab_size},
+              {"by": "a test"}, on_erasure="note", dock=cut.dock)
+    spec = importlib.util.spec_from_file_location("bits_per_byte_under_test", BUILT_IN / "bits_per_byte.py")
+    bits_per_byte = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bits_per_byte)
+
+    def one_nat_each(windows):
+        return [np.ones(len(window) - 1, dtype=np.float32) for window in windows]
+
+    found = []
+    for tokenizer, vocabulary in ((cut.tokenizer, cut.vocabulary_key), (other, key)):
+        note = asked(cut, tmp_path, resources.corpus_request(cut.cut_data(total_tokens=2000), vocabulary))
+        context = SimpleNamespace(folder=tmp_path / "model", dock=cut.dock, tokenizer=tokenizer,
+                                  provenance={"deliveries": {"corpus": {"key": note["key"]}}},
+                                  model=SimpleNamespace(config=SimpleNamespace(block_size=16), losses=one_nat_each))
+        found.append(bits_per_byte.run(context).data)
+    # every byte of the same held-out texts, read in tokens of two vocabularies
+    assert found[0]["bytes"] == found[1]["bytes"] == resources.held_out(note)["bytes"] > 0
+    assert found[0]["texts"] == found[1]["texts"] > 1 and found[0]["tokens"] != found[1]["tokens"]
+    assert {pool: one["bytes"] for pool, one in found[0]["by_share"].items()} == {
+        pool: one["bytes"] for pool, one in found[1]["by_share"].items()}
+    for data in found:  # one nat a token
+        assert data["bits_per_byte"] == pytest.approx(data["tokens"] / math.log(2) / data["bytes"])
 
 
 @pytest.mark.parametrize("stop", [1, 3, 5])

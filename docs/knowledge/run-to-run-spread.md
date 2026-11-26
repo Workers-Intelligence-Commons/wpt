@@ -31,6 +31,11 @@ defined in [README.md](README.md).
   compared on the same windows, or the gap says nothing: two runs of one
   order measured on different windows end 0.06 apart, which the windows
   alone can give. **measured here**, two runs
+- Two models of different vocabularies have no windows of tokens in
+  common, and a loss per token divides by counts of tokens that differ
+  with the vocabulary: they are compared in bits per byte on the same
+  bytes, every token's loss counted once over the bytes those tokens stand
+  for. **proved**
 - So one run of each model shows a gap in validation loss when it is
   several times the spread between seeds, on the same windows: about 0.01
   nats from the one pair of runs measured here, 0.02 if the published
