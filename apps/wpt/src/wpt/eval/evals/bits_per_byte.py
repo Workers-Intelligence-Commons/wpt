@@ -36,17 +36,19 @@ under two windows), and bits per byte for each share's tag (the rows' pool),
 each token counted in its text's share.
 
 MAX_BYTES bounds the work: at most that many bytes of text, so at most
-that many tokens of text plus one END per text and the first one, which a
-GPU reads in a few minutes. It is twice wpt_corpus.roles.HELD_OUT_BYTES, the
-size the freight fills the held-out portion to, so the whole portion is
-measured, its last text included, whatever that size is set to.
+that many tokens of text plus one END per text and the first one. It is
+twice wpt_corpus.roles.HELD_OUT_BYTES, the size the freight fills the
+held-out portion to, so the whole portion is measured, its last text
+included, whatever that size is set to.
 
-A model whose corpus has no held-out portion is refused (EvalError), and
-so the run of wpt eval stops: one trained on a corpus the depot built under
-corpora/ or before snapshots, on a delivery made without portions or for an
-order whose roles leave the held-out portion out. So is a delivery the dock
-no longer holds, and one an erasure reached (stale), whose texts are not to
-be read again.
+A model whose corpus has no held-out portion is not measured (NotMeasured):
+one trained on a corpus the depot built under corpora/ or before
+snapshots, on a delivery made without portions or for an order whose roles
+leave the held-out portion out. Named, the test refuses it and the run of
+wpt eval stops; run with every built-in test, its result says it was not
+measured and the other tests run. A delivery the dock no longer holds, and
+one an erasure reached (stale), whose texts are not to be read again, are
+refused (EvalError) either way.
 """
 
 import math
@@ -61,18 +63,19 @@ from wpt_corpus.shards import read_verified, shard_file
 from wpt_model.provenance import corpus_label, deliveries
 from wpt_tokenizer import Tokenizer
 from wpt import resources
-from wpt.eval import EvalError, Result
+from wpt.eval import EvalError, NotMeasured, Result
 
 MAX_BYTES = 2 * roles.HELD_OUT_BYTES  # bytes of text measured at most: the whole held-out portion
 CALL_TOKENS = 1 << 16  # tokens sent to the model in one call, about: the windows of a call are whole
 
 
 def held_out(context) -> tuple[str, dict]:
-    """(the corpus delivery's key, its held-out portion), or EvalError."""
+    """(the corpus delivery's key, its held-out portion); NotMeasured
+    without one, EvalError for a delivery not to be read."""
     corpus = deliveries(context.provenance).get("corpus")
     if corpus is None:
-        raise EvalError(f"{context.folder}: learned from {corpus_label(context.provenance)}, a corpus the freight did "
-                        "not deliver, which has no held-out portion to measure it on")
+        raise NotMeasured(f"the model learned from {corpus_label(context.provenance)}, a corpus the freight did not "
+                          "deliver, which has no held-out portion to measure it on")
     note = freight.delivery(corpus["key"], dock=context.dock)
     if note is None:
         raise EvalError(f"{context.folder}: the dock holds no corpus delivery {corpus['key']}, the one it learned from")
@@ -81,8 +84,8 @@ def held_out(context) -> tuple[str, dict]:
             raise EvalError(f"{context.folder}: its corpus delivery {corpus['key']} is {mark}: {note[mark]}")
     found = resources.held_out(note)
     if found is None:
-        raise EvalError(f"{context.folder}: its corpus delivery {corpus['key']} has no held-out portion (made without "
-                        "portions, or for an order whose roles leave it out): nothing to measure it on")
+        raise NotMeasured(f"the model's corpus delivery {corpus['key']} has no held-out portion (made without "
+                          "portions, or for an order whose roles leave it out): nothing to measure it on")
     return corpus["key"], found
 
 

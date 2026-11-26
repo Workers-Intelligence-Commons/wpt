@@ -181,18 +181,43 @@ def test_bits_per_byte_measures_the_model_on_the_held_out_portion_of_its_corpus(
         trained.folder / "README.md").read_text()
 
 
-@pytest.mark.parametrize("change, refused", [
+NO_HELD_OUT = [
     (lambda provenance, notes: provenance.pop("deliveries"), "a corpus the freight did not deliver"),
     # a delivery without portions: the vocabulary's stands for one here
     (lambda provenance, notes: provenance["deliveries"]["corpus"].update(key=notes["vocabulary"]["key"]),
      "has no held-out portion"),
-    (lambda provenance, notes: provenance["deliveries"]["corpus"].update(key="0" * 64), "holds no corpus delivery"),
-])
-def test_bits_per_byte_refuses_a_model_whose_corpus_has_no_held_out_portion(trained, change, refused):
+]
+
+
+def changed(trained, change):
+    """The model folder's provenance.json, changed by change(provenance, the delivery notes)."""
     path = trained.folder / "provenance.json"
     provenance = json.loads(path.read_text())
     change(provenance, trained.notes)
     path.write_text(json.dumps(provenance))
+
+
+@pytest.mark.parametrize("change, refused", [
+    *NO_HELD_OUT,
+    (lambda provenance, notes: provenance["deliveries"]["corpus"].update(key="0" * 64), "holds no corpus delivery"),
+])
+def test_bits_per_byte_named_refuses_a_model_whose_corpus_has_no_held_out_portion(trained, change, refused):
+    changed(trained, change)
     with pytest.raises(SystemExit, match=f"EvalError: .*{refused}"):
         main([str(trained.folder), "bits_per_byte"])
     assert not (trained.folder / "evals" / "bits_per_byte.json").exists()
+
+
+@pytest.mark.parametrize("change, reason", NO_HELD_OUT)
+def test_every_built_in_test_runs_on_a_model_whose_corpus_has_no_held_out_portion_which_is_not_measured(
+        trained, change, reason):
+    changed(trained, change)
+    main([str(trained.folder)])
+    records = {path.stem: json.loads(path.read_text()) for path in (trained.folder / "evals").glob("*.json")}
+    assert set(records) == {"bits_per_byte", "copying", "general_knowledge"}  # the run went on past it
+    data = records["bits_per_byte"]["data"]
+    assert data["measured"] is False and reason in data["reason"] and set(data) == {"measured", "reason"}
+    assert str(trained.folder) not in data["reason"]  # the folder never records where it lives
+    card = (trained.folder / "README.md").read_text()
+    shown = card[card.index("### bits_per_byte"):card.index("Data: [evals/bits_per_byte.json]")]
+    assert "Not measured: " in shown and reason in shown and "bits per byte" not in shown

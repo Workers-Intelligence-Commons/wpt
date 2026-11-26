@@ -22,7 +22,10 @@ cannot work there refuses the evaluation before any test runs.
 
 Each result goes to MODEL_FOLDER/evals/<name>.json, and the model card
 (README.md) is written again to show it. A test that fails stops the run;
-results already written stay.
+results already written stay. A test that cannot measure this model
+raises NotMeasured: named, it stops the run as a failure does; run as one
+of every built-in test (no test named), its result says it was not
+measured and why, with no figure, and the run goes on.
 
 The run is recorded in its own folder of the dock's runs/ (wpt_telemetry; docs/observability.md): the weights it measured, each test
 with its file's sha256 and its result, and every file written. A test can
@@ -67,6 +70,13 @@ class EvalError(Exception):
     Nothing is written for that test."""
 
 
+class NotMeasured(EvalError):
+    """A test that cannot measure this model (a bits-per-byte test on a model
+    whose corpus has no held-out portion): the reason, about the model and
+    not the machine, as the result of a run of every built-in test shows
+    it."""
+
+
 @dataclass(frozen=True)
 class Result:
     data: dict  # numbers and names that json can hold, for programs
@@ -100,8 +110,11 @@ def find(eval_) -> tuple[str, Path, str]:
     return path.stem, path, path.name
 
 
-def run_eval(context, eval_) -> dict:
-    """Run one test, write its result into the folder and return it."""
+def run_eval(context, eval_, named: bool = True) -> dict:
+    """Run one test, write its result into the folder and return it. A
+    test that raises NotMeasured is refused as EvalError when it was named,
+    and gets the result not_measured gives when it runs as one of every
+    built-in test (named false)."""
     name, path, file_name = find(eval_)
     spec = importlib.util.spec_from_file_location(f"wpt_eval_test_{name}", path)
     module = importlib.util.module_from_spec(spec)
@@ -111,7 +124,12 @@ def run_eval(context, eval_) -> dict:
     file_sha256 = sha256_file(path)
     telemetry = context.telemetry
     with telemetry.span("eval", name=name, file=file_name, file_sha256=file_sha256):
-        result = module.run(context)
+        try:
+            result = module.run(context)
+        except NotMeasured as error:
+            if named:
+                raise EvalError(f"{context.folder}: {error}") from None
+            result = not_measured(error)
         if not isinstance(result, Result):
             raise EvalError(f"{path.name}: run(context) returned {type(result).__name__}, not wpt.eval.Result")
         record = {"name": name, "file": file_name, "file_sha256": file_sha256,
@@ -127,6 +145,12 @@ def run_eval(context, eval_) -> dict:
             (folder / f"{name}.json").write_text(text, encoding="utf-8", newline="\n")
             _write_documents(context.folder, telemetry)  # the model card shows it
     return record
+
+
+def not_measured(reason) -> Result:
+    """The result of a test that did not measure the model: {"measured":
+    false, "reason"} and the reason in words, no figure."""
+    return Result({"measured": False, "reason": str(reason)}, f"Not measured: {reason}.")
 
 
 def _write_documents(folder, telemetry):
@@ -218,7 +242,7 @@ def main(argv=None):
                 with telemetry.span("gpu_worker.model"), Remote(args.model, environ, telemetry.log, args.kernels) as model:
                     context.model, context.device = model, model.device
                     for eval_ in evals:
-                        record = run_eval(context, eval_)
+                        record = run_eval(context, eval_, named=bool(args.evals))
                         telemetry.log(f"\n{record['name']}\n{record['text'].rstrip()}")
             except (DockError, EvalError, LinkError, WorkerError) as error:
                 sys.exit(f"{type(error).__name__}: {error}")  # end.json records it
