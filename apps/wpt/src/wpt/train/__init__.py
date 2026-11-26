@@ -102,8 +102,12 @@ compiler), and uncompiled elsewhere, which the log says in one line;
 A step's batch is the number of examples per update over every process
 together, so the same order trains the same way on any hardware. Each
 process takes --micro-batch examples per pass (default: all of its share of
-each batch) and adds passes up until the batch is complete. Lower
---micro-batch when a GPU runs out of memory; the training does not change.
+each batch) and adds passes up until the batch is complete. Without
+--micro-batch, --recompute or --no-recompute, a stage of text windows whose
+share does not fit the GPU's memory takes fewer windows per pass, and one
+whose single window does not fit runs it in segments; the stage chooses
+both from a measure when it starts, and a stage no pass fits is refused
+(docs/training.md, "Recomputing layers"). The training does not change.
 
 Every option can also come from an environment variable, WPT_ plus the
 option name in capitals with '_' for '-' (--micro-batch ->
@@ -284,7 +288,9 @@ def parse_size(text):
 # option name, type, default, help
 OPTIONS = [
     ("out", str, "runs/default", "model folder to write"),
-    ("micro-batch", int, None, "examples per pass in one process (default: its whole share of each batch)"),
+    ("micro-batch", int, None, "examples per pass in one process (default: its whole share of each batch, or for "
+                               "a stage of text windows left to choose, see --recompute, the windows that fit "
+                               "the GPU's memory)"),
     ("checkpoint-every", int, 500, "write a checkpoint every N updates of a step (0: none during a step); each "
                                    "step's result is kept on the dock when it ends"),
     ("segment", int, 0, "run a window longer than this many tokens as consecutive segments (with --strategy split, "
@@ -356,9 +362,12 @@ def parse_args(argv=None, environ=None):
                         default=switch(parser, environ, "WPT_RECOMPUTE"),
                         help="keep only the input of each window layer's attention and of each experts sublayer, and "
                              "run it again for the backward pass: the same training with much less memory, slower. "
-                             "Unset, each stage of text windows keeps every activation where its pass fits the GPU's "
-                             "memory, measured by two short probe passes, and recomputes where it does not; "
-                             "--recompute recomputes in every stage, --no-recompute in none (WPT_RECOMPUTE=1 or 0)")
+                             "Unset, each stage of text windows chooses from short probe passes that measure the "
+                             "GPU's memory: every activation kept where its pass fits, else the layers recomputed, "
+                             "then fewer windows per pass (without --micro-batch), then one window in segments "
+                             "(without --segment), and the stage is refused when no pass fits; --recompute "
+                             "recomputes in every stage, --no-recompute in none, and neither measures "
+                             "(WPT_RECOMPUTE=1 or 0)")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction,
                         default=switch(parser, environ, "WPT_COMPILE"),
                         help="the passes over whole text windows run through torch.compile: the same training "

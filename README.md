@@ -127,7 +127,7 @@ the same command with `--resume` continues.
 | teach the model to chat | conversations in a new snapshot, its corpus made, and an order whose `steps` add `answer-as-assistant` after `read-text`: `wpt train ORDER CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
 | teach the model to finish tasks as an agent | tasks in a new snapshot, its corpus made, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and an order whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
 | teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the order's `steps`: it trains on the same tasks ([training](docs/training.md)) |
-| train long windows on a small GPU | nothing: each stage whose pass does not fit the GPU's memory runs its layers again in the backward pass instead of keeping their values; `--recompute` does it in every stage, `--no-recompute` in none |
+| train long windows on a small GPU | nothing: each stage whose pass does not fit the GPU's memory runs its layers again in the backward pass instead of keeping their values, then takes fewer windows per pass, then runs one window in segments; `--recompute` runs the layers again in every stage, `--no-recompute` in none, and with either the passes run as `--micro-batch` and `--segment` say |
 | train without `torch.compile` | `--no-compile`: the passes over whole text windows, compiled by default on a CUDA device (an NVIDIA or AMD GPU) with Triton and a C++ compiler, run uncompiled ([training](docs/training.md), "Compiling the passes") |
 | add texts, conversations and tasks, decide on them, tag them and make snapshots, in a browser | `depot web` (needs Bun and `git submodule update --init`), then http://127.0.0.1:8410/ (this machine only; another one reaches it through an SSH tunnel, Tailscale, or a proxy in front of it ([depot-web](docs/depot-web.md))); the same through the `depot` commands ([architecture](docs/architecture.md), "Two interfaces") |
 
@@ -162,6 +162,7 @@ settle alone are listed for legal review in
 - [Machines for training: the wpt manager, gpu workers, sandboxes](docs/machines.md)
 - [The public depot web app: its containers, limits and host](docs/depot-web.md)
 - [Evaluation](docs/evaluation.md)
+- [Trials: how a change is judged](docs/trials.md)
 - [Observability: the record of every run, and its live view](docs/observability.md)
 - [Chat format: conversations as JSON, turned into tokens by a template](docs/chat-format.md)
 - [Output notice and attribution](docs/output-notice.md)

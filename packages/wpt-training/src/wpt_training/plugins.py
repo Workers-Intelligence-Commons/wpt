@@ -398,7 +398,12 @@ class Environment:
     tokens: the tokens of its examples. learned: what of the corpus it
     read, for the model's NOTICE, by kind of texts: {"plain": the tokens of
     the plain texts' token files it read from their start}, {"conversation":
-    how many}, {"task": how many}."""
+    how many}, {"task": how many}. An environment whose stages have a
+    window length may define per_pass(index, examples): stage index (from
+    0) then takes that many examples per pass in each process, which the
+    runner chooses for a stage whose whole share does not fit the device's
+    memory (memory.py); without it, the runner leaves its passes as they
+    are."""
 
     stage_list: tuple = ()
     tokens: int = 0

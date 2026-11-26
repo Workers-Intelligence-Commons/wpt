@@ -13,6 +13,9 @@ defined in [README.md](README.md).
 - The validation loss of a language model of 80M to 300M parameters
   differs between seeds by about 0.01 nats (one standard deviation).
   **published, agreed**, two sources, **unchecked**
+- Two runs of one recipe of 45M parameters on 1.18B tokens, measured on
+  the same windows, differ by 0.001 nats, with an error of 0.001: less
+  than a tenth of the published spread. **measured here**, two runs
 - Changing only the initial weights, or only the order of the text, gives
   nearly the whole spread each. **published, one source**, **unchecked**
 - Tests that count right answers differ far more between seeds than the
@@ -29,9 +32,9 @@ defined in [README.md](README.md).
   order measured on different windows end 0.06 apart, which the windows
   alone can give. **measured here**, two runs
 - So one run of each model shows a gap in validation loss when it is
-  several times the spread between seeds, on the same windows: about 0.02
-  nats if the published spread holds at this size, which is not measured.
-  **hypothesis**
+  several times the spread between seeds, on the same windows: about 0.01
+  nats from the one pair of runs measured here, 0.02 if the published
+  spread holds. **hypothesis**
 - The rank of two models cannot be read early in training: predicting the
   final result needs most of the run. **published, one source**,
   **unchecked**; and **measured here**, one run each
@@ -114,12 +117,29 @@ measure to the next while the training loss falls smoothly.
 The copying figures are those of the `copying` test of `wpt eval`, the
 same 200 prompts for both runs.
 
+The two saved models were then measured on one set of 2,048 windows of
+2,048 tokens drawn once from the training tokens, 4.2M tokens:
+
+| | First seed | Second seed |
+| --- | --- | --- |
+| Loss on the common windows | 3.1022 | 3.1032 |
+| Error of each loss, from the spread between windows | 0.017 | 0.017 |
+| Difference, window by window | 0.0010 | |
+| Error of the difference | 0.0012 | |
+
+The loss of one window differs from another's by 0.75 (one standard
+deviation), so a loss on these windows is known to 0.017, while the
+difference between two models on the same windows is known to 0.001: the
+windows' own spread cancels. These windows are shorter than the last
+stage's, which is why the loss is higher than the run's own last measure.
+
 ## Open
 
-- **The spread at 40M to 200M parameters on 1B to 4B tokens.** No source
-  measures it there. The two runs above give it once their loss is
-  measured on one set of windows, large enough for its own error to be
-  under 0.01 nats.
+- **The spread at 40M to 200M parameters on 1B to 4B tokens.** One pair
+  of runs at 45M gives 0.001; a spread needs three runs at least, and
+  another size.
+- **Whether the spread on text the model never read is the same.** The
+  common windows above come from the training tokens, read once.
 - **The spread of a test of copying from the context.** The same repeats
   give it, on the `copying` test of `wpt eval`.
 - **Whether an average of the last weights shrinks the spread.** The same

@@ -8,7 +8,7 @@ import shutil
 import signal
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
@@ -16,7 +16,7 @@ import torch
 from wpt_telemetry import RecordError, Telemetry
 from wic_utils.lines import WARNING, say
 
-from .plugins import PluginError, Run
+from .plugins import PluginError, Run, TextMethod
 from .profiling import profiled
 from .states import load_state, save_state
 
@@ -105,10 +105,12 @@ class Options:
     (with a model that recomputes its layers, model.recompute, a stage of
     windows shorter than this many tokens keeps every activation instead;
     0 every stage recomputes), automatic (each stage of text windows
-    keeps every activation when its pass fits the device's memory and
-    recomputes its layers when it does not, whatever model.recompute says:
-    memory.py), micro_batch (the examples per pass in one process, 0 its
-    whole share: what automatic's pass holds)."""
+    chooses from a measure of the device's memory, whatever model.recompute
+    says: every activation kept or the layers recomputed and, where
+    micro_batch or segment is 0, the windows of a pass or the length of
+    its segments; memory.py), micro_batch (the examples per pass in one
+    process, 0 its whole share, or with automatic what each stage
+    chooses)."""
     checkpoint_every: int = 0
     segment: int = 0
     profile_update: int = 0
@@ -283,39 +285,69 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
             model.recompute = recomputes
 
 
-def _pass_tokens(stage, options, strategy) -> tuple[int, int]:
-    """(the tokens of one pass of a stage of text windows in this process,
-    the length of each of its windows): its examples per pass, each its
-    slice of a window (split windows) or a segment of it, whichever is
-    shorter."""
-    split = strategy.splits_windows
-    window = stage.block_size // strategy.world_size if split else stage.block_size
-    length = min(window, options.segment) if options.segment else window
-    share = stage.batch_size if split else -(-stage.batch_size // strategy.world_size)
-    return min(options.micro_batch or share, share) * length, length
+def _part(model, method, stage, strategy) -> int:
+    """The tokens a segment of a stage's windows holds a multiple of; 0
+    when its windows cannot run in segments."""
+    from . import parts
+
+    part = getattr(model, "PART", 1)
+    if not isinstance(method, TextMethod):
+        return 0
+    try:
+        parts.check(model, method, (stage,), part, strategy)
+    except (ValueError, PluginError):
+        return 0
+    return part
 
 
-def _automatic(model, optimizer, stage, index, options, strategy, record) -> tuple[bool, str]:
-    """Whether a stage recomputes its layers, left to the runner
-    (Options.automatic), and the log's words for it: from a measure of the
-    device's memory (memory.py), one choice for every process."""
+def _automatic(model, method, environment, optimizer, stage, index, options, strategy,
+               record) -> tuple[bool, int, int, str]:
+    """How a stage runs its passes, left to the runner (Options.automatic):
+    (whether it recomputes its layers, the windows per pass the rule chose
+    in place of the process's whole share, else 0, the segment's length,
+    the options' or the rule's, 0 for whole windows, the log's words). From
+    a measure of the device's memory (memory.py), one choice for every
+    process: each part of it as the process with the least memory left
+    chose it. ValueError when no pass is foreseen to fit."""
     from . import memory
 
     found = memory.reader(strategy.device)
     if stage.block_size is None:
-        return False, "every activation kept: its examples have no fixed length to measure the memory of"
+        return (False, 0, options.segment,
+                "every activation kept: its examples have no fixed length to measure the memory of")
     if found is None or not hasattr(model, "carried"):
-        return False, f"every activation kept: nothing measures the memory of {strategy.device.type}"
-    choice = memory.measure(model, optimizer.optimizer, *_pass_tokens(stage, options, strategy), found)
-    recompute = choice.recompute
+        return (False, 0, options.segment,
+                f"every activation kept: nothing measures the memory of {strategy.device.type}")
+    split = strategy.splits_windows
+    length = stage.block_size // strategy.world_size if split else stage.block_size
+    share = stage.batch_size if split else -(-stage.batch_size // strategy.world_size)
+    # an environment that cannot take another number of windows per pass keeps its own
+    windows = options.micro_batch or (0 if hasattr(environment, "per_pass") else share)
+    own = memory.measure(model, optimizer.optimizer, share, length, found, windows, options.segment,
+                         _part(model, method, stage, strategy))
+    choice = own
     if strategy.world_size > 1:  # every process runs the same way
-        recompute = bool(strategy.reduce(torch.tensor([float(recompute)], device=strategy.device), "max").item())
-    record.event("training.memory", values={"foreseen": choice.foreseen, "usable": choice.usable,
-                                            "allocated": choice.allocated, "state": choice.state,
-                                            "fixed": choice.fixed, "per_token": choice.per_token},
-                 stage=index + 1, tokens=choice.tokens, recompute=recompute)
-    return recompute, choice.text() + ("" if recompute == choice.recompute
-                                       else "; another process recomputes, so this one does too")
+        flags = torch.tensor([float(own.recompute), -float(own.windows), -float(own.segment or length),
+                              float(not own.fits)], device=strategy.device)
+        recompute, fewest, shortest, refused = strategy.reduce(flags, "max").tolist()
+        choice = replace(own, recompute=bool(recompute), windows=round(-fewest),
+                         segment=round(-shortest) % length, fits=not refused)
+    record.event("training.memory",
+                 values={"foreseen": choice.foreseen, "usable": choice.usable, "allocated": choice.allocated,
+                         "state": choice.state, "fixed": choice.fixed, "per_token": choice.per_token,
+                         "recomputed_fixed": choice.recomputed_fixed,
+                         "recomputed_per_token": choice.recomputed_per_token,
+                         "foreseen_recomputed": choice.peak(True, choice.tokens),
+                         "foreseen_pass": choice.peak(choice.recompute, choice.pass_tokens)},
+                 stage=index + 1, tokens=choice.tokens, recompute=choice.recompute, windows=choice.windows,
+                 segment=options.segment or choice.segment, pass_tokens=choice.pass_tokens, fits=choice.fits)
+    text = choice.text() + ("" if choice == own else "; another process has less memory left, and every process "
+                                                     "runs the same way")
+    if not choice.fits:
+        raise ValueError(f"stage {index + 1}: {text}; nothing was started (--recompute runs the stage as the "
+                         "options say, without this measure)")
+    return (choice.recompute, choice.windows if choice.windows < min(windows or share, share) else 0,
+            options.segment or choice.segment, text)
 
 
 def weights(state: dict) -> dict:
@@ -355,7 +387,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
 
     def evaluate(update):
         model.eval()
-        value = environment.evaluate(update, method, model, wrapped, strategy, options.segment)
+        value = environment.evaluate(update, method, model, wrapped, strategy, segment)
         model.train()
         return value
 
@@ -378,7 +410,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             def quiet(final, a=a):  # the update's gradients are shared at its very last backward pass
                 return (contextlib.nullcontext() if final and a == len(passes) - 1
                         else strategy.no_sync(wrapped))
-            losses.append(method.learn(model, wrapped, examples, len(passes), strategy, options.segment, quiet))
+            losses.append(method.learn(model, wrapped, examples, len(passes), strategy, segment, quiet))
         strategy.synchronize(model)
         optimizer.before_update(update)
         optimizer.optimizer.step()
@@ -421,6 +453,7 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
         strategy.barrier()
 
     keeps = checkpoint is not None and options.checkpoint_every > 0
+    segment = options.segment  # of the stage running: the options', or what the stage chose (Options.automatic)
     model.train()
     t0 = time.time()
     last, update = first_step - 1, first_step
@@ -434,9 +467,10 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
                     and stage.block_size < options.recompute_from)
             if recomputes:
                 model.recompute = not kept
-            chosen = None
+            chosen, windows, segment = None, 0, options.segment
             if options.automatic:
-                model.recompute, chosen = _automatic(model, optimizer, stage, index, options, strategy, record)
+                model.recompute, windows, segment, chosen = _automatic(model, method, environment, optimizer, stage,
+                                                                       index, options, strategy, record)
             log(f"{step.name}: "
                 + (f"stage {index + 1} of {len(stages)}: windows of {stage.block_size:,} tokens, "
                    if stage.block_size is not None else "")
@@ -446,6 +480,8 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
             if chosen:
                 log(f"{step.name}: stage {index + 1}: {chosen}")
             environment.stage(index)
+            if windows:
+                environment.per_pass(index, windows)
             with record.span("training.stage", stage=index + 1, block_size=stage.block_size,
                              batch_size=stage.batch_size, first_step=begin,
                              last_step=end, resumed_at=update):

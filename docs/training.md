@@ -499,9 +499,12 @@ share of the batch) and adds the passes up until the batch is complete.
 Which windows an update uses depends only on the order's `seed`, the
 step's number in the order and the update, never on the number of
 processes: one GPU with two passes and two
-GPUs with one pass each make the same updates. When a GPU runs out of
-memory, lower `--micro-batch`, then add `--recompute`; the training stays
-the same. Every stage's batch must split evenly: its `batch_size` a
+GPUs with one pass each make the same updates. Without `--micro-batch`
+and without `--recompute` or `--no-recompute`, a stage of text windows
+whose share does not fit the GPU's memory in one pass takes fewer windows
+per pass, a number the stage chooses when it starts ("Recomputing layers",
+below); the training stays the same within rounding. Every stage's batch
+must split evenly: its `batch_size` a
 multiple of `--micro-batch` times the number of processes (with
 `--strategy split`, every process takes every window, so a multiple of
 `--micro-batch`).
@@ -576,30 +579,62 @@ and 10.1 GiB recomputing, and 11.5 to 13.3 GiB against 5.6 GiB at width
 grows with the tokens of a pass, not with its windows' length.
 Recomputing cost 6 to 10 % of the tokens per second.
 
-Unasked, each stage of text windows chooses when it starts (or resumes):
-it keeps every activation when its pass fits the GPU's memory, and
-recomputes when it does not (`wpt_training/memory.py`). The choice never
+Unasked, each stage of text windows chooses how its passes run when it
+starts (or resumes), from a measure of the GPU's memory
+(`wpt_training/memory.py`). It takes the first of these that is foreseen
+to fit:
+
+1. the whole pass, every activation kept: the process's share of the
+   batch, or `--micro-batch` windows;
+2. the whole pass, the layers recomputed;
+3. fewer windows per pass, the layers recomputed: the largest number that
+   divides the process's share of the batch and fits. The process adds
+   the passes up until the batch is complete, as with `--micro-batch`
+   ("The batch is the same on any hardware", above);
+4. one window per pass in segments, the layers recomputed: the longest
+   segment that fits, a multiple of 128 tokens shorter than the window
+   ("Long windows", below).
+
+When no pass fits, the stage is refused before it starts: the run stops
+with exit code 2 and a message that gives the numbers. `--micro-batch`
+and `--segment` are kept as given: the stage chooses only what they leave
+open, so with `--micro-batch` it never takes fewer windows, and with
+`--segment` it chooses no other segment. A stage may choose another way
+than the one before it, and a resumed run chooses again.
+
+The choice never
 tries the pass and catches an out-of-memory error, since on Windows the
 NVIDIA driver raises none: it spills into the machine's memory, which
-stops answering. Two probe passes, forward and backward without
-recomputing, over one window of 2,048 tokens and one of 1,024 (no longer
-than the stage's windows), give the memory per token and the part that
-does not grow with the tokens; the stage's pass (its examples per pass, of
-a slice or a segment where the windows run in parts) is extrapolated from
-them, with 5 % more per token: the memory of a pass follows its tokens,
-whether they come as more windows or longer ones. The optimizer's state is added while
+stops answering. Four probe passes, forward and backward, over one window
+of 2,048 tokens and one of 1,024 (no longer than the stage's windows or
+`--segment`), each without recomputing and with it, give for each way the
+memory per token and the part that does not grow with the tokens; a pass
+(its windows, each whole, a slice or a segment where the windows run in
+parts) is extrapolated from them, with 5 % more per token: the memory of a
+pass follows its tokens, whether they come as more windows or longer ones.
+The optimizer's state is added while
 it does not exist yet, at two FP32 numbers per trained weight, and the sum
 must fit what the GPU has left, free or held by PyTorch, less a tenth of
-its memory. The probes change no weight, gradient, optimizer state,
+its memory. A pass of a segment is foreseen as a pass of the segment's
+tokens: what the segments hand on, which grows with the window ("Long
+windows", below), is not counted. Not measured: how far the extrapolation
+with recomputation stands from the real peak of a long pass. The probes
+change no weight, gradient, optimizer state,
 balancing count or random stream, and run uncompiled. The log gives the
 choice and its numbers for each stage, and the event `training.memory`
-records them. With several processes, each measures its own GPU, and all
-recompute when one must. A stage of conversations or tasks, whose
+records them: the foreseen peaks of the whole pass each way and of the
+chosen pass, the measures, whether it recomputes, its windows per pass,
+its segment and the tokens of its pass. With several processes, each
+measures its own GPU, and all run the same way: each part of the choice
+is the one of the process with the least memory left. A stage of
+conversations or tasks, whose
 examples have no fixed length, keeps every activation, and so does every
 stage off a CUDA device, where nothing measures the memory.
 
 `--recompute` (or `WPT_RECOMPUTE=1`) recomputes in every stage, and
-`--no-recompute` (or `WPT_RECOMPUTE=0`) in none.
+`--no-recompute` (or `WPT_RECOMPUTE=0`) in none; with either, no stage
+measures the memory, and the passes run as `--micro-batch` and
+`--segment` say.
 
 `--recompute-from N` (or `WPT_RECOMPUTE_FROM`), with `--recompute`, runs
 the layers again only in the stages whose windows hold at least `N`
@@ -668,7 +703,9 @@ The weights keep their names, so a checkpoint resumes compiled or not.
 
 A window too long for one GPU's memory, even with `--recompute`, runs in
 parts, which give exactly the loss and gradients of the whole window at
-once (model.md, "Long windows"):
+once (model.md, "Long windows"). Unasked, a stage whose single window is
+foreseen not to fit chooses its own segments ("Recomputing layers",
+above); the options are:
 
 - `--segment N` (or `WPT_SEGMENT`), on one GPU: a window longer than `N`
   tokens runs as consecutive segments of `N` (the last may be shorter). A
