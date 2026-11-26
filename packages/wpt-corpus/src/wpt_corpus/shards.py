@@ -1,5 +1,6 @@
 """The token shard format WPT's corpus is written in (the program wpt-tokens
-and the depot's corpus build write it) and training reads.
+writes it, as the depot's build wrote the corpora under corpora/) and
+training reads.
 
 A shard is a Parquet file with one row per document pass:
 

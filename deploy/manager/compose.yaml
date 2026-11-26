@@ -13,18 +13,18 @@
 #
 # Settings, from the environment or the .env file given:
 #
-#     WPT_ORDER            the model order; required
+#     WPT_ORDER             the model order; required
 #     WPT_CORPUS            the corpus the run trains on (its id, or a start of it); unset, the
 #                           corpus last built for the order's depot and dataset; nothing is built
 #     WPT_RUN               the run's name; unset, the manager makes one and writes it, with the
 #                           lines to copy, into wpt-run.txt at the repository's root
 #     WPT_EVALUATE          1: evaluate the model at the end; off by default
-#     DOCK             the dock; unset, a folder on the volume dock (file:///store).
+#     DOCK                  the dock; unset, a folder on the volume wpt-store (file:///store).
 #                           A file:// dock must name a folder on a volume or a mounted folder:
 #                           the manager refuses one in this container's own files, which go
 #                           with the container
-#     DOCK_FOLDER      a folder of this machine to mount at that same path in the container
-#                           instead of the volume dock (set DOCK to file:// and the same path)
+#     DOCK_FOLDER           a folder of this machine to mount at that same path in the container
+#                           instead of the volume wpt-store (set DOCK to file:// and the same path)
 #     WPT_GPU_WORKERS       the run's gpu workers, one per machine: their keys
 #                           (deploy/gpu-worker/compose.yaml prints one), or how many to rent;
 #                           unset, a local one in this container
@@ -116,12 +116,12 @@ services:
       DOCKER_HOST:
     volumes:
       - ../..:/repo
-      - ${DOCK_FOLDER:-dock}:${DOCK_FOLDER:-/store}
+      - ${DOCK_FOLDER:-wpt-store}:${DOCK_FOLDER:-/store}
       - wpt-manager:/manager
       - /var/run/docker.sock:/var/run/docker.sock  # the sandboxes, on this machine's Docker
     restart: on-failure
     stop_grace_period: 20m  # WPT_STOP_DEADLINE's default, 10 minutes, and 10 to give the machines back
 
 volumes:
-  dock:
+  wpt-store:
   wpt-manager:

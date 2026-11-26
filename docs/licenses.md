@@ -312,7 +312,7 @@ table checked again.
 | python (Docker's official image, Debian trixie slim) | 3.14 | PSF-2.0 for Python; each Debian package its own license | the app's base image |
 | oven/bun (Bun's official image, its `bun` command) | 1.4.4 | MIT for Bun; it links JavaScriptCore and parts of WebKit under LGPL-2.0, and other libraries under their own licenses (its `LICENSE.md`) | builds the interface |
 | uv | 0.13.5 | MIT OR Apache-2.0 | installs the libraries |
-| rustup, build-essential (Debian packages) | trixie | rustup MIT OR Apache-2.0; build-essential's compilers GPL-3.0-or-later | build the tokenizer |
+| build-essential (Debian package) | trixie | its compilers GPL-3.0-or-later | builds a library that has no wheel for the image |
 | nginx (Docker's official image, Debian trixie) | 1.30.6 | BSD-2-Clause for nginx; each Debian package its own license | the reverse proxy |
 | certbot/certbot (Certbot's official image, Alpine Linux) | 5.10.0 | Apache-2.0 for Certbot; each Alpine package its own license | gets and renews the Let's Encrypt certificate |
 

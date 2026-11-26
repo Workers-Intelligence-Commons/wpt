@@ -26,6 +26,7 @@ from wpt.train import InputError, DockCheckpoint, check_record, main
 from wpt_training import load_state
 from wic_utils.lines import bare
 from freight import corpora
+from wpt_corpus import corpora as readers
 from wpt_corpus.shards import shard_file
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -56,7 +57,7 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
 
     model = load_model(tmp_path / "model")
     assert model.config.n_layer == 5 and model.config.block_size == 16  # the order's numbers
-    record = corpora.find(store, corpus_id)
+    record = readers.find(store, corpus_id)
     # the weights name the corpus's vocabulary, and only that file loads with them
     assert tokenizer_identity(tmp_path / "model") == ("t version 1", record["tokenizer"]["vocabulary"]["sha256"])
     tokenizer = Tokenizer.from_bytes(load_tokenizer(tmp_path / "model"))
@@ -538,13 +539,13 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
     credits = (folder / "CREDITS").read_text()
     learned = credits.split("\n\n", 1)[0].splitlines()
     texts = {(one["depot"], one["id"]): one
-             for one in corpora.read_table(built.store, corpora.find(built.store, built.corpus_id), "texts").to_pylist()}
+             for one in readers.rows(built.store, readers.find(built.store, built.corpus_id), "texts")}
     assert len(learned) == len(texts) == 16  # the step read every token of the plain texts
     assert all(line.startswith(f"{built.depot.name()} ") and "; MIT; notice " in line for line in learned)
     assert f"\n{built.notice}\n" in credits and "MIT (MIT License)\nCopyright (c) 2026 Ada Writer" in credits
     notice = (folder / "NOTICE").read_text()
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
-    snapshot = corpora.find(built.store, built.corpus_id)["snapshot"]
+    snapshot = readers.find(built.store, built.corpus_id)["snapshot"]
     trained_on = (f"Trained on snapshot {built.names['d']} (change {snapshot['change']}, digest {snapshot['digest']}) of the depot "
                   f"{built.depot.name()}, order d, code at commit ")
     assert trained_on in notice and f"corpus {built.corpus_id}:" in notice
@@ -562,7 +563,7 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
 
 def test_a_damaged_shard_stops_training_before_it_starts(built, tmp_path, capsys):
     store, corpus_id = built.store, built.corpus_id
-    record = corpora.find(store, corpus_id)
+    record = readers.find(store, corpus_id)
     path = store.path(shard_file(record["shards"]["plain"][0]))  # the shard's own bytes, whether the dock keeps it compressed or not
     path.write_bytes(path.read_bytes()[:-10] + b"0123456789")
     with pytest.raises(SystemExit) as refused:
@@ -916,7 +917,7 @@ def test_a_order_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the
     data = load_data(built.order("old-layout", training=one_stage(3)))
     record = built.sized("d", data["total_tokens"])
     built.store.put_json(f"{corpora.folder_of(record)}/{corpora.RECORD}",
-                         {**record, "shards": corpora.token_files(record)})
+                         {**record, "shards": [one for kept in record["shards"].values() for one in kept]})
 
     with pytest.raises(InputError, match=r"does not list its token files by kind.*wpt build-resources"):
         find_corpus(built.store, None, data)
@@ -925,7 +926,7 @@ def test_a_order_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the
 def test_a_order_written_before_snapshots_trains_on_its_dataset_s_corpus_and_its_folder_says_so(built, tmp_path):
     # an order of a dataset (the legacy shape) still trains on a corpus built from that dataset, given by its id,
     # and the model folder names that corpus, its dataset and its depot as such folders always did
-    record = corpora.find(built.store, built.corpus_id)
+    record = readers.find(built.store, built.corpus_id)
     legacy = {key: value for key, value in record.items() if key not in ("build_key", "snapshot", "data")}
     legacy.update(id="1e9acy" + record["id"][6:], dataset={"id": "fox-1", "name": "classics", "revision": 1})
     built.store.put_json(f"{corpora.FOLDER}/classics-1e9acy00/{corpora.RECORD}", legacy)  # its files stay where they are
@@ -957,7 +958,7 @@ def test_a_order_naming_its_depot_by_a_web_address_finds_its_corpus_without_read
     monkeypatch.setattr(order_depot.WebDepot, "_json", unreachable)
     monkeypatch.delenv("DEPOT")
     address = "https://depot.example.org"
-    size = corpora.find(built.store, built.corpus_id)["total_tokens"]
+    size = readers.find(built.store, built.corpus_id)["total_tokens"]
     data = {**built.data("d", size), "depot": address}
     public = built.sized("d", size, url=address)
 
@@ -1137,8 +1138,8 @@ def refusal(capsys, argv) -> str:
 
 def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, capsys):
     # an admitted erasure reached a text the corpus holds (docs/erasure.md): training on it would learn the erased passage
-    record = corpora.find(built.store, built.corpus_id)
-    text = corpora.read_table(built.store, record, "texts").to_pylist()[0]["id"]
+    record = readers.find(built.store, built.corpus_id)
+    text = readers.rows(built.store, record, "texts")[0]["id"]
     corpora.mark_stale(built.store, [text], [f"{built.depot.name()}-1"])
 
     said = refusal(capsys, [built.order("stale"), built.corpus_id, "--out", "model"])
@@ -1159,7 +1160,7 @@ def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the
 
 
 def test_a_corpus_with_fewer_tokens_than_the_order_s_total_is_refused(built, tmp_path, capsys):
-    record = corpora.find(built.store, built.corpus_id)
+    record = readers.find(built.store, built.corpus_id)
     order = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())
     order["data"]["total_tokens"] = record["total_tokens"] + 1
     (tmp_path / "data" / "orders" / "models" / "long.json").write_text(json.dumps(order))
@@ -1170,7 +1171,7 @@ def test_a_corpus_with_fewer_tokens_than_the_order_s_total_is_refused(built, tmp
 def test_a_corpus_built_at_the_order_s_size_trains_on_what_it_holds_and_the_record_says_how_much(built, tmp_path):
     # total_tokens is the size the order asks for and a ceiling: a corpus built at that size never passes it, so
     # it may hold fewer tokens of plain text, and training reads them all, found by its triple or given by its id
-    whole = corpora.find(built.store, built.corpus_id)["total_tokens"]
+    whole = readers.find(built.store, built.corpus_id)["total_tokens"]
     asked = whole + 500  # more than the dataset holds: the corpus built at that size holds every token, fewer
     folder = tmp_path / "data" / "orders" / "models"
     order = json.loads((folder / "d.json").read_text())
@@ -1219,7 +1220,7 @@ def test_a_plain_order_trains_on_the_first_total_tokens_of_its_corpus(built, tmp
     main(["short", built.corpus_id, "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["learned"]["plain"] == 3000 < corpora.find(built.store, built.corpus_id)["total_tokens"]
+    assert provenance["learned"]["plain"] == 3000 < readers.find(built.store, built.corpus_id)["total_tokens"]
 
 
 def test_recompute_from_narrows_recompute_and_is_refused_alone(capsys):

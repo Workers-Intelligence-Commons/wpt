@@ -1,6 +1,6 @@
 """`wpt list`, `runs` and `run`: what the dock holds, and its runs."""
 
-from freight import corpora
+from wpt_corpus import corpora
 from wpt.models import keep_model, put_model
 from wpt_telemetry import Telemetry
 

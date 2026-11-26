@@ -85,7 +85,7 @@ from wpt_training.launch import REFUSED, STOPPED, launch
 from wpt_utils.device import describe, train_in_tf32
 from wic_utils.lines import ERROR, WARNING, say
 
-from .job import LinkStore, call, download, remote, upload
+from .job import LinkDock, call, download, remote, upload
 from .link import RemoteError, addresses, is_private
 from .peers import HUB, MACHINE, MACHINES
 from .writing import Writing
@@ -119,7 +119,7 @@ def tools() -> dict:
 def run(spec, link, work: Path) -> int:
     options = spec["options"]
     machines = spec.get("machines") or ONE_MACHINE
-    store = LinkStore(link, work)
+    store = LinkDock(link, work)
     environ = {**spec["join"], **os.environ}  # a process the job's launcher started joins under its span
     try:
         several = machines["count"] > 1

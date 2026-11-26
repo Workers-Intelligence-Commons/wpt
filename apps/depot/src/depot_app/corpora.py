@@ -2,19 +2,16 @@
 commands read them: the frozen dataset routes list and send those built
 from a dataset (depot_app.web.legacy), an upgrade from a format before
 snapshots reads their records (depot.upgrade), and an erasure carried out
-marks stale those that hold a text it reached. The freight keeps the same
-reading of them for WPT (freight.corpora); the depot reaches the dock
-through dock.api alone (docs/architecture.md, "The parts").
+marks stale those that hold a text it reached. The depot reaches the
+dock through dock.api alone (docs/architecture.md, "The parts").
 
     records(store)                       every corpus the dock holds, newest first
     built_from(store, depot, dataset)    every corpus built for that depot's dataset (by id), latest first
     folder_of, fresh, by_kind, token_files, files, triple
                                          what a record says: its folder, fresh, its files, what it was built for
-    read_table(store, record, table)     one of a corpus's tables
     mark_stale(store, texts, erasures)   mark every corpus that holds one of these texts stale
 """
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 from dock.api import as_record_name
 
@@ -46,7 +43,8 @@ def token_files(record: dict) -> list[dict]:
 
 
 def files(record: dict) -> list[dict]:
-    """Every file of a corpus but its record, as the record names each ({key, sha256} and maybe bytes)."""
+    """Every file of a corpus but its record, as the record names each ({key, sha256} and maybe bytes), in the
+    order the frozen dataset routes list them."""
     tables = record.get("tables", {})
     found = [*token_files(record), *record.get("conversation_shards", [])]
     for table in tables.values():
@@ -94,16 +92,6 @@ def built_from(store, depot: str, dataset: str, vocabulary: str | None = None, s
              and (vocabulary is None or triple(record)[1] == vocabulary)
              and (size is ANY or triple(record)[2] == size)]
     return sorted(found, key=lambda record: (record["dataset"].get("revision", 0), record["built_at"]), reverse=True)
-
-
-def read_table(store, record: dict, table: str) -> pa.Table:
-    """One of a corpus's tables (texts, licenses, notices), each
-    file checked by the dock: the texts table is the concatenation of its
-    parts, in order."""
-    found = record["tables"][table]
-    if isinstance(found, list):
-        return pa.concat_tables([pq.read_table(store.path(one)) for one in found]) if found else pa.table({})
-    return pq.read_table(store.path(found))
 
 
 def mark_stale(store, texts, erasures) -> list[str]:

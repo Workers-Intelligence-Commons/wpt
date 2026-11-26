@@ -8,7 +8,7 @@ import json
 import pytest
 
 from depot import NewText
-from freight import corpora
+from wpt_corpus import corpora
 from wpt.manager import RUN_FILE, main, mount_point, task_images
 from wpt.docked import main as store_command
 from wpt_telemetry import file_hashes

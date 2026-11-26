@@ -127,8 +127,9 @@ first; `items(key, dock=)` the rows of its items tables, in order.
 
 `check(home=, depot=, dock=)` marks what the erasures carried out since
 the last check did ([Erasures](#erasures)): `{mark, erasures, stale,
-noted}`, the depot's mark now, the erasures' ids, and the keys of the
-deliveries marked stale and of those whose note took an erasure in.
+noted, corpora}`, the depot's mark now, the erasures' ids, the keys of the
+deliveries marked stale and of those whose note took an erasure in, and
+the ids of the corpora under `corpora/` marked stale.
 
 `adopt(key, files, result, about, on_erasure=, items=, dock=)` puts files
 made elsewhere on the dock as the delivery of `key`, which starts with
@@ -144,6 +145,10 @@ parts. A fresh delivery of that key stays as it is. WPT adopts the
 vocabularies of the depot's tokenizer recipes so (`wpt
 adopt-vocabularies`, [tokenizer.md](../tokenizer.md), "A vocabulary in an
 order").
+
+`settings_home(home)` and `settings_dock(dock)` give the freight's home
+and the dock's URL, each the one given, else `FREIGHT_HOME` or `DOCK` from
+the settings.
 
 The module names what its calls refuse: `Refused`, `Busy`, and
 `SettingMissing` for a setting named nowhere.
@@ -221,7 +226,7 @@ no longer names are deleted.
 
 ## Erasures
 
-The depot marks nothing on the dock. The freight asks the depot
+The depot marks no delivery. The freight asks the depot
 (`depot.api.erasures`) which erasures it carried out since the mark it
 saw last there, which the queue's file keeps, and writes what each did into
 the note of every delivery whose items hold a text it reached
@@ -235,3 +240,12 @@ or a request that names it is refused until the same request makes it
 again; `note` adds the erasure to its `erasures_since` and leaves it fresh,
 for what models keep using after an erasure, such as a vocabulary
 ([tokenizer.md](../tokenizer.md)).
+
+The corpora the depot built before the freight stay under `corpora/` of
+the dock, each with its record `corpus.json` (`freight.corpora`). The
+freight marks stale, at the same moments, every one whose texts table
+holds a text an erasure reached; WPT reads them itself, through the dock
+(`wpt_corpus.corpora`), and `freight.api` offers no call on them. The
+depot's web app marks the same corpora when it carries out an erasure, so
+its frozen dataset routes never send one an erasure reached
+([depot-web.md](../depot-web.md), "Models trained before snapshots").

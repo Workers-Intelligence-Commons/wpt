@@ -8,7 +8,7 @@ import torch
 from wpt.train import DockCheckpoint
 from wpt.train.remote import named_files
 from depot import NewText
-from freight import corpora
+from wpt_corpus import corpora
 from dock import open_dock
 from wpt_corpus.shards import documents, read_verified
 from wpt_telemetry import Telemetry

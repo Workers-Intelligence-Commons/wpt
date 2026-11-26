@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from freight import corpora
+from wpt_corpus import corpora
 from wpt_orders import Orders
 from wpt_training import WINDOWS
 from wpt_worker.training import drafter_shards

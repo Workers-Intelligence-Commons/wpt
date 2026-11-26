@@ -10,9 +10,8 @@ counting with a tag or a kind, a decision over 1,000 texts, a change of
 one text's content, relicensing 1,000 texts, a bulk tag change through the
 credits write (its time, and the rows and bytes it writes per text), a scan
 of the index texts_status for the admitted texts, the number of distinct
-tag sets of plain texts, the export-key sort of every admitted id, and a
-snapshot's corpus build in tokens per second (bench/build.py). It prints a Markdown
-report, and writes it to --out when given.
+tag sets of plain texts, and the export-key sort of every admitted id. It
+prints a Markdown report, and writes it to --out when given.
 
 Cold figures need a root on a disk: on a tmpfs the files are memory and
 cannot leave the cache (the report says so). A root inside a checkout gets
@@ -207,15 +206,6 @@ def measure(bench: Bench, layout: common.Layout, root: Path):
     bench.figure("argsort of those keys", f"{sort_s * 1000:,.0f}", "ms",
                  f"22M projected: {sort_s * PROJECTED / len(admitted_ids):,.1f} s")
 
-    build(bench, layout, root)
-
-
-def build(bench: Bench, layout: common.Layout, root: Path):
-    """A snapshot of the depot's admitted texts, its corpus built at build.TOKENS tokens warm `runs` times into new
-    stores: tokens per second (median, build.snapshot_build)."""
-    import build as builds
-    snapshot = bench.depot.create_snapshot()
-    builds.snapshot_build(bench, root, snapshot, builds.tokenizer_of(bench.depot))
 
 
 def main():

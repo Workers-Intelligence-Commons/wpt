@@ -14,10 +14,10 @@ depot through every route, with no login ([architecture.md](architecture.md),
   (`deploy/depot-web/Dockerfile`) holds the repository's code, its Python
   libraries and the browser interface, built when the image is built, so
   the container never builds anything. `DEPOT` names
-  `depot.sqlite` in the host folder `DEPOT_FOLDER`, mounted whole,
+  `wpt-depot.sqlite` in the host folder `DEPOT_FOLDER`, mounted whole,
   since SQLite writes its `-wal` and `-shm` files, the depot its
-  `.waiting` folder, the queue its `depot.sqlite.jobs` file and the
-  jobs their `depot.sqlite.work` folder beside the file, and the dock
+  `.waiting` folder, the queue its `wpt-depot.sqlite.jobs` file and the
+  jobs their `wpt-depot.sqlite.work` folder beside the file, and the dock
   its local copies in `cache/` there. `DEPOT_URL` is
   `https://depot.workers-intelligence-commons.org`, the address an order
   names the depot by. The app runs as `DEPOT_USER`, which must be able
@@ -81,11 +81,11 @@ the heavy lane makes the snapshots, one at a time; the read lane
 orders a snapshot by the length of its texts, once for good, the first
 time its strip or its size map opens (`POST /api/snapshots/{id}/strip`
 queues it and answers its state), and keeps that order in
-`depot.sqlite.work/sizes/`, about 14 bytes a text of the snapshot. A
+`wpt-depot.sqlite.work/sizes/`, about 14 bytes a text of the snapshot. A
 snapshot holds the depot's write lock for one short transaction at most,
 so a decision over many texts never waits behind it, and a small write runs
 in the request while no write job is open. The queue lives in
-`depot.sqlite.jobs`, which nothing backs up, so a job survives a
+`wpt-depot.sqlite.jobs`, which nothing backs up, so a job survives a
 restart of the app: a queued job stays queued, and a job the restart cut
 short runs again, a snapshot read again from the start, so it reads the
 change current when it finishes. Anyone may start a job. At most one
@@ -156,11 +156,11 @@ each visitor; past that the app answers 429.
 
 ## Cloudflare's address ranges
 
-`deploy/depot-web/depot-cloudflare.py` runs on the host, as root,
-from the systemd timer `depot-cloudflare.timer` every week. It reads
+`deploy/depot-web/wpt-depot-cloudflare.py` runs on the host, as root,
+from the systemd timer `wpt-depot-cloudflare.timer` every week. It reads
 Cloudflare's IPv4 and IPv6 ranges, then:
 
-- writes `/etc/depot-web/cloudflare-real-ip.conf`, the list of
+- writes `/etc/wpt-depot-web/cloudflare-real-ip.conf`, the list of
   addresses nginx takes the visitor's address from; the nginx container
   mounts the folder read-only and does not start without the file;
 - adds a ufw rule that allows ports 80 and 443 from each range, then
@@ -183,7 +183,7 @@ Cloudflare proxies the domain's DNS record, with the SSL/TLS mode "Full
 Let's Encrypt's challenges must reach port 80 over plain HTTP.
 
 1. Clone the repository with its submodule (`git clone --recurse-submodules`).
-2. Put the depot's file, `depot.sqlite`, in its own folder, writable by
+2. Put the depot's file, `wpt-depot.sqlite`, in its own folder, writable by
    `DEPOT_USER`.
 3. Write the settings below into `deploy/depot-web/.env` (git-ignored). The
    repository's `.env` stays out of it: the app needs a key to the corpora
@@ -191,11 +191,11 @@ Let's Encrypt's challenges must reach port 80 over plain HTTP.
 4. Install the script and its timer, then run it once:
 
    ```sh
-   sudo install -m 755 deploy/depot-web/depot-cloudflare.py /usr/local/sbin/depot-cloudflare
-   sudo install -m 644 deploy/depot-web/depot-cloudflare.service deploy/depot-web/depot-cloudflare.timer /etc/systemd/system/
+   sudo install -m 755 deploy/depot-web/wpt-depot-cloudflare.py /usr/local/sbin/wpt-depot-cloudflare
+   sudo install -m 644 deploy/depot-web/wpt-depot-cloudflare.service deploy/depot-web/wpt-depot-cloudflare.timer /etc/systemd/system/
    sudo systemctl daemon-reload
-   sudo systemctl start depot-cloudflare.service
-   sudo systemctl enable --now depot-cloudflare.timer
+   sudo systemctl start wpt-depot-cloudflare.service
+   sudo systemctl enable --now wpt-depot-cloudflare.timer
    ```
 
 5. From `deploy/depot-web/`, start the containers:
@@ -208,7 +208,7 @@ Let's Encrypt's challenges must reach port 80 over plain HTTP.
    HTTPS server within a minute of it.
 
 6. Name what backs the depot up. Every write leaves a change file in
-   `depot.sqlite.waiting/` until `depot backup` sends it to the
+   `wpt-depot.sqlite.waiting/` until `depot backup` sends it to the
    dock, and the app sends none by itself, so without one of these the
    folder grows until the disk fills
    ([architecture.md](architecture.md), "Backups"):
@@ -228,10 +228,10 @@ the upgrade does (each locked library and each dataset revision models were
 trained on made a snapshot, the open libraries left as they are), what it
 costs (time, WAL, disk, the full copy the next backup sends) and what to
 check before, and writes nothing in the depot; it saves what it measured
-beside the depot's file, in `depot.sqlite.upgrade-check.json`. It runs
+beside the depot's file, in `wpt-depot.sqlite.upgrade-check.json`. It runs
 while the app keeps serving, from the new code's image: it holds one read
 transaction to its end, so the WAL keeps every page the app writes until
-then (`depot.sqlite-wal` grows by what the app writes, and goes back
+then (`wpt-depot.sqlite-wal` grows by what the app writes, and goes back
 to its usual size at the next checkpoint after the check), and its reads
 take disk time from the app, so run it when the site is quiet. Then stop
 the app and back the depot up right before the upgrade (`depot
@@ -258,7 +258,7 @@ docker compose up -d --build
 
 | Setting | Meaning |
 | --- | --- |
-| `DEPOT_FOLDER` | the host folder that holds `depot.sqlite`; required |
+| `DEPOT_FOLDER` | the host folder that holds `wpt-depot.sqlite`; required |
 | `DEPOT_USER` | `uid:gid` the app runs as; default `1000:1000` |
 | `DOCK` | the dock that holds the corpora the frozen dataset routes serve (`s3://BUCKET/PREFIX`); unset, no corpus is served |
 | `DOCK_ACCESS_KEY_ID`, `DOCK_SECRET_ACCESS_KEY` | a key that reads and writes that dock |

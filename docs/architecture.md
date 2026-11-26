@@ -39,7 +39,7 @@ Four parts make a model, each with its own packages and its own command:
 | depot | `depot`, `depot-app` (`depot`) | models, tokens, vocabularies, the freight, the dock |
 | freight | `freight`, `freight-app` (`freight`) | what a token or a vocabulary is |
 | dock | `dock`, `dock-app` (`dock`) | everything else |
-| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot: it never reads one |
+| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot, which only `wpt adopt-vocabularies` reads (below) |
 
 What one part offers the others is one module named `api`: `depot.api`,
 `freight.api` and `dock.api`, each described in a document of its own
@@ -57,9 +57,14 @@ of it. The parts import one another only so:
 `packages/wic-utils/tests/test_part_imports.py` reads the imports of every
 module and fails on any other, except those its list `EXCEPTIONS` names,
 each with its reason: the depot's own command and web app write its
-backups to the dock, and read and mark the corpora built from a legacy
-dataset there; and `wpt adopt-vocabularies` reads the vocabularies the
-depot's tokenizer recipes trained through `depot.api`.
+backups to the dock, keep the Translate button's models there, and read
+and mark the corpora built before the freight there, which its frozen
+dataset routes send and an upgrade from a format before snapshots reads;
+and `wpt adopt-vocabularies` reads the vocabularies the depot's tokenizer
+recipes trained through `depot.api`. `dock.api` also hands out the dock as
+an object (`open_dock`, `dock_from_settings`), which every part that reads
+or writes more than whole files works through
+([api/dock.md](api/dock.md), "The dock as an object").
 
 ## Components and services
 
@@ -72,7 +77,7 @@ disagree.
 
 | Component | Role | Code |
 | --- | --- | --- |
-| depot | every change to a depot's tables, under its rules; an order's corpus built from a snapshot onto the dock | `depot` |
+| depot | every change to a depot's tables, under its rules, and the snapshots, listings and content the freight reads ([api/depot.md](api/depot.md)) | `depot` |
 | service layer | the only code that reads or writes `data/` ([The service layer](#the-service-layer)) | `wpt_orders/orders.py` |
 | freight | a request's items chosen in a snapshot and prepared by one program into a delivery on the dock ([api/freight.md](api/freight.md)) | `freight` |
 | dock | files, compressed, on a folder or a bucket ([The dock](#the-dock)) | `dock` |
@@ -720,7 +725,8 @@ cache/<stage>/<fingerprint>        only what can be rebuilt
 A corpus lies under its build key: a hash of the snapshot (its id and
 digest), the order's kinds, shares and size, the vocabulary and the rules
 of the build, so the same build always lands in the same folder, on a
-server and on its clones alike (`depot/corpora.py`). The dock keeps
+server and on its clones alike. WPT reads them (`wpt_corpus/corpora.py`), and
+the freight marks them stale after an erasure (`freight/corpora.py`). The dock keeps
 the record of every corpus. A deleted corpus's record stays, marked
 deleted with the reason, and building it again checks that it gives the
 same id. The depot builds no corpus: the freight delivers corpora on the
@@ -1142,7 +1148,7 @@ dock.
 | `wpt-orders` | the model and series orders and the images of agentic tasks: the service layer that reads and checks them (`orders.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `dock` | the dock (its kinds: a local folder or S3), its compression, its named files (deliveries, corpora, models, run folders) and its results; what code outside it asks of it, the gestures find, fetch and put, the only module code outside the dock imports ([api/dock.md](api/dock.md), `api.py`) |
 | `freight` | reads a request, chooses items in a depot's snapshot by the selection rules ([data-selection.md](data-selection.md)), reading the depot only through `depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the dock with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
-| `wpt-corpus` | WPT's preparations, the programs `wpt-vocabulary` (a vocabulary learned from plain texts, `vocabulary.py`), `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`; [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`) |
+| `wpt-corpus` | WPT's preparations, the programs `wpt-vocabulary` (a vocabulary learned from plain texts, `vocabulary.py`), `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`; [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`); the reading of the corpora the depot built before the freight, under `corpora/` of the dock (`corpora.py`) |
 | `wpt-telemetry` | the record of one command run on the dock, sent live to an OpenTelemetry backend when one is set ([observability.md](observability.md)) |
 | `wpt-tokenizer` | the byte-level BPE tokenizer, Rust inside |
 | `wpt-model` | the WPT network ([model.md](model.md)) and its drafter, its safetensors model folders, their license documents (`LICENSE`, `NOTICE`, model card), and what a folder's `provenance.json` says of its corpus in either of its shapes (`provenance.py`) |

@@ -149,3 +149,23 @@ listing gives them as of the snapshot), `notice` (its id) and `scores`
 `licenses(depot, ids)` gives `{id, name, text}` of each license named that
 the depot holds, and `notices(depot, ids)` gives `{id, text}` of each
 notice, both in the order given.
+
+### The vocabularies of the legacy tables
+
+The depot keeps, unwritten, the vocabularies its tokenizer recipes
+trained, in its legacy tables `tokenizers_revisions`, `vocabularies` and
+`vocabulary_texts` (docs/architecture.md, "The depot"). Only `wpt
+adopt-vocabularies` reads them, to put each on the dock as an adopted
+delivery ([tokenizer.md](../tokenizer.md), "A vocabulary in an order").
+
+`vocabularies(depot)` gives every one, in the order of their recipes'
+names and versions: `recipe` (the recipe's id), `name`, `version`,
+`sha256`, `merges` (the vocabulary file, as text), `texts` and `bytes`
+(what it read), `made_at`, and what its recipe's version asked:
+`dataset`, `sample` (JSON), `sample_bytes` and `vocab_size`.
+
+`vocabulary_texts(depot, recipe, version, offset=0, limit=100000)` gives
+the texts the vocabulary of that recipe (its id) and version read, in the
+order it read them, from the place `offset` on, at most `limit`: each
+`{depot, id, change}`, `depot` the depot's own name for one of its own
+texts.

@@ -195,7 +195,7 @@ def main(argv=None):
     environ = {**read_env_file(Path.cwd() / ".env"), **{key: value for key, value in os.environ.items() if value}}
     try:
         store = dock_from_settings(Path.cwd() / ".env")
-    except DockError as error:  # no store, no record: nothing has started
+    except DockError as error:  # no dock, no record: nothing has started
         sys.exit(f"{type(error).__name__}: {error}")
     evals = args.evals or built_in_names()
     try:

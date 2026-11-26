@@ -9,10 +9,10 @@ https://), with the frozen dataset and tokenizer routes `depot web` serves
 (docs/depot-web.md, "Models trained before snapshots").
 
 An order of a dataset finds the latest fresh corpus of one dataset,
-vocabulary and size (freight.api.corpus_triple), built from any revision
+vocabulary and size (wpt_corpus.corpora.triple), built from any revision
 of the dataset: the WebDepot reads it from the listing of the dataset's
 downloads, which names it for each triple, and reads that corpus's record
-from the dock through the freight.
+from the dock.
 
     opened(data)   the depot, as a WebDepot; Unreadable when it cannot be read
     download_page(address, dataset)   the address of the dataset's listing of corpora in the depot's web app
@@ -23,7 +23,7 @@ import urllib.error
 from pathlib import Path
 from urllib.parse import quote
 
-from freight import api as freight
+from wpt_corpus import corpora
 from wic_utils import web
 from wpt_tokenizer import Tokenizer
 
@@ -91,7 +91,7 @@ class WebDepot:
         corpus it names as the triple's latest fresh one; None when it names
         none.
         Unreadable when the listing cannot be made (an erasure being
-        checked, no store) or the dock does not hold the corpus it names."""
+        checked, no dock) or the dock does not hold the corpus it names."""
         found = self._json(f"/api/datasets/{quote(dataset['id'], safe='')}/download")
         if found.get("state") != "listed":
             raise Unreadable(f"{self.url} cannot list the corpora of the dataset {dataset['id']} now: "
@@ -100,7 +100,7 @@ class WebDepot:
                       if one["vocabulary"]["sha256"] == vocabulary and one["max_tokens"] == size), None)
         if named is None:
             return None
-        record = freight.corpus(named["id"], dock=store.url)
+        record = corpora.find(store, named["id"])
         if record is None:
             raise Unreadable(f"{self.url} names the corpus {named['id']} for that dataset, vocabulary and size, "
                              f"which the dock {store} does not hold")

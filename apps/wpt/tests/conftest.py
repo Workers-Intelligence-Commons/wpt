@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from depot import About, Declaration, Depot, NewText
-from freight import corpora
+from wpt_corpus import corpora
 from depot.errors import NotFound
 from corpus_build import build
 from freight import api as freight

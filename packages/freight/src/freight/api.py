@@ -17,18 +17,12 @@ can become a route without its callers changing.
     wait(job, ...)                          the job once it ended, the queue run here while no other process does
     work(...)                               run the queue until stopped, or for a number of seconds
     job(job), jobs(), cancel(job)           a job's state, every job's, cancelling one
-    delivery(key), deliveries()             a delivery's note, every note on the dock
+    delivery(key), deliveries_on()          a delivery's note, every note on the dock
     items(key)                              the rows of a delivery's items tables
     check(...)                              mark what the erasures since the last check did to the deliveries
+                                            and to the corpora under corpora/
     adopt(key, files, result, about, ...)   files made elsewhere put on the dock as a delivery, with its items
     ADOPTED                                 the start of the key of an adopted delivery
-    corpora(), corpus(given)                the corpora the depot's build made before the freight, which the
-                                            dock keeps under corpora/: every record, the one of an id
-    dataset_corpus(depot, dataset, ...)     the latest such corpus of a dataset, before snapshots
-    corpus_rows(record, table)              the rows of one of such a corpus's tables
-    corpus_fresh(record), corpus_by_kind(record), corpus_triple(record), corpus_canonical(data), CORPUS_RULES
-                                            what such a record says: fresh, its token files by kind, what it was
-                                            built for, and the form of a data section its build key covers
     Refused, Busy, SettingMissing           what a call refuses: a request that cannot be met, a key with a job
                                             queued or running already, a setting named nowhere
 """
@@ -41,7 +35,6 @@ from pathlib import Path
 from dock.api import open_dock
 from wic_utils.env import read_env_file
 
-from . import corpora as legacy
 from . import deliveries, erasures
 from .jobs import ENDED, Busy, Queue
 from .job import Job
@@ -50,11 +43,9 @@ from .selection import canonical as canonical_selection
 
 ENV_FILE = ".env"
 ADOPTED = deliveries.ADOPTED
-CORPUS_RULES = legacy.RULES
-__all__ = ["ADOPTED", "CORPUS_RULES", "Busy", "Refused", "SettingMissing", "adopt", "cancel", "canonical", "check",
-           "corpora", "corpus", "corpus_by_kind", "corpus_canonical", "corpus_fresh", "corpus_rows", "corpus_triple",
-           "dataset_corpus", "deliveries_on", "delivery", "items", "job", "jobs", "key", "request", "settings",
-           "settings_dock", "settings_home", "wait", "work"]
+__all__ = ["ADOPTED", "Busy", "Refused", "SettingMissing", "adopt", "cancel", "canonical", "check", "deliveries_on",
+           "delivery", "items", "job", "jobs", "key", "request", "settings", "settings_dock", "settings_home", "wait",
+           "work"]
 
 
 class SettingMissing(Exception):
@@ -194,7 +185,8 @@ def check(*, home: str | None = None, depot: str | None = None, dock: str | None
     whose items hold a text it reached, as its note's on_erasure says:
     {mark (the depot's mark now), erasures (their ids), stale (the keys of
     the deliveries marked stale), noted (those whose note took an erasure
-    in and stay fresh)}. A job asks the same before it runs."""
+    in and stay fresh), corpora (the ids of the corpora under corpora/,
+    built before the freight, marked stale)}. A job asks the same before it runs."""
     found = settings(home, depot, dock)
     return erasures.check(Queue(found["home"]), found["depot"], _dock(found["dock"]))
 
@@ -206,58 +198,6 @@ def adopt(key: str, files: dict[str, bytes], result: dict, about: dict, *, on_er
     that reaches one of its items doing what on_erasure says ("stale" or "note"): its note
     (freight.deliveries.adopt)."""
     return deliveries.adopt(_dock(settings_dock(dock)), key, files, result, about, on_erasure, items)
-
-
-def corpora(*, dock: str | None = None) -> list[dict]:
-    """The record of every corpus the dock keeps under corpora/, each
-    checked, the last built first (freight.corpora)."""
-    return legacy.records(_dock(settings_dock(dock)))
-
-
-def corpus(given: str, *, dock: str | None = None) -> dict | None:
-    """The record of the corpus under corpora/ whose id is given, or starts
-    with it when only one does; None when none does. ValueError when
-    several do."""
-    return legacy.find(_dock(settings_dock(dock)), given)
-
-
-def dataset_corpus(depot: str, dataset: str, vocabulary: str | None = None, size=legacy.ANY, *, fresh: bool = False,
-                   dock: str | None = None) -> dict | None:
-    """The record of the corpus last built from the dataset of id dataset
-    of the depot of that name, before snapshots, for that vocabulary
-    (sha256) and size (max_tokens) when they are given, a fresh one only
-    with fresh; None without one."""
-    found = _dock(settings_dock(dock))
-    return (legacy.latest_fresh if fresh else legacy.latest)(found, depot, dataset, vocabulary, size)
-
-
-def corpus_rows(record: dict, table: str, *, dock: str | None = None) -> list[dict]:
-    """The rows of one of the tables of the corpus of that record (texts,
-    licenses or notices), in order, each file checked."""
-    return legacy.read_table(_dock(settings_dock(dock)), record, table).to_pylist()
-
-
-def corpus_fresh(record: dict) -> bool:
-    """Whether the corpus of that record is neither stale nor deleted, and holds its token files by kind."""
-    return legacy.fresh(record)
-
-
-def corpus_by_kind(record: dict) -> bool:
-    """Whether the corpus of that record holds its token files by kind."""
-    return legacy.by_kind(record)
-
-
-def corpus_triple(record: dict) -> list:
-    """What the corpus of that record was built for: [its dataset's id or
-    None, its vocabulary's sha256, its size or None]."""
-    return list(legacy.triple(record))
-
-
-def corpus_canonical(data: dict) -> dict:
-    """A data section in the form the build key of a corpus under corpora/
-    covers (freight.corpora.canonical). Refused for one no corpus was built
-    for."""
-    return legacy.canonical(data)
 
 
 def settings_home(home: str | None) -> str:

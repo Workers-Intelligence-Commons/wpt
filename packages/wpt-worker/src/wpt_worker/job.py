@@ -10,9 +10,9 @@ what it runs (TASKS). The worker has no tokenizer: wpt_tokenizer cannot be
 imported here (NoTokenizer), so nothing on the worker turns text into
 tokens or back by mistake; it deals only in the token ids the manager sends.
 
-    LinkStore     the manager's store as the job reads it: files the manager allows, fetched
+    LinkDock      the manager's dock as the job reads it: files the manager allows, fetched
                   part by part into the job's folder and checked against their sha256, and the
-                  run's record, each write and line given to the manager's store before the call
+                  run's record, each write and line given to the manager's dock before the call
                   returns, and sent on from there when flush_records() returns (an S3 dock holds
                   lines back until then, as on the manager)
     download()    a file the manager offers, into a local file, checked against its sha256
@@ -165,11 +165,11 @@ def _sha(what) -> str:
     return what["sha256"] if isinstance(what, dict) else getattr(what, "sha256", what)
 
 
-class LinkStore:
-    """The manager's store, as a job's process reads it (what
+class LinkDock:
+    """The manager's dock, as a job's process reads it (what
     wpt_corpus.shards, the environments and wpt_telemetry call): files by
     their sha256, which only the manager holds and gives part by part; the
-    record folder of the run, whose every write goes to the manager's store
+    record folder of the run, whose every write goes to the manager's dock
     before the call returns, and whose lines that dock holds back are sent
     when flush_records() returns. Copies of files go into folder/files
     (path(), until release()), files derived from them into folder/scratch.
@@ -181,7 +181,7 @@ class LinkStore:
         self.cache, self.scratch = Path(folder) / "files", Path(folder) / "scratch"
 
     def __repr__(self):
-        return "the wpt manager's store"
+        return "the wpt manager's dock"
 
     def path(self, what) -> Path:
         sha = _sha(what)

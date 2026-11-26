@@ -230,6 +230,7 @@ from wpt_model import PARTS, WPT, ModelConfig, canonical_ids, save_drafter, save
 from wpt_model.drafter import Drafter
 from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
+from wpt_corpus import corpora
 from wpt_orders import SIZE_OF, OrderError, Orders
 from wpt_orders.series import layer_count
 from dock.api import NAME as STORE_NAME
@@ -481,7 +482,7 @@ def _find_corpus(store, given, data, log) -> dict:
     dataset = None
     try:
         if given is not None:
-            found = freight.corpus(given, dock=store.url) or _delivered(store, given)
+            found = corpora.find(store, given) or _delivered(store, given)
         else:
             try:
                 reader = order_depot.opened(data, Path.cwd() / ".env")
@@ -500,8 +501,8 @@ def _find_corpus(store, given, data, log) -> dict:
                 raise InputError(f"the corpus of the dataset {dataset['name']!r} cannot be found "
                                  f"({type(error).__name__}: {error})") from None
             if found is None:
-                older = freight.dataset_corpus(data["depot"], dataset["id"], vocabulary, size, dock=store.url)
-                if older is not None and not freight.corpus_by_kind(older) and not {"stale", "deleted"} & older.keys():
+                older = next(iter(corpora.built_from(store, data["depot"], dataset["id"], vocabulary, size)), None)
+                if older is not None and not corpora.by_kind(older) and not {"stale", "deleted"} & older.keys():
                     raise InputError(f"corpus {older['id']} does not list its token files by kind, which each "
                                      f"training step reads: {LEGACY_AGAIN}")
                 raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
@@ -553,10 +554,10 @@ def _snapshot_corpus(store, data) -> dict:
                             "texts it holds" if "stale" in note else f"deleted: {note['deleted']['why']}")
                          + f"; {BUILD}, which makes it again")
     legacy = _built(store, data) if resources.vocabulary_named(data) else None
-    if legacy is not None and not freight.corpus_by_kind(legacy) and not {"stale", "deleted"} & legacy.keys():
+    if legacy is not None and not corpora.by_kind(legacy) and not {"stale", "deleted"} & legacy.keys():
         raise InputError(f"corpus {legacy['id']} does not list its token files by kind, which each training step "
                          f"reads: {BUILD}")
-    if legacy is not None and freight.corpus_fresh(legacy):
+    if legacy is not None and corpora.fresh(legacy):
         return legacy
     vocabulary_said = (f"the vocabulary {data['vocabulary']['sha256']}" if resources.vocabulary_named(data)
                        else f"its vocabulary learned on {data['vocabulary']['sample_bytes']:,} bytes")
@@ -570,12 +571,12 @@ def _built(store, data) -> dict | None:
     """The latest corpus of the dock's corpora/ built from the snapshot a
     data part names (name, change, digest), of its depot, with its kinds,
     shares and vocabulary, at its size, under the selection rules the depot
-    built with last (freight.api.CORPUS_RULES, which its build key covered): a fresh one
+    built with last (wpt_corpus.corpora.RULES, which its build key covered): a fresh one
     first. None without one."""
-    found = [record for record in freight.corpora(dock=store.url)
-             if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == freight.CORPUS_RULES
-             and _same_build(record, data) and freight.corpus_triple(record)[2] == data["total_tokens"]]
-    return next((record for record in found if freight.corpus_fresh(record)), found[0] if found else None)
+    found = [record for record in corpora.records(store)
+             if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == corpora.RULES
+             and _same_build(record, data) and corpora.triple(record)[2] == data["total_tokens"]]
+    return next((record for record in found if corpora.fresh(record)), found[0] if found else None)
 
 
 def _source(record) -> str:
@@ -597,11 +598,11 @@ def _same_build(record, data) -> bool:
     snapshot = record["snapshot"]
     try:
         if "build_key" in record:
-            ours, theirs = freight.corpus_canonical(data), freight.corpus_canonical(record["data"])
+            ours, theirs = corpora.canonical(data), corpora.canonical(record["data"])
         else:
             ours = freight.canonical({"kinds": data.get("kinds"), "shares": data.get("shares")})
             theirs = freight.canonical({**record["request"]["selection"], "size": None})
-    except freight.Refused:
+    except (freight.Refused, corpora.Refused):
         return False
     if "delivery" in record:
         same_vocabulary = (record["vocabulary"]["sha256"] == data["vocabulary"]["sha256"]
@@ -641,8 +642,8 @@ def load_corpus(store, record, order):
 
 def built_for(record, order) -> bool:
     """Whether the corpus was built at the size the order asks for: its
-    max_tokens (freight.api.corpus_triple) is the data part's total_tokens."""
-    return freight.corpus_triple(record)[2] == order["data"]["total_tokens"]
+    max_tokens (wpt_corpus.corpora.triple) is the data part's total_tokens."""
+    return corpora.triple(record)[2] == order["data"]["total_tokens"]
 
 
 def check_record(record, order):
@@ -652,12 +653,12 @@ def check_record(record, order):
     built at that size (built_for: such a corpus gives its conversations
     and tasks their share of the size, and training reads what it holds),
     or it does not list its token files by kind, which each step reads
-    (freight.api.corpus_by_kind). The message says how to make it again: `wpt
+    (wpt_corpus.corpora.by_kind). The message says how to make it again: `wpt
     build-resources` for a corpus of a snapshot; for one of a dataset, a
     snapshot in the order first, since no build makes a corpus of a
     dataset."""
     snapshot = "build_key" in record or "delivery" in record
-    if not freight.corpus_by_kind(record):
+    if not corpora.by_kind(record):
         again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} does not list its token files by kind, which each training step "
                          f"reads: {again}")
@@ -667,7 +668,7 @@ def check_record(record, order):
                          f"{', '.join(record['stale']['erasures'])} on texts it was built from; {again}")
     wanted = order["data"]["total_tokens"]
     if record["total_tokens"] < wanted and not built_for(record, order):
-        size = freight.corpus_triple(record)[2]
+        size = corpora.triple(record)[2]
         raise InputError(f"the order trains on {wanted:,} tokens (data.total_tokens); corpus {record['id']} holds "
                          f"{record['total_tokens']:,} and was built at "
                          f"{'no size' if size is None else f'the size {size:,}'}, not the order's {wanted:,}")
@@ -916,7 +917,7 @@ def main(argv=None):
         store = dock_from_settings(Path.cwd() / ".env")
         record = find_corpus(store, args.corpus, load_data(args.order))
         check_record(record, load_order(args.order, record))
-    except (DockError, InputError) as error:  # no store, no corpus: nothing has started, nothing is recorded
+    except (DockError, InputError) as error:  # no dock, no corpus: nothing has started, nothing is recorded
         say(f"{type(error).__name__}: {error}", ERROR)
         sys.exit(REFUSED)
     try:

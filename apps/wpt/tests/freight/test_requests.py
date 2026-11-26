@@ -14,7 +14,7 @@ import pytest
 
 from freight import api
 from depot import Declaration, NewText
-from freight.corpora import read_table
+from wpt_corpus.corpora import rows as corpus_rows
 from corpus_build import build
 from dock.names import File
 
@@ -107,7 +107,7 @@ def same(built, record: dict, note: dict):
     for kind in ("plain", "conversation"):
         assert [one["token_sha256"] for one in result["shards"][kind]] == [
             one["token_sha256"] for one in record["shards"][kind]], kind
-    built_rows = read_table(store, record, "texts").to_pylist()
+    built_rows = corpus_rows(store, record, "texts")
     rows = api.items(note["key"], dock=store.root.as_uri())
     # the rows of the corpus's texts table, with the bytes the freight counted each at and its weight beside them
     assert [{key: value for key, value in row.items() if key not in ("bytes", "weight")} for row in rows] == built_rows
@@ -119,7 +119,7 @@ def same(built, record: dict, note: dict):
         assert tasks["sha256"] == record["tasks"]["file"]["sha256"] and result["tasks"]["count"] == record["tasks"]["count"]
     for table in ("licenses", "notices"):
         assert pq.read_table(store.path(File.of(note["tables"][table]))).to_pylist() == \
-            read_table(store, record, table).to_pylist()
+            corpus_rows(store, record, table)
     assert (note["items"]["texts"], note["items"]["pieces"], note["items"]["kinds"].get("conversation", 0)) == (
         record["texts"], record["pieces"], record["conversations"])
     assert note["left_out"] == record["left_out"]

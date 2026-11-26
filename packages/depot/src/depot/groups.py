@@ -3,9 +3,8 @@ carry, each tag's part following the square root of what it holds
 (docs/data-selection.md, "Shares"): a first pass over the snapshot's
 order, the choice of texts it makes, and the chosen set a corpus build
 follows as it walks the order again. Nothing here reads a depot: the
-entries come from the caller, a legacy dataset's sample (depot.legacy).
-The freight keeps the same choice for a snapshot's listing
-(freight.groups).
+entries come from the caller, a legacy dataset's sample (depot.legacy),
+which is the only use of this copy of the rules.
 
 A plain text belongs to the first share whose tag it has
 (its pool). Inside a share, every tag its texts carry other

@@ -250,6 +250,8 @@ from depot.fill import Fill
 from depot.kinds import PLAIN
 from dock.api import File
 from freight import corpora
+from wpt_corpus.corpora import RULES as CORPUS_RULES
+from wpt_corpus.corpora import fresh
 from wic_utils.lines import say
 from wic_utils.parallel import Sizing, in_order, process_pool
 from wpt_corpus.shards import write_shard
@@ -281,7 +283,7 @@ CORPUS_SCHEMAS = {
                            pa.field("text", pa.string(), False)]),
     "notices": pa.schema([pa.field("id", pa.string(), False), pa.field("text", pa.string(), False)]),
 }
-RULES = corpora.RULES  # the version of the rules of what a build takes, in the build's key
+RULES = CORPUS_RULES  # the version of the rules of what a build takes, in the build's key
 # the kinds a corpus holds as token files, each kind's apart (a task is a line of tasks.jsonl, never tokenized)
 TOKEN_KINDS = (PLAIN, "conversation")
 TRAINING_KINDS = ("conversation", "task")  # the kinds beside plain a corpus takes
@@ -770,7 +772,7 @@ class _Build:
 
     def run(self) -> dict:
         known = self.store.get_json(f"{self.folder}/{RECORD}")
-        if known is not None and corpora.fresh(known):
+        if known is not None and fresh(known):
             self.log(f"corpus {known['id']} of snapshot {self.snapshot['name']} is already built")
             return known
         self.replaced = known
@@ -1330,7 +1332,7 @@ class _Build:
                  f"{record['total_tokens']:,} tokens of plain text in {len(record['shards'][PLAIN])} token files, "
                  f"{len(record['shards']['conversation'])} of conversations, {state['tasks_count']:,} tasks")
         self._drop_replaced(record)
-        if not corpora.fresh(record):
+        if not fresh(record):
             self.log(f"corpus {corpus_id} is stale already: the erasures {', '.join(record['stale']['erasures'])}, "
                      "carried out while it was built, reached a text it holds; build it again")
         return record

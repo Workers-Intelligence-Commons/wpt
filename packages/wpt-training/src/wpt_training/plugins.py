@@ -321,7 +321,7 @@ def step_seed(seed: int, number: int) -> int:
 class Data:
     """What an environment's part on the gpu worker reads its examples
     from: the step's name, the dock (the manager's, as the worker reads
-    it: wpt_worker.job.LinkStore), the corpus's record, the model's
+    it: wpt_worker.job.LinkDock), the corpus's record, the model's
     configuration, the strategy, the run's telemetry (its record), log (a
     no-op except in the main process), the order's seed, the step's number
     in the order (from 1), which the step's draws read with the seed

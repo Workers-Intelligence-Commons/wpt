@@ -10,14 +10,14 @@
 # Settings, from the environment or the .env file of this folder (never the
 # repository's .env, whose keys reach more than the corpora):
 #
-#     DEPOT_FOLDER   the host's folder that holds the depot's file, depot.sqlite
+#     DEPOT_FOLDER       the host's folder that holds the depot's file, wpt-depot.sqlite
 #                        (such as /home/ubuntu/depot); required. SQLite writes its -wal and
 #                        -shm files, the depot its .waiting folder, the queue its
-#                        depot.sqlite.jobs file and the jobs their depot.sqlite.work
+#                        wpt-depot.sqlite.jobs file and the jobs their wpt-depot.sqlite.work
 #                        folder beside the file, and the dock its local copies in cache/
-#     DEPOT_USER     uid:gid the app runs as, which must be able to write in that
+#     DEPOT_USER         uid:gid the app runs as, which must be able to write in that
 #                        folder (default 1000:1000)
-#     DOCK          the dock that holds the corpora the frozen dataset routes serve,
+#     DOCK               the dock that holds the corpora the frozen dataset routes serve,
 #                        and the backups (s3://BUCKET/PREFIX); unset, the app serves none
 #     DOCK_ACCESS_KEY_ID, DOCK_SECRET_ACCESS_KEY
 #                        a key that reads and writes that dock
@@ -29,9 +29,9 @@
 # around ufw, which lets only Cloudflare's address ranges reach ports 80 and
 # 443. The app listens on 127.0.0.1:8780 (Dockerfile), where nginx reaches it
 # (nginx/https.conf); nothing else on the host may listen on 80, 443 or 8780. nginx reads
-# the host's /etc/depot-web/cloudflare-real-ip.conf, which the host's
-# timer depot-cloudflare writes; it must run once before the first start.
-name: depot-web
+# the host's /etc/wpt-depot-web/cloudflare-real-ip.conf, which the host's
+# timer wpt-depot-cloudflare writes; it must run once before the first start.
+name: wpt-depot-web
 
 services:
   app:
@@ -42,7 +42,7 @@ services:
     init: true
     user: ${DEPOT_USER:-1000:1000}
     environment:
-      DEPOT: /depot/depot.sqlite
+      DEPOT: /depot/wpt-depot.sqlite
       DEPOT_URL: https://depot.workers-intelligence-commons.org  # what an order names it by
       XDG_CACHE_HOME: /depot/cache
       DOCK: ${DOCK:-}
@@ -52,7 +52,7 @@ services:
       DOCK_REGION: ${DOCK_REGION:-}
       DOCK_SESSION_TOKEN: ${DOCK_SESSION_TOKEN:-}
     volumes:
-      - ${DEPOT_FOLDER:?set DEPOT_FOLDER, the host folder that holds depot.sqlite (docs/depot-web.md)}:/depot
+      - ${DEPOT_FOLDER:?set DEPOT_FOLDER, the host folder that holds wpt-depot.sqlite (docs/depot-web.md)}:/depot
     restart: unless-stopped
 
   nginx:
@@ -60,7 +60,7 @@ services:
     network_mode: host
     init: true
     volumes:
-      - /etc/depot-web:/etc/nginx/cloudflare:ro
+      - /etc/wpt-depot-web:/etc/nginx/cloudflare:ro
       - letsencrypt:/etc/letsencrypt:ro
       - acme-challenge:/var/www/certbot:ro
     restart: unless-stopped

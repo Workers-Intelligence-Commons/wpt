@@ -13,7 +13,7 @@ on a bucket:
 
     deliveries/<key>/                  what the freight delivered for a request (freight.deliveries)
     corpora/<name>/                    a corpus built before the freight: its record corpus.json, token
-                                       files, vocabulary, tables and tasks (freight.corpora)
+                                       files, vocabulary, tables and tasks (wpt_corpus.corpora)
     models/<name>/                     the model's real files (wpt.models)
     runs/<run>/                        each command's log
     cache/<stage>/<fingerprint>        results that can be rebuilt

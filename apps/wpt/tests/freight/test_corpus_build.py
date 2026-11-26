@@ -11,7 +11,9 @@ from wpt_tokenizer import END, Tokenizer, chat
 from depot import About, Depot, NewText, clone, ids, pull, snapshots
 from depot import order, pieces
 from freight import corpora
-from freight.corpora import Room, TooBig, mark_stale, read_table, records
+from freight.corpora import Room, TooBig, mark_stale, records
+from wpt_corpus.corpora import find, fresh
+from wpt_corpus.corpora import rows as corpus_rows
 from corpus_build import build, build_key, census, task_text
 from depot.errors import Refused
 from depot.ids import export_key
@@ -107,13 +109,13 @@ def test_a_corpus_holds_its_snapshot_s_texts_tokenized_with_their_credits_and_a_
     assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0,
                                   "kinds not taken": {"probe": 1}, "quoted text left out": 0, "quote unmatched": 0}
 
-    texts = {(one["depot"], one["id"]): one for one in read_table(store, record, "texts").to_pylist()}
+    texts = {(one["depot"], one["id"]): one for one in corpus_rows(store, record, "texts")}
     assert probe not in {id_ for _, id_ in texts} and waiting not in {id_ for _, id_ in texts}
     assert texts[("depot", first)]["title"] == "Twice" and texts[("depot", first)]["authors"] == ["Ann"]
     assert texts[("depot", first)]["tags"] == ["en"] and texts[("depot", talk)]["tags"] == ["en"]
-    notices = {one["id"]: one["text"] for one in read_table(store, record, "notices").to_pylist()}
+    notices = {one["id"]: one["text"] for one in corpus_rows(store, record, "notices")}
     assert notices == {"depot-1": "(c) Ann"}  # ids carry the depot: copied as they are
-    assert read_table(store, record, "licenses").to_pylist() == [
+    assert corpus_rows(store, record, "licenses") == [
         {"id": "CC0-1.0", "name": "Creative Commons Zero v1.0 Universal", "text": "The CC0 text."}]
     start = 0
     for tokens, source, document, _, _ in rows:  # each text's first token, over the token files in order
@@ -183,7 +185,7 @@ def test_a_conversation_comes_with_the_passages_it_quotes_and_only_when_the_corp
     assert record["conversations"] == 1
     assert record["left_out"] == {"no share": 0, "trimmed": 0, "trimmed items": 0, "kinds not taken": {},
                                   "quoted text left out": 1, "quote unmatched": 1}
-    texts = {one["id"]: one for one in read_table(store, record, "texts").to_pylist()}
+    texts = {one["id"]: one for one in corpus_rows(store, record, "texts")}
     assert left_out not in texts and unmatched not in texts
     assert texts[kept]["quotes"] == [fox] and texts[fox]["quotes"] is None
     # a model that learned the conversations alone is credited with the text it quotes too
@@ -197,7 +199,7 @@ def test_a_conversation_comes_with_the_passages_it_quotes_and_only_when_the_corp
     assert mark_stale(store, [fox], [erased]) == [record["id"]]
     assert "brown" not in depot.content(kept)
     again = make(depot, store)
-    assert again["folder"] == record["folder"] and again["id"] != record["id"] and corpora.fresh(again)
+    assert again["folder"] == record["folder"] and again["id"] != record["id"] and fresh(again)
     assert again["erasures"] == [erased]
     [row] = [row for shard in again["shards"]["conversation"] for row in read_verified(store, shard)]
     assert "brown" not in chat.show(TOKENIZER, list(row[0])) and " fox" in chat.show(TOKENIZER, list(row[0]))
@@ -377,7 +379,7 @@ def test_a_snapshot_builds_the_same_corpus_whatever_its_texts_did_since(make_dep
     again = make(depot, open_dock((tmp_path / "other").as_uri()), snapshot)
 
     assert again["id"] == before["id"] and again["build_key"] == before["build_key"]
-    assert [(one["id"], one["title"]) for one in read_table(store, again, "texts").to_pylist()] == [(first, "Fox")]
+    assert [(one["id"], one["title"]) for one in corpus_rows(store, again, "texts")] == [(first, "Fox")]
 
 
 def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_chooses_nothing_by_them(
@@ -394,7 +396,7 @@ def test_a_corpus_copies_each_text_s_scores_with_their_content_versions_and_choo
 
     record = make(depot, store)
 
-    texts = {one["id"]: one["scores"] for one in read_table(store, record, "texts").to_pylist()}
+    texts = {one["id"]: one["scores"] for one in corpus_rows(store, record, "texts")}
     assert texts == {scored: [{"name": "machine-made", "value": 0.03, "content_version": 2},
                               {"name": "rank", "value": -1.5, "content_version": 1}], unscored: None}
 
@@ -419,7 +421,7 @@ def test_an_erasure_carried_out_while_a_corpus_is_built_makes_it_stale_once_writ
     assert record["stale"] == {"erasures": asked}
     kept = {one["id"]: one for one in records(store)}
     assert kept[record["id"]]["stale"] == {"erasures": asked}
-    assert corpora.fresh(kept[older["id"]])  # nothing deletes another key's corpus
+    assert fresh(kept[older["id"]])  # nothing deletes another key's corpus
 
 
 def test_a_corpus_takes_its_texts_in_the_order_of_the_export_keys_each_once_and_a_smaller_size_takes_that_order(
@@ -606,7 +608,7 @@ def test_conversations_and_tasks_are_one_share_where_an_item_that_does_not_fit_l
     task = len(TOKENIZER.encode(task_text(TASK).encode("utf-8")))
     store = open_dock((tmp_path / "store").as_uri())
     every = make(depot, store)
-    kinds = [one["kind"] for one in read_table(store, every, "texts").to_pylist() if one["kind"] != "plain"]
+    kinds = [one["kind"] for one in corpus_rows(store, every, "texts") if one["kind"] != "plain"]
     assert task > conversation
     if "conversation" not in kinds[kinds.index("task") + 1:]:
         pytest.skip("this order puts no conversation after the first task")
@@ -743,7 +745,7 @@ def test_a_snapshot_change_digest_or_vocabulary_other_than_the_order_s_is_refuse
     refused(section(snapshot, total_tokens=0), match="whole number of tokens above 0")
     refused(section(snapshot, shares=[("en", 1), ("en", 1)]), match="name a tag twice")
     assert records(store) == []
-    assert corpora.fresh(build(depot, snapshot["id"], {"vocabulary": vocabulary()}, store, TOKENIZER,
+    assert fresh(build(depot, snapshot["id"], {"vocabulary": vocabulary()}, store, TOKENIZER,
                                log=lambda *_: None))  # a section that names no change nor digest checks none
 
 
@@ -760,7 +762,7 @@ def test_a_cap_deletes_the_corpus_downloaded_least_recently_and_refuses_a_corpus
     whole_size = sum(one["bytes"] for one in corpora.files(whole))
     # what the cap would delete, told before the build: the corpus it then deletes, nothing deleted yet
     foretold = Room(store, cap, "corpora/next", downloaded.get, set).evicted(whole_size)
-    assert [one["corpus"] for one in foretold] == [french["id"]] and corpora.fresh(corpora.find(store, french["id"]))
+    assert [one["corpus"] for one in foretold] == [french["id"]] and fresh(find(store, french["id"]))
     assert Room(store, cap, "corpora/next", downloaded.get, lambda: {french["id"]}).evicted(whole_size)[0]["corpus"] \
         == english["id"]  # one being downloaded is never deleted
     assert Room(store, None, "corpora/next").evicted(10**12) == [] and Room(store, 10, "corpora/next").evicted(11) is None
@@ -769,7 +771,7 @@ def test_a_cap_deletes_the_corpus_downloaded_least_recently_and_refuses_a_corpus
 
     kept = {one["id"]: one for one in records(store)}
     assert "deleted" in kept[french["id"]] and "deleted" not in kept[english["id"]]
-    assert corpora.fresh(kept[record["id"]])
+    assert fresh(kept[record["id"]])
     with pytest.raises(TooBig):
         make(depot, store, total_tokens=4, shares=[("fr", 1.0)], room=lambda folder: Room(store, 10, folder))
 
@@ -801,7 +803,7 @@ def test_a_corpus_bigger_than_the_cap_is_refused_before_any_other_corpus_is_dele
     with pytest.raises(TooBig, match="no corpus was deleted"):
         make(depot, store, shard_tokens=20, room=lambda folder: Room(store, size // 2, folder))
 
-    assert corpora.fresh(records(store)[0]) and records(store)[0]["id"] == french["id"]
+    assert fresh(records(store)[0]) and records(store)[0]["id"] == french["id"]
 
 
 def test_a_cap_deletes_the_files_a_build_left_without_a_record_and_that_build_started_again_starts_over(
@@ -827,7 +829,7 @@ def test_a_cap_deletes_the_files_a_build_left_without_a_record_and_that_build_st
     record = make(depot, store, total_tokens=10**6, shard_tokens=1_000,
                   room=lambda folder: Room(store, other_size + left_bytes - 1, folder))
 
-    assert corpora.fresh(record)
+    assert fresh(record)
     assert sum(store.kind.list(left, deep=True).values()) < left_bytes  # a file at a time, as the build needed room
     resumed = make(depot, store, work=tmp_path / "work", checkpoint=saved[-1], shard_tokens=20)
     assert resumed["id"] == whole["id"] and not corpora.missing(store, resumed["folder"], corpora.files(resumed))
@@ -845,9 +847,9 @@ def test_an_erasure_of_a_text_the_snapshot_does_not_hold_leaves_its_corpus_s_fol
 
     again = make(depot, store)
 
-    assert (again["id"], again["folder"]) == (first["id"], first["folder"]) and corpora.fresh(again)
+    assert (again["id"], again["folder"]) == (first["id"], first["folder"]) and fresh(again)
     assert again["erasures"] == []
-    assert corpora.find(store, first["id"])["id"] == first["id"]  # one record of that id
+    assert find(store, first["id"])["id"] == first["id"]  # one record of that id
 
 
 def two_parts(depot, parts):
@@ -879,7 +881,7 @@ def test_a_number_two_parts_hold_is_built_once_at_its_first_part_s_bound(make_de
 
     record = make(depot, store, depot.snapshot("two"))
 
-    texts = {one["id"]: one["revision"] for one in read_table(store, record, "texts").to_pylist()}
+    texts = {one["id"]: one["revision"] for one in corpus_rows(store, record, "texts")}
     assert texts == {first: 1, second: 1}  # first read at the bound of part 0, before its change
     [row] = [row for shard in record["shards"]["plain"] for row in read_verified(store, shard) if row[2] == first]
     assert list(row[0]) == [*TOKENIZER.encode(b"text 0"), END]
@@ -924,10 +926,10 @@ def test_a_long_text_comes_as_pieces_cut_between_files_each_at_its_own_place_of_
     assert all(abs(len(one) - pieces.LENGTH) < 300_100 for one in cut[:3])
     assert all(dict(rows)[name] == [*TOKENIZER.encode(one.encode()), END] for name, one in zip(names, cut))
     # each piece has its row, with its number and its text's credits; the text counts once
-    table = [one for one in read_table(store, record, "texts").to_pylist() if one["id"] == repo]
+    table = [one for one in corpus_rows(store, record, "texts") if one["id"] == repo]
     assert sorted(one["piece"] for one in table) == [0, 1, 2, 3]
     assert {one["title"] for one in table} == {"A repository"}
-    assert all(one["piece"] is None for one in read_table(store, record, "texts").to_pylist() if one["id"] != repo)
+    assert all(one["piece"] is None for one in corpus_rows(store, record, "texts") if one["id"] != repo)
     assert (record["texts"], record["pieces"]) == (201, 4)
     assert [line for line in model_notice(store, record).split("\n\n")[0].splitlines()
             if line.startswith(f"depot {repo}:")] == [f"depot {repo}: A repository; CC0-1.0"]
@@ -1000,7 +1002,7 @@ def test_a_text_of_more_pieces_than_a_16_bit_number_holds_comes_as_every_one_of_
     numbers = [int(name.rpartition("#")[2]) for name in taken]
     assert record["pieces"] == len(taken) and max(numbers) > 1 << 15
     assert taken == sorted(taken, key=export_key)
-    table = {one["piece"] for one in read_table(store, record, "texts").to_pylist()}
+    table = {one["piece"] for one in corpus_rows(store, record, "texts")}
     assert table == set(numbers)
     held = Parted(depot.reader(), text, depot.listed_text(text, 1)["parts"])
     rows = {document: list(tokens) for shard in record["shards"]["plain"]

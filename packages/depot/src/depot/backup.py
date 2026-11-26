@@ -141,7 +141,7 @@ def restore(store, to: str, at: str | None = None, name: str | None = None) -> D
         Path(held.path(chosen)).rename(working)
         found_format = format_of(str(working))
         if found_format != FORMAT:
-            raise OtherFormat(f"the backups of {name} are of format {found_format}, and this wpt restores format "
+            raise OtherFormat(f"the backups of {name} are of format {found_format}, and this depot restores format "
                               f"{FORMAT}")
         con = apsw.Connection(str(working))
         try:

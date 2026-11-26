@@ -21,18 +21,18 @@ import sys
 from pathlib import Path
 
 from dock.api import DockError, dock_from_settings
-from freight import api as freight
+from wpt_corpus import corpora
 from wpt.models import copy_out, names
 from wpt_telemetry import runs
 from wic_utils.lines import ERROR, say
 
 
 def cmd_list(args, store):
-    found = freight.corpora(dock=store.url)
+    found = corpora.records(store)
     say(f"{len(found)} corpora:")
     for record in found:
         say(f"  {record['id']}: {_source(record)}, built {record['built_at']}, {record['total_tokens']:,} tokens of "
-            f"plain text, {record['texts']:,} texts" + ("" if freight.corpus_fresh(record) else ", not fresh"))
+            f"plain text, {record['texts']:,} texts" + ("" if corpora.fresh(record) else ", not fresh"))
     models = names(store)
     say(f"{len(models)} models:")
     for name in models:

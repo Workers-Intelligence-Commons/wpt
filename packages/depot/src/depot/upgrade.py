@@ -151,8 +151,8 @@ decides, and are null otherwise, since format 11 never split them by kind.
 The step to format 13 runs in stages (STAGES_13): its first transaction
 marks the depot half upgraded with a row of upgrade_under_way for each
 stage and one for each dataset revision a corpus record names (NAMED_13:
-the records given, freight.corpora.records of the dock, read once, so a
-run after a stop needs no store), and each stage whose row is left runs,
+the records given, those of the corpora under corpora/ of the dock, read once, so a
+run after a stop needs no dock), and each stage whose row is left runs,
 deleting its row in its last transaction, so a run after a stop starts
 again at the first stage not ended; the last transaction drops the mark.
 Its stage tables, in one transaction, makes the tables of the snapshots,
@@ -659,7 +659,7 @@ def upgrade(address: str, to: str | None = None, upstream: str | None = None, lo
     had). A depot of the code's format is left as it is. upstream: the web
     address of the upstream's web app, for a clone. log: where a step says
     what it does. records: the records of the corpora of the dock
-    (freight.corpora.records), whose dataset revisions the step to format
+    (the records under corpora/, which `depot upgrade` reads), whose dataset revisions the step to format
     13 makes snapshots of; public: the depot's public address, which the
     order data sections that step says name. `depot upgrade` runs check
     first and acts only when it passes; checked: that check, whose measures
@@ -1487,7 +1487,7 @@ def _to_13(db: Database, log, records: list[dict] | None = None, public: str | N
 
 def named_revisions(records: list[dict], own: str) -> dict[tuple[str, int], list[str]]:
     """{(dataset id, revision): the ids of the corpora whose record names
-    it} of the corpus records (freight.corpora.records) built from a
+    it} of the corpus records (those under corpora/ of the dock) built from a
     dataset of the depot named own."""
     found = {}
     for record in records:
@@ -2160,7 +2160,7 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
         for key, corpora in _named_13(con).items():
             named.setdefault(key, []).extend(one for one in corpora if one not in named.get(key, []))
         if records is None and not _named_13(con):
-            lines.append("No store given: only each dataset's current revision converts, not the revisions corpora "
+            lines.append("No dock given: only each dataset's current revision converts, not the revisions corpora "
                          "were built from (set DOCK to the dock that holds them).")
         libraries, datasets, left = conversion.plan(con, named, _reads_here(path))
         state = _state_13(con)

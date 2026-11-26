@@ -391,7 +391,7 @@ def _main(argv, signalled) -> int:
     layer = store_in_layer(environ.get("DOCK", ""))
     if layer is not None:
         say(f"DOCK names {layer}, which is in this container's own files, deleted with the container: name "
-            "a bucket, or leave DOCK unset for the volume dock, or set DOCK_FOLDER to that folder "
+            "a bucket, or leave DOCK unset for the volume wpt-store, or set DOCK_FOLDER to that folder "
             "on this machine to mount it at the same path", ERROR)
         return leave(REFUSED)
     folder = Path(environ.get("WPT_MANAGER_FOLDER") or root / DEFAULT_FOLDER)

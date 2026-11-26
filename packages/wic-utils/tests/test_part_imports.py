@@ -11,8 +11,8 @@
 
 A part is its library and its controllers: the depot is `depot` and
 `depot_app`, the dock `dock` and `dock_app`, the freight `freight` and
-`freight_app`; every other module of packages/*/src, apps/*/src and
-scripts/ is WPT's. A part's own controllers may import all of it.
+`freight_app`; a package's benchmarks (packages/*/bench) are its part's;
+every other module of packages/*/src, apps/*/src and scripts/ is WPT's. A part's own controllers may import all of it.
 
 The test reads the source of every module and fails on any import that
 breaks the rule and is not in EXCEPTIONS, each of which says why it stands.
@@ -59,6 +59,10 @@ def module_files() -> dict[str, Path]:
         for path in source.rglob("*.py"):
             parts = path.relative_to(source).with_suffix("").parts
             found[".".join(parts[:-1] if parts[-1] == "__init__" else parts)] = path
+    for bench in ROOT.glob("packages/*/bench"):  # a package's benchmarks belong to its part
+        [package] = [one.name for one in (bench.parent / "src").iterdir() if (one / "__init__.py").is_file()]
+        for path in bench.glob("*.py"):
+            found[f"{package}.bench.{path.stem}"] = path
     for path in ROOT.glob("scripts/*.py"):
         found[f"scripts.{path.stem}"] = path
     return found

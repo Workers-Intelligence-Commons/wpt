@@ -12,15 +12,15 @@ FROM python:3.14-slim-trixie@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 # the design system's build runs bunx, which is the same program under that name
 RUN ln -s bun /usr/local/bin/bunx
-# rustup and a C toolchain build the tokenizer from source, with the Rust version its rust-toolchain.toml names
+# a C toolchain, for a library the lock has no wheel of for this image (the depot app needs no Rust)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends rustup build-essential ca-certificates \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv==0.13.5
 WORKDIR /app
 COPY . .
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
-RUN uv sync --frozen --no-default-groups --package wpt
+RUN uv sync --frozen --no-default-groups --package depot-app
 # the interface, built by the same code that serves it; then what only the build reads
 RUN .venv/bin/python -c "from depot_app.web import ui; ui.built()" \
     && find . \( -name node_modules -o -name target \) -prune -exec rm -rf {} +
@@ -32,4 +32,4 @@ ENV PATH=/app/.venv/bin:$PATH
 # Bun is not in this image: the build fails here if the interface counts as stale,
 # which would make the server try to build it when it starts
 RUN python -c "from depot_app.web import ui; ui.built()"
-CMD ["wpt", "depot", "web", "--port", "8780"]
+CMD ["depot", "web", "--port", "8780"]

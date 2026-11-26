@@ -8,4 +8,6 @@ chose (docs/api/preparation.md), and the token file format training reads
 
 encoding turns one item into its tokens, as both programs and an estimate
 count them; channel reads and writes the messages of the exchange.
+corpora reads the corpora the depot built before the freight, which the
+dock keeps under corpora/.
 """

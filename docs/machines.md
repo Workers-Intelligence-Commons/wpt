@@ -482,8 +482,8 @@ wins (`DOCK`, the manager's folders, `HOME`, `DOCKER_HOST`).
 | `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus of the order's build key (an order written before snapshots: the corpus last built for its depot and dataset) |
 | `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the dock |
 | `WPT_EVALUATE` | `1`: evaluate the model at the end; off by default |
-| `DOCK` | the dock; unset, a folder on the Compose volume `dock`. A `file://` dock must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |
-| `DOCK_FOLDER` | a folder of the machine, mounted at the same path in the container in place of the volume `dock`; set `DOCK` to `file://` and that path |
+| `DOCK` | the dock; unset, a folder on the Compose volume `wpt-store`. A `file://` dock must name a folder on a volume or a mounted folder: the manager refuses one in the container's own files, which go with the container |
+| `DOCK_FOLDER` | a folder of the machine, mounted at the same path in the container in place of the volume `wpt-store`; set `DOCK` to `file://` and that path |
 | `DOCK_ACCESS_KEY_ID`, `DOCK_SECRET_ACCESS_KEY`, `DOCK_SESSION_TOKEN`, `DOCK_ENDPOINT_URL`, `DOCK_REGION` | an S3 dock's keys and place; the dock reads no `AWS_*` setting |
 | `WPT_KERNELS` | `tilelang`, `triton` or `pytorch`: what computes the attention; unset, rented workers get `triton` for the training and the evaluation |
 | `WPT_GPU_WORKERS` | the gpu workers' keys, or how many to rent; unset, a local worker in the container |

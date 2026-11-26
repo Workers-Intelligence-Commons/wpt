@@ -1,6 +1,6 @@
 """wpt train's side of the links to its gpu workers (docs/machines.md):
 what the workers' training jobs (wpt_worker.training) ask, answered from
-the manager's store, record, checkpoint and tokenizer. Each worker's link
+the manager's dock, record, checkpoint and tokenizer. Each worker's link
 is served on a thread of its own (wpt_worker.manager.run_jobs); the
 answers are the same for every worker, and only the run's main process
 (on worker 0) asks ready, checkpoint.*, step.done and finished.

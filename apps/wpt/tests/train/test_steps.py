@@ -18,7 +18,7 @@ import wpt_agent
 import wpt.train
 from wpt_agent import images, played
 from depot import NewText
-from freight import corpora
+from wpt_corpus import corpora
 from wpt_model import PARTS
 from dock import LocalDock
 from wpt_telemetry import RECORD_FAILED, Telemetry
