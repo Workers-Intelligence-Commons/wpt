@@ -25,6 +25,7 @@ wpt_worker.writing.RemoteWriter is the writer an environment's manager
 part gets (Context.writer): the model on the gpu worker writes its tokens.
 """
 
+import collections
 import functools
 import json
 import threading
@@ -65,6 +66,8 @@ class Training:
         self.lock = threading.Lock()  # around self.parts, which every worker's thread changes
         self.plan = self.ready_found = self.finished = None
         self.done, self.outputs = list(run.done), {}
+        self.offered = {}  # sha256: the reference of a file copied from the dock into the run's folder for the job
+        self.copying = collections.defaultdict(threading.Lock)  # sha256: held while that file is copied, once
 
     def handlers(self, worker) -> dict:
         """The answers to worker's job."""
@@ -76,17 +79,21 @@ class Training:
                 "finished": self._finished, **self.files.handlers()}
 
     def close(self):
+        for file in self.offered.values():
+            self.run.files.release(file)
         self.files.close()
 
     def _offer(self, file: dict) -> dict:
-        """A file of the dock, offered as the job reads it: in parts read
-        straight from the dock (a range a request asks for at most, the
-        parts after it requested ahead on S3), which the job checks against
-        the file's sha256 once it has it whole."""
-        store, key = self.run.store, file["key"]
-        size = dock_api.size(store, key)
-        return self.files.offer_reader(size, file["sha256"], lambda start, length: dock_api.fetch_range(
-            store, key, start, max(0, min(length, size - start))))
+        """A file of the dock, offered to the job: fetched once, whole and
+        checked against its sha256, into the run's own folder (run.files,
+        several parts at once from an S3 dock), and read there by every
+        worker's job; removed when the run ends."""
+        with self.lock:
+            copying = self.copying[file["sha256"]]
+        with copying:  # however many workers ask for it at once
+            path = self.run.files.path(file)
+            self.offered[file["sha256"]] = file
+        return self.files.offer(path, file["sha256"])
 
     def _ready(self, header, body):
         run, telemetry = self.run, self.run.telemetry

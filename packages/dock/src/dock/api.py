@@ -22,7 +22,7 @@ its disk names a path of its own (fetch_into, put_from).
     delete(dock, key)                       a file or a record removed
     put_json(dock, key, record), get_json(dock, key)
                                             a record that holds the sha256 of its fields
-    put_result, get_result, result_maker    a result kept under the fingerprint of what made it
+    put_result, get_result                  a result kept under the fingerprint of what made it, and what made it
     write_record, append_record, flush_records, end_records, read_record, read_new, record_files,
     record_folders                          the run records, runs/<run>/
     NAME, check_name, check_record_name, as_record_name
@@ -47,9 +47,16 @@ from urllib.parse import urlparse
 
 from wic_utils.env import read_env_file
 
-from . import CACHE, FILES, RUNS, SHA256, Dock, RecordReader, local_folder, open_dock, s3_settings
+from . import CACHE, FILES, RUNS, SHA256
+from . import Dock as _Dock
+from . import LocalDock as _LocalDock
+from . import RecordReader as _RecordReader
+from . import S3Dock as _S3Dock
+from . import local_folder as _local_folder
+from . import s3_settings as _s3_settings
 from .errors import CorruptFile, DockError, DockSettingError, MissingFile, MixedRecord, NoDockFolder
-from .names import NAME, File, as_record_name, check_name, check_record_name
+from .names import NAME, as_record_name, check_name, check_record_name
+from .names import File as _File
 
 SETTING = "DOCK"
 CHUNK = 1 << 20
@@ -57,11 +64,11 @@ __all__ = ["NAME", "SETTING", "CorruptFile", "DockError", "DockSettingError", "M
            "NoDockFolder", "append_record", "as_record_name", "check", "check_name", "check_record_name", "content_key", "delete",
            "end_records", "fetch", "fetch_into", "fetch_range", "find", "flush_records", "folders", "get_json",
            "get_result", "has", "put", "put_content", "put_content_from", "put_from", "put_json", "put_result",
-           "read_new", "ready", "read_record", "record_files", "record_folders", "result_maker", "size", "stream", "url",
+           "read_new", "ready", "read_record", "record_files", "record_folders", "size", "stream", "url",
            "write_record"]
 
 _OPENED = {}  # a dock's URL: the dock opened for it, once in each process
-_ENV_FILES = {}  # a dock's URL: the .env file that named it (url), where an S3 dock's keys are read too
+_KEYS = {}  # an S3 dock's URL: its keys and endpoint (s3_settings) as url found them
 _LOCK = threading.Lock()
 
 
@@ -77,36 +84,51 @@ def url(env_file=".env", environ=None) -> str:
     """The dock's URL DOCK gives, in environ (default: the process's
     environment), else in env_file. DockSettingError when neither sets it,
     when it is neither a local file:// URL nor an s3:// one with a bucket,
-    and for an S3 dock whose keys neither sets. An S3 dock of that URL
-    then reads its keys from the same places. Nothing is asked of the dock."""
+    and for an S3 dock whose keys neither sets. The calls that follow open
+    an S3 dock of that URL with the keys found there; one this process
+    opened already keeps the keys it was opened with. Without a call of
+    url, an S3 dock reads its keys from the process's environment, else
+    from .env. Nothing is asked of the dock."""
     environ = os.environ if environ is None else environ
     found = environ.get(SETTING) or read_env_file(env_file).get(SETTING)
     if not found:
         raise DockSettingError(f"{SETTING} is not set: put {SETTING}=file:///path or s3://bucket/prefix in .env")
-    if local_folder(found) is None:
+    if _local_folder(found) is None:
         parsed = urlparse(found)
         if parsed.scheme != "s3":
             raise DockSettingError(f"DOCK must start with file:// or s3://, got {found!r}")
         if not parsed.netloc:
             raise DockSettingError(f"s3 URLs need a bucket: {found!r}")
-        s3_settings(environ, env_file)
-    _ENV_FILES.setdefault(found, env_file)
+        _KEYS[found] = _s3_settings(environ, env_file)
     return found
 
 
-def _dock(dock: str) -> Dock:
+def _open(dock: str) -> _Dock:
+    folder = _local_folder(dock)
+    if folder is not None:
+        return _LocalDock(folder)
+    parsed = urlparse(dock)
+    if parsed.scheme != "s3":
+        raise DockSettingError(f"DOCK must start with file:// or s3://, got {dock!r}")
+    if not parsed.netloc:
+        raise DockSettingError(f"s3 URLs need a bucket: {dock!r}")
+    keys = _KEYS.get(dock)
+    return _S3Dock(parsed.netloc, parsed.path, settings=keys if keys is not None else _s3_settings(None, ".env"))
+
+
+def _dock(dock: str) -> _Dock:
     if not isinstance(dock, str):
         raise TypeError(f"a dock is named by its URL, not {type(dock).__name__}")
     with _LOCK:
         if dock not in _OPENED:
-            opened = open_dock(dock, env_file=_ENV_FILES.get(dock, ".env"))
+            opened = _open(dock)
             opened.copies_only = True  # every read goes to the dock: no copy is kept in its cache folder
             _OPENED[dock] = opened
         return _OPENED[dock]
 
 
 def _file(key: str, sha256: str | None):
-    return key if sha256 is None else File(key, sha256)
+    return key if sha256 is None else _File(key, sha256)
 
 
 def _stored(key, size, packed=".zst") -> tuple[str, int] | None:
@@ -121,7 +143,7 @@ def ready(dock: str):
     folder that does not exist (none is made), DockSettingError for a bad
     URL or missing keys, whatever the folder or the bucket raised
     otherwise."""
-    folder = local_folder(dock)
+    folder = _local_folder(dock)
     if folder is not None and not folder.is_dir():
         raise NoDockFolder(f"{folder} does not exist")
     _dock(dock).kind.list(f"{RUNS}/", deep=False)
@@ -162,7 +184,7 @@ def size(dock: str, key: str) -> int:
     held.refresh(key)
     if held._stored(key, fresh=True) is None:
         raise MissingFile(f"{key} is not on the dock")
-    return held.size(File(key, "0" * 64))
+    return held.size(_File(key, "0" * 64))
 
 
 # Fetching
@@ -174,7 +196,7 @@ def fetch(dock: str, key: str, sha256: str | None = None) -> bytes:
     held = _dock(dock)
     held.refresh(key)
     if sha256 is not None:
-        return held.get_bytes(File(key, sha256))
+        return held.get_bytes(_File(key, sha256))
     data = held.whole(key)
     if data is None:
         raise MissingFile(f"{key} is not on the dock")
@@ -185,12 +207,13 @@ def fetch_range(dock: str, key: str, start: int, length: int) -> bytes:
     """length bytes of the file under key from start, without fetching the
     rest of it: a compressed file's frames are read a few at a time and
     kept a while, and on S3 the frames after a read going through the file
-    are requested ahead. What the process learned of the file serves the
+    are requested ahead; a file kept as it is is read in place, one request
+    per call. What the process learned of the file serves the
     reads that follow: a file another process replaced since is read anew
     after size, fetch, stream or fetch_into of its key. A range cannot be
     checked against the file's sha256: the caller checks it against a hash
     of its own. MissingFile, or CorruptFile when the file ends first."""
-    return _dock(dock).read_range(File(key, "0" * 64), start, length)
+    return _dock(dock).read_range(_File(key, "0" * 64), start, length)
 
 
 def stream(dock: str, key: str, start: int = 0, length: int | None = None) -> Iterator[bytes]:
@@ -309,16 +332,12 @@ def put_result(dock: str, stage: str, fingerprint: str, data: bytes, made_by: st
     return _dock(dock).put_result(stage, fingerprint, data, made_by)
 
 
-def get_result(dock: str, stage: str, fingerprint: str) -> bytes | None:
-    """A result's bytes, checked against their sha256; None when there is
-    none."""
-    return _dock(dock).get_result(stage, fingerprint)[0]
-
-
-def result_maker(dock: str, stage: str, fingerprint: str) -> str | None:
-    """What made a result, as put_result got it; None when there is none
-    or nothing was said."""
-    return _dock(dock).get_result(stage, fingerprint)[1]
+def get_result(dock: str, stage: str, fingerprint: str) -> tuple[bytes, str | None] | None:
+    """(a result's bytes, checked against their sha256; what made it, as
+    put_result got it, None when nothing was said), read once; None when
+    there is no result."""
+    data, made_by = _dock(dock).get_result(stage, fingerprint)
+    return None if data is None else (data, made_by)
 
 
 # Run records
@@ -360,7 +379,7 @@ def read_new(dock: str, run: str, name: str, cursor: dict | None = None) -> tupl
     since it began), and the cursor to give next time, a JSON value: what
     a reader of a run still going reads as it grows. A read that raises
     moves nothing."""
-    reader = RecordReader(_dock(dock), run, name)
+    reader = _RecordReader(_dock(dock), run, name)
     if cursor is not None:
         reader.seen, reader.plain = set(cursor["parts"]), cursor["plain"]
     data = reader.read()

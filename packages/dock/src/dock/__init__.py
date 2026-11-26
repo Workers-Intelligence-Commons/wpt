@@ -67,16 +67,15 @@ DOCK_SECRET_ACCESS_KEY (both needed), DOCK_SESSION_TOKEN,
 DOCK_ENDPOINT_URL and DOCK_REGION (default us-east-1). The
 dock reads no AWS_* setting (no AWS_ENDPOINT_URL, no AWS_PROFILE) and no
 AWS configuration or credentials file, so the keys a cloud provider's
-other tools use never reach it. A dock keeps local copies in its cache
-folder: an S3 dock every file read as a file, after its check; a local
-dock the compressed ones read as a file, which it cannot give in place. release() removes a
-copy; copies_in(folder) is the same dock making in folder only the copies
-its work asks for as files, for work that keeps none. A local dock keeps
-that folder and its scratch folder under .local/ at its root, which is no
-part of the dock. A dock sent to another process (pickled) opens the same
-dock there. dock.api opens each dock it serves keeping no copies
-(copies_only): copy_to() writes a file into a path its caller names, and
-stream() gives a file's bytes in pieces; neither path() nor the cache
+other tools use never reach it. A dock opened by itself keeps local
+copies in its cache folder: an S3 dock every file read as a file
+(path()), after its check; a local dock the compressed ones, which it
+cannot give in place. release() removes a copy. A local dock keeps that
+folder and its scratch folder under .local/ at its root, which is no part
+of the dock. dock.api opens each dock it serves keeping no copies
+(copies_only): copy_to() writes a file into a path its caller names,
+stream() gives a file's bytes in pieces, and the cache folder holds only
+what a write gathers before it is sent; neither path() nor the cache
 folder leaves the package.
 
 Failures: DockSettingError (no or bad DOCK), MissingFile (no such
@@ -213,7 +212,7 @@ class Dock:
 
     def __init__(self, kind, cache):
         self.kind, self.cache = kind, Path(cache)
-        self.copies_only = False  # a view of copies_in: only path() makes a local copy
+        self.copies_only = False  # as dock.api opens it: no copy is kept, and only path() makes one
         self._record_kinds = {}  # (folder, name) -> WHOLE or APPENDED, as this dock learned it
         self._tables, self._frames, self._keys = _Kept(TABLES_KEPT), _Kept(FRAMES_KEPT), _Kept(KEYS_KEPT)
         self._ahead = Ahead()  # reads of a kind that waits (S3) with several requests in flight
@@ -353,11 +352,11 @@ class Dock:
         return None
 
     def refresh(self, key: str):
-        """Forget what is kept in memory about the file under key when
-        another process replaced it since the last refresh (its version
-        changed)."""
+        """Forget what is kept in memory about the file under key unless
+        the last refresh saw it at the version it has now: another process
+        may have replaced it since this one learned of it."""
         now = self.version(key)
-        if self._versions.get(key) not in (None, now):
+        if self._versions.get(key) != now:
             self.forget(key)
         self._versions.put(key, now)
 
@@ -391,7 +390,7 @@ class Dock:
         """A local file holding the file, checked against its sha256. A
         copy in the cache folder when it is not a local file as it is
         (every file of an S3 dock, a local dock's compressed ones),
-        and always in a view of copies_in: the copy stays until release()."""
+        and always when copies_only: the copy stays until release()."""
         file = self._file(what)
         key = self._found(file)
         local = self._local(file)
@@ -411,7 +410,7 @@ class Dock:
     def get_bytes(self, what) -> bytes:
         """The file's bytes, checked against its sha256. A file that is
         not a local one is read through a copy in the cache folder (kept
-        until release()), except in a view of copies_in, which reads it
+        until release()), except when copies_only, which reads it
         straight from the dock and keeps no copy."""
         file = self._file(what)
         key = self._found(file)
@@ -495,7 +494,8 @@ class Dock:
     def stream(self, key, start=0, length=None, chunk=8 * CHUNK):
         """The original bytes of the file under key from start, length of
         them (None: up to its end), in pieces of at most chunk bytes, read
-        as read_range reads (the frames after them requested ahead on S3).
+        as read_range reads (a compressed file's frames after them
+        requested ahead on S3).
         MissingFile when there is no such file."""
         stored = self._stored(key)
         if stored is None:
@@ -530,31 +530,6 @@ class Dock:
         for stored in (file.key + PACKED, file.key):
             self.kind.delete(stored)
         self.forget(file.key)
-
-    def copies_in(self, folder) -> "Dock":
-        """The same dock, whose local copies of files go into folder
-        instead of its cache folder, for work that keeps none: removing
-        folder afterwards removes every copy that work made. Only a file
-        the work asks for as a file (path(), file_path()) is copied, a local
-        dock's own files too, so the work never opens a file of the dock
-        itself; everything else is read from the dock (get_bytes,
-        read_range, read_file, file_parts). A copy folder already holds is
-        read instead. Copies already in the cache folder are not read. Not
-        for run records."""
-        self.compressing()  # made before the copy, so every view shares this dock's one
-        view = copy.copy(self)
-        view.cache, view.copies_only = Path(folder), True
-        return view
-
-    def __reduce__(self):
-        """A dock sent to another process (a worker process of the same
-        run) is the same dock opened there, with the same cache folder,
-        a view of copies_in stays one."""
-        return _reopened, (self._opening(), str(self.cache), self.copies_only)
-
-    def _opening(self):
-        """(a class, its arguments) that open this dock again."""
-        raise NotImplementedError
 
     def _found(self, file: File):
         key = self._stored(file.key)
@@ -1031,8 +1006,6 @@ class LocalDock(Dock):
         with self._pending_lock:
             self._unsynced.difference_update(paths)
 
-    def _opening(self):
-        return LocalDock, (str(self.root),)
 
 
 S3_SETTINGS = {"access_key_id": "DOCK_ACCESS_KEY_ID", "secret_access_key": "DOCK_SECRET_ACCESS_KEY",
@@ -1085,7 +1058,6 @@ class S3Dock(Dock):
         cache = Path(cache_dir) if cache_dir else _default_cache() / bucket / (self.prefix or "_")
         super().__init__(Bucket(self.client, bucket, self.prefix), cache)
         self.scratch = self.cache / "scratch"
-        self._own_cache = str(cache)
 
     def __repr__(self):
         return f"S3Dock(s3://{self.bucket}/{self.prefix})"
@@ -1095,8 +1067,6 @@ class S3Dock(Dock):
         """The DOCK value that opens this dock (open_dock)."""
         return f"s3://{self.bucket}/{self.prefix}"
 
-    def _opening(self):
-        return S3Dock, (self.bucket, self.prefix, self._own_cache, None, self.settings)  # its client, from the same settings
 
 
 def _own_session():
@@ -1135,13 +1105,6 @@ def _append(path: Path, data: bytes):
             view = view[file.write(view):]
 
 
-def _reopened(opening, cache, copies_only) -> Dock:
-    kind, arguments = opening
-    store = kind(*arguments)
-    store.cache, store.copies_only = Path(cache), copies_only
-    return store
-
-
 def local_folder(url: str) -> Path | None:
     """The folder a file:// DOCK value names; None for any other
     value. DockSettingError for a file:// value that is not local."""
@@ -1168,15 +1131,6 @@ def open_dock(url: str, environ=None, env_file=None) -> Dock:
             raise DockSettingError(f"s3 URLs need a bucket: {url!r}")
         return S3Dock(parsed.netloc, parsed.path, settings=s3_settings(environ, env_file))
     raise DockSettingError(f"DOCK must start with file:// or s3://, got {url!r}")
-
-
-def dock_from_settings(env_file=".env", environ=None) -> Dock:
-    """The dock named by DOCK in the environment, else in env_file (an s3 dock's keys likewise)."""
-    environ = os.environ if environ is None else environ
-    url = environ.get("DOCK") or read_env_file(env_file).get("DOCK")
-    if not url:
-        raise DockSettingError("DOCK is not set: put DOCK=file:///path or s3://bucket/prefix in .env")
-    return open_dock(url, environ, env_file)
 
 
 def _default_cache():

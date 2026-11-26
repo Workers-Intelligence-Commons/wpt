@@ -20,7 +20,6 @@ from wpt_agent import images, played
 from depot import NewText
 from wpt_corpus import corpora
 from wpt_model import PARTS
-from dock import LocalDock
 from wpt_telemetry import RECORD_FAILED, Telemetry
 from wpt_tokenizer import chat
 from wpt_training import Context, Data, Strategy, in_process, load_step, step_seed
@@ -398,14 +397,14 @@ def test_a_refused_attempt_line_stops_the_run_with_the_record_error_code(built, 
     # part of the record does: exit code 3, no model written
     dataset, _ = task_corpus(built, tmp_path)
     no_sandbox(monkeypatch)  # a dropped attempt is kept too
-    real = LocalDock._raw_append_record
+    real = dock_api.append_record
 
-    def disk_full(self, folder, name, data):
+    def disk_full(dock, folder, name, data):
         if name == "finish-tasks-attempts.jsonl":
             raise OSError(28, "No space left on device")
-        real(self, folder, name, data)
+        real(dock, folder, name, data)
 
-    monkeypatch.setattr(LocalDock, "_raw_append_record", disk_full)
+    monkeypatch.setattr(dock_api, "append_record", disk_full)
     with pytest.raises(SystemExit) as stopped:
         train([built.order("agent", training=one_stage(1, 1024), steps=[{"step": "finish-tasks"}], snapshot="tasks"),
                dataset, "--out", "model"])

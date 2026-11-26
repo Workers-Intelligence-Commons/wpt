@@ -3,7 +3,7 @@ file checked against its sha256."""
 
 import pytest
 
-from dock import CorruptFile, MissingFile
+from dock.api import CorruptFile, MissingFile
 from wpt.models import copy_out, keep_model, put_model
 
 

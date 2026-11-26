@@ -787,8 +787,11 @@ class StepResults:
     def found(self, mark) -> dict | None:
         """The result of the step of fingerprint mark, its own sha256 in
         "result"; None when none is kept."""
-        data = dock_api.get_result(self.store, self.STAGE, mark)
-        return None if data is None else {**json.loads(data), "result": hashlib.sha256(data).hexdigest()}
+        found = dock_api.get_result(self.store, self.STAGE, mark)
+        if found is None:
+            return None
+        data = found[0]
+        return {**json.loads(data), "result": hashlib.sha256(data).hexdigest()}
 
     def keep(self, mark, state, about) -> str:
         """Keep a step's checkpoint state, the file state (a reference {"key",

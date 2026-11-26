@@ -228,9 +228,8 @@ def checkout(root, left_out: str) -> bytes:
 
 
 class Files:
-    """The files the manager offers its job (offer: a local file, or
-    offer_reader: one it reads where it lies; an id the job reads through
-    file.range, part by part), and those the job sends it
+    """The files the manager offers its job (offer: an id the job reads
+    through file.range, part by part), and those the job sends it
     (upload.*: each into a file of folder, complete once its sha256
     matches; received(id) gives its path, which the caller then owns)."""
 
@@ -248,14 +247,6 @@ class Files:
             sha256 = sha256_file(path)
         return {"file": number, "size": path.stat().st_size, "sha256": sha256}
 
-    def offer_reader(self, size: int, sha256: str, read) -> dict:
-        """A file the manager reads where it lies, read(start, length)
-        giving its bytes, offered as offer() offers a local file; the job
-        checks it against sha256 when it has it whole."""
-        number = f"f{next(self._numbers)}"
-        self.offered[number] = read
-        return {"file": number, "size": size, "sha256": sha256}
-
     def handlers(self) -> dict:
         return {"file.range": self._range, "upload.start": self._start, "upload.part": self._part,
                 "upload.end": self._end}
@@ -269,8 +260,6 @@ class Files:
         path = self.offered.get(header["file"])
         if path is None:
             raise ValueError(f"no file {header['file']} is offered")
-        if callable(path):
-            return {}, path(header["start"], min(header["length"], PART))
         with open(path, "rb") as file:
             file.seek(header["start"])
             return {}, file.read(min(header["length"], PART))

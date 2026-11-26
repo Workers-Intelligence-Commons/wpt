@@ -211,13 +211,14 @@ def trained(request, built, tmp_path, monkeypatch):
 def s3(tmp_path, monkeypatch):
     """An S3 dock that DOCK now names (moto answers its requests inside
     the test process).
-    Gives store, copy(local), which puts a local dock's files into it (the
-    built corpus, for a command that reads it), and refuse(marker), after which the bucket refuses every group of
-    record lines that holds marker."""
+    Gives store, copy(local), which puts a local dock's files into it, its
+    run records left out (the built corpus, for a command that reads it),
+    and refuse(marker), after which the bucket refuses every group of
+    record lines that holds marker: once such a line is added, every send
+    of the lines held back fails, as it would on S3, where they stay held
+    back."""
     import boto3
     from moto import mock_aws
-
-    from dock import S3Dock
 
     for name, value in {"DOCK_ACCESS_KEY_ID": "test", "DOCK_SECRET_ACCESS_KEY": "test", "AWS_DEFAULT_REGION": "us-east-1",
                         "XDG_CACHE_HOME": str(tmp_path / "cache"), "LOCALAPPDATA": str(tmp_path / "cache")}.items():
@@ -230,18 +231,24 @@ def s3(tmp_path, monkeypatch):
         monkeypatch.setenv("DOCK", store)
 
         def copy(local):
-            source, target = dock_api._dock(local), dock_api._dock(store)
-            for key in source.kind.list(""):
-                target.kind.write(key, source.root / key)
+            for found in dock_api.find(local, ""):
+                if not found["key"].startswith("runs/"):
+                    dock_api.put(store, found["key"], dock_api.stream(local, found["key"]))
 
         def refuse(marker):
-            real = S3Dock._raw_flush_records
+            append, flush, held = dock_api.append_record, dock_api.flush_records, []
 
-            def refusing(self):
-                if any(marker in data for additions in self._pending.values() for *_, data in additions):
+            def appending(dock, run, name, data):
+                append(dock, run, name, data)
+                if dock == store and marker in data:
+                    held.append(name)
+
+            def refusing(dock):
+                if dock == store and held:
                     raise OSError("the bucket refused the request")
-                real(self)
+                flush(dock)
 
-            monkeypatch.setattr(S3Dock, "_raw_flush_records", refusing)
+            monkeypatch.setattr(dock_api, "append_record", appending)
+            monkeypatch.setattr(dock_api, "flush_records", refusing)
 
         yield SimpleNamespace(store=store, copy=copy, refuse=refuse)

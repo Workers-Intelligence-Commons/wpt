@@ -1013,7 +1013,7 @@ def _interrupt_main():
 
 def set_result(dock, stage, fingerprint, data, telemetry):
     """Keep data, a result the build can compute again, as
-    cache/<stage>/<fingerprint> (Store.put_result): the event
+    cache/<stage>/<fingerprint> (dock.api.put_result): the event
     "store.result_set" goes with the next group of lines, so a run that
     keeps one result per source writes no part of the record for each. A
     crash may leave such a result unrecorded; it then only saves work. The
@@ -1026,9 +1026,11 @@ def set_result(dock, stage, fingerprint, data, telemetry):
 def get_result(dock, stage, fingerprint, telemetry):
     """The bytes of a result set_result kept, None without one, noting it
     in telemetry when another commit made it (Telemetry.note_reused)."""
-    data = dock_api.get_result(dock, stage, fingerprint)
-    if data is not None:
-        telemetry.note_reused(stage, fingerprint, dock_api.result_maker(dock, stage, fingerprint))
+    found = dock_api.get_result(dock, stage, fingerprint)
+    if found is None:
+        return None
+    data, made_by = found
+    telemetry.note_reused(stage, fingerprint, made_by)
     return data
 
 

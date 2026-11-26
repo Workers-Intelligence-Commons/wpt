@@ -100,7 +100,7 @@ def amd_note(chips):
 def store_folder():
     """The local folder DOCK names (environment, else .env at the
     root), as dock reads it; None when it names no local folder."""
-    # mirrors dock.dock_from_settings, which this cannot import: it runs before anything is installed
+    # mirrors dock.api.url, which this cannot import: it runs before anything is installed
     url = os.environ.get("DOCK")
     if not url:
         try:

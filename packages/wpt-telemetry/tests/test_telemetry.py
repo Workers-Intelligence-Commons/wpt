@@ -14,7 +14,6 @@ from opentelemetry._logs import SeverityNumber
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 
 import wpt_telemetry
-from dock import LocalDock
 from dock import api as dock_api
 from wpt_telemetry import ENDPOINT, FLUSH_THREAD, RELAY_THREAD, RecordError, Telemetry, runs
 from wic_utils.lines import ERROR, WARNING, bare
@@ -24,9 +23,9 @@ from wic_utils.lines import ERROR, WARNING, bare
 PATIENCE = 120
 
 
-def opened(store):
-    """The dock dock.api opened for that URL in this process, whose parts a test makes fail."""
-    return dock_api._dock(store)
+def keys(store, prefix):
+    """The keys of the dock's files under prefix."""
+    return [one["key"] for one in dock_api.find(store, prefix)]
 
 
 def _run(folder) -> str:
@@ -58,9 +57,9 @@ def test_a_local_record_holds_its_events_as_one_compressed_part_once_the_run_end
     with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
         telemetry.event("one")
         # while the run goes, its events are in the plain file, whole after a crash
-        assert any(key.endswith("events.jsonl.open") for key in opened(store).kind.list(_run(telemetry.folder)))
+        assert any(key.endswith("events.jsonl.open") for key in keys(store, _run(telemetry.folder)))
         assert [e["name"] for e in events(store, telemetry.folder) if e.get("kind") == "event"] == ["one"]
-    stored = opened(store).kind.list(_run(telemetry.folder))
+    stored = keys(store, _run(telemetry.folder))
     assert not any(key.endswith(".open") for key in stored)
     assert len([key for key in stored if f"/events.jsonl/" in key]) == 1
     assert record(store, telemetry.folder, "end.json")["status"] == "succeeded"
@@ -73,7 +72,7 @@ def test_a_result_is_found_from_its_fingerprint(tmp_path):
         assert wpt_telemetry.get_result(store, "stage", "abc", telemetry) is None
         wpt_telemetry.set_result(store, "stage", "abc", b"what the stage gave\n", telemetry)
         assert wpt_telemetry.get_result(store, "stage", "abc", telemetry) == b"what the stage gave\n"
-    assert opened(store).has_result("stage", "abc")
+    assert dock_api.get_result(store, "stage", "abc") is not None
 
 
 def test_a_backend_that_cannot_be_reached_gets_one_warning_and_the_run_goes_on(tmp_path, capsys, monkeypatch):
@@ -311,19 +310,20 @@ def test_a_record_that_cannot_be_read_gets_one_warning_and_its_lines_go_once_it_
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket="wpt-test")
         store = "s3://wpt-test/records"
-        read, refused = opened(store).kind.read, []
+        read_new, refused = dock_api.read_new, []
 
         with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env",
                              environ={ENDPOINT: otlp_backend.endpoint},
                              echo=lambda text, level: printed.append((text, level))) as run:
             with run.relay(), joined_to(run, store, tmp_path) as joined:
-                def failing(key, *rest):
-                    if "events.jsonl/" in key and len(refused) < 3:
-                        refused.append(key)
+                def failing(dock, folder, name, cursor=None):
+                    data, after = read_new(dock, folder, name, cursor)
+                    if name == "events.jsonl" and data and len(refused) < 3:  # lines were there to read
+                        refused.append(name)
                         raise OSError("the bucket did not answer")
-                    return read(key, *rest)
+                    return data, after
 
-                monkeypatch.setattr(opened(store).kind, "read", failing)
+                monkeypatch.setattr(dock_api, "read_new", failing)
                 joined.log("kept")
                 joined.irreversible("sent")  # the dock's lines reach the bucket
                 wait_for(lambda: len(refused) == 3)  # the run goes on, and each read is tried again
@@ -345,15 +345,15 @@ def test_a_read_of_a_long_backlog_sends_every_line(tmp_path, otlp_backend):
 
 
 def relay_listing(store, monkeypatch, listed):
-    """Calls listed each time the relay's thread lists the dock."""
-    listing = opened(store).kind.list
+    """Calls listed each time the relay's thread reads the dock."""
+    read_new = dock_api.read_new
 
-    def noted(prefix, **options):
+    def noted(dock, *arguments):
         if threading.current_thread().name == RELAY_THREAD:
             listed()
-        return listing(prefix, **options)
+        return read_new(dock, *arguments)
 
-    monkeypatch.setattr(opened(store).kind, "list", noted)
+    monkeypatch.setattr(dock_api, "read_new", noted)
 
 
 def test_a_dock_that_stops_answering_does_not_hold_up_the_end_of_a_relay(tmp_path, monkeypatch, otlp_backend,
@@ -386,7 +386,7 @@ def test_a_relay_whose_record_broke_ends_without_a_last_read(tmp_path, monkeypat
         with Telemetry.start(store, "wpt train", [], "d", env_file=tmp_path / ".env",
                              environ={ENDPOINT: otlp_backend.endpoint}, echo=lambda *_: None) as run:
             with run.relay():
-                monkeypatch.setattr(LocalDock, "_raw_flush_records", refuse)
+                monkeypatch.setattr(dock_api, "flush_records", refuse)
     assert relay_threads() == [] and reads == []
 
 
@@ -509,10 +509,11 @@ def test_on_s3_lines_go_in_groups_and_a_refused_send_stops_the_run(tmp_path, mon
                 ended = [e["kind"] for e in events("s3://wpt-test/records", telemetry.folder)]
                 assert ended[-4:] == ["span_start", "event", "span_end", "event"]
 
-                def refused(**request):
+                def refused(*arguments):
                     raise OSError("the bucket refused the request")
 
-                monkeypatch.setattr(opened(store).client, "put_object", refused)
+                for call in ("write_record", "flush_records", "put_json"):  # every write the record makes
+                    monkeypatch.setattr(dock_api, call, refused)
                 telemetry.irreversible("model.folder_replaced")
                 telemetry.log("never reached")
         assert "end.json" not in dock_api.record_files(store, telemetry.folder)
@@ -521,15 +522,15 @@ def test_on_s3_lines_go_in_groups_and_a_refused_send_stops_the_run(tmp_path, mon
 def refused_in_the_background(monkeypatch):
     """The dock refuses every send made by the flush thread, which now
     tries every few hundredths of a second; the command's own sends pass."""
-    real = LocalDock._raw_flush_records
+    real = dock_api.flush_records
 
-    def refuse(self):
+    def refuse(dock):
         if threading.current_thread().name == FLUSH_THREAD:
             raise OSError(28, "No space left on device")
-        real(self)
+        real(dock)
 
     monkeypatch.setattr(wpt_telemetry, "FLUSH_SECONDS", 0.02)
-    monkeypatch.setattr(LocalDock, "_raw_flush_records", refuse)
+    monkeypatch.setattr(dock_api, "flush_records", refuse)
 
 
 def test_a_record_that_broke_in_the_background_ends_the_run_in_record_error(tmp_path, monkeypatch):
@@ -592,12 +593,12 @@ def test_a_ctrl_c_while_a_broken_record_closes_still_ends_in_record_error(tmp_pa
     # a record that broke must end the command with code 3 even when a stop
     # asked by the user reaches it while the record closes: never with 130
     store = (tmp_path / "store").as_uri()
-    real = LocalDock._raw_append_record
+    real = dock_api.append_record
 
-    def disk_full(self, folder, name, data):
+    def disk_full(dock, folder, name, data):
         if b"refused" in data:
             raise OSError(28, "No space left on device")
-        real(self, folder, name, data)
+        real(dock, folder, name, data)
 
     stop_flushing = Telemetry._stop_flushing
 
@@ -605,7 +606,7 @@ def test_a_ctrl_c_while_a_broken_record_closes_still_ends_in_record_error(tmp_pa
         stop_flushing(self)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(LocalDock, "_raw_append_record", disk_full)
+    monkeypatch.setattr(dock_api, "append_record", disk_full)
     monkeypatch.setattr(Telemetry, "_stop_flushing", ctrl_c)
     with pytest.raises(RecordError, match="No space left on device"):
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
@@ -634,13 +635,13 @@ def test_a_record_failure_while_the_record_starts_ends_in_record_error_not_a_sto
     # a background send that fails must never reach start() as a Ctrl+C:
     # that would end the command with 130, the code of a stop by the user
     refused_in_the_background(monkeypatch)
-    real = LocalDock._raw_write_record
+    real = dock_api.write_record
 
-    def slow(self, folder, name, data):
+    def slow(dock, folder, name, data):
         time.sleep(0.2)  # ten times the flush thread's period in this test
-        real(self, folder, name, data)
+        real(dock, folder, name, data)
 
-    monkeypatch.setattr(LocalDock, "_raw_write_record", slow)
+    monkeypatch.setattr(dock_api, "write_record", slow)
     store = (tmp_path / "store").as_uri()
     with pytest.raises(RecordError, match="No space left on device"):
         with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:
@@ -650,7 +651,7 @@ def test_a_record_failure_while_the_record_starts_ends_in_record_error_not_a_sto
 def test_a_bad_file_name_or_a_mixed_file_is_the_callers_error_and_the_record_goes_on(tmp_path):
     # a step or a test that names a file wrongly made a mistake; the record
     # itself is fine and the run must still end with its end.json
-    from dock import MixedRecord
+    from dock.api import MixedRecord
 
     store = (tmp_path / "store").as_uri()
     with Telemetry.start(store, "wpt-example", [], "d", env_file=tmp_path / ".env", environ={}) as telemetry:

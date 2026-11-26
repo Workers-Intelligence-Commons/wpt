@@ -17,7 +17,7 @@ from safetensors.torch import load_file
 from wpt_inference import COSTS_FILE, DRAFT, costs_setup, replayed_costs
 from wpt_model import DrafterMismatch, load_drafter, load_model, load_tokenizer, tokenizer_identity, weight_hashes
 import wpt_telemetry
-from dock import LocalDock, DockError
+from dock.api import DockError
 from dock import api as dock_api
 from wpt_telemetry import FLUSH_THREAD
 from wpt_tokenizer import Tokenizer
@@ -80,7 +80,7 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     [step] = provenance["steps"]
     assert step["step"]["name"] == "read-text" and step["updates"] == 3 and not step["reused"]
     # the step's result is kept on the dock, under its fingerprint
-    assert hashlib.sha256(dock_api.get_result(store, "steps", step["fingerprint"])).hexdigest() == step["result"]
+    assert hashlib.sha256(dock_api.get_result(store, "steps", step["fingerprint"])[0]).hexdigest() == step["result"]
     assert [s["token_sha256"] for s in provenance["shards"]] == [s["token_sha256"] for s in record["shards"]["plain"]]
 
 
@@ -305,14 +305,14 @@ def test_a_record_the_dock_refuses_stops_the_run_once_its_checkpoint_is_saved(bu
     # without its record a run must do nothing more than keep its work: it
     # finishes the step and saves its checkpoint, takes no further step,
     # writes no model, and says why
-    real = LocalDock._raw_append_record
+    real = dock_api.append_record
 
-    def disk_full_at_step_3(self, folder, name, data):
+    def disk_full_at_step_3(dock, folder, name, data):
         if b'"name": "training.step"' in data and b'"step": 3,' in data:
             raise OSError(28, "No space left on device")
-        real(self, folder, name, data)
+        real(dock, folder, name, data)
 
-    monkeypatch.setattr(LocalDock, "_raw_append_record", disk_full_at_step_3)
+    monkeypatch.setattr(dock_api, "append_record", disk_full_at_step_3)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")  # the checkpoint it saves comes to this machine
     with pytest.raises(SystemExit) as stopped:
         main([built.order("five", training=one_stage(5)), built.corpus_id, "--out", "model"])
@@ -333,15 +333,15 @@ def test_a_send_refused_in_the_background_keeps_the_step_in_the_dock_checkpoint(
     # done: the step ends, the dock's checkpoint holds it, unrecorded, and
     # --resume gives the model of an unbroken run. The checkpoint it replaced
     # is not deleted, since its deletion could not be recorded first
-    real, now = LocalDock._raw_flush_records, tmp_path / "refuse-now"  # the gpu worker's job makes now at update 3
+    real, now = dock_api.flush_records, tmp_path / "refuse-now"  # the gpu worker's job makes now at update 3
 
-    def refused_in_the_background(self):
+    def refused_in_the_background(dock):
         if threading.current_thread().name == FLUSH_THREAD and now.exists():
             raise OSError(28, "No space left on device")
-        real(self)
+        real(dock)
 
     monkeypatch.setattr(wpt_telemetry, "FLUSH_SECONDS", 0.02)
-    monkeypatch.setattr(LocalDock, "_raw_flush_records", refused_in_the_background)
+    monkeypatch.setattr(dock_api, "flush_records", refused_in_the_background)
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "every")
     options = [*interrupting(built, tmp_path, "if os.environ.get('REFUSE'): open(os.environ['REFUSE'], 'w').close(); "
                                               "__import__('time').sleep(2)"), "--checkpoint-every", "1"]
@@ -379,15 +379,15 @@ def test_training_into_a_model_folder_replaces_it_whole_and_only_once_recorded(b
     (folder / "notes.txt").write_text("mine\n")
     before = {path.name: path.read_bytes() for path in folder.iterdir() if path.is_file()}
 
-    real = LocalDock._raw_append_record
+    real = dock_api.append_record
 
-    def disk_full_at_the_files(self, record, name, data):
+    def disk_full_at_the_files(dock, record, name, data):
         if b'"name": "model.files"' in data:
             raise OSError(28, "No space left on device")
-        real(self, record, name, data)
+        real(dock, record, name, data)
 
     with monkeypatch.context() as patch:
-        patch.setattr(LocalDock, "_raw_append_record", disk_full_at_the_files)
+        patch.setattr(dock_api, "append_record", disk_full_at_the_files)
         with pytest.raises(SystemExit) as stopped:
             main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert stopped.value.code == 3
@@ -442,7 +442,7 @@ def test_every_checkpoint_deleted_from_the_dock_is_named_in_the_record_first(bui
     assert len({sha for sha, _ in deleted}) == 2 and all(named for _, named in deleted)
     assert checkpoint(built.store, "fox-1") is None
     [step] = json.loads((tmp_path / "model" / "provenance.json").read_text())["steps"]
-    state = json.loads(dock_api.get_result(built.store, "steps", step["fingerprint"]))["state"]
+    state = json.loads(dock_api.get_result(built.store, "steps", step["fingerprint"])[0])["state"]
     assert dock_files.has(built.store, state) and state["key"] not in {key for key, _ in deleted}
     assert state["key"].startswith("models/fox-1/")  # beside the run's checkpoint record
 

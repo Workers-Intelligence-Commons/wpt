@@ -16,9 +16,11 @@ every other module of packages/*/src, apps/*/src and scripts/ is WPT's. A part's
 
 The test reads the source of every module and fails on any import that
 breaks the rule and is not in EXCEPTIONS, each of which says why it stands.
-It also fails on any name of dock.api that another part imports and that is
-neither a function, an error, nor a plain value: the dock is named by its
-URL, and no part holds a dock object (docs/api/dock.md, "The calls").
+It also fails on any name of dock.api that another part takes, imported
+(`from dock.api import X`) or read from the module (`api.X` after `from dock
+import api`), and that is neither a function, an error, nor a plain value
+the module lists in __all__: the dock is named by its URL, and no part holds
+a dock object (docs/api/dock.md, "The calls").
 The tests themselves are left out: they build the depots, docks and
 deliveries they check.
 """
@@ -136,12 +138,53 @@ def dock_values(name: str) -> bool:
     return inspect.isfunction(found) or isinstance(found, (str, int, float, re.Pattern))
 
 
+def dock_names(path: Path) -> list[tuple[int, str]]:
+    """(line, name) of each name the file reads from the module dock.api
+    through a name bound to it: `api.fetch` after `from dock import api`,
+    `dock_api.X` after `... as dock_api`, `dock.api.X` after `import
+    dock.api`."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bound = set()  # the names the file binds to dock.api
+    whole = False  # whether the file reads it as dock.api
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "dock" and not node.level:
+            bound |= {alias.asname or alias.name for alias in node.names if alias.name == "api"}
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "dock.api":
+                    if alias.asname:
+                        bound.add(alias.asname)
+                    else:
+                        whole = True
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if isinstance(node.value, ast.Name) and node.value.id in bound:
+            found.append((node.lineno, node.attr))
+        elif (whole and isinstance(node.value, ast.Attribute) and node.value.attr == "api"
+              and isinstance(node.value.value, ast.Name) and node.value.value.id == "dock"):
+            found.append((node.lineno, node.attr))
+    return found
+
+
 def test_other_parts_take_from_the_dock_only_functions_errors_and_values():
     found = sorted(f"{path.relative_to(ROOT).as_posix()}:{line}: {module} imports {name}"
                    for module, path in module_files().items() if part_of(module) != DOCK
                    for line, name in imported(module, path)
                    if name.startswith("dock.api.") and not dock_values(name.removeprefix("dock.api.")))
+    found += sorted(f"{path.relative_to(ROOT).as_posix()}:{line}: {module} reads dock.api.{name}"
+                    for module, path in module_files().items() if part_of(module) != DOCK
+                    for line, name in dock_names(path) if not dock_values(name))
     assert found == [], "names of dock.api that are no function, error or value:\n" + "\n".join(found)
+
+
+def test_the_check_of_dock_api_sees_names_read_from_the_module(tmp_path):
+    source = tmp_path / "caller.py"
+    source.write_text("from dock import api as dock_api\nimport dock.api\n"
+                      "dock_api._dock('file:///d').path('k')\ndock.api.open_dock('file:///d')\ndock_api.fetch\n")
+    assert sorted(dock_names(source)) == [(3, "_dock"), (4, "open_dock"), (5, "fetch")]
+    assert sorted(name for _, name in dock_names(source) if not dock_values(name)) == ["_dock", "open_dock"]
 
 
 def test_the_rule_refuses_each_import_it_names():

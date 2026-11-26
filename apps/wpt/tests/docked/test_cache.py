@@ -9,7 +9,6 @@ from wpt.train import DockCheckpoint
 from wpt.train.remote import named_files
 from depot import NewText
 from wpt_corpus import corpora
-from dock import api as dock_api
 from wpt_corpus.files import DockFiles
 from wpt_corpus.shards import documents, read_verified
 from wpt_telemetry import Telemetry
@@ -36,7 +35,6 @@ def test_emptying_the_cache_leaves_a_corpus_readable_and_a_checkpoint_to_resume_
     assert state["key"].startswith("models/fox-1/")
 
     shutil.rmtree(dock_files.folder(store) / "cache", ignore_errors=True)
-    dock_api._forget_opened()  # and what this process learned of the dock's files
     fresh = store
     files = DockFiles(fresh, dock_files.folder(store).parent / "reader")
 

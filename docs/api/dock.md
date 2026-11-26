@@ -44,7 +44,7 @@ ends with the `.zst` the dock adds to a file it keeps compressed.
 
 | Call | What it does |
 | --- | --- |
-| `url(env_file=".env", environ=None)` | the URL `DOCK` gives, in `environ` (by default the process's environment), else in `env_file`; an S3 dock of that URL reads its keys from the same places. `DockSettingError` when nothing sets it, when it is neither a `file://` URL nor an `s3://` one with a bucket, and for an S3 dock without its keys. Nothing is asked of the dock |
+| `url(env_file=".env", environ=None)` | the URL `DOCK` gives, in `environ` (by default the process's environment), else in `env_file`. The calls that follow open an S3 dock of that URL with the keys found in the same places; one the process opened already keeps the keys it was opened with, and without a call of `url` an S3 dock reads its keys from the process's environment, else from `.env`. `DockSettingError` when nothing sets it, when it is neither a `file://` URL nor an `s3://` one with a bucket, and for an S3 dock without its keys. Nothing is asked of the dock |
 | `ready(dock)` | nothing when the dock answers (a local folder that exists and lists, a bucket that answers a listing); `NoDockFolder` for a local folder that does not exist, which it never makes; else what the folder or the bucket raised |
 
 ### Finding
@@ -61,7 +61,7 @@ ends with the `.zst` the dock adds to a file it keeps compressed.
 | Call | What it gives |
 | --- | --- |
 | `fetch(dock, key, sha256=None)` | the file's bytes, checked against `sha256` when it is given; `MissingFile` when the dock holds no such file, `CorruptFile` when the bytes do not match |
-| `fetch_range(dock, key, start, length)` | `length` bytes of the file from `start`, without fetching the rest: a compressed file's frames are read a few at a time and kept a while, and on S3 the frames after a read going through the file are requested ahead. A range cannot be checked against the file's sha256: the caller checks it with a hash of its own. `MissingFile`, or `CorruptFile` when the file ends first |
+| `fetch_range(dock, key, start, length)` | `length` bytes of the file from `start`, without fetching the rest: a compressed file's frames are read a few at a time and kept a while, and on S3 the frames after a read going through the file are requested ahead; a file kept as it is (one compression would not shrink) is read in place, one request per call. A caller that reads a large file whole, or many times, fetches it once with `fetch_into`. A range cannot be checked against the file's sha256: the caller checks it with a hash of its own. `MissingFile`, or `CorruptFile` when the file ends first |
 | `stream(dock, key, start=0, length=None)` | the file's bytes from `start`, `length` of them (`None`: to its end), as pieces of at most 8 MiB read as `fetch_range` reads; `MissingFile` |
 | `fetch_into(dock, key, path, sha256=None)` | the file written into `path`, a local file of the caller's, replaced whole (a file there before stays until the new one takes its place) and checked against `sha256` when it is given: `{key, sha256, bytes}`. The file is the caller's own copy. `MissingFile`, `CorruptFile`, and nothing is left at `path` |
 | `check(dock, key, sha256)` | whether the file holds the bytes of that sha256, read through once; `MissingFile` |
@@ -75,7 +75,7 @@ anew, and the `fetch_range` calls after them read the new file.
 
 | Call | What it does |
 | --- | --- |
-| `put(dock, key, data)` | `data`, bytes or an iterable of pieces of bytes, stored under `key`, replacing any earlier file: `{key, sha256, bytes}`, a reference that fetches it back checked. A stream is gathered in the dock's own folder first |
+| `put(dock, key, data)` | `data`, bytes or an iterable of pieces of bytes, stored under `key`, replacing any earlier file: `{key, sha256, bytes}`, a reference that fetches it back checked. A stream is gathered in the dock's own cache folder first, and removed from there once sent |
 | `put_from(dock, key, path)` | the local file at `path`, left as it is, stored under `key`: `{key, sha256, bytes}` |
 | `put_content(dock, data)`, `put_content_from(dock, path)` | bytes, or a local file, kept under the key their sha256 names and sent only when the dock does not hold them yet: `{key, sha256, bytes}`. For a file whose content is all that names it |
 | `content_key(sha256)` | that key, `cache/files/<sha256>`; `ValueError` for anything but a sha256 |
@@ -96,8 +96,7 @@ A result is kept under the fingerprint of what made it,
 | Call | What it does |
 | --- | --- |
 | `put_result(dock, stage, fingerprint, data, made_by=None)` | the bytes kept, replacing any earlier result; `made_by`, one word, says what made them. Their sha256 |
-| `get_result(dock, stage, fingerprint)` | the result's bytes, checked against their sha256; `None` when there is none |
-| `result_maker(dock, stage, fingerprint)` | what made it, as `put_result` got it; `None` when there is none or nothing was said |
+| `get_result(dock, stage, fingerprint)` | `(bytes, made_by)`, read once: the result's bytes, checked against their sha256, and what made them, as `put_result` got it (`None` when nothing was said); `None` when there is no result |
 
 ### Run records
 

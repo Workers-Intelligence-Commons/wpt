@@ -5,7 +5,7 @@ import pytest
 
 import wpt_telemetry
 from wpt.eval import BUILT_IN, main
-from dock import LocalDock
+from dock import api as dock_api
 from wpt_telemetry import FLUSH_THREAD
 from wic_utils.lines import bare
 
@@ -62,14 +62,14 @@ def test_a_test_that_returns_no_result_writes_nothing(trained, tmp_path):
 def test_a_record_the_dock_refuses_stops_the_evaluation_with_code_3(trained, monkeypatch, capsys, tmp_path):
     # every command stops without its record, with the one exit code
     # that says so, before writing the result it could not record
-    real = LocalDock._raw_append_record
+    real = dock_api.append_record
 
-    def disk_full_at_the_result(self, folder, name, data):
+    def disk_full_at_the_result(dock, folder, name, data):
         if b'"name": "eval.result"' in data:
             raise OSError(28, "No space left on device")
-        real(self, folder, name, data)
+        real(dock, folder, name, data)
 
-    monkeypatch.setattr(LocalDock, "_raw_append_record", disk_full_at_the_result)
+    monkeypatch.setattr(dock_api, "append_record", disk_full_at_the_result)
     test = tmp_path / "constant.py"
     test.write_text("from wpt.eval import Result\n\ndef run(context):\n    return Result(data={'x': 1}, text='x is 1')\n")
     with pytest.raises(SystemExit) as stopped:
@@ -98,15 +98,15 @@ def test_a_send_refused_in_the_background_stops_the_evaluation_before_its_next_r
                                                                                            monkeypatch, capsys):
     # the command must stop when the send fails, not at its next record call,
     # and exit as a record failure (3), not as a stop asked for (130)
-    real = LocalDock._raw_flush_records
+    real = dock_api.flush_records
 
-    def refused_in_the_background(self):
+    def refused_in_the_background(dock):
         if threading.current_thread().name == FLUSH_THREAD:
             raise OSError(28, "No space left on device")
-        real(self)
+        real(dock)
 
     monkeypatch.setattr(wpt_telemetry, "FLUSH_SECONDS", 0.02)
-    monkeypatch.setattr(LocalDock, "_raw_flush_records", refused_in_the_background)
+    monkeypatch.setattr(dock_api, "flush_records", refused_in_the_background)
     finished = tmp_path / "finished"
     test = tmp_path / "long.py"  # works without recording anything, far longer than a loaded machine delays the stop
     test.write_text("import pathlib, time\nfrom wpt.eval import Result\n\ndef run(context):\n"
