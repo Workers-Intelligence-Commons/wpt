@@ -743,7 +743,9 @@ models.
 A delivery lies under its delivery key: a hash of the request (the
 snapshot's change and digest, the selection, the preparation and its
 inputs, the selection rules), so the same request always lands in the same
-folder, on a server and on its clones alike. The freight writes and finds
+folder, on a server and on its clones alike. A selection can cut its
+delivery into named portions, filled in the order given, a text in one
+portion at most ([data-selection.md](data-selection.md), "Portions"). The freight writes and finds
 them, and marks them stale after an erasure ([api/freight.md](api/freight.md),
 "A delivery on the dock"). A delivery whose files a cap deleted keeps its
 note, marked deleted. The corpora under `corpora/` stay readable by WPT

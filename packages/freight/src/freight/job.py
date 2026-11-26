@@ -320,6 +320,7 @@ class Job:
         state = self.state
         if self.portioned:
             self._flush_named()
+            self._keep_groups()
             texts, plain = next(self.named_file.execute(
                 "SELECT count(*), count(*) FILTER (WHERE kind = ?) FROM took WHERE portion = ?", (PLAIN, self.index)))
             start = state["start"]
@@ -719,10 +720,14 @@ class Job:
             kept.append({**self._upload(path, key), **added})
         state["said"] += said
         self._flush_named()
-        state["groups"] = {share: [[tag, *counted_so] for tag, counted_so in found.items()]
-                           for share, found in self.group_counts.items()}
+        self._keep_groups()
         state["fill"] = None if self.fill is None else self.fill.state()
         self.save(json.loads(json.dumps(state)))
+
+    def _keep_groups(self):
+        """Copy the groups the portion counted so far into the state, which the note and a resumed job read."""
+        self.state["groups"] = {share: [[tag, *counted_so] for tag, counted_so in found.items()]
+                                for share, found in self.group_counts.items()}
 
     def _estimate(self, local: int, final: bool) -> int:
         """The delivery's whole size in bytes, from the local files of its first upload: those files when the

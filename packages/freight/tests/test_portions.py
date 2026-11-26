@@ -65,8 +65,8 @@ def rich(freight):
     return freight
 
 
-def held_out(amount: int = 900) -> dict:
-    return {"name": "held_out", "kinds": ["plain"], "shares": SHARES, "size": {"unit": "bytes", "amount": amount}}
+def first(amount: int = 900) -> dict:
+    return {"name": "first", "kinds": ["plain"], "shares": SHARES, "size": {"unit": "bytes", "amount": amount}}
 
 
 def run(freight, request, folder: str) -> tuple[dict, list[dict]]:
@@ -104,32 +104,34 @@ def test_a_selection_without_portions_keeps_its_key_and_its_bytes(freight):
 
 
 def test_each_text_lies_in_one_portion_at_most(rich):
-    request = rich.rich({"portions": [held_out(), {"name": "rest", "kinds": [], "shares": [], "size": None}]})
+    request = rich.rich({"portions": [first(), {"name": "rest", "kinds": [], "shares": [], "size": None}]})
     note, rows = run(rich, request, "work")
-    held = {row["id"] for row in rows if row["portion"] == "held_out"}
+    early = {row["id"] for row in rows if row["portion"] == "first"}
     rest = {row["id"] for row in rows if row["portion"] == "rest"}
-    assert held and rest and not held & rest
-    assert [row["portion"] for row in rows] == sorted((row["portion"] for row in rows), key=["held_out", "rest"].index)
-    assert {row["kind"] for row in rows if row["portion"] == "held_out"} == {"plain"}
+    assert early and rest and not early & rest
+    assert [row["portion"] for row in rows] == sorted((row["portion"] for row in rows), key=["first", "rest"].index)
+    assert {row["kind"] for row in rows if row["portion"] == "first"} == {"plain"}
     pieces = {row["portion"] for row in rows if row["id"] == rich.repository}
     assert len(pieces) == 1 and len([row for row in rows if row["id"] == rich.repository]) > 1
     taken = {row["id"]: row for row in rows if row["kind"] == "conversation"}
     for conversation, quoted in rich.quotes.items():
-        if quoted in held:  # its passage went to the held-out portion: the conversation stays out of the rest
+        if quoted in early:  # its passage went to the first portion: the conversation stays out of the rest
             assert conversation not in taken
         else:
             assert taken[conversation]["portion"] == "rest" and taken[conversation]["quotes"] == [quoted]
     counted = {one["name"]: one for one in note["portions"]}
     assert note["shares"] is None and note["left_out"] is None
-    assert counted["rest"]["left_out"][LEFT_OUT] == sum(quoted in held for quoted in rich.quotes.values())
-    assert counted["rest"]["left_out"][EARLIER] == len(held)
-    assert counted["held_out"]["left_out"][EARLIER] == 0
-    for name, ids in (("held_out", held), ("rest", rest)):
+    assert counted["rest"]["left_out"][LEFT_OUT] == sum(quoted in early for quoted in rich.quotes.values())
+    assert counted["rest"]["left_out"][EARLIER] == len(early)
+    assert counted["first"]["left_out"][EARLIER] == 0
+    for name, ids in (("first", early), ("rest", rest)):
         mine = [row for row in rows if row["portion"] == name]
         assert counted[name]["items"]["texts"] == len(ids)
         assert counted[name]["bytes"] == sum(row["bytes"] for row in mine)
         assert counted[name]["weight"] == sum(row["weight"] for row in mine)
-    assert counted["held_out"]["bytes"] <= 900 and [one["tag"] for one in counted["held_out"]["shares"]] == ["en", "de"]
+    assert counted["first"]["bytes"] <= 900 and [one["tag"] for one in counted["first"]["shares"]] == ["en", "de"]
+    for share in counted["first"]["shares"]:  # every text the portion took lies in one group of its share
+        assert share["groups"] and sum(group["bytes"] for group in share["groups"]) == share["bytes"]
     assert counted["rest"]["shares"] is None
     # the program was told each item's portion: fake writes it on the item's line
     lines = b"".join(dock_api.fetch(dock_api_url(rich, "work"), one["key"]) for one in note["files"]).splitlines()
@@ -142,34 +144,38 @@ def dock_api_url(freight, folder: str) -> str:
 
 def test_a_first_portion_sized_in_bytes_takes_the_same_texts_whatever_follows(rich):
     tokens = {"name": "rest", "kinds": [], "shares": [], "size": {"unit": "bytes-of-text", "amount": 3000}}
-    base_note, base = run(rich, rich.rich({"portions": [held_out(), tokens]}), "base")
-    first = chosen(base, "held_out")
-    assert 0 < len(first) < len({row["id"] for row in base})
+    base_note, base = run(rich, rich.rich({"portions": [first(), tokens]}), "base")
+    taken = chosen(base, "first")
+    assert 0 < len(taken) < len({row["id"] for row in base})
     variants = {
-        "other settings": rich.rich({"portions": [held_out(), tokens]}, per_file=100, at_name="row"),
-        "a larger rest": rich.rich({"portions": [held_out(), {**tokens, "size": {"unit": "bytes-of-text",
+        "other settings": rich.rich({"portions": [first(), tokens]}, per_file=100, at_name="row"),
+        "a larger rest": rich.rich({"portions": [first(), {**tokens, "size": {"unit": "bytes-of-text",
                                                                                    "amount": 9000}}]}),
-        "a rest without size": rich.rich({"portions": [held_out(), {**tokens, "size": None}]}),
-        "a program with no unit": rich.rich({"portions": [held_out(), {**tokens, "size": {"unit": "bytes",
+        "a rest without size": rich.rich({"portions": [first(), {**tokens, "size": None}]}),
+        "a program with no unit": rich.rich({"portions": [first(), {**tokens, "size": {"unit": "bytes",
                                                                                             "amount": 2000}}]},
                                             unit=None),
-        "a third portion": rich.rich({"portions": [held_out(), tokens, {"name": "talk", "kinds": ["conversation"],
+        "a third portion": rich.rich({"portions": [first(), tokens, {"name": "talk", "kinds": ["conversation"],
                                                                         "shares": [], "size": None}]}),
-        "alone": rich.rich({"portions": [held_out()]}),
+        "alone": rich.rich({"portions": [first()]}),
     }
     for name, request in variants.items():
         note, rows = run(rich, request, name.replace(" ", "-"))
         assert note["key"] != base_note["key"], name
-        assert chosen(rows, "held_out") == first, name
+        assert chosen(rows, "first") == taken, name
     # and the same texts as a selection without portions that asks for what the first portion asks for
-    alone = held_out()
-    _, rows = run(rich, rich.rich({"kinds": alone["kinds"], "shares": alone["shares"], "size": alone["size"]}), "none")
-    assert [(row["id"], row["piece"], row["revision"]) for row in rows] == first
+    # and counts them as that selection does, groups included
+    alone = first()
+    note, rows = run(rich, rich.rich({"kinds": alone["kinds"], "shares": alone["shares"], "size": alone["size"]}),
+                     "none")
+    assert [(row["id"], row["piece"], row["revision"]) for row in rows] == taken
+    assert base_note["portions"][0]["shares"] == note["shares"]
+    assert all(one["groups"] for one in note["shares"])
 
 
 @pytest.mark.parametrize("cut", [1, 3, 6])
 def test_a_job_with_portions_cut_short_goes_on_to_the_same_delivery(rich, cut):
-    request = rich.rich({"portions": [held_out(), {"name": "rest", "kinds": [], "shares": SHARES,
+    request = rich.rich({"portions": [first(), {"name": "rest", "kinds": [], "shares": SHARES,
                                                    "size": {"unit": "bytes-of-text", "amount": 4000}}]}, per_file=2)
     whole, whole_rows = run(rich, request, "whole")
     assert len(whole["files"]) > cut
@@ -190,10 +196,10 @@ def test_a_job_with_portions_cut_short_goes_on_to_the_same_delivery(rich, cut):
 
 
 def test_the_canonical_form_and_the_key_cover_the_portions(freight):
-    portions = [held_out(), {"name": "rest", "kinds": ["task", "plain", "plain"], "shares": [],
+    portions = [first(), {"name": "rest", "kinds": ["task", "plain", "plain"], "shares": [],
                              "size": {"unit": "tokens", "amount": 10}}]
     assert canonical({"portions": portions}) == {"portions": [
-        {"name": "held_out", "kinds": ["plain"], "shares": [{"tag": "en", "share": 0.7}, {"tag": "de", "share": 0.3}],
+        {"name": "first", "kinds": ["plain"], "shares": [{"tag": "en", "share": 0.7}, {"tag": "de", "share": 0.3}],
          "size": {"unit": "bytes", "amount": 900}},
         {"name": "rest", "kinds": ["plain", "task"], "shares": [], "size": {"unit": "tokens", "amount": 10}}]}
     request = freight.request()
