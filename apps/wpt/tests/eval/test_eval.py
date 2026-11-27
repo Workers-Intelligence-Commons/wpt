@@ -161,6 +161,19 @@ def test_free_text_shows_what_the_model_writes_from_each_opening(trained, tmp_pa
     assert json.loads((trained.folder / "evals" / "free_text.json").read_text())["data"] == data
 
 
+def test_answer_from_context_scores_each_format_greedy_and_sampled(trained, tmp_path):
+    test = tmp_path / "answer_from_context.py"
+    test.write_text((BUILT_IN / "answer_from_context.py").read_text(encoding="utf-8").replace(
+        "PROMPTS = 50", "PROMPTS = 3"), encoding="utf-8")
+    main([str(trained.folder), str(test)])
+    data = json.loads((trained.folder / "evals" / "answer_from_context.json").read_text())["data"]
+    assert list(data["formats"]) == ["fr, question", "fr, chat", "en, question", "en, chat"]
+    assert len(data["items"]) == 12 and all("\n" not in one["greedy_line"] + one["sampled_line"]
+                                            for one in data["items"])
+    assert all(0 <= one[key] <= 1 for one in data["formats"].values() for key in ("greedy", "sampled", "probability"))
+    assert all(one["rank"] >= 1 for one in data["kinds"].values())
+    assert "| en, chat |" in (trained.folder / "README.md").read_text()
+
 
 def test_copying_measures_what_the_model_reuses_from_its_prompt(trained, tmp_path):
     # the built-in test, with fewer prompts and a lower floor of words: the test vocabulary is small
@@ -239,7 +252,8 @@ def test_every_built_in_test_runs_on_a_model_whose_corpus_has_no_held_out_portio
     changed(trained, change)
     main([str(trained.folder)])
     records = {path.stem: json.loads(path.read_text()) for path in (trained.folder / "evals").glob("*.json")}
-    assert set(records) == {"bits_per_byte", "copying", "free_text", "general_knowledge"}  # the run went on past it
+    assert set(records) == {"answer_from_context", "bits_per_byte", "copying", "free_text",
+                            "general_knowledge"}  # the run went on past it
     data = records["bits_per_byte"]["data"]
     assert data["measured"] is False and reason in data["reason"] and set(data) == {"measured", "reason"}
     assert str(trained.folder) not in data["reason"]  # the folder never records where it lives
