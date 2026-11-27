@@ -54,7 +54,7 @@ of process r is slice (a * world_size + r) of the batch, so the batch
 holds the same windows whatever the number of processes; with split
 windows, every process takes every window and trains its slice of each.
 
-Every eval_tokens tokens trained, and at the first and last update of each stage,
+Every eval_tokens tokens trained, and at the last update of each stage,
 the model is evaluated on eval_batches batches of windows at the stage's
 window length, drawn at random places of the corpus's held-out portion
 (the record's `held_out` token files, read whole), which no step trains
@@ -465,7 +465,8 @@ class TextWindows(Environment):
         return self._split(torch.from_numpy(np.stack(found)))
 
     def evaluates(self, step, first, last):
-        return step % self.eval_every == 0 or step in (first, last)
+        """Every eval_every updates, and at the stage's last update."""
+        return step % self.eval_every == 0 or step == last
 
     def evaluation_passes(self, step):
         """This process's passes of the current stage's evaluation batches:

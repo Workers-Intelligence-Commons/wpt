@@ -61,7 +61,7 @@ def test_each_weighed_pass_s_losses_are_in_the_record_and_the_log(dataset):
     events, lines = run(dataset, loop_losses=[1, 1])
     steps = [values for name, values in events if name == "training.step"]
     evaluations = [values for name, values in events if name == "training.evaluation"]
-    assert len(steps) == 6 and len(evaluations) == 3
+    assert len(steps) == 6 and len(evaluations) == 2  # every 3 updates (eval_tokens 96), the last among them
     for values in steps:
         assert {"train_loss_pass_1", "train_loss_pass_2"} <= values.keys()
         # the update's loss: the two passes' next-token losses at equal weight, plus the multi-token prediction's

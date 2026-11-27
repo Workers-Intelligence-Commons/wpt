@@ -479,7 +479,7 @@ the first. Dropout reads the seed, the step's number and the update.
 
 Validation reads windows of the corpus's held-out portion, which no step
 trains on: every `eval_tokens` tokens trained (rounded to whole updates)
-and at each stage's first and last update, `eval_batches` batches of the stage's batch size
+and at each stage's last update, `eval_batches` batches of the stage's batch size
 and window length, drawn at random places of the held-out tokens, read
 whole even with `--stream`. They depend only on the held-out tokens, the
 window length, the batch size and `eval_batches`: the same at every
@@ -691,7 +691,7 @@ the same at every evaluation, for any seed and any step of an order: two
 runs that read the same training tokens through the same stages are
 measured on the same windows, so their validation losses compare.
 
-Each stage is evaluated at its first and last updates and every
+Each stage is evaluated at its last update and every
 `eval_tokens` tokens trained, on windows of its length: a longer window predicts
 better, so losses are compared within a stage only. When a stage after
 the first starts, the optimizer hears of it (`Optimizer.stage`) and the

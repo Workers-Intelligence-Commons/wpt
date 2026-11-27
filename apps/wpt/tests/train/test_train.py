@@ -113,7 +113,7 @@ def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built,
     assert [e["attributes"]["step"] for e in steps] == [1, 2, 3]
     assert all(math.isfinite(e["values"]["train_loss"]) for e in steps)
     evaluations = [e["attributes"]["step"] for e in run.events if e.get("name") == "training.evaluation"]
-    assert evaluations == [1, 2, 3]  # eval_every 2, and the first and last steps
+    assert evaluations == [2, 3]  # eval_every 2, and the stage's last update
     folder = tmp_path / "model"
     weights = hashlib.sha256((folder / "model.safetensors").read_bytes()).hexdigest()
     assert run.ids["outputs"]["weights"] == {"model.safetensors": weights}
