@@ -18,6 +18,11 @@ updates, then first_factor of it after first_drop of the step's updates
 and second_factor after second_drop, the updates being those of every
 stage of the step together; "constant", lr at every update.
 
+`warmup` and `average_every` count the updates of one reading: a step
+that reads its examples several times (Run.readings) runs that many times
+each, so its schedule and its average are those of one reading stretched.
+The weight decay is the setting's, whatever the readings.
+
 The average (IMU-1, arXiv 2602.02522): with `average_states` above 0, the
 step keeps an exponential moving average of the model's states (its whole
 state_dict, every floating-point entry) taken at its last update and every
@@ -88,15 +93,19 @@ class ByPart(Optimizer):
         if not hasattr(model, "optimizer_roles"):
             raise PluginError("by-part: the model does not name its parameters' roles (optimizer_roles)")
         self.model, self.settings, self.steps = model, settings, run.steps
+        # counted in the updates of one reading: a step that reads its examples several times stretches them
+        self.warmup, self.every = settings["warmup"] * run.readings, settings["average_every"] * run.readings
         self.optimizer = NorMuonAdamW(model.optimizer_roles(), settings["lr"], settings["weight_decay"],
                                       settings["momentum"], (settings["beta1"], settings["beta2"]), settings["eps"],
                                       settings["table_lr_factor"])
         counts = self.optimizer.counts
         run.log(f"by-part: {counts['matrix']} NorMuon matrices, {counts['vector']} AdamW tensors, "
-                f"{counts['table']} Engram tables; schedule {settings['schedule']}")
+                f"{counts['table']} Engram tables; schedule {settings['schedule']}"
+                + (f", warm-up {self.warmup:,} updates" if settings["schedule"] == "steps" else "")
+                + f"; weight decay {settings['weight_decay']:g}")
         self.oldest = None  # the update of the average's oldest state
         if settings["average_states"]:
-            every = settings["average_every"]
+            every = self.every
             self.oldest = run.steps - min(settings["average_states"] - 1, (run.steps - 1) // every) * every
             run.log(f"by-part: keeps the average of {(run.steps - self.oldest) // every + 1} states, every {every} "
                     f"updates from update {self.oldest}, beta {settings['average_beta']}")
@@ -114,8 +123,8 @@ class ByPart(Optimizer):
         s = self.settings
         if s["schedule"] == "constant":
             return 1.0
-        if step <= s["warmup"]:
-            return step / s["warmup"]
+        if step <= self.warmup:
+            return step / self.warmup
         if step > s["second_drop"] * self.steps:
             return s["second_factor"]
         if step > s["first_drop"] * self.steps:
@@ -127,7 +136,7 @@ class ByPart(Optimizer):
             group["lr"] = self.settings["lr"] * group["lr_factor"] * self.factor(step)
 
     def after_update(self, step, reduce):
-        if self.oldest is None or step < self.oldest or (self.steps - step) % self.settings["average_every"]:
+        if self.oldest is None or step < self.oldest or (self.steps - step) % self.every:
             return
         state = {name: t.detach() for name, t in self.model.state_dict().items() if t.is_floating_point()}
         if step == self.oldest:

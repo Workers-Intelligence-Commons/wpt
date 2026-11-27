@@ -62,6 +62,9 @@ plain text than total_tokens and was built at another size, is refused. A
 step that reads text windows reads the first prefix_tokens of the corpus
 (without them, total_tokens), at most what a corpus built at the order's
 size holds; the run's record says how many it reads when that is fewer.
+Its `readings` say how many times it reads them (docs/training.md,
+"Readings"), and the run's record says, for each such step, the tokens it
+reads, how many times, and the updates and tokens it trains on.
 
 `wpt train series NAME` prints the numbers of every size of a series.
 
@@ -668,6 +671,23 @@ def with_prefixes(order, record, log=lambda text: None) -> dict:
     return {**order, "steps": entries}
 
 
+def readings(steps) -> list[str]:
+    """A line for each step that reads text windows, once with_prefixes
+    gave it its prefix: the tokens it reads from the corpus's start, how
+    many times (its `readings`), and the updates and the tokens its windows
+    train on."""
+    found = []
+    for number, step in enumerate(steps, 1):
+        if step.reads != WINDOWS:
+            continue
+        stages, times = step.stages(), step.settings.get("readings", 1)
+        updates = sum(stage["steps"] for stage in stages)
+        tokens = sum(stage["steps"] * stage["batch_size"] * stage["block_size"] for stage in stages)
+        found.append(f"step {number} {step.name} reads the first {step.settings['prefix_tokens']:,} tokens of plain "
+                     f"text {times} time{'s' if times > 1 else ''}: {updates:,} updates, {tokens:,} tokens trained")
+    return found
+
+
 def check_corpus(steps, record, files):
     """InputError naming the first step whose environment finds nothing to
     learn from in the corpus (wpt_training.Step.check_corpus), its files
@@ -822,10 +842,14 @@ def print_series(name) -> int:
                 f"M {plan.flops_per_token:.4g} FLOPs per token, C {plan.compute:.4g}, D {plan.tokens:.4g} tokens; "
                 f"learning rate {plan.learning_rate:g}, batch {plan.batch_size} windows of {plan.block_size:,} "
                 f"(the law: {plan.batch_tokens:,.0f} tokens), {plan.updates:,} updates, warm-up {plan.warmup:,}, "
-                f"prefix {plan.prefix_tokens:,} tokens")
+                f"prefix {plan.prefix_tokens:,} tokens"
+                + (f"; read {plan.readings} times: {plan.readings * plan.updates:,} updates, warm-up "
+                   f"{plan.readings * plan.warmup:,}, {plan.readings * plan.updates * plan.batch_size * plan.block_size:,} "
+                   "tokens trained" if plan.readings > 1 else ""))
             for run in orders.series_runs(name, plan):
-                say(f"  {name}:{plan.size}:{run['run']}: {run['updates']:,} updates"
-                    + (f", decaying after update {run['start']:,} of the trunk" if run["start"] is not None else "")
+                say(f"  {name}:{plan.size}:{run['run']}: {plan.readings * run['updates']:,} updates"
+                    + (f", decaying after update {plan.readings * run['start']:,} of the trunk"
+                       if run["start"] is not None else "")
                     + f", learning rate {run['learning_rate']:g}")
     except OrderError as error:
         say(f"InputError: {error}", ERROR)
@@ -884,6 +908,8 @@ def _run(args, record, dock, telemetry, environ) -> int:
             strategy_file = strategy_plugin(args.strategy)
         with telemetry.span("inputs.steps", steps=len(order["steps"])):
             steps, context = plan(order)
+        for line in readings(steps):
+            telemetry.log(line)
     except (InputError, PluginError) as error:
         return _refuse(f"{type(error).__name__}: {error}", telemetry)
     try:

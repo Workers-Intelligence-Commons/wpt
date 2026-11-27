@@ -8,8 +8,9 @@ from wpt_training import runner
 
 
 def windows(name, *stages, continues=False):
-    return SimpleNamespace(name=name, continues=continues, environment_settings={"stages": [
-        {"steps": steps, "batch_size": batch, "block_size": block} for steps, batch, block in stages]})
+    """Stands for a wpt_training.Step of these stages, each (updates, batch, window length)."""
+    found = [{"steps": steps, "batch_size": batch, "block_size": block} for steps, batch, block in stages]
+    return SimpleNamespace(name=name, continues=continues, stages=lambda: found)
 
 
 def test_the_first_limit_reached_stops_the_run_and_only_updates_after_the_first_are_measured(monkeypatch):
@@ -34,7 +35,7 @@ def test_the_first_limit_reached_stops_the_run_and_only_updates_after_the_first_
 
 def test_the_tokens_left_count_later_stages_and_steps_and_name_the_steps_that_list_no_windows():
     steps = [windows("read", (10, 2, 4), (10, 2, 8)),
-             SimpleNamespace(name="chat", continues=False, environment_settings={}),
+             SimpleNamespace(name="chat", continues=False, stages=lambda: None),
              windows("again", (5, 1, 2))]
     assert window_tokens_left(steps) == (10 * 8 + 10 * 16 + 5 * 2, ["chat"])
     assert window_tokens_left(steps, 1, 15) == (5 * 16 + 5 * 2, ["chat"])

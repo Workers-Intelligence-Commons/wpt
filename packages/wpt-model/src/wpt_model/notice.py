@@ -205,6 +205,9 @@ def _step(step):
                                  f"{stage['steps']:,} updates" for stage in stages)
     else:
         text += f"; {stages[0]['batch_size']:,} examples an update"
+    times, read = step.get("settings", {}).get("readings", 1), step.get("learned", {}).get("plain")
+    if times > 1 and read is not None:
+        text += f"; its {read:,} tokens of plain text read {times} times"
     if step["best_validation_loss"] is not None:
         text += f"; best validation loss {step['best_validation_loss']:.4f}"
     if step["reused"]:

@@ -141,3 +141,22 @@ def test_a_series_of_the_snapshot_shape_gives_every_size_its_data_and_the_larges
     # a series' sizes give the size: its data part names none
     with pytest.raises(InvalidOrder, match="at data: Additional properties are not allowed .'total_tokens' was"):
         validate({**snapshot, "data": {**SNAPSHOT_DATA, "total_tokens": 100}}, "series", "snapshot")
+
+
+def test_a_series_that_reads_its_text_several_times_gives_every_size_its_readings_over_the_same_prefix(ladder):
+    # docs/training.md, "Readings": each size's read-text step reads its prefix that many times; the updates and
+    # the warm-up stay those of one reading, which the step stretches, and the corpus every size reads is the same
+    four = {**copy.deepcopy(ladder), "readings": 4}
+    validate(four, "series", "four readings")
+    assert series.data_part(four) == series.data_part(ladder)
+    for size in series.sizes(four):
+        once, again = (series.model_order(chosen, series.plan(chosen, size, VOCABULARY)) for chosen in (ladder, four))
+        [step], [read] = once["steps"], again["steps"]
+        assert read["settings"] == {**step["settings"], "readings": 4}
+        assert read["optimizer"] == step["optimizer"]
+        for run in series.runs(four, size):  # a decay branch's trunk and decay read as many times
+            assert all(entry["settings"]["readings"] == 4
+                       for entry in series.run_order(four, series.plan(four, size, VOCABULARY), run)["steps"])
+    for readings in (0, 1.5):
+        with pytest.raises(InvalidOrder, match="at readings"):
+            validate({**four, "readings": readings}, "series", "readings")

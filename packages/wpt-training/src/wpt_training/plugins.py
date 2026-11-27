@@ -153,6 +153,9 @@ class Run:
     parameters: int  # the parameters the step trains
     steps: int       # the maximum number of updates
     log: callable    # a no-op except in the main process
+    # how many times the step reads its examples (Environment.readings): settings counted in updates count those
+    # of one reading
+    readings: int = 1
 
 
 @dataclass(frozen=True)
@@ -400,7 +403,9 @@ class Environment:
     tokens: the tokens of its examples. learned: what of the corpus it
     read, for the model's NOTICE, by kind of texts: {"plain": the tokens of
     the plain texts' token files it read from their start}, {"conversation":
-    how many}, {"task": how many}. An environment whose stages have a
+    how many}, {"task": how many}. readings: how many times the step reads
+    its examples, its stages holding that many times the updates of one
+    reading; the optimizer hears it (Run.readings). An environment whose stages have a
     window length may define per_pass(index, examples): stage index (from
     0) then takes that many examples per pass in each process, which the
     runner chooses for a stage whose whole share does not fit the device's
@@ -410,6 +415,7 @@ class Environment:
     stage_list: tuple = ()
     tokens: int = 0
     learned: dict = {}
+    readings: int = 1
 
     def begin(self, model, strategy):
         """Called once before the step's first update, with the weights the
@@ -558,6 +564,17 @@ class Step:
         environment file's context(settings); None when it has none."""
         return getattr(self.environment.module, "context", lambda settings: None)(self.environment_settings)
 
+    def stages(self) -> list[dict] | None:
+        """The stages the step runs, each {"block_size", "steps",
+        "batch_size"}, from its environment file's stages(settings), else
+        its settings' `stages` as they are; None when its settings list
+        none."""
+        made = getattr(self.environment.module, "stages", None)
+        if made is not None:
+            return made(self.environment_settings)
+        stages = self.environment_settings.get("stages")
+        return stages if isinstance(stages, list) else None
+
     def check_corpus(self, record: dict, dock):
         """ValueError when the corpus (its record, and its files, dock: a
         reader of wpt_corpus.files) holds nothing the step can learn from, from its environment
@@ -665,8 +682,8 @@ def load_step(entry: dict, parts) -> Step:
 
 def _updates(step: Step) -> int | None:
     """The updates of a step whose settings list its stages (text windows), else None."""
-    stages = step.environment_settings.get("stages")
-    return sum(stage["steps"] for stage in stages) if isinstance(stages, list) else None
+    stages = step.stages()
+    return None if stages is None else sum(stage["steps"] for stage in stages)
 
 
 def window_tokens_left(steps: list[Step], number: int = 1, update: int = 0) -> tuple[int, list[str]]:
@@ -676,8 +693,8 @@ def window_tokens_left(steps: list[Step], number: int = 1, update: int = 0) -> t
     that continues the one before it goes on past that step's updates."""
     left, unknown, done = 0, [], update
     for position, step in enumerate(steps[number - 1:], number):
-        stages = step.environment_settings.get("stages")
-        if not isinstance(stages, list):
+        stages = step.stages()
+        if stages is None:
             unknown.append(step.name)
             done = 0
             continue
@@ -695,8 +712,10 @@ def check_continuations(steps: list[Step]):
     """ValueError for a step that continues the one before it (Step.continues)
     and cannot: it is the first, or its step, method, environment, optimizer
     or locked parts are not those of the step before it (the state it goes
-    on from is theirs), or, both listing stages, it has no update left
-    after the updates of the step before it."""
+    on from is theirs), it reads its examples another number of times
+    (the `readings` of its settings, which stretch its schedule), or, both
+    listing stages, it has no update left after the updates of the step
+    before it."""
     for number, step in enumerate(steps, 1):
         if not step.continues:
             continue
@@ -710,6 +729,10 @@ def check_continuations(steps: list[Step]):
         if mine != theirs:
             raise ValueError(f"step {number} {step.name} continues step {number - 1} {before.name}: it must have the "
                              "same step, method, environment, optimizer and locked parts")
+        mine, theirs = step.settings.get("readings", 1), before.settings.get("readings", 1)
+        if mine != theirs:
+            raise ValueError(f"step {number} {step.name} continues step {number - 1}, which reads its tokens {theirs} "
+                             f"times: it must read them as many times, and it reads them {mine}")
         found, left = _updates(before), _updates(step)
         if found is not None and left is not None and left <= found:
             raise ValueError(f"step {number} {step.name} continues step {number - 1}, which makes {found:,} updates: "

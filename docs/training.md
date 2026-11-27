@@ -253,7 +253,8 @@ When the step before it is reused, it goes on from that step's kept
 state.
 
 It has the same step, method, environment, optimizer and locked parts as
-the step before it, and, both listing stages, more updates; an order that
+the step before it, the same `readings` ("Readings", below), and, both
+listing stages, more updates; an order that
 breaks this is refused before any step runs. It forgets the best
 evaluation of the steps before it, as a new stage does: it keeps the
 weights of its own best evaluation. Its fingerprint chains to the step
@@ -388,7 +389,9 @@ a run resumes on another.
 `schedule` chooses how the learning rate moves. With `steps`, it warms up
 over `warmup` updates to `lr`, then falls to `first_factor` of it after
 `first_drop` of the step's updates and to `second_factor` after
-`second_drop`. With `constant`, every update uses `lr`.
+`second_drop`. With `constant`, every update uses `lr`. In a step that
+reads its tokens several times, `warmup` and `average_every` count the
+updates of one reading ("Readings", below).
 
 With `average_states` above 0, the step keeps an average of the model's
 last states (IMU-1). The states are the model's whole state at the step's
@@ -443,9 +446,10 @@ The `read-text` step reads the corpus's plain texts: next-token prediction
 (`next-token`) on windows of the training shards (`text-windows`), the
 windows growing stage by stage, under `by-part` on its multi-step
 schedule, without early stop. Its settings are `stages`,
-`eval_every` (200), `eval_batches` (20) and `prefix_tokens` (0, "Prefix"
-below), with the method's. Each update
-draws its windows at random places of the training tokens, seeded by the
+`eval_every` (200), `eval_batches` (20), `prefix_tokens` (0, "Prefix"
+below) and `readings` (1, "Readings" below), with the method's. Each update
+of one reading draws its windows at random places of the training tokens,
+with replacement, seeded by the
 seed, the step's number in the order and the update only: a second
 `read-text` step draws other windows than the first. Dropout reads the
 same three.
@@ -490,6 +494,56 @@ plain text than `total_tokens` and was built at another size, and a corpus
 that is stale (an admitted erasure reached a text it was built from,
 [erasure.md](erasure.md), "What it covers") until it is made again (`wpt
 build-resources`).
+
+### Readings
+
+`readings`, a whole number of 1 or more, is how many times the step reads
+its training tokens. A step of N readings is the step of one reading
+stretched N times. `total_tokens` and the prefix keep their meaning: the
+same tokens are read, and the step trains on N times the updates and
+tokens its stages give. Each stage lasts N times its `steps`, in the
+stages' order, so the windows grow once over the whole step and never
+shrink back. `eval_every` and the optimizer's settings counted in updates
+(`by-part`'s `warmup` and `average_every`) count the updates of one
+reading, and the step multiplies them by N, so the learning-rate schedule
+keeps its shape. `--checkpoint-every` counts the updates as they run. The
+setting is part of the step's fingerprint.
+
+The windows of a step of N readings are those of one reading until the
+tokens drawn reach the size of the training tokens. From there, each
+time the tokens drawn pass another multiple of that size, inside any
+stage, a new pass starts: it cuts the tokens into windows of the stage's
+length from an offset of at most one window, drawn for that pass, and
+takes every one of those windows once, in an order drawn for that pass.
+The offset and the order depend on the seed, the step's number in the
+order, the pass's number and the window length, so two passes read the
+tokens in another order and cut at other places, and one seed reads the
+same windows. Where fewer windows fit than a pass has places for, its
+last places take its first windows again. Which pass a window belongs to
+depends on the tokens drawn before it, so a resumed step and a step that
+continues another ("Continued steps", above) draw what the uninterrupted
+step draws. With `--stream`, the walk over the shards goes on N times as
+long and wraps at the prefix's end, as with one reading.
+
+The updates come from the stages, not from the prefix: a step of one
+reading whose stages draw more tokens than its prefix already reads parts
+of it more than once, at random places, and N multiplies that. N
+readings read the prefix exactly N times only when the stages draw as
+many tokens as it holds.
+
+The validation windows are the same whatever the readings, and they are
+drawn from the training tokens, so a step of N readings trains on them N
+times as often. Only the held-out portion's `bits_per_byte`
+([evaluation.md](evaluation.md)) measures text that no training read.
+
+The run's record says, for each step of more than one reading, the
+tokens it reads, how many times, its updates and the tokens it trains on.
+`provenance.json` holds the setting with the step's others, and the model
+card names the readings beside the tokens of plain text.
+
+Choosing N, and what changes with it, is in
+[knowledge/reading-scarce-text.md](knowledge/reading-scarce-text.md).
+The weight decay stays the optimizer's setting whatever the readings.
 
 ### Streaming: a corpus larger than the disk
 

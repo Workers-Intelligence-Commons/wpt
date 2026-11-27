@@ -29,11 +29,16 @@ functions of the series document:
                   C; the batch in whole windows (at least 1), the updates
                   that read D tokens (at least 1), the warm-up the series'
                   share of them (at least 1), and the prefix: the tokens its
-                  updates read, the first ones of the series' corpus
+                  updates read, the first ones of the series' corpus; the
+                  series' `readings` (1 when left out), how many times the
+                  size reads that prefix, its step's stage running that
+                  many times these updates and its warm-up stretched with
+                  them (docs/training.md, "Readings")
     model_order   the size as a model order, the shape of
                   data/orders/models/<name>.json: the series' data part,
                   its shape, the seed, one read-text step of one stage
-                  reading its prefix, the drafter
+                  reading its prefix, its readings when more than 1, the
+                  drafter
     data_part     the series' data part (a snapshot of a depot) with the
                   total tokens of the largest prefix, so one corpus serves
                   every size
@@ -88,8 +93,10 @@ class Plan:
     total_parameters: with them. flops_per_token: M; compute: C; tokens:
     D; batch_tokens: the law's batch, before rounding; learning_rate:
     AdamW's, rounded to 4 significant digits; batch_size: windows per
-    update; updates; warmup: updates; prefix_tokens: the first training
-    tokens of the series' corpus this size reads."""
+    update; updates: those of one reading; warmup: updates of one reading;
+    prefix_tokens: the first training tokens of the series' corpus this
+    size reads; readings: how many times it reads them, the step running
+    readings x updates."""
     size: str
     model: dict
     parameters: int
@@ -104,6 +111,7 @@ class Plan:
     updates: int
     warmup: int
     prefix_tokens: int
+    readings: int = 1
 
 
 def _half_up(value) -> int:
@@ -279,7 +287,8 @@ def plan(series: dict, size: str, vocab_size: int) -> Plan:
     return Plan(size=size, model=model, parameters=counted, total_parameters=total, flops_per_token=M, compute=C,
                 tokens=D, batch_tokens=batch_tokens,
                 learning_rate=float(f"{_law(series, 'learning_rate', C):.4g}"), block_size=block, batch_size=batch,
-                updates=updates, warmup=warmup, prefix_tokens=updates * batch * (block + 1))
+                updates=updates, warmup=warmup, prefix_tokens=updates * batch * (block + 1),
+                readings=series.get("readings", 1))
 
 
 def plans(series: dict, vocab_size: int) -> list[Plan]:
@@ -304,6 +313,8 @@ def _read_text(found: Plan, updates: int, prefix: int, drops=True, continues=Fal
     optimizer = {"lr": found.learning_rate, "warmup": found.warmup}
     settings = {"stages": [{"block_size": found.block_size, "steps": updates, "batch_size": found.batch_size}],
                 "prefix_tokens": prefix}
+    if found.readings != 1:
+        settings["readings"] = found.readings
     if drops:
         settings["mtp_switch"] = MTP_SWITCH
     else:

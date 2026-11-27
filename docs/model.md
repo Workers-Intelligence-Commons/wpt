@@ -1045,6 +1045,12 @@ each size's model order (`wpt_orders.series`):
   training.md, "Prefix"), so every size sees the same texts in the same
   order. `wpt build-resources SERIES:` asks the freight for that corpus,
   and its vocabulary when the series learns one.
+- the readings: the series' `readings` (1 when it sets none) becomes the
+  `readings` of every size's `read-text` step and of every step of its
+  runs ([training.md](training.md), "Readings"). The updates, the warm-up
+  and the prefix above stay those of one reading, and the step reads
+  them that many times, so every count in updates and the tokens trained
+  are that many times larger and the corpus is the same.
 
 The seed and the drafter are the series' own, the same at every size. The
 model's provenance holds the size's derived order and the name

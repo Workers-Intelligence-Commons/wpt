@@ -376,6 +376,11 @@
       "exclusiveMaximum": 1,
       "description": "share of a size's updates the learning rate rises over"
     },
+    "readings": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "how many times every size reads its prefix (left out: once); each size's read-text step runs that many times its updates, its warm-up stretched with them (docs/training.md, \"Readings\")"
+    },
     "seed": {
       "type": "integer",
       "minimum": 0,

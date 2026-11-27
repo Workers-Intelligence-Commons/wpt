@@ -1212,6 +1212,31 @@ def test_a_plain_order_trains_on_the_first_total_tokens_of_its_corpus(built, tmp
     assert provenance["learned"]["plain"] == 3000 < readers.find(built.dock, built.corpus_id)["total_tokens"]
 
 
+def test_an_order_that_reads_its_text_twice_trains_twice_the_updates_and_says_so_in_its_record_and_card(built,
+                                                                                                         tmp_path):
+    # docs/training.md, "Readings": the same prefix, read twice; the run's record, provenance.json and the
+    # model card say how many times and how many tokens
+    folder = tmp_path / "data" / "orders" / "models"
+    order = json.loads((folder / "d.json").read_text())
+    order["data"]["total_tokens"] = 3000
+    [stage] = order["steps"][0]["settings"]["stages"]
+    order["steps"][0]["settings"]["readings"] = 2
+    (folder / "twice.json").write_text(json.dumps(order))
+
+    main(["twice", built.corpus_id, "--out", "model"])
+
+    provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
+    [step] = provenance["steps"]
+    assert step["settings"]["readings"] == 2 and step["updates"] == 2 * stage["steps"]
+    assert [one["steps"] for one in step["stages"]] == [2 * stage["steps"]]
+    assert provenance["learned"]["plain"] == 3000
+    tokens = 2 * stage["steps"] * stage["batch_size"] * stage["block_size"]
+    said = [event["text"] for event in built.records("wpt train")[-1].events if event["kind"] == "log"]
+    assert (f"step 1 read-text reads the first 3,000 tokens of plain text 2 times: {2 * stage['steps']:,} updates, "
+            f"{tokens:,} tokens trained") in said
+    assert "its 3,000 tokens of plain text read 2 times" in (tmp_path / "model" / "README.md").read_text()
+
+
 def test_recompute_from_narrows_recompute_and_is_refused_alone(capsys):
     # docs/training.md, "Recomputing layers": --recompute-from (or WPT_RECOMPUTE_FROM) goes with --recompute
     from wpt.train import parse_args

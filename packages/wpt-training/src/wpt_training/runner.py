@@ -270,7 +270,8 @@ def train(model, strategy, step, method, environment, seed: int, number: int, op
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         if not trainable:
             raise PluginError(f"{step.name}: its locked parts leave nothing of the model to train")
-        run = Run(tokens=environment.tokens, parameters=trainable, steps=updates, log=log)
+        run = Run(tokens=environment.tokens, parameters=trainable, steps=updates, log=log,
+                  readings=environment.readings)
         optimizer = step.start_optimizer(model, run)
         method.begin(model, environment, run, options.segment, strategy)
         wrapped = strategy.wrap(model)
