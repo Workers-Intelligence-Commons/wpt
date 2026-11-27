@@ -1,8 +1,11 @@
+import dataclasses
+
 import pytest
 import torch
 
 from wpt_inference import DRAFT, Writer, sample_tokens, schedule
 from wpt_model import WPT, Drafter, DrafterConfig, ModelConfig
+from wpt_model import attention, ttt
 from wpt_model.drafter import training_blocks
 
 CONFIG = ModelConfig(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
@@ -68,6 +71,59 @@ def test_rows_written_through_the_cache_get_the_tokens_the_whole_text_gives(rout
         read = len(history) - 1 if differ is None else differ  # the tokens read before the first one that differs
         first = routing.first_difference(model, history[:read], cached.routes[row])
         assert differ is None or first is not None, "a token differs although every route is the whole text's"
+
+
+class Recorded(Writer):
+    """A writer that keeps the scores each row's tokens are drawn from, by
+    the place in the row's text of the token drawn."""
+
+    def __init__(self, *args, **options):
+        super().__init__(*args, **options)
+        self.drawn = [{} for _ in self.histories]
+
+    def _scores(self, rows):
+        scores = super()._scores(rows)
+        for row, found in zip(rows, scores):
+            self.drawn[row][len(self.histories[row])] = found.float()
+        return scores
+
+
+@pytest.mark.parametrize("loops", [0, 2])
+def test_rows_written_through_the_cache_get_the_whole_text_s_probabilities_past_the_window(loops, monkeypatch,
+                                                                                          routing):
+    # 3 rows from one prompt, each at its own pace (one skips every third
+    # call, one every fifth and reads a tool result midway), so they end at
+    # different lengths, all past block_size (16) and the window layers'
+    # window (128), with exact layers that pick 16 tokens and TTT chunks of
+    # 32 so that both matter: every token is drawn from the probabilities
+    # the forward pass over the row's whole text gives at its place, for a
+    # plain model and for one that loops. The cache's routes may differ
+    # from the whole text's at near ties only: a row is compared before the
+    # first position that went to other experts
+    monkeypatch.setattr(attention, "TOP_K", 16)
+    monkeypatch.setattr(ttt, "CHUNK", 32)
+    torch.manual_seed(0)
+    model = WPT(dataclasses.replace(CONFIG, loops=loops)).eval()
+    with torch.no_grad():  # the parameters that start at zero (sinks, convolutions, queries) made to count
+        for p in model.parameters():
+            if p.abs().max() == 0:
+                p.normal_(std=0.3)
+    prompt = torch.randint(50, (30,), generator=torch.Generator().manual_seed(1)).tolist()
+    writer = Recorded(model, prompt, 3, temperature=1.0, top_k=None, generator=torch.Generator().manual_seed(2),
+                      routes=True)
+    for step in range(190):
+        limits = {row: 1 for row, every in enumerate((None, 5, 3)) if every is None or step % every}
+        writer.write({1: list(range(20, 45))} if step == 60 else {}, limits)
+    lengths = [len(history) for history in writer.histories]
+    assert len(set(lengths)) == 3 and min(lengths) > attention.WINDOW + 16
+    for row, history in enumerate(writer.histories):
+        with torch.no_grad():
+            whole = model(torch.tensor([history]))[0].float().softmax(-1)
+        first = routing.first_difference(model, history[:-1], writer.routes[row])
+        compared = [place for place in writer.drawn[row] if first is None or place <= first]
+        assert max(compared) > attention.WINDOW + 16
+        for place in compared:  # the token at place is drawn from the scores of the text before it
+            assert torch.allclose(writer.drawn[row][place].softmax(-1), whole[place - 1], atol=1e-4), (row, place)
 
 
 class Uniform:
