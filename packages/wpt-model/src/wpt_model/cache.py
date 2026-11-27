@@ -37,11 +37,11 @@ row's tokens is never read, and is written again when the row reaches
 it).
 
 A model that loops (docs/model.md, "Loops") reads a call's tokens once per
-pass, and the cache keeps one value per module and name, the last pass's.
-Every pass starts from what the cache held when the call began, and reads
-its own entries and tails for the call's tokens: a prompt read in one call
-gives what the model's forward pass gives, and a token read later reads,
-in every pass, the last pass's values of the earlier tokens.
+pass, and the cache keeps each pass's values apart, by (module, name, loop),
+as training's places do (sequence.py): every pass reads its own values of
+the earlier tokens, so a text read in any number of calls gives what the
+model's forward pass gives. The exact layers so keep one key and one value
+per token and pass.
 """
 
 import torch
@@ -55,7 +55,8 @@ class Rows:
     """One stream of B rows' carried values: the text the model reads, or
     the (hidden state, next token) pairs its multi-token prediction block
     reads. lengths: the tokens each row has read; values: what each module
-    passes on, by (module, name), made at the first reading; pending: what
+    passes on in each pass, by (module, name, loop), made at the first
+    reading; pending: what
     undo needs after an undoable reading, None otherwise."""
 
     def __init__(self, rows, device):
@@ -89,10 +90,7 @@ class Reading(Place):
         self.rows, self.counts = rows, counts
         self.start = rows.lengths
         self.saved = {} if undoable else None
-        self.began = {}  # what each tail or fold held when the reading began, which every pass starts from
-
-    def key(self, module, name):
-        return id(module), name
+        self.began = {}  # what each pass's tail or fold held when the reading began
 
     def before(self, module, name, x):
         key, item = self.key(module, name), described(module, name)

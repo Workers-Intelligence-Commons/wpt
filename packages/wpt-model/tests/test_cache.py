@@ -161,7 +161,7 @@ def test_segments_and_the_cache_carry_exactly_what_each_module_says_it_passes_on
     with torch.no_grad():
         _, hidden = wpt.extend(ids[:, :40], cache)
         wpt.extend_mtp(hidden, ids[:, 1:], cache)
-    assert set(cache.text.values) | set(cache.mtp.values) == described
+    assert set(cache.text.values) | set(cache.mtp.values) == {(*key, 0) for key in described}  # its one pass's
 
 
 def by_itself(wpt, ids):

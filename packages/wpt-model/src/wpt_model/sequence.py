@@ -13,10 +13,9 @@ for what came before its first token:
 A place also gives the pass's positions (positions) and whether training
 statistics are recorded (collect). A model that loops (docs/model.md,
 "Loops") reads the same tokens once per pass, each through at(loop), the
-place of that pass: training's places keep what each pass passes on apart, by
-(module, name, loop), so a window in parts gives what the whole window
-gives; a generation cache keeps one value per module and name, the last
-pass's (cache.py).
+place of that pass: every place keeps what each pass passes on apart, by
+(module, name, loop), so a window in parts, and a text read through a
+generation cache (cache.py), give what the whole window gives.
 
 Four places answer, from that one description:
 

@@ -1,14 +1,13 @@
 """Loops (docs/model.md, "Loops"): the text passes `loops` more times
 through every layer with the same weights; at 0 nothing of the loop
-remains. A prompt read through the cache in one call gives what the
-forward pass gives; a later token reads, in every pass, the last pass's
-values of the earlier tokens."""
+remains. A text read through the cache, in any number of calls, gives
+what the forward pass gives: every pass reads its own values of the
+earlier tokens."""
 
 import torch
 
 from wpt_model import WPT, ModelConfig, Routes
 from wpt_model import attention, ttt
-from wpt_model.carry import Entries
 from wpt_model.sequence import Carried
 
 CONFIG = dict(vocab_size=300, block_size=64, window_layers=1, sparse_groups=1, sparse_layers=1, d_model=16,
@@ -59,26 +58,17 @@ def test_each_pass_routes_on_its_own_and_replays_its_own_choices():
     assert torch.equal(recorded, replayed)
 
 
-def test_a_prompt_read_at_once_gives_the_forward_pass_and_later_tokens_read_the_last_pass(monkeypatch):
+def test_a_text_read_through_the_cache_in_pieces_gives_the_forward_pass(monkeypatch):
     monkeypatch.setattr(attention, "TOP_K", 16)
     monkeypatch.setattr(ttt, "CHUNK", 32)
     looped = model(2)
     ids = text()
     with torch.no_grad():
+        whole = looped(ids)
         cache = looped.new_cache(2)
-        scores, _ = looped.extend(ids[:, :100], cache)
-        assert torch.allclose(scores, looped(ids[:, :100]), atol=1e-4)
-        # the next tokens: every pass reads the earlier tokens' values the cache holds, the last pass's
-        carried = {}
-        for module in looped.modules():
-            for name, item in (module.passes_on().items() if hasattr(module, "passes_on") else ()):
-                value = cache.text.values.get((id(module), name))
-                if value is None:
-                    continue
-                if isinstance(item, Entries):
-                    value = value[:, :100]
-                carried.update({(id(module), name, loop): value for loop in range(3)})
-        later, _ = looped.extend(ids[:, 100:], cache)
-        assert torch.allclose(later, looped(ids[:, 100:], sequence=Carried(100, carried)), atol=1e-4)
-        # which differs from reading the whole text: the earlier passes' own values are gone
-        assert not torch.allclose(later, looped(ids)[:, 100:], atol=1e-3)
+        pieces = [looped.extend(ids[:, a:b], cache)[0] for a, b in ((0, 100), (100, 101), (101, 102), (102, 150))]
+        assert torch.allclose(torch.cat(pieces, 1), whole, atol=1e-4)
+        # each pass keeps its own values of the earlier tokens
+        kept = {key[:2] for key in cache.text.values}
+        assert set(cache.text.values) == {(*key, loop) for key in kept for loop in range(3)}
+

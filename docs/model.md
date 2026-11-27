@@ -520,19 +520,19 @@ cache instead of from a segment before.
 - The experts keep nothing, but a cache can record each attempt's routed
   experts as its tokens are read, for R3 (training.md).
 
-A model that loops keeps one value per layer, the last pass's. Each call
-runs every pass over its new tokens; every pass starts from what the cache
-held when the call began, and reads its own keys, values and tails for the
-call's tokens. A prompt read in one call so gives what the forward pass
-gives, and a token read later reads, in every pass, the last pass's values
-of the earlier tokens. Ouro measured this sharing at 78.85 against 78.92
-on GSM8K. Every pass reads the prompt through every layer: stopping the
-last pass after the first half for the tokens whose scores are not needed
-is not built.
+A model that loops keeps each pass's values apart: each call runs every
+pass over its new tokens, and every pass reads its own values of the
+earlier tokens, as in training, so a text read in any number of calls
+gives what reading it whole gives. Ouro shares one pass's keys and values
+with the others and measured 78.85 against 78.92 on GSM8K; WPT shares
+nothing: a model trained here writes no coherent text through the last
+pass's values alone. Every pass reads the prompt through every
+layer: stopping the last pass after the first half for the tokens whose
+scores are not needed is not built.
 
 Only the exact layers' keys and values grow, one key and one value per
-token and exact layer, so generation goes on past `block_size` with no
-limit. It is the same computation as reading the whole text, so the same
+token, exact layer and pass, so generation goes on past `block_size` with
+no limit. It is the same computation as reading the whole text, so the same
 scores within rounding: on the CPU, tests check each kind of layer and
 the whole model read in pieces against reading it whole, and the tokens
 that sampling draws with one seed. A rounding can still fall the other way
