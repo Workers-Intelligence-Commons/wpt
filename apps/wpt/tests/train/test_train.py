@@ -97,7 +97,8 @@ def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built,
     # afterwards one must know exactly what happened, from the dock alone:
     # the corpus read, each step's loss, the evaluations, the files written
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
-    printed = bare(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    printed, warned = bare(captured.out), bare(captured.err)
 
     [run] = built.records("wpt train")
     assert run.end["status"] == "succeeded" and run.end["exit_code"] == 0
@@ -114,8 +115,11 @@ def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built,
     [files] = [e["attributes"]["files"] for e in run.events if e.get("name") == "model.files"]
     assert files["NOTICE"] == hashlib.sha256((folder / "NOTICE").read_bytes()).hexdigest()
     assert {"LICENSE", "README.md", "provenance.json", "tokenizer.json", "config.json"} <= set(files)
-    logged = "".join(e["text"] + "\n" for e in run.events if e["kind"] == "log")
-    assert logged == printed  # every line it printed, nothing else
+    def logged(*severities):
+        return "".join(e["text"] + "\n" for e in run.events if e["kind"] == "log" and e["severity"] in severities)
+    # every line it printed, nothing else: its 3 updates read a sliver of its text, which it warns of
+    assert logged("info") == printed and logged("warning", "error") == warned
+    assert warned.startswith("step 1 read-text reads the first ")
 
 
 def test_what_the_gpu_worker_records_reaches_the_live_backend_once_through_this_side(built, otlp_backend, monkeypatch,
@@ -1232,9 +1236,30 @@ def test_an_order_that_reads_its_text_twice_trains_twice_the_updates_and_says_so
     assert provenance["learned"]["plain"] == 3000
     tokens = 2 * stage["steps"] * stage["batch_size"] * stage["block_size"]
     said = [event["text"] for event in built.records("wpt train")[-1].events if event["kind"] == "log"]
-    assert (f"step 1 read-text reads the first 3,000 tokens of plain text 2 times: {2 * stage['steps']:,} updates, "
-            f"{tokens:,} tokens trained") in said
-    assert "its 3,000 tokens of plain text read 2 times" in (tmp_path / "model" / "README.md").read_text()
+    # the test order's stages predict more tokens than its 3,000: the record says how many times they read them
+    times = tokens / 3000
+    assert any(text.startswith(f"step 1 read-text reads the first 3,000 tokens of plain text {times:.2f} times "
+                               f"(readings 2): {2 * stage['steps']:,} updates, {tokens:,} tokens trained; its stages "
+                               f"predict {tokens:,} tokens, not the 6,000 that 2 readings of its text would")
+               for text in said)
+    assert f"its 3,000 tokens of plain text read {times:.2f} times (readings 2)" in \
+        (tmp_path / "model" / "README.md").read_text()
+
+
+def test_each_step_that_reads_text_says_how_many_times_its_stages_read_it_and_warns_when_not_its_readings():
+    from wpt.train import readings
+    from wpt_model import PARTS
+    from wpt_training import load_step
+
+    def step(readings_, steps):
+        return load_step({"step": "read-text", "settings": {
+            "stages": [{"block_size": 16, "steps": steps, "batch_size": 4}], "prefix_tokens": 6400,
+            "readings": readings_}}, PARTS)
+    assert readings([step(2, 100)]) == [("step 1 read-text reads the first 6,400 tokens of plain text 2.00 times "
+                                         "(readings 2): 200 updates, 12,800 tokens trained", False)]
+    [(line, strays)] = readings([step(1, 240)])
+    assert strays and line.startswith("step 1 read-text reads the first 6,400 tokens of plain text 2.40 times "
+                                      "(readings 1)")
 
 
 def test_recompute_from_narrows_recompute_and_is_refused_alone(capsys):

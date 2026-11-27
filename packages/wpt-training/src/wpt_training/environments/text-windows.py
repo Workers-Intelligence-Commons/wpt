@@ -4,25 +4,27 @@
 `stages` lists the window lengths in order, each {"block_size", "steps",
 "batch_size"}: its updates and its windows per update, over every process
 together (batch_size is global). The windows grow from one stage to the
-next, inside one step and one optimizer schedule. Every update draws
-batch_size windows of block_size + 1 tokens at random places of the
-training tokens, seeded by the order's seed, the step's number in the
-order and the update only; with
---stream, from the shards in use once the updates before it have used
-their tokens (wpt_corpus.shards.ShardStream).
+next, inside one step and one optimizer schedule; each window length
+divides the longest. `readings` (1 or more) is how many times the step
+reads its training tokens: every stage runs readings times its `steps`
+(`stages`), and eval_every counts the updates of one reading, so the step
+is the step of one reading stretched readings times (docs/training.md,
+"Readings").
 
-`readings` (1 or more) is how many times the step reads its training
-tokens: every stage runs readings times its `steps` (`stages`), and
-eval_every counts the updates of one reading, so the step is the step of
-one reading stretched readings times (docs/training.md, "Readings"). With
-readings above 1 and without --stream, a window whose place in the step's
-walk over its tokens (the windows of every update, block_size + 1 tokens
-each, one after the other) lies past the first pass over them comes from a
-pass without replacement: pass q cuts the training tokens into windows
-from a place of its own and takes each of them once, in an order of its
-own, both drawn from the seed, the step's number, q and the window length
-(`_pass`). A window within the first pass is the one a step of one reading
-draws.
+The step walks its training tokens in readings, each a pass without
+replacement (`_Walk`). A window of block_size + 1 tokens starts on the last
+token of the window before it in the walk, so each window predicts
+block_size tokens and the walk advances by block_size. Pass q cuts each
+segment of the tokens (the whole of them; with --stream, each token file)
+into slots of the longest window length, from an offset of its own, and
+takes the slots in an order of its own; it reads them in groups of GROUP
+slots, each group's windows in an order of their own. Every draw depends
+on the order's seed, the step's number in the order, q and the window
+lengths only. A stage that starts inside a group starts at the next group,
+so no token is predicted twice in one pass; the tokens before a segment's
+offset and after its last whole slot are not read in that pass. With
+--stream, the windows are read from the shards in use from the segment
+of the update's first window (wpt_corpus.shards.ShardStream).
 
 prefix_tokens, when above 0, makes the training tokens the first
 prefix_tokens of the corpus's, in the token files' order, and nothing after
@@ -52,6 +54,7 @@ on the same windows. With --stream they are drawn from the shards in use,
 which change as the run goes on.
 """
 
+import bisect
 import hashlib
 
 import numpy as np
@@ -85,11 +88,22 @@ def check(settings):
         raise ValueError("prefix_tokens: 0 (every training token) or more")
     if settings["readings"] < 1:
         raise ValueError(f"readings {settings['readings']}: a whole number, 1 or more")
+    longest = max(stage["block_size"] for stage in settings["stages"])
+    for number, stage in enumerate(settings["stages"], 1):
+        if longest % stage["block_size"]:
+            raise ValueError(f"stage {number}: its window length {stage['block_size']} does not divide the longest, "
+                             f"{longest}, so its windows cannot share the slots of a reading")
 
 
 def stages(settings) -> list[dict]:
     """The stages the step runs: each stage of its settings with readings times its updates."""
     return [{**stage, "steps": stage["steps"] * settings["readings"]} for stage in settings["stages"]]
+
+
+def times_read(settings, tokens) -> float:
+    """How many times the stages read `tokens` training tokens: the tokens
+    their windows predict over the tokens."""
+    return sum(stage["steps"] * stage["batch_size"] * stage["block_size"] for stage in stages(settings)) / tokens
 
 
 def shards(record, kinds) -> list[dict]:
@@ -130,15 +144,89 @@ def _windows(tokens, block_size, count, *seed_parts):
     return _gathered(tokens, _starts(len(tokens), block_size, count, *seed_parts), block_size)
 
 
-def _pass(length, block_size, *seed_parts) -> tuple[int, torch.Tensor]:
-    """A pass over length tokens without replacement, the same on every
-    machine: (the place its windows of block_size + 1 tokens start from, the
-    order it takes them in: a permutation of the windows that fit one after
-    the other from that place)."""
-    size = block_size + 1
-    generator = torch.Generator().manual_seed(_seed(*seed_parts))
-    offset = int(torch.randint(min(block_size, length - size) + 1, (1,), generator=generator))
-    return offset, torch.randperm((length - offset) // size, generator=generator)
+GROUP = 64  # the slots a pass reads together, each group's windows in an order of their own
+
+
+class _Walk:
+    """The places of the windows of a step's walk over its training tokens,
+    the same on every machine (the module's docstring). segments: (start,
+    length) of each part of the tokens a slot stays inside. unit: the
+    longest window length, a slot's length in tokens predicted. seeds: the
+    order's seed and the step's number."""
+
+    def __init__(self, segments, unit, seeds):
+        self.segments, self.unit, self.seeds = segments, unit, seeds
+        self.starts = [0]  # where each pass starts in the walk, in tokens predicted; one more than the passes known
+        self.layout = None  # (pass number, the start of each of its slots in the tokens in its order, its groups)
+        self.orders = {}  # the order of the windows of the group in use, by (pass, group, window length)
+
+    def _generator(self, number, segment):
+        return torch.Generator().manual_seed(_seed(*self.seeds, "reading", number, self.unit, segment))
+
+    def _offset(self, generator, length) -> int | None:
+        """Where a segment of length tokens starts its slots, or None when no slot fits."""
+        if length < self.unit + 1:
+            return None
+        return int(torch.randint(min(self.unit, length - self.unit - 1) + 1, (1,), generator=generator))
+
+    def _counts(self, number) -> list[int]:
+        """The slots of each segment in pass `number`."""
+        found = []
+        for index, (_, length) in enumerate(self.segments):
+            offset = self._offset(self._generator(number, index), length)
+            found.append(0 if offset is None else (length - offset - 1) // self.unit)
+        return found
+
+    def _pass(self, place) -> tuple[int, int]:
+        """(the pass a place of the walk lies in, the place inside it)."""
+        while self.starts[-1] <= place:
+            self.starts.append(self.starts[-1] + sum(self._counts(len(self.starts) - 1)) * self.unit)
+        number = bisect.bisect_right(self.starts, place) - 1
+        return number, place - self.starts[number]
+
+    def _groups(self, number) -> list[int]:
+        """Where each group of pass `number` starts among its slots, then
+        the pass's slots: a group is GROUP slots of one segment, or the
+        segment's last ones."""
+        groups, first = [], 0
+        for count in self._counts(number):
+            groups += range(first, first + count, GROUP)
+            first += count
+        return groups + [first]
+
+    def _layout(self, number) -> np.ndarray:
+        """Pass `number`'s slots, each its start in the tokens, in its order."""
+        if self.layout is None or self.layout[0] != number:
+            found = []
+            for index, (start, length) in enumerate(self.segments):
+                generator = self._generator(number, index)
+                offset = self._offset(generator, length)
+                if offset is not None:
+                    order = torch.randperm((length - offset - 1) // self.unit, generator=generator).numpy()
+                    found.append(start + offset + order.astype(np.int64) * self.unit)
+            self.layout, self.orders = (number, np.concatenate(found), self._groups(number)), {}
+        return self.layout[1]
+
+    def aligned(self, place) -> int:
+        """The first place at or after `place` where a group starts: where a stage starts."""
+        number, inside = self._pass(place)
+        groups = self._groups(number)
+        later = groups[bisect.bisect_left(groups, -(-inside // self.unit))]
+        return self.starts[number] + later * self.unit
+
+    def start(self, place, block_size) -> int:
+        """Where in the tokens the window at that place of the walk starts."""
+        number, inside = self._pass(place)
+        layout, groups = self._layout(number), self.layout[2]
+        group = bisect.bisect_right(groups, inside // self.unit) - 1
+        slots = layout[groups[group]:groups[group + 1]]
+        each = self.unit // block_size
+        key = (number, group, block_size)
+        if key not in self.orders:
+            generator = torch.Generator().manual_seed(_seed(*self.seeds, "group", number, group, block_size))
+            self.orders = {key: torch.randperm(len(slots) * each, generator=generator).numpy()}
+        drawn = int(self.orders[key][(inside - groups[group] * self.unit) // block_size])
+        return int(slots[drawn // each]) + (drawn % each) * block_size
 
 
 def batching(stages, micro_batch, sharing, first=1) -> list[dict]:
@@ -177,7 +265,16 @@ class TextWindows(Environment):
                              f"than one window of {longest}")
         self.tokens = len(self.train_tokens)
         self.index = 0
-        self.passes = {}  # the pass over the training tokens in use, by (its number, the window length): _order
+        if isinstance(self.train_tokens, ShardStream):
+            ends = self.train_tokens.ends
+            segments = [(ends[i - 1] if i else 0, ends[i] - (ends[i - 1] if i else 0)) for i in range(len(ends))]
+        else:
+            segments = [(0, self.tokens)]
+        if all(length < longest + 1 for _, length in segments):
+            self.close()
+            raise ValueError(f"no token file holds one window of {longest} tokens, so none can be streamed whole")
+        self.walk = _Walk(segments, longest, (data.seed, data.number))
+        self.stage_places = []
 
     @property
     def learned(self):
@@ -224,37 +321,35 @@ class TextWindows(Environment):
         stage = self.stage_list[self.index]
         return self._split(_windows(self._tokens_at(tokens, step), stage.block_size, stage.batch_size, *seed_parts))
 
+    def _place(self, step) -> int:
+        """Where update `step` starts in the step's walk over its tokens, in tokens predicted (_Walk)."""
+        if not self.stage_places:  # where each stage starts: once its stage before it ends, at a group's start
+            place = 0
+            for stage in self.stage_list:
+                self.stage_places.append(self.walk.aligned(place))
+                place = self.stage_places[-1] + stage.steps * stage.batch_size * stage.block_size
+        first = 1
+        for stage, place in zip(self.stage_list, self.stage_places):
+            if step < first + stage.steps:
+                return place + (step - first) * stage.batch_size * stage.block_size
+            first += stage.steps
+        return place
+
     def batch(self, step, model, strategy):
-        seeds = (self.data.seed, self.data.number, "train", step)
-        if self.readings == 1 or isinstance(self.train_tokens, ShardStream):
-            return self._passes(self.train_tokens, step, *seeds)
-        return self._split(self._read_again(step, seeds))
-
-    def _read_again(self, step, seeds):
-        """The windows of update `step` of a step that reads its tokens more
-        than once: a window whose place in the step's walk over its tokens
-        lies within the first pass is the one a step of one reading draws,
-        and one placed in pass q after it is the window its place gives in
-        that pass's order (_pass). Where the windows that fit after the
-        pass's place are fewer than the walk's places in the pass (one or
-        two fewer), its last places take its first windows again."""
-        stage, length = self.stage_list[self.index], len(self.train_tokens)
-        size, used = stage.block_size + 1, self._used(step)
-        starts = _starts(length, stage.block_size, stage.batch_size, *seeds)
-        for i in range(stage.batch_size):
-            place = used + i * size
-            if place >= length:
-                offset, order = self._order(place // length, stage.block_size)
-                starts[i] = offset + int(order[(place % length) // size % len(order)]) * size
-        return _gathered(self.train_tokens, starts, stage.block_size)
-
-    def _order(self, number, block_size):
-        """Pass `number` (from 1) over the training tokens in windows of block_size + 1 tokens (_pass)."""
-        key = (number, block_size)
-        if key not in self.passes:  # one pass at a time is in use
-            self.passes = {key: _pass(len(self.train_tokens), block_size, self.data.seed, self.data.number,
-                                      "reading", number, block_size)}
-        return self.passes[key]
+        stage = self.stage_list[self.index]
+        place = self._place(step)
+        starts = [self.walk.start(place + i * stage.block_size, stage.block_size) for i in range(stage.batch_size)]
+        if not isinstance(self.train_tokens, ShardStream):
+            return self._split(_gathered(self.train_tokens, starts, stage.block_size))
+        stream, total, found, base, joined = self.train_tokens, len(self.train_tokens), [], None, None
+        for start in starts:  # the shards in use from a window's token file on, kept while they hold the next ones
+            if joined is None or (start - base) % total + stage.block_size + 1 > len(joined):
+                segment = bisect.bisect_right(stream.ends, start)
+                base = stream.ends[segment - 1] if segment else 0
+                joined = stream.at(base)
+            found.append(np.asarray(joined[(start - base) % total:(start - base) % total + stage.block_size + 1],
+                                    dtype=np.int64))
+        return self._split(torch.from_numpy(np.stack(found)))
 
     def evaluates(self, step, first, last):
         return step % (self.settings["eval_every"] * self.readings) == 0 or step in (first, last)

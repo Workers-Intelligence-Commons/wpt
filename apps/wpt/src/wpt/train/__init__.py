@@ -254,7 +254,7 @@ from wpt_training import (WINDOWS, Checkpoint, FolderCheckpoint, PluginError, ch
                           load_step, save_state, strategy_plugin, weights)
 from wpt_training.launch import REFUSED, STOPPED
 from wic_utils.files import sha256_file
-from wic_utils.lines import ERROR, WARNING, say
+from wic_utils.lines import ERROR, INFO, WARNING, say
 from wic_utils.programs import code, fingerprint, repository
 from wpt_worker.link import LinkError
 from wpt_worker.manager import Files, NoCheckout, code_root, keys, machines, run_jobs, start_workers
@@ -671,20 +671,32 @@ def with_prefixes(order, record, log=lambda text: None) -> dict:
     return {**order, "steps": entries}
 
 
-def readings(steps) -> list[str]:
+AGREE = 0.01  # how far the times a step's stages read its text may stray from its readings without a warning
+
+
+def readings(steps) -> list[tuple[str, bool]]:
     """A line for each step that reads text windows, once with_prefixes
-    gave it its prefix: the tokens it reads from the corpus's start, how
-    many times (its `readings`), and the updates and the tokens its windows
-    train on."""
+    gave it its prefix: the tokens it reads from the corpus's start, the
+    times its stages read them (the tokens their windows predict over the
+    prefix), its `readings`, and the updates and the tokens its windows
+    train on; with whether it is a warning: the times stray from the
+    readings by more than AGREE of them."""
     found = []
     for number, step in enumerate(steps, 1):
         if step.reads != WINDOWS:
             continue
-        stages, times = step.stages(), step.settings.get("readings", 1)
+        stages, asked, prefix = step.stages(), step.settings.get("readings", 1), step.settings["prefix_tokens"]
         updates = sum(stage["steps"] for stage in stages)
         tokens = sum(stage["steps"] * stage["batch_size"] * stage["block_size"] for stage in stages)
-        found.append(f"step {number} {step.name} reads the first {step.settings['prefix_tokens']:,} tokens of plain "
-                     f"text {times} time{'s' if times > 1 else ''}: {updates:,} updates, {tokens:,} tokens trained")
+        times = tokens / prefix
+        line = (f"step {number} {step.name} reads the first {prefix:,} tokens of plain text {times:.2f} times "
+                f"(readings {asked}): {updates:,} updates, {tokens:,} tokens trained")
+        strays = abs(times - asked) > AGREE * asked
+        if strays:
+            line += (f"; its stages predict {tokens:,} tokens, not the {asked * prefix:,} that {asked} reading"
+                     f"{'s' if asked > 1 else ''} of its text would: the updates come from the stages "
+                     "(docs/training.md, \"Readings\")")
+        found.append((line, strays))
     return found
 
 
@@ -908,8 +920,8 @@ def _run(args, record, dock, telemetry, environ) -> int:
             strategy_file = strategy_plugin(args.strategy)
         with telemetry.span("inputs.steps", steps=len(order["steps"])):
             steps, context = plan(order)
-        for line in readings(steps):
-            telemetry.log(line)
+        for line, strays in readings(steps):
+            telemetry.log(line, WARNING if strays else INFO)
     except (InputError, PluginError) as error:
         return _refuse(f"{type(error).__name__}: {error}", telemetry)
     try:

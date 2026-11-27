@@ -447,12 +447,11 @@ The `read-text` step reads the corpus's plain texts: next-token prediction
 windows growing stage by stage, under `by-part` on its multi-step
 schedule, without early stop. Its settings are `stages`,
 `eval_every` (200), `eval_batches` (20), `prefix_tokens` (0, "Prefix"
-below) and `readings` (1, "Readings" below), with the method's. Each update
-of one reading draws its windows at random places of the training tokens,
-with replacement, seeded by the
-seed, the step's number in the order and the update only: a second
-`read-text` step draws other windows than the first. Dropout reads the
-same three.
+below) and `readings` (1, "Readings" below), with the method's. The step
+reads its training tokens in passes without replacement, in an order
+decided by the seed, the step's number in the order and the pass
+("Readings", below): a second `read-text` step reads other windows than
+the first. Dropout reads the seed, the step's number and the update.
 
 Validation draws windows of the training tokens apart from the
 training's. The tokens are read from disk as training needs them, so a
@@ -509,37 +508,52 @@ reading, and the step multiplies them by N, so the learning-rate schedule
 keeps its shape. `--checkpoint-every` counts the updates as they run. The
 setting is part of the step's fingerprint.
 
-The windows of a step of N readings are those of one reading until the
-tokens drawn reach the size of the training tokens. From there, each
-time the tokens drawn pass another multiple of that size, inside any
-stage, a new pass starts: it cuts the tokens into windows of the stage's
-length from an offset of at most one window, drawn for that pass, and
-takes every one of those windows once, in an order drawn for that pass.
-The offset and the order depend on the seed, the step's number in the
-order, the pass's number and the window length, so two passes read the
-tokens in another order and cut at other places, and one seed reads the
-same windows. Where fewer windows fit than a pass has places for, its
-last places take its first windows again. Which pass a window belongs to
-depends on the tokens drawn before it, so a resumed step and a step that
-continues another ("Continued steps", above) draw what the uninterrupted
-step draws. With `--stream`, the walk over the shards goes on N times as
-long and wraps at the prefix's end, as with one reading.
+Every reading is a pass without replacement over the training tokens.
+A window of a stage holds `block_size` + 1 tokens and starts on the last
+token of the window before it in the walk, so each window predicts
+`block_size` tokens and a pass predicts each of its tokens once. Each
+stage's window length divides the longest, the slot length: a step whose
+window lengths do not is refused. A pass cuts the tokens into slots from
+an offset of less than one slot and takes the slots in an order of its
+own. It reads them in groups of 64 slots, and each group's windows of a
+stage's length in an order of their own, so an update's windows come
+from many places of the text. The offset and the orders depend on the
+seed, the step's number in the order, the pass's number and the window
+lengths, so two passes read the tokens in another order and cut at other
+places, and one seed reads the same windows. A pass leaves out the
+tokens before its offset and after its last whole slot: less than two
+slots, so `readings: 1` predicts every training token once but for at
+most two slots of them. A pass that a stage boundary falls inside goes on
+at the next group, so its new windows predict no token the pass already
+predicted, and the rest of that group is not read in that pass. Where a
+window lies depends on the tokens predicted before it, so a resumed step
+and a step that continues another ("Continued steps", above) read what
+the uninterrupted step reads.
 
-The updates come from the stages, not from the prefix: a step of one
-reading whose stages draw more tokens than its prefix already reads parts
-of it more than once, at random places, and N multiplies that. N
-readings read the prefix exactly N times only when the stages draw as
-many tokens as it holds.
+With `--stream`, a pass reads the token files in their order, each file
+cut into its own slots and its own groups, so an update's windows come
+from the shards in use. A file shorter than one slot is not read, and a
+pass leaves out less than two slots of each file.
+
+The updates come from the stages, not from the prefix: a step reads its
+tokens as many times as its stages' windows predict tokens over the
+prefix, N exactly when the stages of one reading predict as many tokens
+as the prefix holds. Stages that predict more go on into further passes,
+and stages that predict fewer end inside a pass, which leaves the rest of
+that pass unread. `wpt train` writes in the run's record, for each step
+that reads text windows, how many times its stages read its tokens, such
+as 2.40, with its readings, its updates and the tokens it trains on, and
+the line is a warning when the times stray from the readings by more than
+1%. The step still runs: the stages decide its length.
 
 The validation windows are the same whatever the readings, and they are
 drawn from the training tokens, so a step of N readings trains on them N
 times as often. Only the held-out portion's `bits_per_byte`
 ([evaluation.md](evaluation.md)) measures text that no training read.
 
-The run's record says, for each step of more than one reading, the
-tokens it reads, how many times, its updates and the tokens it trains on.
 `provenance.json` holds the setting with the step's others, and the model
-card names the readings beside the tokens of plain text.
+card says, beside the tokens of plain text, how many times the stages
+read them and the readings.
 
 Choosing N, and what changes with it, is in
 [knowledge/reading-scarce-text.md](knowledge/reading-scarce-text.md).
@@ -549,9 +563,9 @@ The weight decay stays the optimizer's setting whatever the readings.
 
 `--stream` (or `WPT_STREAM=1`) never copies every shard to disk. The
 shards are walked in order at the speed training uses tokens: before each
-update, the shard holding the next unused token and the shards after it,
-`--stream-shards` in all (8 by default, about 2 GB), are the ones in use,
-and the update draws its windows from them only. The shard after them is
+update, the shard holding the update's first window and the shards after
+it, `--stream-shards` in all (8 by default, about 2 GB), are the ones in
+use, and the update reads its windows from them. The shard after them is
 prepared while training goes on, and a shard that leaves the set loses
 its token file and, from an S3 dock, its local copy. After the last shard
 comes the first again.
@@ -559,7 +573,8 @@ comes the first again.
 Which shards are in use depends only on the update, so a resumed run and
 any number of processes take the same windows, but they are not the
 windows a run without `--stream` takes: a streamed run mixes texts within
-the shards in use, not over the whole corpus. Both options only say
+each shard, in groups of slots, not over the whole corpus ("Readings",
+below). Both options only say
 how the hardware reads the shards, so they are no part of the step's
 fingerprint: a run reuses a step another run kept with other values of
 them.

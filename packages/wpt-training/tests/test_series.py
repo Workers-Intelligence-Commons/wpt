@@ -105,13 +105,11 @@ def windows(dock, record, prefix, stream_shards=None, updates=40):
 @pytest.mark.parametrize("stream_shards", [None, 2])
 def test_a_smaller_size_reads_exactly_the_start_of_the_corpus_built_for_a_larger_one(dataset, stream_shards):
     # a prefix of 250 tokens ends inside the third token file: every window is a run of the first
-    # 250 tokens (a stream walks them over and over: after token 249 comes token 0), the windows
-    # reach its end, and the step learned from those 250 tokens alone; the same windows on every run
+    # 250 tokens, the windows reach its end, and the step learned from those 250 tokens alone; the
+    # same windows on every run
     dock, record = dataset
     found, learned = windows(dock, record, 250, stream_shards)
-    following = np.roll(found, -1, axis=1)[:, :-1]
-    assert ((following == found[:, :-1] + 1) | (stream_shards is not None) & (found[:, :-1] == 249)
-            & (following == 0)).all()
+    assert (found[:, 1:] == found[:, :-1] + 1).all()
     assert found.min() >= 0 and found.max() <= 249 and found.max() >= 240
     assert learned == {"plain": 250}
     again, _ = windows(dock, record, 250, stream_shards)

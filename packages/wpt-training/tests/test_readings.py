@@ -1,9 +1,8 @@
-"""A read-text step that reads its tokens several times (docs/training.md,
-"Readings"): it trains on that many times the updates and tokens of one
-reading, on the windows of one reading first, then on passes that take
-every window of the tokens once, in another order and cut at another place
-each time; a resumed step draws as the uninterrupted one, and the
-evaluation's windows stay those of every other run."""
+"""How a read-text step reads its tokens (docs/training.md, "Readings"):
+N readings train on N times the updates and tokens of one; every reading
+is a pass that predicts each token once, in another order and cut at
+another place each time; a resumed step draws as the uninterrupted one,
+and the evaluation's windows stay those of every other run."""
 
 import numpy as np
 import pytest
@@ -56,9 +55,13 @@ def drawn(dataset, step, seed=1337, stream_shards=None):
     environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(), lambda _: None,
                                               seed, 1, stream_shards=stream_shards))
     try:
-        updates = sum(stage.steps for stage in environment.stage_list)
-        found = [torch.cat([x for x, _ in environment.batch(update, None, CPU)]).numpy()
-                 for update in range(1, updates + 1)]
+        found = []
+        for index, stage in enumerate(environment.stage_list):
+            environment.stage(index)
+            first = len(found) + 1
+            found += [torch.cat([x for x, _ in environment.batch(update, None, CPU)]).numpy()
+                      for update in range(first, first + stage.steps)]
+        environment.stage(0)
         return found, torch.cat([x for x, _ in environment.evaluation_passes(1)]).numpy()
     finally:
         environment.close()
@@ -93,29 +96,57 @@ def test_the_schedule_of_three_readings_is_the_schedule_of_one_stretched_three_t
     assert three[:6] == [u / 6 for u in range(1, 7)]  # a warm-up of 2 updates of one reading: 6 of three
 
 
-def test_a_step_of_several_readings_reads_one_reading_s_windows_then_every_window_of_each_pass_once(positions):
-    once, _ = drawn(positions, read_text())
+def passes(updates):
+    """The windows of a step's updates, in order, cut into its passes: a pass
+    ends before the first window that predicts a token the pass predicted."""
+    found, seen = [[]], set()
+    for window in (window for update in updates for window in update):
+        predicted = set(window[1:].tolist())
+        if predicted & seen:
+            found.append([])
+            seen = set()
+        found[-1].append(window)
+        seen |= predicted
+    return found
+
+
+def test_every_reading_predicts_each_token_once_in_an_order_of_its_own(positions):
     thrice, _ = drawn(positions, read_text(3))
     assert len(thrice) == 3 * UPDATES
-    # the first reading: the windows a step of one reading draws, at random places
-    assert all((a == b).all() for a, b in zip(once, thrice[:UPDATES]))
-    passes = []
-    for number in (1, 2):
-        windows = np.concatenate(thrice[number * UPDATES:(number + 1) * UPDATES])
-        assert ((windows[:, 1:] == windows[:, :-1] + 1)).all()  # each a run of the corpus's tokens
-        starts = windows[:, 0].tolist()
-        offset = min(starts)
-        fit = list(range(offset, 400 - BLOCK, BLOCK + 1))
-        # cut from one place: every window that fits after it, each once, in a drawn order; where one or two
-        # fewer fit than the 25 places of the pass, its last places take its first windows again
-        assert offset <= BLOCK and set(starts) == set(fit) and starts[:len(fit)] != sorted(starts[:len(fit)])
-        assert starts[len(fit):] == starts[:len(starts) - len(fit)]
-        passes.append(starts)
-    assert passes[0] != passes[1]  # another order, and another place, each pass
+    windows = np.concatenate(thrice)
+    assert ((windows[:, 1:] == windows[:, :-1] + 1)).all()  # each a run of the corpus's tokens
+    found = passes(thrice)
+    assert len(found) == 3  # 75 windows of 15 tokens predicted: a little under 3 passes over 400 tokens
+    orders = []
+    for one in found[:-1]:
+        starts = [int(window[0]) for window in one]
+        # cut from one offset into windows that start every 15 tokens, each window once, in a drawn order: every
+        # token but those before the offset and after the last whole window is predicted once
+        offset = min(starts) % BLOCK
+        assert sorted(starts) == list(range(offset, offset + BLOCK * len(starts), BLOCK))
+        assert 400 - 1 - 2 * BLOCK < BLOCK * len(starts) <= 400 - 1 and starts != sorted(starts)
+        orders.append(starts)
+    assert orders[0] != orders[1]  # another order, or another cut, each pass
     again, _ = drawn(positions, read_text(3))
     assert all((a == b).all() for a, b in zip(thrice, again))  # one seed, the same windows
     other, _ = drawn(positions, read_text(3), seed=7)
-    assert any((a != b).any() for a, b in zip(thrice[UPDATES:], other[UPDATES:]))
+    assert any((a != b).any() for a, b in zip(thrice, other))
+
+
+def test_a_stage_that_starts_inside_a_pass_predicts_no_token_the_pass_predicted(positions, monkeypatch):
+    # the longest window gives the slots; a stage of shorter windows reads windows inside them, and the next
+    # stage starts at the next group of slots, so a pass never predicts a token twice
+    step = load_step({"step": "read-text", "settings": {"prefix_tokens": 400, "stages": [
+        {"block_size": 5, "steps": 4, "batch_size": 2}, {"block_size": 15, "steps": 30, "batch_size": 1}]}}, PARTS)
+    monkeypatch.setattr(step.environment.module, "GROUP", 2)  # groups of 2 slots of 15 tokens
+    windows, _ = drawn(positions, step)
+    first = passes(windows)[0]
+    # 8 windows of 5 tokens fill a group and a third of the next; the second stage starts at the group after
+    assert [len(window) for window in first[:8]] == [5] * 8 and {len(window) for window in first[8:]} == {15}
+    read = [token for window in first for token in window.tolist()]
+    assert len(read) == len(set(read))  # inputs of windows that each start on the last token of another
+    every = len(read) + 20  # the 20 tokens the second group's skipped part held
+    assert 400 - 2 * 15 < every <= 400
 
 
 def test_the_evaluation_reads_the_same_windows_whatever_the_readings(positions):
@@ -124,12 +155,16 @@ def test_the_evaluation_reads_the_same_windows_whatever_the_readings(positions):
     assert (once == thrice).all()
 
 
-def test_a_stream_reads_its_tokens_as_many_times_drawing_as_a_step_of_one_reading(positions):
-    once, _ = drawn(positions, read_text(), stream_shards=2)
+def test_a_stream_reads_each_token_file_in_passes_without_crossing_from_one_to_the_next(positions):
     twice, _ = drawn(positions, read_text(2), stream_shards=2)
-    assert len(twice) == 2 * UPDATES and all((a == b).all() for a, b in zip(once, twice))
+    assert len(twice) == 2 * UPDATES
     windows = np.concatenate(twice)
-    assert ((windows[:, 1:] == windows[:, :-1] + 1) | ((windows[:, :-1] == 399) & (windows[:, 1:] == 0))).all()
+    assert ((windows[:, 1:] == windows[:, :-1] + 1)).all() and (windows[:, 0] // 100 == windows[:, -1] // 100).all()
+    found = passes(twice)
+    files = [int(window[0]) // 100 for window in found[0]]
+    assert files == sorted(files)  # the token files in their order, each one's windows in an order of its own
+    # each of the 4 files of 100 tokens holds 6 windows of 15 tokens predicted after its offset, or 5
+    assert 4 * 5 <= len(found[0]) <= 4 * 6
 
 
 def test_a_step_stopped_in_its_second_reading_and_resumed_trains_as_the_uninterrupted_one(positions, tmp_path):
@@ -165,6 +200,13 @@ def test_readings_other_than_a_whole_number_of_1_or_more_are_refused(readings):
     with pytest.raises(PluginError, match="readings"):
         load_step({"step": "read-text", "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 1}],
                                                      "readings": readings}}, PARTS)
+
+
+def test_a_window_length_that_does_not_divide_the_longest_is_refused():
+    with pytest.raises(PluginError, match="stage 1: its window length 12 does not divide the longest, 32"):
+        load_step({"step": "read-text", "settings": {"stages": [{"block_size": 12, "steps": 1, "batch_size": 1},
+                                                                {"block_size": 32, "steps": 1, "batch_size": 1}]}},
+                  PARTS)
 
 
 def test_a_step_continues_only_one_that_reads_its_tokens_as_many_times():
