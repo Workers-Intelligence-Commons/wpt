@@ -135,7 +135,12 @@ def test_general_knowledge_asks_each_question_in_both_languages(trained, tmp_pat
     assert data["questions"] == 2 and set(data["languages"]) == {"fr", "en"}
     assert [one["prompt"] for one in data["answers"]["fr"]] == [one["fr"]["prompt"] for one in two]
     assert all(0 <= figures["choice"] <= 1 for figures in data["languages"]["en"].values())
-    assert "| **all** |" in (trained.folder / "README.md").read_text()
+    assert all(one["rank"] >= 1 and 0 < one["probability"] <= 1 for found in data["answers"].values() for one in found)
+    figures = data["languages"]["fr"]["all"]
+    assert figures["rank"] >= 1 and 0 <= figures["top_1"] <= figures["top_10"] <= 1
+    card = (trained.folder / "README.md").read_text()
+    assert "| **all** |" in card and "| fr rank | fr top 1 | fr top 10 | fr probability |" in card
+
 
 
 def test_copying_measures_what_the_model_reuses_from_its_prompt(trained, tmp_path):

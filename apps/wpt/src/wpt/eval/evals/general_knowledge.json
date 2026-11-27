@@ -378,6 +378,48 @@
   }
  },
  {
+  "topic": "geography",
+  "fr": {
+   "prompt": "Paris est la capitale de la",
+   "answer": "France",
+   "wrong": [
+    "Belgique",
+    "Suisse",
+    "Italie"
+   ]
+  },
+  "en": {
+   "prompt": "Paris is the capital of",
+   "answer": "France",
+   "wrong": [
+    "Belgium",
+    "Switzerland",
+    "Italy"
+   ]
+  }
+ },
+ {
+  "topic": "geography",
+  "fr": {
+   "prompt": "La capitale des États-Unis est",
+   "answer": "Washington",
+   "wrong": [
+    "New York",
+    "Chicago",
+    "Boston"
+   ]
+  },
+  "en": {
+   "prompt": "The capital of the United States is",
+   "answer": "Washington",
+   "wrong": [
+    "New York",
+    "Chicago",
+    "Boston"
+   ]
+  }
+ },
+ {
   "topic": "time",
   "fr": {
    "prompt": "Après lundi vient",
@@ -1676,6 +1718,48 @@
     "hammer",
     "glass",
     "pillow"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Roméo et",
+   "answer": "Juliette",
+   "wrong": [
+    "Marie",
+    "Sophie",
+    "Claire"
+   ]
+  },
+  "en": {
+   "prompt": "Romeo and",
+   "answer": "Juliet",
+   "wrong": [
+    "Mary",
+    "Sophie",
+    "Claire"
+   ]
+  }
+ },
+ {
+  "topic": "culture",
+  "fr": {
+   "prompt": "Blanche-Neige et les sept",
+   "answer": "nains",
+   "wrong": [
+    "frères",
+    "chats",
+    "rois"
+   ]
+  },
+  "en": {
+   "prompt": "Snow White and the Seven",
+   "answer": "Dwarfs",
+   "wrong": [
+    "Brothers",
+    "Cats",
+    "Kings"
    ]
   }
  }
