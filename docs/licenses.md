@@ -339,19 +339,6 @@ starts with a `Format:` field), the record lists the licenses its
 text instead. A package with no such
 file in the image has a record with its version only.
 
-### Word lists of order names (`scripts/names/`)
-
-`scripts/order_name.py` draws model order names from two lists taken
-from Princeton WordNet 3.0, under its own license (the WordNet License,
-kept in `scripts/names/LICENSE` as it asks):
-
-- `adjectives.txt`: the adjectives that are one lowercase ASCII word and
-  appear at least once in WordNet's tagged text (its sense counts), minus
-  those WordNet marks as an ethnic slur, a disparagement or an obscenity:
-  4,619 words.
-- `animals.txt`: the nouns under `animal.n.01` that are one lowercase
-  ASCII word, minus the same marks: 2,497 words.
-
 ### Distribution
 
 WPT does not distribute any of these packages: installing a build downloads
