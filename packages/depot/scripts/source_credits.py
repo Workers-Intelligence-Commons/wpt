@@ -1,21 +1,19 @@
-# /// script
-# requires-python = ">=3.14"
-# dependencies = []
-# ///
 """Write the input files of `depot credits-file` that give titles to
 the texts of a depot that have none, and fix authors stored as the text of
 a Python dict, by the rules of docs/data-selection.md, "Titles from a
 text's source".
 
 Usage:
-    python scripts/source_credits.py --depot FILE --out FOLDER
+    uv run python packages/depot/scripts/source_credits.py --depot FILE --out FOLDER
         --ledger FILE [--ledger FILE ...] [--catalogue pg_catalog.csv]
         [--family NAME ...] [--range FIRST LAST]
 
-The depot is read only (SQLite's mode=ro), one text at a time by its id,
-so it may be read while the depot's web app writes it. Which family of
-sources a text comes from is read from the ledgers of the run that added
-the texts: JSON lines whose "intent" lines name a source and give `before`
+The depot is read through the depot's library, opened read only
+(depot.Depot.view), one text at a time by its id, so it may be read while
+the depot's web app writes it.
+
+Which family of sources a text comes from is read from the ledgers of the
+run that added the texts: JSON lines whose "intent" lines name a source and give `before`
 (how many texts the depot held just before) and `count` (how many texts it
 added, 1 when absent), so the texts are the ids NAME-(before+1) to
 NAME-(before+count) of the depot named NAME. The source's name says its
@@ -41,12 +39,13 @@ import ast
 import csv
 import json
 import re
-import sqlite3
 import sys
 import xml.etree.ElementTree as ElementTree
-from compression import zstd
 from pathlib import Path
 from urllib.parse import urlparse
+
+from depot import Depot
+from depot.errors import NotFound
 
 CHUNK = 350_000  # lines per input file: what one `depot credits-file` takes at most (depot.crediting.MOST)
 
@@ -261,32 +260,28 @@ def catalogue_titles(path: Path) -> dict[str, str]:
 
 
 class Reader:
-    """A depot's file, read only, one text at a time."""
+    """A depot, opened read only (depot.Depot.view), one text at a time."""
 
     def __init__(self, path: str):
-        self.con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        self.depot = Depot.view(path)
 
     def name(self) -> str:
-        return self.con.execute("SELECT name FROM about_revisions ORDER BY revision DESC LIMIT 1").fetchone()[0]
+        return self.depot.name()
 
     def row(self, text: str) -> dict | None:
-        found = self.con.execute(
-            "SELECT t.title, t.authors, t.address, n.text, c.parts FROM texts_revisions t "
-            "LEFT JOIN notices n ON n.id = t.notice "
-            "JOIN content_lists c ON c.id = t.id AND c.version = t.content_version WHERE t.latest AND t.id = ?",
-            (text,)).fetchone()
-        if found is None:
+        """The text's current credits and its notice's text (Depot.show, without reading its content); None
+        without such a text."""
+        try:
+            shown = self.depot.show(text, characters=0)
+        except NotFound:
             return None
-        title, authors, address, notice, parts = found
-        return {"id": text, "title": title, "authors": None if authors is None else json.loads(authors),
-                "address": address, "notice": notice, "parts": json.loads(parts)}
+        found = shown["text"]
+        return {"id": text, "title": found["title"], "authors": found["authors"], "address": found["address"],
+                "notice": shown["notice"]}
 
     def parts(self, row: dict):
-        """The texts of the parts of the text's content, in order, read one at a time."""
-        for part in row["parts"]:
-            value = self.con.execute("SELECT value FROM parts WHERE id = ? AND hash = ?",
-                                     (row["id"], bytes.fromhex(part["hash"]))).fetchone()[0]
-            yield zstd.decompress(value).decode("utf-8")
+        """The texts of the parts of the text's current content, in order, read one at a time (Depot.parted)."""
+        return iter(self.depot.parted(row["id"]))
 
     def opening(self, row: dict) -> str:
         """The text's start, up to its first blank line at least, or the whole text when it has none."""

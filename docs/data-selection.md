@@ -202,8 +202,9 @@ An author stored as the text of a Python dict, `{'first': 'Jean M',
 parts that are not empty, in the order first, last. An author whose parts
 are both empty is dropped, and a text left with no author has none.
 
-`scripts/source_credits.py` reads a depot, read only, and writes the
-files of `depot credits-file` by these rules, one family of sources
+The depot's script `packages/depot/scripts/source_credits.py` reads a
+depot through the depot's library, read only, and writes the files of
+`depot credits-file` by these rules, one family of sources
 at a time, in files of at most 350,000 lines. Each line names under
 `was` the title or authors it read, so a title set after the reading
 stays. It learns which source each text came from from the ledgers of the

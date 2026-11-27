@@ -1,5 +1,5 @@
-"""scripts/source_credits.py: the rule of each family on rows shaped as the depot's own, and a run over a depot that
-writes the input files of `depot credits-file` and goes on after a stop."""
+"""packages/depot/scripts/source_credits.py: the rule of each family on rows shaped as the depot's own, and a run
+over a depot that writes the input files of `depot credits-file` and goes on after a stop."""
 
 import importlib.util
 import json
@@ -9,12 +9,12 @@ import pytest
 
 from depot import NewText, crediting
 
-SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "source_credits.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "source_credits.py"
 
 
 @pytest.fixture(scope="module")
 def script():
-    spec = importlib.util.spec_from_file_location("wpt_source_credits_script", SCRIPT)
+    spec = importlib.util.spec_from_file_location("depot_source_credits_script", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
