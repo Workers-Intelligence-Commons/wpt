@@ -1,0 +1,103 @@
+{
+  "data": {
+    "depot": "https://depot.workers-intelligence-commons.org",
+    "snapshot": "2026-11-26T15-34-39Z",
+    "change": 32195,
+    "digest": "f288b762414120511b0aba6b1ab3c78278d5341e9700c31b4d685e3e52c54219",
+    "shares": [
+      {
+        "tag": "research-paper",
+        "share": 0.35
+      },
+      {
+        "tag": "books",
+        "share": 0.15
+      },
+      {
+        "tag": "government",
+        "share": 0.05
+      },
+      {
+        "tag": "code",
+        "share": 0.05
+      },
+      {
+        "tag": "encyclopedia",
+        "share": 0.4
+      }
+    ],
+    "total_tokens": 1179648000,
+    "vocabulary": {
+      "size": 16384,
+      "sample_bytes": 10000000000
+    }
+  },
+  "model": {
+    "window_layers": 2,
+    "sparse_groups": 1,
+    "sparse_layers": 5,
+    "d_model": 128,
+    "attention_heads": 2,
+    "attention_head_dim": 128,
+    "n_experts": 32,
+    "top_k": 4,
+    "expert_width": 64,
+    "latent_width": 64,
+    "shared_width": 128,
+    "engram_layers": [],
+    "engram_order": 3,
+    "engram_heads": 8,
+    "engram_dim": 16,
+    "engram_table_size": 50021,
+    "residual_groups": 22,
+    "loops": 0,
+    "tied_tables": true
+  },
+  "seed": 1337,
+  "steps": [
+    {
+      "step": "read-text",
+      "optimizer": {
+        "name": "by-part",
+        "settings": {
+          "lr": 0.004,
+          "warmup": 103
+        }
+      },
+      "settings": {
+        "stages": [
+          {
+            "block_size": 2048,
+            "steps": 1549,
+            "batch_size": 64
+          },
+          {
+            "block_size": 8192,
+            "steps": 645,
+            "batch_size": 16
+          },
+          {
+            "block_size": 32768,
+            "steps": 384,
+            "batch_size": 4
+          }
+        ],
+        "prefix_tokens": 338014608,
+        "mtp_switch": 0.8
+      },
+      "locked": []
+    }
+  ],
+  "drafter": {
+    "prompts": 256,
+    "prompt_tokens": 64,
+    "answer_tokens": 256,
+    "epochs": 10,
+    "learning_rate": 0.0006,
+    "held_out": 0.1,
+    "anchors": 512,
+    "batch": 8,
+    "seed": 0
+  },
+  "note": "One size of a comparison of widths at one shape, to be compared on bits per byte of one held-out portion: width 128, 11 layers (two window layers on each side of an exact layer, then one exact layer and five sparse layers), 2 attention heads of 128, 32 routed experts with top 4, the expert and latent widths half the width and the shared width the width, one vocabulary table, a 16,384-token vocabulary learned on the order's own mix. 7.14M parameters without the vocabulary table, 9.24M with it. Its data part is the same as that of remaining-mouser, unarmed-sagitta, fastidious-bristletail and of the width-256 model of this shape, which reads all 1,179,648,000 tokens, so every size reads the same corpus and is measured on its held-out portion. It reads the first 338,014,608 tokens of the pretraining portion, 36.6 tokens per parameter, every parameter counted, as the width-256 model does: 337,903,616 tokens in 2,578 updates of 131,072 tokens, windows of 2,048, 8,192 then 32,768 tokens in the width-256 model's proportions, with its learning rate and a warm-up of 4% of the updates. Untested in a full run."
+}
