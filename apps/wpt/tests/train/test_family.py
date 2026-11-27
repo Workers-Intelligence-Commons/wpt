@@ -79,5 +79,5 @@ def test_the_run_s_record_says_how_the_stages_were_rounded_to_whole_groups():
     entry = Orders(Path(__file__).resolve().parents[4]).model_order("pocket:64")["steps"][0]
     [(line, strays)] = readings([load_step(entry, PARTS)])
     assert not strays and "816 updates" in line and "1.01 times" in line
-    assert ("its stages are rounded to whole groups of 16 updates, so none skips the end of a group: "
+    assert ("its stages are rounded to whole groups of 16 updates, so each starts where a group starts: "
             + ", ".join(["90.1"] * 9) + " computed, " + ", ".join(["96"] * 6 + ["80"] * 3) + " scheduled") in line

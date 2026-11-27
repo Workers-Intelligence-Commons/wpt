@@ -720,8 +720,8 @@ def readings(steps) -> list[tuple[str, bool]]:
         module, settings = step.environment.module, step.environment_settings
         if getattr(module, "rounded", lambda _: False)(settings):
             each, exact = module.group_updates(settings), module.computed(settings)
-            line += (f"; its stages are rounded to whole groups of {each:,} updates, so none skips the end of a "
-                     f"group: {', '.join(f'{float(one):,.1f}' for one in exact)} computed, "
+            line += (f"; its stages are rounded to whole groups of {each:,} updates, so each starts where a group "
+                     f"starts: {', '.join(f'{float(one):,.1f}' for one in exact)} computed, "
                      f"{', '.join(f'{stage['steps']:,}' for stage in module.schedule(settings))} scheduled")
         if cut:
             line += f"; it ends after update {cut:,} of its schedule (last_update)"

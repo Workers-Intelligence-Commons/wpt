@@ -11,8 +11,8 @@ stage are computed (`schedule`): its share x the tokens of one reading
 A step of several stages whose updates fill at least one group (below)
 per stage rounds each stage to whole groups instead, keeping its total
 updates as near the computed ones as whole groups allow, so that every
-stage starts where a group starts and no stage skips the end of a group;
-wpt train says what was rounded.
+stage starts where a group starts and no stage boundary makes a group
+shorter; wpt train says what was rounded.
 The windows grow from one stage to the next, inside one step and one
 optimizer schedule; each window length divides the longest. `readings`
 (1 or more) is how many times the step reads its training tokens, the
@@ -31,9 +31,12 @@ into slots of the longest window length, from an offset of its own, and
 takes the slots in an order of its own; it reads them in groups of GROUP
 slots, each group's windows in an order of their own. Every draw depends
 on the order's seed, the step's number in the order, q and the window
-lengths only. A stage that starts inside a group starts at the next group,
-so no token is predicted twice in one pass; the tokens before a segment's
-offset and after its last whole slot are not read in that pass. With
+lengths only. Each stage starts where the one before it ends, a slot's
+start since the longest window length divides tokens_per_update, and
+starts a group there, the segment's next groups counted from it, so no
+token is predicted twice in one pass and none of its slots is left unread;
+the tokens before a segment's offset and after its last whole slot are not
+read in that pass. With
 --stream, the windows are read from the shards in use from the segment
 of the update's first window (wpt_corpus.shards.ShardStream).
 
@@ -141,7 +144,7 @@ def computed(settings) -> list[Fraction]:
 def group_updates(settings) -> int:
     """The fewest updates whose windows fill whole groups (GROUP slots of the
     longest window length): a stage of a multiple of them that starts at a
-    group's start ends at one, so the next stage skips nothing."""
+    group's start ends at one, so the next stage starts a whole group."""
     group = GROUP * max(stage["block_size"] for stage in settings["stages"])
     return group // math.gcd(group, settings["tokens_per_update"])
 
@@ -249,10 +252,13 @@ class _Walk:
     the same on every machine (the module's docstring). segments: (start,
     length) of each part of the tokens a slot stays inside. unit: the
     longest window length, a slot's length in tokens predicted. seeds: the
-    order's seed and the step's number."""
+    order's seed and the step's number. cuts: the places of the walk where
+    a stage starts, each a slot's start: a group starts at each, and the
+    groups after it in its segment are counted from it."""
 
-    def __init__(self, segments, unit, seeds):
+    def __init__(self, segments, unit, seeds, cuts=()):
         self.segments, self.unit, self.seeds = segments, unit, seeds
+        self.cuts = sorted(cuts)
         self.starts = [0]  # where each pass starts in the walk, in tokens predicted; one more than the passes known
         self.layout = None  # (pass number, the start of each of its slots in the tokens in its order, its groups)
         self.orders = {}  # the order of the windows of the group in use, by (pass, group, window length)
@@ -283,11 +289,19 @@ class _Walk:
 
     def _groups(self, number) -> list[int]:
         """Where each group of pass `number` starts among its slots, then
-        the pass's slots: a group is GROUP slots of one segment, or the
-        segment's last ones."""
+        the pass's slots: a group is GROUP slots of one segment, or fewer
+        before a cut or the segment's end. A cut inside the pass starts a
+        group, and the segment's next groups start every GROUP slots from
+        it. The pass's start must be known (`_pass`)."""
+        start, end = self.starts[number], self.starts[number + 1]
+        cuts = [(cut - start) // self.unit for cut in self.cuts if start <= cut < end]
         groups, first = [], 0
         for count in self._counts(number):
-            groups += range(first, first + count, GROUP)
+            anchor = first
+            for cut in (cut for cut in cuts if first < cut < first + count):
+                groups += range(anchor, cut, GROUP)
+                anchor = cut
+            groups += range(anchor, first + count, GROUP)
             first += count
         return groups + [first]
 
@@ -304,13 +318,6 @@ class _Walk:
             self.layout, self.orders = (number, np.concatenate(found), self._groups(number)), {}
         return self.layout[1]
 
-    def aligned(self, place) -> int:
-        """The first place at or after `place` where a group starts: where a stage starts."""
-        number, inside = self._pass(place)
-        groups = self._groups(number)
-        later = groups[bisect.bisect_left(groups, -(-inside // self.unit))]
-        return self.starts[number] + later * self.unit
-
     def start(self, place, block_size) -> int:
         """Where in the tokens the window at that place of the walk starts."""
         number, inside = self._pass(place)
@@ -324,6 +331,21 @@ class _Walk:
             self.orders = {key: torch.randperm(len(slots) * each, generator=generator).numpy()}
         drawn = int(self.orders[key][(inside - groups[group] * self.unit) // block_size])
         return int(slots[drawn // each]) + (drawn % each) * block_size
+
+
+def walk(settings, segments, seeds) -> tuple[_Walk, list[int]]:
+    """The step's walk over its training tokens (_Walk) and where each stage
+    of its whole schedule starts in it, in tokens predicted; the schedule's,
+    not the stages a last_update cuts, so a part of a schedule walks as the
+    whole one. Each stage starts where the one before it ends, a slot's
+    start (each stage's tokens are whole updates, and the longest window
+    length divides tokens_per_update), and starts a group there, so a stage
+    that ends inside a group counted from the start of its pass or token
+    file leaves the stage after it nothing to skip."""
+    unit = max(stage["block_size"] for stage in settings["stages"])
+    lengths = [stage["steps"] * stage["batch_size"] * stage["block_size"] for stage in schedule(settings)]
+    places = [sum(lengths[:index]) for index in range(len(lengths))]
+    return _Walk(segments, unit, seeds, places), places
 
 
 def batching(stages, micro_batch, sharing, first=1) -> list[dict]:
@@ -375,8 +397,7 @@ class TextWindows(Environment):
         if all(length < longest + 1 for _, length in segments):
             self.close()
             raise ValueError(f"no token file holds one window of {longest} tokens, so none can be streamed whole")
-        self.walk = _Walk(segments, longest, (data.seed, data.number))
-        self.stage_places = []
+        self.walk, self.stage_places = walk(settings, segments, (data.seed, data.number))
         held = data.record.get("held_out")
         self.held_out = None if held is None else _token_array(data.dock, held["shards"], strategy)
         if self.held_out is not None and len(self.held_out) <= longest + 1:
@@ -435,12 +456,7 @@ class TextWindows(Environment):
         return self._split(_windows(self._tokens_at(tokens, step), stage.block_size, stage.batch_size, *seed_parts))
 
     def _place(self, step) -> int:
-        """Where update `step` starts in the step's walk over its tokens, in tokens predicted (_Walk)."""
-        if not self.stage_places:  # where each stage starts: once its stage before it ends, at a group's start
-            place = 0
-            for stage in self.stage_list:
-                self.stage_places.append(self.walk.aligned(place))
-                place = self.stage_places[-1] + stage.steps * stage.batch_size * stage.block_size
+        """Where update `step` starts in the step's walk over its tokens, in tokens predicted (_Walk, `walk`)."""
         first = 1
         for stage, place in zip(self.stage_list, self.stage_places):
             if step < first + stage.steps:

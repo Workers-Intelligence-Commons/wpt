@@ -568,10 +568,11 @@ lengths, so two passes read the tokens in another order and cut at other
 places, and one seed reads the same windows. A pass leaves out the
 tokens before its offset and after its last whole slot: less than two
 slots, so `readings: 1` predicts every training token once but for at
-most two slots of them. A pass that a stage boundary falls inside goes on
-at the next group, so its new windows predict no token the pass already
-predicted, and the rest of that group is not read in that pass. Where a
-window lies depends on the tokens predicted before it, so a resumed step
+most two slots of them. A stage starts where the stage before it ends,
+at the start of a slot since the longest window length divides
+`tokens_per_update`, and a group of the pass starts there ("Stages",
+below). A stage's windows therefore predict no token the pass already
+predicted, and leave none of its slots unread. Where a window lies depends on the tokens predicted before it, so a resumed step
 and a step that continues another ("Continued steps", above) read what
 the uninterrupted step reads.
 
@@ -582,8 +583,7 @@ pass leaves out less than two slots of each file.
 
 A step's windows predict about N times the prefix's tokens, the stages'
 rounding aside. A pass predicts a little less than the prefix (the
-tokens it leaves out, and the rest of a group a stage boundary skips),
-so the last updates of a reading go on into the next pass. `wpt train`
+tokens it leaves out), so the last updates of a reading go on into the next pass. `wpt train`
 writes in the run's record, for each step that reads text windows, how
 many times its stages read its tokens, such as 1.00, with its readings,
 its updates and the tokens it trains on. The line is a warning when the
@@ -669,15 +669,20 @@ of groups: for 131,072 tokens per update and a longest window of 32,768
 tokens, 16 updates. The step's groups are its computed updates over that
 number, rounded half up, shared out by the stages' shares, the largest
 remainders first and at least one group each. Every stage then starts
-where a group starts, so no stage boundary skips the rest of a group and
-`readings: 1` reads its text once within 1%. pocket 64's nine equal
+where a group of 64 slots starts, so no stage boundary makes a group
+shorter. pocket 64's nine equal
 shares make 811.3 computed updates and 816 scheduled: six stages of 96 and
 three of 80. The run's record gives each stage's computed and scheduled
 updates. A step whose updates do not fill a group per stage, such as a
-short test run, keeps its computed updates. Whole groups line up within
-one pass of the text: a stage that runs over the end of a pass into the
-next (`readings` above 1), or a token file that ends inside a group
-with `--stream`, still moves the stage after it to the next group.
+short test run, keeps its computed updates.
+
+A stage boundary can still fall inside a group counted from the start of
+a pass or token file: in a step that keeps its computed updates, and
+where a stage runs into the next pass (`readings` above 1) or, with
+`--stream`, the next token file, over a last group that holds the slots
+left after its whole groups, fewer than 64. A group then starts at the
+boundary, and the groups after it in that pass and token file are counted
+from it, so every slot of every pass is read once.
 
 The stages are one step: their updates are counted together, update 1
 being the first stage's first, and the learning-rate schedule and the

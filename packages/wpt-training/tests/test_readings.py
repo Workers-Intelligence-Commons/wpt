@@ -159,23 +159,24 @@ def test_every_reading_predicts_each_token_once_in_an_order_of_its_own(positions
 
 
 def test_a_stage_that_starts_inside_a_pass_predicts_no_token_the_pass_predicted(positions, monkeypatch):
-    # the longest window gives the slots; a stage of shorter windows reads windows inside them, and the next
-    # stage starts at the next group of slots, so a pass never predicts a token twice
+    # the longest window gives the slots; a stage of shorter windows reads windows inside them, and the next stage
+    # starts at the next slot, starting a group there, so a pass predicts each of its tokens once
     # 15 tokens an update over 400 tokens, 26.67 updates: 3 of 3 windows of 5, then 24 of 1 window of 15
     step = load_step({"step": "read-text", "settings": {"prefix_tokens": 400, "tokens_per_update": 15, "stages": [
         {"block_size": 5, "share": 3}, {"block_size": 15, "share": 24}]}}, PARTS)
     assert [(stage["steps"], stage["batch_size"]) for stage in step.stages()] == [(3, 3), (24, 1)]
     monkeypatch.setattr(step.environment.module, "GROUP", 2)  # groups of 2 slots of 15 tokens
-    # a schedule not rounded to whole groups, as a stage that crosses into another pass or token file is
+    # a schedule not rounded to whole groups, as a short test run's is
     monkeypatch.setattr(step.environment.module, "rounded", lambda settings: False)
+    walk, places = step.environment.module.walk(step.environment_settings, [(0, 400)], (1337, 1))
+    walk._pass(27 * 15)
+    # 9 windows of 5 tokens fill a group and half of the next; the second stage starts at the slot after them
+    assert places == [0, 45]
     windows, _ = drawn(positions, step)
-    first = passes(windows)[0]
-    # 9 windows of 5 tokens fill a group and half of the next; the second stage starts at the group after
+    first = by_pass(windows, walk.starts)[0]
     assert [len(window) for window in first[:9]] == [5] * 9 and {len(window) for window in first[9:]} == {15}
-    read = [token for window in first for token in window.tolist()]
-    assert len(read) == len(set(read))  # inputs of windows that each start on the last token of another
-    every = len(read) + 15  # the 15 tokens the second group's skipped part held
-    assert 400 - 2 * 15 < every <= 400
+    [(start, last)] = runs(first)  # every slot of the pass, once
+    assert last - start + 1 == walk.starts[1]
 
 
 def test_a_corpus_with_a_held_out_portion_is_evaluated_on_it_alone_on_the_same_windows_for_every_run(positions,
@@ -295,9 +296,10 @@ def test_a_step_whose_updates_fill_a_group_per_stage_rounds_its_stages_to_whole_
 
 
 @pytest.mark.parametrize("order", ["pocket:64", "pocket:96", "pocket:128", "pocket:192", "pocket:256", "coherent:512"])
-def test_each_size_of_nine_stages_reads_its_text_once_skipping_no_group(order):
-    # one pass over the size's own tokens (one token file, as without --stream): no stage boundary skips the
-    # end of a group, and the stages predict the tokens of the pass 1.00 times within 1%
+def test_each_size_of_nine_stages_reads_its_text_once_in_whole_groups(order):
+    # one pass over the size's own tokens (one token file, as without --stream): every stage starts where a group
+    # of 64 slots counted from the pass's start starts, so no stage boundary makes a group shorter, and the stages
+    # predict the tokens of the pass 1.00 times within 1%
     from pathlib import Path
 
     from wpt_orders import Orders
@@ -306,13 +308,116 @@ def test_each_size_of_nine_stages_reads_its_text_once_skipping_no_group(order):
     module, settings = step.environment.module, step.environment_settings
     assert module.rounded(settings)
     longest = max(stage["block_size"] for stage in settings["stages"])
-    walk = module._Walk([(0, settings["prefix_tokens"])], longest, (1337, 1))
-    place = 0
-    for stage in step.stages():
-        assert walk.aligned(place) == place
-        place += stage["steps"] * stage["batch_size"] * stage["block_size"]
+    walk, places = module.walk(settings, [(0, settings["prefix_tokens"])], (1337, 1))
+    place = sum(stage["steps"] * stage["batch_size"] * stage["block_size"] for stage in step.stages())
     walk._pass(place)
+    assert all(start % (module.GROUP * longest) == 0 for start in places)
+    uncut = module._Walk([(0, settings["prefix_tokens"])], longest, (1337, 1))
+    uncut._pass(0)
+    assert walk._groups(0) == uncut._groups(0)  # the stages' starts add no group
     assert abs(place / walk.starts[1] - 1) < 0.01
+
+
+@pytest.mark.parametrize("order, digest", [
+    ("pocket:64", "b0421f599055a585d59b62f2193ad6a1fc1fc1dbbcfec96f63f2a7504afa123d"),
+    ("pocket:96", "3aa7f037f3753a42273c504fdc72166a7506e4d31e0cca32afd57ff2ce0ff96c"),
+    ("pocket:128", "34aa5143a59daebffe5a31ae2f4dfdc333a0cd10501adfb8398505d21c935065"),
+    ("pocket:192", "06dc292b5cddf8b12df7eee4fc7e26df2ad398b34bd291639b655626f2b1777b"),
+    ("pocket:256", "994ce947c9bc2b0b7096a3161efa9cd727a21ebf4b64ccc6338ceac5f04a7eb4"),
+    ("coherent:512", "cdd4b02f387182f352d73f983981e18d0af81f5a596ebe0400049acf500c831b")])
+def test_each_size_of_nine_stages_draws_its_pinned_windows(order, digest):
+    # one reading over one token file, as without --stream: every stage starts where a group starts and the last
+    # one runs into the next pass with no stage after it, so no stage starts a group of its own; the sha256 of
+    # every window's start, in order, for seed 1337 and step 1, pins the windows each size draws
+    import hashlib
+    from pathlib import Path
+
+    from wpt_orders import Orders
+    [entry] = Orders(Path(__file__).resolve().parents[3]).model_order(order)["steps"]
+    step = load_step(entry, PARTS)
+    module, settings = step.environment.module, step.environment_settings
+    walk, places = module.walk(settings, [(0, settings["prefix_tokens"])], (1337, 1))
+    found = hashlib.sha256()
+    for stage, place in zip(step.stages(), places):
+        block, count = stage["block_size"], stage["steps"] * stage["batch_size"]
+        found.update(np.array([walk.start(place + i * block, block) for i in range(count)], dtype="<i8").tobytes())
+    assert found.hexdigest() == digest
+
+
+def stages_over_passes(monkeypatch, **settings):
+    """A step of two stages of windows of 5 and 15 tokens over the 400
+    tokens, rounded to whole groups of 2 slots of 15 tokens: 2 updates of
+    15 tokens a group."""
+    step = load_step({"step": "read-text", "settings": {
+        "prefix_tokens": 400, "tokens_per_update": 15,
+        "stages": [{"block_size": 5, "share": 1}, {"block_size": 15, "share": 1}], **settings}}, PARTS)
+    monkeypatch.setattr(step.environment.module, "GROUP", 2)
+    return step
+
+
+def by_pass(updates, starts):
+    """The windows of a step's updates (their inputs, as `drawn` gives
+    them), in order, cut into its passes by where each pass starts in the
+    walk (_Walk.starts), for a schedule whose stages follow one another with
+    no gap."""
+    found, place = [[] for _ in starts], 0
+    for window in (window for update in updates for window in update):
+        found[sum(1 for start in starts if start <= place) - 1].append(window)
+        place += len(window)
+    return [one for one in found if one]
+
+
+def runs(windows):
+    """The tokens the windows (their inputs) predict, each once, as (first, last) runs cut where a token is
+    missing."""
+    predicted = sorted(token for window in windows for token in range(int(window[0]) + 1,
+                                                                       int(window[0]) + len(window) + 1))
+    assert len(predicted) == len(set(predicted))  # no token predicted twice
+    found, first = [], predicted[0]
+    for before, token in zip(predicted, predicted[1:]):
+        if token != before + 1:
+            found.append((first, before))
+            first = token
+    return found + [(first, predicted[-1])]
+
+
+def test_a_stage_that_runs_into_the_next_pass_leaves_the_stage_after_it_no_group_to_skip(positions, monkeypatch):
+    step = stages_over_passes(monkeypatch, readings=2)
+    # 2 readings of 400 tokens, 53.3 updates: 27 groups, 14 and 13, so a first stage of 28 updates, 28 slots, runs
+    # over the first pass into the second
+    assert [(stage["steps"], stage["batch_size"]) for stage in step.stages()] == [(28, 3), (26, 1)]
+    walk, places = step.environment.module.walk(step.environment_settings, [(0, 400)], (4, 1))
+    walk._pass(sum(stage["steps"] * 15 for stage in step.stages()))
+    # a first pass of 25 slots, whose last group holds one: the second stage starts at slot 3 of the second pass,
+    # inside its group of slots 2 and 3 counted from the pass's start, and starts a group there
+    assert walk.starts[:3] == [0, 375, 750] and places == [0, 420]
+    windows, _ = drawn(positions, step, seed=4)
+    found = by_pass(windows, walk.starts)
+    assert len(found) == 3  # two whole passes, then the start of a third
+    for one in found[:2]:
+        [(first, last)] = runs(one)  # every slot of the pass, once
+        assert last - first + 1 == 375
+    assert {len(window) for window in found[1]} == {5, 15}  # both stages read the second pass
+
+
+def test_a_stream_stage_that_runs_into_the_next_token_file_leaves_the_stage_after_it_no_group_to_skip(positions,
+                                                                                                    monkeypatch):
+    step = stages_over_passes(monkeypatch)
+    # 400 tokens, 26.7 updates: 13 groups, 7 and 6, so a first stage of 14 updates, 14 slots
+    assert [(stage["steps"], stage["batch_size"]) for stage in step.stages()] == [(14, 3), (12, 1)]
+    walk, places = step.environment.module.walk(step.environment_settings, [(100 * i, 100) for i in range(4)],
+                                                (4, 1))
+    walk._pass(places[1])
+    # token files of 5, 6, 5 and 6 slots, the first ending inside a group: the second stage starts at slot 3 of
+    # the third file, inside its group of slots 2 and 3 counted from the file's start, and starts a group there
+    counts = walk._counts(0)
+    assert counts == [5, 6, 5, 6] and places == [0, 210]
+    windows, _ = drawn(positions, step, seed=4, stream_shards=2)
+    first = by_pass(windows, walk.starts)[0]
+    assert {len(window) for window in first} == {5, 15}
+    for number, count in enumerate(counts):  # every slot of each token file, once
+        [(start, last)] = runs([window for window in first if int(window[0]) // 100 == number])
+        assert last - start + 1 == 15 * count
 
 
 @pytest.mark.parametrize("readings", [0, -1, 1.5, "two"])
