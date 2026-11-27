@@ -13,7 +13,9 @@ shows a behaviour. Its marks are defined in [README.md](README.md).
   favour at 100M tokens. **published, one source**
 - When the data is the limit and compute is not, a larger model that reads
   the data several times wins: up to 4 readings are worth about as much as
-  new data, and the gain fades near 16. **published, one source**
+  new data, and the gain fades near 16. **published, one source**. The
+  readings, and what changes with them, are in
+  [reading-scarce-text.md](reading-scarce-text.md).
 - A training method can reach a given loss with far fewer tokens than the
   rule suggests: a model of 124M parameters reaches the loss of GPT-2 small
   with about 330M tokens. This is a property of the method, not another best

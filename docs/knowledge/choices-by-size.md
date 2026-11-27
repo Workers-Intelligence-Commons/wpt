@@ -107,6 +107,12 @@ direction for most choices and a value for few.
   from the attention the part along the token's own value gains more the
   larger the model, and most other changes are measured from 400M
   ([layer-changes.md](layer-changes.md)). **published**, **unchecked**
+- **Fewer readings of a scarce text.** On 200M tokens the best number of
+  passes is 16 at 150M and 300M parameters and 8 at 600M and 1.4B, and
+  the best weight decay rises with the size
+  ([reading-scarce-text.md](reading-scarce-text.md)). **published,
+  agreed**. Nothing measures it under 15M parameters, nor a rule for
+  the weight decay by readings.
 - **The optimizer matters less.** Optimizers on whole matrices save 1.4
   times the tokens at 130M and 1.1 times at 1.2B
   ([training-recipe.md](training-recipe.md)). **published, agreed**,

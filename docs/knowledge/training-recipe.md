@@ -17,9 +17,11 @@ marks are defined in [README.md](README.md).
   than a well tuned AdamW: 1.4 times fewer at 130M, 1.1 times at 1.2B.
   Against a badly tuned AdamW the gap looks twice as large.
   **published, agreed**, **unchecked**
-- When text is scarce, a weight decay 8 to 30 times the usual one with 16
-  passes over the text is worth 2.3 times the text, at 150M parameters on
-  200M tokens. **published, one source**, **unchecked**
+- When text is scarce, a weight decay tuned with the number of passes
+  gains: 0.8 and 16 passes at 150M parameters on 200M tokens. How many
+  passes, and the weight decay with them, are in
+  [reading-scarce-text.md](reading-scarce-text.md), whose figures are
+  checked. **published, one source**
 - A model trained to fill masked tokens keeps learning from the same text
   for about 100 passes, where a model trained on the next token stops
   after about 4; with one pass the next-token model wins.
@@ -53,9 +55,9 @@ exists under the id or address given.
 ### Scarce text
 
 - arXiv 2509.14786 (2025). 200M tokens, 150M to 1.4B parameters. The best
-  weight decay is 0.8 at 150M; the best number of passes 16. Together
-  2.29 times the text. A model taught by a trained copy of itself beats
-  the best plain run.
+  weight decay is 0.8 at 150M; the best number of passes 16
+  ([reading-scarce-text.md](reading-scarce-text.md)). A model taught by
+  a trained copy of itself beats the best plain run.
 - arXiv 2507.15857 (2025). 7M to 2.5B parameters, 25M to 100M tokens. On
   100M tokens trained long: loss 3.55 for the masked model against 3.71.
   With one pass: 10.65 against 7.07. Giving the next-token model 16
@@ -82,4 +84,5 @@ exists under the id or address given.
   share of masked tokens and compares the loss of the next token and the
   copying test of `wpt eval`.
 - **Many passes over less text against one pass over more**, at an equal
-  number of updates, under 100M parameters.
+  number of updates, under 100M parameters: the measure is written in
+  [reading-scarce-text.md](reading-scarce-text.md).
