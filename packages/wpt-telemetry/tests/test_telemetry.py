@@ -312,18 +312,20 @@ def test_a_record_that_cannot_be_read_gets_one_warning_and_its_lines_go_once_it_
         dock = "s3://wpt-test/records"
         read_new, refused = dock_api.read_new, []
 
+        def failing(dock, folder, name, cursor=None):
+            data, after = read_new(dock, folder, name, cursor)
+            if name == "events.jsonl" and b'"kept"' in data and len(refused) < 3:  # the line was there to read
+                refused.append(name)
+                raise OSError("the bucket did not answer")
+            return data, after
+
+        # in place before the relay starts: a read already under way when it is swapped in would bring the line
+        # unrefused
+        monkeypatch.setattr(dock_api, "read_new", failing)
         with Telemetry.start(dock, "wpt train", [], "d", env_file=tmp_path / ".env",
                              environ={ENDPOINT: otlp_backend.endpoint},
                              echo=lambda text, level: printed.append((text, level))) as run:
             with run.relay(), joined_to(run, dock, tmp_path) as joined:
-                def failing(dock, folder, name, cursor=None):
-                    data, after = read_new(dock, folder, name, cursor)
-                    if name == "events.jsonl" and data and len(refused) < 3:  # lines were there to read
-                        refused.append(name)
-                        raise OSError("the bucket did not answer")
-                    return data, after
-
-                monkeypatch.setattr(dock_api, "read_new", failing)
                 joined.log("kept")
                 joined.irreversible("sent")  # the dock's lines reach the bucket
                 wait_for(lambda: len(refused) == 3)  # the run goes on, and each read is tried again

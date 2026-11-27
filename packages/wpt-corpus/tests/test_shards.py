@@ -74,8 +74,14 @@ def test_a_shard_stream_keeps_only_the_shards_in_use_on_disk(tmp_path, monkeypat
         # after the last shard comes the first again; a window may span two shards
         assert stream.at(35)[5:15].tolist() == [35, 36, 37, 38, 39, 0, 1, 2, 3, 4]
         assert len(on_disk()) <= 3
-        assert not any((files.copies / s["sha256"][:2] / s["sha256"]).exists() for s in shards)  # copies released
-        stream.close()
+        def copies():
+            return [i for i, s in enumerate(shards) if (files.copies / s["sha256"][:2] / s["sha256"]).exists()]
+
+        # copies released; shard 1, after the two in use, may still be in the middle of its preparation in the
+        # background, its copy there until its token file is built
+        assert set(copies()) <= {1}
+        stream.close()  # waits for that preparation
+        assert copies() == []
         assert on_disk() == []
 
 
