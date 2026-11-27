@@ -103,6 +103,8 @@
                        "description": "with loops: each pass after the first starts from h0 + loop_decay x (out - h0), h0 the first pass's first source and out the pass before's output (Loopback's decay-only rule; docs/model.md, \"Loops\"); left out: from out"},
         "decay_last_pass": {"type": "boolean",
                             "description": "with loop_decay: the last pass's output is decayed the same way before the output head reads it; left out or false: read as it is"},
+        "loop_losses": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 2,
+                        "description": "each pass's weight in the next-token loss, one per pass (loops + 1), the last above 0, divided by their sum; each pass read through the output head (docs/model.md, \"Loops\"); left out: the last pass alone"},
         "tied_tables": {"type": "boolean",
                         "description": "one vocabulary table: the embedding reads the output head's rows, times a fixed scale (docs/model.md, \"One vocabulary table\"); absent or false: two tables"}
       }

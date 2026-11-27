@@ -13,7 +13,7 @@ from .attention import ROPE_DIMS
 
 WINDOW, EXACT, SPARSE = "window", "exact", "sparse"  # the kinds of layer
 # the rules of how a loop's passes follow each other, each with its value when it is off: today's loop
-LOOP_RULES = {"loop_decay": None, "decay_last_pass": False}
+LOOP_RULES = {"loop_decay": None, "decay_last_pass": False, "loop_losses": None}
 
 
 def layer_kinds(window_layers, sparse_groups, sparse_layers):
@@ -53,9 +53,13 @@ class ModelConfig:
     loop_decay: float | None = None  # lambda: a pass after the first starts from h0 + lambda (out - h0), h0 the
                                      # first pass's first source, out the pass before's output; None: from out
     decay_last_pass: bool = False    # the last pass's output decayed the same way before the output head reads it
+    loop_losses: tuple | None = None  # each pass's weight in the next-token loss, one per pass (pass_weights);
+                                      # None: the last pass's alone
 
     def __post_init__(self):
         object.__setattr__(self, "engram_layers", tuple(self.engram_layers))
+        if self.loop_losses is not None:
+            object.__setattr__(self, "loop_losses", tuple(self.loop_losses))
         problems = [f"{f.name} must be at least 1" for f in fields(self)
                     if f.name not in ("engram_layers", "loops", "tied_tables", *LOOP_RULES)
                     and getattr(self, f.name) < 1]
@@ -90,7 +94,24 @@ class ModelConfig:
             problems.append("loop_decay must be above 0 and below 1 (leave it out for no decay)")
         if self.decay_last_pass and self.loop_decay is None:
             problems.append("decay_last_pass decays by loop_decay, which is left out")
+        weights = self.loop_losses
+        if weights is not None and self.loops:
+            if len(weights) != self.loops + 1:
+                problems.append(f"loop_losses gives one weight per pass: {self.loops + 1}, not {len(weights)}")
+            elif min(weights) < 0 or not weights[-1] > 0:
+                problems.append("loop_losses are at least 0, and the last pass's above 0: it is the pass the "
+                                "model's scores come from")
         return problems
+
+    @property
+    def pass_weights(self) -> tuple:
+        """Each pass's weight in the next-token loss, summing to 1: the
+        weights of loop_losses divided by their sum (Mixture-of-Loops'
+        Eq. 8), or 1 for the last pass alone."""
+        if self.loop_losses is None:
+            return (0,) * self.loops + (1,)
+        total = sum(self.loop_losses)
+        return tuple(weight / total for weight in self.loop_losses)
 
     def numbers(self) -> dict:
         """The config as config.json holds it: every number, the rules of the

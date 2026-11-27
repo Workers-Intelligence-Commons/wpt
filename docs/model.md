@@ -365,8 +365,9 @@ model is one pass: nothing of the loop is in its weights or its cost.
   embeddings in every pass.
 - The routed experts route each pass on its own, and R3 records and
   replays each pass's choices apart.
-- The loss reads the last pass only. Ouro also trains an exit gate that
-  learns when to stop looping; WPT has none. Both are open to review.
+- The loss reads the last pass, unless `loop_losses` weighs others too
+  (below). Ouro also trains an exit gate that learns when to stop
+  looping; WPT has none, which is open to review.
 
 **Decay between passes.** An order number, `loop_decay` (`lambda`, above 0
 and below 1), changes what a pass after the first starts from. With `h0`
@@ -393,6 +394,23 @@ validation loss from 2.6802 to 2.6220 against 2.6234 for a model without
 a loop; at 374M (24 layers) from 2.4415 to 2.3999 against 2.4198. Those
 runs had no Attention Residuals between sublayers and no Mixture of
 Experts.
+
+**A loss on every pass.** An order number, `loop_losses`, gives each pass
+a weight in the next-token loss, one weight per pass (`loops + 1`), each
+at least 0 and the last above 0. The training loss is then
+`sum_r (w_r / sum w) x L_r`, `L_r` the next-token cross-entropy of the
+output head reading what follows pass `r` (with `decay_last_pass`, its
+decayed output): the loop forcing of [Mixture-of-Loops][mol] (its Eq. 8),
+through the one output head and final norm. Left out, the last pass
+alone has weight 1, the loss of a model without it. The scores the
+model gives, in generation and in evaluation, are the last pass's
+whatever the weights; the multi-token prediction block reads the last
+pass alone. In that paper every 113M model, its plain 2-pass loop
+included, trains with a loss on both passes, so it measures no loop
+without one. Its Table 3 compares the weights on its own looped model
+(U-MoLT, which also reads keys and values across passes): at 1:1, 1:2
+and 1:4 the second pass's cross-entropy is 3.279, 3.276 and 3.272, and
+the first's 3.306, 3.315 and 3.322.
 
 The evidence is mixed, which is why this is a number and not a fixed
 choice. In the paper's test at equal compute, from 53M to 1.36B
@@ -947,8 +965,8 @@ repository ("Model series", below). A model order holds:
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
   "Loops"; every order sets 0), optionally the rules of how the passes
-  follow each other (`loop_decay`, `decay_last_pass`, "Loops"; no order
-  sets them), and optionally one vocabulary table in place of two
+  follow each other and are trained (`loop_decay`, `decay_last_pass`,
+  `loop_losses`, "Loops"; no order sets them), and optionally one vocabulary table in place of two
   (`tied_tables`, "One vocabulary table");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
@@ -1182,7 +1200,8 @@ marked as such above.
 - [Attention Residuals](https://arxiv.org/abs/2603.15031)
 - [In-Place Test-Time Training](https://arxiv.org/abs/2604.06169)
 - [Ouro: scaling latent reasoning via looped language models](https://arxiv.org/abs/2510.25741)
-- [Loopback Transformer: residual looped Transformers](https://arxiv.org/abs/2611.07226)
+- [Loopback Transformer: towards a unified view of residual looped Transformers](https://arxiv.org/abs/2611.07226)
+- [Mixture-of-Loops Transformer](https://arxiv.org/abs/2611.34923)
 - [Moonlight: Muon at scale](https://arxiv.org/abs/2502.16982)
 - [NorMuon: neuron-wise normalized Muon](https://arxiv.org/abs/2510.05491)
 - [Cautious weight decay](https://arxiv.org/abs/2510.12402)
@@ -1206,6 +1225,7 @@ marked as such above.
 [ttt]: https://arxiv.org/abs/2604.06169
 [ouro]: https://arxiv.org/abs/2510.25741
 [loopback]: https://arxiv.org/abs/2611.07226
+[mol]: https://arxiv.org/abs/2611.34923
 [moonlight]: https://arxiv.org/abs/2502.16982
 [normuon]: https://arxiv.org/abs/2510.05491
 [cwd]: https://arxiv.org/abs/2510.12402

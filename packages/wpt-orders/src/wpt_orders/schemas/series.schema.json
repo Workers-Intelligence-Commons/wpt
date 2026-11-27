@@ -284,6 +284,12 @@
           "type": "boolean",
           "description": "with loop_decay, at every size: the last pass's output is decayed the same way before the output head reads it; left out or false: read as it is"
         },
+        "loop_losses": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0},
+          "minItems": 2,
+          "description": "at every size, each pass's weight in the next-token loss, one per pass (loops + 1), the last above 0, divided by their sum; left out: the last pass alone"
+        },
         "tied_tables": {
           "type": "boolean",
           "description": "one vocabulary table at every size: the embedding reads the output head's rows, times a fixed scale (docs/model.md, \"One vocabulary table\"); absent or false: two tables"

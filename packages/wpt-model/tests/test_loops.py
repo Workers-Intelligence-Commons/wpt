@@ -73,6 +73,35 @@ def test_with_a_decay_each_pass_starts_from_the_input_plus_the_decayed_change(de
         assert not torch.allclose(decayed(ids), model(2)(ids), atol=1e-3)
 
 
+@pytest.mark.parametrize("decay", [{}, dict(loop_decay=0.25, decay_last_pass=True)])
+def test_with_loop_losses_the_next_token_loss_is_the_weighted_sum_of_each_pass_s(decay):
+    # Mixture-of-Loops' Eq. 8: sum_r w_r / sum(w) L_r, each pass read through the one head; the multi-token
+    # prediction block and the scores read the last pass alone
+    plain, last, weighed = model(0), model(2, **decay), model(2, loop_losses=[1, 0, 3], **decay)
+    last.load_state_dict(plain.state_dict())
+    weighed.load_state_dict(plain.state_dict())
+    ids = text()[:, :90]
+    x, y, after = ids[:, :-2], ids[:, 1:-1], ids[:, 2:]
+    with torch.no_grad():
+        start = hidden = plain.embedding(x)
+        each = []
+        for loop in range(3):
+            out = one_pass(plain, hidden, x, loop)
+            hidden = start + 0.25 * (out - start) if decay else out
+            logits = plain.head(plain.final_norm(hidden if decay else out)).float()
+            each.append(torch.nn.functional.cross_entropy(logits.flatten(0, 1), y.flatten(), reduction="sum"))
+        next_sum, ahead_sum, by_pass = weighed(x, next_tokens=y, targets=(y, after), by_pass=True)
+        assert torch.allclose(by_pass, torch.stack([each[0], each[2]]), rtol=1e-5)
+        assert torch.allclose(next_sum, (each[0] + 3 * each[2]) / 4, rtol=1e-5)
+        assert torch.equal(ahead_sum, last(x, next_tokens=y, targets=(y, after))[1])
+        assert torch.equal(weighed(x), last(x))
+        # the last pass alone, said or left out, is the loss of a loop without the rule
+        alone = model(2, loop_losses=[0, 0, 5], **decay)
+        alone.load_state_dict(plain.state_dict())
+        assert all(torch.equal(a, b) for a, b in zip(alone(x, next_tokens=y, targets=(y, after)),
+                                                     last(x, next_tokens=y, targets=(y, after))))
+
+
 def test_a_config_without_the_rules_of_the_loop_is_saved_as_before_they_existed(tmp_path):
     # config.json, the steps' fingerprints and the scheduler's setup read ModelConfig.numbers()
     ModelConfig(**CONFIG, loops=2).save(tmp_path / "config.json")
@@ -87,6 +116,10 @@ def test_a_config_without_the_rules_of_the_loop_is_saved_as_before_they_existed(
     (dict(loops=0, loop_decay=0.25), "loop_decay shapes the passes of a loop, and loops is 0"),
     (dict(loops=1, loop_decay=1.0), "loop_decay must be above 0 and below 1"),
     (dict(loops=1, decay_last_pass=True), "decay_last_pass decays by loop_decay, which is left out"),
+    (dict(loops=0, loop_losses=[1]), "loop_losses shapes the passes of a loop, and loops is 0"),
+    (dict(loops=2, loop_losses=[1, 1]), "loop_losses gives one weight per pass: 3, not 2"),
+    (dict(loops=1, loop_losses=[1, 0]), "the last pass's above 0"),
+    (dict(loops=1, loop_losses=[-1, 2]), "loop_losses are at least 0"),
 ])
 def test_rules_of_the_loop_that_cannot_hold_are_refused(rules, problem):
     with pytest.raises(ValueError, match=problem):
@@ -139,7 +172,8 @@ def trained(rules, updates=12):
     return losses
 
 
-@pytest.mark.parametrize("rules", [dict(loop_decay=0.25), dict(loop_decay=0.25, decay_last_pass=True)])
+@pytest.mark.parametrize("rules", [dict(loop_decay=0.25), dict(loop_decay=0.25, decay_last_pass=True),
+                                   dict(loop_losses=[1, 1, 1]), dict(loop_decay=0.25, loop_losses=[1, 0, 2])])
 def test_a_looping_model_with_its_rules_learns(rules):
     losses = trained(rules)
     assert losses[-1] < losses[0] - 0.1

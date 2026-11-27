@@ -201,6 +201,14 @@ class Method:
     def after_update(self, step: int):
         """Called after the optimizer steps, with the update's number."""
 
+    def pass_losses(self, kind: str, strategy) -> dict | None:
+        """{pass number from 1: its next-token loss} for each pass of a
+        looping model the loss weighs, over the update just made (kind
+        "training") or the evaluation just made ("validation"), the same in
+        every process; None when the loss weighs one pass alone. Every
+        process calls it at the same point."""
+        return None
+
     def state_dict(self) -> dict:
         """Everything a resumed step needs: tensors, numbers, strings, lists, dicts."""
         return {}
@@ -214,13 +222,35 @@ class TextMethod(Method):
     the next-token loss plus the multi-token prediction loss at
     mtp_weight. Windows
     longer than the options' segment, or split across processes, train in
-    parts (parts.py), which need part_loss."""
+    parts (parts.py), which need part_loss. A model whose config weighs
+    several passes of its loop (wpt_model.ModelConfig.pass_weights) gives
+    the weighted next-token loss, and each weighted pass's own, which
+    pass_losses gives."""
 
     mtp_weight = 0.3  # DeepSeek-V3's first weight; a method may change it as training goes
+    passes = ()  # the passes (from 0) whose next-token losses the model weighs, when it weighs several
+    _sums = None  # {kind: each weighted pass's summed loss, then the tokens they cover} since pass_losses
 
     def begin(self, model, environment, run, segment, strategy):
         from . import parts
         parts.check(model, self, environment.stage_list, segment, strategy)
+        weights = getattr(getattr(model, "config", None), "pass_weights", (1,))
+        weighed = tuple(number for number, weight in enumerate(weights) if weight > 0)
+        self.passes, self._sums = (weighed if len(weighed) > 1 else ()), {}
+
+    def _add(self, kind, each, tokens):
+        """Adds each weighted pass's summed loss over tokens tokens to what pass_losses reads."""
+        found = torch.cat([each.detach().double(), torch.tensor([tokens], dtype=torch.float64, device=each.device)])
+        self._sums[kind] = found if kind not in self._sums else self._sums[kind] + found
+
+    def pass_losses(self, kind, strategy):
+        if not self.passes:
+            return None
+        found = self._sums.pop(kind, None)
+        if found is None:
+            found = torch.zeros(len(self.passes) + 1, dtype=torch.float64)
+        totals = strategy.reduce(found.to(strategy.device))
+        return {number + 1: (totals[i] / totals[-1]).item() for i, number in enumerate(self.passes)}
 
     def learn(self, model, wrapped, examples, passes, strategy, segment, quiet):
         from . import parts
@@ -249,7 +279,12 @@ class TextMethod(Method):
         B, t = y.shape
         targets = y[:, 1:] if following is None else torch.cat([y[:, 1:], following], 1)  # the token after next
         # the model sums the two cross-entropies without holding every token's scores at once
-        next_sum, ahead_sum = model(x, next_tokens=y, targets=(y, targets))
+        if self.passes:
+            next_sum, ahead_sum, each = model(x, next_tokens=y, targets=(y, targets), by_pass=True)
+            if torch.is_grad_enabled():  # not the first run of a window in parts, which runs again with gradients
+                self._add("training", each, B * t)
+        else:
+            next_sum, ahead_sum = model(x, next_tokens=y, targets=(y, targets))
         return next_sum / (B * window) + self.mtp_weight * ahead_sum / (B * (window - 1))
 
     def validation_loss(self, model, x, y):
@@ -257,7 +292,12 @@ class TextMethod(Method):
         cross-entropy of the next-token scores, summed by the model a chunk
         of tokens at a time as in training, so that the scores of every
         token of the windows are never held at once; the multi-token
-        prediction block does not run."""
+        prediction block does not run. For a model that weighs several
+        passes, the last pass's, the scores the model gives."""
+        if self.passes:
+            _, each = model(x, targets=(y,), by_pass=True)
+            self._add("validation", each, y.numel())
+            return each[-1] / y.numel()
         next_sum = model(x, targets=(y,))
         return next_sum / y.numel()
 

@@ -12,7 +12,8 @@ attention's choice of tokens, the routed experts' grouped products
 a replay is kept apart from the graph's memory, which the next replay
 writes over:
 
-    losses     the two sums come back as copies
+    losses     the two sums, and each weighted pass's when asked, come back
+               as copies
     gradients  a parameter takes a copy of its first gradient of an update
                (model.py's _kept), and adds the later windows' to it
     counts     each routed layer's balancing histogram is one tensor kept
@@ -40,12 +41,12 @@ class _Pass(nn.Module):
     """The model's pass to its two summed losses, as a module whose
     parameters are the model's (what make_graphed_callables records)."""
 
-    def __init__(self, model):
+    def __init__(self, model, by_pass):
         super().__init__()
-        self.model = model
+        self.model, self.by_pass = model, by_pass
 
     def forward(self, idx, next_tokens, targets, targets_after):
-        return self.model.losses(idx, next_tokens, (targets, targets_after))
+        return self.model.losses(idx, next_tokens, (targets, targets_after), by_pass=self.by_pass)
 
 
 class WindowGraphs:
@@ -57,20 +58,20 @@ class WindowGraphs:
         self.graphed = None
         self.counts = {}  # each routed layer's Experts -> the histogram the replays add to
 
-    def losses(self, idx, next_tokens, targets):
-        """The model's two summed losses over windows idx (as WPT.losses),
-        through the graphs of their shape, recorded first if needed."""
+    def losses(self, idx, next_tokens, targets, by_pass=False):
+        """The model's two summed losses over windows idx, and with by_pass
+        each weighted pass's next-token one (as WPT.losses), through the
+        graphs of their shape, recorded first if needed."""
         inputs = (idx, next_tokens, *targets)
         key = (tuple(t.shape for t in inputs), idx.device,
-               tuple(p.requires_grad for p in self.model.parameters()))
+               tuple(p.requires_grad for p in self.model.parameters()), by_pass)
         if key != self.key:
-            self._record(inputs)
+            self._record(inputs, by_pass)
             self.key = key
         self._hand_over_counts()
-        first, after = self.graphed(*inputs)
-        return first.clone(), after.clone()
+        return tuple(found.clone() for found in self.graphed(*inputs))
 
-    def _record(self, inputs):
+    def _record(self, inputs, by_pass):
         self.key, self.graphed, self.counts = None, None, {}
         torch.cuda.empty_cache()  # the graphs before and the memory the passes before kept go back to the GPU
         held = {}
@@ -84,7 +85,8 @@ class WindowGraphs:
         torch.autograd.graph.set_override_stale_capture_stream(True)
         try:
             # copies of the inputs: the graphs read their inputs from these, and each replay copies new ones in
-            self.graphed = torch.cuda.make_graphed_callables(_Pass(self.model), tuple(t.clone() for t in inputs),
+            self.graphed = torch.cuda.make_graphed_callables(_Pass(self.model, by_pass),
+                                                             tuple(t.clone() for t in inputs),
                                                              allow_unused_input=True)
         finally:
             torch.autograd.graph.set_override_stale_capture_stream(False)

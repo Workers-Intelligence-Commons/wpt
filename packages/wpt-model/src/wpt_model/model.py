@@ -33,9 +33,11 @@ pass. At 0 the model is one pass: no weight and no work of the loop.
 With config.loop_decay (Loopback's decay-only rule, arXiv 2611.07226, its
 Eq. 13), a pass after the first starts from h0 + loop_decay (out - h0)
 instead of out, h0 the embedding; with config.decay_last_pass, the last
-pass's output is decayed the same way before the head reads it.
-Open to review: the loss reads the last pass only, and no exit gate learns
-when to stop (Ouro's).
+pass's output is decayed the same way before the head reads it. With
+config.loop_losses (Mixture-of-Loops' loop forcing, arXiv 2611.34923, its
+Eq. 8), the next-token loss is the weighted sum of each weighed pass's,
+each read through the output head; the scores are the last pass's.
+Open to review: no exit gate learns when to stop (Ouro's).
 
 With recompute set, training keeps only the input of each window layer's
 attention and of each experts sublayer, and runs the sublayer again during
@@ -359,7 +361,7 @@ class WPT(nn.Module):
         self.canonical.copy_(ids)
 
     def forward(self, idx, next_tokens=None, *, record: Routes | None = None, replay: Routes | None = None,
-                sequence=None, features=(), targets=None):
+                sequence=None, features=(), targets=None, by_pass=False):
         """(B, T) token ids -> (B, T, vocab_size) next-token scores. With
         next_tokens, the (B, T) tokens that follow idx, also returns the
         multi-token prediction block's scores for the token after each next
@@ -382,7 +384,15 @@ class WPT(nn.Module):
         len(features) * d_model), what a drafter reads (drafter.py): a
         layer's hidden state is the input Attention Residuals gives the next
         layer's attention, and the last layer's is the output head's
-        input."""
+        input.
+
+        The next-token cross-entropy of a model whose loop_losses weigh
+        several passes (ModelConfig.pass_weights; Mixture-of-Loops' loop
+        forcing) is the weighted sum of each such pass's, each read through
+        the output head; the multi-token prediction block reads the last
+        pass alone. With by_pass and targets, the tuple ends with each
+        weighted pass's own summed next-token cross-entropy, (passes,), in
+        order, detached."""
         sequence = WHOLE if sequence is None else sequence
         if targets is not None and next_tokens is None and len(targets) > 1:
             raise ValueError("targets after next need next_tokens")
@@ -390,35 +400,46 @@ class WPT(nn.Module):
                          and self._whole(sequence) and record is None and replay is None and not features
                          and not self.recompute)
         if self.replayed:
-            return self.graphs.losses(idx, next_tokens, targets)
+            return self.graphs.losses(idx, next_tokens, targets, by_pass)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=idx.is_cuda):
-            hidden, found = self._hidden(idx, record, replay, sequence, features)
+            hidden, found, exited = self._hidden(idx, record, replay, sequence, features, targets is not None)
             if targets is None:
                 outputs = [self.head(self.final_norm(hidden)).float()]
                 if next_tokens is not None:
                     mtp = self._running(self.mtp, sequence)
                     outputs.append(self.head(mtp(hidden, self.embedding(next_tokens), sequence)).float())
             else:
-                outputs = list(self._sums(hidden, next_tokens, targets, sequence))
+                outputs = list(self._sums(hidden, next_tokens, targets, sequence, exited, by_pass))
             if features:
                 outputs.append(found)
             return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
-    def losses(self, idx, next_tokens, targets, record=None, replay=None, sequence=WHOLE):
-        """forward's two summed cross-entropies, computed as they are (no
+    def losses(self, idx, next_tokens, targets, record=None, replay=None, sequence=WHOLE, by_pass=False):
+        """forward's summed cross-entropies, computed as they are (no
         recorded graph): what a recorded pass records (graphs.py)."""
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=idx.is_cuda):
-            hidden, _ = self._hidden(idx, record, replay, sequence, ())
-            return self._sums(hidden, next_tokens, targets, sequence)
+            hidden, _, exited = self._hidden(idx, record, replay, sequence, (), True)
+            return self._sums(hidden, next_tokens, targets, sequence, exited, by_pass)
 
-    def _sums(self, hidden, next_tokens, targets, sequence):
-        """The two summed cross-entropies from the final hidden states, inside
-        forward's autocast; the next-token one alone for targets (tokens,)."""
-        if len(targets) == 1:
-            return (self._summed(self.final_norm(hidden), targets[0]),)
-        ahead = self._running(self.mtp, sequence)(hidden, self.embedding(next_tokens), sequence)
-        return (self._summed(self.final_norm(hidden), targets[0]),
-                self._summed(ahead[:, :targets[1].shape[1]], targets[1]))
+    def _sums(self, hidden, next_tokens, targets, sequence, exited, by_pass):
+        """The summed cross-entropies from the final hidden states and the
+        exits (_hidden), inside forward's autocast: the next-token one, then
+        the multi-token prediction one unless targets is (tokens,), then
+        with by_pass each weighted pass's next-token one."""
+        if len(targets) > 1:
+            ahead = self._running(self.mtp, sequence)(hidden, self.embedding(next_tokens), sequence)
+        if exited is None:
+            each = [self._summed(self.final_norm(hidden), targets[0])]
+            found = [each[0]]
+        else:
+            each = [self._summed(self.final_norm(exit), targets[0]) for exit in exited]
+            weights = [weight for weight in self.config.pass_weights if weight > 0]
+            found = [sum(weight * one for weight, one in zip(weights, each))]
+        if len(targets) > 1:
+            found.append(self._summed(ahead[:, :targets[1].shape[1]], targets[1]))
+        if by_pass:
+            found.append(torch.stack([torch.as_tensor(one).detach().float() for one in each]))
+        return tuple(found)
 
     def _summed(self, hidden, targets):
         """The cross-entropy of the head's scores for hidden (B, t, d_model)
@@ -450,22 +471,30 @@ class WPT(nn.Module):
             total = total + (checkpoint(_chunk_loss, *args, use_reentrant=False) if grads else _chunk_loss(*args))
         return total
 
-    def _hidden(self, idx, record, replay, sequence, features):
+    def _hidden(self, idx, record, replay, sequence, features, exits=False):
         """(the final hidden states, the features' hidden states side by
-        side or None) of idx at its place, inside forward's autocast: every
-        pass of the loop in turn, each from the one before's output."""
+        side or None, the exits) of idx at its place, inside forward's
+        autocast: every pass of the loop in turn, each from the one before's
+        output. The exits, with exits when more than the last pass has a
+        weight in the next-token loss (ModelConfig.pass_weights): what the
+        output head would read after each pass that has one, in order, the
+        last pass's the final hidden states; None otherwise."""
         canonical = self.canonical[idx]
         embedding = self.embedding(idx)
+        weights = self.config.pass_weights
+        exited = [] if exits and sum(weight > 0 for weight in weights) > 1 else None
         first, last = embedding, self.config.loops
         for loop in range(last + 1):
             out, found = self._pass(first, idx, canonical, embedding, record, replay, sequence.at(loop), loop,
                                     features if loop == last else ())
-            if loop < last:
-                first = self._decayed(out, embedding)
-        hidden = self._decayed(out, embedding) if self.config.decay_last_pass else out
+            follows = self._decayed(out, embedding) if loop < last or self.config.decay_last_pass else out
+            hidden = follows if self.config.decay_last_pass else out  # what the head reads after this pass
+            if exited is not None and weights[loop] > 0:
+                exited.append(hidden)
+            first = follows
         if len(self.layers) in features:
             found[len(self.layers)] = hidden.float()
-        return hidden, torch.cat([found[number] for number in features], -1) if features else None
+        return hidden, torch.cat([found[number] for number in features], -1) if features else None, exited
 
     def _decayed(self, out, start):
         """What follows a pass whose output is out, start the first pass's
@@ -539,7 +568,7 @@ class WPT(nn.Module):
         reading = cache.text.reading(counts, undoable)
         record = Recorder(cache.routes, counts.tolist()) if cache.routes is not None else None
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=ids.is_cuda):
-            hidden, found = self._hidden(ids, record, None, reading, features)
+            hidden, found, _ = self._hidden(ids, record, None, reading, features)
             scores = self.head(self.final_norm(hidden)).float()
         reading.finish()
         return (scores, hidden, found) if features else (scores, hidden)

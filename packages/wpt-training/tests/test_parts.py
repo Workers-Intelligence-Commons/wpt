@@ -253,6 +253,34 @@ def test_a_window_in_segments_trains_as_the_whole_window(recompute, routing):
                               TextMethod().validation_loss(model, x, y), rtol=1e-5)
 
 
+def test_each_weighed_pass_s_loss_is_its_mean_cross_entropy_whole_or_in_segments():
+    # with loop_losses, what the run's record gives for each pass (Method.pass_losses) is that pass's mean
+    # next-token cross-entropy over the update's windows, and over the evaluation's; a window in segments,
+    # whose first run of each segment has no gradients, counts each token once
+    model, x, y = model_and_window(448)
+    weighed = WPT(ModelConfig(**{**MODEL, "block_size": 448, "loop_losses": [1, 2]})).train()
+    weighed.load_state_dict(model.state_dict())
+    cpu = Strategy(torch.device("cpu"))
+    with torch.no_grad():
+        start = model.embedding(x)
+        found = model._pass(start, x, model.canonical[x], start, None, None, wpt_model.WHOLE.at(0), 0, ())[0]
+        first = F.cross_entropy(model.head(model.final_norm(found)).flatten(0, 1), y.flatten())
+        last = F.cross_entropy(model(x).flatten(0, 1), y.flatten())
+    for segment in (None, 128):
+        method = TextMethod()
+        method.begin(weighed, SimpleNamespace(stage_list=[]), None, segment, cpu)
+        parts.learn(method, weighed, weighed, x, y, 1.0, cpu, segment, lambda last: contextlib.nullcontext())
+        training = method.pass_losses("training", cpu)
+        assert training.keys() == {1, 2}
+        assert training[1] == pytest.approx(first.item(), rel=1e-4) and training[2] == pytest.approx(last.item(), rel=1e-4)
+        weighed.zero_grad()
+        with torch.no_grad():
+            validation = parts.validation_loss(method, weighed, weighed, x, y, cpu, segment)
+        assert method.pass_losses("validation", cpu) == pytest.approx(training, rel=1e-4)
+        assert validation.item() == pytest.approx(last.item(), rel=1e-4)  # what evaluations compare: the last pass's
+    assert TextMethod().pass_losses("training", cpu) is None  # one pass weighed: nothing more in the record
+
+
 def test_the_validation_loss_is_the_mean_cross_entropy_of_every_next_token_score():
     # summed chunk by chunk, as training sums its loss, it is what the whole windows' scores give
     model, x, y = model_and_window(256)

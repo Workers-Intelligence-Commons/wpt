@@ -842,10 +842,24 @@ chunk and the sum of updates, so a window in parts trains as the whole
 window, also where a chunk crosses their boundaries.
 
 A model that loops (model.md, "Loops") runs every pass in each training
-pass, and the loss reads the last one. Its cost per token is `loops + 1`
-times one pass's, and so is its memory of activations, with `--recompute`
-too. Segments and slices hand on each pass's values apart. R3 records and
-replays each pass's routed experts apart.
+pass. Its cost per token is `loops + 1` times one pass's, and so is its
+memory of activations, with `--recompute` too. Segments and slices hand
+on each pass's values apart. R3 records and replays each pass's routed
+experts apart.
+
+The next-token loss reads the last pass, or with `loop_losses` the
+weighted sum of the passes it weighs. Each weighed pass besides the last
+adds one run of the output head and its loss over every token, about
+`6 x vocab_size x d_model` operations per token with its backward pass,
+which the series' compute per token, without the vocabulary's tables,
+leaves out. The multi-token prediction loss reads the last pass alone.
+The validation loss, the one evaluations compare and keep the best
+weights by, is the last pass's. When more than one pass is weighed, each
+update's `training.step` event also gives `train_loss_pass_N` for each
+weighed pass N (from 1), each evaluation's `training.evaluation` event
+gives `val_loss_pass_N`, and the log line of each evaluation gives each
+pass's two losses. Methods that compute their own loss from the scores
+(the assistant-token methods, GRPO) train the last pass alone.
 
 ## Comparing routing in tests
 

@@ -421,21 +421,24 @@ def _loop(model, strategy, step, method, environment, optimizer, wrapped, draws,
         optimizer.after_update(update, strategy.reduce)
         method.after_update(update)
         train_loss = method.update_loss(losses, strategy)
+        train_passes = method.pass_losses("training", strategy)
         environment.after_update(update, train_loss)
-        record.event("training.step", values={"train_loss": train_loss, "seconds": time.monotonic() - started},
+        record.event("training.step", values={"train_loss": train_loss, "seconds": time.monotonic() - started,
+                                              **_by_pass("train_loss", train_passes)},
                      step=update, block_size=stage.block_size,
                      learning_rates=[group["lr"] for group in optimizer.optimizer.param_groups])
 
         if environment.evaluates(update, first, last):
             val_loss = evaluate(update)
+            val_passes = method.pass_losses("validation", strategy)
             verdict = optimizer.evaluated(update, val_loss)
             if verdict.best:
                 best_val, best_step = val_loss, update
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-            record.event("training.evaluation", values={"val_loss": val_loss}, step=update, best=verdict.best,
-                         stop=verdict.stop, note=verdict.note)
+            record.event("training.evaluation", values={"val_loss": val_loss, **_by_pass("val_loss", val_passes)},
+                         step=update, best=verdict.best, stop=verdict.stop, note=verdict.note)
             log(f"update {update:5d} | train loss {train_loss:.4f} | val loss {val_loss:.4f} | "
-                f"{time.time() - t0:.0f}s{verdict.note}")
+                f"{_passes_line(train_passes, val_passes)}{time.time() - t0:.0f}s{verdict.note}")
             return verdict.stop
         return False
 
@@ -546,6 +549,22 @@ def _known(values: dict) -> dict:
     """The values that are numbers: a step without evaluations has no
     validation loss."""
     return {name: value for name, value in values.items() if value is not None}
+
+
+def _by_pass(name: str, losses: dict | None) -> dict:
+    """The record's values of each weighed pass's loss (Method.pass_losses),
+    name_pass_N for pass N; none when one pass alone is weighed."""
+    return {f"{name}_pass_{number}": loss for number, loss in (losses or {}).items()}
+
+
+def _passes_line(train: dict | None, validation: dict | None) -> str:
+    """Each weighed pass's training and validation losses for the log line,
+    empty when one pass alone is weighed."""
+    if not train and not validation:
+        return ""
+    numbers = sorted({*(train or {}), *(validation or {})})
+    return "".join(f"pass {n} {(train or {}).get(n, float('nan')):.4f}/{(validation or {}).get(n, float('nan')):.4f}"
+                   " | " for n in numbers)
 
 
 class _Unbroken:
