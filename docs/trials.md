@@ -5,24 +5,24 @@ This document says how WPT shows it without training the same model
 twice. What is known about the spread between two runs of one order is in
 [knowledge/run-to-run-spread.md](knowledge/run-to-run-spread.md).
 
-## A change is tried on a series
+## A change is tried on the sizes of a family
 
-A change is tried on a model series ([model.md](model.md), "Model
-series"): the series as it is, and the series with the change, each size
-trained once. No size is trained again with another seed to confirm a
-result. The sizes confirm each other:
+A change is tried on the sizes of a model family ([model.md](model.md),
+"Model families"): the family as it is, and a copy of its file with the
+change, each size trained once. No size is trained again with another
+seed to confirm a result. The sizes confirm each other:
 
 - a change that helps lowers the final validation loss at every size, by a
   gap that grows or shrinks steadily with the size;
 - a gap that changes sign from one size to the next, or shows at one size
   only, is not a result.
 
-The series gives its own measure of the noise. The final losses of one
-series lie on a smooth curve against the size; how far the points stand
-from that curve is what one run moves by chance. A gap between the two
-series smaller than that is not shown.
+The sizes give their own measure of the noise. The final losses of one
+family's sizes lie on a smooth curve against the size; how far the points
+stand from that curve is what one run moves by chance. A gap between the
+two families smaller than that is not shown.
 
-The series also says where the change stops paying: a gap that shrinks as
+The sizes also say where the change stops paying: a gap that shrinks as
 the model grows is a change for small models, and the largest size trained
 says how far it holds.
 
@@ -31,12 +31,14 @@ says how far it holds.
 - **The same tokens.** Both runs read the same corpus and the same prefix
   of it, with the same stages.
 - **The same seed.** Both then draw the same training windows.
-- **The same validation windows.** A stage's validation windows depend only
-  on the training tokens and the stage ([training.md](training.md),
-  "Stages"), so two runs of one size are measured on the same windows.
-  The losses of two sizes of a series are measured on different windows,
-  since each size reads its own prefix: they place a point on the curve and
-  are not compared one to one.
+- **The same validation windows.** A stage's validation windows depend
+  only on the corpus's held-out portion, the window length, the batch and
+  `eval_batches` ([training.md](training.md), "The read-text step"), so
+  two runs of one size are measured on the same windows, and so are the
+  sizes of a family that share a corpus and `tokens_per_update`. A change
+  to the data, the vocabulary or the stages makes other windows: its
+  result compares the sizes' final `bits_per_byte`
+  ([evaluation.md](evaluation.md)) instead.
 - **The end of training.** Two runs are compared at their last update. The
   order of two models at an earlier update says nothing about their order
   at the end.

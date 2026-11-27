@@ -7,7 +7,9 @@ model records") names, in `data`, the data section of its order: the
 depot's address, the snapshot's name, its change and digest; in
 `deliveries`, the key, id and preparation of its vocabulary's delivery and
 of its corpus's; in `corpus`, the corpus delivery's id, key and rules; and
-`order_name` and `repository_commit`. A model trained on a corpus the
+`order_name` and `repository_commit`; a model trained by a size of a
+family also names its `family`, `size` and, for another run of the size,
+`run`, and `order` is that size's resolved model order. A model trained on a corpus the
 depot built from a snapshot names the same `data`, and in `corpus` the
 corpus's id, build key and rules. A model trained before snapshots names,
 in `corpus`, the corpus's id, its depot and the name of its dataset.
@@ -19,6 +21,7 @@ A folder written before the keys `order_name` and `order` names them
     on_snapshot(provenance)    whether the folder names a snapshot (the two newer shapes)
     deliveries(provenance)     {vocabulary, corpus: {key, id, preparation or adopted}}, {} for the older shapes
     order_name(named)          the order's name a provenance, or a drafter's trained_by, gives, under either key
+    trained_by(provenance)     the family and size the model was trained by, or its order's name, for people
     order(provenance)          the order the model was trained by, under either key; {} without one
 """
 
@@ -38,8 +41,8 @@ def corpus_id(provenance: dict) -> str:
 
 def corpus_label(provenance: dict) -> str:
     """What the model learned from, in one sentence without its final
-    full stop: "snapshot S (change N, digest H) of the depot D, order R,
-    code at commit X" for a model trained on a snapshot (a delivery's or a
+    full stop: "snapshot S (change N, digest H) of the depot D, family F,
+    size Z (or order R), code at commit X" for a model trained on a snapshot (a delivery's or a
     corpus the depot built), "corpus C, built
     from dataset T of the depot D" for one trained before snapshots."""
     if not on_snapshot(provenance):
@@ -50,7 +53,17 @@ def corpus_label(provenance: dict) -> str:
     code = (f"code at commit {commit}" + (" with uncommitted changes" if provenance.get("repository_dirty") else "")
             if commit else "code outside a git checkout")
     return (f"snapshot {data['snapshot']} (change {data['change']}, digest {data['digest']}) of the depot "
-            f"{data['depot']}, order {order_name(provenance)}, {code}")
+            f"{data['depot']}, {trained_by(provenance)}, {code}")
+
+
+def trained_by(provenance: dict) -> str:
+    """The order the model was trained by, for people: "family F, size S"
+    (and ", run R" for another run of the size) for a folder that names
+    them, else "order NAME"."""
+    if provenance.get("family"):
+        return (f"family {provenance['family']}, size {provenance['size']}"
+                + (f", run {provenance['run']}" if provenance.get("run") else ""))
+    return f"order {order_name(provenance)}"
 
 
 def _data(provenance: dict) -> dict:

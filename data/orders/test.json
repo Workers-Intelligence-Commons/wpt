@@ -1,0 +1,63 @@
+{
+  "note": "A test to see every step work on one machine: 6.6M parameters without the two vocabulary tables, 15.0M with them, 256-token windows, its text read once in 262 updates. Its 11 layers are two window layers on each side of an exact layer, then one exact layer and five sparse layers; with windows this short, every sparse layer reads every earlier token, since the exact layer chooses 1,024 of them outside the last 128. The MTP block's attention is a 128-token window.",
+  "data": {
+    "depot": "https://depot.workers-intelligence-commons.org",
+    "snapshot": "test1",
+    "change": 30019,
+    "digest": "d21d5edd07aff55c750233785445146fc2173582c1ce10d7a7c2481fa0d34927",
+    "roles": ["pretrain"],
+    "total_tokens": 4290110,
+    "vocabulary": {"sha256": "4e264a0d04d6f9d9d8348a135b273b1640217d65049b278cb304ad0fb56fa5eb", "size": 32768}
+  },
+  "model": {
+    "window_layers": 2,
+    "sparse_groups": 1,
+    "sparse_layers": 5,
+    "attention_heads": 4,
+    "attention_head_dim": 128,
+    "n_experts": 8,
+    "top_k": 2,
+    "expert_width": 128,
+    "latent_width": 64,
+    "shared_width": 128,
+    "engram_layers": [2],
+    "engram_order": 3,
+    "engram_heads": 4,
+    "engram_dim": 16,
+    "engram_table_size": 4099,
+    "residual_groups": 22,
+    "loops": 0
+  },
+  "seed": 1337,
+  "steps": [
+    {
+      "step": "read-text",
+      "optimizer": {"name": "by-part", "settings": {"warmup": 0.067}},
+      "settings": {
+        "stages": [{"block_size": 256, "share": 1}],
+        "tokens_per_update": 16384,
+        "readings": 1,
+        "eval_tokens": 1048576,
+        "eval_batches": 20
+      },
+      "locked": []
+    }
+  ],
+  "drafter": {
+    "prompts": 256,
+    "prompt_tokens": 64,
+    "answer_tokens": 256,
+    "epochs": 10,
+    "learning_rate": 0.0006,
+    "held_out": 0.1,
+    "anchors": 512,
+    "batch": 8,
+    "seed": 0
+  },
+  "sizes": {
+    "columns": ["size", "model.d_model"],
+    "rows": [
+      ["128", 128]
+    ]
+  }
+}

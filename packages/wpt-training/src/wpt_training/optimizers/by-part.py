@@ -13,15 +13,18 @@ decay, for Engram's tables. Only the parameters the step trains are in it:
 those of the parts it locks, and of the parts its method never reaches,
 are not.
 
-Schedule: "steps" (DeepSeek LLM), a linear warm-up to lr over `warmup`
-updates, then first_factor of it after first_drop of the step's updates
-and second_factor after second_drop, the updates being those of every
-stage of the step together; "constant", lr at every update.
+Schedule: "steps" (DeepSeek LLM), a linear warm-up to lr over the
+`warmup` share of the updates, then first_factor of it after first_drop of
+the step's updates and second_factor after second_drop, the updates being
+those of every stage of the step together; "constant", lr at every update.
+The warm-up is a share of the whole schedule the step is a part of
+(Run.schedule), so a step cut from a longer schedule and the steps that
+continue it warm up as that schedule does; the drops are shares of the
+step's own updates (Run.steps).
 
-`warmup` and `average_every` count the updates of one reading: a step
-that reads its examples several times (Run.readings) runs that many times
-each, so its schedule and its average are those of one reading stretched.
-`weight_decay` is the value for one reading: a step of N readings decays
+`warmup` and `average_every` are shares of the updates, so they keep their
+meaning whatever the updates a step's stages compute, its readings
+included. `weight_decay` is the value for one reading: a step of N readings decays
 by weight_decay / N, every part that decays alike, so that the learning
 rate times the weight decay times the updates stays the same (the
 relation of "Frontier Pre-training at Microsoft AI", docs/training.md,
@@ -30,7 +33,8 @@ relation of "Frontier Pre-training at Microsoft AI", docs/training.md,
 The average (IMU-1, arXiv 2602.02522): with `average_states` above 0, the
 step keeps an exponential moving average of the model's states (its whole
 state_dict, every floating-point entry) taken at its last update and every
-`average_every` updates before it, at most `average_states` of them, those
+`average_every` share of its updates before it (at least 1 update), at most
+`average_states` of them, those
 before update 1 left out. It starts from the oldest state and takes in each
 later one with weight 1 - `average_beta`: with 10 states and 0.8, the
 newest weighs 0.2 and the oldest 0.8^9. The average lives in FP32 on the
@@ -39,9 +43,10 @@ optimizer's state. Evaluations are then never the best: the step keeps the
 average. A step that continues the one before it after its own oldest
 state has no whole average and keeps its last weights. Early stop is
 refused with the average, whose states count back from the step's last
-update. `average_every` counted in updates and its default of 500 are
-WPT's own, open to review: IMU-1 saved its states every 5,000 of 100,000
-updates.
+update. `average_every` as a share and its default of 2% (with 10 states,
+the last 18% of the updates) are WPT's own, open to review: IMU-1 saved
+its states every 5,000 of 100,000 updates. The warm-up's default of 4% is
+WPT's own too.
 
 Without the average and without early stop (`patience` 0), the step keeps
 the weights of the lowest validation loss of its last stage. With early
@@ -59,6 +64,8 @@ lr and weight_decay default to Kimi Linear's smallest model (2.006e-3) and
 Moonlight (0.1); an order sets its own.
 """
 
+import math
+
 import torch
 
 from wpt_model import NorMuonAdamW
@@ -70,11 +77,16 @@ SETTINGS = {
     "beta1": 0.9, "beta2": 0.95, "eps": 1e-8,
     "table_lr_factor": 5.0,
     "schedule": "steps",
-    "warmup": 2000, "first_drop": 0.8, "first_factor": 0.316, "second_drop": 0.9, "second_factor": 0.1,
-    "average_states": 10, "average_every": 500, "average_beta": 0.8,
+    "warmup": 0.04, "first_drop": 0.8, "first_factor": 0.316, "second_drop": 0.9, "second_factor": 0.1,
+    "average_states": 10, "average_every": 0.02, "average_beta": 0.8,
     "patience": 0, "min_improve": 0.01, "smoothing": 3, "chinchilla": 20,
 }
 SCHEDULES = ("steps", "constant")
+
+
+def updates(share, of) -> int:
+    """A share of `of` updates as a count: rounded half up, at least 1."""
+    return max(1, math.floor(share * of + 0.5))
 
 
 def check(settings):
@@ -82,9 +94,11 @@ def check(settings):
         raise ValueError(f"schedule {settings['schedule']!r}: one of {', '.join(SCHEDULES)}")
     if settings["patience"] < 0:
         raise ValueError(f"patience {settings['patience']}: 0 (no early stop) or more evaluations")
-    if settings["average_states"] < 0 or settings["average_every"] < 1:
-        raise ValueError(f"average_states {settings['average_states']} and average_every "
-                         f"{settings['average_every']}: 0 or more states, every 1 or more updates")
+    for key in ("warmup", "average_every"):
+        if not 0 < settings[key] <= 1:
+            raise ValueError(f"{key} {settings[key]}: a share of the updates, above 0 and at most 1")
+    if settings["average_states"] < 0:
+        raise ValueError(f"average_states {settings['average_states']}: 0 or more states")
     if not 0 <= settings["average_beta"] < 1:
         raise ValueError(f"average_beta {settings['average_beta']}: from 0 to less than 1")
     if settings["average_states"] and settings["patience"]:
@@ -97,8 +111,9 @@ class ByPart(Optimizer):
         if not hasattr(model, "optimizer_roles"):
             raise PluginError("by-part: the model does not name its parameters' roles (optimizer_roles)")
         self.model, self.settings, self.steps = model, settings, run.steps
-        # counted in the updates of one reading: a step that reads its examples several times stretches them
-        self.warmup, self.every = settings["warmup"] * run.readings, settings["average_every"] * run.readings
+        # shares of the updates: of the whole schedule for the warm-up, of the step's own for the average
+        self.warmup = updates(settings["warmup"], run.schedule or run.steps)
+        self.every = updates(settings["average_every"], run.steps)
         # the value of one reading: the learning rate times the weight decay times the updates stays the same
         self.weight_decay = settings["weight_decay"] / run.readings
         self.optimizer = NorMuonAdamW(model.optimizer_roles(), settings["lr"], self.weight_decay,

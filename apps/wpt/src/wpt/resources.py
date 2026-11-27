@@ -3,9 +3,9 @@ sent to it, and found again on the dock.
 
     wpt build-resources ORDER    send the order's requests to the freight in order and print both delivery notes
 
-ORDER is a model order's name, or SERIES: for the one corpus every size of
-a series reads (its largest size's). Its data section names a snapshot of a
-depot.
+ORDER is FAMILY:SIZE, a size of a family file of data/orders/: the corpus
+it shares with the family's sizes of the same data part, of the most tokens
+any of them reads. Its data section names a snapshot of a depot.
 
 The data section makes two requests (docs/api/freight.md, "A request"):
 
@@ -339,7 +339,7 @@ def build(data: dict) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="wpt build-resources", description=__doc__.split("\n\n")[0])
-    parser.add_argument("order", help="a model order's name, or SERIES: for a series")
+    parser.add_argument("order", help="FAMILY:SIZE, a size of a family file of data/orders/")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     try:
         data = Orders.find().data_part(args.order)

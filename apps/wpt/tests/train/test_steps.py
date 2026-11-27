@@ -36,8 +36,10 @@ def reader(dock):
 
 
 def one_stage(steps, block_size=16, batch_size=4):
-    """A read-text step of one stage (docs/training.md, "Stages")."""
-    return {"stages": [{"block_size": block_size, "steps": steps, "batch_size": batch_size}]}
+    """A read-text step of one stage (docs/training.md, "Stages"): `steps` updates of batch_size windows of
+    block_size tokens, the size's schedule in updates of that many tokens cut after them."""
+    return {"stages": [{"block_size": block_size, "share": 1}], "tokens_per_update": block_size * batch_size,
+            "last_update": steps}
 
 
 def refused(capsys, argv) -> str:
@@ -118,15 +120,18 @@ def test_answer_as_assistant_learns_from_the_corpus_s_conversations_and_credits_
 
 @dataclass
 class Shape:
-    """Stands for ModelConfig: wpt.train.fingerprints reads its fields."""
+    """Stands for ModelConfig: wpt.train.fingerprints reads its numbers."""
     vocab_size: int
+
+    def numbers(self) -> dict:
+        return {"vocab_size": self.vocab_size}
 
 
 def test_each_step_s_fingerprint_names_only_the_kinds_of_texts_it_reads(built):
     # wpt.train.fingerprints: what the corpus holds of the kinds each step names, plain for read-text,
     # conversation for answer-as-assistant, task for the task steps; a later step also follows the one before it
-    steps = [load_step(entry, PARTS) for entry in ({"step": "read-text", "settings": one_stage(1)},
-                                                   {"step": "answer-as-assistant"}, {"step": "finish-tasks"},
+    text = {"step": "read-text", "settings": {**one_stage(1), "prefix_tokens": 1000}}
+    steps = [load_step(entry, PARTS) for entry in (text, {"step": "answer-as-assistant"}, {"step": "finish-tasks"},
                                                    {"step": "finish-tasks-with-less-writing"})]
     config = Shape(vocab_size=10)
     parts = {"plain": "a" * 64, "conversation": "b" * 64, "task": "c" * 64}
@@ -194,7 +199,7 @@ def test_two_text_steps_of_one_order_draw_other_windows(built):
     # other windows than the first, while each step draws the same windows
     # on every run
     record = corpora.find(built.dock, built.corpus_id)
-    step = load_step({"step": "read-text", "settings": one_stage(1)}, PARTS)
+    step = load_step({"step": "read-text", "settings": {**one_stage(1), "prefix_tokens": 1000}}, PARTS)
     strategy = Strategy(torch.device("cpu"))
 
     def first_windows(number):
@@ -215,7 +220,7 @@ def test_every_run_is_evaluated_on_the_same_windows_whatever_its_seed_step_and_u
     # the seed, the step's number and the update change the training's
     # windows and never the evaluation's
     record = corpora.find(built.dock, built.corpus_id)
-    step = load_step({"step": "read-text", "settings": one_stage(1)}, PARTS)
+    step = load_step({"step": "read-text", "settings": {**one_stage(1), "prefix_tokens": 1000}}, PARTS)
     strategy = Strategy(torch.device("cpu"))
 
     def windows(seed, number, update):
@@ -278,7 +283,8 @@ spec = importlib.util.spec_from_file_location(
     "text_windows", Path(wpt_training.__file__).parent / "environments" / "text-windows.py")
 text = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(text)
-GIVES, KINDS, SETTINGS, check, context = text.GIVES, text.KINDS, text.SETTINGS, text.check, text.context
+GIVES, KINDS, SETTINGS, check, context, stages = (text.GIVES, text.KINDS, text.SETTINGS, text.check, text.context,
+                                                 text.stages)
 
 
 class FailsOnce(text.TextWindows):

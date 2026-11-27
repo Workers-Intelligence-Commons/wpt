@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/model.schema.json",
-  "title": "WPT model order (data/orders/models/<name>.json): everything that changes the resulting model",
+  "title": "WPT model order: everything that changes the resulting model, what one size of a family (data/orders/<name>.json) resolves to",
   "type": "object",
   "additionalProperties": false,
   "required": ["data", "model", "seed", "steps", "drafter"],
@@ -10,7 +10,7 @@
     "settings": {"type": "object", "additionalProperties": {"type": ["number", "string", "boolean", "array"]}},
     "depot": {"type": "string", "description": "the depot's public address: the web address of its web app, or its name for a depot with none; empty until a person names it, and the check names each order to fill in"},
     "hex64": {"type": "string", "pattern": "^([0-9a-f]{64})?$", "description": "64 lowercase hexadecimal digits; empty until a person fills it in, and the check names each order to fill in"},
-    "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the pretraining portion the order asks for, in tokens of plain text (the max_tokens it is built at), and a ceiling on what the steps that read text windows read: training reads what the portion holds"},
+    "total_tokens": {"type": "integer", "minimum": 1, "description": "the size of the pretraining portion the order asks for, in tokens of plain text (the max_tokens it is built at), and a ceiling on what the steps that read text windows read: training reads what the portion holds; in a family, the tokens a size reads, its order asking for the corpus it shares with the sizes of the same data part"},
     "snapshot_data": {
       "type": "object",
       "additionalProperties": false,

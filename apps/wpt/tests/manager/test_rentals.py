@@ -87,9 +87,9 @@ Fake.cluster_of = {}
 
 @pytest.fixture
 def published(built, tmp_path) -> str:
-    """The id of the corpus wpt train finds for the order d: the one of its build key (its snapshot, data section
+    """The id of the corpus wpt train finds for the order d:s: the one of its build key (its snapshot, data section
     and vocabulary)."""
-    size = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())["data"]["total_tokens"]
+    size = json.loads((tmp_path / "data" / "orders" / "d.json").read_text())["data"]["total_tokens"]
     return built.sized("d", size)["id"]
 
 
@@ -100,7 +100,7 @@ def fake(built, published, on_the_cpu, tmp_path, monkeypatch, worker_port):
     monkeypatch.setattr(rental, "providers", lambda: {"fake": Fake})
     monkeypatch.setenv("WPT_RENTAL_PROVIDER", "fake")
     monkeypatch.setenv("FAKE_FOLDER", str(tmp_path / "rented"))
-    monkeypatch.setenv("WPT_ORDER", "d")
+    monkeypatch.setenv("WPT_ORDER", "d:s")
     monkeypatch.setenv("WPT_KERNELS", "pytorch")  # the fake's workers have no GPU
     yield Fake
     for group in Fake.cluster_of.values():
@@ -201,7 +201,7 @@ def cut_run(built, tmp_path) -> Workers:
     found = provider.address("wpt-cut-1", lambda: None)
     key = Key(found.host, found.port, found.pin, "token-of-the-cut-run")
     kept = tmp_path / "runs" / "manager-state"
-    workers = Workers.new(kept, "cut", "d")
+    workers = Workers.new(kept, "cut", "d:s")
     workers.state["workers"] = [{"key": str(key), "rental": {"provider": "fake", "name": "wpt-cut-1",
                                                              "kind": "on-demand"}}]
     workers.save()
@@ -262,7 +262,7 @@ elif arguments[0] == "down" and arguments[-1] == "wpt-gone":
     settings = {**os.environ, "PATH": f"{bin_folder}{os.pathsep}{os.environ['PATH']}", "WPT_RENTAL_GPUS": "H100:8",
                 "WPT_WORKER_WAIT": "600", "RUNPOD_API_KEY": "provider-key", "AWS_ACCESS_KEY_ID": "provider-key",
                 "DOCK": "s3://bucket", "DOCK_ACCESS_KEY_ID": "dock-key",
-                "DOCK_SECRET_ACCESS_KEY": "dock-secret", "GITHUB_TOKEN": "x", "WPT_ORDER": "d"}
+                "DOCK_SECRET_ACCESS_KEY": "dock-secret", "GITHUB_TOKEN": "x", "WPT_ORDER": "d:s"}
     sky = SkyPilot(settings, tmp_path)
     sky.rent("wpt-one", "secret-token-123", True)
     assert sky.address("wpt-one", lambda: None) == Address("34.0.0.9", 30123, pin)
@@ -305,7 +305,7 @@ def test_every_rental_is_tried_at_the_end_and_those_still_rented_are_named_and_k
             stopped.append(name)
 
     monkeypatch.setattr(rental, "providers", lambda: {"stubborn": Stubborn})
-    workers = Workers.new(tmp_path, "three", "d")
+    workers = Workers.new(tmp_path, "three", "d:s")
     entries = [{"key": None, "rental": {"provider": "stubborn", "name": name, "kind": "on-demand"}}
                for name in ("wpt-a", "wpt-b", "wpt-c")]
     workers.state["workers"] = entries
@@ -319,7 +319,7 @@ def test_a_run_another_manager_runs_is_left_to_it(built, fake, tmp_path, monkeyp
     # two managers on one state folder: the second neither goes on with the
     # first one's run nor starts it, so it never gives back its rentals
     kept = tmp_path / "runs" / "manager-state"
-    busy = Workers.new(kept, "busy", "d")  # the other manager, holding the run's lock
+    busy = Workers.new(kept, "busy", "d:s")  # the other manager, holding the run's lock
     busy.state["workers"] = [{"key": None, "rental": {"provider": "fake", "name": "wpt-busy-1", "kind": "on-demand"}}]
     busy.save()
     assert unfinished(built.dock, "busy")  # no record yet: it looks cut short
@@ -441,7 +441,7 @@ def test_a_lost_worker_of_a_cluster_replaces_the_whole_cluster_and_a_crash_with_
         fake, tmp_path, monkeypatch):
     monkeypatch.setenv("WPT_RENTAL_GPUS", "x")
     settings = dict(os.environ)
-    workers = Workers.new(tmp_path / "state", "pair", "d")
+    workers = Workers.new(tmp_path / "state", "pair", "d:s")
     recorder = Recorder()
     workers.prepare({**settings, "WPT_GPU_WORKERS": "2"}, tmp_path, recorder, lambda: None)
     [first] = [call[1] for call in fake.calls if call[0] == "rent"]
@@ -523,7 +523,7 @@ def test_rentals_that_could_not_be_stopped_are_tried_again_at_each_start_and_eve
     assert state(tmp_path, "sweep")["workers"] == []
 
     # a rental an earlier manager could not stop is tried again when the next one starts
-    left = Workers.new(tmp_path / "runs" / "manager-state", "old", "d")
+    left = Workers.new(tmp_path / "runs" / "manager-state", "old", "d:s")
     left.state["workers"] = [{"key": None, "rental": {"provider": "fake", "name": "wpt-old-1", "kind": "on-demand"}}]
     left.end()
     left.release()
@@ -624,7 +624,7 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
         return real(step, arguments, log, environ)
 
     monkeypatch.setattr(wpt.manager, "run_command", failing)
-    monkeypatch.setenv("WPT_ORDER", "d")
+    monkeypatch.setenv("WPT_ORDER", "d:s")
     monkeypatch.delenv("WPT_RUN", raising=False)
     with pytest.raises(SystemExit) as stopped:
         main([])
@@ -642,7 +642,7 @@ def test_a_failed_run_is_continued_by_the_same_command_under_the_name_wpt_run_tx
     assert (tmp_path / RUN_FILE).read_text() != written
     # another order's run name is never taken over
     (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the order not-d; once it is done\n")
-    assert wpt.manager.previous_run(tmp_path, "d", built.dock, None) is None
+    assert wpt.manager.previous_run(tmp_path, "d:s", built.dock, None) is None
     assert wpt.manager.previous_run(tmp_path, "not-d", built.dock, None) == "other-20260101T000000Z"
     # a file an older manager wrote says "of the recipe": its run is still found
     (tmp_path / RUN_FILE).write_text("# run other-20260101T000000Z of the recipe not-d; once it is done\n")
@@ -658,7 +658,7 @@ def test_in_the_container_a_run_that_failed_or_was_refused_exits_with_0_and_says
     err = capsys.readouterr().err
     assert "WPT_ORDER is not set" in err and "exits with 0" in err
 
-    monkeypatch.setenv("WPT_ORDER", "d")
+    monkeypatch.setenv("WPT_ORDER", "d:s")
 
     def failing(step, arguments, log, environ=None, stops=None):
         raise Failed(step, 3)
@@ -698,8 +698,9 @@ def stopping_order(built, tmp_path, at_update_3):
         f"            {at_update_3}\n"
         "            time.sleep(3)\n\n"
         "def start(model, settings, run):\n    return Stopping(model, settings)\n")
-    stages = [{"block_size": 16, "steps": 5, "batch_size": 4}]
-    return built.order("stopping", training={"stages": stages, "optimizer": str(optimizer)})
+    # 5 updates of 4 windows of 16 tokens: the size's schedule in updates of 64 tokens, cut after 5 of them
+    return built.order("stopping", training={"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 64,
+                                             "last_update": 5, "optimizer": str(optimizer)})
 
 
 def checkpoint_step(built, name) -> int:
@@ -867,7 +868,7 @@ def test_a_sigterm_before_a_run_went_on_gives_its_rentals_back_and_leaves_a_run_
     monkeypatch.delenv("WPT_RUN", raising=False)
     monkeypatch.setattr(wpt.manager, "COMMAND", ["-c", "raise SystemExit('no command may start')"])
     cut_run(built, tmp_path)
-    idle = Workers.new(tmp_path / "runs" / "manager-state", "idle", "d")
+    idle = Workers.new(tmp_path / "runs" / "manager-state", "idle", "d:s")
     idle.release()
     sigterm_at_the_first_look_at_the_rentals(monkeypatch)
     with pytest.raises(SystemExit) as stopped:
@@ -985,7 +986,7 @@ def test_workers_rented_one_by_one_stop_being_rented_once_a_stop_comes(fake, tmp
 
     monkeypatch.setattr(rental, "providers", lambda: {"fake": Alone})
     monkeypatch.setenv("WPT_RENTAL_GPUS", "x")
-    workers = Workers.new(tmp_path / "state", "pair", "d")
+    workers = Workers.new(tmp_path / "state", "pair", "d:s")
     recorder = Recorder()
     with pytest.raises(Failed):
         workers.prepare({**os.environ, "WPT_GPU_WORKERS": "2"}, tmp_path, recorder, watch)

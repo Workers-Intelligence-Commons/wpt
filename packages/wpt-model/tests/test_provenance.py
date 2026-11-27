@@ -16,6 +16,15 @@ def test_a_new_provenance_names_its_snapshot_change_digest_depot_order_and_commi
     assert corpus_label(older) == label and order_name(older) == order_name(new) == "small"
 
 
+def test_a_provenance_that_names_its_family_and_size_says_them():
+    sized = {"data": {"depot": "https://depot.example.org", "snapshot": "2026-11", "change": 1234, "digest": "ab" * 32},
+             "order_name": "pocket:64", "family": "pocket", "size": "64", "repository_commit": None}
+    assert corpus_label(sized) == (f"snapshot 2026-11 (change 1234, digest {'ab' * 32}) of the depot "
+                                   "https://depot.example.org, family pocket, size 64, code outside a git checkout")
+    branch = {**sized, "order_name": "pocket:64:branch-1", "run": "branch-1"}
+    assert ", family pocket, size 64, run branch-1, " in corpus_label(branch)
+
+
 def test_the_order_and_its_name_read_under_either_key():
     trained = {"data": {"depot": "fox"}, "steps": []}
     assert order({"order": trained}) == order({"recipe": trained}) == trained and order({}) == {}

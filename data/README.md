@@ -3,13 +3,12 @@
 This folder describes data; it never holds data itself. The texts live in
 a depot (`depot`).
 
-- `orders/models/`: model orders, each everything that changes one model:
-  the depot and the snapshot it trains on, with the roles of its corpus's
-  portions, the shares, sizes and vocabulary it takes, its architecture and
-  training steps.
-  See [docs/model.md](../docs/model.md).
-- `orders/series/`: model series, each deriving the model orders of its
-  sizes.
+- `orders/<name>.json`: model families, each everything that changes the
+  models of its sizes: the depot and the snapshot they train on, with the
+  roles of the corpus's portions, the shares, tokens and vocabulary they
+  take, their architecture and training steps, written once, then a table
+  of what varies between sizes. `FAMILY:SIZE` names one size.
+  See [docs/model.md](../docs/model.md), "Model families".
 - `images/<name>/`: the container images of agentic training: a
   `Dockerfile`, and the `lock.json` and `licenses.json` that
   `wpt agent lock-image <name>` writes; `wpt agent build-image <name>`

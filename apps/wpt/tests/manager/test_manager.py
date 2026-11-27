@@ -30,9 +30,9 @@ def test_one_command_trains_on_the_order_s_corpus_and_keeps_the_model_under_the_
     # and the manager's own copy of that folder is gone; it trains on the
     # corpus of the order's build key: its snapshot, data section and
     # vocabulary
-    size = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())["data"]["total_tokens"]
+    size = json.loads((tmp_path / "data" / "orders" / "d.json").read_text())["data"]["total_tokens"]
     corpus = built.sized("d", size)["id"]
-    monkeypatch.setenv("WPT_ORDER", "d")
+    monkeypatch.setenv("WPT_ORDER", "d:s")
     monkeypatch.delenv("WPT_RUN", raising=False)
     main([])
     [copy_out] = [line for line in (tmp_path / RUN_FILE).read_text().splitlines() if not line.startswith("#")]
@@ -54,12 +54,12 @@ def test_one_command_trains_on_the_order_s_corpus_and_keeps_the_model_under_the_
     assert [e["name"] for e in run.events if e["kind"] == "span_start" and e["name"].startswith("manager.")] == [
         "manager.corpus", "manager.workers", "manager.train", "manager.model"]
     assert [e["attributes"]["model"] for e in run.events if e.get("name") == "dock.model_kept"] == [name]
-    assert train.start["arguments"][:2] == ["d", corpus] and "--run" in train.start["arguments"]
+    assert train.start["arguments"][:2] == ["d:s", corpus] and "--run" in train.start["arguments"]
 
 
 def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
     other = built.snapshot("later")  # the corpus last built, of another snapshot than the order's
-    monkeypatch.setenv("WPT_ORDER", "d")
+    monkeypatch.setenv("WPT_ORDER", "d:s")
     monkeypatch.setenv("WPT_CORPUS", built.corpus_id[:12])
     main([])
     [run] = built.records("wpt manager")
@@ -69,8 +69,8 @@ def test_a_corpus_the_settings_name_is_trained_on(built, monkeypatch):
 
 
 def test_a_order_whose_corpus_is_not_built_stops_the_run_before_anything_starts(built, monkeypatch, capsys):
-    built.order("unbuilt")  # the snapshot d at the size of its whole corpus, a build key never built
-    monkeypatch.setenv("WPT_ORDER", "unbuilt")
+    order = built.order("unbuilt")  # the snapshot d at the size of its whole corpus, a build key never built
+    monkeypatch.setenv("WPT_ORDER", order)
     with pytest.raises(SystemExit) as refused:
         main([])
     err = capsys.readouterr().err

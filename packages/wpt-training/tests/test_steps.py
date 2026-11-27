@@ -36,8 +36,8 @@ def test_a_step_s_optimizer_is_chosen_apart_from_its_method(tmp_path):
     assert other.optimizer_settings == {"lr": 0.1, "warmup": 5}
     # the read-text step's next-token loss settings are the step's, whatever its optimizer
     text = load_step({"step": "read-text", "optimizer": {"name": str(plain)},
-                      "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}], "mtp_weight": 0.5}},
-                     PARTS)
+                      "settings": {"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 64,
+                                   "prefix_tokens": 64, "mtp_weight": 0.5}}, PARTS)
     assert text.method_settings["mtp_weight"] == 0.5 and "mtp_weight" not in text.optimizer_settings
 
 
@@ -65,7 +65,8 @@ def test_a_step_entry_that_cannot_be_is_refused_saying_why(tmp_path):
         step = tmp_path / f"{name}.py"
         step.write_text('METHOD = "next-token"\nENVIRONMENT = "text-windows"\nOPTIMIZER = {"name": "by-part"}\n'
                         + ("" if kinds is None else f"KINDS = {kinds}\n"))
-        cases.append(({"step": str(step), "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}]}},
+        cases.append(({"step": str(step), "settings": {"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 64,
+                                                         "prefix_tokens": 64}},
                       why))
     for entry, why in cases:
         with pytest.raises(PluginError, match=why):

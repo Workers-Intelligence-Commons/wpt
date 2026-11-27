@@ -19,7 +19,8 @@ CREDITS, evals/*.json, drafter/config.json and drafter/provenance.json), so
 they cannot disagree with what the folder holds. What they say of the
 corpus comes from wpt_model.provenance, which reads a folder trained on a
 snapshot ("Trained on snapshot S (change N, digest H) of the depot D,
-order R, code at commit X"; the model card names the corpus's delivery
+family F, size Z, code at commit X", or "order R" for a folder that names
+no family; the model card names the corpus's delivery
 and the vocabulary's, for one trained on deliveries of the freight) and
 one written before snapshots ("From corpus C, built from dataset T of the
 depot D") alike. The drafter's weights are

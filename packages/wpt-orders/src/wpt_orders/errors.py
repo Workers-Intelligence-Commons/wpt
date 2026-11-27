@@ -6,12 +6,14 @@ class OrderError(Exception):
 
 
 class NotFound(OrderError):
-    """No such order, series, size of it, run of a size, image, or file of
-    an image."""
+    """No such family, size of it, run of a size, image, or file of an
+    image, or a name of an order that names no size."""
 
 
 class InvalidOrder(OrderError):
     """A file the check refuses: it does not parse, does not match its
-    schema, or breaks a rule across files (a data part that names a dataset, a
-    depot or snapshot not named yet, shares that name a tag twice or sum above 1, a series whose sizes cannot be derived, an image's pool of tools
-    that takes a built-in tool's name)."""
+    schema, or breaks a rule (a family's table that writes a setting twice
+    or leaves a value empty, a size whose order the model order's schema
+    refuses, a data part that names a dataset, a depot or snapshot not named
+    yet, shares that name a tag twice or sum above 1, an image's pool of
+    tools that takes a built-in tool's name)."""

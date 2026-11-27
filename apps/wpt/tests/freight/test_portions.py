@@ -251,9 +251,10 @@ def _roles_field(schema):
     return None
 
 
-@pytest.mark.parametrize("schema", ["model.schema.json", "series.schema.json"])
-def test_an_order_schema_names_the_roles_their_order_pretrain_and_the_default_as_wpt_corpus_does(schema):
-    field = _roles_field(json.loads((files("wpt_orders") / "schemas" / schema).read_text(encoding="utf-8")))
+def test_the_order_schema_names_the_roles_their_order_pretrain_and_the_default_as_wpt_corpus_does():
+    # a family's size resolves to a model order, which this schema checks
+    schema = files("wpt_orders") / "schemas" / "model.schema.json"
+    field = _roles_field(json.loads(schema.read_text(encoding="utf-8")))
     assert field["items"]["enum"] == list(roles.ROLES) and field["contains"] == {"const": roles.PRETRAIN}
     assert f"left out: {' and '.join(roles.DEFAULT)}" in field["description"]
 
@@ -298,7 +299,7 @@ def test_wpt_build_resources_refuses_a_held_out_portion_its_corpus_is_too_small_
         built, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
     monkeypatch.setattr(roles, "HELD_OUT_MIN_TOKENS", 10**6)  # the order "d" asks for a few thousand tokens
-    assert build_resources(["d"]) == 1
+    assert build_resources(["d:s"]) == 1
     said = bare(capsys.readouterr().err)
     assert "too small for a held-out portion" in said and 'name the roles without held_out, such as ["pretrain"]' in said
     assert api.jobs() == []

@@ -1,4 +1,7 @@
-"""The orders and the task images, read and checked through Orders."""
+"""The orders and the task images, read and checked through Orders: each
+order here a family of one size, s, with every setting common, so its
+size's model order is the order it writes (the tables of several sizes:
+test_family.py)."""
 
 import json
 import re
@@ -13,7 +16,7 @@ MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_model": 
          "shared_width": 16, "engram_layers": [1], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
          "engram_table_size": 31, "residual_groups": 3, "loops": 0}
 STEPS = [{"step": "read-text", "optimizer": {"name": "by-part", "settings": {}},
-          "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}]}, "locked": []}]
+          "settings": {"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 64}, "locked": []}]
 DEPOT = "https://depot.example"
 DIGEST, SHA256 = "d" * 64, "5" * 64
 
@@ -21,14 +24,14 @@ DIGEST, SHA256 = "d" * 64, "5" * 64
 @pytest.fixture
 def orders(tmp_path):
     root = tmp_path / "wpt"
-    for folder in ("models", "series"):
-        (root / "data" / "orders" / folder).mkdir(parents=True)
+    (root / "data" / "orders").mkdir(parents=True)
     return Orders(root)
 
 
-def write(orders, kind, name, document):
-    folder = {"model": "models"}[kind]
-    (orders.root / "data" / "orders" / folder / f"{name}.json").write_text(dump_json(document), encoding="utf-8")
+def write(orders, name, document):
+    """The family `name` of one size, s, whose order is the document."""
+    family = {**document, "sizes": {"columns": ["size"], "rows": [["s"]]}}
+    (orders.root / "data" / "orders" / f"{name}.json").write_text(dump_json(family), encoding="utf-8")
 
 
 def snapshot_model(**data):
@@ -42,19 +45,20 @@ def snapshot_model(**data):
 
 
 def test_a_model_order_names_a_snapshot_of_a_depot_its_roles_shares_sizes_and_vocabulary(orders):
-    write(orders, "model", "m", snapshot_model())
+    write(orders, "m", snapshot_model())
     pretrain = snapshot_model(roles=["pretrain"], shares=[])
     del pretrain["data"]["finetune_tokens"]
-    write(orders, "model", "bare", pretrain)
+    write(orders, "bare", pretrain)
     bare = snapshot_model()
     # left out: the roles held_out and pretrain, the snapshot's own proportions, every conversation and task
     del bare["data"]["roles"], bare["data"]["shares"], bare["data"]["finetune_tokens"]
-    write(orders, "model", "least", bare)
+    write(orders, "least", bare)
     # 0.33 + 0.56 + 0.11 is 1.0000000000000002 in floats: a share of the whole is still at most 1
-    write(orders, "model", "whole", snapshot_model(shares=[{"tag": "a", "share": 0.33}, {"tag": "b", "share": 0.56},
+    write(orders, "whole", snapshot_model(shares=[{"tag": "a", "share": 0.33}, {"tag": "b", "share": 0.56},
                                                             {"tag": "c", "share": 0.11}]))
-    assert orders.model_order("m")["data"] == snapshot_model()["data"]
-    assert orders.data_part("m") == orders.model_order("m")["data"]
+    assert orders.model_order("m:s")["data"] == snapshot_model()["data"]
+    assert orders.model_order("m:s")["steps"][0]["settings"]["prefix_tokens"] == 10**9  # its total_tokens
+    assert orders.data_part("m:s") == orders.model_order("m:s")["data"]
     assert orders.check() == []
 
 
@@ -74,39 +78,39 @@ def test_a_model_order_names_a_snapshot_of_a_depot_its_roles_shares_sizes_and_vo
     ({"dataset": "first"}, "data", "names a dataset; an order names a snapshot of a depot"),
 ])
 def test_a_snapshot_data_part_of_the_wrong_shape_is_refused_naming_its_field(orders, data, place, message):
-    write(orders, "model", "m", snapshot_model(**data))
-    with pytest.raises(InvalidOrder, match=rf"data/orders/models/m.json: at {place}: .*{re.escape(message)}"):
-        orders.model_order("m")
-    assert orders.problems("model", "m")[0].startswith(f"data/orders/models/m.json: at {place}: ")
+    write(orders, "m", snapshot_model(**data))
+    with pytest.raises(InvalidOrder, match=rf"data/orders/m.json, size s: at {place}: .*{re.escape(message)}"):
+        orders.model_order("m:s")
+    assert orders.problems("family", "m")[0].startswith(f"data/orders/m.json, size s: at {place}: ")
 
 
 def test_a_vocabulary_is_named_by_its_sha256_or_learned_from_a_sample_of_a_number_of_bytes(orders):
     # the second form names no sha256: the vocabulary's delivery note gives it once it is learned
-    write(orders, "model", "learned", snapshot_model(vocabulary={"size": 4096, "sample_bytes": 10**10}))
-    assert orders.data_part("learned")["vocabulary"] == {"size": 4096, "sample_bytes": 10**10}
+    write(orders, "learned", snapshot_model(vocabulary={"size": 4096, "sample_bytes": 10**10}))
+    assert orders.data_part("learned:s")["vocabulary"] == {"size": 4096, "sample_bytes": 10**10}
     assert orders.check() == []
     for wrong, message in (({"size": 4096}, "'sha256' is a required property"),
                            ({"size": 512, "sample_bytes": 10}, "less than the minimum of 513"),
                            ({"size": 4096, "sample_bytes": 10, "sha256": SHA256}, "Additional properties")):
-        write(orders, "model", "m", snapshot_model(vocabulary=wrong))
+        write(orders, "m", snapshot_model(vocabulary=wrong))
         with pytest.raises(InvalidOrder, match=f"at data/vocabulary.*{re.escape(message)}"):
-            orders.model_order("m")
+            orders.model_order("m:s")
 
 
 def test_a_snapshot_data_part_without_its_vocabulary_is_refused(orders):
     missing = snapshot_model()
     del missing["data"]["vocabulary"]
-    write(orders, "model", "m", missing)
+    write(orders, "m", missing)
     with pytest.raises(InvalidOrder, match="at data: 'vocabulary' is a required property"):
-        orders.model_order("m")
+        orders.model_order("m:s")
 
 
 def test_the_check_names_each_field_of_a_snapshot_data_part_a_person_has_not_filled_in(orders):
     # an empty depot, snapshot, digest or vocabulary reads, and the check names the file and fields to fill in
-    write(orders, "model", "m", snapshot_model(snapshot="", digest="", vocabulary={"sha256": "", "size": 4096}))
-    assert orders.model_order("m")["data"]["snapshot"] == ""
+    write(orders, "m", snapshot_model(snapshot="", digest="", vocabulary={"sha256": "", "size": 4096}))
+    assert orders.model_order("m:s")["data"]["snapshot"] == ""
     assert orders.check() == [
-        "data/orders/models/m.json: data.snapshot, data.digest, data.vocabulary.sha256 empty: a person names the "
+        "data/orders/m.json, size s: data.snapshot, data.digest, data.vocabulary.sha256 empty: a person names the "
         "depot's public address and its snapshot, with the snapshot's digest and, for a vocabulary named by its "
         "sha256, that sha256"]
 
@@ -119,16 +123,16 @@ def test_the_check_names_each_field_of_a_snapshot_data_part_a_person_has_not_fil
     ([{"tag": "law", "share": 0}], "data.shares are all 0: give one a share above 0, or give no shares"),
 ])
 def test_the_check_refuses_shares_a_corpus_cannot_be_built_with(orders, shares, message):
-    write(orders, "model", "m", snapshot_model(shares=shares))
-    assert orders.model_order("m")["data"]["shares"] == shares  # the schema takes them: the check refuses them
-    assert orders.problems("model", "m") == [f"data/orders/models/m.json: {message}"]
+    write(orders, "m", snapshot_model(shares=shares))
+    assert orders.model_order("m:s")["data"]["shares"] == shares  # the schema takes them: the check refuses them
+    assert orders.problems("family", "m") == [f"data/orders/m.json, size s: {message}"]
 
 
 def test_the_check_refuses_a_size_of_the_finetune_portion_its_roles_leave_out(orders):
-    write(orders, "model", "m", snapshot_model(roles=["held_out", "pretrain"]))
-    assert orders.model_order("m")["data"]["finetune_tokens"] == 40  # the schema takes it: the check refuses it
-    assert orders.problems("model", "m") == [
-        "data/orders/models/m.json: data.finetune_tokens sizes the finetune portion, which data.roles leave out: add "
+    write(orders, "m", snapshot_model(roles=["held_out", "pretrain"]))
+    assert orders.model_order("m:s")["data"]["finetune_tokens"] == 40  # the schema takes it: the check refuses it
+    assert orders.problems("family", "m") == [
+        "data/orders/m.json, size s: data.finetune_tokens sizes the finetune portion, which data.roles leave out: add "
         "finetune to the roles, or give no finetune_tokens"]
 
 
@@ -142,24 +146,24 @@ def test_the_check_refuses_a_held_out_portion_in_a_corpus_too_small_for_it(order
             del document["data"]["roles"]
         return document
 
-    write(orders, "model", "m", sized(HELD_OUT_MIN_TOKENS - 1))
-    assert orders.problems("model", "m") == [
-        f"data/orders/models/m.json: data.total_tokens {HELD_OUT_MIN_TOKENS - 1:,} is too small for the held-out "
+    write(orders, "m", sized(HELD_OUT_MIN_TOKENS - 1))
+    assert orders.problems("family", "m") == [
+        f"data/orders/m.json, size s: data.total_tokens {HELD_OUT_MIN_TOKENS - 1:,} is too small for the held-out "
         f"portion, which needs at least {HELD_OUT_MIN_TOKENS:,}: name data.roles without held_out, such as "
         '["pretrain"], or ask for more tokens']
-    write(orders, "model", "m", sized(HELD_OUT_MIN_TOKENS - 1, ["pretrain"]))
-    write(orders, "model", "enough", sized(HELD_OUT_MIN_TOKENS))
+    write(orders, "m", sized(HELD_OUT_MIN_TOKENS - 1, ["pretrain"]))
+    write(orders, "enough", sized(HELD_OUT_MIN_TOKENS))
     assert orders.check() == []
 
 
 def test_an_order_that_names_a_dataset_is_refused_saying_an_order_names_a_snapshot(orders):
     # the data part of the orders written before snapshots: a dataset of a depot, which no training reads
-    write(orders, "model", "m", {**snapshot_model(), "data": {"depot": DEPOT, "dataset": "first", "total_tokens": 100}})
-    with pytest.raises(InvalidOrder, match="data/orders/models/m.json: at data: names a dataset; an order names a "
+    write(orders, "m", {**snapshot_model(), "data": {"depot": DEPOT, "dataset": "first", "total_tokens": 100}})
+    with pytest.raises(InvalidOrder, match="data/orders/m.json, size s: at data: names a dataset; an order names a "
                                            "snapshot of a depot, with its change and digest"):
-        orders.model_order("m")
+        orders.model_order("m:s")
     assert orders.check() == [
-        "data/orders/models/m.json: at data: names a dataset; an order names a snapshot of a depot, with its change "
+        "data/orders/m.json, size s: at data: names a dataset; an order names a snapshot of a depot, with its change "
         "and digest (docs/data-selection.md, \"The data section of a model order\")"]
 
 
@@ -167,16 +171,23 @@ def test_a_order_of_an_earlier_shape_is_refused(orders):
     # an order with a field its shape lacks is refused naming that field, not as a whole value
     earlier = snapshot_model()
     earlier["data"] = {"mixture": "classics", "tokenizer": "t", "total_tokens": 100, "held_out": 0.05}
-    write(orders, "model", "earlier", earlier)
+    write(orders, "earlier", earlier)
     named = snapshot_model()
     named["data"]["tokenizer"] = "t"  # the vocabulary is named by itself: an order names no tokenizer
-    write(orders, "model", "named", named)
-    with pytest.raises(InvalidOrder, match="data/orders/models/earlier.json: at data: "):
-        orders.model_order("earlier")
-    with pytest.raises(InvalidOrder, match="data/orders/models/named.json: at data: Additional properties"):
+    write(orders, "named", named)
+    with pytest.raises(InvalidOrder, match="data/orders/earlier.json, size s: at data: "):
+        orders.model_order("earlier:s")
+    with pytest.raises(InvalidOrder, match="data/orders/named.json, size s: at data: Additional properties"):
+        orders.model_order("named:s")
+    with pytest.raises(NotFound, match="no family 'nothing'"):
+        orders.model_order("nothing:s")
+    with pytest.raises(NotFound, match="no size 'x' in the family named; its sizes are s"):
+        orders.model_order("named:x")
+    # an order is always a size of a family: the family's name alone names none
+    with pytest.raises(NotFound, match="'named' names no size: an order is FAMILY:SIZE"):
         orders.model_order("named")
-    with pytest.raises(NotFound, match="no model 'nothing'"):
-        orders.model_order("nothing")
+    with pytest.raises(NotFound, match="'named:' names no size.*its sizes are s"):
+        orders.data_part("named:")
 
 
 def test_the_check_reads_the_lock_and_licenses_of_each_image(orders):

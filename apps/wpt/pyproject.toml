@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "The wpt command: a controller over the WPT libraries' services"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.14"
-# wpt-orders: the model and series orders and the images of agentic tasks; wpt-agent: the measure tasks' attempts
+# wpt-orders: the model families and the images of agentic tasks; wpt-agent: the measure tasks' attempts
 # and the images of agentic tasks; wpt-worker: the gpu worker that trains and holds the model; freight: the requests
 # of wpt build-resources and the deliveries wpt train reads, through freight.api; dock: the dock, through dock.api;
 # wpt-corpus: the programs the freight runs for WPT and their versions, which the delivery keys cover, and the

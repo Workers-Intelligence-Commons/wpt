@@ -1,13 +1,14 @@
 """A step that continues the one before it (docs/training.md, "Continued
-steps"): a decay branch of a model series is a trunk at the peak rate
-and a decay that goes on from its last state, and together they must
-train as the one step whose schedule drops at the same updates."""
+steps"): a decay branch of a size of a model family is a trunk at the
+peak rate and a decay that goes on from its last state, each a part of
+one schedule cut by last_update, and together they must train as the one
+step whose schedule drops at the same updates."""
 
 import pytest
 import torch
 
 from wpt_model import PARTS, WPT, ModelConfig
-from wpt_orders import series
+from wpt_orders import family
 from wpt_telemetry import Telemetry
 from wpt_training import (Data, FolderCheckpoint, Strategy, check_continuations, draw_numbers, load_state, load_step,
                           train)
@@ -19,15 +20,18 @@ TINY = dict(vocab_size=50, block_size=16, window_layers=1, sparse_groups=1, spar
 CPU = Strategy(torch.device("cpu"))
 
 
-def read_text(updates, drops=True, continues=False, **settings):
-    """A read-text step as a series' order holds it: 2 windows of 16 tokens per update, a warm-up of 2;
-    without drops, a trunk: no drop, no switch of the multi-token prediction's weight."""
-    optimizer = {"lr": 0.01, "warmup": 2}
+def read_text(last_update=0, drops=True, continues=False, **settings):
+    """A read-text step as a family's branch holds it: a schedule of 10 updates of 2 windows of 16 tokens, a
+    warm-up of a fifth of them, cut after last_update; without drops, a trunk: no drop, no switch of the
+    multi-token prediction's weight."""
+    optimizer = {"lr": 0.01, "warmup": 0.2}
     if not drops:
         optimizer.update(first_drop=1.0, second_drop=1.0)
         settings["mtp_switch"] = 1.0
+    if last_update:
+        settings["last_update"] = last_update
     entry = {"step": "read-text", "optimizer": {"name": "by-part", "settings": optimizer},
-             "settings": {"stages": [{"block_size": 16, "steps": updates, "batch_size": 2}], "prefix_tokens": 500,
+             "settings": {"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 32, "prefix_tokens": 320,
                           **settings}}
     if continues:
         entry["continues"] = True
@@ -58,7 +62,7 @@ def test_a_decay_that_continues_a_trunk_trains_as_the_one_step_of_its_schedule(d
     # 10 updates whose rate drops after update 8 (80%) and 9 (90%), where the multi-token prediction's weight
     # switches too; the trunk runs updates 1 to 8 at the peak rate and the early weight, and the decay goes on
     # from its last state at update 9 with the 10 updates' schedule, every late change in it
-    [whole] = run([read_text(10, mtp_switch=0.8)], dataset, tmp_path / "whole")
+    [whole] = run([read_text(mtp_switch=0.8)], dataset, tmp_path / "whole")
     trunk, decay = run([read_text(8, drops=False), read_text(10, continues=True)], dataset, tmp_path / "branch")
     assert trunk["step"] == 8 and decay["step"] == 10
     assert whole["model"].keys() == decay["model"].keys()
@@ -77,6 +81,6 @@ def test_a_step_continues_only_one_like_it_with_updates_left():
         check_continuations([read_text(8), other])
 
 
-def test_a_series_branches_where_by_part_s_first_drop_is():
+def test_a_family_branches_where_by_part_s_first_drop_is():
     from wpt_training.plugins import _load
-    assert series.FIRST_DROP == _load("optimizers", "by-part").module.SETTINGS["first_drop"]
+    assert family.FIRST_DROP == _load("optimizers", "by-part").module.SETTINGS["first_drop"]

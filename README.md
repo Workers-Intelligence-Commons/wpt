@@ -13,7 +13,7 @@ This repository is everything needed to build a WPT model from nothing:
 the code of the depot that holds the texts and the decisions on them, of
 the freight that prepares a vocabulary and a corpus from it, of the dock
 that keeps what machines made, the code that trains, evaluates and runs
-the model, and the orders of the models. The depot, the freight and the
+the model, and the families of the models. The depot, the freight and the
 dock are meant to serve other models and other kinds of data too, and to
 move to a repository of their own
 ([architecture](docs/architecture.md), "The parts"). No checkpoint has been published yet.
@@ -25,16 +25,16 @@ SQLite file, known by its address, that holds texts and items (conversations,
 tasks), each of one kind and with its license, credit, notice and tags,
 the human decisions that admit or refuse it, and its snapshots, each a
 change number, named by the UTC time it was made, and the texts admitted
-then (`depot`). A model order names a depot by its public address, a
+then (`depot`). A model family names a depot by its public address, a
 snapshot of it with the change and digest it reads, the roles of the
 portions its corpus is cut into (a held-out portion no training reads, the
 pretraining one, the fine-tuning one), the shares by tag it takes, its
 sizes and its vocabulary. `wpt build-resources
-ORDER` asks the freight to learn that vocabulary and prepare that corpus,
+FAMILY:SIZE` asks the freight to learn that vocabulary and prepare the corpus of that size,
 which it delivers on a dock you control (a folder or an S3 bucket): the
 token files, with copies of every text's credits, licenses and notices.
 `wpt train` reads that corpus from the dock. A corpus is a cache: the
-depot's address, the snapshot and the order make it again, the same. A depot can follow
+depot's address, the snapshot and the family make it again, the same. A depot can follow
 another and pull its updates, the way a Git clone follows its remote.
 WPT hosts no data.
 
@@ -70,11 +70,11 @@ echo "FREIGHT_HOME=$HOME/freight" >> .env  # the freight's queue and the work of
 uv run wpt doctor                                  # what this machine still lacks, and how to fix it
 
 uv run depot snapshot new                      # the texts admitted now, named by the UTC time
-cp data/orders/models/classics-test.json data/orders/models/first.json
+cp data/orders/test.json data/orders/first.json
 uv run depot web                               # the snapshot's page gives its name, change and digest
-# put them in the "data" of data/orders/models/first.json with a vocabulary to learn, then commit the file
-uv run wpt build-resources first                   # its vocabulary and corpus, from the freight, on the dock
-scripts/detach.sh uv run wpt train first --stream --out runs/first
+# put them in the "data" of data/orders/first.json with a vocabulary to learn, then commit the file
+uv run wpt build-resources first:128               # its vocabulary and corpus, from the freight, on the dock
+scripts/detach.sh uv run wpt train first:128 --stream --out runs/first
 uv run wpt eval runs/first                         # the tests, into the model card
 uv run wpt chat runs/first                         # continue text with the model
 ```
@@ -87,18 +87,21 @@ the depot, the freight and the dock have their own commands, `depot`,
 `runs/` (`freight deliveries` lists the deliveries, `wpt list` the corpora
 and models).
 
-A model order (`data/orders/models/ORDER.json`) holds everything that
-changes the model: its data, architecture and training steps
-([model.md](docs/model.md)); the command-line options only say how the
-hardware runs it. Its data section names the depot, the snapshot (its
-name, change number and digest) and the vocabulary (its sha256 and size,
-or the size and sample of one to learn), so it is made only from the depot
-it names: a snapshot's page in `depot web` gives its name, change and
-digest, to put in the order file and commit, since the corpus and the
-model name the commit they were built from. `classics-test` is a
-small model order, enough to see every step work on one machine, which
-the quick start copies for its model part. Like every order of the repository, it names a snapshot
-of the public depot https://depot.workers-intelligence-commons.org.
+A model family (`data/orders/FAMILY.json`) holds everything that
+changes the models of its sizes: their data, architecture and training
+steps, written once, then a table of what varies between sizes
+([model.md](docs/model.md), "Model families"); `FAMILY:SIZE` names one
+size, and the command-line options only say how the hardware runs it.
+Its data section names the depot, the snapshot (its name, change number
+and digest) and the vocabulary (its sha256 and size, or the size and
+sample of one to learn), so it is made only from the depot it names: a
+snapshot's page in `depot web` gives its name, change and digest, to put
+in the family file and commit, since the corpus and the model name the
+commit they were built from. `test` is a small family of one size,
+`128`, enough to see every step work on one machine, which the quick
+start copies for its model part. Like every family of the repository, it
+names a snapshot of the public depot
+https://depot.workers-intelligence-commons.org.
 
 **Streaming** keeps disk use small at each step, for data larger than the
 disk:
@@ -122,7 +125,7 @@ the same command with `--resume` continues.
 | train on another machine's GPUs | a gpu worker on each machine (`deploy/gpu-worker/compose.yaml`, with `compose.nvidia.yaml` or `compose.amd.yaml` for GPUs), their keys in `WPT_GPU_WORKERS` ([machines](docs/machines.md)) |
 | rent the GPUs | `WPT_GPU_WORKERS=N` and `WPT_RENTAL_GPUS` for `wpt manager`, which rents N gpu workers through SkyPilot (as one cluster in one request), replaces a lost one and gives them back at the end ([machines](docs/machines.md)) |
 | train on a built corpus in one command | `docker compose up`, with `COMPOSE_FILE=deploy/manager/compose.yaml` and `WPT_ORDER` set in `.env`; then `wpt copy-out NAME runs/NAME` ([machines](docs/machines.md)) |
-| teach the model to chat | conversations in a new snapshot, its corpus made, and an order whose `steps` add `answer-as-assistant` after `read-text`: `wpt train ORDER CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
+| teach the model to chat | conversations in a new snapshot, its corpus made, and a family whose `steps` add `answer-as-assistant` after `read-text`: `wpt train FAMILY:SIZE CORPUS_ID --out runs/chat`, then `wpt chat runs/chat --chat` ([training](docs/training.md)) |
 | teach the model to finish tasks as an agent | tasks in a new snapshot, its corpus made, their images in `data/images/` locked with `wpt agent lock-image NAME` and built with `wpt agent build-image NAME`, and an order whose `steps` hold `finish-tasks` (needs Docker; [training](docs/training.md)) |
 | teach the agent to reach the same result with fewer tokens | `finish-tasks-with-less-writing` after `finish-tasks` in the order's `steps`: it trains on the same tasks ([training](docs/training.md)) |
 | train long windows on a small GPU | nothing: each stage whose pass does not fit the GPU's memory runs its layers again in the backward pass instead of keeping their values, then takes fewer windows per pass, then runs one window in segments; `--recompute` runs the layers again in every stage, `--no-recompute` in none, and with either the passes run as `--micro-batch` and `--segment` say |
@@ -154,7 +157,7 @@ settle alone are listed for legal review in
 - [A preparation and its messages: the programs the freight runs](docs/api/preparation.md)
 - [The dock's api: find, fetch, put and the `dock` command](docs/api/dock.md)
 - [Tokenizer](docs/tokenizer.md)
-- [Model architecture: the research it comes from and the orders that size it](docs/model.md)
+- [Model architecture: the research it comes from and the families that size it](docs/model.md)
 - [Training and repeatability](docs/training.md)
 - [Knowledge: what sizes a model, the evidence and what is open](docs/knowledge/README.md)
 - [Machines for training: the wpt manager, gpu workers, sandboxes](docs/machines.md)

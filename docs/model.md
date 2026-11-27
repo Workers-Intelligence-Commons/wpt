@@ -9,9 +9,9 @@ trained from scratch: no weights or outputs of those models are used.
 The design is one family for every size: a mixture-of-experts model that
 reads long texts, aiming at a context of 1M tokens, which an order reaches
 by stages of growing windows (training.md, "Stages"). The numbers of a given size (layers, width, experts, table
-sizes) are not fixed here: each size is a model order, or a size of a
-model series (below), since a small model may not want the ratios of a
-large one.
+sizes) are not fixed here: each size is a size of a model family
+("Model families", below), since a small model may not want the ratios
+of a large one.
 
 ## The shape
 
@@ -376,9 +376,9 @@ the plain model had the lower loss in every case, by 0.015 to 0.039;
 accuracy by number of passes peaks at 3 to 4. No paper combines loops
 with HySparse2 or with Attention Residuals, so the rule for the sources
 above and the cache's rule (Generation, below) are open to review. A
-size of a series computes `loops + 1` times the work per token of one
+size's compute count holds `loops + 1` times the work per token of one
 pass, or with `loop_layers` one pass plus `loops` times the looped
-layers' work ("Model series").
+layers' work ("Model families").
 
 **Decay between passes.** An order number, `loop_decay` (`lambda`, above 0
 and below 1), changes what a pass after the first starts from. With `h0`
@@ -688,13 +688,14 @@ with separate weights:
   test checks that no text past a prompt reaches the drafter's training.
 
 **Settings.** The model order's `drafter` section ("Model
-orders") gives the drafter's shape (`features`, `layers`, `block`,
+families") gives the drafter's shape (`features`, `layers`, `block`,
 `markov_rank`) and its training (`epochs`, `learning_rate`, `weight_decay`,
 `warm_up`, `clip`, `anchors`, `batch`, `prompts`, `prompt_tokens`,
 `answer_tokens`, `temperature`, `top_k`, `held_out`, `ece_bins`, `seed`); a
-setting left out keeps its default below. The three orders state the
-training values explicitly ("Model orders"), equal to today's defaults, so
-a later change of a default does not change their drafters. `features`
+setting left out keeps its default below. The families of the
+repository state the training values explicitly ("Model families"),
+equal to the defaults, so a change of a default does not change their
+drafters. `features`
 numbers the model's layers from 1 to its last;
 `DrafterConfig.for_model` checks them against the model's layers when a run
 starts, so `wpt train` refuses a layer the model does not have before
@@ -930,18 +931,18 @@ built-in step trains under this rule, through the `by-part` optimizer
 drafter").
 
 **Average.** `read-text` keeps an exponential moving average of the
-model's last 10 states, 500 updates apart, with a factor of 0.8, as IMU-1
+model's last 10 states, 2% of its updates apart, with a factor of 0.8, as IMU-1
 averages its last checkpoints ([training.md](training.md), "Optimizers");
 IMU-1 measured its 430M model's mean benchmark score rising from 0.560 to
 0.574 with it. The steps after it keep no average.
 
 **Schedule.** Multi-step for `read-text` ([DeepSeek LLM][llm], also used in the [mHC paper][mhc]): linear
-warm-up to the maximum over the order's `warmup` updates (2,000 by
-default; 4% of the updates at every size of a model series), then 31.6% of
+warm-up to the maximum over the order's `warmup`, a share of the
+updates (4% by default), then 31.6% of
 it after 80% of the training tokens and 10% after 90%. DeepSeek reports final results matching
 cosine decay, and a run can be extended by continuing from a checkpoint
-taken before the first drop; a model series' decay branches go on from
-such a state ("Model series"). The steps after it run at a constant learning
+taken before the first drop; a size's decay branches go on from
+such a state ("Model families"). The steps after it run at a constant learning
 rate. Their early stop on the validation loss is on, but their
 environments make no evaluations, so it never stops them and they keep
 their last weights.
@@ -970,13 +971,18 @@ The sublayers' second run records no balancing counts.
 (training.md): routing ties, balancing quantiles and expert gradient sums
 are computed in a fixed order, over the whole global batch.
 
-## Model orders
+## Model families
 
-A model order, `data/orders/models/<name>.json`, says everything that
-changes the resulting model, so a release model is rebuilt from one file
-and the repository, or from a series file, the name of one of its sizes
-(and of that size's run, when it is another than its own) and the
-repository ("Model series", below). A model order holds:
+A model family, `data/orders/<name>.json`, is one file for the sizes of
+one model, named by what the family is for. It writes once what its
+sizes share, then a table of its sizes. `FAMILY:SIZE` names one size
+wherever an order's name goes (`wpt build-resources`, `wpt train`,
+`WPT_ORDER`). A release model is rebuilt from the family file, the name
+of its size and the repository.
+
+**What a size resolves to.** Each size resolves to a model order
+(`wpt_orders.family.resolve`, checked against `model.schema.json`),
+which holds:
 
 - the data: a depot (`depot`, its
   public address, [data-selection.md](data-selection.md)), the name of one of
@@ -1001,206 +1007,190 @@ repository ("Model series", below). A model order holds:
   and head width, expert counts and widths, top `k`, latent width,
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
-  "Loops"; every order sets 0), optionally the rules of how the passes
+  "Loops"), optionally the rules of how the passes
   follow each other, are trained and which layers they run (`loop_decay`,
-  `decay_last_pass`, `loop_losses`, `loop_layers`, "Loops"; no order sets
-  them), and optionally one vocabulary table in place of two
+  `decay_last_pass`, `loop_losses`, `loop_layers`, "Loops"), and
+  optionally one vocabulary table in place of two
   (`tied_tables`, "One vocabulary table");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
   file's, its optimizer and that optimizer's settings, its settings and
   the parts it locks ([training.md](training.md), "Steps"): the
-  `read-text` step's stages (each its window length, updates and batch, in
-  order), evaluations, MTP loss weights and `by-part` settings among them; the
-  model's context is the last window length of the last step that reads
-  text windows;
+  `read-text` step's stages (each its window length and its share of the
+  tokens), tokens per update, readings, evaluations, MTP loss weights and
+  `by-part` settings among them; the model's context is the last window
+  length of the last step that reads text windows;
 - the drafter (`drafter`): its shape and how it is trained ("The
-  drafter"; an empty section keeps every default).
+  drafter"; an empty section keeps every default);
+- a `note`, which says what the family is for.
 
-Settings that change the result come only from the order. Command-line
+Settings that change the result come only from the family. Command-line
 options remain only for what does not: device strategy (splitting windows
 across processes included), number of processes, streaming, output folder,
 run name, resuming, micro-batch, recomputing, segments, checkpoints, weight
 file size and restarts. A vocabulary is named by its sha256 or learned
-by its own request, never held in the order, since several models share
+by its own request, never held in the family, since several models share
 it. A model has at least 5 layers: one window
 layer on each side of an exact layer, then one exact and one sparse layer.
-A head is at least 64 wide and even, for the 64 rotary dimensions. The orders' `drafter` sections
-state the same training values: 256 prompts of at most 64 tokens, answers
-of at most 256 tokens, 10 epochs, learning rate 6e-4, 10% held out, 512
-anchors, 8 answers per update, seed 0; the settings a section leaves out
-(the drafter's shape, `weight_decay`, `warm_up`, `clip`, `temperature`,
-`top_k`, `ece_bins`) keep their defaults.
+A head is at least 64 wide and even, for the 64 rotary dimensions.
 
 A step whose optimizer is `muon` or `adamw` is named `by-part`; the
 entry keeps its own settings and gains none.
 
-A new order's or series' name is an adjective and an animal drawn by `uv run
-scripts/order_name.py`, among about 11.5 million names, so the name says
-nothing about the GPU or size it was made for; the order's `note` says
-that. Four orders exist, each of one stage (none yet sets V4's 4K, 16K,
-64K and 1M stages). The first three read the admitted public-domain books
-(about 4.3M tokens); `interstitial-pecker` reads every admitted document:
+**The table of sizes.** `sizes` holds `columns` and `rows`. The first
+column is `size`, each row's name. Each other column is the path of a
+setting that varies between sizes, its names joined by `.` from the top
+of a model order: `model.d_model`, `data.total_tokens`,
+`data.vocabulary`, `steps.1.optimizer.settings.lr`, the steps numbered
+from 1. A row is a size's name, then one value per column. A setting
+without a column is common to every size. No value is computed from
+another: every size's values are written.
 
-- `classics-test`: 8.7M parameters, 256-token windows, a test to see every
-  step work on one machine. Its 11 layers are laid out `(2, 1, 5)`, with 4
-  heads of 128. In windows this short, every sparse layer reads every
-  earlier token: the exact layer picks 1,024 of them outside the last 128.
-- `watery-tardigrade`: 132M parameters (11 layers laid out `(2, 1, 5)`,
-  width 512, 8 heads of 128, 32 experts with top 4), 32K-token windows,
-  meant for one 16 GB GPU with `--recompute --micro-batch 1`. Its memory is
-  not measured. It is untested in a full run: see below.
-- `unimpaired-axolotl`: 60M parameters (the same 11 layers and 32 experts,
-  width 320, 4 heads of 128), 32K-token windows, meant to need less GPU
-  memory with `--recompute --micro-batch 1`. Its memory is not measured.
-  No full run yet.
-- `interstitial-pecker`: 255M parameters, the smallest of a series for
-  watching behaviors appear as size grows, not for release. It keeps
-  `watery-tardigrade`'s width of 512 and its experts and has the full
-  layout, 21 layers laid out `(4, 2, 5)`. Its vocabulary is the `admitted`
-  order's 32,768 tokens, whose two tables take 33.6M parameters. It reads
-  about 2.93B tokens as 2,790 updates of 32 windows of 32K tokens. Both
-  heads' scores over one 32K window take about 8 GiB in 32-bit, so one
-  16 GB GPU is estimated to need `--recompute --micro-batch 1 --segment
-  8192`; nothing is measured yet. No full run yet.
+```json
+"sizes": {
+  "columns": ["size", "model.d_model", "model.attention_heads", "data.total_tokens"],
+  "rows": [["64", 64, 1, 106334292], ["128", 128, 2, 338014608]]
+}
+```
 
-Every order of the repository names a snapshot of the public depot.
-Every order uses
-attention heads 128 wide, of which the window layers rotate the last 64.
+`wpt_orders.family.check` refuses, with a sentence that says what is
+wrong:
 
-### Model series
+- a first column other than `size`, a column named twice, or a column
+  inside another;
+- a path that names no setting of a model order, or a step the family
+  does not write;
+- a setting written both as common and as a column;
+- a step's `prefix_tokens`, written anywhere;
+- a size named twice, or by a name other than lowercase `a-z`, `0-9`,
+  `.`, `_` and `-`;
+- a row with another number of values than the columns, or with an empty
+  value (`null`): every size fills every column;
+- with branches, a step listing stages whose `mtp_switch` is not 0.8 or
+  whose `first_drop` is not 0.8 (below).
 
-A model series, `data/orders/series/<name>.json`, is one file for several
-sizes of one model, so the rules of a scaling test are written once and
-each size follows them. It holds the rules every size shares and the list
-of sizes, each a name and a width. `SERIES:SIZE` names one size wherever a
-model order's name goes (`wpt train`, `WPT_ORDER`). Every size reads
-the same corpus, the one of the series' snapshot and data part at its
-largest size, and a smaller
-size the first part of its pretraining portion (its prefix). The code derives
-each size's model order (`wpt_orders.series`):
+`wpt_orders.Orders.check` then applies the rules of a model order to
+every resolved size (shares, empty data fields, the fine-tuning portion,
+the held-out portion), naming the file and the size.
 
-- the shape: the series' `reference` model scaled to the size's width.
-  Every width inside the model scales with it (attention heads, expert,
-  latent and shared widths), and every count stays (the layout of the
-  layers, head width, experts and top `k`, Engram's layers, heads, order
-  and row width, the groups of Attention Residuals, the loops), so every
-  size has the reference's layers. Engram's table size grows with the cube of the
-  width: the size is the reference's times
-  `(d_model / the reference's d_model)^3`, rounded to the nearest prime
-  (the model hashes into tables of prime size and gives each table the
-  smallest prime at or above this one), which is the reference's own size
-  at the reference's width. A width at which one
-  of the widths is not a whole number is refused.
-- the parameters, counted as `wpt_model` builds the model: without the
-  vocabulary tables (the embedding and the output head, or the one table of
-  `tied_tables`), the usual scaling-law convention, and with them.
-- the training, from the series' `laws`, which are [DeepSeek LLM][llm]'s
-  (its equations 1 and 4): `eta_opt = 0.3118 C^-0.1250`,
-  `B_opt = 0.2920 C^0.3271` tokens, `M_opt = 0.1715 C^0.5243` and
-  `D_opt = 5.8316 C^0.4757`, for the compute `C` in FLOPs. A size's
-  non-embedding compute per token is the paper's form,
-  `M = 6 N + 12 L d_model l`, with `L` the layers, `N` the parameters one token
-  uses and `l` the series' `block_size`. `N` leaves out the two
-  vocabulary tables, counts only the `top_k` routed experts of the
-  `n_experts` in each layer (the others do not run for the token), counts
-  the shared experts and every other weight, and leaves out Engram's
-  lookup tables (a row is read, not multiplied) while counting its
-  projections. The attention term is the paper's, applied as the paper
-  writes it: the window and sparse layers attend less than full attention
-  over the window, so it overstates their attention compute, and the series keeps
-  the paper's form rather than a count of its own. In-Place TTT adds its
-  update and its change, counted as `6 x 2 x d_model x 2 shared_width`
-  per token in each layer that has it. A model that loops does all of
-  this `loops + 1` times per token, and `M` counts every pass; with
-  `loop_layers`, the passes after the first count the looped layers'
-  share alone (their parameters, attention term and In-Place TTT). The size's compute is
-  the `C` whose `M_opt` is that `M`, and its tokens the `D_opt` of that `C`
-  (DeepSeek's split of compute between model and data). The learning rate is the law's, rounded to 4
-  significant digits, and AdamW's rates carry over to NorMuon ("Training").
-  The batch is the law's in whole windows of the series' `block_size`, at
-  least 1, and the updates read `D` tokens. The warm-up is the series'
-  `warmup_share` of the updates, at least 1; the drops stay at 80% and 90%.
-- the data: one corpus for the whole series. Its data part holds the
-  series' own (a model order's data part of either shape without
-  `total_tokens`), and the most tokens any
-  size's run reads (its own, or its trunk's, below), so every size's
-  order has the same data part and reads the same corpus. Each size's
-  `read-text` step reads only the start of its training tokens
-  (`prefix_tokens`: its updates times its batch times the window plus one,
-  training.md, "Prefix"), so every size sees the same texts in the same
-  order. `wpt build-resources SERIES:` asks the freight for that corpus,
-  and its vocabulary when the series learns one.
-- the readings: the series' `readings` (1 when it sets none) becomes the
-  `readings` of every size's `read-text` step and of every step of its
-  runs ([training.md](training.md), "Readings"). The updates, the warm-up
-  and the prefix above stay those of one reading, and the step reads
-  them that many times, so every count in updates and the tokens trained
-  are that many times larger and the corpus is the same.
+**Tokens and corpora.** A size's `data.total_tokens` is the tokens it
+reads. Sizes whose data parts are the same but for `total_tokens` share
+one corpus, of the most tokens any of them reads: each resolved order's
+data part asks for that corpus. Each step whose settings list `stages`
+gets the size's own `total_tokens` as its `prefix_tokens`, so it reads
+the first part of the shared corpus ([training.md](training.md),
+"Prefix"), and every size sees the same texts in the same order. Sizes
+of other data parts, another vocabulary among them, read corpora of
+their own. `wpt build-resources FAMILY:SIZE` asks the freight for the
+corpus of that size, and its vocabulary when the family learns one.
 
-The seed and the drafter are the series' own, the same at every size. The
-model's provenance holds the size's derived order and the name
-`SERIES:SIZE`.
+The model's provenance, its run's record and its model card name the
+family and the size, and hold the size's whole resolved order.
 
-A size has other runs, each named `SERIES:SIZE:RUN` wherever a model
+**Other runs of a size.** A size of a family whose order is one step
+listing stages has other runs, each named `FAMILY:SIZE:RUN` wherever an
 order's name goes:
 
-- `branch-SHARE`, a decay branch, one per share of the series' `branches`:
-  SHARE times the size's updates, rounded half up. Every branch of a size
-  goes on from one trunk: the size's `read-text` step at its peak rate
-  after its warm-up, with no drop and the early weight of multi-token
-  prediction. A branch starts its decay after its last update at the peak,
-  80% of its updates, so its decay's schedule is the one the multi-step
-  schedule gives a run of its updates ("Schedule"). Its order is the
-  trunk cut into consecutive steps that end at the starts of the size's
-  branches, up to its own start, then its decay; each of them continues
-  the one before it ([training.md](training.md), "Continued steps"). Two
+- `branch-SHARE`, a decay branch, one per share of the family's
+  `branches` (above 0, at most 1): SHARE times the size's updates,
+  rounded half up. Every branch of a size goes on from one trunk: the
+  size's step at its peak rate after its warm-up, with no drop and the
+  early weight of multi-token prediction. A branch starts its decay
+  after 80% of its updates, rounded down, where by-part's first drop is
+  ("Schedule"). Its order is the trunk cut into consecutive steps that
+  end at the starts of the size's branches up to its own start, each a
+  part of the size's schedule ended by `last_update`, then its decay,
+  the size's step ended at the branch's updates; each continues the one
+  before it ([training.md](training.md), "Continued steps"). Two
   branches of a size hold the same trunk steps up to the shorter one's
   start, so `wpt train` reuses their kept results and the trunk trains
-  once. The trunk reads the prefix of the size's longest branch, or the
-  size's own when it is longer, so every branch of a size draws its
-  windows from the same tokens. A branch whose decay would start inside
-  the warm-up is refused, and so are two branches of a size with the same
-  updates. The multi-token prediction's weight switches in the decay, at
-  its first update, which is where the size's own run switches it: after
-  80% of its updates (`mtp_switch` 0.8 in every size's order), so a size's
-  own run and its full-length branch are the same order up to the cut of
-  the trunk into steps. The step defaults of other model orders are their
-  own (`mtp_switch`, [training.md](training.md), "Steps").
-- `lr-FACTOR`, at the smallest size only (the fewest parameters), one per
-  factor of the series' `learning_rate_check`: the size's own run at
-  FACTOR times the law's learning rate, rounded to 4 significant digits.
-  It checks whether the laws' learning rate holds for NorMuon at that size.
+  once. Every part keeps the size's whole schedule for its warm-up and
+  its windows, so a branch reads the size's tokens in the size's order.
+  A family with branches writes `mtp_switch` 0.8 in each step that lists
+  stages and leaves `first_drop` at its default of 0.8: the size's own
+  run then switches the multi-token prediction's weight and drops its
+  rate where every branch does, and `branch-1` trains the same weights
+  as the size's own run. Two branches of the same updates are refused,
+  and so is a branch too short to decay after one update.
+- `lr-FACTOR`, at the smallest size only (the fewest parameters without
+  the vocabulary tables), one per factor of the family's
+  `learning_rate_check`: the size's own run at FACTOR times the learning
+  rate the family writes (`steps.1.optimizer.settings.lr`), rounded to 4
+  significant digits.
 
 Each run's model folder and record are those of any `wpt train` run.
 
-`wpt train series NAME` prints the numbers of every size of the series
-(shape, parameters, compute, learning rate, batch, updates, prefix) and of
-each run of a size, and trains nothing.
+**The numbers of every size.** `wpt train family NAME` prints, for every
+size of the family and training nothing: its width, layers, heads and
+experts, its parameters without and with the vocabulary tables and those
+one token uses, its vocabulary, the tokens it reads of its corpus, the
+updates and batch of each stage of each step that reads text windows,
+the tokens its windows train on and their number per parameter (every
+parameter counted), the compute per token and in all, and each other
+run of the size.
 
-One series exists, `eldest-titmouse`: `interstitial-pecker`'s shape as its
-reference (width 512, 21 layers laid out `(4, 2, 5)`, Attention Residuals
-in its full form), the `admitted` vocabulary of 32,768 tokens and 32K-token
-windows, and five sizes. Every size has the reference's 21 layers: the
-first number of a size's name is its width, and the second is not its
-layer count. The parameters are counted without the vocabulary tables,
-then with them; the learning rate is AdamW's peak:
+The parameters are counted as `wpt_model` builds the model
+(`wpt_orders.counts`; wpt-training's tests check the counts against the
+model itself). The parameters one token uses leave out the vocabulary
+tables, the `n_experts - top_k` routed experts of each layer that do not
+run for the token and Engram's lookup tables (a row is read, not
+multiplied), and count the shared experts, Engram's projections and
+every other weight. The compute of training on one token in windows of
+`l` tokens (`counts.compute_per_token`) is, for each pass of the loop,
+`6 N + 12 L d_model l` ([DeepSeek LLM][llm]'s form, with `N` the
+parameters one token uses in the layers and `L` the layers) plus
+In-Place TTT's update and change, `6 x 2 x d_model x 2 shared_width`
+in each layer that has it. With `loop_layers`, the passes after the
+first count the looped layers alone, and the layers after the loop run
+again for each earlier pass the loss weighs (`loop_losses`). The output
+head adds `6 x vocabulary x d_model` each time it reads a token: once
+for each pass the loss weighs, and once for the multi-token prediction
+block. The attention term is the paper's: the window and sparse layers
+attend less than full attention over the window, so it overstates their
+attention compute. A size's compute in all adds each stage's tokens at
+the compute per token of its window length.
 
-| size | layers | parameters | with the tables | one token uses | tokens | learning rate | batch (windows) | updates | warm-up |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `256x5` | 21 | 54.4M | 71.2M | 23.9M | 8.88B | 1.205e-3 | 18 | 15,049 | 602 |
-| `384x8` | 21 | 123.4M | 148.6M | 53.0M | 13.19B | 1.086e-3 | 24 | 16,772 | 671 |
-| `512x10` | 21 | 221.9M | 255.4M | 93.4M | 17.60B | 1.007e-3 | 29 | 18,521 | 741 |
-| `640x13` | 21 | 351.0M | 392.9M | 145.3M | 22.13B | 9.479e-4 | 34 | 19,863 | 795 |
-| `768x15` | 21 | 511.9M | 562.3M | 208.6M | 26.79B | 9.014e-4 | 39 | 20,966 | 839 |
+**The families of the repository.** Every family of the repository names
+a snapshot of the public depot, uses attention heads 128 wide, of which
+the window layers rotate the last 64, and states the same drafter
+training values: 256 prompts of at most 64 tokens, answers of at most
+256 tokens, 10 epochs, learning rate 6e-4, 10% held out, 512 anchors, 8
+answers per update, seed 0; the settings a section leaves out (the
+drafter's shape, `weight_decay`, `warm_up`, `clip`, `temperature`,
+`top_k`, `ece_bins`) keep their defaults. `pocket` and `coherent` read
+their text once through nine stages of windows of 128, 256, 512, 1,024,
+2,048, 4,096, 8,192, 16,384 and 32,768 tokens, each an equal share of
+the tokens, in updates of 131,072 tokens, with `mtp_switch` 0.8 and a
+warm-up of 4%.
 
-Its data part asks for the 26.79B training tokens of `768x15`. Engram's
-tables are 3.0% to 8.4% of the sizes' parameters (1.6M at `256x5`, 12.8M
-at `512x10`, 43.2M at `768x15`). Every size has three decay branches,
-`branch-0.25`, `branch-0.5` and `branch-1`, shares of its own updates, and
-the smallest size, `256x5`, has the learning-rate check at 0.25, 0.5, 1, 2
-and 4 times the law's rate (`lr-1` is its own run). None of these sizes has
-trained yet.
+- `pocket`: sizes to compare on bits per byte of one held-out portion,
+  11 layers laid out `(2, 1, 5)`, heads of 128, 32 experts with top 4,
+  no Engram layer, one vocabulary table of 16,384 tokens learned on
+  10^10 bytes of its snapshot, a learning rate of 0.004. Its sizes are
+  its widths; every size reads the start of one corpus of 1,179,648,000
+  tokens, about 36.6 tokens per parameter, every parameter counted. The
+  updates are whole groups of 16 (training.md, "Stages"):
+
+  | size | heads | parameters | with the table | one token uses | tokens | updates |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `64` | 1 | 1.86M | 2.90M | 0.91M | 106.3M | 816 |
+  | `96` | 2 | 4.28M | 5.85M | 2.15M | 214.1M | 1,632 |
+  | `128` | 2 | 7.14M | 9.24M | 3.36M | 338.0M | 2,576 |
+  | `192` | 3 | 15.86M | 19.00M | 7.34M | 695.7M | 5,312 |
+  | `256` | 4 | 28.01M | 32.20M | 12.87M | 1,179.6M | 9,008 |
+
+- `coherent`: one size, `512`, a model for one GPU meant to read coherent
+  text: 11 layers laid out `(2, 1, 5)`, 8 heads of 128, 32 experts with
+  top 4, Engram memory in layer 2, one vocabulary table of 65,536 tokens,
+  one loop, a learning rate of 0.0034; 196.0M parameters with the table,
+  162.4M without, 3.72B tokens in 28,400 updates.
+- `test`: one size, `128`, a test to see every step work on one machine:
+  6.6M parameters without its two vocabulary tables of 32,768 tokens,
+  15.0M with them, 11 layers laid out `(2, 1, 5)` with 4 heads of 128,
+  8 experts with top 2, its 4.29M tokens read once in 262 updates of 64
+  windows of 256 tokens. In windows this short, every sparse layer reads
+  every earlier token: the exact layer picks 1,024 of them outside the
+  last 128.
 
 ## Limits of the evidence
 
@@ -1215,7 +1205,7 @@ measured. No WPT model has yet trained beyond 32K tokens: the stages to
 steps on random tokens (training.md, "Long windows"). The drafter's
 production values were set for V4-Flash and V4-Pro; WPT scales its Markov
 head with the width ("The drafter"), and no drafter has yet been measured
-on a real WPT run. The memory of the 32K orders is not measured. The
+on a real WPT run. The memory of the 32K-token sizes is not measured. The
 details
 the papers leave out (the hash routing function, Engram's hash constants
 and tables, how uneven groups of Attention Residuals split, the histogram behind Quantile

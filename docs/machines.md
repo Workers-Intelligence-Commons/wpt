@@ -475,7 +475,7 @@ wins (`DOCK`, the manager's folders, `HOME`, `DOCKER_HOST`).
 
 | Setting | Meaning |
 | --- | --- |
-| `WPT_ORDER` | the model order, `SERIES:SIZE` for a size of a model series, or `SERIES:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
+| `WPT_ORDER` | the order to train, `FAMILY:SIZE` for a size of a model family, or `FAMILY:SIZE:RUN` for another run of it; required, Compose refuses to start without it |
 | `WPT_CORPUS` | the corpus the run trains on, its id or a start of it; unset, the corpus delivery of the order's delivery key |
 | `WPT_RUN` | the run's name; unset, the manager makes one and writes it into `wpt-run.txt` at the repository's root (git-ignored), with the line that copies its model out of the dock |
 | `WPT_EVALUATE` | `1`: evaluate the model at the end; off by default |

@@ -27,12 +27,12 @@ ME = Declaration("Ada Writer", "ada@example.org", True)
 
 
 def order(tmp_path, name="d") -> dict:
-    return json.loads((tmp_path / "data" / "orders" / "models" / f"{name}.json").read_text())
+    return json.loads((tmp_path / "data" / "orders" / f"{name}.json").read_text())
 
 
 def learn(tmp_path, sample_bytes=10**6, name="d") -> dict:
-    """Rewrite the order so it learns its vocabulary, of the size it names, on sample_bytes bytes: its data."""
-    path = tmp_path / "data" / "orders" / "models" / f"{name}.json"
+    """Rewrite the family so it learns its vocabulary, of the size it names, on sample_bytes bytes: its data."""
+    path = tmp_path / "data" / "orders" / f"{name}.json"
     document = json.loads(path.read_text())
     document["data"]["vocabulary"] = {"size": document["data"]["vocabulary"]["size"], "sample_bytes": sample_bytes}
     path.write_text(json.dumps(document))
@@ -86,17 +86,17 @@ def test_an_erasure_is_written_into_the_vocabulary_s_note_and_the_corpus_is_made
     capsys.readouterr()
 
     with pytest.raises(SystemExit) as refused:
-        train(["d", "--out", "again"])
+        train(["d:s", "--out", "again"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and f"corpus delivery {corpus['key']} of the order is stale" in said
     assert "wpt build-resources" in said
 
-    assert build_resources(["d"]) == 0
+    assert build_resources(["d:s"]) == 0
     notes = printed_notes(capsys.readouterr().out)
     assert notes["vocabulary"]["id"] == vocabulary["id"]  # the same vocabulary, unchanged
     assert notes["corpus"]["key"] == corpus["key"] and notes["corpus"]["id"] != corpus["id"]
     assert "stale" not in notes["corpus"]
-    train(["d", "--out", "again"])
+    train(["d:s", "--out", "again"])
     assert json.loads((tmp_path / "again" / "provenance.json").read_text())["corpus"]["id"] == notes["corpus"]["id"]
 
 
@@ -117,15 +117,15 @@ def test_only_the_freight_s_check_marks_stale_a_corpus_the_depot_built_before_it
 
 def test_an_order_naming_a_vocabulary_the_dock_does_not_hold_makes_no_request(built, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FREIGHT_HOME", str(tmp_path / "freight"))
-    assert build_resources(["d"]) == 1
+    assert build_resources(["d:s"]) == 1
     said = bare(capsys.readouterr().err)
     assert f"the dock holds no vocabulary {built.vocabulary}" in said and "let the order learn" in said
     assert api.jobs() == []
     with pytest.raises(SystemExit) as refused:  # the corpus the depot built of every token is not of its size
-        train(["d", "--out", "model"])
+        train(["d:s", "--out", "model"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and f"the dock holds no vocabulary {built.vocabulary}" in said
-    assert "run `wpt build-resources ORDER`" in said
+    assert "run `wpt build-resources FAMILY:SIZE`" in said
 
 
 @pytest.mark.parametrize("trained", ["learned"], indirect=True)
@@ -134,12 +134,12 @@ def test_wpt_train_given_a_corpus_delivery_by_its_id_or_key_trains_on_it_when_it
     # wpt manager hands the corpus's id to wpt train on the machine it rents
     corpus = trained.notes["corpus"]
     for given, out in ((corpus["id"][:16], "by-id"), (corpus["key"][:16], "by-key")):
-        train(["d", given, "--out", out])
+        train(["d:s", given, "--out", out])
         assert json.loads((tmp_path / out / "provenance.json").read_text())["corpus"]["id"] == corpus["id"]
     capsys.readouterr()
     learn(tmp_path, sample_bytes=10**5)  # another vocabulary: the corpus is no longer the order's
     with pytest.raises(SystemExit) as refused:
-        train(["d", corpus["id"][:16], "--out", "other"])
+        train(["d:s", corpus["id"][:16], "--out", "other"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and "with portions, shares or vocabulary other than the order's" in said
 
@@ -151,7 +151,7 @@ def test_wpt_build_resources_run_again_waits_for_the_job_a_stopped_run_left(buil
     data = learn(tmp_path)
     left = api.request(resources.vocabulary_request(data))
     assert left["state"] == "queued" and left["key"] == resources.vocabulary_key(data)
-    assert build_resources(["d"]) == 0
+    assert build_resources(["d:s"]) == 0
     notes = printed_notes(capsys.readouterr().out)
     assert api.job(left["id"])["state"] == "done" and api.job(left["id"])["answer"]["id"] == notes["vocabulary"]["id"]
     assert [job["id"] for job in api.jobs() if job["key"] == notes["vocabulary"]["key"]] == [left["id"]]

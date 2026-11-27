@@ -3,15 +3,15 @@
 Usage:
     wpt train ORDER [CORPUS_ID] [options]
     wpt train ORDER [CORPUS_ID] --strategy ddp --processes N [options]
-    wpt train series NAME
+    wpt train family NAME
 
-ORDER is a file name in data/orders/models/, without .json, in the
-repository holding the current folder, or SERIES:SIZE, one size of the
-series file data/orders/series/SERIES.json, whose model order the
-series derives (wpt_orders.series; docs/model.md, "Model series"): every
-size of a series reads the same corpus, the smaller sizes its first part; or
-SERIES:SIZE:RUN, another run of that size (a decay branch, a learning
-rate of the check). Everything
+ORDER is FAMILY:SIZE, one size of the family file data/orders/FAMILY.json
+of the repository holding the current folder, its model order the
+family's common settings with the size's values in place
+(wpt_orders.family; docs/model.md, "Model families"): sizes whose data
+parts are the same but for total_tokens read the same corpus, each its
+own start of it; or FAMILY:SIZE:RUN, another run of that size (a decay
+branch, a learning rate of the check). Everything
 that changes the resulting model comes from it: the architecture's
 numbers, the seed, and its steps, which run in order on one model
 (docs/training.md, "Steps"):
@@ -26,8 +26,7 @@ corpus's portions (wpt_corpus.roles), its shares, the size of its
 pretraining portion (total_tokens) and its vocabulary, named by its sha256
 or learned for it from a sample of a number of bytes; `wpt build-resources ORDER` asks the
 freight for its vocabulary and corpus, which it delivers on the dock, the
-one named by DOCK (environment or .env) (wpt.resources); a size of a
-series is derived for the size of the corpus's vocabulary. CORPUS_ID is a
+one named by DOCK (environment or .env) (wpt.resources). CORPUS_ID is a
 corpus's id (or a start of it), of a corpus delivery or of a corpus the
 depot built onto the dock's corpora/; without it, the corpus delivery
 whose key the order's data part gives (wpt.resources.corpus_key), and
@@ -60,13 +59,16 @@ size), and training reads what it holds. A corpus that is stale (an admitted
 erasure reached a text it was built from), or that holds fewer tokens of
 plain text than total_tokens and was built at another size, is refused. A
 step that reads text windows reads the first prefix_tokens of the corpus
-(without them, total_tokens), at most what a corpus built at the order's
+(the size's own tokens), at most what a corpus built at the order's
 size holds; the run's record says how many it reads when that is fewer.
-Its `readings` say how many times it reads them (docs/training.md,
-"Readings"), and the run's record says, for each such step, the tokens it
-reads, how many times, and the updates and tokens it trains on.
+Its `readings` say how many times it reads them, and its stages' shares
+how its updates spread over them (docs/training.md, "Readings" and
+"Stages"); the run's record says, for each such step, the tokens it
+reads, how many times, the updates each stage computes and the tokens it
+trains on.
 
-`wpt train series NAME` prints the numbers of every size of a series.
+`wpt train family NAME` prints every size of a family with its numbers and
+trains nothing.
 
 The training runs on gpu workers (wpt_worker; docs/machines.md): the
 keys WPT_GPU_WORKERS lists, one gpu worker per machine, or with none a
@@ -241,8 +243,8 @@ from wpt_model.kernels import FORMS, named_form
 from wpt_model.notice import CREDITS_NAME, WEIGHT_METADATA, write_documents
 from wpt_corpus import corpora, roles
 from wpt_corpus.files import DockFiles
-from wpt_orders import SIZE_OF, OrderError, Orders
-from wpt_orders.series import layer_count
+from wpt_orders import SIZE_OF, OrderError, Orders, counts
+from wpt_orders import family as families
 from dock.api import NAME as DOCK_NAME
 from dock import api as dock_api
 from dock.api import DockError, DockSettingError
@@ -348,8 +350,8 @@ def parse_args(argv=None, environ=None):
     environ = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(prog="wpt train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("order", nargs="?", default=environ.get("WPT_ORDER"),
-                        help="model order: a file name in data/orders/models/, without .json, or SERIES:SIZE[:RUN], "
-                             "a size of a series file of data/orders/series/ or another run of it (WPT_ORDER)")
+                        help="model order: FAMILY:SIZE, a size of a family file of data/orders/, or "
+                             "FAMILY:SIZE:RUN, another run of it (WPT_ORDER)")
     parser.add_argument("corpus", nargs="?", default=environ.get("WPT_CORPUS"),
                         help="a corpus's id, or a start of it: a corpus delivery's (`wpt build-resources` prints it) "
                              "or a corpus of the dock's corpora/; default: the order's corpus (WPT_CORPUS)")
@@ -410,27 +412,45 @@ def parse_args(argv=None, environ=None):
 
 
 def load_data(name) -> dict:
-    """The data part of the model order of that name (or SERIES:SIZE[:RUN]):
-    its depot, snapshot and total_tokens, from the repository holding the current folder."""
+    """The data part of the model order FAMILY:SIZE[:RUN] names: its
+    depot, snapshot and total_tokens, from the repository holding the
+    current folder."""
     try:
         return Orders.find().data_part(name)
     except OrderError as error:
         raise InputError(str(error)) from None
 
 
-def load_order(name, record):
-    """The model order of that name (or SERIES:SIZE[:RUN]), checked against its
-    schema, from the repository holding the current folder; a size of a
-    series is derived for the vocabulary of the corpus record."""
+def step_updates(entry) -> int:
+    """The updates a step entry of a model order makes: those its stages
+    compute (wpt_training.Step.stages); PluginError for a step that
+    cannot be, or lists no stages."""
+    stages = load_step(entry, PARTS).stages()
+    if stages is None:
+        raise PluginError(f"step {entry['step']} lists no stages, so nothing here counts its updates")
+    return sum(stage["steps"] for stage in stages)
+
+
+def load_order(name):
+    """The model order FAMILY:SIZE[:RUN] names, checked against its schema,
+    from the repository holding the current folder."""
     try:
-        return Orders.find().model_order(name, record["tokenizer"]["vocab_size"])
-    except OrderError as error:
+        return Orders.find().model_order(name, step_updates)
+    except (OrderError, PluginError) as error:
         raise InputError(str(error)) from None
 
 
+def named(name) -> dict:
+    """What a run's record and provenance say of the order FAMILY:SIZE[:RUN]:
+    its family, its size and, for another run of the size, the run."""
+    family, _, rest = name.partition(SIZE_OF)
+    size, _, run = rest.partition(SIZE_OF)
+    return {"family": family, "size": size, **({"run": run} if run else {})}
+
+
 # how an order gets its corpus
-BUILD = ("run `wpt build-resources ORDER` (SERIES: for a series), which asks the freight for the order's vocabulary "
-         "and corpus")
+BUILD = ("run `wpt build-resources FAMILY:SIZE`, which asks the freight for the vocabulary and corpus of that size "
+         "of the family")
 
 
 def find_corpus(dock, given, data) -> dict:
@@ -648,16 +668,17 @@ def plan(order) -> tuple[list, int]:
 
 def with_prefixes(order, record, log=lambda text: None) -> dict:
     """The order with each step that reads text windows given the prefix
-    it reads: its prefix_tokens, or without them the data part's
-    total_tokens, and for a corpus built at the order's size (built_for)
-    never more than the tokens of plain text the corpus holds. log gets a
-    line for each step that reads fewer tokens than it asks for."""
+    it reads: its prefix_tokens (a size's own tokens), and for a corpus
+    built at the order's size (built_for) never more than the tokens of
+    plain text the corpus holds, the step's updates then computed on what
+    it reads. log gets a line for each step that reads fewer tokens than it
+    asks for."""
     held = record["total_tokens"] if built_for(record, order) else None
     entries = []
     for number, entry in enumerate(order["steps"], 1):
         step = load_step(entry, PARTS)
         if step.reads == WINDOWS:
-            asked = step.settings["prefix_tokens"] or order["data"]["total_tokens"]
+            asked = step.settings["prefix_tokens"]
             prefix = asked if held is None else min(asked, held)
             if prefix < asked:
                 log(f"step {number} {step.name} reads the first {prefix:,} tokens of plain text, all that corpus "
@@ -679,8 +700,11 @@ def readings(steps) -> list[tuple[str, bool]]:
     gave it its prefix: the tokens it reads from the corpus's start, the
     times its stages read them (the tokens their windows predict over the
     prefix), its `readings`, and the updates and the tokens its windows
-    train on; with whether it is a warning: the times stray from the
-    readings by more than AGREE of them."""
+    train on, and when its environment rounds its stages to whole groups
+    (text-windows.py, `rounded`), each stage's updates computed and
+    scheduled; with whether it is a warning: the times stray from the
+    readings by more than AGREE of them, in a step that runs its whole
+    schedule (a step cut by last_update is a part of it, and says so)."""
     found = []
     for number, step in enumerate(steps, 1):
         if step.reads != WINDOWS:
@@ -691,7 +715,16 @@ def readings(steps) -> list[tuple[str, bool]]:
         times = tokens / prefix
         line = (f"step {number} {step.name} reads the first {prefix:,} tokens of plain text {times:.2f} times "
                 f"(readings {asked}): {updates:,} updates, {tokens:,} tokens trained")
-        strays = abs(times - asked) > AGREE * asked
+        cut = step.settings.get("last_update", 0)
+        strays = not cut and abs(times - asked) > AGREE * asked
+        module, settings = step.environment.module, step.environment_settings
+        if getattr(module, "rounded", lambda _: False)(settings):
+            each, exact = module.group_updates(settings), module.computed(settings)
+            line += (f"; its stages are rounded to whole groups of {each:,} updates, so none skips the end of a "
+                     f"group: {', '.join(f'{float(one):,.1f}' for one in exact)} computed, "
+                     f"{', '.join(f'{stage['steps']:,}' for stage in module.schedule(settings))} scheduled")
+        if cut:
+            line += f"; it ends after update {cut:,} of its schedule (last_update)"
         if strays:
             line += (f"; its stages predict {tokens:,} tokens, not the {asked * prefix:,} that {asked} reading"
                      f"{'s' if asked > 1 else ''} of its text would: the updates come from the stages "
@@ -809,7 +842,9 @@ def provenance(args, order, record, model_config, n_params, worker, strategy_fil
     return {
         **source,
         "order_name": args.order,
-        "order": order,  # everything that changes the model: data, architecture, seed, steps, drafter
+        **named(args.order),  # the family, the size and, for another run of it, the run
+        "order": order,  # the size's resolved order, everything that changes the model: data, architecture, seed,
+        #                  steps, drafter
         "corpus": corpus,  # a cache: the snapshot, its data section and the code build it again
         "learned": learned(done),  # what of the corpus the steps learned from
         "texts": texts,
@@ -832,38 +867,77 @@ def provenance(args, order, record, model_config, n_params, worker, strategy_fil
     }
 
 
-def print_series(name) -> int:
-    """Print the numbers of every size of the series file of that name (wpt train series NAME)."""
+def family_numbers(order) -> dict:
+    """What a size's model order makes, counted without training it: its
+    layers and parameters (wpt_orders.counts) for the vocabulary its data
+    part names, and for each step that reads text windows the stages it
+    computes (`stages`, by step number), the tokens its windows train on
+    and their compute, each stage's tokens at the compute per token of its
+    window length (counts.compute_per_token); `steps_unknown`, the steps
+    whose tokens and compute nothing here counts. PluginError for a step
+    that cannot be."""
+    model, vocab_size = order["model"], order["data"]["vocabulary"]["size"]
+    without, every = counts.parameters(model, vocab_size)
+    found = {"layers": counts.layer_count(model), "parameters": without, "total_parameters": every,
+             "active_parameters": counts.active_parameters(model), "stages": {}, "trained": 0, "compute": 0,
+             "steps_unknown": []}
+    for number, entry in enumerate(order["steps"], 1):
+        step = load_step(entry, PARTS)
+        if step.reads != WINDOWS:
+            found["steps_unknown"].append(f"{number} {step.name}")
+            continue
+        found["stages"][number] = step.stages()
+        for stage in step.stages():
+            tokens = stage["steps"] * stage["batch_size"] * stage["block_size"]
+            found["trained"] += tokens
+            found["compute"] += tokens * counts.compute_per_token(model, vocab_size, stage["block_size"])
+    return found
+
+
+def print_family(name) -> int:
+    """Print every size of the family file of that name with its numbers,
+    and each other run of a size, training nothing (wpt train family
+    NAME)."""
     orders = Orders.find()
     try:
-        data = orders.data_part(f"{name}{SIZE_OF}")
-        vocab_size = data["vocabulary"]["size"]  # the series names its vocabulary, with its size
-        said = (f"the vocabulary {data['vocabulary']['sha256'] or '(not named yet)'} its data part names"
-                if resources.vocabulary_named(data) else
-                f"the size of the vocabulary its data part learns on {data['vocabulary']['sample_bytes']:,} bytes")
-        plans = orders.series_plans(name, vocab_size)
-        say(f"series {name}: a vocabulary of {vocab_size:,} tokens, {said}")
-        total = orders.series_total_tokens(name)
-        say(f"series {name}: one corpus of {total:,} training tokens; wpt train {name}:SIZE reads its first prefix tokens")
-        for plan in plans:
-            model = plan.model
-            say(f"{plan.size}: width {model['d_model']}, {layer_count(model)} layers ({model['window_layers']} "
-                f"window layers on each side of an exact layer, {model['sparse_groups']} groups of an exact layer "
-                f"and {model['sparse_layers']} sparse layers), Engram at {', '.join(map(str, model['engram_layers']))}; "
-                f"{plan.parameters:,} parameters without the vocabulary tables, {plan.total_parameters:,} with them; "
-                f"M {plan.flops_per_token:.4g} FLOPs per token, C {plan.compute:.4g}, D {plan.tokens:.4g} tokens; "
-                f"learning rate {plan.learning_rate:g}, batch {plan.batch_size} windows of {plan.block_size:,} "
-                f"(the law: {plan.batch_tokens:,.0f} tokens), {plan.updates:,} updates, warm-up {plan.warmup:,}, "
-                f"prefix {plan.prefix_tokens:,} tokens"
-                + (f"; read {plan.readings} times: {plan.readings * plan.updates:,} updates, warm-up "
-                   f"{plan.readings * plan.warmup:,}, {plan.readings * plan.updates * plan.batch_size * plan.block_size:,} "
-                   "tokens trained" if plan.readings > 1 else ""))
-            for run in orders.series_runs(name, plan):
-                say(f"  {name}:{plan.size}:{run['run']}: {plan.readings * run['updates']:,} updates"
-                    + (f", decaying after update {plan.readings * run['start']:,} of the trunk"
-                       if run["start"] is not None else "")
-                    + f", learning rate {run['learning_rate']:g}")
-    except OrderError as error:
+        document = orders.family(name)
+        for size in families.sizes(document):
+            order = orders.model_order(f"{name}{SIZE_OF}{size}")
+            data, model = order["data"], order["model"]
+            found = family_numbers(order)
+            reads = {entry["settings"]["prefix_tokens"] for entry in order["steps"]
+                     if "prefix_tokens" in (entry.get("settings") or {})}
+            said = (f"the vocabulary {data['vocabulary']['sha256'] or '(not named yet)'}"
+                    if resources.vocabulary_named(data) else
+                    f"a vocabulary learned on {data['vocabulary']['sample_bytes']:,} bytes")
+            say(f"{name}{SIZE_OF}{size}: width {model['d_model']}, {found['layers']} layers, "
+                f"{model['attention_heads']} heads of {model['attention_head_dim']}, {model['n_experts']} experts "
+                f"with top {model['top_k']}, loops {model['loops']}; {found['parameters']:,} parameters without the "
+                f"vocabulary tables, {found['total_parameters']:,} with them, {found['active_parameters']:,} used "
+                f"by one token; {data['vocabulary']['size']:,} tokens of {said}; reads the first "
+                f"{', '.join(f'{one:,}' for one in sorted(reads)) or '(no text windows)'} tokens of a corpus of "
+                f"{data['total_tokens']:,}")
+            for number, stages in found["stages"].items():
+                say(f"  step {number}: " + "; ".join(f"{stage['steps']:,} updates of {stage['batch_size']:,} windows "
+                                                     f"of {stage['block_size']:,}" for stage in stages)
+                    + f" ({sum(stage['steps'] for stage in stages):,} updates)")
+            trained = found["trained"]
+            say(f"  {trained:,} tokens trained, {trained / found['total_parameters']:.1f} per parameter, every "
+                f"parameter counted; compute {found['compute'] / max(trained, 1):.4g} FLOPs per token, "
+                f"{found['compute']:.4g} in all"
+                + (f"; steps {', '.join(found['steps_unknown'])} not counted" if found["steps_unknown"] else ""))
+            runs = families.runs(document, size)
+            if any(run.startswith(families.BRANCH) for run in runs):
+                made = families.branch_numbers(document, step_updates(order["steps"][0]))
+                for branch in made:
+                    say(f"  {name}{SIZE_OF}{size}{SIZE_OF}{branch['run']}: {branch['updates']:,} updates, decaying "
+                        f"after update {branch['start']:,} of the trunk")
+            for run in runs:
+                if run.startswith(families.LEARNING_RATE):
+                    entry = orders.model_order(f"{name}{SIZE_OF}{size}{SIZE_OF}{run}")["steps"][0]
+                    rate = entry["optimizer"]["settings"]["lr"]
+                    say(f"  {name}{SIZE_OF}{size}{SIZE_OF}{run}: learning rate {rate:g}")
+    except (OrderError, PluginError, ValueError) as error:
         say(f"InputError: {error}", ERROR)
         return REFUSED
     return 0
@@ -872,11 +946,11 @@ def print_series(name) -> int:
 def main(argv=None):
     sys.stdout.reconfigure(encoding="utf-8")  # the sample is any text; Windows pipes default to a narrower code page
     given = sys.argv[1:] if argv is None else list(argv)
-    if given[:1] == ["series"]:
+    if given[:1] == ["family"]:
         if len(given) != 2:
-            say("usage: wpt train series NAME", ERROR)
+            say("usage: wpt train family NAME", ERROR)
             sys.exit(REFUSED)
-        code = print_series(given[1])
+        code = print_family(given[1])
         if code:
             sys.exit(code)
         return
@@ -886,13 +960,13 @@ def main(argv=None):
     try:
         dock = dock_api.url(Path.cwd() / ".env")
         record = find_corpus(dock, args.corpus, load_data(args.order))
-        check_record(record, load_order(args.order, record))
+        check_record(record, load_order(args.order))
     except (DockError, InputError) as error:  # no dock, no corpus: nothing has started, nothing is recorded
         say(f"{type(error).__name__}: {error}", ERROR)
         sys.exit(REFUSED)
     try:
         with Telemetry.start(dock, "wpt train", arguments, short(record["id"]),
-                             inputs={"order": args.order, "corpus": record["id"]},
+                             inputs={"order": args.order, **named(args.order), "corpus": record["id"]},
                              env_file=Path.cwd() / ".env") as telemetry:
             code = _run(args, record, dock, telemetry, environ)
             if code == RECORD_FAILED:  # the gpu worker's lines of the record could not be written
@@ -915,7 +989,7 @@ def _run(args, record, dock, telemetry, environ) -> int:
     """The run; its exit code."""
     try:
         with telemetry.span("inputs.order", order=args.order):
-            order = with_prefixes(load_order(args.order, record), record,
+            order = with_prefixes(load_order(args.order), record,
                                    lambda text: telemetry.log(text, WARNING))
             strategy_file = strategy_plugin(args.strategy)
         with telemetry.span("inputs.steps", steps=len(order["steps"])):

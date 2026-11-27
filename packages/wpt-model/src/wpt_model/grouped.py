@@ -21,8 +21,8 @@ The rows kernel gives each program one tile of BLOCK_ROWS rows of one
 group, so a group's last tile is part empty: there are at most M /
 BLOCK_ROWS + G tiles. The weights kernel gives each program one tile of
 one group's gradient, and loops over the group's rows. The tile sizes are
-a first choice measured on an RTX 5080 laptop GPU (sm_120) at the series'
-widths, open to review.
+a first choice measured on an RTX 5080 laptop GPU (sm_120) at the widths
+of the families' sizes, open to review.
 
 PyTorch's grouped product runs as one kernel of its own on the GPUs NATIVE
 names (compute capabilities 9 and 10: H100, B200), where these kernels are

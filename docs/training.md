@@ -4,15 +4,15 @@
 
 ```sh
 uv run depot snapshot new           # the texts admitted now, named by the UTC time ("Make a snapshot" on the Snapshots page)
-uv run wpt build-resources NAME         # the vocabulary and corpus of data/orders/models/NAME.json (SERIES: for a series)
-uv run wpt train NAME
+uv run wpt build-resources FAMILY:SIZE   # the vocabulary and corpus of that size of data/orders/FAMILY.json
+uv run wpt train FAMILY:SIZE
 ```
 
 The order's data section names the snapshot by its name, change and
 digest, and its vocabulary by its sha256 or as one to learn
 ([tokenizer.md](tokenizer.md), "A vocabulary in an order"). The
 snapshot's page in `depot web` gives its name, change and digest, to
-write in the data section of `data/orders/models/NAME.json` and commit
+write in the data section of `data/orders/FAMILY.json` and commit
 ([data-selection.md](data-selection.md), "The data section of a model
 order").
 
@@ -25,12 +25,12 @@ In a container, `scripts/detach.sh` also copies the log's lines to the
 standard output of the container's main process, which is what a rented
 machine's console shows, until the run ends.
 
-`wpt train` takes a model order (`data/orders/models/<name>.json`,
-`SERIES:SIZE`, a size of a model series, or `SERIES:SIZE:RUN`, another run
-of that size; see [model.md](model.md), "Model orders") and the id of a
-corpus, or a start of it, and never builds. `wpt build-resources ORDER`
-(`SERIES:` for a series: the one corpus every size reads, at its largest
-size) asks the freight for the order's vocabulary, when it learns one,
+`wpt train` takes an order, `FAMILY:SIZE`, a size of a model family
+(`data/orders/<family>.json`), or `FAMILY:SIZE:RUN`, another run of that
+size ([model.md](model.md), "Model families"), and the id of a corpus, or
+a start of it, and never builds. The size resolves to a model order, which
+the rest of this document calls the order. `wpt build-resources
+FAMILY:SIZE` asks the freight for the order's vocabulary, when it learns one,
 then for its corpus, which the freight delivers on the dock, the dock
 `DOCK` names. It queues both requests in the freight's folder, which
 `FREIGHT_HOME` names in the environment or `.env` like `DOCK`, and runs
@@ -39,8 +39,8 @@ that queue itself while no other process does
 `wpt train` reads the corpus delivery whose key the order gives: the key
 of the request its data part makes (the snapshot's change and digest, the
 portions of its roles with their kinds, shares and sizes, `data.total_tokens`
-the pretraining portion's in tokens, for a series the total tokens of its
-largest size, and the key of its vocabulary's delivery), worked out from
+the pretraining portion's in tokens, the most that any size of the family
+sharing the corpus reads, and the key of its vocabulary's delivery), worked out from
 the order alone (`wpt.resources`). It reads no
 depot. Without that delivery, an order that names its vocabulary by its
 sha256 reads the latest corpus the depot built onto the dock's
@@ -56,8 +56,7 @@ texts; any other is refused.
 
 An order that names a dataset instead of a snapshot is refused, and so is
 a corpus of the dock's `corpora/` built from a dataset ("Models trained
-before snapshots", below). The vocabulary is the corpus's, so
-a size of a model series is derived for the vocabulary the corpus holds. Everything that changes the
+before snapshots", below). The vocabulary is the corpus's. Everything that changes the
 resulting model comes from the order: the architecture's numbers, the
 seed, the steps ("Steps", below) with their settings, and the drafter. The
 command-line options say only how the hardware runs it; each also comes
@@ -124,7 +123,7 @@ tasks. A step that continues the one before it draws as that step does
 "seed": 1337,
 "steps": [
   {"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.002}},
-   "settings": {"stages": [{"block_size": 4096, "steps": 2000, "batch_size": 256}], "eval_every": 200,
+   "settings": {"stages": [{"block_size": 4096, "share": 1}], "tokens_per_update": 1048576,
                 "eval_batches": 20},
    "locked": []},
   {"step": "answer-as-assistant"},
@@ -262,8 +261,10 @@ breaks this is refused before any step runs. It forgets the best
 evaluation of the steps before it, as a new stage does: it keeps the
 weights of its own best evaluation. Its fingerprint chains to the step
 before it as every step's does, so two orders that share a step's whole
-chain share its kept result. The decay branches of a model series are
-built this way ([model.md](model.md), "Model series").
+chain share its kept result. The decay branches of a size of a family
+are built this way ([model.md](model.md), "Model families"): each part is
+the size's step ended after an update of its schedule (`last_update`,
+"The read-text step", below).
 
 ### Methods
 
@@ -390,11 +391,14 @@ within rounding, and the optimizer's state is the same on every device, so
 a run resumes on another.
 
 `schedule` chooses how the learning rate moves. With `steps`, it warms up
-over `warmup` updates to `lr`, then falls to `first_factor` of it after
-`first_drop` of the step's updates and to `second_factor` after
-`second_drop`. With `constant`, every update uses `lr`. In a step that
-reads its tokens several times, `warmup` and `average_every` count the
-updates of one reading ("Readings", below).
+to `lr` over `warmup`, a share of the updates of the step's whole
+schedule, then falls to `first_factor` of it after `first_drop` of the
+step's updates and to `second_factor` after `second_drop`. With
+`constant`, every update uses `lr`. The whole schedule is the updates the
+step's stages make before `last_update` cuts them, so every part of a
+size's schedule warms up as the size's own run does. `warmup` and
+`average_every` are shares, so they keep their meaning at any number of
+updates and readings; each gives at least 1 update.
 
 `weight_decay` is the value for one reading. A step of N readings runs N
 times the updates at the same learning rate and decays by `weight_decay`
@@ -410,7 +414,7 @@ repetition of each source fixed, so not against readings
 
 With `average_states` above 0, the step keeps an average of the model's
 last states (IMU-1). The states are the model's whole state at the step's
-last update and every `average_every` updates before it, at most
+last update and every `average_every` of its updates before it, at most
 `average_states` of them; a step with fewer updates takes the states it
 has. The average starts from the oldest state and takes in each later one
 with weight 1 - `average_beta`, an exponential moving average: with 10
@@ -432,16 +436,17 @@ Early stop is off while `patience` is 0. Then the best evaluation is the
 lowest validation loss. With a `patience` above 0, the validation loss is
 smoothed over the last `smoothing` evaluations, and the best evaluation
 is the last one that improved it by `min_improve`. A stage stops early
-once `patience` evaluations in a row have not improved it. The smaller
+once `patience` evaluations in a row have not improved it. `patience`
+and `smoothing` count evaluations, not updates. The smaller
 the tokens-per-parameter ratio, the smaller the improvement it asks for:
 `chinchilla` is the tokens per parameter at which `min_improve` applies in
 full.
 
 Settings and defaults: `lr` 0.002, `weight_decay` 0.1, `momentum` 0.95,
 `beta1` 0.9, `beta2` 0.95, `eps` 1e-8, `table_lr_factor` 5, `schedule`
-`steps`, `warmup` 2000, `first_drop` 0.8, `first_factor` 0.316,
+`steps`, `warmup` 0.04, `first_drop` 0.8, `first_factor` 0.316,
 `second_drop` 0.9, `second_factor` 0.1, `average_states` 10,
-`average_every` 500, `average_beta` 0.8, `patience` 0, `min_improve` 0.01,
+`average_every` 0.02, `average_beta` 0.8, `patience` 0, `min_improve` 0.01,
 `smoothing` 3, `chinchilla` 20.
 
 ### Writing a step
@@ -460,17 +465,21 @@ a step file that puts them together, without changes to the runner.
 The `read-text` step reads the corpus's plain texts: next-token prediction
 (`next-token`) on windows of the training shards (`text-windows`), the
 windows growing stage by stage, under `by-part` on its multi-step
-schedule, without early stop. Its settings are `stages`,
-`eval_every` (200), `eval_batches` (20), `prefix_tokens` (0, "Prefix"
-below) and `readings` (1, "Readings" below), with the method's. The step
+schedule, without early stop. Its settings are `stages` and
+`tokens_per_update` ("Stages", below), `readings` (1, "Readings" below),
+`eval_tokens` (2^25), `eval_batches` (20), `last_update` (0) and
+`prefix_tokens` ("Prefix", below), with the method's. `last_update`,
+above 0, ends the step after that update of its schedule, the stages
+after it left out: a part of a longer schedule, which a step that
+continues it goes on with ("Continued steps", above). The step
 reads its training tokens in passes without replacement, in an order
 decided by the seed, the step's number in the order and the pass
 ("Readings", below): a second `read-text` step reads other windows than
 the first. Dropout reads the seed, the step's number and the update.
 
 Validation reads windows of the corpus's held-out portion, which no step
-trains on: every `eval_every` updates of one reading and at each stage's
-first and last update, `eval_batches` batches of the stage's batch size
+trains on: every `eval_tokens` tokens trained (rounded to whole updates)
+and at each stage's first and last update, `eval_batches` batches of the stage's batch size
 and window length, drawn at random places of the held-out tokens, read
 whole even with `--stream`. They depend only on the held-out tokens, the
 window length, the batch size and `eval_batches`: the same at every
@@ -506,16 +515,17 @@ the size and the time, such as a fault of the disk, goes unseen.
 
 ### Prefix
 
-`prefix_tokens`, when above 0, makes the step's training tokens the first
+`prefix_tokens`, above 0, makes the step's training tokens the first
 `prefix_tokens` of the corpus's (of its pretraining portion, in a corpus
-cut into portions), in the shards' order, and nothing after them. Only the shards that hold them are copied (or streamed), the windows
-are drawn from them alone, and the step learned from the texts of that
-start. With `--stream`, the walk over the shards starts again after the
-prefix. A corpus with fewer tokens than the prefix is refused before any
-step runs. A `read-text` step that sets no `prefix_tokens` trains on the
-first `total_tokens` of the order's data part, the same prefix. Each size
-of a model series reads its prefix of the series' one corpus (model.md,
-"Model series"), and the setting is part of the step's fingerprint.
+cut into portions), in the shards' order, and nothing after them: the
+tokens of one reading. Only the shards that hold them are copied (or
+streamed), the windows are drawn from them alone, and the step learned
+from the texts of that start. With `--stream`, the walk over the shards
+starts again after the prefix. A corpus with fewer tokens than the prefix
+is refused before any step runs. A family never writes it: each size's
+step reads the size's `data.total_tokens`, its start of the corpus the
+family's sizes share (model.md, "Model families"). The setting is part of
+the step's fingerprint.
 
 The order's `total_tokens` is the size of the pretraining portion the
 order asks for and a ceiling on what it reads. A corpus built at that size
@@ -535,16 +545,13 @@ build-resources`).
 ### Readings
 
 `readings`, a whole number of 1 or more, is how many times the step reads
-its training tokens. A step of N readings is the step of one reading
-stretched N times. `total_tokens` and the prefix keep their meaning: the
-same tokens are read, and the step trains on N times the updates and
-tokens its stages give. Each stage lasts N times its `steps`, in the
-stages' order, so the windows grow once over the whole step and never
-shrink back. `eval_every` and the optimizer's settings counted in updates
-(`by-part`'s `warmup` and `average_every`) count the updates of one
-reading, and the step multiplies them by N, so the learning-rate schedule
-keeps its shape. `--checkpoint-every` counts the updates as they run. The
-setting is part of the step's fingerprint.
+its training tokens. `total_tokens` and the prefix keep their meaning:
+the same tokens are read, N times. The stages' updates come from the
+tokens of every reading ("Stages", below), so the stages spread over the
+whole step: the windows grow once over all N readings and never shrink
+back. The optimizer's settings are shares of the updates, so the
+learning-rate schedule keeps its shape. The setting is part of the
+step's fingerprint.
 
 Every reading is a pass without replacement over the training tokens.
 A window of a stage holds `block_size` + 1 tokens and starts on the last
@@ -573,16 +580,16 @@ cut into its own slots and its own groups, so an update's windows come
 from the shards in use. A file shorter than one slot is not read, and a
 pass leaves out less than two slots of each file.
 
-The updates come from the stages, not from the prefix: a step reads its
-tokens as many times as its stages' windows predict tokens over the
-prefix, N exactly when the stages of one reading predict as many tokens
-as the prefix holds. Stages that predict more go on into further passes,
-and stages that predict fewer end inside a pass, which leaves the rest of
-that pass unread. `wpt train` writes in the run's record, for each step
-that reads text windows, how many times its stages read its tokens, such
-as 2.40, with its readings, its updates and the tokens it trains on, and
-the line is a warning when the times stray from the readings by more than
-1%. The step still runs: the stages decide its length.
+A step's windows predict about N times the prefix's tokens, the stages'
+rounding aside. A pass predicts a little less than the prefix (the
+tokens it leaves out, and the rest of a group a stage boundary skips),
+so the last updates of a reading go on into the next pass. `wpt train`
+writes in the run's record, for each step that reads text windows, how
+many times its stages read its tokens, such as 1.00, with its readings,
+its updates and the tokens it trains on. The line is a warning when the
+times stray from the readings by more than 1%. A step ended by
+`last_update` reads a part of its schedule: its line says after which
+update it ends, and is no warning.
 
 The validation windows are the same whatever the readings. Drawn from
 the held-out portion, they hold no text the step trains on; drawn from
@@ -620,7 +627,8 @@ them.
 ### The batch is the same on any hardware
 
 A step's batch is the number of examples in one update, over every process
-together: for text windows, each stage's `batch_size` ("Stages", below).
+together: for text windows, each stage's batch, `tokens_per_update` over
+its window length ("Stages", below).
 Each process takes `--micro-batch` examples per pass (by default its whole
 share of the batch) and adds the passes up until the batch is complete.
 Which windows an update uses depends only on the order's `seed`, the
@@ -631,7 +639,7 @@ and without `--recompute` or `--no-recompute`, a stage of text windows
 whose share does not fit the GPU's memory in one pass takes fewer windows
 per pass, a number the stage chooses when it starts ("Recomputing layers",
 below); the training stays the same within rounding. Every stage's batch
-must split evenly: its `batch_size` a
+must split evenly: its batch a
 multiple of `--micro-batch` times the number of processes (with
 `--strategy split`, every process takes every window, so a multiple of
 `--micro-batch`).
@@ -642,32 +650,49 @@ Training targets 1M tokens and reaches it by stages of the `read-text`
 step; the window lengths follow DeepSeek-V4 (section 4.2.2: 4K, then 16K,
 64K and 1M tokens); V4 states no tokens or updates per stage, so each
 order sets them. The step's `stages` setting lists them in order, each
-with its window length, its length in updates and its batch:
+its window length (`block_size`) and its share of the tokens (`share`,
+above 0; the shares are divided by their sum). `tokens_per_update` is the
+tokens of every update, over every process together, at every stage.
 
-```json
-"stages": [
-  {"block_size": 4096, "steps": 2000, "batch_size": 256},
-  {"block_size": 16384, "steps": 500, "batch_size": 64},
-  {"block_size": 65536, "steps": 200, "batch_size": 16},
-  {"block_size": 1048576, "steps": 50, "batch_size": 1}
-]
-```
+The step computes each stage's updates and batch, and no order writes
+them. A stage's updates are its share of the shares' sum, times the
+tokens of one reading (`prefix_tokens`), times `readings`, over
+`tokens_per_update`, rounded half up and at least 1. Its batch is
+`tokens_per_update` over its window length, which must divide it. The
+run's record, `provenance.json` and `wpt train family NAME` give each
+stage's computed updates and batch.
 
-(an example of the shape, not an order's numbers). The stages are one
-step: their updates are counted together, update 1 being the first
-stage's first, and the learning-rate schedule and the multi-token
-prediction weight's switch (model.md, "Training") run over them all. Each
-stage draws batches of its own `batch_size` windows of its own length, so
-a stage puts `batch_size` times `block_size` tokens in each update. A
-stage's `batch_size` is global, over every process together ("The batch is
-the same on any hardware", above), and its evaluations average
-`eval_batches` batches of its own size. A stage's evaluation windows are
+A step of several stages whose updates fill at least one group of 64
+slots per stage ("Readings", below) rounds its stages to whole groups
+instead. A group holds the fewest updates whose tokens are a whole number
+of groups: for 131,072 tokens per update and a longest window of 32,768
+tokens, 16 updates. The step's groups are its computed updates over that
+number, rounded half up, shared out by the stages' shares, the largest
+remainders first and at least one group each. Every stage then starts
+where a group starts, so no stage boundary skips the rest of a group and
+`readings: 1` reads its text once within 1%. pocket 64's nine equal
+shares make 811.3 computed updates and 816 scheduled: six stages of 96 and
+three of 80. The run's record gives each stage's computed and scheduled
+updates. A step whose updates do not fill a group per stage, such as a
+short test run, keeps its computed updates. Whole groups line up within
+one pass of the text: a stage that runs over the end of a pass into the
+next (`readings` above 1), or a token file that ends inside a group
+with `--stream`, still moves the stage after it to the next group.
+
+The stages are one step: their updates are counted together, update 1
+being the first stage's first, and the learning-rate schedule and the
+multi-token prediction weight's switch (model.md, "Training") run over
+them all. A stage's batch is global, over every process together ("The
+batch is the same on any hardware", above), and its evaluations average
+`eval_batches` batches of its own size. The options `--checkpoint-every`,
+`--stop-after-updates` and `--profile-update` say how the hardware runs,
+and count updates as they run. A stage's evaluation windows are
 the same at every evaluation, for any seed and any step of an order: two
 runs that read the same training tokens through the same stages are
 measured on the same windows, so their validation losses compare.
 
 Each stage is evaluated at its first and last updates and every
-`eval_every` updates, on windows of its length: a longer window predicts
+`eval_tokens` tokens trained, on windows of its length: a longer window predicts
 better, so losses are compared within a stage only. When a stage after
 the first starts, the optimizer hears of it (`Optimizer.stage`) and the
 best evaluation so far is forgotten: `by-part` starts counting again, and
@@ -681,9 +706,9 @@ the update to continue from, and a resumed step starts within its stage.
 Each stage is a span of the run's record (`training.stage`, with its
 number, window length, first and last updates, and the update a resumed
 run started at), each update's event names its window length, and
-`provenance.json` lists, for the step, the stages with the last update
-each made (`stages`). The orders keep one stage (model.md, "Model
-orders").
+`provenance.json` lists, for the step, the stages with their computed
+updates, batch and window length and the last update each made
+(`stages`).
 
 The sparse layers read their chosen tokens from the first update, at every
 stage (model.md, "Attention").
@@ -773,9 +798,9 @@ resume with another choice.
 
 On an integrated Radeon 860M (gfx1152, which ROCm supports only through
 `HSA_OVERRIDE_GFX_VERSION`), Muon's 10 Newton-Schulz steps on the
-32-expert orders crash the process (a segmentation fault in the GPU
+32-expert families crash the process (a segmentation fault in the GPU
 stack) in the first update unless `HIP_LAUNCH_BLOCKING=1` makes the CPU
-wait for each GPU kernel; 8 steps do not, and the small `classics-test`
+wait for each GPU kernel; 8 steps do not, and the small `test:128`
 does not crash.
 
 ## Compiling the passes
@@ -905,8 +930,8 @@ The next-token loss reads the last pass, or with `loop_losses` the
 weighted sum of the passes it weighs. Each weighed pass besides the last
 adds one run of the output head and its loss over every token, about
 `6 x vocab_size x d_model` operations per token with its backward pass,
-which the series' compute per token, without the vocabulary's tables,
-leaves out. The multi-token prediction loss reads the last pass alone.
+which a size's compute per token counts (model.md, "Model families").
+The multi-token prediction loss reads the last pass alone.
 The validation loss, the one evaluations compare and keep the best
 weights by, is the last pass's. When more than one pass is weighed, each
 update's `training.step` event also gives `train_loss_pass_N` for each
@@ -1301,8 +1326,9 @@ says.
 A model trained on a snapshot names, in `provenance.json`, what anyone needs
 to make its corpus again and check it: `data`, the order's data section (the
 depot's address, the snapshot's name, change and digest, the roles,
-shares, sizes and vocabulary); `order_name` and `order`, the order's name and the
-order itself; and `repository_commit`
+shares, sizes and vocabulary); `order_name` and `order`, the order's name
+(`FAMILY:SIZE` or `FAMILY:SIZE:RUN`) and the size's whole resolved order;
+`family`, `size` and, for another run of the size, `run`; and `repository_commit`
 with `repository_dirty`, the code (the commit pins the design-system
 submodule too). A model trained on deliveries of the freight names too
 `deliveries`, the key, id and preparation (for an adopted vocabulary, what

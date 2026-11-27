@@ -37,12 +37,13 @@ class Kept:
 
 
 def run(dataset, **rules):
-    """6 updates of 2 windows of 16 tokens, evaluated at the third and the
-    last: the events of the run's record, and its log lines."""
+    """6 updates of 2 windows of 16 tokens, evaluated at the first, every
+    96 tokens trained (the third) and the last: the events of the run's
+    record, and its log lines."""
     dock, record = dataset
-    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 2}},
-                      "settings": {"stages": [{"block_size": 16, "steps": 6, "batch_size": 2}], "prefix_tokens": 500,
-                                   "eval_every": 3}}, PARTS)
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 0.34}},
+                      "settings": {"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 32,
+                                   "prefix_tokens": 192, "eval_tokens": 96}}, PARTS)
     [draws] = draw_numbers([step])
     torch.manual_seed(1337)
     model = WPT(ModelConfig(**TINY, **rules))

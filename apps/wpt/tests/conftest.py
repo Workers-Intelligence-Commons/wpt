@@ -36,9 +36,20 @@ TINY_MODEL = {"window_layers": 1, "sparse_groups": 1, "sparse_layers": 1, "d_mod
               "attention_head_dim": 64, "n_experts": 4, "top_k": 2, "expert_width": 8, "latent_width": 8,
               "shared_width": 16, "engram_layers": [2], "engram_order": 3, "engram_heads": 2, "engram_dim": 4,
               "engram_table_size": 31, "residual_groups": 3, "loops": 0}
-# the read-text step of the order "d": the optimizer, its settings, the step's text windows, the order's seed
-ONE_STEP = {"optimizer": "by-part", "settings": {}, "stages": [{"block_size": 16, "steps": 1, "batch_size": 4}],
-            "eval_every": 2, "eval_batches": 20, "seed": 1337}
+# the read-text step of the order "d:s": the optimizer, its settings, the step's text windows (updates of 4 windows
+# of 16 tokens over the size's tokens, the step cut after its first update), an evaluation every 2 updates, the
+# order's seed
+ONE_STEP = {"optimizer": "by-part", "settings": {}, "stages": [{"block_size": 16, "share": 1}],
+            "tokens_per_update": 64, "last_update": 1, "eval_tokens": 128, "eval_batches": 20, "seed": 1337}
+SIZE = "s"  # the one size of every family the tests write
+TEXT_WINDOWS = ("stages", "tokens_per_update", "last_update", "eval_tokens", "eval_batches")
+
+
+def one_stage(updates, block_size=16, batch_size=4):
+    """The text windows of a read-text step of `updates` updates of batch_size windows of block_size tokens: the
+    size's schedule in updates of that many tokens, cut after `updates` of them."""
+    return {"stages": [{"block_size": block_size, "share": 1}], "tokens_per_update": block_size * batch_size,
+            "last_update": updates}
 # the drafter every run trains at its end, as small and short as still trains and calibrates one
 TINY_DRAFTER = {"epochs": 1, "prompts": 4, "prompt_tokens": 8, "answer_tokens": 8, "batch": 2, "anchors": 4,
                 "held_out": 0.25}
@@ -48,20 +59,22 @@ TINY_DRAFTER = {"epochs": 1, "prompts": 4, "prompt_tokens": 8, "answer_tokens": 
 def built(tmp_path, monkeypatch):
     """A corpus of a depot's snapshot "d": 16 plain texts. The working folder tmp_path is the
     repository, the dock is DOCK and the depot DEPOT. Gives dock, depot (the Depot),
-    corpus_id (the corpus of every token of "d", which the model order "d", a tiny model
+    corpus_id (the corpus of every token of "d", which the order "d:s", a tiny model
     trained one step, names), tokenizer (the vocabulary every corpus here is built with), records(command) (the record folders of that
     command's runs, oldest first), notice (the texts' notice), vocabulary
     (the sha256 of the vocabulary every corpus here is built with),
     data(name, size) (the data section of an order of the snapshot name at
     that size, as order writes it),
     order(name, model=..., training=..., drafter=..., steps=...,
-    snapshot="d"), which writes a model order of that snapshot (its data
-    section: the depot by its name, the snapshot's change and digest, the
-    one share TAG, the vocabulary, and as total_tokens the tokens of plain
-    text of the snapshot's corpus of every token, 3000 before one is
-    built), with those changes to "d" (training: to ONE_STEP, its
-    read-text step; steps: the entries that follow it), and returns its
-    name, snapshot(label, items=()), which adds the items (NewText, licensed
+    snapshot="d"), which writes the family `name` of one size, SIZE, every
+    setting common, of that snapshot (its data section: the depot by its
+    name, the snapshot's change and digest, the one share TAG, the
+    vocabulary, and as total_tokens the tokens of plain text of the
+    snapshot's corpus of every token, 3000 before one is built), with
+    those changes to "d" (training: to ONE_STEP, its read-text step;
+    steps: the entries that follow it), and returns the order NAME:SIZE,
+    write(name, family), which writes data/orders/<name>.json,
+    snapshot(label, items=()), which adds the items (NewText, licensed
     MIT and tagged TAG unless they say otherwise) to the depot, admitted,
     makes a snapshot of every admitted text that the test calls label (the
     depot names it by the time it is made; names[label] is that name),
@@ -100,8 +113,8 @@ def built(tmp_path, monkeypatch):
         return build(depot, snapshot["id"], data_of(label, size), dock, tokenizer, address=url or depot.name(),
                      order=label, tokenizer_recipe=TOKENIZER, tokenizer_version=1, log=lambda *_: None)
 
-    def write(kind, name, document):
-        path = tmp_path / "data" / "orders" / f"{kind}s" / f"{name}.json"
+    def write(name, document):
+        path = tmp_path / "data" / "orders" / f"{name}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document))
         return name
@@ -121,10 +134,11 @@ def built(tmp_path, monkeypatch):
                       and one["max_tokens"] is None), None)
         total = whole["total_tokens"] if whole else 3000
         read_text = {"step": "read-text", "optimizer": {"name": text["optimizer"], "settings": text["settings"]},
-                     "settings": {key: text[key] for key in ("stages", "eval_every", "eval_batches")}}
-        return write("model", name, {"data": data_of(snapshot, total),
-                                     "model": {**TINY_MODEL, **(model or {})}, "seed": text["seed"],
-                                     "steps": [read_text, *steps], "drafter": {**TINY_DRAFTER, **(drafter or {})}})
+                     "settings": {key: text[key] for key in TEXT_WINDOWS if key in text}}
+        write(name, {"data": data_of(snapshot, total), "model": {**TINY_MODEL, **(model or {})}, "seed": text["seed"],
+                     "steps": [read_text, *steps], "drafter": {**TINY_DRAFTER, **(drafter or {})},
+                     "sizes": {"columns": ["size"], "rows": [[SIZE]]}})
+        return f"{name}:{SIZE}"
 
     corpus_id = snapshot("d", [NewText(text=story, notice=NOTICE) for story in stories])
     order()
@@ -148,7 +162,7 @@ def built(tmp_path, monkeypatch):
                     if "end.json" in dock_api.record_files(dock, folder) else None))
         return sorted(found, key=lambda run: run.start["started"])
 
-    return SimpleNamespace(dock=dock, depot=depot, corpus_id=corpus_id, notice=NOTICE, order=order,
+    return SimpleNamespace(dock=dock, depot=depot, corpus_id=corpus_id, notice=NOTICE, order=order, write=write,
                            records=records, snapshot=snapshot, sized=sized, vocabulary=vocabulary["sha256"],
                            tokenizer=tokenizer, data=data_of, names=names)
 
@@ -180,9 +194,9 @@ HELD_OUT = 3500  # the held-out portion's bytes in the app's tests: two of the 1
 
 @pytest.fixture(params=["named"])
 def trained(request, built, tmp_path, monkeypatch):
-    """tmp_path/model, trained by the order "d" on deliveries of the freight
+    """tmp_path/model, trained by the order "d:s" on deliveries of the freight
     (its home FREIGHT_HOME, tmp_path/freight), as a person makes it:
-    `wpt build-resources d`, then `wpt train d`. By default ("named") the
+    `wpt build-resources d:s`, then `wpt train d:s`. By default ("named") the
     order names its vocabulary by its sha256, the test vocabulary, which
     the dock holds as the adopted delivery `adopted-<sha256>` (put there by
     freight.api.adopt, its items every text of the depot, as the tokenizer
@@ -204,11 +218,11 @@ def trained(request, built, tmp_path, monkeypatch):
                        "tokenizer_version": json.loads(built.tokenizer.to_bytes())["tokenizer_version"]},
                       {"by": "the test", "recipe": TOKENIZER, "version": 1}, on_erasure="note", items=items)
     else:
-        path = tmp_path / "data" / "orders" / "models" / "d.json"
+        path = tmp_path / "data" / "orders" / "d.json"
         order = json.loads(path.read_text())
         order["data"]["vocabulary"] = LEARNED
         path.write_text(json.dumps(order))
-    assert build_resources(["d"]) == 0
+    assert build_resources([f"d:{SIZE}"]) == 0
     out = printed.readouterr().out
     notes = json.loads(out[out.index("\n{\n") + 1:])  # printed last, after the lines of the jobs
     fetched = []
@@ -218,7 +232,7 @@ def trained(request, built, tmp_path, monkeypatch):
                 fetched.append(key)
                 return _read(dock, key, *args, **kwargs)
             watched.setattr(dock_api, name, reading)
-        train(["d", "--out", "model"])
+        train([f"d:{SIZE}", "--out", "model"])
     return SimpleNamespace(**{**vars(built), "corpus_id": notes["corpus"]["id"]}, folder=tmp_path / "model",
                            notes=notes, fetched=fetched)
 

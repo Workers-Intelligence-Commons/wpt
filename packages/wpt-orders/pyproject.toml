@@ -1,7 +1,7 @@
 [project]
 name = "wpt-orders"
 version = "0.1.0"
-description = "WPT's model and series orders and the images of agentic tasks: read, checked, and the sizes a series derives"
+description = "WPT's model families and the images of agentic tasks: read, checked, each size of a family resolved to its model order, and what a model's numbers count"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.14"
 dependencies = ["jsonschema>=4.23", "wic-utils"]

@@ -35,7 +35,7 @@ def credited(folder) -> list[str]:
 
 @pytest.fixture
 def delivered(built, tmp_path, monkeypatch, capsys):
-    """resources(name, roles, steps): writes the order name of the snapshot "chat" (the 16 stories and two
+    """resources(name, roles, steps): writes the family name, of one size, of the snapshot "chat" (the 16 stories and two
     conversations tagged answer-as-assistant) with those roles and steps after its read-text step, asks the freight
     for its corpus through `wpt build-resources` and gives its delivery note. The vocabulary is the test one, which
     the dock holds as an adopted delivery; the held-out portion is HELD_OUT bytes."""
@@ -47,14 +47,14 @@ def delivered(built, tmp_path, monkeypatch, capsys):
                   on_erasure="note")
 
     def resources(name, order_roles, steps=()):
-        built.order(name, training={"stages": [{"block_size": 64, "steps": 1, "batch_size": 4}]}, steps=steps,
-                    snapshot="chat")
-        path = tmp_path / "data" / "orders" / "models" / f"{name}.json"
-        order = json.loads(path.read_text())
-        order["data"]["roles"] = order_roles
-        path.write_text(json.dumps(order))
+        order = built.order(name, training={"stages": [{"block_size": 64, "share": 1}], "tokens_per_update": 256,
+                                    "last_update": 1}, steps=steps, snapshot="chat")
+        path = tmp_path / "data" / "orders" / f"{name}.json"
+        family = json.loads(path.read_text())
+        family["data"]["roles"] = order_roles
+        path.write_text(json.dumps(family))
         capsys.readouterr()
-        assert build_resources([name]) == 0
+        assert build_resources([order]) == 0
         out = capsys.readouterr().out
         return json.loads(out[out.index("\n{\n") + 1:])["corpus"]
 
@@ -89,7 +89,7 @@ def test_the_conversation_step_reads_the_fine_tuning_portion(built, delivered, t
             fetched.append(key)
             return _read(dock, key, *args, **kwargs)
         monkeypatch.setattr(dock_api, name, reading)
-    train(["talks", "--out", "model"])
+    train(["talks:s", "--out", "model"])
     assert portion_files(note, "finetune", "conversation-") <= set(fetched)
     assert portion_files(note, "held_out") & set(fetched) == portion_files(note, "held_out", "plain-")
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
@@ -101,7 +101,7 @@ def test_the_conversation_step_reads_the_fine_tuning_portion(built, delivered, t
     # the same step, its order's corpus without a fine-tuning portion: nothing for it to read
     delivered("plain", ["held_out", "pretrain"], chat_step)
     with pytest.raises(SystemExit) as stopped:
-        train(["plain", "--out", "other"])
+        train(["plain:s", "--out", "other"])
     assert stopped.value.code == 2
     assert "step 2 answer-as-assistant: no conversations" in capsys.readouterr().err
 
@@ -116,7 +116,7 @@ def test_a_corpus_delivered_without_portions_trains_as_its_pretraining_portion(b
     assert done["state"] == "done", done["problem"]
     old = done["answer"]
     assert "portions" not in old["result"]
-    train(["whole", old["id"], "--out", "model"])
+    train(["whole:s", old["id"], "--out", "model"])
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["corpus"]["id"] == old["id"]
     assert provenance["texts"] == old["items"]["kinds"]["plain"]  # every story: none held out

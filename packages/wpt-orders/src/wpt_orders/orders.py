@@ -3,8 +3,7 @@
 Every file of these kinds is opened here and nowhere else
 (docs/architecture.md, "The service layer"):
 
-    data/orders/models/<name>.json       data, architecture and training steps of one model
-    data/orders/series/<name>.json       a model series: the rules its sizes share and the sizes
+    data/orders/<name>.json              a model family: what its sizes share, then the table of its sizes
     data/images/<name>/Dockerfile         a container image of agentic tasks (and any file it copies)
                       + lock.json, licenses.json (written by `wpt agent lock-image`)
                       + tools.json, the shared pool of tools its programs answer (optional)
@@ -16,8 +15,10 @@ image license lists) are written only through
 write_generated, by the command that makes them. The audit hook of
 guard.py refuses any other code that reaches these files.
 
-Every read is checked: an order against its schema (InvalidOrder), and
-check() and problems() add the rules across files. An order's data part
+Every read is checked: a family against its schema and the rules of its
+table (family.py), each size's model order against the model order's
+schema (InvalidOrder), and check() and problems() add the rules on each
+size's data part. An order's data part
 names a snapshot of a depot, its change and digest, the roles of its
 corpus's portions, the shares by tag, the sizes and the vocabulary, named
 by its sha256 or learned for the data part from a sample of a number of
@@ -41,27 +42,27 @@ from pathlib import Path
 
 import jsonschema
 
-from . import series
+from . import family as families
 from .errors import InvalidOrder, NotFound, OrderError
 from .guard import guard
 
 DATA_FOLDER = "data"  # the repository's data, a top-level folder of its root
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
-ORDER_FOLDERS = {"model": "models", "series": "series"}
+FAMILY = "family"  # the one kind of order file, data/orders/<name>.json
 IMAGE_FILES = {"dockerfile": "Dockerfile", "image-lock": "lock.json", "image-licenses": "licenses.json",
                "image-tools": "tools.json"}
 # every kind of file, by its name: its JSON schema (None for a text kind), and the command that writes a
 # generated kind (None: people write it)
 KINDS = {
-    "model": ("model", None),
-    "series": ("series", None),
+    FAMILY: ("family", None),
     "dockerfile": (None, None),
     "image-lock": ("image-lock", "wpt agent lock-image"),
     "image-licenses": ("image-licenses", "wpt agent lock-image"),
     "image-tools": ("image-tools", None),
 }
-SIZE_OF = ":"  # SERIES:SIZE[:RUN] names one size of a series (or another run of it) wherever a model order's
-#                name goes (Orders.model_order)
+MODEL = "model"  # the schema of a model order, what a size of a family resolves to
+SIZE_OF = ":"  # FAMILY:SIZE[:RUN] names one size of a family (or another run of it) wherever an order's name goes
+#                (Orders.model_order)
 BUILT_IN_TOOLS = ("read", "write", "edit", "bash")  # the tools every task can offer (wpt_agent.tools)
 ASK = "ask"  # the tool a task with replies offers
 # the least total_tokens of a data part whose roles hold held_out, wpt_corpus.roles.HELD_OUT_MIN_TOKENS (64 MiB),
@@ -87,12 +88,13 @@ def _validator(name: str):
 
 
 def validate(document, kind: str, where: str):
-    """InvalidOrder unless the document is a valid file of that kind; where
-    names it in the message."""
-    if kind in ORDER_FOLDERS and isinstance(document, dict) and "dataset" in (document.get("data") or {}):
+    """InvalidOrder unless the document is a valid file of that kind, or
+    for MODEL a valid model order; where names it in the message."""
+    if kind == MODEL and isinstance(document, dict) and "dataset" in (document.get("data") or {}):
         raise InvalidOrder(f"{where}: at data: names a dataset; an order names a snapshot of a depot, with its "
                            "change and digest (docs/data-selection.md, \"The data section of a model order\")")
-    error = jsonschema.exceptions.best_match(_validator(KINDS[kind][0]).iter_errors(document))
+    error = jsonschema.exceptions.best_match(_validator(MODEL if kind == MODEL else KINDS[kind][0])
+                                             .iter_errors(document))
     while error is not None and error.validator == "oneOf" and error.context:
         error = _nearest_shape(error)
     if error is not None:
@@ -172,7 +174,8 @@ def _held_out(where: str, data: dict, place: str):
     """InvalidOrder for a data part whose roles hold
     held_out (left out: they do) with a total_tokens under
     HELD_OUT_MIN_TOKENS, too small a corpus for the held-out portion
-    (wpt_corpus.roles); for a series, data is its largest size's."""
+    (wpt_corpus.roles); data is a size's resolved one, which asks for the
+    corpus it shares."""
     total = data.get("total_tokens")
     if ("held_out" in (data.get("roles") or ["held_out"]) and total is not None
             and total < HELD_OUT_MIN_TOKENS):
@@ -212,8 +215,8 @@ class Orders:
             raise NotFound(f"no kind of file named {kind!r}; the kinds are {', '.join(KINDS)}")
         if not NAME.fullmatch(name):
             raise NotFound(f"no {kind} {name!r}: a name is lowercase a-z, 0-9, '.', '_' and '-'")
-        if kind in ORDER_FOLDERS:
-            return self._data / "orders" / ORDER_FOLDERS[kind] / f"{name}.json"
+        if kind == FAMILY:
+            return self._data / "orders" / f"{name}.json"
         return self._data / "images" / name / IMAGE_FILES[kind]
 
     def relative(self, kind: str, name: str) -> str:
@@ -226,8 +229,8 @@ class Orders:
 
     def names(self, kind: str) -> list[str]:
         """The names of the existing files of a kind, sorted."""
-        if kind in ORDER_FOLDERS:
-            folder = self._data / "orders" / ORDER_FOLDERS[kind]
+        if kind == FAMILY:
+            folder = self._data / "orders"
             return sorted(p.stem for p in folder.glob("*.json")) if folder.is_dir() else []
         if kind not in KINDS:
             raise NotFound(f"no kind of file named {kind!r}; the kinds are {', '.join(KINDS)}")
@@ -246,63 +249,62 @@ class Orders:
         return document
 
     # -- orders -----------------------------------------------------------------
-    def order(self, kind: str, name: str) -> dict:
-        """The model or series order of that name, validated
-        against its schema; NotFound when it does not exist."""
-        if kind not in ORDER_FOLDERS:
-            raise NotFound(f"no kind of order named {kind!r}; the kinds are {', '.join(ORDER_FOLDERS)}")
-        return self._load(kind, name)
+    def family(self, name: str) -> dict:
+        """The family file of that name, validated against its schema and
+        the rules of its table (family.check); NotFound when it does not
+        exist, InvalidOrder for one the check refuses."""
+        document = self._load(FAMILY, name)
+        try:
+            families.check(document)
+        except ValueError as error:
+            raise InvalidOrder(f"{self.relative(FAMILY, name)}: {error}") from None
+        return document
+
+    def _named(self, given: str) -> tuple[str, dict, str, str]:
+        """(the family's name, its document, the size, the run: '' for the
+        size's own) that FAMILY:SIZE[:RUN] names; NotFound for another
+        shape, or a family or size that does not exist."""
+        name, separated, rest = given.partition(SIZE_OF)
+        size, _, run = rest.partition(SIZE_OF)
+        if not separated or not size:
+            listed = f": its sizes are {', '.join(families.sizes(self.family(name)))}" \
+                if separated and self.exists(FAMILY, name) else ""
+            raise NotFound(f"{given!r} names no size: an order is FAMILY:SIZE, a size of a family file of "
+                           f"data/orders/, or FAMILY:SIZE:RUN, another run of it{listed}")
+        document = self.family(name)
+        if size not in families.sizes(document):
+            raise NotFound(f"no size {size!r} in the family {name}; its sizes are "
+                           f"{', '.join(families.sizes(document))}")
+        return name, document, size, run
 
     def data_part(self, given: str) -> dict:
-        """The data part of the model order a name gives (model_order),
-        with total_tokens for a size of a series too; read
-        without deriving a size, so without the vocabulary's size. NotFound
-        as model_order."""
-        name, separated, _ = given.partition(SIZE_OF)
-        if not separated:
-            return self.order("model", given)["data"]
-        return series.data_part(self.order("series", name))
+        """The data part of the model order FAMILY:SIZE[:RUN] names
+        (model_order): the corpus the size reads, which a run of it reads
+        too. NotFound and InvalidOrder as model_order."""
+        name, document, size, _ = self._named(given)
+        return self._resolved(name, document, size)["data"]
 
-    def model_order(self, given: str, vocab_size: int | None = None) -> dict:
-        """The model order a name gives: NAME, the file of
-        data/orders/models/; SERIES:SIZE, that size of the series file
-        data/orders/series/SERIES.json, derived from it (series.py) for a
-        vocabulary of vocab_size tokens (the size its data part's vocabulary
-        names), which a series needs;
-        SERIES:SIZE:RUN, another run of that size (a decay branch, a
-        learning rate of the check: series.runs). NotFound when there is no
-        such order, series, size or run; InvalidOrder when the series'
-        sizes cannot be derived, or no vocab_size is given for one."""
-        name, separated, rest = given.partition(SIZE_OF)
-        if not separated:
-            return self.order("model", given)
-        size, _, run = rest.partition(SIZE_OF)
-        document = self.order("series", name)
-        if vocab_size is None:
-            raise InvalidOrder(f"series {name}: a size is derived for the vocabulary's size, which its data part "
-                                "names")
-        if size not in series.sizes(document):
-            raise NotFound(f"no size {size!r} in the series {name}; its sizes are {', '.join(series.sizes(document))}")
+    def _resolved(self, name: str, document: dict, size: str, run: str = "", updates=None) -> dict:
         try:
-            if run and run not in series.runs(document, size):
-                listed = series.runs(document, size)
-                raise NotFound(f"series {name}: no run {run!r} of the size {size}; "
-                               + (f"its runs are {', '.join(listed)}" if listed else "it has no other run"))
-            return series.run_order(document, series.plan(document, size, vocab_size), run)
+            order = families.run_order(document, size, run, updates)
         except ValueError as error:
-            raise InvalidOrder(f"series {name}: {error}") from None
+            if run and run not in families.runs(document, size):
+                raise NotFound(f"family {name}: {error}") from None
+            raise InvalidOrder(f"{self.relative(FAMILY, name)}, size {size}: {error}") from None
+        validate(order, MODEL, f"{self.relative(FAMILY, name)}, size {size}")
+        return order
 
-    def series_plans(self, name: str, vocab_size: int) -> list[series.Plan]:
-        """Every size's numbers in the series file of that name (series.Plan), for a vocabulary of vocab_size tokens."""
-        return series.plans(self.order("series", name), vocab_size)
-
-    def series_total_tokens(self, name: str) -> int:
-        """The training tokens of the one corpus of the series file of that name (series.data_part)."""
-        return series.data_part(self.order("series", name))["total_tokens"]
-
-    def series_runs(self, name: str, found: series.Plan) -> list[dict]:
-        """What each other run of a size of the series file of that name does (series.run_numbers)."""
-        return series.run_numbers(self.order("series", name), found)
+    def model_order(self, given: str, updates=None) -> dict:
+        """The model order FAMILY:SIZE names, that size of the family file
+        data/orders/FAMILY.json with its values in place (family.resolve),
+        checked against the model order's schema; FAMILY:SIZE:RUN,
+        another run of that size (a decay branch, a learning rate of the
+        check: family.runs), whose branches need updates(entry), the
+        updates a step entry makes (its environment's). NotFound when there
+        is no such family, size or run; InvalidOrder when the family or the
+        size's order is refused."""
+        name, document, size, run = self._named(given)
+        return self._resolved(name, document, size, run, updates)
 
     def generated(self, kind: str, name: str) -> dict | None:
         """A generated file (image-lock, image-licenses), validated; None
@@ -410,8 +412,8 @@ class Orders:
     def problems(self, kind: str, name: str) -> list[str]:
         """What the check finds in that one file: [] or its problem."""
         try:
-            if kind in ORDER_FOLDERS:
-                self._check_order(kind, name)
+            if kind == FAMILY:
+                self._check_family(name)
             elif kind == "dockerfile":
                 self._image_folder(name)
             elif kind == "image-tools":
@@ -425,9 +427,8 @@ class Orders:
     def check(self) -> list[str]:
         """Every rule on every order and every image; one line per problem."""
         found = []
-        for kind in ORDER_FOLDERS:
-            for name in self.names(kind):
-                found += self.problems(kind, name)
+        for name in self.names(FAMILY):
+            found += self.problems(FAMILY, name)
         for name in self.image_names():
             found += self.problems("dockerfile", name)
             for kind in ("image-lock", "image-licenses", "image-tools"):
@@ -435,15 +436,13 @@ class Orders:
                     found += self.problems(kind, name)
         return found
 
-    def _check_order(self, kind: str, name: str):
-        document = self.order(kind, name)
-        where = self.relative(kind, name)
-        if kind == "series":
-            try:
-                series.check(document)
-            except ValueError as error:
-                raise InvalidOrder(f"{where}: {error}") from None
-        _shares(where, document["data"], "data.")
-        _empty_data(where, document["data"], "data.")
-        _finetune(where, document["data"], "data.")
-        _held_out(where, series.data_part(document) if kind == "series" else document["data"], "data.")
+    def _check_family(self, name: str):
+        """InvalidOrder for the first rule a size of the family breaks."""
+        document = self.family(name)
+        for size in families.sizes(document):
+            data = self._resolved(name, document, size)["data"]
+            where = f"{self.relative(FAMILY, name)}, size {size}"
+            _shares(where, data, "data.")
+            _empty_data(where, data, "data.")
+            _finetune(where, data, "data.")
+            _held_out(where, data, "data.")

@@ -11,9 +11,8 @@ Usage:
 Settings, from the environment, else from the .env file at the
 repository's root (an empty value counts as unset):
 
-    WPT_ORDER        the model order, a file name in data/orders/models/ without .json, or
-                      SERIES:SIZE, a size of a series file of data/orders/series/, or
-                      SERIES:SIZE:RUN, another run of that size;
+    WPT_ORDER        the model order: FAMILY:SIZE, a size of a family file of data/orders/, or
+                      FAMILY:SIZE:RUN, another run of that size;
                       required: the manager refuses to start without it
     WPT_CORPUS        the corpus the run trains on (its id, or a start of it); unset, the
                       order's corpus, as wpt train finds it
@@ -156,7 +155,8 @@ from wic_utils.env import read_env_file
 from wpt.models import has_model, keep_model, put_model
 from dock.api import as_record_name
 from wpt_telemetry import RECORD_FAILED, RecordError, Telemetry
-from wpt.train import CRASHED, LOST, InputError, find_corpus
+from wpt.train import CRASHED, LOST, InputError, find_corpus, step_updates
+from wpt_training import PluginError
 from wpt_training.launch import STOPPED, ask_to_stop
 from wic_utils.lines import ERROR, WARNING, say
 from wpt_worker.manager import WORKERS
@@ -363,9 +363,8 @@ def _main(argv, signalled) -> int:
 
     order = environ.get("WPT_ORDER", "")
     if not order:
-        say("WPT_ORDER is not set: name the model order to train (a file name in data/orders/models/, without "
-            ".json, or SERIES:SIZE[:RUN], a size of a series of data/orders/series/ or another run of it), in the "
-            "environment or in .env", ERROR)
+        say("WPT_ORDER is not set: name the model order to train (FAMILY:SIZE, a size of a family file of "
+            "data/orders/, or FAMILY:SIZE:RUN, another run of it), in the environment or in .env", ERROR)
         return leave(REFUSED)
     try:
         Orders(root).data_part(order)  # refused now, not after the workers are rented
@@ -571,8 +570,8 @@ def _run(order, name, out, evaluate, dock, telemetry, environ, root, workers, si
         with telemetry.span("manager.corpus", order=order) as span:
             try:
                 record = find_corpus(dock, environ.get("WPT_CORPUS") or None, Orders(root).data_part(order))
-                Orders(root).model_order(order, record["tokenizer"]["vocab_size"])  # a size of a series derives
-            except (InputError, OrderError) as error:
+                Orders(root).model_order(order, step_updates)  # a run of a size: its steps checked now
+            except (InputError, OrderError, PluginError) as error:
                 log(f"{type(error).__name__}: {error}", ERROR)
                 return REFUSED
             span.set(corpus=record["id"])

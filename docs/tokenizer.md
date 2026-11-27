@@ -70,7 +70,7 @@ deliveries (below); the web app serves none of them.
 
 ### A vocabulary in an order
 
-A model order's data section names its vocabulary in one of two forms
+The data section of a model family's size names its vocabulary in one of two forms
 ([data-selection.md](data-selection.md), "The data section of a model
 order"):
 
@@ -81,7 +81,7 @@ order"):
 - `{"sha256": S, "size": N}`: the vocabulary of that sha256, which the dock
   must hold. This is how an order keeps the vocabulary of an earlier model.
 
-`wpt build-resources ORDER` (`SERIES:` for a series) sends the order's
+`wpt build-resources FAMILY:SIZE` sends the order of that size's
 requests to the freight in order: the vocabulary first when the order
 learns one, then the corpus, whose request names the vocabulary's delivery
 as its input. It waits for both jobs and prints both delivery notes

@@ -1,5 +1,4 @@
 import contextlib
-import json
 import math
 from pathlib import Path
 
@@ -21,7 +20,8 @@ CPU = Strategy(torch.device("cpu"))
 def read_text(**settings):
     """A read-text step under by-part with these settings (docs/training.md, "Steps")."""
     return load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": settings},
-                      "settings": {"stages": [{"block_size": 128, "steps": 1, "batch_size": 4}]}}, PARTS)
+                      "settings": {"stages": [{"block_size": 128, "share": 1}], "tokens_per_update": 512,
+                                   "prefix_tokens": 1000}}, PARTS)
 
 
 def by_part(model, steps=100, **settings):
@@ -30,9 +30,9 @@ def by_part(model, steps=100, **settings):
 
 
 def test_the_learning_rate_warms_up_then_drops_twice():
-    # docs/model.md: linear warm-up, then 31.6% of the maximum after 80% of
+    # docs/model.md: linear warm-up over its share of the updates, then 31.6% of the maximum after 80% of
     # the steps and 10% after 90%; Engram tables at 5 times the rate
-    method = by_part(WPT(ModelConfig(**TINY)), steps=100, lr=0.01, warmup=10)
+    method = by_part(WPT(ModelConfig(**TINY)), steps=100, lr=0.01, warmup=0.1)
     seen = {}
     for step in (5, 50, 85, 95):
         method.before_update(step)
@@ -75,13 +75,14 @@ def test_early_stop_is_off_unless_patience_turns_it_on():
 
 
 def test_the_step_keeps_an_exponential_average_of_its_last_states():
-    # IMU-1's post-hoc EMA: the states at the last update and every average_every updates before it, at most
-    # average_states of them, from the oldest, each later one taken in with weight 1 - average_beta
+    # IMU-1's post-hoc EMA: the states at the last update and every average_every of the updates before it (a
+    # share, 3 of 10), at most average_states of them, from the oldest, each later one taken in with weight
+    # 1 - average_beta
     torch.manual_seed(0)
     model = torch.nn.Linear(4, 3)
     model.optimizer_roles = lambda: [("weight", model.weight, "matrix", (1, 3, 4)),
                                      ("bias", model.bias, "vector", None)]
-    method = by_part(model, steps=10, average_states=3, average_every=3, average_beta=0.8)
+    method = by_part(model, steps=10, average_states=3, average_every=0.3, average_beta=0.8)
     states = {}
     for update in range(1, 11):
         with torch.no_grad():
@@ -95,7 +96,7 @@ def test_the_step_keeps_an_exponential_average_of_its_last_states():
         expected = 0.8 * (0.8 * states[4][name] + 0.2 * states[7][name]) + 0.2 * states[10][name]
         assert torch.allclose(kept[name], expected, atol=1e-6)
     # a step shorter than the states counts only the updates it has
-    short = by_part(model, steps=5, average_states=3, average_every=3)
+    short = by_part(model, steps=5, average_states=3, average_every=0.6)
     for update in range(1, 6):
         short.after_update(update, None)
     assert all(torch.equal(t, model.state_dict()[name]) for name, t in short.kept().items())
@@ -107,8 +108,8 @@ def test_a_step_stopped_and_resumed_keeps_the_average_of_its_states(dataset, tmp
     # keeps, holds the average of the weights at updates 2, 4 and 6, and so does the model
     dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {
-        "lr": 0.01, "warmup": 2, "average_states": 3, "average_every": 2}}, "settings": {
-        "stages": [{"block_size": 16, "steps": 6, "batch_size": 2}], "prefix_tokens": 500}}, PARTS)
+        "lr": 0.01, "warmup": 0.34, "average_states": 3, "average_every": 0.34}}, "settings": {
+        "stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 32, "prefix_tokens": 192}}, PARTS)
     torch.manual_seed(1337)
     model = WPT(ModelConfig(**TINY))
     checkpoint, states = FolderCheckpoint(tmp_path / "checkpoint"), []
@@ -132,16 +133,19 @@ def test_a_step_stopped_and_resumed_keeps_the_average_of_its_states(dataset, tmp
             assert torch.allclose(model.state_dict()[name], expected, atol=1e-6), name
 
 
+# 2 updates of 4 windows of 16 tokens, then 2 of 2 windows of 32
+TWO_STAGES = {"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 0.25}},
+              "settings": {"stages": [{"block_size": 16, "share": 1}, {"block_size": 32, "share": 1}],
+                           "tokens_per_update": 64, "prefix_tokens": 256}}
+
+
 def test_recompute_from_keeps_every_activation_in_the_shorter_stages_and_trains_the_same(dataset):
     # docs/training.md, "Recomputing layers": through the runner, with --recompute and --recompute-from 32,
     # the stage of 16 tokens keeps every activation and the stage of 32 runs its layers again; the weights
     # are those of a run that recomputes every stage and of one that recomputes none, bit for bit, and the
     # model recomputes again once the step is over
     dock, record = dataset
-    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
-                      "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
-                                              {"block_size": 32, "steps": 2, "batch_size": 2}],
-                                   "prefix_tokens": 500}}, PARTS)
+    step = load_step(TWO_STAGES, PARTS)
     results = []
     for recompute, recompute_from in ((False, 0), (True, 0), (True, 32)):
         torch.manual_seed(1337)
@@ -195,15 +199,17 @@ class FakeMemory:
 
 
 def stages_run(dataset, monkeypatch, stages, usable, automatic=True, micro_batch=0, block_size=32):
-    """Train a read-text step of these stages on a device that foresees 4 GiB for each window of a pass, 2 GiB
-    recomputing, with `usable` GiB left: (the weights, the passes with gradients as (windows, tokens,
-    recomputed), the log's lines)."""
+    """Train a read-text step of these stages, each (window length, windows per update) and 2 updates, on a
+    device that foresees 4 GiB for each window of a pass, 2 GiB recomputing, with `usable` GiB left: (the
+    weights, the passes with gradients as (windows, tokens, recomputed), the log's lines)."""
     from wpt_training import memory
 
     dock, record = dataset
-    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
-                      "settings": {"stages": [{"block_size": length, "steps": 2, "batch_size": batch}
-                                              for length, batch in stages], "prefix_tokens": 500}}, PARTS)
+    [per] = {length * batch for length, batch in stages}  # every stage's update holds as many tokens
+    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 0.25}},
+                      "settings": {"stages": [{"block_size": length, "share": 1} for length, _ in stages],
+                                   "tokens_per_update": per, "prefix_tokens": 2 * per * len(stages)}}, PARTS)
+    assert [(stage["steps"], stage["batch_size"]) for stage in step.stages()] == [(2, batch) for _, batch in stages]
     torch.manual_seed(1337)
     model = WPT(ModelConfig(**{**TINY, "block_size": block_size}))
     monkeypatch.setattr(memory, "reader", lambda device: FakeMemory((usable * GIB, 0, 0), model, (4 * GIB, 2 * GIB)))
@@ -229,23 +235,22 @@ def stages_run(dataset, monkeypatch, stages, usable, automatic=True, micro_batch
 def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_hand(dataset, monkeypatch, fits):
     # docs/training.md, "Recomputing layers": with nothing asked, each stage of text windows probes its
     # memory (here real probe passes on the CPU, read through faked numbers that make every pass fit, or
-    # only a pass that recomputes) and keeps every activation or recomputes; the weights are bit for bit
-    # those of a run that recomputes none, and of one that recomputes every stage: the probes leave no trace
+    # only the first stage's pass that recomputes) and keeps every activation or recomputes; the weights are
+    # bit for bit those of a run that recomputes none, and of one that recomputes every stage: the probes
+    # leave no trace
     from wpt_training import memory
 
     dock, record = dataset
-    step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01, "warmup": 1}},
-                      "settings": {"stages": [{"block_size": 16, "steps": 2, "batch_size": 2},
-                                              {"block_size": 32, "steps": 2, "batch_size": 2}],
-                                   "prefix_tokens": 500}}, PARTS)
+    step = load_step(TWO_STAGES, PARTS)
     results = []
     for recompute, automatic in ((False, False), (True, False), (False, True)):
         torch.manual_seed(1337)
         model = WPT(ModelConfig(**{**TINY, "block_size": 32}))
         model.recompute = recompute
-        # a pass of 2 windows is foreseen at 8.4 GiB, and at 4.2 GiB recomputing
+        # the first stage's pass of 4 windows is foreseen at 16.8 GiB, and at 8.4 GiB recomputing; the second
+        # stage's pass of 2 windows at 8.4 GiB, and at 4.2 GiB recomputing
         monkeypatch.setattr(memory, "reader", lambda device, model=model: FakeMemory(
-            ((16 if fits else 5) * GIB, 0, 0), model, (4 * GIB, 2 * GIB)))
+            ((20 if fits else 9) * GIB, 0, 0), model, (4 * GIB, 2 * GIB)))
         passes, run_pass, said = [], model._pass, []
 
         def counted(first, idx, *args, model=model, passes=passes, run_pass=run_pass):
@@ -265,11 +270,11 @@ def test_a_stage_left_to_the_runner_chooses_from_memory_and_trains_as_chosen_by_
     (none, _, _), (every, _, _), (chosen, chosen_passes, said) = results
     # half a window and a window, of each stage, each way
     probes = {(length, recompute) for length in (8, 16, 32) for recompute in (False, True)}
-    assert chosen_passes == probes | ({(16, True), (32, True)} if not fits else set())
+    assert chosen_passes == probes | ({(16, True)} if not fits else set())
     choices = [line for line in said if "foreseen" in line]
-    assert len(choices) == 2 and all(("every activation kept: " if fits else "recompute the layers: ") in line
-                                     for line in choices)
-    assert "stage 1: " in choices[0] and "a pass of 32 tokens" in choices[0]  # 2 windows of 16
+    assert len(choices) == 2 and ("every activation kept: " if fits else "recompute the layers: ") in choices[0]
+    assert "every activation kept: " in choices[1]
+    assert "stage 1: " in choices[0] and "a pass of 64 tokens" in choices[0]  # 4 windows of 16
     for name, value in none.items():
         assert torch.equal(value, every[name]) and torch.equal(value, chosen[name]), name
 
@@ -362,7 +367,7 @@ def test_fewer_windows_per_pass_add_up_to_the_gradient_of_the_whole_pass(dataset
     # order, and the passes' gradients add up to the whole pass's within rounding
     dock, record = dataset
     step = load_step({"step": "read-text", "optimizer": {"name": "by-part", "settings": {"lr": 0.01}},
-                      "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 4}],
+                      "settings": {"stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 64,
                                    "prefix_tokens": 500}}, PARTS)
     torch.manual_seed(0)
     model = WPT(ModelConfig(**TINY)).train()
@@ -402,7 +407,7 @@ def test_each_head_moves_as_much_whatever_its_gradient_size(weight):
     # with large ones; each part's step has an RMS of 0.18
     torch.manual_seed(0)
     model = WPT(ModelConfig(**TINY))
-    method = by_part(model, lr=0.01, warmup=1, weight_decay=0.0)
+    method = by_part(model, lr=0.01, warmup=0.01, weight_decay=0.0)
     weight = weight(model)
     for p in model.parameters():
         p.grad = torch.zeros_like(p)
@@ -426,7 +431,7 @@ def test_a_matrix_s_update_has_an_rms_of_0_18(shape):
     torch.manual_seed(0)
     model = torch.nn.Linear(shape[1], shape[0], bias=False)
     model.optimizer_roles = lambda: [("weight", model.weight, "matrix", (1, *shape))]
-    method = by_part(model, lr=0.01, warmup=1, weight_decay=0.0)
+    method = by_part(model, lr=0.01, warmup=0.01, weight_decay=0.0)
     model.weight.grad = torch.randn(shape) * 1e3
     before = model.weight.detach().clone()
     method.before_update(1)
@@ -440,7 +445,7 @@ def test_every_parameter_takes_a_step():
     # block's window attention) each belong to one optimizer group, once
     torch.manual_seed(0)
     model = WPT(ModelConfig(**TINY))
-    method = by_part(model, lr=0.01, warmup=1)
+    method = by_part(model, lr=0.01, warmup=0.01)
     grouped = [id(p) for group in method.optimizer.param_groups for p in group["params"]]
     assert sorted(grouped) == sorted(id(p) for p in model.parameters())
     for p in model.parameters():
@@ -452,15 +457,15 @@ def test_every_parameter_takes_a_step():
     assert still == []
 
 
-def test_the_classics_test_order_trains_with_a_falling_loss():
-    # the test order's architecture (data/orders/models/classics-test.json),
+def test_the_test_family_s_model_trains_with_a_falling_loss():
+    # the architecture of the test family's size (data/orders/test.json),
     # on a repeating text it can learn in a few steps: the loss stays finite
     # and falls, through every part
-    path = Path(__file__).parents[3] / "data/orders/models/classics-test.json"
-    order = json.loads(path.read_text(encoding="utf-8"))
+    from wpt_orders import Orders
+    order = Orders(Path(__file__).parents[3]).model_order("test:128")
     torch.manual_seed(0)
     model = WPT(ModelConfig(vocab_size=64, **{**order["model"], "block_size": 128})).train()
-    method = by_part(model, steps=20, **{**order["steps"][0]["optimizer"]["settings"], "warmup": 2})
+    method = by_part(model, steps=20, **{**order["steps"][0]["optimizer"]["settings"], "warmup": 0.1})
     loss_of = read_text().start_method()  # next-token, with its multi-token prediction schedule
     text = torch.arange(129).remainder(13)[None].expand(4, -1)  # a period of 13 tokens
     x, y = text[:, :-1], text[:, 1:]

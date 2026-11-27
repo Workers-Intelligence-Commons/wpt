@@ -96,7 +96,7 @@ loops at small sizes, and half against it.
   their number. Loops change the work per token, `loops + 1` times one
   pass, and not the parameters. Fewer experts and more loops is a smaller
   model that computes more. **proved**, by counting the parameters and the
-  passes of WPT's layers (docs/model.md, "Model series").
+  passes of WPT's layers (docs/model.md, "Model families").
 - The routed experts are the largest part of a small model's body, so the
   number of experts is the strongest lever on its size after the
   vocabulary. **proved**, by counting, for the shapes of the table below

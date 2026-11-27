@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Workers-Intelligence-Commons/wpt/schemas/family.schema.json",
+  "title": "WPT model family (data/orders/<name>.json): what its sizes share, written once as the parts of a model order, then a table of its sizes; FAMILY:SIZE names one size wherever an order's name goes, and resolves to a model order the model order's schema checks",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sizes"],
+  "properties": {
+    "data": {"type": "object", "description": "the data part every size shares, as a model order's (model.schema.json), without the settings its columns give; a size's total_tokens is the tokens it reads, and sizes whose data parts are the same but for total_tokens read the start of one corpus, of the most tokens any of them reads"},
+    "model": {"type": "object", "description": "the architecture's numbers every size shares, as a model order's, without the settings its columns give"},
+    "seed": {"type": "integer", "minimum": 0, "description": "every size's seed, as a model order's"},
+    "steps": {"type": "array", "items": {"type": "object"}, "description": "every size's steps, as a model order's, without the settings its columns give; a step that lists stages reads the size's data.total_tokens, so its prefix_tokens is never written"},
+    "drafter": {"type": "object", "description": "every size's drafter, as a model order's"},
+    "note": {"type": "string", "description": "what the family is for, for people; every size's order holds it"},
+    "branches": {
+      "type": "array", "items": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "uniqueItems": true,
+      "description": "decay branches of every size, each a share of the size's updates: FAMILY:SIZE:branch-SHARE goes on from the size's trunk, its one step at the peak rate, at the last update before its first drop, and decays to its own updates (docs/model.md, \"Model families\"); left out, none"
+    },
+    "learning_rate_check": {
+      "type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "uniqueItems": true,
+      "description": "factors of the learning rate the smallest size writes: FAMILY:SIZE:lr-FACTOR is that size's own run at FACTOR times it (docs/model.md, \"Model families\"); left out, none"
+    },
+    "sizes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns", "rows"],
+      "description": "the table of sizes: one row per size, one column per setting that varies between sizes; a setting no column names is common, and a setting is written in one place only",
+      "properties": {
+        "columns": {
+          "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
+          "description": "\"size\", then the path of each setting that varies: its names from the top of a model order joined by '.', the steps numbered from 1 (model.d_model, data.total_tokens, data.vocabulary, steps.1.optimizer.settings.lr)"
+        },
+        "rows": {
+          "type": "array", "minItems": 1, "items": {"type": "array", "minItems": 1},
+          "description": "one per size: its name (what FAMILY:SIZE names), then its value for each other column, in order, none left empty"
+        }
+      }
+    }
+  }
+}

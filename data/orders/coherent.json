@@ -1,0 +1,79 @@
+{
+  "note": "One model on one GPU, to read coherent text: width 512, 11 layers (two window layers on each side of an exact layer, then one exact layer and five sparse layers), 8 heads of 128, 32 routed experts with top 4, Engram memory in layer 2, one vocabulary table, one loop, a vocabulary of 65,536 tokens, the whole corpus read once through nine stages of windows from 128 to 32,768 tokens, each stage an equal share of the tokens.",
+  "data": {
+    "depot": "https://depot.workers-intelligence-commons.org",
+    "snapshot": "balanced",
+    "change": 32118,
+    "digest": "1c4c1fe17abcfe8c3741fe35d87efed839b83ff8e462c8d3617db184decc0a01",
+    "shares": [
+      {"tag": "research-paper", "share": 0.35},
+      {"tag": "books", "share": 0.15},
+      {"tag": "government", "share": 0.05},
+      {"tag": "code", "share": 0.05},
+      {"tag": "encyclopedia", "share": 0.4}
+    ],
+    "total_tokens": 3722444800,
+    "vocabulary": {"sha256": "312d8d3fcd38b2312422956e4e476aa5f94ca1bac4e1dc9629030df468ed34bc", "size": 65536}
+  },
+  "model": {
+    "window_layers": 2,
+    "sparse_groups": 1,
+    "sparse_layers": 5,
+    "attention_heads": 8,
+    "attention_head_dim": 128,
+    "n_experts": 32,
+    "top_k": 4,
+    "expert_width": 256,
+    "latent_width": 256,
+    "shared_width": 512,
+    "engram_layers": [2],
+    "engram_order": 3,
+    "engram_heads": 8,
+    "engram_dim": 16,
+    "engram_table_size": 200087,
+    "residual_groups": 22,
+    "loops": 1,
+    "tied_tables": true
+  },
+  "seed": 1337,
+  "steps": [
+    {
+      "step": "read-text",
+      "optimizer": {"name": "by-part", "settings": {"lr": 0.0034, "warmup": 0.04}},
+      "settings": {
+        "stages": [
+          {"block_size": 128, "share": 1},
+          {"block_size": 256, "share": 1},
+          {"block_size": 512, "share": 1},
+          {"block_size": 1024, "share": 1},
+          {"block_size": 2048, "share": 1},
+          {"block_size": 4096, "share": 1},
+          {"block_size": 8192, "share": 1},
+          {"block_size": 16384, "share": 1},
+          {"block_size": 32768, "share": 1}
+        ],
+        "tokens_per_update": 131072,
+        "readings": 1,
+        "mtp_switch": 0.8
+      },
+      "locked": []
+    }
+  ],
+  "drafter": {
+    "prompts": 256,
+    "prompt_tokens": 64,
+    "answer_tokens": 256,
+    "epochs": 10,
+    "learning_rate": 0.0006,
+    "held_out": 0.1,
+    "anchors": 512,
+    "batch": 8,
+    "seed": 0
+  },
+  "sizes": {
+    "columns": ["size", "model.d_model"],
+    "rows": [
+      ["512", 512]
+    ]
+  }
+}

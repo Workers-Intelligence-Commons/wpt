@@ -1,7 +1,7 @@
 # Architecture
 
 **The texts live in a depot; the repository holds none.** The repository
-holds the code, the model and series orders, and the images of agentic
+holds the code, the model families, and the images of agentic
 tasks. The texts, the decisions on them and what to train on live in
 depots, and everything built or trained lives in a dock.
 
@@ -13,7 +13,7 @@ depots, and everything built or trained lives in a dock.
   kept read only, the tokenizer recipes and vocabularies a depot may hold.
   A hand-picked selection of texts is a tag. A depot can follow an upstream depot and pull its updates
   (`depot`).
-- A corpus is what a model order's data section is built into, on the
+- A corpus is what the data section of a family's size is built into, on the
   dock: the token files, the conversations and tasks, and copies of every
   text's credits, licenses and notices, so it says everything about what it
   holds even once the depots it read change or vanish (the freight's
@@ -24,11 +24,11 @@ depots, and everything built or trained lives in a dock.
   a corpus").
   A corpus is a cache: the same build gives it again, so nothing keeps one
   for reproducibility.
-- A model order names a depot by its public address, a snapshot of it (with the change
+- A model family names a depot by its public address, a snapshot of it (with the change
   and digest it reads), the roles of its corpus's portions, its shares, sizes and vocabulary;
-  training reads the corpus of that request's delivery key from the dock, and every size of a
-  model series reads the same corpus, the one of its largest size, the smaller sizes the first
-  part of its pretraining portion;
+  training reads the corpus of that request's delivery key from the dock, and the sizes of a
+  family whose data differ only in their tokens read the same corpus, of the most tokens any
+  of them reads, each size the first part of its pretraining portion;
   `total_tokens` is the size the pretraining portion is made at and a ceiling on what training
   reads, and training reads what a corpus made at that size holds.
 
@@ -820,15 +820,15 @@ ends; [observability.md](observability.md)).
 
 `packages/wpt-orders/src/wpt_orders/orders.py` (`Orders`) is the only
 code that reads or writes the repository's data. It hands out documents
-and bytes, never a path under `data/`. It holds the model and series
-orders and the images of agentic tasks:
+and bytes, never a path under `data/`. It holds the model families and
+the images of agentic tasks:
 their Dockerfiles, locks, license lists and pools of tools (`tools.json`).
 `wpt train`, `wpt manager`, `wpt eval`, `wpt doctor`, the
 image commands of `wpt agent` and the task reader of `wpt_agent` read them
 through it. It checks every file it reads against its schema, and its
-check adds the rules across files: a series derives every size, and an
-image's pool takes no built-in tool's name. An order's data part names a snapshot, and one
-that names a dataset is refused ([model.md](model.md), "Model orders"); the check refuses
+check adds the rules across files: every size of a family resolves to a
+valid order, and an image's pool takes no built-in tool's name. An order's data part names a snapshot, and one
+that names a dataset is refused ([model.md](model.md), "Model families"); the check refuses
 shares that name a tag twice or sum above 1. An order whose depot, snapshot, digest or
 vocabulary is still empty reads, and the check names it for a person to fill in. People edit the
 orders and `tools.json` as files; `Orders` writes only the generated
@@ -1166,7 +1166,7 @@ corpus.
 | Package | Role |
 | --- | --- |
 | `depot` | the depot: texts and structured items, the decisions on them, snapshots and erasures, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore onto the dock (`backup.py`); the upgrade from an older format (`upgrade.py`, `delta.py`, and `conversion.py`, which makes snapshots of the libraries and datasets of format 12); erasures carried out (`erasure.py`); snapshots, made, read and checked against their digest (`snapshots.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); what code outside the depot asks of it, a snapshot, its listing, its texts' content and credits and the erasures, in values JSON carries, the only module code outside the depot imports ([api/depot.md](api/depot.md), `api.py`); a snapshot's texts in the order of their export keys (`order.py`), a long text taken as pieces (`pieces.py`); a share split over its texts' tags, which only the tests' reference corpus build uses (`groups.py`, `fill.py`); the table of counts (`counts.py`); `DEPOT` (`settings.py`) |
-| `wpt-orders` | the model and series orders and the images of agentic tasks: the service layer that reads and checks them (`orders.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
+| `wpt-orders` | the model families and the images of agentic tasks: the service layer that reads and checks them (`orders.py`), the sizes and other runs a family resolves to (`family.py`), the parameters and compute of a size (`counts.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `dock` | the dock (its kinds: a local folder or S3), its compression, its named files (deliveries, corpora, models, run folders) and its results; what code outside it asks of it, the gestures find, fetch and put, the only module code outside the dock imports ([api/dock.md](api/dock.md), `api.py`) |
 | `freight` | reads a request, chooses items in a depot's snapshot by the selection rules ([data-selection.md](data-selection.md)), reading the depot only through `depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the dock with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
 | `wpt-corpus` | WPT's preparations, the programs `wpt-vocabulary` (a vocabulary learned from plain texts, `vocabulary.py`), `wpt-tokens` (a corpus's token files and `tasks.jsonl`) and `wpt-count` (the same weights, no file) (`programs.py`; [api/preparation.md](api/preparation.md)); how an item becomes tokens (`encoding.py`); the token shard format with its checked reader, so training and evaluation read a corpus without depending on the depot (`shards.py`); the reading of the corpora the depot built before the freight, under `corpora/` of the dock (`corpora.py`); `DockFiles`, the reader of a corpus's files on the dock that `wpt train`, the shards and the environments take, which fetches each file it is asked for as a file into a folder of the caller's (`files.py`) |
@@ -1248,9 +1248,9 @@ commit in CI, or `--base REV`. The parts:
   changed.
 - `tests`: the tests of every package, below.
 - `rust`: the tokenizer's Rust tests. It runs when the tokenizer's Rust changed.
-- `data`: the orders' check (`wpt_orders.Orders.check`): every order
-  and image file matches its schema, and the rules across files hold (a
-  series derives every size, an image's pool takes no built-in tool's name, a
+- `data`: the orders' check (`wpt_orders.Orders.check`): every family
+  and image file matches its schema, and the rules across files hold (every
+  size of a family resolves to a valid order, an image's pool takes no built-in tool's name, a
   order names its depot and its snapshot). It runs when `data/` changed, or
   `wpt-orders`, the root `pyproject.toml` or `uv.lock`.
 - `commits`: the author's sign-off (`Signed-off-by: <author>`) on every

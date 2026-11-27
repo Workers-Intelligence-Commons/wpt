@@ -153,9 +153,11 @@ class Run:
     parameters: int  # the parameters the step trains
     steps: int       # the maximum number of updates
     log: callable    # a no-op except in the main process
-    # how many times the step reads its examples (Environment.readings): settings counted in updates count those
-    # of one reading
+    # how many times the step reads its examples (Environment.readings)
     readings: int = 1
+    # the updates of the whole schedule the step is a part of (Environment.schedule; steps when it is whole): a
+    # step cut from a longer schedule warms up as that schedule does
+    schedule: int | None = None
 
 
 @dataclass(frozen=True)
@@ -444,8 +446,10 @@ class Environment:
     read, for the model's NOTICE, by kind of texts: {"plain": the tokens of
     the plain texts' token files it read from their start}, {"conversation":
     how many}, {"task": how many}. readings: how many times the step reads
-    its examples, its stages holding that many times the updates of one
-    reading; the optimizer hears it (Run.readings). validation: what its
+    its examples; the optimizer hears it (Run.readings). schedule: the
+    updates of the whole schedule the step is a part of, when its stages
+    end before it (text windows' last_update), else None: the optimizer
+    hears it (Run.schedule). validation: what its
     evaluations measure, "held_out" (text no step trains on) or "training"
     (text the step trains on), None for an environment that does not
     evaluate. An environment whose stages have a
@@ -459,6 +463,7 @@ class Environment:
     tokens: int = 0
     learned: dict = {}
     readings: int = 1
+    schedule: int | None = None
     validation: str | None = None
 
     def begin(self, model, strategy):

@@ -490,7 +490,8 @@ each process.
 
 ## The data section of a model order
 
-A model order's data section ([model.md](model.md), "Model orders")
+A model order's data section, written in a model family for its sizes
+([model.md](model.md), "Model families"),
 says what its corpus takes: the depot by its public address, the snapshot
 by its name with the change and digest it reads, the roles of the portions
 its corpus is cut into (`roles`, see "The portions of a corpus"), its
@@ -691,7 +692,7 @@ seventieth of the text of an order of a billion tokens.
 
 Training reads only its portions ([training.md](training.md), "Steps"):
 the steps that read text windows the pretraining portion, as they read the
-start of the corpus (a size of a model series reads the first part of it),
+start of the corpus (each size of a model family reads its first part),
 the steps that read conversations and tasks the fine-tuning one. Of the
 held-out portion, the record training is given names the token files of
 plain text alone, which the steps that read text windows measure their
@@ -730,8 +731,8 @@ cut in every revision ([erasure.md](erasure.md)).
 
 ## Corpora
 
-`wpt build-resources ORDER` asks the freight for the corpus of a model
-order, or of a series at its largest size: a request whose preparation is
+`wpt build-resources FAMILY:SIZE` asks the freight for the corpus of a
+size of a model family: a request whose preparation is
 `wpt-tokens`, which the freight delivers on the dock (`DOCK`), what
 training reads ([api/freight.md](api/freight.md),
 [api/preparation.md](api/preparation.md)). The depot builds no corpus. The
@@ -811,9 +812,9 @@ text to find them. A snapshot can hold a number in several parts (a part
 for each library of the dataset an upgrade made the snapshot from): the
 text is taken once, read as of its first part's change number. Texts of
 one key go by their depot's name, then their number, then their piece.
-The order depends on nothing but the snapshot, so every size of a model
-series reads the same corpus, the smaller sizes its first part
-([model.md](model.md), "Model series"). The order takes 8 bytes a text in
+The order depends on nothing but the snapshot, so the sizes of a model
+family that share a corpus read it in the same order, each its first part
+([model.md](model.md), "Model families"). The order takes 8 bytes a text in
 memory, and at most 16 while it is made.
 
 ### What a corpus holds

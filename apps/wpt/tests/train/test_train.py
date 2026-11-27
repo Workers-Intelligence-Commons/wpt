@@ -35,8 +35,10 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 def one_stage(steps, block_size=16, batch_size=4):
-    """A read-text step of one stage (docs/training.md, "Stages")."""
-    return {"stages": [{"block_size": block_size, "steps": steps, "batch_size": batch_size}]}
+    """A read-text step of one stage (docs/training.md, "Stages"): `steps` updates of batch_size windows of
+    block_size tokens, the size's schedule in updates of that many tokens cut after them."""
+    return {"stages": [{"block_size": block_size, "share": 1}], "tokens_per_update": block_size * batch_size,
+            "last_update": steps}
 
 
 def checkpoint(dock, name):
@@ -69,14 +71,16 @@ def test_training_writes_a_model_with_its_provenance(built, tmp_path, monkeypatc
     assert provenance["corpus"] == {"id": corpus_id, "build_key": record["build_key"], "rules": record["rules"],
                                     "depot": built.depot.name(), "snapshot": record["snapshot"],
                                     "data": record["data"]}
-    assert provenance["data"] == json.loads((tmp_path / "data" / "orders" / "models" / "three.json").read_text())["data"]
+    assert provenance["data"] == json.loads((tmp_path / "data" / "orders" / "three.json").read_text())["data"]
     assert (provenance["data"]["snapshot"], provenance["data"]["change"], provenance["data"]["digest"]) == (
         built.names["d"], record["snapshot"]["change"], record["snapshot"]["digest"])
     assert provenance["repository_commit"] is not None
     assert provenance["vocabulary"] == record["tokenizer"]["vocabulary"]
     assert provenance["learned"] == {"plain": record["total_tokens"]}  # the order trains on the whole corpus
-    assert provenance["order_name"] == "three"
-    assert provenance["order"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "steps": 3, "batch_size": 4}]
+    assert (provenance["order_name"], provenance["family"], provenance["size"]) == ("three:s", "three", "s")
+    assert provenance["order"]["steps"][0]["settings"]["stages"] == [{"block_size": 16, "share": 1}]
+    # the record holds the updates each stage makes, computed: the size's schedule cut after 3
+    assert [(s["steps"], s["batch_size"], s["block_size"]) for s in provenance["steps"][0]["stages"]] == [(3, 4, 16)]
     [step] = provenance["steps"]
     assert step["step"]["name"] == "read-text" and step["updates"] == 3 and not step["reused"]
     # the step's result is kept on the dock, under its fingerprint
@@ -102,7 +106,8 @@ def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built,
 
     [run] = built.records("wpt train")
     assert run.end["status"] == "succeeded" and run.end["exit_code"] == 0
-    assert run.ids["inputs"]["order"] == "three" and run.ids["inputs"]["corpus"] == built.corpus_id
+    assert run.ids["inputs"]["order"] == "three:s" and run.ids["inputs"]["corpus"] == built.corpus_id
+    assert (run.ids["inputs"]["family"], run.ids["inputs"]["size"]) == ("three", "s")
     assert f"-wpt-train-{built.corpus_id[:8]}-" in run.folder  # its folder is found by the corpus it trained on
     steps = [e for e in run.events if e.get("name") == "training.step"]
     assert [e["attributes"]["step"] for e in steps] == [1, 2, 3]
@@ -117,16 +122,16 @@ def test_a_training_run_records_what_it_read_every_step_and_what_it_wrote(built,
     assert {"LICENSE", "README.md", "provenance.json", "tokenizer.json", "config.json"} <= set(files)
     def logged(*severities):
         return "".join(e["text"] + "\n" for e in run.events if e["kind"] == "log" and e["severity"] in severities)
-    # every line it printed, nothing else: its 3 updates read a sliver of its text, which it warns of
+    # every line it printed, nothing else: its 3 updates are a part of its schedule, which it says without a warning
     assert logged("info") == printed and logged("warning", "error") == warned
-    assert warned.startswith("step 1 read-text reads the first ")
+    assert "it ends after update 3 of its schedule (last_update)" in printed and "read-text reads" not in warned
 
 
 def test_what_the_gpu_worker_records_reaches_the_live_backend_once_through_this_side(built, otlp_backend, monkeypatch,
                                                                                      capsys):
     # the local worker's environment names the backend too: it must still send nothing itself, or its spans come twice
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_backend.endpoint)
-    main(["d", built.corpus_id, "--out", "model"])
+    main(["d:s", built.corpus_id, "--out", "model"])
 
     run = built.records("wpt train")[-1]
     update = next(line for line in run.events if line["kind"] == "event" and line["name"] == "training.step")
@@ -149,7 +154,7 @@ def test_training_ends_with_the_drafter_against_the_final_weights_and_the_schedu
     folder = tmp_path / "model"
     drafter = load_drafter(folder).provenance
     assert drafter["target"] == {"weights": weight_hashes(folder)}
-    assert drafter["trained_by"] == {"command": "wpt train", "order_name": "three"}
+    assert drafter["trained_by"] == {"command": "wpt train", "order_name": "three:s"}
     assert drafter["corpus"] == built.corpus_id and drafter["prompts"]["count"] == 4
     [run] = built.records("wpt train")
     names = [e.get("name") for e in run.events]
@@ -275,7 +280,7 @@ def test_kernels_named_that_cannot_work_on_the_gpu_worker_refuse_the_run_before_
 
     monkeypatch.setenv("WPT_KERNELS", "fast")
     with pytest.raises(SystemExit) as refused:
-        main(["d", built.corpus_id, "--out", "model"])
+        main(["d:s", built.corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "WPT_KERNELS='fast': not one of tilelang, triton, pytorch" in \
         capsys.readouterr().err
 
@@ -402,7 +407,7 @@ def test_training_into_a_model_folder_replaces_it_whole_and_only_once_recorded(b
 
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert not (folder / "evals").exists() and not (folder / "notes.txt").exists()
-    assert json.loads((folder / "provenance.json").read_text())["order_name"] == "three"
+    assert json.loads((folder / "provenance.json").read_text())["order_name"] == "three:s"
     run = built.records("wpt train")[-1]
     assert run.ids["outputs"]["weights"] == {
         "model.safetensors": hashlib.sha256((folder / "model.safetensors").read_bytes()).hexdigest()}
@@ -419,7 +424,7 @@ def test_on_s3_the_model_folder_is_replaced_only_once_its_record_is_in_the_bucke
     (folder / "notes.txt").write_text("mine\n")
     s3.refuse(b'"training.checkpoint_removed"')
     with pytest.raises(SystemExit) as stopped:
-        main(["d", built.corpus_id, "--out", "model"])
+        main(["d:s", built.corpus_id, "--out", "model"])
     assert stopped.value.code == 3
     # as it was: the step's checkpoint went once its result was kept
     assert sorted(path.name for path in folder.iterdir()) == ["notes.txt"]
@@ -473,7 +478,7 @@ def test_an_earlier_folder_that_cannot_be_removed_is_left_beside_with_a_warning(
     # the new model is in place and complete: an earlier folder that the
     # system will not remove must not fail the run, but must be named; a
     # Ctrl+C during its removal names it the same way, and still stops
-    main(["d", built.corpus_id, "--out", "model"])
+    main(["d:s", built.corpus_id, "--out", "model"])
     real = shutil.rmtree
 
     def refuse_the_replaced_one(path, *args, **options):
@@ -483,7 +488,7 @@ def test_an_earlier_folder_that_cannot_be_removed_is_left_beside_with_a_warning(
 
     monkeypatch.setattr(shutil, "rmtree", refuse_the_replaced_one)
     with pytest.raises(KeyboardInterrupt) if isinstance(error, KeyboardInterrupt) else contextlib.nullcontext():
-        main(["d", built.corpus_id, "--out", "model"])
+        main(["d:s", built.corpus_id, "--out", "model"])
 
     [left] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-replaced-")]
     assert (left / "model.safetensors").exists() and (tmp_path / "model" / "model.safetensors").exists()
@@ -497,7 +502,7 @@ def test_an_earlier_folder_that_cannot_be_removed_is_left_beside_with_a_warning(
 def test_an_earlier_folder_is_put_back_when_the_new_one_cannot_take_its_place(built, tmp_path, monkeypatch):
     # moving the earlier folder aside and the new one in are one step: when
     # the second fails, the target must be the earlier folder again
-    main(["d", built.corpus_id, "--out", "model"])
+    main(["d:s", built.corpus_id, "--out", "model"])
     before = {path.name: path.read_bytes() for path in (tmp_path / "model").iterdir() if path.is_file()}
     real = os.replace
 
@@ -518,7 +523,7 @@ def test_an_earlier_folder_that_cannot_be_put_back_is_named_with_the_new_one(bui
     # missing: neither model may be deleted, and the error names both
     from wpt.train import RestoreFailed
 
-    main(["d", built.corpus_id, "--out", "model"])
+    main(["d:s", built.corpus_id, "--out", "model"])
     earlier = (tmp_path / "model" / "model.safetensors").read_bytes()
     real = os.replace
 
@@ -532,13 +537,13 @@ def test_an_earlier_folder_that_cannot_be_put_back_is_named_with_the_new_one(bui
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert not (tmp_path / "model").exists() and str(failed.value.aside) in str(failed.value)
     assert (failed.value.aside / "model.safetensors").read_bytes() == earlier
-    assert json.loads((failed.value.new / "provenance.json").read_text())["order_name"] == "three"
+    assert json.loads((failed.value.new / "provenance.json").read_text())["order_name"] == "three:s"
 
 
 def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from(built, tmp_path):
     # whoever receives the folder, or only a weight file, must learn the licenses,
     # and each text the model learned from, with its notice and license text
-    main(["d", built.corpus_id, "--out", "model"])
+    main(["d:s", built.corpus_id, "--out", "model"])
     folder = tmp_path / "model"
 
     credits = (folder / "CREDITS").read_text()
@@ -552,7 +557,7 @@ def test_a_trained_model_folder_names_its_licenses_and_the_texts_it_learned_from
     assert "Weights: AGPL-3.0-or-later" in notice and "Generated text: CC0-1.0" in notice
     snapshot = readers.find(built.dock, built.corpus_id)["snapshot"]
     trained_on = (f"Trained on snapshot {built.names['d']} (change {snapshot['change']}, digest {snapshot['digest']}) of the depot "
-                  f"{built.depot.name()}, order d, code at commit ")
+                  f"{built.depot.name()}, family d, size s, code at commit ")
     assert trained_on in notice and f"corpus {built.corpus_id}:" in notice
     assert credits.rstrip("\n") in notice
     assert notice.endswith((ROOT / "OUTPUT-NOTICE").read_text())
@@ -573,7 +578,7 @@ def test_a_damaged_shard_stops_training_before_it_starts(built, tmp_path, capsys
     [path] = (dock_files.folder(dock) / shard["key"]).parent.glob(shard["key"].rsplit("/", 1)[1] + "*")  # as it is, or compressed
     path.write_bytes(path.read_bytes()[:-10] + b"0123456789")
     with pytest.raises(SystemExit) as refused:
-        main(["d", corpus_id, "--out", "model"])
+        main(["d:s", corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "CorruptFile" in capsys.readouterr().err  # 2: never restarted
     assert not (tmp_path / "model").exists()
 
@@ -583,16 +588,16 @@ def test_a_corpus_of_another_snapshot_or_other_shares_than_the_order_s_is_refuse
     # snapshot, or of the same one with other shares, stops the run before it starts
     other = built.snapshot("other")
     with pytest.raises(SystemExit) as refused:
-        main(["d", other, "--out", "model"])
+        main(["d:s", other, "--out", "model"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and f"was built from snapshot {built.names['other']}" in said \
         and f"this order names snapshot {built.names['d']} " in said
-    folder = tmp_path / "data" / "orders" / "models"
+    folder = tmp_path / "data" / "orders"
     order = json.loads((folder / "d.json").read_text())
     order["data"]["shares"] = [{"tag": "en", "share": 0.5}]
     (folder / "half.json").write_text(json.dumps(order))
     with pytest.raises(SystemExit) as refused:
-        main(["half", built.corpus_id, "--out", "model"])
+        main(["half:s", built.corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "with portions, shares or vocabulary other than the order's" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
 
@@ -696,13 +701,16 @@ def test_a_crashed_run_resumes_where_its_checkpoint_left_it(built, tmp_path, mon
 
 def staged(built, tmp_path, crash_at, best=None):
     """The options of a run of two stages on the CPU (docs/training.md,
-    "Stages"): 2 updates of 4 windows of 16 tokens, then 4 updates of 2
-    windows of 256 tokens, whose optimizer raises at update crash_at when
-    CRASH is set."""
+    "Stages"): updates of 256 tokens over the size's tokens, shared 1 to
+    11 (the corpus's 4,608 to 7,680 tokens make 2 updates of the first
+    stage), cut after update 6: 2 updates of 16 windows of 16 tokens, then
+    4 updates of 1 window of 256 tokens, whose optimizer raises at update
+    crash_at when CRASH is set."""
     options = interrupting(built, tmp_path, "if os.environ.get('CRASH'): raise RuntimeError('power cut')", crash_at,
                            best)
     options[0] = built.order("staged", training={
-        "stages": [{"block_size": 16, "steps": 2, "batch_size": 4}, {"block_size": 256, "steps": 4, "batch_size": 2}],
+        "stages": [{"block_size": 16, "share": 1}, {"block_size": 256, "share": 11}], "tokens_per_update": 256,
+        "last_update": 6,
         "optimizer": str(tmp_path / "interrupting.py")})
     return [*options, "--checkpoint-every", "2"]
 
@@ -736,12 +744,12 @@ def test_stages_train_in_order_and_a_run_resumes_across_their_boundary(built, tm
     assert load_model(tmp_path / "resumed").config.block_size == 256  # the model's context: the last stage's
     provenance = json.loads((tmp_path / "resumed" / "provenance.json").read_text())
     assert provenance["steps"][0]["stages"] == [
-        {"block_size": 16, "steps": 2, "batch_size": 4, "first_step": 1, "last_step": 2},
-        {"block_size": 256, "steps": 4, "batch_size": 2, "first_step": 3, "last_step": 6}]
+        {"block_size": 16, "steps": 2, "batch_size": 16, "first_step": 1, "last_step": 2},
+        {"block_size": 256, "steps": 4, "batch_size": 1, "first_step": 3, "last_step": 6}]
 
     uninterrupted, crashed, again = built.records("wpt train")
     assert [(s["stage"], s["block_size"], s["batch_size"], s["first_step"], s["last_step"])
-            for s in stage_spans(uninterrupted)] == [(1, 16, 4, 1, 2), (2, 256, 2, 3, 6)]
+            for s in stage_spans(uninterrupted)] == [(1, 16, 16, 1, 2), (2, 256, 1, 3, 6)]
     assert step_windows(uninterrupted) == [(1, 16), (2, 16), (3, 256), (4, 256), (5, 256), (6, 256)]
     assert [(s["stage"], s["resumed_at"]) for s in stage_spans(again)] == [(2, 3)]
     assert step_windows(again) == [(3, 256), (4, 256), (5, 256), (6, 256)]
@@ -866,7 +874,7 @@ def test_a_dock_that_fails_while_the_last_corpus_is_found_refuses_the_run_in_one
 
     monkeypatch.setattr(api, "delivery", failing)  # the run asks the dock for the deliveries the order names
     with pytest.raises(SystemExit) as refused:
-        main(["d"])
+        main(["d:s"])
     assert refused.value.code == 2 and bare(capsys.readouterr().err) == "DockError: the bucket does not answer\n"
 
 
@@ -875,12 +883,12 @@ def test_wpt_train_without_a_corpus_id_reads_the_corpus_the_depot_built_for_its_
     # its data section and vocabulary, at its size, is the order's: the dock holds it, no depot is read
     whole = built.snapshot("later")  # every token
     order = built.order("three", training=one_stage(3), snapshot="later")  # total_tokens: every token of later
-    size = json.loads((tmp_path / "data" / "orders" / "models" / "three.json").read_text())["data"]["total_tokens"]
+    size = json.loads((tmp_path / "data" / "orders" / "three.json").read_text())["data"]["total_tokens"]
     with pytest.raises(SystemExit) as refused:  # only the corpus of every token is built, not that size
         main([order, "--out", "model"])
     said = bare(capsys.readouterr().err)
     assert refused.value.code == 2 and f"no fresh corpus of snapshot {built.names['later']} of the depot fox with the vocabulary " \
-        f"{built.vocabulary} at the size {size:,}" in said and "run `wpt build-resources ORDER`" in said
+        f"{built.vocabulary} at the size {size:,}" in said and "run `wpt build-resources FAMILY:SIZE`" in said
 
     sized = built.sized("later", size)["id"]
     main([order, "--out", "model"])
@@ -902,7 +910,7 @@ def test_a_order_whose_snapshot_reads_another_change_or_digest_or_is_missing_fin
     assert find_corpus(built.dock, None, data)["build_key"]
     for wrong in ({"change": data["change"] + 1}, {"digest": "0" * 64}, {"snapshot": "never"},
                   {"depot": "elsewhere"}):
-        with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources ORDER`"):
+        with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources FAMILY:SIZE`"):
             find_corpus(built.dock, None, {**data, **wrong})
 
 
@@ -913,7 +921,7 @@ def test_a_corpus_the_depot_built_under_other_selection_rules_is_not_the_order_s
     data = load_data(built.order("three", training=one_stage(3)))
     record = built.sized("d", data["total_tokens"])
     dock_api.put_json(built.dock, f"{corpora.folder_of(record)}/{corpora.RECORD}", {**record, "rules": RULES - 1})
-    with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources ORDER`"):
+    with pytest.raises(InputError, match="no fresh corpus of snapshot .*run `wpt build-resources FAMILY:SIZE`"):
         find_corpus(built.dock, None, data)
 
 
@@ -936,13 +944,13 @@ def test_an_order_that_names_a_dataset_and_a_corpus_built_from_one_are_refused(b
     legacy = {key: value for key, value in record.items() if key not in ("build_key", "snapshot", "data")}
     legacy.update(id="1e9acy" + record["id"][6:], dataset={"id": "fox-1", "name": "classics", "revision": 1})
     dock_api.put_json(built.dock, f"{corpora.FOLDER}/classics-1e9acy00/{corpora.RECORD}", legacy)  # its files stay where they are
-    folder = tmp_path / "data" / "orders" / "models"
+    folder = tmp_path / "data" / "orders"
     order = json.loads((folder / "d.json").read_text())
     order["data"] = {"depot": built.depot.name(), "dataset": "classics", "total_tokens": record["total_tokens"]}
     (folder / "old.json").write_text(json.dumps(order))
 
-    assert "at data: names a dataset; an order names a snapshot" in refusal(capsys, ["old", "--out", "model"])
-    said = refusal(capsys, ["d", legacy["id"][:12], "--out", "model"])
+    assert "at data: names a dataset; an order names a snapshot" in refusal(capsys, ["old:s", "--out", "model"])
+    said = refusal(capsys, ["d:s", legacy["id"][:12], "--out", "model"])
     assert f"corpus {legacy['id']} was built from dataset 'classics'" in said and "wpt build-resources" in said
     assert not (tmp_path / "model").exists()
 
@@ -1033,7 +1041,7 @@ def test_a_new_model_that_cannot_take_an_empty_place_is_kept_and_named(built, tm
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model", "--run", "fox-2"])
     [kept] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-")]
     assert not (tmp_path / "model").exists()
-    assert json.loads((kept / "provenance.json").read_text())["order_name"] == "three"
+    assert json.loads((kept / "provenance.json").read_text())["order_name"] == "three:s"
     assert str(kept) in capsys.readouterr().err
 
 
@@ -1055,7 +1063,7 @@ def test_a_new_model_that_cannot_take_the_place_of_its_own_checkpoint_folder_is_
         main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])
     assert list((tmp_path / "model").iterdir()) == []
     [kept] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-")]
-    assert json.loads((kept / "provenance.json").read_text())["order_name"] == "three"
+    assert json.loads((kept / "provenance.json").read_text())["order_name"] == "three:s"
     assert f"it is kept in {kept}" in capsys.readouterr().err
     monkeypatch.setattr(os, "replace", real)
     main([built.order("three", training=one_stage(3)), built.corpus_id, "--out", "model"])  # reuses the step
@@ -1069,7 +1077,7 @@ def test_a_restore_failure_inside_a_broken_record_still_keeps_both_models(built,
     import wpt.train
     from wpt_telemetry import RecordError
 
-    main(["d", built.corpus_id, "--out", "model"])
+    main(["d:s", built.corpus_id, "--out", "model"])
     earlier = (tmp_path / "model" / "model.safetensors").read_bytes()
     real_replace, real_folder = os.replace, wpt.train._replace_folder
 
@@ -1092,7 +1100,7 @@ def test_a_restore_failure_inside_a_broken_record_still_keeps_both_models(built,
     [aside] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-replaced-")]
     [new] = [path for path in tmp_path.iterdir() if path.name.startswith(".model-") and path != aside]
     assert (aside / "model.safetensors").read_bytes() == earlier
-    assert json.loads((new / "provenance.json").read_text())["order_name"] == "three"
+    assert json.loads((new / "provenance.json").read_text())["order_name"] == "three:s"
     err = capsys.readouterr().err
     assert str(new) in err and str(aside) in err
 
@@ -1119,7 +1127,7 @@ def test_only_each_step_s_end_comes_back_from_the_gpu_worker_unless_every_checkp
 
     monkeypatch.setenv("WPT_LINK_CHECKPOINTS", "sometimes")
     with pytest.raises(SystemExit) as refused:
-        main(["d", built.corpus_id, "--out", "model"])
+        main(["d:s", built.corpus_id, "--out", "model"])
     assert refused.value.code == 2 and "WPT_LINK_CHECKPOINTS='sometimes': one of every, step-ends" in \
         capsys.readouterr().err
 
@@ -1140,7 +1148,7 @@ def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, caps
 
     said = refusal(capsys, [built.order("stale"), built.corpus_id, "--out", "model"])
     assert "is stale" in said
-    assert "run `wpt build-resources ORDER`" in said
+    assert "run `wpt build-resources FAMILY:SIZE`" in said
     assert not (tmp_path / "model").exists()
 
 
@@ -1154,11 +1162,11 @@ def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the
 
 def test_a_corpus_with_fewer_tokens_than_the_order_s_total_is_refused(built, tmp_path, capsys):
     record = readers.find(built.dock, built.corpus_id)
-    order = json.loads((tmp_path / "data" / "orders" / "models" / "d.json").read_text())
+    order = json.loads((tmp_path / "data" / "orders" / "d.json").read_text())
     order["data"]["total_tokens"] = record["total_tokens"] + 1
-    (tmp_path / "data" / "orders" / "models" / "long.json").write_text(json.dumps(order))
+    (tmp_path / "data" / "orders" / "long.json").write_text(json.dumps(order))
 
-    assert "holds" in refusal(capsys, ["long", built.corpus_id, "--out", "model"])  # built at no size
+    assert "holds" in refusal(capsys, ["long:s", built.corpus_id, "--out", "model"])  # built at no size
 
 
 def test_a_corpus_built_at_the_order_s_size_trains_on_what_it_holds_and_the_record_says_how_much(built, tmp_path):
@@ -1166,14 +1174,14 @@ def test_a_corpus_built_at_the_order_s_size_trains_on_what_it_holds_and_the_reco
     # it may hold fewer tokens of plain text, and training reads them all, found by its size or given by its id
     whole = readers.find(built.dock, built.corpus_id)["total_tokens"]
     asked = whole + 500  # more than the snapshot holds: the corpus built at that size holds every token, fewer
-    folder = tmp_path / "data" / "orders" / "models"
+    folder = tmp_path / "data" / "orders"
     order = json.loads((folder / "d.json").read_text())
     order["data"]["total_tokens"] = asked
     (folder / "ceiling.json").write_text(json.dumps(order))
     sized = built.sized("d", asked)
     assert sized["max_tokens"] == asked and sized["total_tokens"] == whole
 
-    main(["ceiling", "--out", "model"])
+    main(["ceiling:s", "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["corpus"]["id"] == sized["id"] and provenance["learned"]["plain"] == whole
@@ -1181,17 +1189,17 @@ def test_a_corpus_built_at_the_order_s_size_trains_on_what_it_holds_and_the_reco
               if event["kind"] == "log" and event["severity"] == "warning"]
     assert any(f"step 1 read-text reads the first {whole:,} tokens of plain text, all that corpus {sized['id']} "
                f"holds, not the {asked:,} it asks for" in text for text in warned)
-    main(["ceiling", sized["id"], "--out", "given"])  # given by its id, the same rule
+    main(["ceiling:s", sized["id"], "--out", "given"])  # given by its id, the same rule
     assert json.loads((tmp_path / "given" / "provenance.json").read_text())["learned"]["plain"] == whole
 
 
 def test_each_size_reads_the_smaller_of_its_prefix_and_what_a_corpus_built_at_the_order_s_size_holds():
-    # a size of a series sets its own prefix; a corpus built at the series' size reads at most what it holds
+    # a size of a family reads its own prefix; a corpus built at the family's size reads at most what it holds
     from wpt.train import with_prefixes
 
     def stepped(prefix):
-        return {"step": "read-text", "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 1}],
-                                                  "prefix_tokens": prefix}}
+        return {"step": "read-text", "settings": {"stages": [{"block_size": 16, "share": 1}],
+                                                  "tokens_per_update": 16, "prefix_tokens": prefix}}
     order = {"data": {"total_tokens": 5000}, "steps": [stepped(4000), stepped(800)]}
     record = {"id": "c", "total_tokens": 900, "tokenizer": {"sha256": "0" * 64}}
     said = []
@@ -1205,12 +1213,12 @@ def test_each_size_reads_the_smaller_of_its_prefix_and_what_a_corpus_built_at_th
 
 
 def test_a_plain_order_trains_on_the_first_total_tokens_of_its_corpus(built, tmp_path):
-    folder = tmp_path / "data" / "orders" / "models"
+    folder = tmp_path / "data" / "orders"
     order = json.loads((folder / "d.json").read_text())
     order["data"]["total_tokens"] = 3000  # fewer than the corpus holds
     (folder / "short.json").write_text(json.dumps(order))
 
-    main(["short", built.corpus_id, "--out", "model"])
+    main(["short:s", built.corpus_id, "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["learned"]["plain"] == 3000 < readers.find(built.dock, built.corpus_id)["total_tokens"]
@@ -1220,28 +1228,25 @@ def test_an_order_that_reads_its_text_twice_trains_twice_the_updates_and_says_so
                                                                                                          tmp_path):
     # docs/training.md, "Readings": the same prefix, read twice; the run's record, provenance.json and the
     # model card say how many times and how many tokens
-    folder = tmp_path / "data" / "orders" / "models"
+    folder = tmp_path / "data" / "orders"
     order = json.loads((folder / "d.json").read_text())
     order["data"]["total_tokens"] = 3000
-    [stage] = order["steps"][0]["settings"]["stages"]
+    del order["steps"][0]["settings"]["last_update"]  # the whole schedule: 6,000 tokens in updates of 64
     order["steps"][0]["settings"]["readings"] = 2
     (folder / "twice.json").write_text(json.dumps(order))
 
-    main(["twice", built.corpus_id, "--out", "model"])
+    main(["twice:s", built.corpus_id, "--out", "model"])
 
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     [step] = provenance["steps"]
-    assert step["settings"]["readings"] == 2 and step["updates"] == 2 * stage["steps"]
-    assert [one["steps"] for one in step["stages"]] == [2 * stage["steps"]]
+    # 6,000 tokens in updates of 64: 93.75 updates, 94; one reading would make 47 (46.875)
+    assert step["settings"]["readings"] == 2 and step["updates"] == 94
+    assert [(one["steps"], one["batch_size"]) for one in step["stages"]] == [(94, 4)]
     assert provenance["learned"]["plain"] == 3000
-    tokens = 2 * stage["steps"] * stage["batch_size"] * stage["block_size"]
     said = [event["text"] for event in built.records("wpt train")[-1].events if event["kind"] == "log"]
-    # the test order's stages predict more tokens than its 3,000: the record says how many times they read them
-    times = tokens / 3000
-    assert any(text.startswith(f"step 1 read-text reads the first 3,000 tokens of plain text {times:.2f} times "
-                               f"(readings 2): {2 * stage['steps']:,} updates, {tokens:,} tokens trained; its stages "
-                               f"predict {tokens:,} tokens, not the 6,000 that 2 readings of its text would")
-               for text in said)
+    times = 94 * 64 / 3000
+    assert (f"step 1 read-text reads the first 3,000 tokens of plain text {times:.2f} times (readings 2): 94 "
+            "updates, 6,016 tokens trained") in said
     assert f"its 3,000 tokens of plain text read {times:.2f} times (readings 2)" in \
         (tmp_path / "model" / "README.md").read_text()
     # the weight decay used, the order's over the readings, is in the run's record
@@ -1254,15 +1259,19 @@ def test_each_step_that_reads_text_says_how_many_times_its_stages_read_it_and_wa
     from wpt_model import PARTS
     from wpt_training import load_step
 
-    def step(readings_, steps):
+    def step(readings_, prefix, **more):
         return load_step({"step": "read-text", "settings": {
-            "stages": [{"block_size": 16, "steps": steps, "batch_size": 4}], "prefix_tokens": 6400,
-            "readings": readings_}}, PARTS)
-    assert readings([step(2, 100)]) == [("step 1 read-text reads the first 6,400 tokens of plain text 2.00 times "
-                                         "(readings 2): 200 updates, 12,800 tokens trained", False)]
-    [(line, strays)] = readings([step(1, 240)])
-    assert strays and line.startswith("step 1 read-text reads the first 6,400 tokens of plain text 2.40 times "
+            "stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 64, "prefix_tokens": prefix,
+            "readings": readings_, **more}}, PARTS)
+    assert readings([step(2, 6400)]) == [("step 1 read-text reads the first 6,400 tokens of plain text 2.00 times "
+                                          "(readings 2): 200 updates, 12,800 tokens trained", False)]
+    # 100 tokens make 1.56 updates, 2: the rounding of a very short step strays from its reading, and says so
+    [(line, strays)] = readings([step(1, 100)])
+    assert strays and line.startswith("step 1 read-text reads the first 100 tokens of plain text 1.28 times "
                                       "(readings 1)")
+    # a step cut by last_update is a part of its schedule: it says where it ends, and warns of nothing
+    [(line, strays)] = readings([step(1, 6400, last_update=10)])
+    assert not strays and line.endswith("it ends after update 10 of its schedule (last_update)")
 
 
 def test_recompute_from_narrows_recompute_and_is_refused_alone(capsys):

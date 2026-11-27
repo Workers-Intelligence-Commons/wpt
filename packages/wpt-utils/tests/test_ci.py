@@ -70,7 +70,7 @@ def test_a_change_is_what_differs_from_the_base_committed_or_not(ci, clone, monk
     ("packages/wpt-tokenizer/rust-toolchain.toml", {"rust"}),
     ("packages/wpt-model/pyproject.toml", {"lock"}),
     ("uv.lock", {"lock", "data"}),
-    ("data/orders/models/one.json", {"data"}),
+    ("data/orders/one.json", {"data"}),
     ("data/images/agent/Dockerfile", {"data"}),
     ("packages/wpt-orders/src/wpt_orders/orders.py", {"data"}),
     ("packages/wpt-orders/tests/test_orders.py", set()),

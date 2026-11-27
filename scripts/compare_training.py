@@ -99,9 +99,9 @@ WARMUP, TIMED = 3, 4  # updates before the timed ones (the first among them time
 
 def shape(width, vocab=65536):
     """A model of 11 layers (2 window layers each side of an exact layer,
-    then an exact layer and 5 sparse ones) as the orders of
-    data/orders/models/ make them: watery-tardigrade at width 512, and
-    unimpaired-axolotl's settings (4 heads) scaled to width 256."""
+    then an exact layer and 5 sparse ones) as the families of data/orders/
+    lay them out, with 8 heads at width 512 and above, else 4, the expert
+    and latent widths half the width and Engram memory in layer 2."""
     return dict(vocab_size=vocab, block_size=max(WINDOWS), window_layers=2, sparse_groups=1, sparse_layers=5,
                 d_model=width, attention_heads=8 if width >= 512 else 4, attention_head_dim=128, n_experts=32,
                 top_k=4, expert_width=width // 2, latent_width=width // 2, shared_width=width, engram_layers=[2],

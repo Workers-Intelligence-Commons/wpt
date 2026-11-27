@@ -86,3 +86,13 @@ exists under the id or address given.
 - **Many passes over less text against one pass over more**, at an equal
   number of updates, under 100M parameters: the measure is written in
   [reading-scarce-text.md](reading-scarce-text.md).
+- **How many stages of growing windows, and their shares of the tokens.**
+  No source read measures the number of stages or their shares: DeepSeek-V4
+  names its window lengths (4K, 16K, 64K, 1M) and states no tokens per
+  stage. A measure trains the same models, under 30M parameters, on the
+  same tokens in two ways: nine stages of windows doubling from 128 to
+  32,768 tokens, each an equal share of the tokens, against three stages
+  (2,048, 8,192 and 32,768 tokens). It compares the bits per byte on one
+  held-out text read in windows of 32,768 tokens, and the copying test.
+  A gap larger than the spread between two runs at every size, of one
+  sign, closes the question for these sizes.

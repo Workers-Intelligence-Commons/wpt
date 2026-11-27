@@ -1,15 +1,26 @@
 """Text windows drawn from the corpus's token files of plain texts
 (docs/training.md, "Stages").
 
-`stages` lists the window lengths in order, each {"block_size", "steps",
-"batch_size"}: its updates and its windows per update, over every process
-together (batch_size is global). The windows grow from one stage to the
-next, inside one step and one optimizer schedule; each window length
-divides the longest. `readings` (1 or more) is how many times the step
-reads its training tokens: every stage runs readings times its `steps`
-(`stages`), and eval_every counts the updates of one reading, so the step
-is the step of one reading stretched readings times (docs/training.md,
-"Readings").
+`stages` lists the window lengths in order, each {"block_size", "share"}:
+its windows' length and its share of the tokens the step reads, the
+shares divided by their sum. `tokens_per_update` is the tokens of every
+update, over every process together, at every stage. The updates of each
+stage are computed (`schedule`): its share x the tokens of one reading
+(prefix_tokens) x readings / tokens_per_update, rounded half up, at least
+1; its batch is tokens_per_update / block_size windows, a whole number.
+A step of several stages whose updates fill at least one group (below)
+per stage rounds each stage to whole groups instead, keeping its total
+updates as near the computed ones as whole groups allow, so that every
+stage starts where a group starts and no stage skips the end of a group;
+wpt train says what was rounded.
+The windows grow from one stage to the next, inside one step and one
+optimizer schedule; each window length divides the longest. `readings`
+(1 or more) is how many times the step reads its training tokens, the
+stages spread over the whole step (docs/training.md, "Readings").
+`last_update`, above 0, ends the step after that update of its schedule,
+the stages after it left out (`stages`): a part of a longer schedule, which
+a step that continues it goes on with (docs/training.md, "Continued
+steps"). An evaluation runs every eval_tokens tokens trained.
 
 The step walks its training tokens in readings, each a pass without
 replacement (`_Walk`). A window of block_size + 1 tokens starts on the last
@@ -26,12 +37,12 @@ offset and after its last whole slot are not read in that pass. With
 --stream, the windows are read from the shards in use from the segment
 of the update's first window (wpt_corpus.shards.ShardStream).
 
-prefix_tokens, when above 0, makes the training tokens the first
-prefix_tokens of the corpus's, in the token files' order, and nothing after
-them: the windows, the token files copied or streamed and the texts the
-step learned from are those of that start. Each size of a model series
-reads its first part of the series' one corpus (docs/model.md, "Model
-series"). A corpus with fewer tokens is refused before any step runs;
+prefix_tokens, above 0, makes the training tokens the first prefix_tokens
+of the corpus's, in the token files' order, and nothing after them: the
+windows, the token files copied or streamed and the texts the step learned
+from are those of that start. Each size of a model family reads its own
+start of the corpus it shares (docs/model.md, "Model families"), and wpt
+train gives every step its prefix. A corpus with fewer tokens is refused before any step runs;
 `wpt train` gives a step no more than a corpus built at the order's size
 holds (docs/training.md, "Prefix"), so such a corpus is read
 whole.
@@ -43,7 +54,7 @@ of process r is slice (a * world_size + r) of the batch, so the batch
 holds the same windows whatever the number of processes; with split
 windows, every process takes every window and trains its slice of each.
 
-Every eval_every updates, and at the first and last update of each stage,
+Every eval_tokens tokens trained, and at the first and last update of each stage,
 the model is evaluated on eval_batches batches of windows at the stage's
 window length, drawn at random places of the corpus's held-out portion
 (the record's `held_out` token files, read whole), which no step trains
@@ -58,6 +69,8 @@ step says so in the run's record (`validation`: "training", else
 
 import bisect
 import hashlib
+import math
+from fractions import Fraction
 
 import numpy as np
 import torch
@@ -68,38 +81,120 @@ from wpt_training import parts as windows_in_parts
 
 GIVES = WINDOWS
 KINDS = ("plain",)  # the kinds of texts it reads (depot.kinds)
-SETTINGS = {"stages": [], "eval_every": 200, "eval_batches": 20, "prefix_tokens": 0, "readings": 1}
-STAGE = ("block_size", "steps", "batch_size")
+# eval_tokens: 2^25, an evaluation about every 33.6M tokens trained, so that evaluating costs the same share of
+# any run (WPT's own choice, open to review)
+SETTINGS = {"stages": [], "tokens_per_update": 0, "eval_tokens": 2**25, "eval_batches": 20, "prefix_tokens": 0,
+            "readings": 1, "last_update": 0}
+STAGE = ("block_size", "share")
 
 
 def check(settings):
-    """ValueError on stages that cannot be: none, a field missing or not a
-    positive whole number, eval_every or eval_batches below 1, or readings
-    below 1."""
+    """ValueError on stages that cannot be: none, a field missing, a window
+    length that is not a whole number above 0 or does not divide
+    tokens_per_update or the longest, a share not above 0; and on
+    prefix_tokens or tokens_per_update not above 0, readings, eval_tokens
+    or eval_batches below 1, or last_update below 0."""
     if not settings["stages"]:
         raise ValueError("stages: at least one stage")
+    for key in ("tokens_per_update", "prefix_tokens"):
+        if settings[key] < 1:
+            raise ValueError(f"{key} {settings[key]}: above 0 (prefix_tokens: the tokens of one reading, which wpt "
+                             "train gives from the order's total_tokens)")
     for number, stage in enumerate(settings["stages"], 1):
         if not isinstance(stage, dict) or sorted(stage) != sorted(STAGE) \
-                or not all(type(stage[key]) is int and stage[key] > 0 for key in STAGE):
-            raise ValueError(f"stage {number}: {{\"block_size\", \"steps\", \"batch_size\"}}, each a whole number "
-                             "above 0")
-    for key in ("eval_every", "eval_batches"):
+                or type(stage["block_size"]) is not int or stage["block_size"] < 1 \
+                or type(stage["share"]) not in (int, float) or stage["share"] <= 0:
+            raise ValueError(f"stage {number}: {{\"block_size\", \"share\"}}, a window length, a whole number above "
+                             "0, and its share of the tokens, above 0")
+        if settings["tokens_per_update"] % stage["block_size"]:
+            raise ValueError(f"stage {number}: its window length {stage['block_size']} does not divide "
+                             f"tokens_per_update {settings['tokens_per_update']}, so its batch is no whole number of "
+                             "windows")
+    for key in ("eval_tokens", "eval_batches", "readings"):
         if settings[key] < 1:
-            raise ValueError(f"{key}: at least 1")
-    if settings["prefix_tokens"] < 0:
-        raise ValueError("prefix_tokens: 0 (every training token) or more")
-    if settings["readings"] < 1:
-        raise ValueError(f"readings {settings['readings']}: a whole number, 1 or more")
+            raise ValueError(f"{key} {settings[key]}: a whole number, 1 or more")
+    if settings["last_update"] < 0:
+        raise ValueError(f"last_update {settings['last_update']}: 0 (every update) or the step's last update")
     longest = max(stage["block_size"] for stage in settings["stages"])
     for number, stage in enumerate(settings["stages"], 1):
         if longest % stage["block_size"]:
             raise ValueError(f"stage {number}: its window length {stage['block_size']} does not divide the longest, "
                              f"{longest}, so its windows cannot share the slots of a reading")
+    updates = sum(stage["steps"] for stage in schedule(settings))
+    if settings["last_update"] > updates:
+        raise ValueError(f"last_update {settings['last_update']:,}: the schedule makes {updates:,} updates")
+
+
+def _half_up(value) -> int:
+    return math.floor(value + Fraction(1, 2))
+
+
+def computed(settings) -> list[Fraction]:
+    """Each stage's updates before any rounding: its share x prefix_tokens x
+    readings / tokens_per_update."""
+    stages_ = settings["stages"]
+    total = sum(Fraction(str(stage["share"])) for stage in stages_)
+    read = Fraction(settings["prefix_tokens"] * settings["readings"], settings["tokens_per_update"])
+    return [Fraction(str(stage["share"])) / total * read for stage in stages_]
+
+
+def group_updates(settings) -> int:
+    """The fewest updates whose windows fill whole groups (GROUP slots of the
+    longest window length): a stage of a multiple of them that starts at a
+    group's start ends at one, so the next stage skips nothing."""
+    group = GROUP * max(stage["block_size"] for stage in settings["stages"])
+    return group // math.gcd(group, settings["tokens_per_update"])
+
+
+def rounded(settings) -> bool:
+    """Whether the schedule rounds its stages to whole groups: when there is
+    more than one stage and the step's updates fill at least one group per
+    stage."""
+    stages_ = settings["stages"]
+    return len(stages_) > 1 and sum(computed(settings)) >= group_updates(settings) * len(stages_)
+
+
+def schedule(settings) -> list[dict]:
+    """Every stage of the step's schedule, each {"block_size", "steps",
+    "batch_size"}: its updates and its windows per update, tokens_per_update
+    / block_size. The updates are each stage's computed ones (`computed`)
+    rounded half up, at least 1; when `rounded`, they are instead whole
+    groups of group_updates each, the step's groups its computed updates over
+    group_updates rounded half up, shared out by the stages' shares (largest
+    remainders, at least one group each)."""
+    per, exact = settings["tokens_per_update"], computed(settings)
+    if not rounded(settings):
+        steps = [max(1, _half_up(one)) for one in exact]
+    else:
+        each = group_updates(settings)
+        groups = _half_up(sum(exact) / each)
+        wanted = [one / sum(exact) * groups for one in exact]
+        found = [max(1, math.floor(one)) for one in wanted]
+        by_remainder = sorted(range(len(wanted)), key=lambda i: (-(wanted[i] - math.floor(wanted[i])), i))
+        for i in by_remainder[:max(0, groups - sum(found))]:
+            found[i] += 1
+        for i in sorted(range(len(found)), key=lambda i: (-found[i], i)):
+            if sum(found) <= groups:
+                break
+            if found[i] > 1:
+                found[i] -= 1
+        steps = [one * each for one in found]
+    return [{"block_size": stage["block_size"], "steps": count, "batch_size": per // stage["block_size"]}
+            for stage, count in zip(settings["stages"], steps)]
 
 
 def stages(settings) -> list[dict]:
-    """The stages the step runs: each stage of its settings with readings times its updates."""
-    return [{**stage, "steps": stage["steps"] * settings["readings"]} for stage in settings["stages"]]
+    """The stages the step runs: its schedule, cut after last_update when
+    it is above 0 (the stages after it left out)."""
+    found, left = [], settings["last_update"] or None
+    for stage in schedule(settings):
+        if left is not None and left <= 0:
+            break
+        steps = stage["steps"] if left is None else min(stage["steps"], left)
+        found.append({**stage, "steps": steps})
+        if left is not None:
+            left -= steps
+    return found
 
 
 def times_read(settings, tokens) -> float:
@@ -122,8 +217,8 @@ def check_corpus(settings, record, dock, kinds):
 
 
 def context(settings) -> int:
-    """The window length the step leaves the model reading at: the last stage's."""
-    return settings["stages"][-1]["block_size"]
+    """The window length the step leaves the model reading at: the last stage it runs."""
+    return stages(settings)[-1]["block_size"]
 
 
 def _seed(*parts) -> int:
@@ -255,12 +350,16 @@ class TextWindows(Environment):
         self.readings = settings["readings"]
         self.stage_list = tuple(Stage(stage["steps"], stage["batch_size"], stage["block_size"])
                                 for stage in stages(settings))
+        self.schedule = sum(stage["steps"] for stage in schedule(settings))
+        self.eval_every = max(1, round(settings["eval_tokens"] / settings["tokens_per_update"]))
         self.sharing = 1 if strategy.splits_windows else strategy.world_size
         self.batches = batching(self.stage_list, data.micro_batch, self.sharing)
-        self.prefix = settings["prefix_tokens"] or None
+        self.prefix = settings["prefix_tokens"]
         self.train_tokens = _token_array(data.dock, shards(data.record, data.kinds), strategy, data.stream_shards,
                                          self.prefix)
-        longest = max(stage.block_size for stage in self.stage_list)
+        # the slots of the whole schedule's longest windows, so a step cut by last_update walks as the one it is a
+        # part of
+        longest = max(stage["block_size"] for stage in settings["stages"])
         if len(self.train_tokens) <= longest + 1:
             self.close()
             raise ValueError(f"the corpus has {len(self.train_tokens):,} tokens of {', '.join(data.kinds)}, fewer "
@@ -366,7 +465,7 @@ class TextWindows(Environment):
         return self._split(torch.from_numpy(np.stack(found)))
 
     def evaluates(self, step, first, last):
-        return step % (self.settings["eval_every"] * self.readings) == 0 or step in (first, last)
+        return step % self.eval_every == 0 or step in (first, last)
 
     def evaluation_passes(self, step):
         """This process's passes of the current stage's evaluation batches:

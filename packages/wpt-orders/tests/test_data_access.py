@@ -41,7 +41,7 @@ from wpt_orders import Orders
 from wpt_orders.guard import DataAccessRefused
 
 ROOT = Path(__file__).resolve().parents[3]
-MODEL = "watery-tardigrade"  # a model order of the repository, copied into a checkout of the test's own
+FAMILY = "test"  # a family of the repository, copied into a checkout of the test's own
 # the service layer's file and the class whose private members give paths under data/
 SERVICES = {ROOT / "packages" / "wpt-orders" / "src" / "wpt_orders" / "orders.py": "Orders"}
 # calls whose arguments are parts of a path, or a path they reach
@@ -167,19 +167,18 @@ def test_the_audit_hook_refuses_data_access_from_code_outside_the_service_layer(
     # the runtime half: whatever way a path was built, code that is neither a service layer nor a test cannot
     # open, list or change a file under a guarded data folder; through the service layer the same file reads
     root = tmp_path / "wpt"
-    (root / "data" / "orders" / "series").mkdir(parents=True)
-    (root / "data" / "orders" / "models").mkdir(parents=True)
-    order = root / "data" / "orders" / "models" / "t.json"
-    shipped = json.loads((ROOT / "data" / "orders" / "models" / f"{MODEL}.json").read_text(encoding="utf-8"))
+    (root / "data" / "orders").mkdir(parents=True)
+    order = root / "data" / "orders" / "t.json"
+    shipped = json.loads((ROOT / "data" / "orders" / f"{FAMILY}.json").read_text(encoding="utf-8"))
     order.write_text(json.dumps({**shipped, "data": {**shipped["data"], "total_tokens": 300}}) + "\n",
-                         encoding="utf-8")
+                     encoding="utf-8")
     orders = Orders(root)
     elsewhere = str(tmp_path / "elsewhere" / "wpt_reader" / "reader.py")  # not a test, not a service layer
     for line in (f"open({str(order)!r}).read()", f"__import__('os').listdir({str(root / 'data')!r})",
                  f"__import__('pathlib').Path({str(order)!r}).write_text('x')"):
         with pytest.raises(DataAccessRefused, match="only the service layers"):
             exec(compile(line, elsewhere, "exec"), {})
-    assert orders.data_part("t")["total_tokens"] == 300
+    assert orders.data_part("t:128")["total_tokens"] == 300
     exec(compile(f"open({str(tmp_path / 'other.txt')!r}, 'w').write('x')", elsewhere, "exec"), {})  # elsewhere: free
 
 
@@ -235,9 +234,8 @@ def test_the_checkout_s_hash_reads_an_untracked_file_under_data_through_git(tmp_
     from wic_utils.programs import _changes
 
     root = tmp_path / "wpt"
-    models = root / "data" / "orders" / "models"
-    models.mkdir(parents=True)
-    (root / "data" / "orders" / "series").mkdir()
+    families = root / "data" / "orders"
+    families.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "README.md").write_text("a\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
@@ -245,7 +243,7 @@ def test_the_checkout_s_hash_reads_an_untracked_file_under_data_through_git(tmp_
                    check=True)
     Orders(root)  # the hook now guards root/data
     assert _changes(root) is None
-    order = models / "t.json"
+    order = families / "t.json"
     order.write_text('{"a": 1}\n', encoding="utf-8", newline="\n")
     first = _changes(root)
     assert first is not None

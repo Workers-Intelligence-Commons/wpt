@@ -148,12 +148,13 @@ reference. A decision never changes what a snapshot made before it holds.
 
 A snapshot is a change number, named by the UTC time it was made: the
 texts admitted then, each read at its revision as of it, never changed
-afterward. A hand-picked selection of texts is a tag. A model order of
-the repository names a snapshot (with its change and digest), the roles
-of its corpus's portions, its shares by tag and its vocabulary. `depot snapshot new`, or
+afterward. A hand-picked selection of texts is a tag. A model family of
+the repository (`data/orders/<name>.json`) names a snapshot (with its
+change and digest), the roles of its corpus's portions, its shares by
+tag and its vocabulary. `depot snapshot new`, or
 the page "Snapshots" of `depot web`, which shows its cost first, makes
-a snapshot of the admitted texts; `wpt build-resources ORDER` asks the
-freight for the order's vocabulary and corpus, the depot reading no
+a snapshot of the admitted texts; `wpt build-resources FAMILY:SIZE` asks the
+freight for that size's vocabulary and corpus, the depot reading no
 repository ([docs/data-selection.md](docs/data-selection.md)).
 
 ## Changing a text

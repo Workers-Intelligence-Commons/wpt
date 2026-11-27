@@ -1,6 +1,7 @@
-"""A size of a model series against the model it trains (docs/model.md,
-"Model series"): the series counts the parameters the model has, and a
-size reads exactly the start of the series' one corpus."""
+"""The sizes of the model families against the models they train
+(docs/model.md, "Model families"): wpt_orders.counts counts the
+parameters each model has, and a size reads exactly the start of the
+corpus it shares."""
 
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import torch
 from wpt_model import PARTS, ModelConfig, WPT
 from wpt_model.engram import Engram
 from wpt_model.experts import Experts
-from wpt_orders import Orders, series
+from wpt_orders import Orders, counts, family
 from dock import api
 from wpt_corpus.files import DockFiles
 from wpt_corpus.shards import write_shard
@@ -21,25 +22,30 @@ from wpt_training import Data, Strategy, load_step
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_the_series_counts_the_parameters_of_the_model_it_derives():
-    # the count without the vocabulary tables decides a size's compute and tokens: it must be
-    # the model's own, so it is checked against the model wpt_model builds at every size
+def models():
+    """The model section of every size of every family of the repository, by its FAMILY:SIZE."""
     repo = Orders(ROOT)
-    ladder = repo.order("series", "eldest-titmouse")
-    for size in series.sizes(ladder):
-        model = series.shape(ladder, size)
+    return {f"{name}:{size}": repo.model_order(f"{name}:{size}")["model"]
+            for name in repo.names("family") for size in family.sizes(repo.family(name))}
+
+
+def test_the_counts_are_the_parameters_of_the_model_each_size_builds():
+    # the count without the vocabulary tables decides a size's tokens per parameter: it must be the model's own,
+    # so it is checked against the model wpt_model builds at every size
+    for size, model in models().items():
+        model = {key: value for key, value in model.items() if key != "tied_tables"}
         config = ModelConfig(vocab_size=32768, block_size=32768, **model)
         with torch.device("meta"):
             built = WPT(config)
         parts = built.parts()
         tables = sum(p.numel() for part in ("embedding", "output-head") for p in parts[part])
         everything = sum(p.numel() for p in built.parameters())
-        assert series.parameters(model, 32768) == (everything - tables, everything), size
-        assert tuple(series.layer_kinds(model)) == config.kinds and series.layer_count(model) == config.n_layer
+        assert counts.parameters(model, 32768) == (everything - tables, everything), size
+        assert tuple(counts.layer_kinds(model)) == config.kinds and counts.layer_count(model) == config.n_layer
         with torch.device("meta"):
             tied = WPT(ModelConfig(vocab_size=32768, block_size=32768, **model, tied_tables=True))
         one_table = sum(p.numel() for p in tied.parameters())
-        assert series.parameters({**model, "tied_tables": True}, 32768) == (everything - tables, one_table), size
+        assert counts.parameters({**model, "tied_tables": True}, 32768) == (everything - tables, one_table), size
         assert one_table == everything - tables // 2, size
         # a loop over the first half: the loop's output and the coda's first sublayer take the sums of one
         # boundary, and nothing else changes
@@ -47,16 +53,13 @@ def test_the_series_counts_the_parameters_of_the_model_it_derives():
         with torch.device("meta"):
             coda = WPT(ModelConfig(vocab_size=32768, block_size=32768, **looping))
         assert sum(p.numel() for p in coda.parameters()) == everything, size
-        assert series.parameters(looping, 32768) == (everything - tables, everything), size
+        assert counts.parameters(looping, 32768) == (everything - tables, everything), size
 
 
-def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives_has_them():
+def test_the_counts_of_the_parameters_one_token_uses_are_those_of_the_model_each_size_builds():
     # the model's own count without the vocabulary tables, less the routed experts a token does not reach
     # (n_experts - top_k of each layer's stacked experts) and less Engram's lookup tables
-    repo = Orders(ROOT)
-    ladder = repo.order("series", "eldest-titmouse")
-    for size in series.sizes(ladder):
-        model = series.shape(ladder, size)
+    for size, model in models().items():
         with torch.device("meta"):
             built = WPT(ModelConfig(vocab_size=32768, block_size=32768, **model))
         unused = tables = 0
@@ -66,8 +69,8 @@ def test_the_series_counts_the_parameters_one_token_uses_as_the_model_it_derives
                 unused += routed - routed // module.n * module.k
             if isinstance(module, Engram):
                 tables += sum(p.numel() for p in module.tables.parameters())
-        assert tables > 0 and unused > 0
-        assert series.active_parameters(model) == series.parameters(model, 0)[0] - unused - tables, size
+        assert unused > 0
+        assert counts.active_parameters(model) == counts.parameters(model, 0)[0] - unused - tables, size
 
 
 @pytest.fixture
@@ -87,16 +90,18 @@ def dataset(tmp_path):
     return DockFiles(dock, tmp_path / "reader"), record
 
 
-def windows(dock, record, prefix, stream_shards=None, updates=40):
-    """Every window the read-text step draws in `updates` updates of 8 windows of 16 tokens."""
+def windows(dock, record, prefix, stream_shards=None):
+    """Every window the read-text step draws reading its prefix 20 times in updates of 8 windows of 16 tokens."""
     step = load_step({"step": "read-text", "settings": {
-        "stages": [{"block_size": 16, "steps": updates, "batch_size": 8}], "prefix_tokens": prefix}}, PARTS)
+        "stages": [{"block_size": 16, "share": 1}], "tokens_per_update": 128, "prefix_tokens": prefix,
+        "readings": 20}}, PARTS)
     step.check_corpus(record, dock)
     data = Data(step.name, dock, record, None, Strategy(torch.device("cpu")), Telemetry.off(), lambda _: None, 1337,
                 1, stream_shards=stream_shards)
     environment = step.start_environment(data)
     try:
-        found = [x.numpy() for update in range(1, updates + 1) for x, _ in environment.batch(update, None, None)]
+        [stage] = step.stages()
+        found = [x.numpy() for update in range(1, stage["steps"] + 1) for x, _ in environment.batch(update, None, None)]
         return np.concatenate(found), environment.learned
     finally:
         environment.close()
@@ -114,8 +119,8 @@ def test_a_smaller_size_reads_exactly_the_start_of_the_corpus_built_for_a_larger
     assert learned == {"plain": 250}
     again, _ = windows(dock, record, 250, stream_shards)
     assert (found == again).all()
-    # without a prefix, the whole corpus
-    everything, learned = windows(dock, record, 0, stream_shards)
+    # the largest size's prefix: the whole corpus
+    everything, learned = windows(dock, record, 400, stream_shards)
     assert everything.max() >= 250 and learned == {"plain": 400}
 
 
