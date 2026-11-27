@@ -9,12 +9,14 @@ import sys
 
 import numpy as np
 import pytest
+import torch
 
 from wpt.eval import main
 from wpt.eval.remote import Remote
 from wpt_model import load_model
 from wpt_tokenizer import END
 from wic_utils.lines import bare
+from wpt_worker import evaluation
 from wpt_worker.evaluation import Served
 from wpt_worker.link import Key
 
@@ -48,6 +50,30 @@ def test_the_model_on_a_gpu_worker_writes_what_the_same_model_in_this_process_wr
         assert far.write({}, {0: 8}) == near.write({}, {0: 8})
         assert remote.worker is not None
     assert remote.worker is None  # the job ended and the link closed with the block
+
+
+def test_windows_read_together_and_in_chunks_get_the_losses_and_ranks_each_gets_alone(trained, monkeypatch):
+    # windows of many lengths, read as the rows of one cache in batches of at
+    # most 24 tokens a pass, a longer window 24 tokens at a time: each
+    # window's losses and ranks are those of the model's forward pass over
+    # it alone
+    monkeypatch.setattr(evaluation, "LOSS_CHUNK", 24)
+    model = load_model(trained.folder)
+    generator = torch.Generator().manual_seed(0)
+    windows = [[END] + torch.randint(model.config.vocab_size, (n,), generator=generator).tolist()
+               for n in (0, 1, 3, 7, 7, 11, 5, 40, 2, 60)]
+    assert len(evaluation.batches(windows)) < len(windows) - 2  # some read together, the two longest alone
+    losses, ranks = evaluation.losses(model, windows), evaluation.ranks(model, windows)
+    for window, loss, rank in zip(windows, losses, ranks):
+        assert len(loss) == len(rank) == len(window) - 1
+        if len(window) < 2:
+            continue
+        with torch.no_grad():
+            scores = model(torch.tensor([window[:-1]]))[0].float()
+        after = torch.tensor(window[1:])
+        expected = torch.nn.functional.cross_entropy(scores, after, reduction="none")
+        np.testing.assert_allclose(loss, expected.numpy(), atol=1e-4)
+        assert list(rank) == (1 + (scores > scores.gather(1, after[:, None])).sum(1)).tolist()
 
 
 def test_a_writer_stops_at_a_stop_token_and_at_its_limit(trained):

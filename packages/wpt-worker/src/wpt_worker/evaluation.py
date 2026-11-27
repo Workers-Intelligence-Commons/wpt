@@ -86,7 +86,21 @@ def greedy(model, prompts: list[list[int]], steps: int) -> list[list[int]]:
     return ids[:, len(prompts[0]):].tolist()
 
 
-LOSS_CHUNK = 4096  # tokens of a window read in one pass: the scores of one pass are LOSS_CHUNK x vocab_size
+LOSS_CHUNK = 4096  # tokens read in one pass, over every row: the scores of one pass are LOSS_CHUNK x vocab_size
+
+
+def batches(windows: list[list[int]]) -> list[list[int]]:
+    """The windows' numbers in batches read together: by length, as many in
+    a batch as keep the rows times the longest's tokens read within
+    LOSS_CHUNK; a window longer than that alone."""
+    found, current = [], []
+    for number in sorted(range(len(windows)), key=lambda number: len(windows[number])):
+        read = max(len(windows[number]) - 1, 1)  # the longest of the batch so far: they come by length
+        if current and (len(current) + 1) * read > LOSS_CHUNK:
+            found.append(current)
+            current = []
+        current.append(number)
+    return found + [current] if current else found
 
 
 @torch.no_grad()
@@ -94,18 +108,28 @@ def each_token(model, windows: list[list[int]], measure, dtype) -> list[np.ndarr
     """For each window (token ids), measure(scores, tokens) of each of its
     tokens after the first, from the model's scores read with only the
     window's earlier tokens before it: one fewer than the window, of dtype.
-    The window is read through the model's generation cache (docs/model.md,
-    "Generation"), LOSS_CHUNK tokens at a time, so the scores held at once
-    stay LOSS_CHUNK x vocab_size whatever the window's length."""
-    device, found = next(model.parameters()).device, []
-    for window in windows:
-        ids = torch.tensor(window, dtype=torch.long, device=device)
-        cache, parts = model.new_cache(1), []
-        for start in range(0, len(window) - 1, LOSS_CHUNK):
-            end = min(start + LOSS_CHUNK, len(window) - 1)
-            scores, _ = model.extend(ids[start:end].unsqueeze(0), cache)
-            parts.append(measure(scores[0].float(), ids[start + 1:end + 1]))
-        found.append(torch.cat(parts).cpu().numpy().astype(dtype) if parts else np.zeros(0, dtype))
+    The windows are read through the model's generation cache (docs/model.md,
+    "Generation"), several as the rows of one cache (batches), each row its
+    own number of tokens, at most LOSS_CHUNK tokens over the rows in one
+    pass, a longer window LOSS_CHUNK tokens at a time, so the scores held at
+    once stay LOSS_CHUNK x vocab_size whatever the windows' lengths."""
+    device, found = next(model.parameters()).device, [np.zeros(0, dtype)] * len(windows)
+    for batch in batches(windows):
+        reads = [len(windows[number]) - 1 for number in batch]  # every token but the last is read
+        cache, parts = model.new_cache(len(batch)), [[] for _ in batch]
+        for start in range(0, max(reads), LOSS_CHUNK):
+            counts = [min(max(read - start, 0), LOSS_CHUNK) for read in reads]
+            ids = torch.zeros(len(batch), max(counts), dtype=torch.long, device=device)
+            for row, (number, count) in enumerate(zip(batch, counts)):
+                ids[row, :count] = torch.tensor(windows[number][start:start + count], dtype=torch.long)
+            scores, _ = model.extend(ids, cache, counts)
+            for row, (number, count) in enumerate(zip(batch, counts)):
+                if count:
+                    after = torch.tensor(windows[number][start + 1:start + count + 1], dtype=torch.long, device=device)
+                    parts[row].append(measure(scores[row, :count].float(), after))
+        for number, found_parts in zip(batch, parts):
+            if found_parts:
+                found[number] = torch.cat(found_parts).cpu().numpy().astype(dtype)
     return found
 
 
