@@ -150,8 +150,9 @@ def test_copying_measures_what_the_model_reuses_from_its_prompt(trained, tmp_pat
     assert 0 <= data["sequence"]["tokens"] <= 1 and data["sequence"]["first_nats"] > 0
     assert set(data["stated"]) == {"en", "fr"}
     assert all(0 <= figures[key] <= 1 for found in data["stated"].values() for figures in found.values()
-               for key in ("choice", "written"))
-    assert "| en |" in (trained.folder / "README.md").read_text()
+               for key in ("choice", "written", "first_probability"))
+    assert all(figures["first_rank"] >= 1 for found in data["stated"].values() for figures in found.values())
+    assert "| en, word |" in (trained.folder / "README.md").read_text()
 
 
 def test_copying_measures_nothing_with_a_vocabulary_of_too_few_whole_words(trained, tmp_path):

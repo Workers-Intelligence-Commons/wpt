@@ -14,12 +14,21 @@ letters), drawn at random. Two measures:
   no copying the two are equal.
 - stated: a sentence states a value, a word or a number of 4 digits, and
   the next sentence asks for it ("The code is 7391. I repeat, the code
-  is"), in English and in French. choice: the stated value costs the model
-  fewer nats than 3 other values of the same kind (chance is 1 in 4);
-  written: the model's likeliest tokens after the prompt are the value.
+  is"), in English and in French. The tokenizer may join the period after
+  the value to its last letters or digits (" 73" "91."), so the value is
+  judged as text, never by its tokens. choice: the stated value followed
+  by a period costs the model fewer nats than 3 other values of the same
+  kind followed by a period (chance is 1 in 4); written: the text of the
+  model's likeliest tokens after the prompt, leading spaces aside, is the
+  value, then the end of the text or a character that is neither a letter
+  nor a digit; first_rank and first_probability: the median rank (1: the
+  likeliest) and the mean probability of the first token of the value
+  followed by a period, at the place where the answer starts.
 """
 
+import math
 import random
+import statistics
 
 from wpt_tokenizer import Tokenizer
 from wpt.eval import Result
@@ -27,6 +36,7 @@ from wpt.eval import Result
 SEED = 0
 PROMPTS = 200  # of each measure, and of each kind of stated value
 SEQUENCE = 8  # words of a sequence
+MORE = 4  # tokens written past the longest stated value: what follows it decides whether it ended
 FEWEST_WORDS = 16  # whole-word tokens the vocabulary must hold for a measure to mean something
 SENTENCES = {
     "en": ["The code is{}. I repeat, the code is", "My name is{}. As I said, my name is",
@@ -75,25 +85,42 @@ def sequences(context, words: list[int], draw) -> dict:
             "first_nats": first, "repeated_nats": repeated}
 
 
+def writes(text: str, value: str) -> bool:
+    """Whether text, leading spaces aside, is value (leading spaces aside)
+    ended there: by the end of the text or by a character that is neither a
+    letter nor a digit."""
+    text, value = text.lstrip(" "), value.lstrip(" ")
+    return text.startswith(value) and not text[len(value):len(value) + 1].isalnum()
+
+
 def stated(context, sentences: list[str], values: list[list[bytes]]) -> dict:
     """values: for each prompt, the stated value then 3 others of its kind,
-    each as it follows the sentence (a space first)."""
-    tokenizer = context.tokenizer
-    prompts, windows, answers = [], [], []
+    each as it follows the sentence (a space first). Every sentence ends the
+    value with a period, which the tokenizer may join to the value's last
+    letters or digits, so each value is scored followed by that period, cut
+    as the prompt cuts the stated one."""
+    tokenizer, model = context.tokenizer, context.model
+    prompts, windows, longest = [], [], 0
     for number, four in enumerate(values):
         sentence = sentences[number % len(sentences)]
         prompt = [Tokenizer.END] + tokenizer.encode(sentence.format(four[0].decode()).encode())
         prompts.append(prompt)
-        answers.append(tokenizer.encode(four[0]))
-        windows += [prompt + tokenizer.encode(value) for value in four]
-    costs = context.model.losses(windows)
-    written = written_after(context.model, prompts, max(len(answer) for answer in answers))
+        ended = [tokenizer.encode(value + b".") for value in four]
+        longest = max(longest, *map(len, ended))
+        windows += [prompt + one for one in ended]
+    costs = model.losses(windows)
+    ranks = model.ranks(windows[::4])
+    written = written_after(model, prompts, longest + MORE)
     chosen = right = 0
-    for number, (prompt, answer) in enumerate(zip(prompts, answers)):
+    first_ranks, first_probabilities = [], []
+    for number, prompt in enumerate(prompts):
         four = [float(costs[4 * number + choice][len(prompt) - 1:].sum()) for choice in range(4)]
         chosen += four.index(min(four)) == 0
-        right += written[number][:len(answer)] == answer
-    return {"prompts": len(prompts), "choice": chosen / len(prompts), "written": right / len(prompts)}
+        right += writes(tokenizer.decode(written[number]).decode("utf-8", "replace"), values[number][0].decode())
+        first_ranks.append(int(ranks[number][len(prompt) - 1]))
+        first_probabilities.append(math.exp(-float(costs[4 * number][len(prompt) - 1])))
+    return {"prompts": len(prompts), "choice": chosen / len(prompts), "written": right / len(prompts),
+            "first_rank": statistics.median(first_ranks), "first_probability": statistics.fmean(first_probabilities)}
 
 
 def run(context) -> Result:
@@ -109,9 +136,12 @@ def run(context) -> Result:
              f"whole of it for {found['whole']:.0%} of the sequences. A word of a sequence costs "
              f"{found['first_nats']:.2f} nats the first time it is read and {found['repeated_nats']:.2f} the "
              "third time.", "",
-             "A value stated in a sentence and asked for in the next. choice: the stated value is the likeliest "
-             "of four (chance 25%); written: the model writes it.", "",
-             "| | word choice | word written | number choice | number written |", "| --- | --- | --- | --- | --- |"]
+             f"A value stated in a sentence and asked for in the next, {PROMPTS} prompts of each kind. choice: the "
+             "stated value, followed by the sentence's period, is the likeliest of four (chance 25%); written: the "
+             "text the model writes is the value, ended there; first token: the median rank (1: the likeliest) and "
+             "the mean probability of the value's first token, as the prompt cuts it, where the answer starts.", "",
+             "| | choice | written | first token's rank | first token's probability |",
+             "| --- | --- | --- | --- | --- |"]
     data["stated"] = {}
     for language, sentences in SENTENCES.items():
         kinds = {"word": [[context.tokenizer.decode([token]) for token in draw.sample(words, 4)]
@@ -119,6 +149,6 @@ def run(context) -> Result:
                  "number": [[f" {number}".encode() for number in draw.sample(range(1000, 10000), 4)]
                             for _ in range(PROMPTS)]}
         data["stated"][language] = found = {kind: stated(context, sentences, values) for kind, values in kinds.items()}
-        lines.append(f"| {language} | " + " | ".join(f"{found[kind][key]:.0%}" for kind in kinds
-                                                     for key in ("choice", "written")) + " |")
+        lines += [f"| {language}, {kind} | {one['choice']:.0%} | {one['written']:.0%} | {one['first_rank']:g} | "
+                  f"{one['first_probability']:.3f} |" for kind, one in found.items()]
     return Result(data, "\n".join(lines))

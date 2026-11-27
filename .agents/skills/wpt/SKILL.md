@@ -279,7 +279,7 @@ path given to `wpt eval`:
 from wpt.eval import Result
 
 def run(context):  # context: model (on a gpu worker: config, generator,
-                   # writer, greedy, losses), tokenizer, device, folder, provenance, dock,
+                   # writer, greedy, losses, ranks), tokenizer, device, folder, provenance, dock,
                    # telemetry (the run's record)
     ...
     return Result(data={...}, text="the same findings, for people")

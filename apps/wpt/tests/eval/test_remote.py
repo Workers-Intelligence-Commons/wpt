@@ -32,7 +32,13 @@ def test_the_model_on_a_gpu_worker_writes_what_the_same_model_in_this_process_wr
         windows = [[END, *range(5, 30)], [END, 7]]  # the held-out-loss test's windows cross the link as token ids
         for far, near in zip(remote.losses(windows), local.losses(windows)):
             np.testing.assert_allclose(far, near, rtol=1e-6)
-        settings = {"temperature": 0.8, "top_k": 40, "stops": [END]}
+        [written] = local.greedy([PROMPTS[0]], 4)
+        windows.append(PROMPTS[0] + written)
+        far, near = remote.ranks(windows), local.ranks(windows)
+        assert [list(one) for one in far] == [list(one) for one in near]
+        assert list(far[2][len(PROMPTS[0]) - 1:]) == [1] * 4  # a token written greedily is the likeliest
+        assert all(len(one) == len(window) - 1 and one.min() >= 1 for one, window in zip(far, windows))
+        settings ={"temperature": 0.8, "top_k": 40, "stops": [END]}
         far = remote.writer(PROMPTS[0], 2, generator=remote.generator(7), **settings)
         near = local.writer(PROMPTS[0], 2, generator=local.generator(7), **settings)
         for _ in range(3):  # the generator goes on from where it was, one writer after the other

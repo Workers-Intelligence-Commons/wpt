@@ -419,7 +419,7 @@ manager, which holds the tokenizer, the dock and the sandboxes. A job
 which the manager offers as files, and answers what the tests ask of the
 model: a seeded generator, writers that write until a stop token or a limit
 (the same ones a training attempt uses), greedy writing, and the
-next-token losses of windows of tokens. The tests cannot tell where the model is.
+next-token losses and ranks of windows of tokens. The tests cannot tell where the model is.
 
 `wpt eval` uses the first key in `WPT_GPU_WORKERS` (the manager passes it
 the rentals it still holds, before it gives them back), else a local

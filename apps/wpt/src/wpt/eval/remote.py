@@ -14,6 +14,9 @@ tests, which hold the tokenizer, the dock and the sandboxes, run here.
                                                 token lists of one length
         model.losses(windows)                   the next-token loss of each token of each window
                                                 after its first (wpt_worker.evaluation.losses)
+        model.ranks(windows)                    the rank of each token of each window after its
+                                                first among the model's scores at its place
+                                                (wpt_worker.evaluation.ranks)
 
 kernels names what computes the model's attention there (one of
 wpt_model.kernels.FORMS, or None to choose): a form that cannot work on the
@@ -120,13 +123,20 @@ class Remote:
         return header["tokens"]
 
     def losses(self, windows) -> list[np.ndarray]:
+        return self._each_token("model.losses", windows, "<f4", np.float32)
+
+    def ranks(self, windows) -> list[np.ndarray]:
+        return self._each_token("model.ranks", windows, "<u4", np.int32)
+
+    def _each_token(self, name, windows, sent, dtype) -> list[np.ndarray]:
+        """One number for each token of each window after its first, as the job's call name gives it."""
         lengths = [len(window) for window in windows]
         body = np.concatenate([np.asarray(window, dtype="<u4") for window in windows]).tobytes() if windows else b""
-        _, found = self.worker.call(self.channel, "model.losses", body, lengths=lengths)
-        values, start, parts = np.frombuffer(found, dtype="<f4"), 0, []
+        _, found = self.worker.call(self.channel, name, body, lengths=lengths)
+        values, start, parts = np.frombuffer(found, dtype=sent), 0, []
         for length in lengths:
             count = max(length - 1, 0)
-            parts.append(values[start:start + count].astype(np.float32))
+            parts.append(values[start:start + count].astype(dtype))
             start += count
         return parts
 
