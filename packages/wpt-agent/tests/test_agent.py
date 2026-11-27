@@ -331,7 +331,8 @@ def test_an_attempt_ends_at_its_token_limit_and_at_the_models_context():
     assert (done.ended, sum(done.learn), len(done.ids)) == (TOKENS, 7, start + 7)
     done = attempt(task(), None, TOKENIZER, endless, context=start + 5, result_bytes=10)
     assert (done.ended, len(done.ids)) == (CONTEXT, start + 5)
-    assert done.conversation["messages"][-1] == {"role": "assistant", "content": [{"type": "text", "text": "aaaaa"}]}
+    assert done.conversation["messages"][-1] == {"role": "assistant", "content": [{"type": "text", "text": "aaaaa"}],
+                                                 "end": "limit"}
 
 
 def test_attempts_written_together_read_the_opening_once_and_end_apart():
@@ -396,6 +397,8 @@ def test_the_ask_tool_answers_from_the_replies_written_in_advance_and_the_attemp
                                                      turn(ask("What now?")), turn({"type": "text", "text": "Blue."})),
                    result_bytes=1000)
     assert results(done) == ["Blue.", "The other one.", NOT_KNOWN] and done.ended == ANSWERED
+    assert [m["end"] for m in done.conversation["messages"] if m["role"] == "assistant"] == [
+        "tool_calls", "tool_calls", "stop", "stop"]
     assert "ask" in [tool["name"] for tool in opening(asking)["tools"]]
     assert "ask" not in [tool["name"] for tool in opening(task())["tools"]]
     assert call(None, "ask", {"question": "Which colour?"}, 10, 1000, plain(task())) == (
@@ -439,7 +442,8 @@ def test_an_attempt_without_a_final_reply_or_a_whole_confidence_has_no_answer():
     sure = turn({"type": "text", "text": "90"})
     done = attempt(task(max_tokens=len(final) + 1), None, TOKENIZER, scripted(final, sure), result_bytes=10)
     assert done.ended == TOKENS and done.conversation["metadata"]["answer"] is None
-    assert done.conversation["messages"][-1] == {"role": "assistant", "content": [{"type": "text", "text": "9"}]}
+    assert done.conversation["messages"][-1] == {"role": "assistant", "content": [{"type": "text", "text": "9"}],
+                                                 "end": "limit"}
 
 
 def test_the_opening_lists_the_offered_tools_that_look_by_their_real_names():

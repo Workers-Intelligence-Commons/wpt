@@ -1960,7 +1960,9 @@ number, and keeps it in the conversation's `metadata.answer`, next to
 `metadata.looking`, the real names of the offered tools that look at
 sources, `metadata.answered_by`, the task's, and `metadata.answered_in`,
 the files of `/work` the attempt starts with that the task's `answered_in`
-matches ("The check library", above). The model's `block_size` does not
+matches ("The check library", above). Each assistant message keeps how
+its turn ended, `end`: `limit` when a limit cut it, `tool_calls` when the
+model closed it holding calls, `stop` otherwise. The model's `block_size` does not
 limit an attempt: the cache reads it past `block_size`, and the loss pass
 reads it whole. The attempt also ends when the model's own processes or
 files fill its container, so that Docker can start no command there:

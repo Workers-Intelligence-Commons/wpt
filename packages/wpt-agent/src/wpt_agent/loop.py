@@ -36,6 +36,11 @@ END in a turn with a tool call), so the check library scores it 0. The
 confidence turn counts against max_tokens and the context, not
 max_turns.
 
+Each assistant message records how its turn ended (`end`): `stop` when
+the model closed it with no tool call, `tool_calls` when it closed it
+holding calls, whether they ran or not, and `limit` when a limit cut it
+before the model closed it.
+
 The tokens are kept exactly as the model sampled them, next to the
 conversation (docs/chat-format.md) they read as: a learner needs the
 tokens the model chose, which encoding the conversation again would not
@@ -170,14 +175,15 @@ def _attempt(task, sandbox, tokenizer, prompt, shared, offer, result_bytes, cont
         turns += final is None  # the reply to CONFIDENCE is not one of the task's turns
         closed, finished = reply[-1] == chat.IM_END, reply[-1] == END
         blocks = chat.reply(tokenizer, reply[:-1] if closed or finished else reply)
-        conversation["messages"].append({"role": "assistant", "content": blocks})
+        calls = [block for block in blocks if block["type"] == "tool_call"]
+        end = "limit" if not (closed or finished) else "tool_calls" if calls else "stop"
+        conversation["messages"].append({"role": "assistant", "content": blocks, "end": end})
         if not (closed or finished):  # cut by a limit before the turn closed: its calls do not run
             return _ended(conversation, ids, learn, TOKENS if written >= task.max_tokens else CONTEXT)
         if final is not None:
             sure = confidence(blocks)
             return _ended(conversation, ids, learn, final[1],
                           None if sure is None else {"answer": final[0], "confidence": sure})
-        calls = [block for block in blocks if block["type"] == "tool_call"]
         if not calls:  # the final reply: its text is the answer, and the confidence comes next
             final = (text(blocks), ENDED if finished else ANSWERED)
             message = {"role": "user", "content": [{"type": "text", "text": CONFIDENCE}]}
