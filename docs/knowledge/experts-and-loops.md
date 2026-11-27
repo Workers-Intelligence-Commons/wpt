@@ -36,15 +36,23 @@ loops at small sizes, and half against it.
   same windows. It keeps 98% of the second pass and 42% of the third.
   **measured here**, one run each
 - A model that loops, trained with every pass reading its own keys and
-  values of the earlier tokens, cannot write through the last pass's keys
-  and values alone: read token by token that way, a text costs 8.32 nats
-  per token against 2.50 at a width of 512 with 1 loop, and 5.34 against
-  2.71 at a width of 256 with 2 loops, and what the model writes is no
-  longer words. Each pass must keep its own, which multiplies what a
-  generation keeps of each token by the number of passes. One published
-  source shares them and reports almost no loss; how its models differ
-  was not read. **measured here**, one text of 39 tokens on each of two
-  models
+  values of the earlier tokens and with the loss on the last pass alone,
+  cannot read a text through the last pass's keys and values alone: read
+  token by token that way from its first token, a text costs 8.32 nats per
+  token against 2.50 at a width of 512 with 1 loop, and 5.34 against 2.71
+  at a width of 256 with 2 loops, and what the model writes is no longer
+  words. **measured here**, one text of 39 tokens on each of two models
+- In a model of 4 passes trained with a loss on every pass, the tokens it
+  writes can keep the last pass's keys and values alone, every pass
+  reading them, at almost no loss: 78.85 against 78.92 on GSM8K, 80.40
+  against 82.40 on MATH-500. The prompt cannot: read that way it loses
+  more than 10 points on GSM8K, so every pass keeps its own keys and values
+  of the prompt. **published, one source**
+- So a model that loops keeps each pass's keys and values of its prompt,
+  which multiplies what it keeps of the prompt by the number of passes.
+  For the tokens it writes, the last pass's may be enough; the measure
+  above read the prompt through them too, so it does not test this.
+  **published, one source**, and the measure above agrees on the prompt
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or
@@ -78,7 +86,9 @@ The 32 routed experts are 56% of the body at a width of 512 and 43% at 256.
 
 All figures in this section are **unchecked**: they were read through an
 automatic reader of the papers' pages. Each source exists on arXiv under
-its id, with the subject given here.
+its id, with the subject given here. The figures of *Ouro* on what the
+passes keep while writing, under "Measured with WPT", were compared with
+the paper's own text.
 
 #### Mixtures of experts in small models
 
@@ -123,7 +133,9 @@ its id, with the subject given here.
   loops and flat at 4; more loops than in training lower the quality. At
   equal compute the plain model wins at every size, by 0.039 falling to
   0.025 as size grows. About 2 bits of knowledge per parameter with or
-  without loops.
+  without loops. While writing, its passes can share the last pass's keys
+  and values of the written tokens, not of the prompt (under "Measured
+  with WPT", below).
 - *MobileLLM* (2024, arXiv 2402.14905). Each block run twice: +0.7 point at
   125M and +0.8 at 350M, for about 2.6% more time on a phone. 3 or 4 times
   show no clear trend.
@@ -243,16 +255,53 @@ tokens.
 | In two halves, the second reading the last pass's values of the first | 3.12 | 3.23 |
 
 Written through the last pass's values, both models give a few words then
-single letters and digits. *Ouro* (2025, arXiv 2510.25741) reports 78.85
-against 78.92 on GSM8K when its passes share keys and values at
-generation (**unchecked**).
+single letters and digits.
+
+*Ouro* (2025, arXiv 2510.25741), section 5.4.2 and its Table 14, read in
+the paper's own text, tests what the passes of its model of 4 passes keep
+of the earlier tokens:
+
+| What each pass reads of the earlier tokens, while writing | GSM8K | MATH-500 | Kept |
+| --- | --- | --- | --- |
+| Its own pass's keys and values | 78.92 | 82.40 | 4 times one pass |
+| The last pass's | 78.85 | 80.40 | one pass |
+| The average of the four passes' | 78.73 | 78.52 | one pass |
+| The first pass's | 18.73 | 8.43 | one pass |
+
+- The sharing is tested only on the tokens the model writes. For the
+  prompt, the paper says every pass needs its own keys and values, and
+  that reusing them while reading the prompt loses more than 10 points on
+  GSM8K, with no table.
+- The section names "our 4-step model" and no size. Its first row equals
+  the scores of Ouro-1.4B with 4 passes in the paper's table of base
+  models, so the model is most likely Ouro-1.4B, trained on 7.7T tokens.
+- The paper presents the sharing as a choice at inference: it does not say
+  the model was trained with it. Its definition of the model, the stack of
+  layers applied to the whole text once per pass, has every pass read its
+  own pass's states of the earlier tokens in training.
+- Each pass of Ouro's training has its own loss: the output head reads
+  every pass, and the loss weighs each pass's loss by a learned
+  probability of stopping there, kept spread by an entropy term. WPT's loss
+  reads the last pass only (docs/model.md, "Loops").
+
+So the paper's setting has what the measure above did not: a prompt read
+with each pass's own values, a loss on every pass, 4 passes, 1.4B
+parameters and 7.7T tokens. The paper does not say which of these makes
+the sharing work. That the loss on every pass does, by keeping each pass's
+states close to what the output head reads, is a **hypothesis**. The row
+of the measure above that reads the first half through the last pass's
+values, 3.12 and 3.23 against 2.71 and 2.50, is the closest to the
+paper's reading of the prompt that way, and both lose.
 
 ## Open
 
-- **Sharing keys and values between passes.** Whether a model trained with
-  its passes reading the last pass's values writes as well as one where
-  each pass keeps its own, at an equal number of parameters: it would
-  divide what generation keeps by the number of passes.
+- **Sharing keys and values between passes on the tokens written.** A
+  measure reads the prompt with each pass's own keys and values and the
+  written tokens through the last pass's alone, on a model trained with the
+  loss on the last pass only and on the same model trained with a loss on
+  every pass, and compares each with every pass keeping its own. It would
+  say whether the published result holds under 1.4B and with fewer than 4
+  passes, and whether the loss on every pass is what makes it work.
 - **One loop against two.** The gate keeps less than half of the third
   pass. A model with 1 loop, at two thirds of the compute of 2, measured
   against both.
@@ -288,4 +337,4 @@ generation (**unchecked**).
   compute, a plain model, a plain loop and a loop where a token that
   leaves does not run the later passes.
 - The figures of the published sources above, to be compared with their
-  texts.
+  texts, except those of *Ouro* on what the passes keep while writing.

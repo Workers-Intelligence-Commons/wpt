@@ -75,9 +75,15 @@ direction for most choices and a value for few.
   ([size-and-tokens.md](size-and-tokens.md)). **measured here**, one run
   of each model
 - **A loop costs at generation too.** Each pass keeps its own keys and
-  values of every token: a model of `loops + 1` passes keeps that many
-  times what one pass keeps
-  ([experts-and-loops.md](experts-and-loops.md)). **measured here**
+  values of the prompt: a model of `loops + 1` passes keeps that many
+  times what one pass keeps of it. The tokens written may keep the last
+  pass's alone, in one model of 1.4B trained with a loss on every pass
+  ([experts-and-loops.md](experts-and-loops.md)). **measured here**, and
+  **published, one source**
+- **Writing an answer catches up with choosing it.** From 0.1B to 104B,
+  small models answer worse when asked than when their answers are ranked
+  by likelihood, and size and instruction data reverse it
+  ([size-and-tokens.md](size-and-tokens.md)). **published, one source**
 - **Bytes lose their advantage.** At an equal number of parameters bytes
   beat tokens from 200M to 3B, and the tables they remove are a smaller
   share of a larger model; at equal compute tokens win

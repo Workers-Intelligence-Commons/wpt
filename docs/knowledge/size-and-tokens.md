@@ -38,6 +38,12 @@ shows a behaviour. Its marks are defined in [README.md](README.md).
   of four in 82% of the prompts and is written in 11%, a stated number in
   98% and 2%. A test by choice among a few answers says more than the model
   does when it writes. **measured here**, one run
+- The same kind of gap is published between ranking answers by their
+  likelihood and making a model give one: small models do better ranked
+  than asked, and size and instruction data close the gap, then reverse
+  it. No published source measures it on a value its context states, under
+  0.1B parameters, or by training tokens. **published, one source**, with
+  a second agreeing on two ways of choosing
 - Recalling a fact depends on how many times the corpus states it, about
   100 to 1,000 times, and on the model's capacity, about 2 bits of knowledge
   per parameter. A test of facts measures the corpus as much as the model.
@@ -45,7 +51,9 @@ shows a behaviour. Its marks are defined in [README.md](README.md).
 
 ## Evidence
 
-All figures from published sources in this section are **unchecked**.
+All figures from published sources in this section are **unchecked**,
+except those under "Choosing an answer against writing it", which were
+compared with the sources' own text.
 
 ### Parameters for a token budget
 
@@ -99,6 +107,56 @@ All figures from published sources in this section are **unchecked**.
   worse.
 - *How much do language models memorize?* (2025, arXiv 2505.24832). A raw
   capacity of about 3.6 bits per parameter.
+
+### Choosing an answer against writing it
+
+No published source found measures what the `copying` test does: a value
+stated in the context, ranked among four by likelihood against written
+by the model, in models under 1B parameters or along their training. The
+sources below measure related gaps on questions of knowledge, where the
+answer is not in the context.
+
+- *Likelihood Ranking doesn't Scale Like Prompting in LLMs* (2026, arXiv
+  2609.29390). 95 released models of about 0.1B to 104B parameters, base
+  and instruction-tuned, 10 multiple-choice datasets, 88,910 questions.
+  One accuracy ranks declarative statements, one per answer, by
+  perplexity; the other shows the question and its options and lets the
+  model write its answer, greedily, in at most 15 tokens. The first
+  changes little with size; the second rises steeply. Small models often
+  do much worse asked than ranked, large ones much better, and
+  instruction-tuned models reach the size where asking catches up with
+  ranking earlier than base models. That size is given only in a figure,
+  not read. Not measured on: a value given in the context, a written answer
+  without options shown, models under 0.1B, the number of training tokens.
+- *OLMES: A Standard for Language Model Evaluations* (2024, arXiv
+  2406.08446). 15 base models of 1B to 70B. It compares two ways of
+  choosing: ranking each answer's text by likelihood, and picking the
+  letter of an answer among options shown. On ARC-Challenge the 8 weakest
+  models are near chance by letter and above it by ranking; on OpenBookQA,
+  Pythia-1B gets 26.0 by letter and 40.4 by ranking. OLMo-7B-0424 starts
+  answering MMLU by letter after about 400B training tokens, and is then
+  better by letter than by ranking. Not measured on: a written answer, a
+  value in the context, models under 1B.
+- *"My Answer is C": First-Token Probabilities Do Not Match Text Answers
+  in Instruction-Tuned Language Models* (2024, arXiv 2402.14499). Six
+  instruction-tuned models of 7B to 70B. The answer whose first token is
+  likeliest differs from the one the model writes in up to more than 60%
+  of the questions; on OpinionQA, from 66.2% for Llama2-Chat 7B to 13.3%
+  at 70B. Models heavily trained on conversation or safety data differ
+  most. Not measured on: base models, models under 7B, a value in the
+  context.
+- *Surface Form Competition: Why the Highest Probability Answer Isn't
+  Always Right* (2021, arXiv 2104.08315), read in its abstract only. On
+  GPT-2 and GPT-3, other strings that would be valid answers, but are not
+  among the options, take part of the probability; ranking among the
+  options sets them aside. This is one reading of the gap: a model can put
+  the stated word above three others and below a word that is not among
+  them. That this explains the gap of the `copying` test is a
+  **hypothesis**.
+- *Leveraging Large Language Models for Multiple Choice Question
+  Answering* (2022, arXiv 2210.12353), read in its abstract only. Picking
+  the letter of an answer needs an ability the authors call symbol
+  binding, which varies greatly by model. No figure read.
 
 ### Measured with WPT
 
@@ -162,8 +220,13 @@ All figures from published sources in this section are **unchecked**.
   average of states or the last updates bring it back: one run shows it.
 - Why a model that ranks a stated value first among four does not write
   it, and what brings the writing: more tokens, conversations in the
-  training text, or a later training step. A measure runs the `copying`
-  test on the same model after each.
+  training text, or a later training step. No published source measures
+  this gap on a value stated in the context, under 0.1B parameters or by
+  training tokens; on questions of knowledge, size and instruction data
+  close it. A measure runs the `copying` test on the same model after
+  each, and records for each prompt the token the model writes in place of
+  the value, which tells a word outside the four from a wrong one among
+  them.
 - The model of width 512 at 19 tokens per parameter without its loop and
   with two vocabulary tables, to separate what the tokens gave from what
   the loop and the table gave.
