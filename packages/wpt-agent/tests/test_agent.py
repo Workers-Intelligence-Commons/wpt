@@ -147,8 +147,9 @@ def test_a_command_that_prints_without_end_never_fills_the_host_s_memory(image):
         text, failed = call(box, "bash", {"command": "timeout 2 yes; echo done"}, 10, 1000, plain(task()))
     cut = int(re.search(r"\[cut: (\d+) bytes\]", text)[1])
     printed = cut + 1000  # bytes: "y\n" many times, then "done\n"
-    assert not failed and cut > 10_000_000
-    assert text == "y\n" * 250 + f"\n[cut: {cut} bytes]\n" + ("y\n" * ((printed - 5) // 2) + "done\n")[-500:]
+    assert not failed and cut > 10_000_000 and (printed - 5) % 2 == 0
+    # the end is that of everything printed, which is never built here: it can be gigabytes
+    assert text == "y\n" * 250 + f"\n[cut: {cut} bytes]\n" + ("y\n" * 250 + "done\n")[-500:]
 
 
 def test_edit_refuses_a_file_that_is_not_utf8_and_leaves_it_as_it_was(image):
