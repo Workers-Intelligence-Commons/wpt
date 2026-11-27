@@ -49,11 +49,11 @@ def read_text(readings=1, updates=UPDATES, **optimizer):
                       "settings": settings}, PARTS)
 
 
-def drawn(dataset, step, seed=1337, stream_shards=None):
+def drawn(dataset, step, seed=1337, stream_shards=None, number=1):
     """The windows of every update of the step, one array per update, and those of its evaluation at update 1."""
     dock, record = dataset
     environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(), lambda _: None,
-                                              seed, 1, stream_shards=stream_shards))
+                                              seed, number, stream_shards=stream_shards))
     try:
         found = []
         for index, stage in enumerate(environment.stage_list):
@@ -147,6 +147,32 @@ def test_a_stage_that_starts_inside_a_pass_predicts_no_token_the_pass_predicted(
     assert len(read) == len(set(read))  # inputs of windows that each start on the last token of another
     every = len(read) + 20  # the 20 tokens the second group's skipped part held
     assert 400 - 2 * 15 < every <= 400
+
+
+def test_a_corpus_with_a_held_out_portion_is_evaluated_on_it_alone_on_the_same_windows_for_every_run(positions,
+                                                                                                     tmp_path):
+    dock, record = positions
+    path = tmp_path / "held.parquet"  # 300 tokens no training file holds: 1000 to 1299
+    digest = write_shard(path, [(list(range(1000, 1300)), "h", "h/d", "p", 0)])
+    stored = api.put_from((tmp_path / "dock").as_uri(), f"corpora/d/{digest}.parquet", path)
+    held = {"shards": [{"key": stored["key"], "sha256": stored["sha256"], "token_sha256": digest, "rows": 1,
+                        "tokens": 300}], "total_tokens": 300}
+    with_held = (dock, {**record, "held_out": held})
+    trained, evaluated = drawn(with_held, read_text(3))
+    assert evaluated.min() >= 1000 and evaluated.max() < 1300  # held-out tokens only
+    assert all((a == b).all() for a, b in zip(trained, drawn(positions, read_text(3))[0]))  # training unchanged
+    for seed in (1337, 7):  # the same windows for every run, seed and step
+        for number in (1, 2):
+            assert (drawn(with_held, read_text(), seed=seed, number=number)[1] == evaluated).all()
+    step = read_text()
+    environment = step.start_environment(Data(step.name, dock, with_held[1], None, CPU, Telemetry.off(),
+                                              lambda _: None, 1337, 1))
+    environment.close()
+    assert environment.validation == "held_out"
+    environment = step.start_environment(Data(step.name, dock, record, None, CPU, Telemetry.off(), lambda _: None,
+                                              1337, 1))
+    environment.close()
+    assert environment.validation == "training"
 
 
 def test_the_evaluation_reads_the_same_windows_whatever_the_readings(positions):

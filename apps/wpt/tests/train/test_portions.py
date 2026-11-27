@@ -1,9 +1,11 @@
 """Training on a corpus cut into the portions of its order's roles
 (wpt_corpus.roles): each step reads its role's portion, the steps that read
 text windows the pretraining one and those that read conversations the
-fine-tuning one; no file of the held-out portion is ever fetched, and the
-texts a model learned from never name one of its texts; a corpus delivered
-without portions still trains, all of it its pretraining portion."""
+fine-tuning one; of the held-out portion only the token files the
+validation reads are fetched, and the texts a model learned from never
+name one of its texts; a corpus delivered without portions still trains,
+all of it its pretraining portion, and says its validation is on training
+text."""
 
 import json
 
@@ -59,11 +61,12 @@ def delivered(built, tmp_path, monkeypatch, capsys):
     return resources
 
 
-def test_the_held_out_portion_is_never_read_nor_credited(trained):
+def test_the_held_out_portion_is_validated_on_and_never_trained_on_nor_credited(trained):
     note = trained.notes["corpus"]
     assert [one["name"] for one in note["portions"]] == ["held_out", "pretrain"]
+    # its token files, which the read-text step's validation reads, and nothing else of it
     held_out = portion_files(note, "held_out")
-    assert held_out and not held_out & set(trained.fetched)
+    assert held_out & set(trained.fetched) == portion_files(note, "held_out", "plain-")
     assert portion_files(note, "pretrain", "plain-") <= set(trained.fetched)  # what the read-text step read
     rows = freight.items(note["key"])
     lines = credited(trained.folder)
@@ -72,6 +75,8 @@ def test_the_held_out_portion_is_never_read_nor_credited(trained):
         assert named == (row["portion"] == "pretrain"), row  # the step read the whole pretraining portion
     provenance = json.loads((trained.folder / "provenance.json").read_text())
     assert provenance["texts"] == sum(1 for row in rows if row["portion"] == "pretrain")
+    assert provenance["steps"][0]["validation"] == "held_out"
+    assert "validated on held-out text" in (trained.folder / "README.md").read_text()
 
 
 def test_the_conversation_step_reads_the_fine_tuning_portion(built, delivered, tmp_path, monkeypatch, capsys):
@@ -86,7 +91,7 @@ def test_the_conversation_step_reads_the_fine_tuning_portion(built, delivered, t
         monkeypatch.setattr(dock_api, name, reading)
     train(["talks", "--out", "model"])
     assert portion_files(note, "finetune", "conversation-") <= set(fetched)
-    assert not portion_files(note, "held_out") & set(fetched)
+    assert portion_files(note, "held_out") & set(fetched) == portion_files(note, "held_out", "plain-")
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["steps"][1]["learned"]["conversation"] == 2
     talks = [row for row in freight.items(note["key"]) if row["kind"] == "conversation"]
@@ -115,3 +120,8 @@ def test_a_corpus_delivered_without_portions_trains_as_its_pretraining_portion(b
     provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
     assert provenance["corpus"]["id"] == old["id"]
     assert provenance["texts"] == old["items"]["kinds"]["plain"]  # every story: none held out
+    # nothing held out to validate on: the record and the card say the validation loss is on training text
+    assert provenance["steps"][0]["validation"] == "training"
+    assert "validated on training text" in (tmp_path / "model" / "README.md").read_text()
+    run = built.records("wpt train")[-1]
+    assert any("validation on windows of the training tokens" in event.get("text", "") for event in run.events)

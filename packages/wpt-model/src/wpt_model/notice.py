@@ -211,6 +211,9 @@ def _step(step):
         text += f"; its {read:,} tokens of plain text read {times:.2f} times (readings {asked})"
     if step["best_validation_loss"] is not None:
         text += f"; best validation loss {step['best_validation_loss']:.4f}"
+    if step.get("validation") is not None:
+        text += ("; validated on held-out text" if step["validation"] == "held_out"
+                 else "; validated on training text, as its corpus has no held-out portion")
     if step["reused"]:
         text += f"; the result of an earlier run (`{step['result'][:12]}`)"
     return text + "."

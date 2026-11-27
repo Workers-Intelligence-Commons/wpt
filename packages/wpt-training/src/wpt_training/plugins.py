@@ -445,7 +445,10 @@ class Environment:
     the plain texts' token files it read from their start}, {"conversation":
     how many}, {"task": how many}. readings: how many times the step reads
     its examples, its stages holding that many times the updates of one
-    reading; the optimizer hears it (Run.readings). An environment whose stages have a
+    reading; the optimizer hears it (Run.readings). validation: what its
+    evaluations measure, "held_out" (text no step trains on) or "training"
+    (text the step trains on), None for an environment that does not
+    evaluate. An environment whose stages have a
     window length may define per_pass(index, examples): stage index (from
     0) then takes that many examples per pass in each process, which the
     runner chooses for a stage whose whole share does not fit the device's
@@ -456,6 +459,7 @@ class Environment:
     tokens: int = 0
     learned: dict = {}
     readings: int = 1
+    validation: str | None = None
 
     def begin(self, model, strategy):
         """Called once before the step's first update, with the weights the

@@ -40,7 +40,8 @@ failed.
     corpus_key(data, vocabulary)        the key of the corpus's delivery
     vocabulary_named(data)              whether the section names its vocabulary by its sha256
     label(note)                         a delivery shown by what made it
-    corpus_record(corpus, vocabulary)   a corpus delivery as training reads a corpus: never its held-out portion
+    corpus_record(corpus, vocabulary)   a corpus delivery as training reads a corpus: of its held-out portion, the
+                                        token files its validation reads alone
     held_out(corpus)                    the held-out portion of a corpus delivery, None without one
 """
 
@@ -172,9 +173,12 @@ def corpus_record(corpus: dict, vocabulary: dict) -> dict:
     tasks the fine-tuning one's), `total_tokens` and `max_tokens` the
     pretraining portion's, `texts` and `conversations` counted over them,
     and `trains_on` their names, the only portions whose rows of the items
-    tables training reads (wpt_corpus.corpora.rows). It names no file of the
-    held-out portion: `portions` only counts each portion's texts and
-    tokens. A delivery without portions is all of it its pretraining
+    tables training reads (wpt_corpus.corpora.rows). Of the held-out
+    portion it names only the token files (`held_out`: {"shards",
+    "total_tokens"}), which the steps that read text windows measure their
+    validation loss on and never train on; no row of its texts is read, and
+    `portions` counts each portion's texts and tokens. A delivery without
+    portions is all of it its pretraining
     portion, read as a whole (no `trains_on`). ValueError for a delivery cut
     into portions whose result does not list its files by portion (a
     wpt-tokens older than programs.PORTIONED_VERSION wrote it)."""
@@ -232,6 +236,9 @@ def corpus_record(corpus: dict, vocabulary: dict) -> dict:
             "portions": {name: {"texts": counted[name]["items"]["texts"], "tokens": made[name]["total_tokens"]
                                 + made[name]["items_tokens"]} for name in made},
         })
+        if roles.HELD_OUT in made:
+            record["held_out"] = {"shards": [placed(one) for one in made[roles.HELD_OUT]["shards"][roles.PLAIN]],
+                                  "total_tokens": made[roles.HELD_OUT]["total_tokens"]}
         tasks = (by_role(roles.TASK) or {}).get("tasks")
     else:
         size = selection.get("size")

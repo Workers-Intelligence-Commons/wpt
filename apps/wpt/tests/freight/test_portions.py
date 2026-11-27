@@ -129,8 +129,13 @@ def test_an_order_s_corpus_is_cut_into_its_roles_portions_each_in_its_own_files(
 
     vocabulary = api.delivery(cut.vocabulary_key, dock=cut.dock)
     record = resources.corpus_record(note, vocabulary)
+    # training is told of the held-out portion's token files alone, which its validation reads, never of its rows
     held_out = {one["key"] for one in note["files"] if one["path"].startswith("held_out/")}
-    assert held_out and not any(key in json.dumps(record) for key in held_out)  # training is never told of it
+    plain = {one["key"] for one in note["files"] if one["path"].startswith("held_out/plain-")}
+    assert plain and {one["key"] for one in record["held_out"]["shards"]} == plain
+    assert record["held_out"]["total_tokens"] == made["held_out"]["total_tokens"]
+    without = json.dumps({key: value for key, value in record.items() if key != "held_out"})
+    assert not any(key in without for key in held_out)
     assert record["trains_on"] == ["pretrain", "finetune"]
     assert [one["token_sha256"] for one in record["shards"]["plain"]] == [
         one["token_sha256"] for one in made["pretrain"]["shards"]["plain"]]

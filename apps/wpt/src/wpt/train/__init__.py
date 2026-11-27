@@ -45,10 +45,10 @@ steps read, by kind of texts, each step reading the kinds it names: the
 token files of plain texts and of conversations, and the tasks. Of a corpus
 cut into portions, each step reads its role's portion, the steps that read
 text windows the pretraining one and those that read conversations and
-tasks the fine-tuning one, and nothing reads the held-out portion: the
-record training is given names none of its files
-(wpt.resources.corpus_record), and the texts the model learned from never
-name one of its texts. Training never builds anything and writes nothing to the depot: it
+tasks the fine-tuning one. Of the held-out portion, the steps that read
+text windows read only the token files, to measure their validation loss
+on, and never train on them (wpt.resources.corpus_record); the texts the
+model learned from never name one of its texts. Training never builds anything and writes nothing to the depot: it
 reads the corpus and checks every input against its recorded hash first. Every step's settings, the drafter's, the steps'
 locked parts, and that the corpus holds something for each step to learn
 from are checked before any step runs. The data part's total_tokens is the

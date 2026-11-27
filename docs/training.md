@@ -79,10 +79,13 @@ each kind are those of the portion whose role holds that kind, plain
 texts the pretraining portion's, conversations and tasks the fine-tuning
 one's, so a step that reads text windows reads the pretraining portion and
 a step that reads conversations or tasks the fine-tuning one. The record
-names no file of the held-out portion, the rows of the items tables it
-reads (the texts a step picks by tag, the model's `CREDITS`) are those of
-its portions alone (`trains_on`), and no step can read the held-out
-portion (`apps/wpt/tests/train/test_portions.py`). A step whose role's
+names of the held-out portion its token files of plain text alone
+(`held_out`), which the steps that read text windows measure their
+validation loss on and never train on ("The read-text step", below); the
+rows of the items tables it reads (the texts a step picks by tag, the
+model's `CREDITS`) are those of its portions alone (`trains_on`), and no
+step trains on the held-out portion
+(`apps/wpt/tests/train/test_portions.py`). A step whose role's
 portion the corpus does not hold finds nothing to read and refuses the
 run. A corpus without portions, delivered without them or one of the
 corpora under `corpora/`, is all of it its pretraining portion, each step
@@ -453,8 +456,31 @@ decided by the seed, the step's number in the order and the pass
 ("Readings", below): a second `read-text` step reads other windows than
 the first. Dropout reads the seed, the step's number and the update.
 
-Validation draws windows of the training tokens apart from the
-training's. The tokens are read from disk as training needs them, so a
+Validation reads windows of the corpus's held-out portion, which no step
+trains on: every `eval_every` updates of one reading and at each stage's
+first and last update, `eval_batches` batches of the stage's batch size
+and window length, drawn at random places of the held-out tokens, read
+whole even with `--stream`. They depend only on the held-out tokens, the
+window length, the batch size and `eval_batches`: the same at every
+evaluation, for every run, seed and step. A corpus without a held-out
+portion (one without portions, or an order whose roles leave it out) is
+validated on windows of the training tokens drawn the same way, and the
+run's record, `provenance.json` (each step's `validation`, `held_out` or
+`training`) and the model card say so: its validation loss is measured
+on text the step trains on. The validation loss decides `by-part`'s early
+stop and the weights of its best evaluation; the kept average, the
+drafter and the figures a limit projects do not read it.
+
+The validation and `wpt eval`'s `bits_per_byte`
+([evaluation.md](evaluation.md)) read the same held-out texts, through
+other windows: the validation random windows of each stage's length,
+`bits_per_byte` every text once, in windows of the model's context that
+follow one another. A step that keeps the weights of its best evaluation,
+or stops early, chose them on that text, so its `bits_per_byte` is a
+little optimistic; a step that keeps its average or its last weights, as
+the read-text step does by default, chose nothing on it.
+
+The training tokens are read from disk as training needs them, so a
 corpus larger than memory trains:
 before the step's first update, the shards are checked against their
 token hashes and their tokens written once into one file per part, in the
@@ -546,10 +572,10 @@ as 2.40, with its readings, its updates and the tokens it trains on, and
 the line is a warning when the times stray from the readings by more than
 1%. The step still runs: the stages decide its length.
 
-The validation windows are the same whatever the readings, and they are
-drawn from the training tokens, so a step of N readings trains on them N
-times as often. Only the held-out portion's `bits_per_byte`
-([evaluation.md](evaluation.md)) measures text that no training read.
+The validation windows are the same whatever the readings. Drawn from
+the held-out portion, they hold no text the step trains on; drawn from
+the training tokens, for a corpus without one, a step of N readings
+trains on them N times.
 
 `provenance.json` holds the setting with the step's others, and the model
 card says, beside the tokens of plain text, how many times the stages

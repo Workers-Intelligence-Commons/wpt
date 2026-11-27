@@ -44,14 +44,16 @@ holds the same windows whatever the number of processes; with split
 windows, every process takes every window and trains its slice of each.
 
 Every eval_every updates, and at the first and last update of each stage,
-the model is evaluated on eval_batches batches of windows of the training
-tokens, at the stage's window length, drawn apart from the training's.
-A stage's evaluation windows are the same at every evaluation, and the
-same for any seed and any step of an order: they depend only on the
-training tokens, the window length, the batch size and eval_batches, so
-two runs that read the same tokens through the same stages are measured
-on the same windows. With --stream they are drawn from the shards in use,
-which change as the run goes on.
+the model is evaluated on eval_batches batches of windows at the stage's
+window length, drawn at random places of the corpus's held-out portion
+(the record's `held_out` token files, read whole), which no step trains
+on. A stage's evaluation windows are the same at every evaluation, and
+the same for any seed and any step of an order: they depend only on the
+held-out tokens, the window length, the batch size and eval_batches. A
+corpus without a held-out portion is evaluated on windows of the training
+tokens drawn the same way, with --stream from the shards in use, and the
+step says so in the run's record (`validation`: "training", else
+"held_out").
 """
 
 import bisect
@@ -265,6 +267,7 @@ class TextWindows(Environment):
                              f"than one window of {longest}")
         self.tokens = len(self.train_tokens)
         self.index = 0
+        self.held_out = None
         if isinstance(self.train_tokens, ShardStream):
             ends = self.train_tokens.ends
             segments = [(ends[i - 1] if i else 0, ends[i] - (ends[i - 1] if i else 0)) for i in range(len(ends))]
@@ -275,6 +278,17 @@ class TextWindows(Environment):
             raise ValueError(f"no token file holds one window of {longest} tokens, so none can be streamed whole")
         self.walk = _Walk(segments, longest, (data.seed, data.number))
         self.stage_places = []
+        held = data.record.get("held_out")
+        self.held_out = None if held is None else _token_array(data.dock, held["shards"], strategy)
+        if self.held_out is not None and len(self.held_out) <= longest + 1:
+            self.close()
+            raise ValueError(f"the held-out portion has {len(self.held_out):,} tokens, fewer than one window of "
+                             f"{longest}: the validation reads its windows there")
+        self.validation = "held_out" if self.held_out is not None else "training"
+        data.log(f"{data.step}: validation on {len(self.held_out):,} tokens of the corpus's held-out portion, which "
+                 "no step trains on" if self.held_out is not None else
+                 f"{data.step}: validation on windows of the training tokens, as the corpus has no held-out portion: "
+                 "the validation loss is measured on text the step trains on")
 
     @property
     def learned(self):
@@ -357,7 +371,11 @@ class TextWindows(Environment):
     def evaluation_passes(self, step):
         """This process's passes of the current stage's evaluation batches:
         the same windows at every evaluation, for any seed and any step of
-        an order."""
+        an order, of the held-out tokens when the corpus has them."""
+        if self.held_out is not None:
+            block = self.stage_list[self.index].block_size
+            return [one for i in range(self.settings["eval_batches"])
+                    for one in self._passes(self.held_out, step, "held_out", block, i)]
         return [one for i in range(self.settings["eval_batches"])
                 for one in self._passes(self.train_tokens, step, "eval", i)]
 

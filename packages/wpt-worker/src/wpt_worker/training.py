@@ -430,7 +430,8 @@ def _train(spec, link, dock, work, strategy, telemetry):
                 except (ValueError, SettingsMismatch, PluginError, DockError) as error:
                     raise Refused(f"{type(error).__name__}: step {number} {step.name}: {error}") from None
                 if strategy.is_main:
-                    about = {"number": number, "reached": _reached(trained), "learned": dict(sorted(learned.items()))}
+                    about = {"number": number, "reached": {**_reached(trained), "validation": environment.validation},
+                             "learned": dict(sorted(learned.items()))}
                     sent_state = None if checkpoint.every else upload(link, local.path)
                     call(link, "step.done", json.dumps(about).encode(), state=sent_state)
                     continued.remove()

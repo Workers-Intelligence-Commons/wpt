@@ -692,9 +692,10 @@ seventieth of the text of an order of a billion tokens.
 Training reads only its portions ([training.md](training.md), "Steps"):
 the steps that read text windows the pretraining portion, as they read the
 start of the corpus (a size of a model series reads the first part of it),
-the steps that read conversations and tasks the fine-tuning one. The
-record training is given names no file of the held-out portion, and the
-texts a model learned from (`CREDITS`, `provenance.json`) never name one of
+the steps that read conversations and tasks the fine-tuning one. Of the
+held-out portion, the record training is given names the token files of
+plain text alone, which the steps that read text windows measure their
+validation loss on and never train on, and the texts a model learned from (`CREDITS`, `provenance.json`) never name one of
 its texts. A corpus made without portions, a delivery made without them or
 one of the corpora the depot built under `corpora/`, is all of it its
 pretraining portion, read as a whole, every step reading its kinds there,
