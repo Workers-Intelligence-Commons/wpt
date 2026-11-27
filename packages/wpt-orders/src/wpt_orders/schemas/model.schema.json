@@ -61,23 +61,12 @@
           }
         }
       ]
-    },
-    "dataset_data": {
-      "description": "legacy: the shape of the orders written before snapshots, a dataset of a depot whose corpus with the vocabulary the dataset publishes, built at the size total_tokens, training takes",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["depot", "dataset", "total_tokens"],
-      "properties": {
-        "depot": {"$ref": "#/$defs/depot"},
-        "dataset": {"type": "string", "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each order to fill in"},
-        "total_tokens": {"$ref": "#/$defs/total_tokens"}
-      }
     }
   },
   "properties": {
     "data": {
-      "description": "what the model trains on: the snapshot data shape (a snapshot of a depot, the kinds and the shares by tag it takes, the corpus size and the vocabulary), or the legacy dataset shape of the orders written before snapshots; orders with the same data share one corpus",
-      "oneOf": [{"$ref": "#/$defs/snapshot_data"}, {"$ref": "#/$defs/dataset_data"}]
+      "description": "what the model trains on: a snapshot of a depot, the roles of its corpus's portions, the shares by tag it takes, the sizes and the vocabulary; orders with the same data share one corpus",
+      "$ref": "#/$defs/snapshot_data"
     },
     "model": {
       "description": "the architecture's numbers (docs/model.md; wpt_model.ModelConfig without vocab_size, which the corpus's vocabulary gives, and block_size, the last window length of the steps' text windows)",

@@ -145,37 +145,12 @@
           }
         }
       ]
-    },
-    "dataset_data": {
-      "description": "legacy: the shape of the series written before snapshots, a dataset of a depot and one corpus for every size",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "depot",
-        "dataset"
-      ],
-      "properties": {
-        "depot": {
-          "$ref": "#/$defs/depot"
-        },
-        "dataset": {
-          "type": "string",
-          "description": "the id or the name of a dataset of that depot; empty until a person names it, and the check names each order to fill in"
-        }
-      }
     }
   },
   "properties": {
     "data": {
-      "description": "what every size trains on, one corpus for every size: the snapshot data shape of a model order without total_tokens, or the legacy dataset shape; its total tokens are the largest size's, the size of the corpus they ask for, and each size reads its start, at most what that corpus holds",
-      "oneOf": [
-        {
-          "$ref": "#/$defs/snapshot_data"
-        },
-        {
-          "$ref": "#/$defs/dataset_data"
-        }
-      ]
+      "description": "what every size trains on, one corpus for every size: the data part of a model order without total_tokens; its total tokens are the largest size's, the size of the corpus they ask for, and each size reads its start, at most what that corpus holds",
+      "$ref": "#/$defs/snapshot_data"
     },
     "reference": {
       "description": "the reference model every size scales from (a model order's `model`): its widths scale with d_model, its counts stay (every size has the same layers), its Engram table size scales with the cube of d_model (docs/model.md, \"Model series\")",

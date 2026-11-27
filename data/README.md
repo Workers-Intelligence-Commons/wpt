@@ -4,8 +4,7 @@ This folder describes data; it never holds data itself. The texts live in
 a depot (`depot`).
 
 - `orders/models/`: model orders, each everything that changes one model:
-  the depot and the snapshot it trains on (or, in the shape of the orders
-  written before snapshots, the dataset), with the roles of its corpus's
+  the depot and the snapshot it trains on, with the roles of its corpus's
   portions, the shares, sizes and vocabulary it takes, its architecture and
   training steps.
   See [docs/model.md](../docs/model.md).

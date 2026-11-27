@@ -18,14 +18,12 @@ guard.py refuses any other code that reaches these files.
 
 Every read is checked: an order against its schema (InvalidOrder), and
 check() and problems() add the rules across files. An order's data part
-has the snapshot shape (a snapshot of a depot, its change and digest, the
-roles of its corpus's portions, the shares by tag, the sizes and the
-vocabulary, named by its sha256 or learned for the data part from a sample
-of a number of bytes) or the
-legacy dataset
-shape of the orders written before snapshots (a dataset of a depot); the
-schema accepts either. An order whose depot, snapshot, digest, vocabulary
-or dataset is still empty passes its schema, so it reads, and the check
+names a snapshot of a depot, its change and digest, the roles of its
+corpus's portions, the shares by tag, the sizes and the vocabulary, named
+by its sha256 or learned for the data part from a sample of a number of
+bytes; a data part that names a dataset instead is refused, saying that an
+order names a snapshot. An order whose depot, snapshot, digest or
+vocabulary is still empty passes its schema, so it reads, and the check
 names it for a person to fill in; the check also refuses shares that name
 a tag twice or sum above 1, a size of the finetune portion in a data
 part whose roles leave it out, and a held-out portion in a data part whose
@@ -91,6 +89,9 @@ def _validator(name: str):
 def validate(document, kind: str, where: str):
     """InvalidOrder unless the document is a valid file of that kind; where
     names it in the message."""
+    if kind in ORDER_FOLDERS and isinstance(document, dict) and "dataset" in (document.get("data") or {}):
+        raise InvalidOrder(f"{where}: at data: names a dataset; an order names a snapshot of a depot, with its "
+                           "change and digest (docs/data-selection.md, \"The data section of a model order\")")
     error = jsonschema.exceptions.best_match(_validator(KINDS[kind][0]).iter_errors(document))
     while error is not None and error.validator == "oneOf" and error.context:
         error = _nearest_shape(error)
@@ -101,8 +102,8 @@ def validate(document, kind: str, where: str):
 
 def _nearest_shape(error):
     """The error to report for a value that matches none of the shapes a
-    oneOf offers (a data section of neither the snapshot nor the legacy
-    dataset shape): the best of the shape that failed with the fewest
+    oneOf offers (a vocabulary named neither by its sha256 nor by the bytes
+    of its sample): the best of the shape that failed with the fewest
     errors (the first shape on a tie), so the message names a field
     instead of the whole value."""
     by_shape = {}
@@ -133,16 +134,8 @@ def check_declared(where: str, names: list[str]):
 
 def _empty_data(where: str, data: dict, place: str):
     """InvalidOrder naming the fields of a data part that a person has not
-    filled in yet: in the snapshot shape, the depot's public address, the
-    snapshot's name and digest and the sha256 of a vocabulary named by it;
-    in the legacy
-    dataset shape, the depot's public address and the dataset's id or name."""
-    if "dataset" in data:
-        empty = [key for key in ("depot", "dataset") if not data[key]]
-        if empty:
-            raise InvalidOrder(f"{where}: {' and '.join(f'{place}{key}' for key in empty)} empty: a person names "
-                                f"the depot's public address and the id or name of its dataset")
-        return
+    filled in yet: the depot's public address, the snapshot's name and
+    digest and the sha256 of a vocabulary named by it."""
     empty = [key for key in ("depot", "snapshot", "digest") if not data[key]]
     empty += ["vocabulary.sha256"] if "sha256" in data["vocabulary"] and not data["vocabulary"]["sha256"] else []
     if empty:
@@ -176,12 +169,12 @@ def _finetune(where: str, data: dict, place: str):
 
 
 def _held_out(where: str, data: dict, place: str):
-    """InvalidOrder for a data part of the snapshot shape whose roles hold
+    """InvalidOrder for a data part whose roles hold
     held_out (left out: they do) with a total_tokens under
     HELD_OUT_MIN_TOKENS, too small a corpus for the held-out portion
     (wpt_corpus.roles); for a series, data is its largest size's."""
     total = data.get("total_tokens")
-    if ("snapshot" in data and "held_out" in (data.get("roles") or ["held_out"]) and total is not None
+    if ("held_out" in (data.get("roles") or ["held_out"]) and total is not None
             and total < HELD_OUT_MIN_TOKENS):
         raise InvalidOrder(f"{where}: {place}total_tokens {total:,} is too small for the held-out portion, which "
                            f"needs at least {HELD_OUT_MIN_TOKENS:,}: name {place}roles without held_out, such as "
@@ -261,8 +254,8 @@ class Orders:
         return self._load(kind, name)
 
     def data_part(self, given: str) -> dict:
-        """The data part of the model order a name gives (model_order), of
-        either shape, with total_tokens for a size of a series too; read
+        """The data part of the model order a name gives (model_order),
+        with total_tokens for a size of a series too; read
         without deriving a size, so without the vocabulary's size. NotFound
         as model_order."""
         name, separated, _ = given.partition(SIZE_OF)
@@ -275,8 +268,7 @@ class Orders:
         data/orders/models/; SERIES:SIZE, that size of the series file
         data/orders/series/SERIES.json, derived from it (series.py) for a
         vocabulary of vocab_size tokens (the size its data part's vocabulary
-        names, or for the legacy dataset shape the vocabulary of the
-        dataset's tokenizer recipe), which a series needs;
+        names), which a series needs;
         SERIES:SIZE:RUN, another run of that size (a decay branch, a
         learning rate of the check: series.runs). NotFound when there is no
         such order, series, size or run; InvalidOrder when the series'
@@ -288,7 +280,7 @@ class Orders:
         document = self.order("series", name)
         if vocab_size is None:
             raise InvalidOrder(f"series {name}: a size is derived for the vocabulary's size, which its data part "
-                                "names, or its dataset's tokenizer recipe gives")
+                                "names")
         if size not in series.sizes(document):
             raise NotFound(f"no size {size!r} in the series {name}; its sizes are {', '.join(series.sizes(document))}")
         try:

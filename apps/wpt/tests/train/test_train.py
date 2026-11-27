@@ -925,9 +925,9 @@ def test_a_order_whose_only_corpus_lists_its_token_files_in_one_list_is_told_the
         find_corpus(built.dock, None, data)
 
 
-def test_a_order_written_before_snapshots_trains_on_its_dataset_s_corpus_and_its_folder_says_so(built, tmp_path):
-    # an order of a dataset (the legacy shape) still trains on a corpus built from that dataset, given by its id,
-    # and the model folder names that corpus, its dataset and its depot as such folders always did
+def test_an_order_that_names_a_dataset_and_a_corpus_built_from_one_are_refused(built, tmp_path, capsys):
+    # the orders and the corpora of before snapshots: an order names a snapshot, and a corpus built from a
+    # dataset, which the dock may still hold, trains no order; neither reaches a depot
     record = readers.find(built.dock, built.corpus_id)
     legacy = {key: value for key, value in record.items() if key not in ("build_key", "snapshot", "data")}
     legacy.update(id="1e9acy" + record["id"][6:], dataset={"id": "fox-1", "name": "classics", "revision": 1})
@@ -937,27 +937,17 @@ def test_a_order_written_before_snapshots_trains_on_its_dataset_s_corpus_and_its
     order["data"] = {"depot": built.depot.name(), "dataset": "classics", "total_tokens": record["total_tokens"]}
     (folder / "old.json").write_text(json.dumps(order))
 
-    main(["old", legacy["id"][:12], "--out", "model"])
-
-    provenance = json.loads((tmp_path / "model" / "provenance.json").read_text())
-    assert provenance["corpus"] == {"id": legacy["id"], "depot": built.depot.name(), "dataset": "classics"}
-    assert "data" not in provenance
-    assert (f"From corpus {legacy['id']}, built from dataset classics of the depot {built.depot.name()}:"
-            in (tmp_path / "model" / "NOTICE").read_text())
-    with pytest.raises(SystemExit) as refused:  # a corpus of a snapshot is not a dataset's
-        main(["old", built.corpus_id, "--out", "other"])
-    assert refused.value.code == 2
+    assert "at data: names a dataset; an order names a snapshot" in refusal(capsys, ["old", "--out", "model"])
+    said = refusal(capsys, ["d", legacy["id"][:12], "--out", "model"])
+    assert f"corpus {legacy['id']} was built from dataset 'classics'" in said and "wpt build-resources" in said
+    assert not (tmp_path / "model").exists()
 
 
 def test_a_order_naming_its_depot_by_a_web_address_finds_its_corpus_without_reading_the_depot(built, monkeypatch):
     # a machine without the depot's file finds the corpus of an order of a snapshot on the dock alone: the corpus
     # names the depot by the address the order gives, and the snapshot by its name, change and digest
-    from wpt.train import InputError, find_corpus, load_corpus, order_depot
+    from wpt.train import InputError, find_corpus, load_corpus
 
-    def unreachable(self, route):
-        raise AssertionError(f"the depot's web app was asked {route}")
-
-    monkeypatch.setattr(order_depot.WebDepot, "_json", unreachable)
     monkeypatch.delenv("DEPOT")
     address = "https://depot.example.org"
     size = readers.find(built.dock, built.corpus_id)["total_tokens"]
@@ -1151,13 +1141,10 @@ def test_a_stale_corpus_is_refused_until_it_is_built_again(built, tmp_path, caps
 
 
 def test_a_corpus_that_does_not_list_its_token_files_by_kind_is_refused_with_the_build_that_makes_one():
-    # each step reads the token files of the kinds it names: a corpus of one list cannot say which are which; no
-    # build makes a corpus of a dataset, so the message says to give the order a snapshot
-    record = {"id": "old", "dataset": {"id": "d", "name": "classics"}, "shards": [{"path": "shard-0.bin"}],
-              "total_tokens": 10}
+    # each step reads the token files of the kinds it names: a corpus of one list cannot say which are which
+    record = {"id": "old", "build_key": "k", "shards": [{"path": "shard-0.bin"}], "total_tokens": 10}
 
-    with pytest.raises(InputError, match=r"does not list its token files by kind.*no build makes a corpus of a "
-                                         r"dataset.*wpt build-resources"):
+    with pytest.raises(InputError, match=r"does not list its token files by kind.*wpt build-resources"):
         check_record(record, {"data": {"total_tokens": 10}})
 
 
@@ -1172,9 +1159,9 @@ def test_a_corpus_with_fewer_tokens_than_the_order_s_total_is_refused(built, tmp
 
 def test_a_corpus_built_at_the_order_s_size_trains_on_what_it_holds_and_the_record_says_how_much(built, tmp_path):
     # total_tokens is the size the order asks for and a ceiling: a corpus built at that size never passes it, so
-    # it may hold fewer tokens of plain text, and training reads them all, found by its triple or given by its id
+    # it may hold fewer tokens of plain text, and training reads them all, found by its size or given by its id
     whole = readers.find(built.dock, built.corpus_id)["total_tokens"]
-    asked = whole + 500  # more than the dataset holds: the corpus built at that size holds every token, fewer
+    asked = whole + 500  # more than the snapshot holds: the corpus built at that size holds every token, fewer
     folder = tmp_path / "data" / "orders" / "models"
     order = json.loads((folder / "d.json").read_text())
     order["data"]["total_tokens"] = asked
@@ -1202,7 +1189,7 @@ def test_each_size_reads_the_smaller_of_its_prefix_and_what_a_corpus_built_at_th
         return {"step": "read-text", "settings": {"stages": [{"block_size": 16, "steps": 1, "batch_size": 1}],
                                                   "prefix_tokens": prefix}}
     order = {"data": {"total_tokens": 5000}, "steps": [stepped(4000), stepped(800)]}
-    record = {"id": "c", "total_tokens": 900, "dataset": {"id": "d"}, "tokenizer": {"sha256": "0" * 64}}
+    record = {"id": "c", "total_tokens": 900, "tokenizer": {"sha256": "0" * 64}}
     said = []
 
     at_size = with_prefixes(order, {**record, "max_tokens": 5000}, said.append)

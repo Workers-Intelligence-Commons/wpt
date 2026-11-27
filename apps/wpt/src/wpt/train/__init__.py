@@ -1,4 +1,4 @@
-"""Train a model as a model order says, on the corpus of its dataset.
+"""Train a model as a model order says, on the corpus its data part asks for.
 
 Usage:
     wpt train ORDER [CORPUS_ID] [options]
@@ -39,17 +39,8 @@ delivery it names. A corpus given by its id must be made from that
 snapshot with the order's portions, shares and vocabulary, at any size; a
 corpus without portions (a delivery made without them, or one of the
 dock's corpora/) is all of it its pretraining portion and needs the
-order's shares and plain texts. An order written before snapshots
-names a dataset instead, by id or name: without CORPUS_ID, the latest
-fresh corpus of the triple that dataset (found by its id), the vocabulary
-it publishes and the data part's total_tokens, read from the depot's file
-or its web app (a dataset's corpora stay its own through a rename); a
-dataset that publishes no vocabulary, or a triple not built, refuses the
-run, naming the dataset's listing of corpora (a frozen route of the
-depot's web app) and saying that no build makes a corpus of a dataset; a
-corpus built from an older
-revision of the dataset is used with a warning; a corpus of another depot
-or dataset, or one built from a snapshot, is refused. The corpus holds everything the
+order's shares and plain texts. A corpus of the dock's corpora/ built from
+a dataset, before snapshots, is refused. The corpus holds everything the
 steps read, by kind of texts, each step reading the kinds it names: the
 token files of plain texts and of conversations, and the tasks. Of a corpus
 cut into portions, each step reads its role's portion, the steps that read
@@ -267,7 +258,6 @@ from wpt_worker.manager import Files, NoCheckout, code_root, keys, machines, run
 from wpt_worker.training import CHECKPOINTS, STEP_ENDS
 
 from .. import resources
-from . import order_depot
 from .notice import PLAIN, model_notice
 from .remote import Training
 
@@ -283,8 +273,8 @@ class Refused(Exception):
 
 
 class InputError(Exception):
-    """The corpus is missing, it was built from another depot, dataset or
-    than the order's, the order's steps cannot run as
+    """The corpus is missing, it was built from another snapshot or
+    selection than the order's, the order's steps cannot run as
     asked, or the batch does not split over the processes. Nothing has been
     trained. (A token file or vocabulary that does not match its hash is the
     dock's CorruptFile.)"""
@@ -418,8 +408,7 @@ def parse_args(argv=None, environ=None):
 
 def load_data(name) -> dict:
     """The data part of the model order of that name (or SERIES:SIZE[:RUN]):
-    its depot, snapshot (or, written before snapshots, dataset) and total_tokens, from the repository holding the
-    current folder."""
+    its depot, snapshot and total_tokens, from the repository holding the current folder."""
     try:
         return Orders.find().data_part(name)
     except OrderError as error:
@@ -436,109 +425,45 @@ def load_order(name, record):
         raise InputError(str(error)) from None
 
 
-# how an order of a snapshot gets its corpus
+# how an order gets its corpus
 BUILD = ("run `wpt build-resources ORDER` (SERIES: for a series), which asks the freight for the order's vocabulary "
          "and corpus")
-# how an order of the legacy dataset shape gets another corpus: no build makes a corpus of a dataset
-LEGACY_AGAIN = ("no build makes a corpus of a dataset: give the order's data part a snapshot of the depot "
-                "(docs/data-selection.md, \"The data section of a model order\"), then " + BUILD)
 
 
-def on_snapshot(data) -> bool:
-    """Whether an order's data part names a snapshot (else, in an order
-    written before snapshots, a dataset)."""
-    return "snapshot" in data
-
-
-def order_dataset(data, reader=None) -> dict:
-    """The current row of the dataset an order's data part written before
-    snapshots names (its id or name), read from its depot without writing
-    to it (wpt.train.order_depot; reader: the depot already opened);
-    InputError when the depot cannot be read or holds no such dataset."""
-    try:
-        return (reader or order_depot.opened(data, Path.cwd() / ".env")).dataset(data["dataset"])
-    except order_depot.Missing:
-        raise InputError(f"no dataset {data['dataset']!r} in the depot {data['depot']!r}: {LEGACY_AGAIN}") from None
-    except order_depot.Unreadable as error:
-        raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
-                         f"({type(error).__name__}: {error}); give the corpus id instead") from None
-
-
-def find_corpus(dock, given, data, log=say) -> dict:
+def find_corpus(dock, given, data) -> dict:
     """The record of the corpus given (an id or a start of it: a corpus of
     the dock's corpora/, else a corpus delivery of the dock, by its id or
-    its key), or without one the corpus of the order's data part.
-
-    A data part that names a snapshot: the corpus delivery whose key the
-    data part gives (wpt.resources.corpus_key, its vocabulary's delivery
-    wpt.resources.vocabulary_key), as wpt.resources.corpus_record gives it;
-    without one, for a vocabulary named by its sha256, the latest corpus of
-    the dock's corpora/ built from that snapshot (name, change, digest),
-    depot, shares (taking plain texts), vocabulary and size. No depot is read. InputError
-    when neither is there fresh, saying to run `wpt build-resources`;
-    nothing is built or queued.
-
-    A data part written before snapshots, which names a dataset: the latest
-    fresh corpus of the triple its dataset (found by its id in its depot,
-    so a dataset's corpora stay its own through a rename), the vocabulary
-    that dataset publishes and the size total_tokens, read from the
-    depot's file or through its web app (order_depot.FileDepot.built,
-    WebDepot.built), with a warning in the log when it was built from an
-    older revision of the dataset than the current one. InputError when
-    the dock holds no such corpus, the dataset publishes no vocabulary,
-    or that triple is not built: the message names the triple and the
-    dataset's listing of corpora, and says that no build makes a corpus
-    of a dataset, as check_record does. InputError too when the freight
-    cannot read the dock (a setting it needs is missing)."""
+    its key), or without one the corpus of the order's data part: the
+    corpus delivery whose key the data part gives (wpt.resources.corpus_key,
+    its vocabulary's delivery wpt.resources.vocabulary_key), as
+    wpt.resources.corpus_record gives it; without one, for a vocabulary
+    named by its sha256, the latest corpus of the dock's corpora/ built from
+    that snapshot (name, change, digest), depot, shares (taking plain
+    texts), vocabulary and size. No depot is read. InputError when neither
+    is there fresh, saying to run `wpt build-resources`; nothing is built or
+    queued. InputError too for a corpus given that was built from a dataset,
+    before snapshots, and when the freight cannot read the dock (a setting
+    it needs is missing)."""
     try:
-        return _find_corpus(dock, given, data, log)
+        return _find_corpus(dock, given, data)
     except (freight.SettingMissing, DockSettingError) as error:
         raise InputError(f"the deliveries of the dock {dock} cannot be read ({type(error).__name__}: "
                          f"{error})") from None
 
 
-def _find_corpus(dock, given, data, log) -> dict:
+def _find_corpus(dock, given, data) -> dict:
     """find_corpus, its freight's and dock's errors aside."""
-    if given is None and on_snapshot(data):
+    if given is None:
         return _snapshot_corpus(dock, data)
-    dataset = None
     try:
-        if given is not None:
-            found = corpora.find(dock, given) or _delivered(dock, given)
-        else:
-            try:
-                reader = order_depot.opened(data, Path.cwd() / ".env")
-            except order_depot.Unreadable as error:
-                raise InputError(f"the dataset {data['dataset']!r} of the depot {data['depot']!r} cannot be read "
-                                 f"({type(error).__name__}: {error}); give the corpus id instead") from None
-            dataset = order_dataset(data, reader)
-            page = order_depot.download_page(data["depot"], dataset["id"])
-            vocabulary, size = dataset.get("vocabulary"), data["total_tokens"]
-            if vocabulary is None:
-                raise InputError(f"the dataset {dataset['name']!r} ({dataset['id']}) of the depot {data['depot']!r} "
-                                 f"publishes no vocabulary, so no corpus is the order's: {LEGACY_AGAIN}")
-            try:
-                found = reader.built(dock, data["depot"], dataset, vocabulary, size)
-            except (order_depot.Unreadable, order_depot.Missing) as error:
-                raise InputError(f"the corpus of the dataset {dataset['name']!r} cannot be found "
-                                 f"({type(error).__name__}: {error})") from None
-            if found is None:
-                older = next(iter(corpora.built_from(dock, data["depot"], dataset["id"], vocabulary, size)), None)
-                if older is not None and not corpora.by_kind(older) and not {"stale", "deleted"} & older.keys():
-                    raise InputError(f"corpus {older['id']} does not list its token files by kind, which each "
-                                     f"training step reads: {LEGACY_AGAIN}")
-                raise InputError(f"no fresh corpus of the dataset {dataset['name']!r} ({dataset['id']}) of the depot "
-                                 f"{data['depot']!r} with its published vocabulary {vocabulary} at the size "
-                                 f"{size:,} (the order's total_tokens) in {dock}, whose corpora the depot lists at "
-                                 f"{page}; {LEGACY_AGAIN}")
+        found = corpora.find(dock, given) or _delivered(dock, given)
     except ValueError as error:
         raise InputError(str(error)) from None
     if found is None:
         raise InputError(f"no corpus {given} in {dock}")
-    if dataset is not None and found["dataset"]["revision"] < dataset["revision"]:
-        log(f"corpus {found['id']} was built from revision {found['dataset']['revision']} of the dataset "
-            f"{dataset['name']!r} ({dataset['id']}), whose current revision is {dataset['revision']}: this run "
-            f"trains on the older revision", WARNING)
+    if "build_key" not in found and "delivery" not in found:
+        raise InputError(f"corpus {found['id']} was built from {_source(found)}, before snapshots; an order names "
+                         f"a snapshot: {BUILD}")
     return found
 
 
@@ -563,8 +488,7 @@ def _record_of(dock, note) -> dict:
 
 
 def _snapshot_corpus(dock, data) -> dict:
-    """The record of the corpus an order's data part that names a snapshot
-    asks for (find_corpus)."""
+    """The record of the corpus an order's data part asks for (find_corpus)."""
     vocabulary = resources.vocabulary_key(data, dock)
     key = None if vocabulary is None else resources.corpus_key(data, vocabulary)
     note = None if key is None else freight.delivery(key, dock=dock)
@@ -597,7 +521,7 @@ def _built(dock, data) -> dict | None:
     first. None without one."""
     found = [record for record in corpora.records(dock)
              if "build_key" in record and record["depot"] == data["depot"] and record.get("rules") == corpora.RULES
-             and _same_build(record, data) and corpora.triple(record)[2] == data["total_tokens"]]
+             and _same_build(record, data) and corpora.size(record) == data["total_tokens"]]
     return next((record for record in found if corpora.fresh(record)), found[0] if found else None)
 
 
@@ -657,33 +581,24 @@ def _cut(selection: dict) -> list[dict]:
 
 def load_corpus(dock, record, order):
     """The corpus's tokenizer, its vocabulary checked, once the corpus is
-    known to be the order's. An order of a snapshot: a corpus built or
-    delivered from that snapshot (name, change, digest) with the order's
-    portions, shares and vocabulary (_same_build), at any size (check_record checks the
-    size). An order of a dataset: a corpus built from the depot the order
-    names, and a dataset of the id or name the order gives then, or,
-    renamed since, of the id the order's dataset has in its depot now."""
+    known to be the order's: a corpus built or delivered from the order's
+    snapshot (name, change, digest) with its portions, shares and
+    vocabulary (_same_build), at any size (check_record checks the size).
+    The record is one find_corpus gives, of a corpus built from a
+    snapshot."""
     data = order["data"]
-    snapshot = "build_key" in record or "delivery" in record
-    if on_snapshot(data):
-        if not snapshot or not _same_build(record, data):
-            raise InputError(f"corpus {record['id']} was built from {_source(record)}"
-                             + (" with portions, shares or vocabulary other than the order's" if snapshot
-                                else "") + f"; this order names snapshot {data['snapshot']} (change "
-                             f"{data['change']}, digest {data['digest']}) of the depot {data['depot']}")
-    elif (snapshot or record["depot"] != data["depot"]
-            or (data["dataset"] not in (record["dataset"]["name"], record["dataset"]["id"])
-                and record["dataset"]["id"] != order_dataset(data)["id"])):
-        raise InputError(f"corpus {record['id']} was built from {_source(record)}; this order names dataset "
-                         f"{data['dataset']!r} of the depot {data['depot']!r}")
+    if not _same_build(record, data):
+        raise InputError(f"corpus {record['id']} was built from {_source(record)} with portions, shares or "
+                         f"vocabulary other than the order's; this order names snapshot {data['snapshot']} (change "
+                         f"{data['change']}, digest {data['digest']}) of the depot {data['depot']}")
     vocabulary = record["tokenizer"]["vocabulary"]
     return Tokenizer.from_bytes(dock_api.fetch(dock, vocabulary["key"], vocabulary["sha256"]))  # checked by the dock
 
 
 def built_for(record, order) -> bool:
     """Whether the corpus was built at the size the order asks for: its
-    max_tokens (wpt_corpus.corpora.triple) is the data part's total_tokens."""
-    return corpora.triple(record)[2] == order["data"]["total_tokens"]
+    max_tokens (wpt_corpus.corpora.size) is the data part's total_tokens."""
+    return corpora.size(record) == order["data"]["total_tokens"]
 
 
 def check_record(record, order):
@@ -693,22 +608,17 @@ def check_record(record, order):
     built at that size (built_for: such a corpus gives its conversations
     and tasks their share of the size, and training reads what it holds),
     or it does not list its token files by kind, which each step reads
-    (wpt_corpus.corpora.by_kind). The message says how to make it again: `wpt
-    build-resources` for a corpus of a snapshot; for one of a dataset, a
-    snapshot in the order first, since no build makes a corpus of a
-    dataset."""
-    snapshot = "build_key" in record or "delivery" in record
+    (wpt_corpus.corpora.by_kind). The message says to make it again with
+    `wpt build-resources`."""
     if not corpora.by_kind(record):
-        again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} does not list its token files by kind, which each training step "
-                         f"reads: {again}")
+                         f"reads: {BUILD}")
     if "stale" in record:
-        again = BUILD if snapshot else LEGACY_AGAIN
         raise InputError(f"corpus {record['id']} is stale: the depot carried out the erasures "
-                         f"{', '.join(record['stale']['erasures'])} on texts it was built from; {again}")
+                         f"{', '.join(record['stale']['erasures'])} on texts it was built from; {BUILD}")
     wanted = order["data"]["total_tokens"]
     if record["total_tokens"] < wanted and not built_for(record, order):
-        size = corpora.triple(record)[2]
+        size = corpora.size(record)
         raise InputError(f"the order trains on {wanted:,} tokens (data.total_tokens); corpus {record['id']} holds "
                          f"{record['total_tokens']:,} and was built at "
                          f"{'no size' if size is None else f'the size {size:,}'}, not the order's {wanted:,}")
@@ -854,20 +764,16 @@ def provenance(args, order, record, model_config, n_params, worker, strategy_fil
     may have been made at a larger size than the order's, and holds other
     texts past the first one a smaller one leaves out. A corpus built by
     the depot from a snapshot gives `data` and `corpus` its id, build key,
-    rules, snapshot and `data`, the data section it was built with. One
-    built before snapshots gives `corpus` its id, depot and dataset
-    (wpt_model.provenance reads the three)."""
+    rules, snapshot and `data`, the data section it was built with."""
     processes = worker["processes"]
     if "delivery" in record:
         corpus = {"id": record["id"], "delivery": record["delivery"], "rules": record["rules"],
                   "depot": record["depot"], "snapshot": record["snapshot"], "request": record["request"]}
         source = {"data": order["data"], "deliveries": record["deliveries"]}
-    elif "build_key" in record:
+    else:
         corpus = {"id": record["id"], "build_key": record["build_key"], "rules": record["rules"],
                   "depot": record["depot"], "snapshot": record["snapshot"], "data": record["data"]}
         source = {"data": order["data"]}
-    else:
-        corpus, source = {"id": record["id"], "depot": record["depot"], "dataset": record["dataset"]["name"]}, {}
     return {
         **source,
         "order_name": args.order,
@@ -899,23 +805,10 @@ def print_series(name) -> int:
     orders = Orders.find()
     try:
         data = orders.data_part(f"{name}{SIZE_OF}")
-        if on_snapshot(data):  # the series names its vocabulary, with its size
-            vocab_size = data["vocabulary"]["size"]
-            said = (f"the vocabulary {data['vocabulary']['sha256'] or '(not named yet)'} its data part names"
-                    if resources.vocabulary_named(data) else
-                    f"the size of the vocabulary its data part learns on {data['vocabulary']['sample_bytes']:,} bytes")
-        else:
-            try:
-                depot = order_depot.opened(data, Path.cwd() / ".env")
-                # the size the trained vocabulary has, which a corpus's record gives training; the order's before
-                vocab_size, trained = depot.vocab_size(depot.dataset(data["dataset"])["tokenizer"])
-            except (order_depot.Unreadable, order_depot.Missing, OSError) as error:
-                say(f"InputError: series {name}: the vocabulary's size comes from the tokenizer recipe of the "
-                    f"dataset {data['dataset']!r} of the depot {data['depot']!r}, which cannot be read "
-                    f"({type(error).__name__}: {error})", ERROR)
-                return REFUSED
-            said = (f"that of the tokenizer recipe of its dataset {data['dataset']!r}"
-                    + ("" if trained else " (not trained yet: the size it asks for)"))
+        vocab_size = data["vocabulary"]["size"]  # the series names its vocabulary, with its size
+        said = (f"the vocabulary {data['vocabulary']['sha256'] or '(not named yet)'} its data part names"
+                if resources.vocabulary_named(data) else
+                f"the size of the vocabulary its data part learns on {data['vocabulary']['sample_bytes']:,} bytes")
         plans = orders.series_plans(name, vocab_size)
         say(f"series {name}: a vocabulary of {vocab_size:,} tokens, {said}")
         total = orders.series_total_tokens(name)

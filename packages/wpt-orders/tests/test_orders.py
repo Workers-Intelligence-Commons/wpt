@@ -31,12 +31,6 @@ def write(orders, kind, name, document):
     (orders.root / "data" / "orders" / folder / f"{name}.json").write_text(dump_json(document), encoding="utf-8")
 
 
-def model(depot=DEPOT, dataset="first"):
-    """An order of the legacy dataset shape, written before snapshots."""
-    return {"data": {"depot": depot, "dataset": dataset, "total_tokens": 100},
-            "model": MODEL, "seed": 1, "steps": STEPS, "drafter": {}}
-
-
 def snapshot_model(**data):
     """An order of the snapshot shape; data replaces fields of its data part."""
     return {"data": {"depot": DEPOT, "snapshot": "2026-11", "change": 1234, "digest": DIGEST,
@@ -77,7 +71,7 @@ def test_a_model_order_names_a_snapshot_of_a_depot_its_roles_shares_sizes_and_vo
     ({"roles": ["held_out", "finetune"]}, "data/roles", "does not contain items matching"),
     ({"roles": ["pretrain", "test"]}, "data/roles/1", "'test' is not one of"),
     ({"kinds": ["plain"]}, "data", "Additional properties are not allowed ('kinds' was unexpected)"),
-    ({"dataset": "first"}, "data", "Additional properties are not allowed ('dataset' was unexpected)"),
+    ({"dataset": "first"}, "data", "names a dataset; an order names a snapshot of a depot"),
 ])
 def test_a_snapshot_data_part_of_the_wrong_shape_is_refused_naming_its_field(orders, data, place, message):
     write(orders, "model", "m", snapshot_model(**data))
@@ -158,31 +152,26 @@ def test_the_check_refuses_a_held_out_portion_in_a_corpus_too_small_for_it(order
     assert orders.check() == []
 
 
-def test_a_legacy_model_order_names_a_depot_a_dataset_there_and_its_tokens(orders):
-    write(orders, "model", "m", model())
-    assert orders.model_order("m")["data"] == {"depot": DEPOT, "dataset": "first", "total_tokens": 100}
-    assert orders.data_part("m") == orders.model_order("m")["data"]
-    assert orders.check() == []
-
-
-def test_the_check_names_each_legacy_order_whose_depot_or_dataset_a_person_has_not_named(orders):
-    # an empty depot or dataset reads (training needs neither), and the check names the file to fill in
-    write(orders, "model", "m", model(dataset=""))
-    assert orders.model_order("m")["data"]["dataset"] == ""
+def test_an_order_that_names_a_dataset_is_refused_saying_an_order_names_a_snapshot(orders):
+    # the data part of the orders written before snapshots: a dataset of a depot, which no training reads
+    write(orders, "model", "m", {**snapshot_model(), "data": {"depot": DEPOT, "dataset": "first", "total_tokens": 100}})
+    with pytest.raises(InvalidOrder, match="data/orders/models/m.json: at data: names a dataset; an order names a "
+                                           "snapshot of a depot, with its change and digest"):
+        orders.model_order("m")
     assert orders.check() == [
-        "data/orders/models/m.json: data.dataset empty: a person names the depot's public address and the id or "
-        "name of its dataset"]
+        "data/orders/models/m.json: at data: names a dataset; an order names a snapshot of a depot, with its change "
+        "and digest (docs/data-selection.md, \"The data section of a model order\")"]
 
 
 def test_a_order_of_an_earlier_shape_is_refused(orders):
-    # a legacy order with a field its shape lacks is refused naming that field, not as a whole value
-    earlier = model()
+    # an order with a field its shape lacks is refused naming that field, not as a whole value
+    earlier = snapshot_model()
     earlier["data"] = {"mixture": "classics", "tokenizer": "t", "total_tokens": 100, "held_out": 0.05}
     write(orders, "model", "earlier", earlier)
-    named = model()
-    named["data"]["tokenizer"] = "t"  # the tokenizer is the dataset's own: an order names none
+    named = snapshot_model()
+    named["data"]["tokenizer"] = "t"  # the vocabulary is named by itself: an order names no tokenizer
     write(orders, "model", "named", named)
-    with pytest.raises(InvalidOrder, match="data/orders/models/earlier.json: at data: Additional properties"):
+    with pytest.raises(InvalidOrder, match="data/orders/models/earlier.json: at data: "):
         orders.model_order("earlier")
     with pytest.raises(InvalidOrder, match="data/orders/models/named.json: at data: Additional properties"):
         orders.model_order("named")

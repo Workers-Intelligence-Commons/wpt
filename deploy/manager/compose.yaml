@@ -15,7 +15,7 @@
 #
 #     WPT_ORDER             the model order; required
 #     WPT_CORPUS            the corpus the run trains on (its id, or a start of it); unset, the
-#                           corpus last built for the order's depot and dataset; nothing is built
+#                           corpus delivery of the order's delivery key; nothing is built
 #     WPT_RUN               the run's name; unset, the manager makes one and writes it, with the
 #                           lines to copy, into wpt-run.txt at the repository's root
 #     WPT_EVALUATE          1: evaluate the model at the end; off by default

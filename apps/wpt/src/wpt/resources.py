@@ -5,7 +5,7 @@ sent to it, and found again on the dock.
 
 ORDER is a model order's name, or SERIES: for the one corpus every size of
 a series reads (its largest size's). Its data section names a snapshot of a
-depot; the legacy shape, which names a dataset, makes no request.
+depot.
 
 The data section makes two requests (docs/api/freight.md, "A request"):
 
@@ -336,8 +336,6 @@ def main(argv=None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     try:
         data = Orders.find().data_part(args.order)
-        if "snapshot" not in data:
-            raise Unanswered(f"{args.order} names a dataset, the legacy shape: the freight chooses in a snapshot")
         notes = build(data)
     except Exception as error:  # noqa: BLE001 a refusal of the order, the freight or the dock, said once
         say(f"wpt build-resources {args.order}: {type(error).__name__}: {error}", ERROR)

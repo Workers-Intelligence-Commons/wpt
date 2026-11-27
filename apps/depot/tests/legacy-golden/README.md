@@ -21,10 +21,10 @@ clients read the fields named in the last column. Every route is a GET.
 
 | Route | Who calls it | Fields old clients read |
 | --- | --- | --- |
-| `/api/datasets` | `wpt train` through `order_depot.WebDepot.dataset` | `id`, `name` of each row |
-| `/api/datasets/{id}/download` | `wpt train` through `WebDepot.built` | `state`, `problem`, `erasures`, `corpora[].vocabulary.sha256`, `corpora[].max_tokens`, `corpora[].latest_fresh.id` |
-| `/api/tokenizers/{name}` | `wpt train` through `WebDepot.vocab_size` | `recipe.version`, `recipe.vocab_size`, `trained` |
-| `/api/tokenizers/{name}/vocabularies/{version}/file` | `wpt train` through `WebDepot.vocab_size` | the whole body, a vocabulary file |
+| `/api/datasets` | `wpt train` at the commit a model trained before snapshots records | `id`, `name` of each row |
+| `/api/datasets/{id}/download` | `wpt train` at such a commit | `state`, `problem`, `erasures`, `corpora[].vocabulary.sha256`, `corpora[].max_tokens`, `corpora[].latest_fresh.id` |
+| `/api/tokenizers/{name}` | `wpt train` at such a commit | `recipe.version`, `recipe.vocab_size`, `trained` |
+| `/api/tokenizers/{name}/vocabularies/{version}/file` | `wpt train` at such a commit | the whole body, a vocabulary file |
 | `/api/datasets/{id or name}/sample?bytes=N` | another depot's `depot tokenizer train` (`corpus.remote_sample`) | lines `{"depot", "text", "bytes"}` each followed by that many bytes, `{"waiting": true}`, and a last `{"end": true}` |
 | `/api/datasets/{id}` | a person, from the dataset's page | none |
 | `/api/datasets/{name}/remote` | a person: the dataset as `depot dataset import` reads it | the remote (`depot.remote`) |

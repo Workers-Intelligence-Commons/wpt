@@ -5,9 +5,7 @@ changes a model: its data (the address of a depot, a snapshot there with
 its change and digest, the roles of its corpus's portions, the shares by
 tag it takes, the sizes of its pretraining portion (total_tokens) and of its
 finetune one, and its vocabulary: its sha256 and size, or its size and the bytes
-of the sample it is learned from; orders written before
-snapshots name a dataset of the depot instead, whose tokenizer recipe
-gives the vocabulary), its architecture, its seed, its training steps and its
+of the sample it is learned from), its architecture, its seed, its training steps and its
 drafter (docs/model.md). A series (data/orders/series/<name>.json) holds
 the rules several sizes of one model share, and series.py derives each
 size's model order from it, for the vocabulary's size. A task image

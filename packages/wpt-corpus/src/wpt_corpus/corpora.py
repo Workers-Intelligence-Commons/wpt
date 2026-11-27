@@ -1,8 +1,8 @@
 """WPT's reading of the corpora the dock keeps under corpora/, built
 before the freight delivered corpora: what each record says of its tokens
-and vocabulary, and the corpus an order of the legacy shapes trains on.
-Nothing here builds or changes one: the freight marks them stale after an
-erasure (freight.corpora), and these readers only read the dock.
+and vocabulary. Nothing here builds or changes one: the freight marks them
+stale after an erasure (freight.corpora), and these readers only read the
+dock.
 
 Each corpus is a folder corpora/<build key>/ of the dock (a corpus built
 from a dataset before snapshots: corpora/<dataset name>-<8 hex
@@ -15,18 +15,13 @@ never fresh: training cannot read it).
 A corpus of a snapshot was built for a build key: its snapshot, its data
 section in the form canonical gives, its vocabulary and the version of the
 selection rules then, RULES. A corpus built from a dataset before snapshots
-was built for a triple (triple): its dataset, its vocabulary (by sha256)
-and its size; those are found by their dataset (built_from, latest_fresh),
-and a corpus of a build key belongs to no dataset.
+has no build key, and no order trains on it.
 
     records(dock)                        every corpus the dock holds, newest first
     find(dock, corpus_id)                the corpus of that id (or of a start of it), None without one
     canonical(data), RULES               a data section in the form a build key covers, and the rules' version
     fresh(record), by_kind(record)       whether a corpus can train, whether it lists its token files by kind
-    triple(record)                       what a corpus was built for: (its dataset's id, its vocabulary's sha256,
-                                         its size)
-    built_from(dock, depot, dataset)     every corpus built for that depot's dataset (by id), latest first
-    latest_fresh(dock, depot, dataset)   the fresh one built last
+    size(record)                         the size a corpus was built at
     rows(dock, record, table)            the rows of one of a corpus's tables, of the portions it trains on
 
 dock is the dock's URL, read through dock.api.
@@ -40,7 +35,6 @@ from dock import api
 
 FOLDER = "corpora"
 RECORD = "corpus.json"
-ANY = "any"  # a size that keeps the corpora of every size (built_from)
 RULES = 8  # the version of the selection rules a corpus of a build key was built with, which its key covers
 
 
@@ -57,16 +51,9 @@ def by_kind(record: dict) -> bool:
     return isinstance(record.get("shards", {}), dict)
 
 
-def triple(record: dict) -> tuple[str | None, str, int | None]:
-    """What a corpus was built for: (its dataset's id, None for a corpus of
-    a build key, the sha256 of its vocabulary, its size: max_tokens, None
-    for none). A record that names no size of its own was built at its
-    dataset's max_tokens, and one that names no vocabulary sha256 of its own
-    has its vocabulary file's."""
-    dataset = record.get("dataset") or {}
-    size = record["max_tokens"] if "max_tokens" in record else dataset.get("max_tokens")
-    vocabulary = record["tokenizer"].get("sha256") or record["tokenizer"]["vocabulary"]["sha256"]
-    return dataset.get("id"), vocabulary, size
+def size(record: dict) -> int | None:
+    """The size a corpus was built at: its max_tokens, None for none."""
+    return record.get("max_tokens")
 
 
 def canonical(data: dict) -> dict:
@@ -116,27 +103,6 @@ def find(dock, corpus_id: str) -> dict | None:
     if len(found) > 1:
         raise ValueError(f"{corpus_id!r} starts the ids of {len(found)} corpora: give more of the id")
     return found[0] if found else None
-
-
-def built_from(dock, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> list[dict]:
-    """The records of the corpora built from the dataset of id dataset of
-    the depot of that name, latest first: those of the dataset's newest
-    revision first, each revision's last built first, so a corpus of an
-    older revision built again never comes before one of a newer revision.
-    vocabulary (a sha256) and size (max_tokens, None for none) keep only the
-    corpora built for them (triple); by default, every vocabulary and
-    size."""
-    found = [record for record in records(dock)
-             if record["depot"] == depot and (record.get("dataset") or {}).get("id") == dataset
-             and (vocabulary is None or triple(record)[1] == vocabulary)
-             and (size is ANY or triple(record)[2] == size)]
-    return sorted(found, key=lambda record: (record["dataset"].get("revision", 0), record["built_at"]), reverse=True)
-
-
-def latest_fresh(dock, depot: str, dataset: str, vocabulary: str | None = None, size=ANY) -> dict | None:
-    """The record of the fresh corpus last built for that dataset (and
-    vocabulary and size, as built_from says); None without one."""
-    return next((record for record in built_from(dock, depot, dataset, vocabulary, size) if fresh(record)), None)
 
 
 def rows(dock, record: dict, table: str) -> list[dict]:

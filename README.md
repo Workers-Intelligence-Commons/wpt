@@ -97,12 +97,8 @@ it names: a snapshot's page in `depot web` gives its name, change and
 digest, to put in the order file and commit, since the corpus and the
 model name the commit they were built from. `classics-test` is a
 small model order, enough to see every step work on one machine, which
-the quick start copies for its model part. Like every order of the repository, it names the dataset
-`test1` (id `wic-1`) of the public depot
-https://depot.workers-intelligence-commons.org, in the legacy shape of
-orders written before snapshots ([model.md](docs/model.md), "Model
-orders"), which `wpt build-resources` refuses: it trains only on a corpus
-of that dataset a dock holds.
+the quick start copies for its model part. Like every order of the repository, it names a snapshot
+of the public depot https://depot.workers-intelligence-commons.org.
 
 **Streaming** keeps disk use small at each step, for data larger than the
 disk:

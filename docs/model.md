@@ -897,7 +897,7 @@ and the repository, or from a series file, the name of one of its sizes
 (and of that size's run, when it is another than its own) and the
 repository ("Model series", below). A model order holds:
 
-- the data, in one of two shapes. The snapshot shape: a depot (`depot`, its
+- the data: a depot (`depot`, its
   public address, [data-selection.md](data-selection.md)), the name of one of
   its snapshots (`snapshot`) with the change number it reads (`change`) and
   its digest (`digest`), the roles of the portions its corpus is cut into
@@ -912,13 +912,9 @@ repository ("Model series", below). A model order holds:
   `finetune`) and the vocabulary (`vocabulary`: its
   file's `sha256` and its `size`, or the `size` and `sample_bytes` of one
   the freight learns, [tokenizer.md](tokenizer.md), "A vocabulary in an
-  order"). The legacy dataset shape, of the orders of models trained
-  before snapshots: the depot, a dataset there by id or name (`dataset`) and
-  the total tokens, the vocabulary the one the corpus was built with, from the
-  dataset's tokenizer recipe; such an order trains on a corpus of that
-  dataset a dock holds, found through the depot's frozen dataset routes,
-  and is never built ([training.md](training.md), "Models trained before
-  snapshots");
+  order"). A data part that names a dataset of a depot instead, as the
+  orders of models trained before snapshots do, is refused
+  ([training.md](training.md), "Models trained before snapshots");
 - the architecture's numbers: the layout of the layers (`window_layers`,
   `sparse_groups`, `sparse_layers`, "Attention"), width, attention heads
   and head width, expert counts and widths, top `k`, latent width,
@@ -984,8 +980,8 @@ that. Four orders exist, each of one stage (none yet sets V4's 4K, 16K,
   16 GB GPU is estimated to need `--recompute --micro-batch 1 --segment
   8192`; nothing is measured yet. No full run yet.
 
-Every order of the repository has the legacy dataset shape, naming the
-dataset `wic-1` or `wic-2` of the public depot. Every order uses
+Every order of the repository names a snapshot of the public depot.
+Every order uses
 attention heads 128 wide, of which the window layers rotate the last 64.
 
 ### Model series

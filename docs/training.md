@@ -54,8 +54,8 @@ change and digest) with the order's portions, shares and vocabulary, at
 any size; a corpus without portions needs the order's shares and plain
 texts; any other is refused.
 
-An order of the legacy shape names a dataset of a depot of format 12 or
-older instead, and reads the corpus the dock kept of it ("Models trained
+An order that names a dataset instead of a snapshot is refused, and so is
+a corpus of the dock's `corpora/` built from a dataset ("Models trained
 before snapshots", below). The vocabulary is the corpus's, so
 a size of a model series is derived for the vocabulary the corpus holds. Everything that changes the
 resulting model comes from the order: the architecture's numbers, the
@@ -489,8 +489,7 @@ than it asks for. `wpt train` refuses a corpus that holds fewer tokens of
 plain text than `total_tokens` and was built at another size, and a corpus
 that is stale (an admitted erasure reached a text it was built from,
 [erasure.md](erasure.md), "What it covers") until it is made again (`wpt
-build-resources`). A stale corpus of a legacy dataset is never built
-again.
+build-resources`).
 
 ### Streaming: a corpus larger than the disk
 
@@ -1234,9 +1233,10 @@ dataset T of the depot D". Nothing rewrites such a folder's
 
 ### Models trained before snapshots
 
-A model trained before snapshots has an order of the legacy shape, which
-names a dataset, and the code at the commit it records reads the depot's
-web app through the dataset routes: `GET /api/datasets` to find the
+A model trained before snapshots has an order that names a dataset of a
+depot of format 12 or older, which `wpt train` refuses: an order names a
+snapshot. The code at the commit the model records reads the depot's web
+app through the dataset routes: `GET /api/datasets` to find the
 dataset, `GET /api/datasets/{id}/download` for the corpus of its
 vocabulary and size, `GET /api/tokenizers/{name}` and its vocabulary file
 (the only routes of tokenizer recipes the web app keeps),

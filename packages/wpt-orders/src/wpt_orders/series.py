@@ -34,9 +34,9 @@ functions of the series document:
                   data/orders/models/<name>.json: the series' data part,
                   its shape, the seed, one read-text step of one stage
                   reading its prefix, the drafter
-    data_part     the series' data part (a snapshot of a depot, or the
-                  legacy dataset of one) with the total tokens of the
-                  largest prefix, so one corpus serves every size
+    data_part     the series' data part (a snapshot of a depot) with the
+                  total tokens of the largest prefix, so one corpus serves
+                  every size
 
 `model_order` builds the order from a Plan: a caller that changes what a
 run does with a size (dataclasses.replace on the plan's numbers) gets the
@@ -288,10 +288,9 @@ def plans(series: dict, vocab_size: int) -> list[Plan]:
 
 
 def data_part(series: dict) -> dict:
-    """The data part every size's order holds: the series' own, of either
-    shape (snapshot or legacy dataset), with the total tokens of the largest
-    prefix, its trunks' included (the vocabulary's size does not change a
-    prefix)."""
+    """The data part every size's order holds: the series' own, with the
+    total tokens of the largest prefix, its trunks' included (the
+    vocabulary's size does not change a prefix)."""
     largest = max(_trunk_prefix(series, plan(series, size, 0)) for size in sizes(series))
     return {**series["data"], "total_tokens": largest}
 

@@ -30,10 +30,7 @@ depots, and everything built or trained lives in a dock.
   model series reads the same corpus, the one of its largest size, the smaller sizes the first
   part of its pretraining portion;
   `total_tokens` is the size the pretraining portion is made at and a ceiling on what training
-  reads, and training reads what a corpus made at that size holds. An order of
-  the older dataset shape names a dataset of a depot of format 12 or older, read
-  through the frozen legacy reader ([training.md](training.md), "Models trained
-  before snapshots").
+  reads, and training reads what a corpus made at that size holds.
 
 ## The parts
 
@@ -44,7 +41,7 @@ Four parts make a model, each with its own packages and its own command:
 | depot | `depot`, `depot-app` (`depot`) | models, tokens, vocabularies, the freight, the dock |
 | freight | `freight`, `freight-app` (`freight`) | what a token or a vocabulary is |
 | dock | `dock`, `dock-app` (`dock`) | everything else |
-| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot, except two reads named below |
+| WPT | every other package of `packages/`, `apps/wpt` (`wpt`) and `scripts/` | the depot, except one read named below |
 
 The depot, the freight and the dock are meant to serve other kinds of
 models than WPT's transformers, such as diffusion models, world models and
@@ -77,11 +74,8 @@ each with its reason: the depot's own command and web app write its
 backups to the dock, keep the Translate button's models there, and read
 the corpora built before the freight there, which its frozen dataset
 routes send and an upgrade from a format before snapshots reads.
-Two reads of a depot by WPT import nothing of it, so that test does not
-see them: `wpt.train.order_depot` reads, for an order of the older dataset
-shape, the depot's frozen dataset and tokenizer routes over HTTP
-([training.md](training.md), "Models trained before snapshots"), and
-`scripts/source_credits.py` opens a depot's SQLite file read only
+One read of a depot by WPT imports nothing of it, so that test does not
+see it: `scripts/source_credits.py` opens a depot's SQLite file read only
 ([data-selection.md](data-selection.md), "Titles from a text's source"). Every call of `dock.api` names the
 dock by its URL and exchanges only values and bytes: no part holds a dock
 object or a path into the dock's files, and a part that needs a local file
@@ -832,10 +826,10 @@ their Dockerfiles, locks, license lists and pools of tools (`tools.json`).
 image commands of `wpt agent` and the task reader of `wpt_agent` read them
 through it. It checks every file it reads against its schema, and its
 check adds the rules across files: a series derives every size, and an
-image's pool takes no built-in tool's name. An order's data part has the snapshot shape
-or the legacy dataset shape ([model.md](model.md), "Model orders"); the check refuses
-shares that name a tag twice or sum above 1. An order whose depot, snapshot, digest,
-vocabulary or dataset is still empty reads, and the check names it for a person to fill in. People edit the
+image's pool takes no built-in tool's name. An order's data part names a snapshot, and one
+that names a dataset is refused ([model.md](model.md), "Model orders"); the check refuses
+shares that name a tag twice or sum above 1. An order whose depot, snapshot, digest or
+vocabulary is still empty reads, and the check names it for a person to fill in. People edit the
 orders and `tools.json` as files; `Orders` writes only the generated
 files (an image's `lock.json` and `licenses.json`), for the command that makes them, after their schema,
 through a temporary file and a rename.
@@ -1263,8 +1257,7 @@ commit in CI, or `--base REV`. The parts:
 - `data`: the orders' check (`wpt_orders.Orders.check`): every order
   and image file matches its schema, and the rules across files hold (a
   series derives every size, an image's pool takes no built-in tool's name, a
-  order names its depot and its snapshot, or its dataset in the legacy
-  shape). It runs when `data/` changed, or
+  order names its depot and its snapshot). It runs when `data/` changed, or
   `wpt-orders`, the root `pyproject.toml` or `uv.lock`.
 - `commits`: the author's sign-off (`Signed-off-by: <author>`) on every
   commit, merge commits aside. It always runs, on what a push sends:

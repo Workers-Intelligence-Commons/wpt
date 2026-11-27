@@ -16,9 +16,7 @@ repository's root (an empty value counts as unset):
                       SERIES:SIZE:RUN, another run of that size;
                       required: the manager refuses to start without it
     WPT_CORPUS        the corpus the run trains on (its id, or a start of it); unset, the
-                      order's corpus, as wpt train finds it (an order written before
-                      snapshots: the one last built for its dataset, found by its id in its
-                      depot)
+                      order's corpus, as wpt train finds it
     WPT_RUN           the run's name (letters, digits, '.', '_', '-'); unset, the manager goes on
                       with the run RUN_FILE names (at the repository's root, git-ignored) when
                       it is a run of this order whose model is not on the dock yet, else makes
@@ -62,9 +60,7 @@ exit code when it fails:
 
     1. the corpus                        WPT_CORPUS, or the order's fresh corpus: the corpus
                                          delivery its data section names on the dock, or a corpus
-                                         the depot built for it; for an order written before
-                                         snapshots, the latest fresh one of its dataset
-                                         (wpt.train.find_corpus); the manager neither downloads nor
+                                         the depot built for it (wpt.train.find_corpus); the manager neither downloads nor
                                          builds: the corpus is made first, with `wpt
                                          build-resources`, and a run without one is refused, saying
                                          so (exit code 2)
@@ -574,7 +570,7 @@ def _run(order, name, out, evaluate, dock, telemetry, environ, root, workers, si
             held.halt("images")
         with telemetry.span("manager.corpus", order=order) as span:
             try:
-                record = find_corpus(dock, environ.get("WPT_CORPUS") or None, Orders(root).data_part(order), log)
+                record = find_corpus(dock, environ.get("WPT_CORPUS") or None, Orders(root).data_part(order))
                 Orders(root).model_order(order, record["tokenizer"]["vocab_size"])  # a size of a series derives
             except (InputError, OrderError) as error:
                 log(f"{type(error).__name__}: {error}", ERROR)

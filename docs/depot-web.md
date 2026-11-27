@@ -147,7 +147,7 @@ vocabulary of another depot trained on; and two reads of a tokenizer
 recipe, `GET /api/tokenizers/{name}` (its row, revisions and vocabularies,
 whether its version is trained) and `GET
 /api/tokenizers/{name}/vocabularies/{version}/file`, which `wpt train`
-read for a dataset's vocabulary. Their answers are the depot's legacy rows
+at those commits reads for a dataset's vocabulary. Their answers are the depot's legacy rows
 and the corpora the dock kept; nothing builds a corpus of a dataset. The
 depot marks no corpus stale when it carries out an erasure: only the
 freight's check does (`freight check`, and the check before each of its

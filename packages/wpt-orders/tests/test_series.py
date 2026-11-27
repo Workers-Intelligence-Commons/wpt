@@ -12,7 +12,7 @@ from wpt_orders import InvalidOrder, NotFound, Orders, series, validate
 ROOT = Path(__file__).resolve().parents[3]
 SERIES = "eldest-titmouse"
 WINDOW = 32768
-VOCABULARY = 32768  # the vocabulary of the admitted mixture, which the series' dataset names
+VOCABULARY = 32768  # the size of the vocabulary the series' data part names
 
 
 @pytest.fixture(scope="module")
