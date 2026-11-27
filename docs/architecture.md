@@ -73,7 +73,11 @@ module and fails on any other, except those its list `EXCEPTIONS` names,
 each with its reason: the depot's own command and web app write its
 backups to the dock, keep the Translate button's models there, and read
 the corpora built before the freight there, which its frozen dataset
-routes send and an upgrade from a format before snapshots reads.
+routes send and an upgrade from a format before snapshots reads. A
+package's benchmarks and scripts (`packages/*/bench`, `packages/*/scripts`)
+are its part's. WPT reaches texts only through the freight's deliveries on
+the dock and reads no depot, so the test also fails on a module of WPT that
+imports `sqlite3` or `apsw`, what a depot's file is opened with.
 Every call of `dock.api` names the dock by its URL and exchanges only values and bytes: no part holds a dock
 object or a path into the dock's files, and a part that needs a local file
 has the dock fetch it into a folder of its own ([api/dock.md](api/dock.md),

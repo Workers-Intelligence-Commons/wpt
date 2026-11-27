@@ -11,8 +11,15 @@
 
 A part is its library and its controllers: the depot is `depot` and
 `depot_app`, the dock `dock` and `dock_app`, the freight `freight` and
-`freight_app`; a package's benchmarks (packages/*/bench) are its part's;
-every other module of packages/*/src, apps/*/src and scripts/ is WPT's. A part's own controllers may import all of it.
+`freight_app`; a package's benchmarks and scripts (packages/*/bench,
+packages/*/scripts) are its part's; every other module of packages/*/src,
+apps/*/src and scripts/ is WPT's. A part's own controllers may import all of
+it.
+
+WPT reaches texts only through the freight's deliveries on the dock, so no
+module of WPT imports the libraries a depot's SQLite file is opened with
+(DEPOT_FILES): a read of a depot's file that imports nothing of the depot
+fails too.
 
 The test reads the source of every module and fails on any import that
 breaks the rule and is not in EXCEPTIONS, each of which says why it stands.
@@ -40,6 +47,8 @@ ALLOWED = {
     WPT: {DEPOT: None, DOCK: {"dock.api"}, FREIGHT: {"freight.api"}},
     SHARED: {DEPOT: None, DOCK: None, FREIGHT: None, WPT: None},
 }
+# the libraries that open an SQLite file, a depot's: no module of WPT imports them
+DEPOT_FILES = ("sqlite3", "apsw")
 # (module that imports, module imported): imports the rule refuses that stand, each with its reason
 EXCEPTIONS = {
     ("depot_app", "dock.api"): "the depot's backups go to the dock until they have a place of their own, and an "
@@ -60,10 +69,10 @@ def module_files() -> dict[str, Path]:
         for path in source.rglob("*.py"):
             parts = path.relative_to(source).with_suffix("").parts
             found[".".join(parts[:-1] if parts[-1] == "__init__" else parts)] = path
-    for bench in ROOT.glob("packages/*/bench"):  # a package's benchmarks belong to its part
-        [package] = [one.name for one in (bench.parent / "src").iterdir() if (one / "__init__.py").is_file()]
-        for path in bench.glob("*.py"):
-            found[f"{package}.bench.{path.stem}"] = path
+    for folder in [*ROOT.glob("packages/*/bench"), *ROOT.glob("packages/*/scripts")]:  # a package's, its part's
+        [package] = [one.name for one in (folder.parent / "src").iterdir() if (one / "__init__.py").is_file()]
+        for path in folder.glob("*.py"):
+            found[f"{package}.{folder.name}.{path.stem}"] = path
     for path in ROOT.glob("scripts/*.py"):
         found[f"scripts.{path.stem}"] = path
     return found
@@ -117,6 +126,18 @@ def problems() -> list[str]:
 
 def test_every_part_imports_the_others_only_as_the_rule_allows():
     assert problems() == [], "imports between the parts that the rule refuses:\n" + "\n".join(problems())
+
+
+def test_no_module_of_wpt_opens_an_sqlite_file():
+    found = sorted(f"{path.relative_to(ROOT).as_posix()}:{line}: {module} imports {name}"
+                   for module, path in module_files().items() if part_of(module) == WPT
+                   for line, name in imported(module, path) if name.split(".")[0] in DEPOT_FILES)
+    assert found == [], "modules of WPT that import what opens a depot's file:\n" + "\n".join(found)
+
+
+def test_the_check_reads_a_package_s_scripts_as_its_part_s():
+    # packages/depot/scripts/source_credits.py reads a depot's file through the depot's library: the depot's own
+    assert "depot.scripts.source_credits" in module_files() and part_of("depot.scripts.source_credits") == DEPOT
 
 
 def dock_values(name: str) -> bool:
