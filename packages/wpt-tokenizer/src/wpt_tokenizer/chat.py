@@ -7,7 +7,7 @@ token (wpt_tokenizer.SPECIAL), so no text inside a message can imitate one:
     <|im_start|>system\\n{text}\\n\\n<tools>\\n{one tool as JSON per line}\\n</tools><|im_end|>\\n
     <|im_start|>user\\n{text}<|im_end|>\\n
     <|im_start|>assistant\\n<think>\\n{thinking}\\n</think>\\n\\n{text}\\n<tool_call>\\n{"name": ..., "arguments": {...}}\\n</tool_call><|im_end|>\\n
-    <|im_start|>user\\n<tool_response>\\n{result}\\n</tool_response><|im_end|>\\n
+    <|im_start|>user\\n<tool_response>\\n{result}\\n<tools>\\n{one tool as JSON per line}\\n</tools>\\n</tool_response><|im_end|>\\n
     <|im_start|>user\\n{text}\\n<json>\\n{value}\\n</json><|im_end|>\\n
 
 A message's blocks keep their order; blocks after the first are separated by
@@ -23,8 +23,15 @@ reply() reads <json> tags the model writes as text. An `excerpt` block,
 a passage of a depot text quoted by its content, is written as the
 passage, its selector's `exact`, as a text block is: a corpus holds a
 conversation only when the passage is there, so its tokens are the
-passage's (docs/chat-format.md, "Excerpts"). Left out, while recorded:
-`file` blocks (no model reads media yet) and a tool_result's `error` flag.
+passage's (docs/chat-format.md, "Excerpts"). A text block the harness
+added (`by`) is written as any text block. A `tools` block, in a system
+message or a tool result, is written in its place as the system message
+writes the conversation's tools, between <tools> and </tools>. A tool
+call kept `raw` with a name is written as a call, its raw text in the
+place of its arguments; one without a name, as its whole raw text. Left
+out, while recorded: `file` blocks (no model reads media yet), a
+tool_result's `error` flag, `value` and `conversation`, a message's `end`
+and the conversation's `harness`.
 """
 
 import json
@@ -149,6 +156,17 @@ def _call(text):
     return {"name": call["name"], "arguments": call["arguments"]}
 
 
+def _call_text(block) -> str:
+    """The text a tool call writes between its tags: its name and arguments
+    as JSON. A call kept raw with a name writes the raw text of its
+    arguments in their place; one without a name, its whole raw text."""
+    if "raw" not in block:
+        return json.dumps({"name": block["name"], "arguments": block["arguments"]}, ensure_ascii=False)
+    if "name" not in block:
+        return block["raw"]
+    return f'{{"name": {json.dumps(block["name"], ensure_ascii=False)}, "arguments": {block["raw"]}}}'
+
+
 def _words_of(block) -> str:
     """The text a text block or an excerpt block writes: its text, or the passage it quotes."""
     return block["selector"]["exact"] if block["type"] == "excerpt" else block["text"]
@@ -178,25 +196,31 @@ def _turns(tokenizer, conversation):
             elif kind == "thinking":
                 parts.append([*wrapped(THINK, THINK_END, block["text"]), *text("\n\n")])
             elif kind == "tool_call":
-                call = {"name": block["name"], "arguments": block["arguments"]}
-                parts.append(wrapped(CALL, CALL_END, json.dumps(call, ensure_ascii=False)))
+                parts.append(wrapped(CALL, CALL_END, _call_text(block)))
             elif kind == "tool_result":
                 parts.append([RESPONSE, *result(block["content"]), RESPONSE_END])
+            elif kind == "tools":
+                parts.append(listing(block["tools"]))
         return parts
 
-    def result(blocks):  # "\n{each block, one per line}\n", the text between json blocks encoded at once
+    def result(blocks):  # "\n{each block, one per line}\n", the text between tagged blocks encoded at once
         ids, words = [], ["\n"]
         for n, block in enumerate(b for b in blocks if b["type"] != "file"):
             words.append("\n" if n else "")
-            if block["type"] == "json":
-                ids += [*text("".join(words)), *wrapped(JSON, JSON_END, json.dumps(block["value"], ensure_ascii=False))]
+            if block["type"] in ("json", "tools"):
+                tagged = (wrapped(JSON, JSON_END, json.dumps(block["value"], ensure_ascii=False))
+                          if block["type"] == "json" else listing(block["tools"]))
+                ids += [*text("".join(words)), *tagged]
                 words = []
             else:
                 words.append(_words_of(block))
         return ids + text("".join(words) + "\n")
 
+    def listing(tools):  # one tool as JSON per line between <tools> and </tools>
+        return wrapped(TOOLS, TOOLS_END, "\n".join(json.dumps(t, ensure_ascii=False) for t in tools))
+
     tools = conversation.get("tools") or []
-    listed = [TOOLS, *text("\n" + "\n".join(json.dumps(t, ensure_ascii=False) for t in tools) + "\n"), TOOLS_END]
+    listed = listing(tools)
     messages = conversation["messages"]
     if tools and messages[0]["role"] != "system":
         yield "system", [listed]

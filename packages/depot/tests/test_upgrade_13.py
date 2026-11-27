@@ -132,7 +132,7 @@ def test_a_depot_of_format_11_is_brought_to_13_in_one_run_as_the_check_said(tmp_
     depot, start = upgrade.upgrade(str(path), log=said.append, records=found, public=PUBLIC)
 
     assert start == 11 and depot.format() == FORMAT
-    assert [one for (one,) in rows_of(path, "SELECT format FROM about_revisions ORDER BY revision")][-4:] == [11, 12, 13, 14]
+    assert [one for (one,) in rows_of(path, "SELECT format FROM about_revisions ORDER BY revision")][-5:] == [11, 12, 13, 14, 15]
     made = {one["name"]: one for one in depot.snapshots()}
     assert {name: (one["digest"], one["texts"], one["at_change"]) for name, one in made.items()} == {
         one["name"]: (one["digest"], one["texts"], one["at_change"]) for one in checked.snapshots}

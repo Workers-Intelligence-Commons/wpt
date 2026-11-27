@@ -25,10 +25,12 @@ A conversation whose excerpts quote a plain text the erasure reaches holds
 copies of that text's passages, so it is cut too, every version of it
 (cut_quotes), a conversation the erasure names included, on top of its own
 cut. Only its strings of text are cut (the text of its text and thinking
-blocks, the values of its tool calls' arguments and json blocks, its tools'
-descriptions, its excerpts' selectors), never a string that names or
-structures it (a role, a type, an excerpt's source, an id, a name, a call,
-metadata), so it still matches its kind and names what it named: each
+blocks, its raw tool calls, the values of its tool calls' arguments, of
+its json blocks and of its tool results' values, its tools' descriptions,
+its excerpts' selectors), never a string that names or structures it (a
+role, a type, an excerpt's source, an id, a name, a call, a sub-agent's
+conversation, the harness, metadata), so it still matches its kind and
+names what it named: each
 passage leaves those strings, and each excerpt, placed where its selector
 matches the quoted text before the cut, loses every character that stands
 over one the erasure removes there, so a passage that only overlaps it or
@@ -299,8 +301,9 @@ def _cut_quoting(documents: dict[str, dict[int, str]], versions: dict[str, dict[
     """{id: {version: its cut content as JSON text}} of each version of the
     conversations documents gives that the cut changes. Only the strings
     that carry text are cut (_texts_mapped): never a block's type, a role,
-    an excerpt's source, a tool call's id or name, a tool result's call, a
-    file's sha256 or media type, or any metadata, so a cut version still
+    an excerpt's source, a tool call's id or name, a tool result's call or
+    conversation, a file's sha256 or media type, the harness, or any
+    metadata, so a cut version still
     matches its kind and still names what it named. Each such string loses
     what cut_string removes of it. An excerpt of a text removed whole (gone)
     keeps none of its characters: its exact, prefix and suffix become
@@ -377,14 +380,13 @@ def _set_selector(selector: dict, prefix: str, exact: str, suffix: str):
 def _texts_mapped(conversation: dict, mapped: Callable[[str], str]) -> dict:
     """A copy of the conversation (the chat format, docs/chat-format.md)
     whose strings that carry text are replaced by what mapped gives of
-    them: each tool's description, the text of a text or thinking block,
-    the values (never the keys) of a tool call's arguments and of a json
-    block, and the same within a tool result's blocks. Everything else is
-    copied as it is, the excerpts' selectors included."""
+    them: each tool's description, in the conversation's tools and in a
+    tools block, the text of a text or thinking block, a raw tool call, the
+    values (never the keys) of a tool call's arguments, of a json block and
+    of a tool result's value, and the same within a tool result's blocks.
+    Everything else is copied as it is, the excerpts' selectors included."""
     value = copy.deepcopy(conversation)
-    for tool in value.get("tools", []):
-        if isinstance(tool, dict) and isinstance(tool.get("description"), str):
-            tool["description"] = mapped(tool["description"])
+    _tools_mapped(value.get("tools", []), mapped)
     for message in value.get("messages", []):
         for block in message.get("content", []):
             _block_mapped(block, mapped)
@@ -397,11 +399,23 @@ def _block_mapped(block: dict, mapped: Callable[[str], str]):
         block["text"] = mapped(block["text"])
     elif kind == "tool_call" and isinstance(block.get("arguments"), dict):
         block["arguments"] = _strings_mapped(block["arguments"], mapped)
+    elif kind == "tool_call" and isinstance(block.get("raw"), str):
+        block["raw"] = mapped(block["raw"])
     elif kind == "json" and "value" in block:
         block["value"] = _strings_mapped(block["value"], mapped)
+    elif kind == "tools":
+        _tools_mapped(block.get("tools", []), mapped)
     elif kind == "tool_result":
+        if "value" in block:
+            block["value"] = _strings_mapped(block["value"], mapped)
         for inner in block.get("content", []):
             _block_mapped(inner, mapped)
+
+
+def _tools_mapped(tools: list, mapped: Callable[[str], str]):
+    for tool in tools:
+        if isinstance(tool, dict) and isinstance(tool.get("description"), str):
+            tool["description"] = mapped(tool["description"])
 
 
 def _strings_mapped(value, mapped: Callable[[str], str]):

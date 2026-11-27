@@ -560,6 +560,14 @@ file, it took 6 seconds and added 102 MB, about 70 bytes a text; the check
 of a depot of format 13 says the seconds, the disk and the full copy the
 next backup sends.
 
+The step to format 15 gives the kind `conversation` the schema that takes
+what an agent harness records (docs/chat-format.md, "Recorded from a
+harness"), a copy the step holds itself, as a new depot of format 15
+starts with it. It writes that one row of `kinds` and the about revision
+in one transaction, so a stop leaves the depot at format 14 and the step
+runs again whole; every conversation of format 14 matches the new schema,
+so none is read or rewritten.
+
 `depot upgrade` alone, or with `--check`, writes nothing in the depot: it opens the
 file read-only and says what the upgrade would do. For a depot of format
 11 it checks what the step to format 12 checks before it ends; for one of

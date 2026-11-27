@@ -45,7 +45,11 @@ def starting_rows() -> list[dict]:
 def check_content(kind: str, schema: str, content: str):
     """BadContent unless content is JSON that matches schema, the JSON
     Schema the kind's row holds; a plain text's content is its text, never
-    checked."""
+    checked. The refusal names the first place that does not match and
+    what is wrong there, followed by the description of the rule it breaks
+    when that rule has one; a rule that refuses a field by `not` is said by
+    its description alone, since the validator's words for it name no
+    reason."""
     if kind == PLAIN:
         return
     try:
@@ -54,6 +58,10 @@ def check_content(kind: str, schema: str, content: str):
         raise BadContent(f"an item of kind {kind} holds JSON: {error}") from None
     problems = sorted(Draft202012Validator(json.loads(schema)).iter_errors(value), key=lambda e: list(e.path))
     if problems:
-        where = "/".join(map(str, problems[0].path)) or "the content"
-        raise BadContent(f"an item of kind {kind} does not match its schema at {where}: {problems[0].message}"
+        first = problems[0]
+        where = "/".join(map(str, first.path)) or "the content"
+        described = first.schema.get("description") if isinstance(first.schema, dict) else None
+        said = (described if first.validator == "not" else f"{first.message} ({described})") if described \
+            else first.message
+        raise BadContent(f"an item of kind {kind} does not match its schema at {where}: {said}"
                          + (f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""))

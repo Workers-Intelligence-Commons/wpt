@@ -45,9 +45,11 @@ person then edits or confirms, and its metadata records that
 }
 ```
 
-- `tools`: the tools offered in the conversation, each with its `name`, its
-  `description` and the JSON Schema of its `parameters`. Empty or absent
-  when none is offered.
+- `tools`: the tools offered from the start of the conversation, each with
+  its `name`, and with its `description` and the JSON Schema of its
+  `parameters` when they are known: a harness may announce a tool by its
+  name alone and give the rest later, in a `tools` block
+  ([Blocks](#blocks)), or never. Empty or absent when none is offered.
 - `messages`: in order. Each message has a `role` (`system`, `user`,
   `assistant` or `tool`) and a `content` list of blocks, in the order they
   happened: thinking, then a call, then more thinking, then text, stays in
@@ -56,13 +58,20 @@ person then edits or confirms, and its metadata records that
   message of any other role holds at least one block. A message may also
   hold `metadata`, a JSON object never written as tokens; its one named
   field is `draft` ([Model drafts](#model-drafts)).
+- `end`: optional, on an `assistant` message only. How its turn ended:
+  `stop` when the model closed it with no tool call, `tool_calls` when the
+  model closed it holding calls, whether they ran or not, and `limit` when
+  a limit cut it before the model closed it.
+- `harness`: optional. The agent harness whose forms the conversation
+  follows (Claude Code, OpenCode, Pi), as `name` and, when it is known,
+  `version` ([Recorded from a harness](#recorded-from-a-harness)).
 - `metadata`: optional. What identifies the conversation where it was
   recorded, as any JSON object: a training attempt's step, task, round
   and score ([training.md](training.md), "Runs"). It is never
   written as tokens.
 
 A conversation without any `metadata`, or whose messages hold none, stays
-valid.
+valid, and so does one without any of the optional fields above.
 
 ## Model drafts
 
@@ -92,16 +101,91 @@ with no `draft` was written by the person from the start.
 
 | `type` | Fields | What it holds |
 | --- | --- | --- |
-| `text` | `text` | text shown to the other side |
+| `text` | `text`, `by` (optional) | text shown to the other side; `by: "harness"` when the harness added it inside a message of another author |
 | `thinking` | `text` | reasoning written before or between other blocks |
-| `tool_call` | `id`, `name`, `arguments` | a call to one of `tools`; `arguments` is a JSON object that matches the tool's `parameters` |
-| `tool_result` | `call`, `content`, `error` (optional, `true` when the call failed) | the answer to the `tool_call` whose `id` is `call`; `content` is a list of blocks |
+| `tool_call` | `id`, `name`, then `arguments` or `raw` | a call to one of the tools; `arguments` is a JSON object that matches the tool's `parameters`; `raw`, in its place, keeps what the model wrote when its arguments could not be parsed: with `name`, the text of its arguments; without `name`, the whole call |
+| `tool_result` | `call`, `content`, `error`, `value`, `conversation` (the last three optional) | the answer to the `tool_call` whose `id` is `call`; `content` is a list of blocks, the text the model saw; `error` is `true` when the call failed; `value` is what the tool returned in structured form when it is known, any JSON value; `conversation` is the id of the depot conversation of the sub-agent that produced the result |
 | `json` | `value` | a structured value: any JSON value; a harness builds it, the model never writes one ([The answer](#the-answer)) |
 | `file` | `sha256`, `media_type` | a media file such as a screenshot, stored next to the record and named by its sha256 |
 | `excerpt` | `source`, `selector` | a passage of a plain text of the depot, quoted by its content ([Excerpts](#excerpts)) |
+| `tools` | `tools` | the tools defined from this point on, a list of the same shape as the conversation's `tools` |
 
 A new kind of element gets a new block type, and existing blocks keep
 their meaning.
+
+## Recorded from a harness
+
+An agent harness wraps a model with its own forms: it announces tools,
+adds text of its own, repairs or refuses calls, and runs sub-agents. The
+chat format records what each of these did, so a conversation with a
+harness is kept without loss:
+
+- `harness` names the harness and its version.
+- A tool announced by its name alone is a tool of `tools` with only its
+  `name`. Its definition, when the harness gives it later, is a `tools`
+  block where it arrived: in the content of a tool result, when a tool
+  loads others, or in a system message, when the harness defines tools
+  outside any call. The definitions stand in that block, not in the text
+  around it.
+- Text the harness added inside someone else's message is a text block
+  with `by: "harness"`: a reminder after the results of a tool, a notice
+  at the head of a result, a reminder at the end of a search result. It
+  stands in a user or system message or in a tool result, never in an
+  assistant message, whose text is the model's own. Without `by`, a text
+  block is the message's author's.
+- A call whose arguments the harness could not parse keeps what the model
+  wrote in `raw`, instead of `arguments`. When the harness read the
+  call's name apart from its arguments, the call keeps that `name` and
+  `raw` holds the text of the arguments alone; otherwise the call has no
+  `name` and `raw` holds the whole call.
+- A tool's structured return (an exit code, a program's output value)
+  goes in its result's `value`, and the text the model read stays in
+  `content`.
+- The result of a sub-agent names the sub-agent's own conversation, a
+  conversation of the same depot, in `conversation`.
+- Each assistant message says how its turn ended in `end`.
+
+Calls nested inside a tool that runs a program are not calls of the
+conversation: the program is the call's argument, and what it returned may
+go in `value`. How a call travelled between the model and the harness (a
+string or an object, its tags, its chunks), side requests that make a
+title, and the quotation marks a harness puts around a person's message
+are not recorded. A harness's `developer` role is `system`.
+
+```json
+{
+  "harness": {"name": "opencode", "version": "1.19.6"},
+  "tools": [{"name": "find_tools", "description": "Load the definitions of tools.",
+             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+            {"name": "shell"}, {"name": "subagent"}],
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "Why does the test fail?"}]},
+    {"role": "assistant", "end": "tool_calls", "content": [
+      {"type": "tool_call", "id": "c1", "name": "shell", "raw": "{\"command\": \"bun test"},
+      {"type": "tool_call", "id": "c2", "name": "find_tools", "arguments": {"query": "shell"}},
+      {"type": "tool_call", "id": "c3", "name": "subagent", "arguments": {"prompt": "Find where the test lives."}}
+    ]},
+    {"role": "tool", "content": [
+      {"type": "tool_result", "call": "c1", "error": true,
+       "content": [{"type": "text", "text": "The tool input could not be parsed as JSON."}]},
+      {"type": "tool_result", "call": "c2", "content": [
+        {"type": "tools", "tools": [{"name": "shell", "description": "Run a command.",
+                                     "parameters": {"type": "object", "properties": {"command": {"type": "string"}}}}]}]},
+      {"type": "tool_result", "call": "c3", "conversation": "my-depot-41",
+       "content": [{"type": "text", "text": "test/calc.test.ts"}]}
+    ]},
+    {"role": "assistant", "end": "tool_calls", "content": [
+      {"type": "tool_call", "id": "c4", "name": "shell", "arguments": {"command": "bun test test/calc.test.ts"}}
+    ]},
+    {"role": "tool", "content": [
+      {"type": "tool_result", "call": "c4", "value": {"exitCode": 1}, "content": [
+        {"type": "text", "text": "1 failed\n\nExit code: 1"},
+        {"type": "text", "text": "Fix the test before going on.", "by": "harness"}]}
+    ]},
+    {"role": "assistant", "end": "stop", "content": [{"type": "text", "text": "calc.ts subtracts instead of adding."}]}
+  ]
+}
+```
 
 ## Excerpts
 
@@ -187,15 +271,27 @@ A conversation is a depot item of kind `conversation`, its content the
 object above ([data-selection.md](data-selection.md), "Items"). The depot
 checks it against the kind's JSON Schema when it is added
 (`packages/depot/src/depot/kinds/conversation.schema.json`): only
-an `assistant` message holds `thinking` or `tool_call` blocks or a
-`draft`, only a `tool` message holds `tool_result` blocks, and only a
-`user` message or a tool result holds `excerpt` blocks.
+an `assistant` message holds `thinking` or `tool_call` blocks, a
+`draft` or an `end`, only a `tool` message holds `tool_result` blocks,
+only a `user` message or a tool result holds `excerpt` blocks, only a
+`system` message or a tool result holds `tools` blocks, and an
+`assistant` message holds no text block `by` the harness. A tool call
+holds exactly one of `arguments` and `raw`. A refusal names the place
+that does not match and the rule it breaks.
 
 On an add, and on a change of a conversation's content, the depot also
 refuses an excerpt whose `source` is no text of the depot, is an item, or
 has a current content version its selector does not match at exactly one
 place, or whose `exact` is empty. The quoted text is read as its parts,
-so a text of any size is never read whole.
+so a text of any size is never read whole. It refuses as well a tool
+result whose `conversation` is no text of the depot, or a text of another
+kind than `conversation`, so a sub-agent's conversation is added before
+the conversation that names it. A change of content keeps, unchecked, the
+names the version it changes held: an erasure that removes a sub-agent's
+conversation whole leaves its name in the conversations that name it,
+which then names no text, and those conversations can still change. A
+conversation never depends on the sub-agent's conversation it names: a
+corpus takes each on its own, and nothing of one reaches the other.
 
 A conversation is never a plain text that the `read-text` step reads. A
 corpus keeps every conversation it takes from its snapshot as the tokens of the
@@ -213,7 +309,7 @@ END
 <|im_start|>system\n{text}\n\n<tools>\n{each tool as JSON, one per line}\n</tools><|im_end|>\n
 <|im_start|>user\n{text}<|im_end|>\n
 <|im_start|>assistant\n<think>\n{thinking}\n</think>\n\n{text}\n<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call><|im_end|>\n
-<|im_start|>user\n<tool_response>\n{result}\n</tool_response><|im_end|>\n
+<|im_start|>user\n<tool_response>\n{result}\n<tools>\n{each tool as JSON, one per line}\n</tools>\n</tool_response><|im_end|>\n
 <|im_start|>user\n{text}\n<json>\n{value}\n</json><|im_end|>\n
 ```
 
@@ -229,13 +325,26 @@ END
 - An `excerpt` block is written as the passage it quotes, its `exact`, as
   a text block is: a corpus holds the conversation only where that passage
   is in the quoted text.
+- A text block `by` the harness is written as any text block: the model
+  reads it where the harness put it.
+- A `tools` block is written in its place as the system message writes
+  the conversation's tools, each tool as JSON, one per line, between
+  `<tools>` and `</tools>`: a model reads the definition of a tool where
+  it arrived, before the calls that use it, in the one form it knows for
+  tools. A tool known by its name alone is written as `{"name": ...}`.
+- A tool call kept `raw` with a `name` is written as any call, the raw
+  text standing in the place of its arguments, so its tokens carry the
+  name: `{"name": "shell", "arguments": {"command": "ls}`. One without a
+  `name` is written as its whole raw text, between `<tool_call>` and
+  `</tool_call>`.
 - The model never writes JSON but its tool calls ([The answer](#the-answer)):
   a `json` block in an assistant message, which only a harness builds, is
   never written as tokens, so no conversation teaches the model to write
   one, and when the model writes `<json>` tags they stay text in its
   message (`chat.reply` reads text, thinking and tool calls only).
 - Recorded but not written as tokens yet: `file` blocks (no model reads
-  media yet) and a `tool_result`'s `error` flag.
+  media yet), a `tool_result`'s `error`, `value` and `conversation`, an
+  assistant message's `end` and the conversation's `harness`.
 - Never written as tokens: `metadata`.
 
 A model learns to predict only the assistant's turns: their content and

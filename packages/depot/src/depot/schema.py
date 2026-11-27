@@ -204,7 +204,7 @@ brings it up (depot.upgrade).
 from . import ids, titles
 from .kinds import PLAIN
 
-FORMAT = 14  # the format of the layout below: what a depot this code reads and writes is written at
+FORMAT = 15  # the format of the layout below: what a depot this code reads and writes is written at
 
 UNDER_REVIEW, ADMITTED, REFUSED = "under review", "admitted", "refused"
 SQL_STRING = 1_000_000_000  # bytes: the longest value SQLite holds

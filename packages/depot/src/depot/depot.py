@@ -32,7 +32,10 @@ The rules (the app's policy, depot.policy, says how decisions combine):
   a kind other than plain matches its kind's schema, as the kinds table
   stores it, and each excerpt of a conversation quotes a plain text of the
   depot whose current content version its selector matches at exactly one
-  place (depot.quotes), checked again on a change of its content.
+  place (depot.quotes), checked again on a change of its content. Each
+  sub-agent's conversation a tool result of a conversation names is a
+  conversation of the depot, checked again on a change of its content for
+  the names the version it changes did not hold.
   Every license a text names is a
   row of licenses (one of them is enough to allow it), and its notice is
   stored once.
@@ -1246,6 +1249,7 @@ class Depot:
                 _check_text(one, held_licenses, held_kinds)
                 if one.kind == "conversation":
                     self._check_quotes(one.content)
+                    self._check_links(one.content)
             decision = self._decision(con, number, UNDER_REVIEW, declaration)
             first = self._take(con, "texts", len(texts))
             notices, new_texts = {}, []
@@ -1294,6 +1298,25 @@ class Depot:
             if len(places) != 1:
                 raise BadContent(f"an excerpt of {source} matches {'no place' if not places else 'more than one place'}"
                                  " of its current content: its exact, with its prefix and suffix, picks one passage")
+
+    def _check_links(self, content: str, held: str | None = None):
+        """BadContent unless each tool result of the conversation whose
+        content is given (JSON text that matches its kind) that names the
+        conversation of its sub-agent names a conversation of the depot; a
+        name the conversation's content held already (held, the JSON text
+        of the version it changes) is kept as it is, so a sub-agent's
+        conversation erased since leaves the name standing."""
+        kept = set() if held is None else set(_linked(json.loads(held)))
+        for linked in dict.fromkeys(_linked(json.loads(content))):
+            if linked in kept:
+                continue
+            found = self._rows(f"SELECT c.kind FROM texts_revisions t {CONTENT_JOIN} WHERE t.latest AND t.id = ?",
+                               (linked,))
+            if not found:
+                raise BadContent(f"a tool result names the conversation {linked}, which is no text of the depot")
+            if found[0]["kind"] != "conversation":
+                raise BadContent(f"a tool result names {linked}, a text of kind {found[0]['kind']}: it names the "
+                                 "conversation of the sub-agent that produced it")
 
     def blocked(self, texts: Selection, status: str = ADMITTED, after: Sequence | None = None,
                 limit: int = 50) -> dict:
@@ -1522,10 +1545,12 @@ class Depot:
                     raise Refused("an item's new content is its content as JSON text, with no plain text")
                 schema = self._one("SELECT schema FROM kinds WHERE id = ?", (row["kind"],))
                 kinds.check_content(row["kind"], schema, content)
-                if _same_json(content, self.content(text, row["content_version"])):
+                held = self.content(text, row["content_version"])
+                if _same_json(content, held):
                     raise _Nothing(None)
                 if row["kind"] == "conversation":
                     self._check_quotes(content)
+                    self._check_links(content, held)
                 _refuse_erased(text, erasure.strings_of(json.loads(content)), erased)
             version = self._one("SELECT max(version) FROM content_lists WHERE id = ?", (text,)) + 1
             decision = self._decision(con, number, UNDER_REVIEW, declaration,
@@ -2822,6 +2847,12 @@ def _refuse_erased(text: str, strings: list, erased: list[dict]):
 def _same_json(one: str, other: str) -> bool:
     """Whether two JSON texts hold the same value (an object's keys in any order)."""
     return json.dumps(json.loads(one), sort_keys=True) == json.dumps(json.loads(other), sort_keys=True)
+
+
+def _linked(conversation: dict) -> list[str]:
+    """The ids its tool results name as the conversations of their sub-agents, in order."""
+    return [block["conversation"] for message in conversation["messages"] for block in message["content"]
+            if block["type"] == "tool_result" and "conversation" in block]
 
 
 def _check_text(one: NewText, held_licenses: set, held_kinds: dict):

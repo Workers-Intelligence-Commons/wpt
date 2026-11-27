@@ -85,3 +85,45 @@ def test_an_excerpt_is_written_as_the_passage_it_quotes_in_a_message_and_in_a_to
     assert chat.show(TOKENIZER, chat.encode(TOKENIZER, conversation(quoting))[0]) == (
         "<|im_start|>user\nWhat does it say?\nthe tool reads<|im_end|>\n"
         "<|im_start|>user\n<tool_response>\nthe file\n</tool_response><|im_end|>\n")
+
+
+def test_what_a_harness_records_beside_the_conversation_leaves_its_tokens_as_they_are():
+    # the harness, how a turn ended, a tool's returned value and its sub-agent's conversation are recorded for
+    # later templates, so a conversation that holds them reads to the model as the same one without them
+    recorded = {**CONVERSATION, "harness": {"name": "opencode", "version": "1.19.6"}, "messages": [
+        *CONVERSATION["messages"][:2],
+        {**CONVERSATION["messages"][2], "end": "tool_calls"},
+        {"role": "tool", "content": [{**CONVERSATION["messages"][3]["content"][0], "value": {"exit_code": 0},
+                                      "conversation": "depot-12"}]},
+        {**CONVERSATION["messages"][4], "end": "stop"}]}
+    assert chat.encode(TOKENIZER, recorded) == chat.encode(TOKENIZER, CONVERSATION)
+
+
+def test_harness_text_a_raw_call_and_tools_defined_later_are_written_where_they_stand():
+    # text the harness added reads as the text around it, a call the model wrote that could not be parsed is
+    # written back as it wrote it, under its name when the harness read the name apart from its arguments, and
+    # tools defined during the conversation appear where they were defined, as the system message lists the first ones
+    conversation = {"tools": [{"name": "find_tool"}], "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "Read a.txt."},
+                                     {"type": "text", "text": "Reminder: be brief.", "by": "harness"}]},
+        {"role": "assistant", "content": [{"type": "tool_call", "id": "c1", "raw": '{"name": "read", "arguments": {'},
+                                          {"type": "tool_call", "id": "c2", "name": "find_tool",
+                                           "arguments": {"query": "read"}},
+                                          {"type": "tool_call", "id": "c3", "name": "read", "raw": '{"path": "a.txt'}]},
+        {"role": "tool", "content": [
+            {"type": "tool_result", "call": "c1", "error": True, "content": [{"type": "text", "text": "Bad JSON."}]},
+            {"type": "tool_result", "call": "c2", "content": [
+                {"type": "text", "text": "Found:"},
+                {"type": "tools", "tools": [{"name": "read", "parameters": {"type": "object"}}]},
+                {"type": "text", "text": "Use it now.", "by": "harness"}]}]},
+        {"role": "system", "content": [{"type": "tools", "tools": [{"name": "ls", "description": "List."}]}]}]}
+    assert chat.show(TOKENIZER, chat.encode(TOKENIZER, conversation)[0]) == (
+        '<|im_start|>system\n<tools>\n{"name": "find_tool"}\n</tools><|im_end|>\n'
+        "<|im_start|>user\nRead a.txt.\nReminder: be brief.<|im_end|>\n"
+        '<|im_start|>assistant\n<tool_call>\n{"name": "read", "arguments": {\n</tool_call>\n'
+        '<tool_call>\n{"name": "find_tool", "arguments": {"query": "read"}}\n</tool_call>\n'
+        '<tool_call>\n{"name": "read", "arguments": {"path": "a.txt}\n</tool_call><|im_end|>\n'
+        "<|im_start|>user\n<tool_response>\nBad JSON.\n</tool_response>\n"
+        '<tool_response>\nFound:\n<tools>\n{"name": "read", "parameters": {"type": "object"}}\n</tools>\n'
+        "Use it now.\n</tool_response><|im_end|>\n"
+        '<|im_start|>system\n<tools>\n{"name": "ls", "description": "List."}\n</tools><|im_end|>\n')

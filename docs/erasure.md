@@ -106,11 +106,13 @@ The depot carries out an admitted request at once:
   also names included, on top of that request's own cut of it. The depot
   finds these conversations through its table `quotes`, which records the
   texts each conversation's versions quote. Only the strings that carry
-  text are cut: the text of text and thinking blocks, the values of tool
-  calls' arguments and of json blocks, the tools' descriptions and the
-  excerpts' selectors. A string that names or structures the conversation
-  (a role, a block's type, an excerpt's `source`, a tool call's `id` or
-  `name`, a tool result's `call`, metadata) stays as it is, so the cut
+  text are cut: the text of text and thinking blocks, raw tool calls, the
+  values of tool calls' arguments, of json blocks and of tool results'
+  `value`, the tools' descriptions, in the conversation's `tools` and in
+  `tools` blocks, and the excerpts' selectors. A string that names or
+  structures the conversation (a role, a block's type, an excerpt's
+  `source`, a tool call's `id` or `name`, a tool result's `call` or
+  `conversation`, the `harness`, metadata) stays as it is, so the cut
   conversation still matches its kind's schema and still names what it
   named. Each passage leaves those strings. Each excerpt is first placed
   where its selector matches the quoted text before the cut, and its

@@ -227,6 +227,14 @@ the rows of counts of each score's values (SCORE_VALUES_14, the facet
 revision's row once, between a first transaction that marks the depot half
 upgraded and a last one that drops the mark, as the step to format 11
 does; it says what it does before it starts and how long it took.
+The step to format 15 gives the kind conversation the schema that takes
+what an agent harness records (docs/chat-format.md, "Recorded from a
+harness"), which the step holds itself (CONVERSATION_15), as a new depot
+of format 15 starts with it. It writes that one row of kinds and the
+about revision in one transaction, so a stop leaves the depot at format
+14 and the step runs again whole; it needs no half-upgraded mark, and no
+conversation is read or rewritten, since every conversation of format 14
+matches the new schema.
 
 The check (check) opens the file read-only and writes nothing: for a depot
 of format 11 it checks what the step to format 12 checks before it ends,
@@ -1979,9 +1987,211 @@ def _to_14(db: Database, log):
         "format 14")
 
 
+# format 15: the schema of the kind conversation, which takes what an agent harness records (docs/chat-format.md,
+# "Recorded from a harness")
+CONVERSATION_15 = (
+    "{\n"
+    "  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n"
+    "  \"$id\": \"https://github.com/Workers-Intelligence-Commons/wpt/schemas/conversation.schema.json\",\n"
+    "  \"title\": \"WPT conversation (one line of a file in the chat format; docs/chat-format.md)\",\n"
+    "  \"type\": \"object\",\n"
+    "  \"additionalProperties\": false,\n"
+    "  \"required\": [\"messages\"],\n"
+    "  \"properties\": {\n"
+    "    \"metadata\": {\"type\": \"object\", \"description\": \"what identifies the conversation where it was"
+    " recorded, such as a training attempt's step, task and round; never read as tokens\"},\n"
+    "    \"harness\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"additionalProperties\": false,\n"
+    "      \"required\": [\"name\"],\n"
+    "      \"description\": \"the agent harness whose forms the conversation follows; never read as tokens\",\n"
+    "      \"properties\": {\n"
+    "        \"name\": {\"type\": \"string\", \"minLength\": 1},\n"
+    "        \"version\": {\"type\": \"string\", \"minLength\": 1}\n"
+    "      }\n"
+    "    },\n"
+    "    \"tools\": {\"$ref\": \"#/$defs/tools\", \"description\": \"the tools defined from the start of the"
+    " conversation\"},\n"
+    "    \"messages\": {\n"
+    "      \"type\": \"array\",\n"
+    "      \"minItems\": 1,\n"
+    "      \"items\": {\n"
+    "        \"type\": \"object\",\n"
+    "        \"additionalProperties\": false,\n"
+    "        \"required\": [\"role\", \"content\"],\n"
+    "        \"properties\": {\n"
+    "          \"role\": {\"enum\": [\"system\", \"user\", \"assistant\", \"tool\"]},\n"
+    "          \"content\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/$defs/block\"}},\n"
+    "          \"end\": {\"enum\": [\"stop\", \"tool_calls\", \"limit\"], \"description\": \"how an assistant's turn"
+    " ended: the model closed it with no call, the model closed it holding calls, or a limit cut it;"
+    " never read as tokens\"},\n"
+    "          \"metadata\": {\n"
+    "            \"type\": \"object\",\n"
+    "            \"description\": \"what is known about the message where it was recorded; never read as"
+    " tokens\",\n"
+    "            \"properties\": {\"draft\": {\"$ref\": \"#/$defs/draft\"}}\n"
+    "          }\n"
+    "        },\n"
+    "        \"allOf\": [\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"system\"}}},\n"
+    "           \"then\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\"type\": {\n"
+    "             \"enum\": [\"text\", \"json\", \"file\", \"tools\"], \"description\": \"the blocks a system message"
+    " holds\"}}}}}}},\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"user\"}}},\n"
+    "           \"then\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\"type\": {\n"
+    "             \"enum\": [\"text\", \"json\", \"file\", \"excerpt\"], \"description\": \"the blocks a user message"
+    " holds\"}}}}}}},\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"assistant\"}}},\n"
+    "           \"then\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\n"
+    "             \"type\": {\"enum\": [\"text\", \"thinking\", \"tool_call\", \"json\", \"file\"], \"description\":"
+    " \"the blocks an assistant message holds\"},\n"
+    "             \"by\": {\"not\": {}, \"description\": \"an assistant's text is the model's own: the harness"
+    " adds no text to it\"}}}}}}},\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"tool\"}}},\n"
+    "           \"then\": {\"properties\": {\"content\": {\"items\": {\"properties\": {\"type\": {\n"
+    "             \"enum\": [\"tool_result\"], \"description\": \"the blocks a tool message holds\"}}}}}}},\n"
+    "          {\"if\": {\"properties\": {\"role\": {\"const\": \"assistant\"}}},\n"
+    "           \"else\": {\"properties\": {\"content\": {\"minItems\": 1},\n"
+    "                                   \"metadata\": {\"not\": {\"required\": [\"draft\"]}},\n"
+    "                                   \"end\": {\"not\": {}, \"description\": \"only an assistant's turn has"
+    " an end\"}}}}\n"
+    "        ]\n"
+    "      }\n"
+    "    }\n"
+    "  },\n"
+    "  \"$defs\": {\n"
+    "    \"tools\": {\n"
+    "      \"type\": \"array\",\n"
+    "      \"items\": {\n"
+    "        \"type\": \"object\",\n"
+    "        \"additionalProperties\": false,\n"
+    "        \"required\": [\"name\"],\n"
+    "        \"description\": \"a tool: its name, and its description and the JSON Schema of its parameters"
+    " when they are known\",\n"
+    "        \"properties\": {\n"
+    "          \"name\": {\"type\": \"string\", \"minLength\": 1},\n"
+    "          \"description\": {\"type\": \"string\"},\n"
+    "          \"parameters\": {\"type\": \"object\", \"description\": \"the JSON Schema of the call's"
+    " arguments\"}\n"
+    "        }\n"
+    "      }\n"
+    "    },\n"
+    "    \"draft\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"additionalProperties\": false,\n"
+    "      \"required\": [\"model\", \"weights\", \"sha256\", \"edited\"],\n"
+    "      \"description\": \"an assistant message that started as a reply drafted by a WPT model, which a"
+    " person then confirmed, edited or not (docs/chat-format.md, \\\"Model drafts\\\")\",\n"
+    "      \"properties\": {\n"
+    "        \"model\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"the name of the model folder"
+    " that drafted it\"},\n"
+    "        \"weights\": {\"type\": \"object\", \"minProperties\": 1, \"description\": \"the sha256 of each of"
+    " that folder's weight files, by file name\",\n"
+    "                    \"additionalProperties\": {\"type\": \"string\", \"pattern\": \"^[0-9a-f]{64}$\"}},\n"
+    "        \"sha256\": {\"type\": \"string\", \"pattern\": \"^[0-9a-f]{64}$\", \"description\": \"the sha256 of the"
+    " drafted content as the model wrote it, of its JSON text written as docs/chat-format.md, Model"
+    " drafts, says\"},\n"
+    "        \"edited\": {\"type\": \"boolean\", \"description\": \"true when the person changed the draft before"
+    " confirming it: the content no longer gives sha256\"}\n"
+    "      }\n"
+    "    },\n"
+    "    \"block\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"required\": [\"type\"],\n"
+    "      \"properties\": {\"type\": {\"enum\": [\"text\", \"thinking\", \"tool_call\", \"tool_result\", \"json\","
+    " \"file\", \"excerpt\", \"tools\"]}},\n"
+    "      \"allOf\": [\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"text\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"text\"],\n"
+    "                  \"properties\": {\"type\": true, \"text\": {\"type\": \"string\"},\n"
+    "                                 \"by\": {\"const\": \"harness\", \"description\": \"who wrote the text when"
+    " it is not the message's author: the harness that added it\"}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"thinking\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"text\"],\n"
+    "                  \"properties\": {\"type\": true, \"text\": {\"type\": \"string\"}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"tool_call\"}}},\n"
+    "         \"then\": {\"if\": {\"required\": [\"raw\"]},\n"
+    "                  \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"id\", \"raw\"],\n"
+    "                           \"description\": \"a call whose arguments could not be parsed: it has no"
+    " arguments, and raw holds, with name, the text of its arguments as the model wrote them, without"
+    " name, the whole call as the model wrote it\",\n"
+    "                           \"properties\": {\"type\": true, \"id\": {\"type\": \"string\", \"minLength\":"
+    " 1},\n"
+    "                                          \"name\": {\"type\": \"string\", \"minLength\": 1}, \"raw\":"
+    " {\"type\": \"string\"}}},\n"
+    "                  \"else\": {\"additionalProperties\": false, \"required\": [\"type\", \"id\", \"name\","
+    " \"arguments\"],\n"
+    "                           \"description\": \"a call with its arguments, or with raw, as the model"
+    " wrote them, when they could not be parsed\",\n"
+    "                           \"properties\": {\"type\": true, \"id\": {\"type\": \"string\", \"minLength\":"
+    " 1},\n"
+    "                                          \"name\": {\"type\": \"string\", \"minLength\": 1}, \"arguments\":"
+    " {\"type\": \"object\"}}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"tool_result\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"call\", \"content\"],\n"
+    "                  \"properties\": {\"type\": true, \"call\": {\"type\": \"string\", \"minLength\": 1}, \"error\":"
+    " {\"type\": \"boolean\"},\n"
+    "                                 \"value\": {\"description\": \"what the tool returned, in structured"
+    " form, when it is known; never read as tokens\"},\n"
+    "                                 \"conversation\": {\"type\": \"string\", \"minLength\": 1, \"description\":"
+    " \"the id of the depot conversation of the sub-agent that produced the result\"},\n"
+    "                                 \"content\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/$defs/block\",\n"
+    "                                             \"properties\": {\"type\": {\"enum\": [\"text\", \"json\","
+    " \"file\", \"excerpt\", \"tools\"],\n"
+    "                                                                     \"description\": \"the blocks a"
+    " tool result holds\"}}}}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"json\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"value\"],\n"
+    "                  \"properties\": {\"type\": true, \"value\": true}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"file\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"sha256\", \"media_type\"],\n"
+    "                  \"properties\": {\"type\": true, \"sha256\": {\"type\": \"string\", \"pattern\":"
+    " \"^[0-9a-f]{64}$\"},\n"
+    "                                 \"media_type\": {\"type\": \"string\", \"pattern\":"
+    " \"^[a-z]+/[A-Za-z0-9.+-]+$\"}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"excerpt\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"source\", \"selector\"],\n"
+    "                  \"description\": \"a passage of a plain text of the depot, quoted by its content"
+    " (docs/chat-format.md, \\\"Excerpts\\\"): the corpus build writes the passage in its place\",\n"
+    "                  \"properties\": {\"type\": true, \"source\": {\"type\": \"string\", \"minLength\": 1,"
+    " \"description\": \"the id of the quoted text\"},\n"
+    "                                 \"selector\": {\"type\": \"object\", \"additionalProperties\": false,"
+    " \"required\": [\"type\", \"exact\"],\n"
+    "                                              \"description\": \"a W3C Web Annotation"
+    " TextQuoteSelector (https://www.w3.org/TR/annotation-model/#text-quote-selector)\",\n"
+    "                                              \"properties\": {\"type\": {\"const\": \"TextQuoteSelector\"},\n"
+    "                                                             \"exact\": {\"type\": \"string\","
+    " \"description\": \"the passage, character for character\"},\n"
+    "                                                             \"prefix\": {\"type\": \"string\","
+    " \"description\": \"the characters right before it\"},\n"
+    "                                                             \"suffix\": {\"type\": \"string\","
+    " \"description\": \"the characters right after it\"}}}}}},\n"
+    "        {\"if\": {\"properties\": {\"type\": {\"const\": \"tools\"}}},\n"
+    "         \"then\": {\"additionalProperties\": false, \"required\": [\"type\", \"tools\"],\n"
+    "                  \"description\": \"the tools defined from this point of the conversation on\",\n"
+    "                  \"properties\": {\"type\": true, \"tools\": {\"$ref\": \"#/$defs/tools\", \"minItems\":"
+    " 1}}}}\n"
+    "      ]\n"
+    "    }\n"
+    "  }\n"
+    "}\n"
+)
+
+
+def _to_15(db: Database, log):
+    """Format 14 to 15, as the module says: the conversation kind's
+    schema, in one transaction."""
+    log(f"{db.path}: writing the schema of the kind conversation that takes what an agent harness records, in one "
+        "transaction that writes one row of kinds")
+    with db.bulk() as con:
+        con.execute("UPDATE kinds SET schema = ? WHERE id = 'conversation'", (CONVERSATION_15,))
+        _new_format(con, 15)
+    log(f"{db.path}: the depot is at format 15")
+
+
 # each format of an SQLite file below the code's: the step that brings it to the next
 FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11, 11: _to_12, 12: _to_13,
-              13: _to_14}
+              13: _to_14, 14: _to_15}
 
 
 # what `depot upgrade --check` takes for the time of what it does not read itself, measured on bench/large.py's
@@ -2119,7 +2329,8 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
     runbook (RUNBOOK) and the command that runs it. A depot older than
     format 11 or a folder gets the steps alone: each stage of the step to
     format 13 checks its conversions itself and stops on a difference; a
-    depot of format 13 gets the cost of the step to format 14 alone.
+    depot of format 13 gets the cost of the steps to formats 14 and 15
+    alone, one of format 14 that of the step to format 15.
     It reads in one read transaction. A check saved beside the depot's file
     (saved_check_path) of the depot in the same state (_state_13) gives the
     measures it holds, and save writes what this one measured there, so a
@@ -2146,8 +2357,8 @@ def check(address: str, records: list[dict] | None = None, public: str | None = 
             return Check(True, [f"{path}: at format {FORMAT} already, nothing to upgrade"], needed=False)
         lines = [f"{path}: format {start}" + (f", an upgrade to format {start + 1} not ended" if half else "")
                  + f"; the upgrade runs the steps {', '.join(f'{one} to {one + 1}' for one in range(start, FORMAT))}"]
-        if start == 13:
-            cost = _cost_14(con, path)
+        if start >= 13:
+            cost = _cost_14(con, path) if start == 13 else _cost_15(path)
             return Check(True, [*lines, *cost.pop("lines"), *RUNBOOK, f"Run: {command}"], cost=cost)
         if start < 11:
             lines.append("The libraries and datasets are converted by the step to format 13, after the steps before it: "
@@ -2291,7 +2502,7 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
                "12 to 13, tables": revisions / RATE_13_TABLES,
                "12 to 13, taggings": revisions / RATE_13_TAGGINGS, "12 to 13, sizes": revisions / RATE_13_SIZES,
                "12 to 13, locked and datasets": 0.0 if start == 12 else again, "12 to 13, counts and views": 0.0,
-               "13 to 14": current / RATE_14 + revisions / RATE_14_SCORES}
+               "13 to 14": current / RATE_14 + revisions / RATE_14_SCORES, "14 to 15": 0.0}
     temporary = max(_sorted_bytes(con), revisions * TAGGINGS_SORTED_13)
     added = (current * LENGTH_ENTRY_14 + contents * KIND_BYTES + sum(snapshot_bytes) + 50 * len(datasets)
              + COUNT_ROW_BYTES * (tagsets + 50) + tagging_bytes + revisions * SIZE_BYTES
@@ -2328,18 +2539,32 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
             "tagsets": tagsets, "temporary": temporary, "lines": lines}
 
 
+def _cost_15(path: Path) -> dict:
+    """The cost of the step to format 15 alone (Check.cost) and its lines: one row of kinds written."""
+    size = path.stat().st_size
+    lines = ["Cost of the step 14 to 15:",
+             "  writing the schema of the kind conversation: one row of kinds, in one transaction, under a second",
+             "  disk added: none to speak of; WAL: a few pages",
+             f"  backup: the next `depot backup` sends a full copy of the file, about {_size(size)}, onto the dock "
+             "(the step marks the file for a full copy, since change files record no layout)"]
+    return {"seconds": {"14 to 15": 0.0}, "again": 0.0, "added": 0, "wal": 0, "backup": size, "temporary": 0,
+            "lines": lines}
+
+
 def _cost_14(con, path: Path) -> dict:
-    """The cost of the step to format 14 alone (Check.cost) and its lines, from the counts of the current texts."""
+    """The cost of the steps to formats 14 and 15 (Check.cost) and its lines, from the counts of the current texts:
+    the step to format 15 writes one row, which takes no time to speak of."""
     current = con.execute("SELECT coalesce(sum(texts), 0) FROM counts WHERE facet = 'status'").fetchall()[0][0]
     revisions = con.execute("SELECT coalesce(max(rowid), 0) FROM texts_revisions").fetchall()[0][0]
     counting, building = revisions / RATE_14_SCORES, current / RATE_14
-    seconds, added = {"13 to 14": counting + building}, current * LENGTH_ENTRY_14
+    seconds, added = {"13 to 14": counting + building, "14 to 15": 0.0}, current * LENGTH_ENTRY_14
     size = path.stat().st_size
-    lines = ["Cost of the step 13 to 14:",
+    lines = ["Cost of the steps 13 to 14 and 14 to 15:",
              f"  counting the values of the scores over {revisions:,} revisions: about {counting:,.0f} seconds "
              f"({counting / 60:,.1f} minutes)",
              f"  building the index texts_length of {current:,} current texts: about {building:,.0f} "
              f"seconds ({building / 60:,.1f} minutes)",
+             "  writing the schema of the kind conversation (14 to 15): one row of kinds, under a second",
              f"  temporary folder: SQLite sorts the index's entries in it (SQLITE_TMPDIR, else /var/tmp, /usr/tmp or "
              f"/tmp), about {_size(added)} of free disk",
              f"  disk added: about {_size(added)}, the index",

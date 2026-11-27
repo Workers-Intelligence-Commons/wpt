@@ -7,20 +7,17 @@
   "required": ["messages"],
   "properties": {
     "metadata": {"type": "object", "description": "what identifies the conversation where it was recorded, such as a training attempt's step, task and round; never read as tokens"},
-    "tools": {
-      "type": "array",
-      "description": "the tools offered in the conversation",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "description", "parameters"],
-        "properties": {
-          "name": {"type": "string", "minLength": 1},
-          "description": {"type": "string"},
-          "parameters": {"type": "object", "description": "the JSON Schema of the call's arguments"}
-        }
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "the agent harness whose forms the conversation follows; never read as tokens",
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
       }
     },
+    "tools": {"$ref": "#/$defs/tools", "description": "the tools defined from the start of the conversation"},
     "messages": {
       "type": "array",
       "minItems": 1,
@@ -31,6 +28,7 @@
         "properties": {
           "role": {"enum": ["system", "user", "assistant", "tool"]},
           "content": {"type": "array", "items": {"$ref": "#/$defs/block"}},
+          "end": {"enum": ["stop", "tool_calls", "limit"], "description": "how an assistant's turn ended: the model closed it with no call, the model closed it holding calls, or a limit cut it; never read as tokens"},
           "metadata": {
             "type": "object",
             "description": "what is known about the message where it was recorded; never read as tokens",
@@ -38,19 +36,42 @@
           }
         },
         "allOf": [
-          {"if": {"properties": {"role": {"const": "tool"}}},
-           "then": {"properties": {"content": {"items": {"properties": {"type": {"const": "tool_result"}}}}}},
-           "else": {"properties": {"content": {"items": {"properties": {"type": {"not": {"const": "tool_result"}}}}}}}},
+          {"if": {"properties": {"role": {"const": "system"}}},
+           "then": {"properties": {"content": {"items": {"properties": {"type": {
+             "enum": ["text", "json", "file", "tools"], "description": "the blocks a system message holds"}}}}}}},
+          {"if": {"properties": {"role": {"const": "user"}}},
+           "then": {"properties": {"content": {"items": {"properties": {"type": {
+             "enum": ["text", "json", "file", "excerpt"], "description": "the blocks a user message holds"}}}}}}},
           {"if": {"properties": {"role": {"const": "assistant"}}},
-           "else": {"properties": {"content": {"minItems": 1, "items": {"properties": {"type": {"not": {"enum": ["thinking", "tool_call"]}}}}},
-                                   "metadata": {"not": {"required": ["draft"]}}}}},
-          {"if": {"properties": {"role": {"enum": ["assistant", "system"]}}},
-           "then": {"properties": {"content": {"items": {"properties": {"type": {"not": {"const": "excerpt"}}}}}}}}
+           "then": {"properties": {"content": {"items": {"properties": {
+             "type": {"enum": ["text", "thinking", "tool_call", "json", "file"], "description": "the blocks an assistant message holds"},
+             "by": {"not": {}, "description": "an assistant's text is the model's own: the harness adds no text to it"}}}}}}},
+          {"if": {"properties": {"role": {"const": "tool"}}},
+           "then": {"properties": {"content": {"items": {"properties": {"type": {
+             "enum": ["tool_result"], "description": "the blocks a tool message holds"}}}}}}},
+          {"if": {"properties": {"role": {"const": "assistant"}}},
+           "else": {"properties": {"content": {"minItems": 1},
+                                   "metadata": {"not": {"required": ["draft"]}},
+                                   "end": {"not": {}, "description": "only an assistant's turn has an end"}}}}
         ]
       }
     }
   },
   "$defs": {
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "description": "a tool: its name, and its description and the JSON Schema of its parameters when they are known",
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "description": {"type": "string"},
+          "parameters": {"type": "object", "description": "the JSON Schema of the call's arguments"}
+        }
+      }
+    },
     "draft": {
       "type": "object",
       "additionalProperties": false,
@@ -67,20 +88,33 @@
     "block": {
       "type": "object",
       "required": ["type"],
-      "properties": {"type": {"enum": ["text", "thinking", "tool_call", "tool_result", "json", "file", "excerpt"]}},
+      "properties": {"type": {"enum": ["text", "thinking", "tool_call", "tool_result", "json", "file", "excerpt", "tools"]}},
       "allOf": [
-        {"if": {"properties": {"type": {"enum": ["text", "thinking"]}}},
+        {"if": {"properties": {"type": {"const": "text"}}},
+         "then": {"additionalProperties": false, "required": ["type", "text"],
+                  "properties": {"type": true, "text": {"type": "string"},
+                                 "by": {"const": "harness", "description": "who wrote the text when it is not the message's author: the harness that added it"}}}},
+        {"if": {"properties": {"type": {"const": "thinking"}}},
          "then": {"additionalProperties": false, "required": ["type", "text"],
                   "properties": {"type": true, "text": {"type": "string"}}}},
         {"if": {"properties": {"type": {"const": "tool_call"}}},
-         "then": {"additionalProperties": false, "required": ["type", "id", "name", "arguments"],
-                  "properties": {"type": true, "id": {"type": "string", "minLength": 1},
-                                 "name": {"type": "string", "minLength": 1}, "arguments": {"type": "object"}}}},
+         "then": {"if": {"required": ["raw"]},
+                  "then": {"additionalProperties": false, "required": ["type", "id", "raw"],
+                           "description": "a call whose arguments could not be parsed: it has no arguments, and raw holds, with name, the text of its arguments as the model wrote them, without name, the whole call as the model wrote it",
+                           "properties": {"type": true, "id": {"type": "string", "minLength": 1},
+                                          "name": {"type": "string", "minLength": 1}, "raw": {"type": "string"}}},
+                  "else": {"additionalProperties": false, "required": ["type", "id", "name", "arguments"],
+                           "description": "a call with its arguments, or with raw, as the model wrote them, when they could not be parsed",
+                           "properties": {"type": true, "id": {"type": "string", "minLength": 1},
+                                          "name": {"type": "string", "minLength": 1}, "arguments": {"type": "object"}}}}},
         {"if": {"properties": {"type": {"const": "tool_result"}}},
          "then": {"additionalProperties": false, "required": ["type", "call", "content"],
                   "properties": {"type": true, "call": {"type": "string", "minLength": 1}, "error": {"type": "boolean"},
+                                 "value": {"description": "what the tool returned, in structured form, when it is known; never read as tokens"},
+                                 "conversation": {"type": "string", "minLength": 1, "description": "the id of the depot conversation of the sub-agent that produced the result"},
                                  "content": {"type": "array", "items": {"$ref": "#/$defs/block",
-                                             "properties": {"type": {"enum": ["text", "json", "file", "excerpt"]}}}}}}},
+                                             "properties": {"type": {"enum": ["text", "json", "file", "excerpt", "tools"],
+                                                                     "description": "the blocks a tool result holds"}}}}}}},
         {"if": {"properties": {"type": {"const": "json"}}},
          "then": {"additionalProperties": false, "required": ["type", "value"],
                   "properties": {"type": true, "value": true}}},
@@ -97,7 +131,11 @@
                                               "properties": {"type": {"const": "TextQuoteSelector"},
                                                              "exact": {"type": "string", "description": "the passage, character for character"},
                                                              "prefix": {"type": "string", "description": "the characters right before it"},
-                                                             "suffix": {"type": "string", "description": "the characters right after it"}}}}}}
+                                                             "suffix": {"type": "string", "description": "the characters right after it"}}}}}},
+        {"if": {"properties": {"type": {"const": "tools"}}},
+         "then": {"additionalProperties": false, "required": ["type", "tools"],
+                  "description": "the tools defined from this point of the conversation on",
+                  "properties": {"type": true, "tools": {"$ref": "#/$defs/tools", "minItems": 1}}}}
       ]
     }
   }

@@ -2073,6 +2073,104 @@ def test_an_excerpt_is_refused_unless_it_quotes_one_place_of_a_plain_text_the_de
             {**in_result, "content": [excerpt(other, "cat"), {"type": "text", "text": "seen"}]}]}]}), me)
 
 
+def recorded(sub_agent):
+    """A conversation an agent harness recorded, holding every field the chat format takes from one, whose third
+    call ran a sub-agent whose conversation is sub_agent."""
+    return {"harness": {"name": "opencode", "version": "1.19.6"},
+            "tools": [{"name": "find_tools", "description": "Load tools.", "parameters": {"type": "object"}},
+                      {"name": "shell"}, {"name": "subagent"}],
+            "messages": [
+                {"role": "system", "content": [{"type": "text", "text": "You are an agent."},
+                                               {"type": "text", "text": "Today is Tuesday.", "by": "harness"}]},
+                {"role": "user", "content": [{"type": "text", "text": "Run the tests."}]},
+                {"role": "assistant", "end": "tool_calls", "content": [
+                    {"type": "tool_call", "id": "c1", "name": "shell", "raw": '{"command": "bun test'},
+                    {"type": "tool_call", "id": "c2", "name": "find_tools", "arguments": {"query": "web"}},
+                    {"type": "tool_call", "id": "c3", "name": "subagent", "arguments": {"prompt": "Find the providers."}},
+                    {"type": "tool_call", "id": "c4", "name": "shell", "arguments": {"command": "bun test"}}]},
+                {"role": "tool", "content": [
+                    {"type": "tool_result", "call": "c1", "error": True,
+                     "content": [{"type": "text", "text": "The tool input could not be parsed as JSON."}]},
+                    {"type": "tool_result", "call": "c2", "content": [
+                        {"type": "tools", "tools": [{"name": "web_search", "description": "Search the web."}]}]},
+                    {"type": "tool_result", "call": "c3", "conversation": sub_agent,
+                     "content": [{"type": "text", "text": "Two providers."}]},
+                    {"type": "tool_result", "call": "c4", "value": {"exitCode": 1}, "content": [
+                        {"type": "text", "text": "1 failed"},
+                        {"type": "text", "text": "Fix the test before going on.", "by": "harness"}]}]},
+                {"role": "system", "content": [{"type": "tools", "tools": [{"name": "fetch"}]}]},
+                {"role": "assistant", "end": "limit", "content": [{"type": "text", "text": "One test"}]}]}
+
+
+def sub_agent_conversation():
+    return NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(
+        {"messages": [{"role": "user", "content": [{"type": "text", "text": "Find the providers."}]},
+                      {"role": "assistant", "end": "stop", "content": [{"type": "text", "text": "Two providers."}]}]}))
+
+
+def test_a_conversation_recorded_from_an_agent_harness_is_held_as_it_was_given(make_depot, me):
+    # the depot holds everything a harness records: its name, tools announced by name alone or defined later, the
+    # text it added in others' messages, a call that could not be parsed, a tool's value, its sub-agent's
+    # conversation and how each turn ended
+    depot = make_depot()
+    [sub_agent] = depot.add([sub_agent_conversation()], me)
+    [talk] = depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(recorded(sub_agent)))],
+                       me)
+    assert json.loads(depot.content(talk)) == recorded(sub_agent)
+
+
+def test_a_misused_field_of_a_harness_s_conversation_is_refused_saying_what_is_wrong(make_depot, me):
+    # each refusal names the place and the rule, so the person who records a conversation can fix it
+    depot = make_depot()
+    [sub_agent] = depot.add([sub_agent_conversation()], me)
+    [text] = depot.add([plain("a plain text")], me)
+
+    def call(**fields):
+        return lambda talk: talk["messages"][2]["content"][1].update(fields)
+
+    def block(at, one):
+        return lambda talk: talk["messages"][at]["content"].append(one)
+
+    for change, said in (
+            (call(raw="{"), "at messages/2/content/1: Additional properties are not allowed ('arguments' was unexpected)"),
+            (lambda talk: talk["messages"][2]["content"][1].pop("arguments"), "'arguments' is a required property"),
+            (block(2, {"type": "thinking", "text": "Hm.", "by": "harness"}), "('by' was unexpected)"),
+            (block(5, {"type": "text", "text": "Hm.", "by": "harness"}),
+             "at messages/5/content/1/by: an assistant's text is the model's own: the harness adds no text to it"),
+            (block(1, {"type": "tools", "tools": [{"name": "fetch"}]}),
+             "'tools' is not one of ['text', 'json', 'file', 'excerpt'] (the blocks a user message holds)"),
+            (lambda talk: talk["messages"][5].update(end="done"),
+             "at messages/5/end: 'done' is not one of ['stop', 'tool_calls', 'limit']"),
+            (lambda talk: talk["messages"][1].update(end="stop"), "only an assistant's turn has an end"),
+            (lambda talk: talk["messages"][3]["content"][2].update(conversation=f"{text}9"),
+             f"names the conversation {text}9, which is no text of the depot"),
+            (lambda talk: talk["messages"][3]["content"][2].update(conversation=text),
+             f"names {text}, a text of kind plain: it names the conversation of the sub-agent")):
+        wrong = recorded(sub_agent)
+        change(wrong)
+        with pytest.raises(BadContent) as refused:
+            depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(wrong))], me)
+        assert said in str(refused.value)
+
+
+def test_a_sub_agent_s_conversation_an_erasure_removed_stays_named_where_it_was(make_depot, me):
+    # an erasure may remove a sub-agent's conversation whole: the conversation that ran it keeps the name and can
+    # still change, but a change never names a conversation the depot does not hold
+    depot = make_depot()
+    [sub_agent] = depot.add([sub_agent_conversation()], me)
+    [talk] = depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(recorded(sub_agent)))],
+                       me)
+    depot.decide_erasure(depot.ask_erasure("asked by its author", [(sub_agent, None, None)], me), "admitted", me)
+
+    changed = recorded(sub_agent)
+    changed["messages"][1]["content"][0]["text"] = "Run the tests again."
+    depot.change_content(talk, None, json.dumps(changed), me)
+    assert json.loads(depot.content(talk)) == changed
+    changed["messages"][3]["content"][0]["conversation"] = f"{sub_agent}9"
+    with pytest.raises(BadContent, match=f"names the conversation {sub_agent}9, which is no text of the depot"):
+        depot.change_content(talk, None, json.dumps(changed), me)
+
+
 def test_the_selectors_on_one_text_read_it_once_and_find_what_each_finds_alone():
     # a build matches every excerpt of a text in one reading, so each must find the places it finds alone, however
     # the text's parts cut it, and whatever the longer or overlapping selectors beside it find
@@ -2132,21 +2230,27 @@ def test_an_erasure_cuts_only_the_strings_of_text_of_a_conversation_it_reaches_t
     talk_content = {"messages": [
         {"role": "user", "content": [excerpt(text, "user 12345 wrote"), {"type": "text", "text": "id 12345?"}]},
         {"role": "assistant", "content": [{"type": "tool_call", "id": "call-12345", "name": "look12345",
-                                           "arguments": {"q": "12345"}}]},
-        {"role": "tool", "content": [{"type": "tool_result", "call": "call-12345",
-                                      "content": [{"type": "text", "text": "found 12345"}]}]}],
-        "metadata": {"run": "12345"}}
+                                           "arguments": {"q": "12345"}},
+                                          {"type": "tool_call", "id": "raw-12345", "raw": "look 12345"}]},
+        {"role": "tool", "content": [{"type": "tool_result", "call": "call-12345", "value": {"seen": ["12345"]},
+                                      "content": [{"type": "text", "text": "found 12345"},
+                                                  {"type": "tools", "tools": [{"name": "t12345",
+                                                                               "description": "finds 12345"}]}]}]}],
+        "harness": {"name": "h12345"}, "metadata": {"run": "12345"}}
     [talk] = depot.add([NewText(kind="conversation", licenses=("CC0-1.0",), content=json.dumps(talk_content))], me)
 
     depot.decide_erasure(depot.ask_erasure("a number", [(text, 5, 10)], me), "admitted", me)
 
     cut = json.loads(depot.content(talk))
     assert cut["messages"][0]["content"] == [excerpt(text, "user  wrote"), {"type": "text", "text": "id ?"}]
-    assert cut["messages"][1]["content"][0] == {"type": "tool_call", "id": "call-12345", "name": "look12345",
-                                                "arguments": {"q": ""}}
+    assert cut["messages"][1]["content"] == [
+        {"type": "tool_call", "id": "call-12345", "name": "look12345", "arguments": {"q": ""}},
+        {"type": "tool_call", "id": "raw-12345", "raw": "look "}]
     assert cut["messages"][2]["content"][0]["call"] == "call-12345"
-    assert cut["messages"][2]["content"][0]["content"] == [{"type": "text", "text": "found "}]
-    assert cut["metadata"] == {"run": "12345"}
+    assert cut["messages"][2]["content"][0]["value"] == {"seen": [""]}
+    assert cut["messages"][2]["content"][0]["content"] == [
+        {"type": "text", "text": "found "}, {"type": "tools", "tools": [{"name": "t12345", "description": "finds "}]}]
+    assert cut["harness"] == {"name": "h12345"} and cut["metadata"] == {"run": "12345"}
     assert depot.content(source_like) == "12345"  # a text the erasure never named
 
 
