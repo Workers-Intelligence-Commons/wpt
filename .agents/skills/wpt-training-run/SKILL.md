@@ -90,9 +90,10 @@ stage whose window does not fit the GPU, even with `--recompute
 training (docs/training.md, "Long windows"):
 
 - one GPU: `--segment N`, with N a multiple of 128 that fits (the memory
-  of an N-token window, plus some memory per token of the whole window,
-  which a short run with `--stop-after-updates` measures for the order,
-  for example `coherent:512`), up to twice the time;
+  of an N-token window, plus what the segments hand on: for
+  `coherent:512`, about 69 KiB per token of the whole window with N =
+  1024, 59 KiB with 2048 and 53 KiB with 4096; docs/training.md, "Long
+  windows", gives the rule for another shape), up to twice the time;
 - several GPUs: `--strategy split` with `--processes N`, each
   window's length a multiple of 128 times the number of processes;
 - several GPUs whose slices still do not fit: `--strategy split` with

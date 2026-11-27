@@ -892,6 +892,39 @@ above); the options are:
   process; the result stays exact. Windows whose slices are `N` tokens or
   fewer are split without segments.
 
+What the segments hand on stays in memory until the window's last
+backward pass ends (`parts.py`), so it grows with the window. Per token of
+the window, with segments of `N` tokens, it is the sum of:
+
+- the exact layers' keys and values: 2 × `attention_head_dim` FP32
+  values per exact layer and pass of the loop, held about four times at
+  the peak (as handed on, as the copy the next segment reads, as its
+  gradient and as the gradient sent back), plus the BF16 copy of the
+  keys and values that the kernels of every exact and sparse layer keep
+  for the backward pass, 2 × `attention_head_dim` BF16 values per layer
+  and pass;
+- the tails: a tail handed on is the end of the values of its whole
+  segment and keeps all of them in memory (`carry.Tail.follow`), so each
+  tail costs every token's values: 2 × `attention_head_dim` FP32 per
+  window layer and pass, and for the MTP block's window; `d_model` + 2 ×
+  `shared_width` + 1 BF16 per In-Place TTT layer and pass; `d_model` FP32
+  per Engram convolution and pass;
+- what each boundary between segments hands on, divided by `N`: the
+  tails' own steps, and In-Place TTT's sum of updates, `d_model` × 2 ×
+  `shared_width` FP32 per layer and pass.
+
+For `coherent:512` on a GPU (two exact layers, five sparse layers, four
+window layers and the MTP block's window, two In-Place TTT layers, Engram
+in one layer, two passes of the loop), that is 48 KiB per token plus
+21 MiB per segment: about 69 KiB per token of the window with
+`--segment 1024`, 59 KiB with 2048 and 53 KiB with 4096. On the CPU,
+where every value is FP32 and the kernels keep the FP32 keys and values
+instead of BF16 copies, the same count gives 90 KiB per token with
+segments of 1,024 tokens and 74 KiB with 2,048; one training pass of
+`coherent:512` in segments on the CPU, random tokens, grew its peak
+resident memory by 89 and 76 KiB per token from a window of 8,192 tokens
+to one of 16,384. Not measured on a GPU.
+
 These are options of the hardware, not of the order: a run may resume with
 another `--segment`, or none. The training loss is the parts' share of the whole window's (`TextMethod.part_loss`, "Methods", above); the
 validation loss in parts is each part's validation loss weighted by its
