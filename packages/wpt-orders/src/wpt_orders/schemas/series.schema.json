@@ -274,6 +274,16 @@
           "minimum": 0,
           "description": "extra passes of the text through every layer with the same weights, at every size (docs/model.md, \"Loops\"); 0: one pass"
         },
+        "loop_decay": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "with loops, at every size: each pass after the first starts from h0 + loop_decay x (out - h0) (docs/model.md, \"Loops\"); left out: from out"
+        },
+        "decay_last_pass": {
+          "type": "boolean",
+          "description": "with loop_decay, at every size: the last pass's output is decayed the same way before the output head reads it; left out or false: read as it is"
+        },
         "tied_tables": {
           "type": "boolean",
           "description": "one vocabulary table at every size: the embedding reads the output head's rows, times a fixed scale (docs/model.md, \"One vocabulary table\"); absent or false: two tables"

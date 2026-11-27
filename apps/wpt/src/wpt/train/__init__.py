@@ -711,7 +711,7 @@ def fingerprints(steps, model_config, record, seed, code) -> list[str]:
     and the code (code, wic_utils.programs.code()). The step's position in the list, which its draws
     mix into the seed, is the length of the chain before it. No option is
     part of it."""
-    shape = {key: value for key, value in asdict(model_config).items() if key != "block_size"}
+    shape = {key: value for key, value in model_config.numbers().items() if key != "block_size"}
     previous = fingerprint({"initial": shape})
     found = []
     held = record.get("fingerprints", {})
@@ -810,7 +810,7 @@ def provenance(args, order, record, model_config, n_params, worker, strategy_fil
         # each step in order: what it is, its fingerprint and kept result, whether this run reused it, what it
         # reached, and what of the corpus it learned from
         "steps": list(done),
-        "model": asdict(model_config),
+        "model": model_config.numbers(),
         "parameters": n_params,
         **repository(),  # repository_commit, repository_dirty
         "device": worker["device"] + (f", {processes} processes" if processes > 1 else ""),
@@ -1171,8 +1171,9 @@ def _train_in(args, record, order, strategy_file, steps, context, dock, telemetr
         raise Refused(f"{type(error).__name__}: {error}") from None
     log(f"corpus {record['id']}: vocabulary {tokenizer.vocab_size:,} tokens")
 
-    model_config = ModelConfig(vocab_size=tokenizer.vocab_size, block_size=context, **order["model"])
-    try:  # the drafter trained at the end, and the scheduler's pass times replayed: refused now, not after training
+    try:  # the model's numbers, the drafter trained at the end and the scheduler's pass times replayed: refused
+        #   now, not after training
+        model_config = ModelConfig(vocab_size=tokenizer.vocab_size, block_size=context, **order["model"])
         drafter_config, _ = drafter_settings(model_config, order["drafter"])  # its feature layers included
         replayed = dock_api.read_record(dock, args.scheduler_costs, COSTS_FILE) if args.scheduler_costs else None
         files = sent_files(steps, strategy_file)

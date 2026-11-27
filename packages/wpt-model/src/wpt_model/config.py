@@ -12,6 +12,8 @@ from pathlib import Path
 from .attention import ROPE_DIMS
 
 WINDOW, EXACT, SPARSE = "window", "exact", "sparse"  # the kinds of layer
+# the rules of how a loop's passes follow each other, each with its value when it is off: today's loop
+LOOP_RULES = {"loop_decay": None, "decay_last_pass": False}
 
 
 def layer_kinds(window_layers, sparse_groups, sparse_layers):
@@ -47,13 +49,19 @@ class ModelConfig:
                             # 2 * n_layer (every attention and every experts sublayer its own) is the full form
     loops: int = 0          # extra passes of the text through every layer, with the same weights; 0: one pass
     tied_tables: bool = False  # one vocabulary table: the embedding reads the output head's rows (TiedEmbedding)
+    # how the passes of the loop follow each other (docs/model.md, "Loops"); each off at its value in LOOP_RULES
+    loop_decay: float | None = None  # lambda: a pass after the first starts from h0 + lambda (out - h0), h0 the
+                                     # first pass's first source, out the pass before's output; None: from out
+    decay_last_pass: bool = False    # the last pass's output decayed the same way before the output head reads it
 
     def __post_init__(self):
         object.__setattr__(self, "engram_layers", tuple(self.engram_layers))
         problems = [f"{f.name} must be at least 1" for f in fields(self)
-                    if f.name not in ("engram_layers", "loops", "tied_tables") and getattr(self, f.name) < 1]
+                    if f.name not in ("engram_layers", "loops", "tied_tables", *LOOP_RULES)
+                    and getattr(self, f.name) < 1]
         if self.loops < 0:
             problems.append("loops must be at least 0")
+        problems += self._loop_problems()
         if self.block_size < 2:
             problems.append("block_size must be at least 2: multi-token prediction reads the token after next")
         if not self.top_k < self.n_experts:
@@ -71,6 +79,26 @@ class ModelConfig:
         if problems:
             raise ValueError("model config: " + "; ".join(problems))
 
+    def _loop_problems(self):
+        """Why the rules of the loop (LOOP_RULES) cannot go together with
+        the rest of the config, one sentence each."""
+        problems = []
+        if self.loops == 0:
+            problems += [f"{name} shapes the passes of a loop, and loops is 0: one pass" for name, off in
+                         LOOP_RULES.items() if getattr(self, name) != off]
+        if self.loop_decay is not None and not 0 < self.loop_decay < 1:
+            problems.append("loop_decay must be above 0 and below 1 (leave it out for no decay)")
+        if self.decay_last_pass and self.loop_decay is None:
+            problems.append("decay_last_pass decays by loop_decay, which is left out")
+        return problems
+
+    def numbers(self) -> dict:
+        """The config as config.json holds it: every number, the rules of the
+        loop (LOOP_RULES) left out where they are off, so a model that uses
+        none of them is described as before they existed."""
+        return {key: value for key, value in asdict(self).items()
+                if key not in LOOP_RULES or value != LOOP_RULES[key]}
+
     @property
     def kinds(self):
         """The kind of each layer, in order (layer_kinds)."""
@@ -87,7 +115,7 @@ class ModelConfig:
         return 2 * self.window_layers + 1
 
     def save(self, path):
-        Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n", encoding="utf-8", newline="\n")
+        Path(path).write_text(json.dumps(self.numbers(), indent=2) + "\n", encoding="utf-8", newline="\n")
 
     @classmethod
     def load(cls, path):

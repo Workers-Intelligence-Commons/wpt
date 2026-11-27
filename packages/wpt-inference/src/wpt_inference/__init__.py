@@ -307,7 +307,8 @@ def costs_setup(model_config, rows, draft, device) -> dict:
     name."""
     device = torch.device(device)
     name = processor_name() if device.type == "cpu" else getattr(torch, device.type).get_device_name(device)
-    return json.loads(json.dumps({"model": asdict(model_config), "rows": rows, "draft": draft,
+    model = model_config.numbers() if hasattr(model_config, "numbers") else asdict(model_config)  # ModelConfig's
+    return json.loads(json.dumps({"model": model, "rows": rows, "draft": draft,
                                   "device": f"{device.type} ({name})"}))
 
 

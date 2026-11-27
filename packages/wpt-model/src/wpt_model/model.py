@@ -30,6 +30,10 @@ embedding, and its sums of Attention Residuals cover its own sources only.
 The output head, the multi-token prediction block and the features read
 the last pass. In-Place TTT's targets are the token embeddings in every
 pass. At 0 the model is one pass: no weight and no work of the loop.
+With config.loop_decay (Loopback's decay-only rule, arXiv 2611.07226, its
+Eq. 13), a pass after the first starts from h0 + loop_decay (out - h0)
+instead of out, h0 the embedding; with config.decay_last_pass, the last
+pass's output is decayed the same way before the head reads it.
 Open to review: the loss reads the last pass only, and no exit gate learns
 when to stop (Ouro's).
 
@@ -452,14 +456,27 @@ class WPT(nn.Module):
         pass of the loop in turn, each from the one before's output."""
         canonical = self.canonical[idx]
         embedding = self.embedding(idx)
-        hidden = embedding
-        for loop in range(self.config.loops + 1):
-            hidden, found = self._pass(hidden, idx, canonical, embedding, record, replay, sequence.at(loop), loop,
-                                       features if loop == self.config.loops else ())
-        return hidden, found
+        first, last = embedding, self.config.loops
+        for loop in range(last + 1):
+            out, found = self._pass(first, idx, canonical, embedding, record, replay, sequence.at(loop), loop,
+                                    features if loop == last else ())
+            if loop < last:
+                first = self._decayed(out, embedding)
+        hidden = self._decayed(out, embedding) if self.config.decay_last_pass else out
+        if len(self.layers) in features:
+            found[len(self.layers)] = hidden.float()
+        return hidden, torch.cat([found[number] for number in features], -1) if features else None
+
+    def _decayed(self, out, start):
+        """What follows a pass whose output is out, start the first pass's
+        first source: out, or with loop_decay (Loopback's decay-only rule,
+        its Eq. 13), start + loop_decay x (out - start), in FP32."""
+        decay = self.config.loop_decay
+        return out if decay is None else torch.lerp(start.float(), out.float(), decay).to(out.dtype)
 
     def _pass(self, first, idx, canonical, embedding, record, replay, sequence, loop, features):
-        """One pass through every layer, from its first source: (its output, the features or None)."""
+        """One pass through every layer, from its first source: (its output,
+        {layer number: its hidden state} for the features among its layers)."""
         sources = self.residuals.start(first, compiled=bool(self.compiled) and self._whole(sequence))
         recompute = self.recompute and self.training and torch.is_grad_enabled()
         found = {}
@@ -488,10 +505,7 @@ class WPT(nn.Module):
                 out = feed(h, idx, embedding, sequence, collect=sequence.collect, record=record, replay=replay,
                            loop=loop)
             sources.output(j + 1, out)
-        hidden = sources.end()
-        if len(self.layers) in features:
-            found[len(self.layers)] = hidden.float()
-        return hidden, torch.cat([found[number] for number in features], -1) if features else None
+        return sources.end(), found
 
     @staticmethod
     def carried(offset, carried, collect=True):

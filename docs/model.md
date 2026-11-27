@@ -31,7 +31,7 @@ token ids
        every sublayer's input a weighted sum of the embedding and the
          earlier sublayers' outputs (Attention Residuals)
   -> `loops` more times through layers 1 .. L, each pass starting from the
-     one before's output (Loops)
+     one before's output, or from the decayed change it made (Loops)
   -> one more such sum, RMSNorm, output head        (next-token scores)
   -> one multi-token prediction block, window attention (the token after next)
 ```
@@ -367,6 +367,32 @@ model is one pass: nothing of the loop is in its weights or its cost.
   replays each pass's choices apart.
 - The loss reads the last pass only. Ouro also trains an exit gate that
   learns when to stop looping; WPT has none. Both are open to review.
+
+**Decay between passes.** An order number, `loop_decay` (`lambda`, above 0
+and below 1), changes what a pass after the first starts from. With `h0`
+the first pass's first source (the embedding) and `out` the pass before's
+output, it starts from `h0 + lambda (out - h0)` instead of `out`: each
+pass's change to the input is shrunk at the end of the pass, so the
+changes of earlier passes weigh geometrically less. This is the
+decay-only rule of [Loopback][loopback] (its Eq. 13), computed in FP32;
+it adds no weight. `decay_last_pass` says whether the last pass's output
+is decayed the same way before the output head reads it, or read as it
+is. Left out, there is no decay and the last pass is read as it is.
+
+The paper always has layers that run once before and after the loop
+(a prefix and a coda), loops only the middle ones, and decays after
+every pass, the last one included, before the coda. A WPT model whose
+loop runs every layer has no coda, a shape the paper never tested: with
+`decay_last_pass` the output head reads `h0 + lambda (out - h0)`, the
+embedding itself weighing `1 - lambda` in it; without it the head reads
+`out`, and only the passes in between are decayed. Which of the two
+suits a model that loops every layer is not known. In the paper's
+ablation (its Table 4a), at 191M parameters with 2 layers before, 4
+layers looped 4 times and 2 after, the decay of 1/4 lowered the
+validation loss from 2.6802 to 2.6220 against 2.6234 for a model without
+a loop; at 374M (24 layers) from 2.4415 to 2.3999 against 2.4198. Those
+runs had no Attention Residuals between sublayers and no Mixture of
+Experts.
 
 The evidence is mixed, which is why this is a number and not a fixed
 choice. In the paper's test at equal compute, from 53M to 1.36B
@@ -920,8 +946,10 @@ repository ("Model series", below). A model order holds:
   and head width, expert counts and widths, top `k`, latent width,
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
-  "Loops"; every order sets 0), and optionally one vocabulary table in
-  place of two (`tied_tables`, "One vocabulary table");
+  "Loops"; every order sets 0), optionally the rules of how the passes
+  follow each other (`loop_decay`, `decay_last_pass`, "Loops"; no order
+  sets them), and optionally one vocabulary table in place of two
+  (`tied_tables`, "One vocabulary table");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
   file's, its optimizer and that optimizer's settings, its settings and
@@ -1154,6 +1182,7 @@ marked as such above.
 - [Attention Residuals](https://arxiv.org/abs/2603.15031)
 - [In-Place Test-Time Training](https://arxiv.org/abs/2604.06169)
 - [Ouro: scaling latent reasoning via looped language models](https://arxiv.org/abs/2510.25741)
+- [Loopback Transformer: residual looped Transformers](https://arxiv.org/abs/2611.07226)
 - [Moonlight: Muon at scale](https://arxiv.org/abs/2502.16982)
 - [NorMuon: neuron-wise normalized Muon](https://arxiv.org/abs/2510.05491)
 - [Cautious weight decay](https://arxiv.org/abs/2510.12402)
@@ -1176,6 +1205,7 @@ marked as such above.
 [attnres]: https://arxiv.org/abs/2603.15031
 [ttt]: https://arxiv.org/abs/2604.06169
 [ouro]: https://arxiv.org/abs/2510.25741
+[loopback]: https://arxiv.org/abs/2611.07226
 [moonlight]: https://arxiv.org/abs/2502.16982
 [normuon]: https://arxiv.org/abs/2510.05491
 [cwd]: https://arxiv.org/abs/2510.12402

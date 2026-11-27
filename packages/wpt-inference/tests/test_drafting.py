@@ -184,7 +184,7 @@ def test_the_scheduler_s_pass_times_are_replayed_only_on_the_setup_they_were_mea
     assert len(costs) == DRAFT + 1 and all(seconds > 0 for seconds in costs)
     setup = costs_setup(CONFIG, 1, DRAFT, "cpu")
     here = f"cpu ({processor_name()})"
-    assert processor_name().strip() and setup == {"model": json.loads(json.dumps(dataclasses.asdict(CONFIG))),
+    assert processor_name().strip() and setup == {"model": json.loads(json.dumps(CONFIG.numbers())),
                                                   "rows": 1, "draft": DRAFT, "device": here}
     recorded = costs_file(costs, setup)
     assert replayed_costs(recorded, costs_setup(CONFIG, 1, DRAFT, torch.device("cpu"))) == costs
