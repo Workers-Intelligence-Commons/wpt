@@ -69,6 +69,15 @@ direction for most choices and a value for few.
   ([depth-and-width.md](depth-and-width.md)). **published, one source**.
   The two pull apart: a series that shares its settings keeps one depth,
   and the best series changes it.
+- **Copying needs the tokens, not only the width.** A model of width 512
+  that read 1.9 tokens per parameter copies nothing; one that read 19
+  writes 89% of a repeated sequence
+  ([size-and-tokens.md](size-and-tokens.md)). **measured here**, one run
+  of each model
+- **A loop costs at generation too.** Each pass keeps its own keys and
+  values of every token: a model of `loops + 1` passes keeps that many
+  times what one pass keeps
+  ([experts-and-loops.md](experts-and-loops.md)). **measured here**
 - **Bytes lose their advantage.** At an equal number of parameters bytes
   beat tokens from 200M to 3B, and the tables they remove are a smaller
   share of a larger model; at equal compute tokens win

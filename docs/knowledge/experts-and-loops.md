@@ -35,6 +35,16 @@ loops at small sizes, and half against it.
   changes does not lower the loss: 2.67 against 2.65 without it, on the
   same windows. It keeps 98% of the second pass and 42% of the third.
   **measured here**, one run each
+- A model that loops, trained with every pass reading its own keys and
+  values of the earlier tokens, cannot write through the last pass's keys
+  and values alone: read token by token that way, a text costs 8.32 nats
+  per token against 2.50 at a width of 512 with 1 loop, and 5.34 against
+  2.71 at a width of 256 with 2 loops, and what the model writes is no
+  longer words. Each pass must keep its own, which multiplies what a
+  generation keeps of each token by the number of passes. One published
+  source shares them and reports almost no loss; how its models differ
+  was not read. **measured here**, one text of 39 tokens on each of two
+  models
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or
@@ -218,8 +228,31 @@ Both runs measure their loss on the same windows. The copying figures
 differ by less than two runs of one recipe do
 ([run-to-run-spread.md](run-to-run-spread.md)).
 
+A model that loops writes token by token through what it keeps of the
+earlier tokens. Two trained models, the second of the first table (width
+256, 2 loops) and one of width 512 with 1 loop (196.0M parameters, 3.72B
+tokens), read one English text of 39 tokens three ways (processor, commit
+bce0c7ab64 and the one before it). The loss is the mean over the text's
+tokens.
+
+| | Width 256, 2 loops | Width 512, 1 loop |
+| --- | --- | --- |
+| The whole text at once | 2.71 | 2.50 |
+| Token by token, each pass reading its own values of the earlier tokens | 2.71 | 2.50 |
+| Token by token, every pass reading the last pass's values | 5.34 | 8.32 |
+| In two halves, the second reading the last pass's values of the first | 3.12 | 3.23 |
+
+Written through the last pass's values, both models give a few words then
+single letters and digits. *Ouro* (2025, arXiv 2510.25741) reports 78.85
+against 78.92 on GSM8K when its passes share keys and values at
+generation (**unchecked**).
+
 ## Open
 
+- **Sharing keys and values between passes.** Whether a model trained with
+  its passes reading the last pass's values writes as well as one where
+  each pass keeps its own, at an equal number of parameters: it would
+  divide what generation keeps by the number of passes.
 - **One loop against two.** The gate keeps less than half of the third
   pass. A model with 1 loop, at two thirds of the compute of 2, measured
   against both.

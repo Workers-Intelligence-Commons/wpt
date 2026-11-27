@@ -28,6 +28,16 @@ shows a behaviour. Its marks are defined in [README.md](README.md).
   layers, 354M tokens). This agrees with the rule, tables counted, and does
   not test it: the three models differ in depth or in tokens read as well
   as in size. **measured here**, one run of each model
+- A model of width 512 that reads 19 tokens per parameter copies: 89% of
+  the tokens of a repeated sequence, where a model of the same width and
+  depth that read 1.9 wrote none. The two also differ by one loop and by
+  one vocabulary table instead of two. **measured here**, one run of each
+  model
+- A model can rank a value its context states first among four and still
+  not write it: at 19 tokens per parameter the stated word is the likeliest
+  of four in 82% of the prompts and is written in 11%, a stated number in
+  98% and 2%. A test by choice among a few answers says more than the model
+  does when it writes. **measured here**, one run
 - Recalling a fact depends on how many times the corpus states it, about
   100 to 1,000 times, and on the model's capacity, about 2 bits of knowledge
   per parameter. A test of facts measures the corpus as much as the model.
@@ -120,6 +130,26 @@ All figures from published sources in this section are **unchecked**.
   The model of width 256 writes the whole second half for 24% of the
   sequences. None of the three writes a stated word or number: 4% at most.
   **measured here**, one run of each model
+- A model of 196.0M parameters (width 512, 11 layers, 32 routed experts, 1
+  loop, a lookup table at layer 2, one shared vocabulary table, a
+  vocabulary of 65,536) trained once on 3.72B tokens, 19 tokens per
+  parameter, with windows of 2,048, 8,192 then 32,768 tokens (RTX 5090,
+  commit 7db97a409d). Its validation loss, on windows of 32,768 tokens of
+  another corpus than the table's above, ends at 2.40. The `copying` test,
+  on 200 prompts each:
+
+  | | English | French |
+  | --- | --- | --- |
+  | Sequence tokens written | 89% | |
+  | Sequence written whole | 78% | |
+  | Stated word, likeliest of four | 82% | 74% |
+  | Stated word, written | 11% | 9% |
+  | Stated number, likeliest of four | 98% | 97% |
+  | Stated number, written | 2% | 2% |
+
+  Given the start of a paragraph, it goes on in the paragraph's language,
+  subject and form for a few sentences, then repeats itself. **measured
+  here**, one run
 - In the model of width 256, measured on its training weights, the share of
   sequence tokens written falls from 38% at update 5,000 to 14% at update
   6,000, the windows going from 2,048 to 8,192 tokens at update 5,400, and
@@ -130,9 +160,13 @@ All figures from published sources in this section are **unchecked**.
 
 - Why copying of a sequence falls when the windows grow, and whether the
   average of states or the last updates bring it back: one run shows it.
-- Whether the model of width 512 copies once it has read 15 tokens per
-  parameter: the measure above does not separate its width from its lack
-  of training.
+- Why a model that ranks a stated value first among four does not write
+  it, and what brings the writing: more tokens, conversations in the
+  training text, or a later training step. A measure runs the `copying`
+  test on the same model after each.
+- The model of width 512 at 19 tokens per parameter without its loop and
+  with two vocabulary tables, to separate what the tokens gave from what
+  the loop and the table gave.
 - The best size under 1B tokens with a current training method: the one
   study there uses an older architecture and one dataset.
 - Whether the limit of about 16 readings holds for models under 100M
