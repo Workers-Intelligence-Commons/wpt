@@ -613,6 +613,42 @@ def test_a_content_change_from_the_page_of_a_text_takes_a_plain_text_or_an_item_
     assert (json.loads(shown["text"]["content"]), shown["content_versions"]) == (changed, 2)
 
 
+def test_the_chat_editor_s_save_keeps_every_field_a_harness_records(web):
+    # what the chat editor of apps/depot/ui sends (conversation-editor.tsx): the harness, a tool named alone, tools
+    # blocks, text by the harness, both raw calls, a result's value and its sub-agent's conversation, the turns' ends
+    request, depot = web
+    request("POST", "/api/texts", {"kind": "conversation", "content": CONVERSATION, "licenses": ["CC0-1.0"],
+                                   "declaration": ME})
+    recorded = {
+        "harness": {"name": "opencode", "version": "1.19.6"},
+        "tools": [{"name": "find_tools", "description": "Load tools.", "parameters": {"type": "object"}}, {"name": "shell"}],
+        "messages": [
+            {"role": "system", "content": [{"type": "tools", "tools": [{"name": "subagent"}]}]},
+            {"role": "user", "content": [{"type": "text", "text": "Why?"}, {"type": "text", "text": "Be brief.", "by": "harness"}]},
+            {"role": "assistant", "end": "tool_calls", "content": [
+                {"type": "tool_call", "id": "c1", "name": "shell", "raw": "{\"command\": \"bun"},
+                {"type": "tool_call", "id": "c2", "raw": "<call>find_tools"},
+                {"type": "tool_call", "id": "c3", "name": "subagent", "arguments": {"prompt": "Look."}}]},
+            {"role": "tool", "content": [
+                {"type": "tool_result", "call": "c1", "error": True, "value": {"exitCode": 1},
+                 "content": [{"type": "text", "text": "Not JSON."}]},
+                {"type": "tool_result", "call": "c2", "content": [{"type": "tools", "tools": [{"name": "read"}]}]},
+                {"type": "tool_result", "call": "c3", "conversation": "test-depot-1",
+                 "content": [{"type": "text", "text": "Found."}, {"type": "text", "text": "Go on.", "by": "harness"}]}]},
+            {"role": "assistant", "end": "stop", "content": [{"type": "text", "text": "Because."}]}]}
+    assert request("POST", "/api/texts/test-depot-1/content", {"content": recorded, "declaration": ME})[0] == 200
+    assert json.loads(request("GET", "/api/texts/test-depot-1")[1]["text"]["content"]) == recorded
+
+    dangling = json.loads(json.dumps(recorded))
+    dangling["messages"][3]["content"][2]["conversation"] = "test-depot-9"
+    status, refused = request("POST", "/api/texts/test-depot-1/content", {"content": dangling, "declaration": ME})
+    assert status == 422 and "test-depot-9" in refused["problems"][0]
+    harness_text = json.loads(json.dumps(recorded))
+    harness_text["messages"][4]["content"][0]["by"] = "harness"
+    status, refused = request("POST", "/api/texts/test-depot-1/content", {"content": harness_text, "declaration": ME})
+    assert status == 422 and "the harness adds no text" in refused["problems"][0]
+
+
 def test_scores_from_the_pages_change_many_texts_under_one_decision_and_the_text_s_page_shows_them(web):
     request, depot = web
     for words in ("one", "two"):

@@ -818,6 +818,14 @@ kbd { font-family: var(--font-typewriter); font-size: 13px; padding: 0 var(--gap
 .chat-new { flex-wrap: wrap; }
 .chat-problems { padding: var(--gap-tight) var(--gap-group); border-left: 3px solid var(--red-ink); background: var(--paper-raised); }
 .chat-problems ul { margin: var(--gap-hair) 0 0; padding-left: 1.2em; }
+/* text the harness added, set apart by a dashed rule; an optional field of a result, with its remove button */
+.chat-block-harness, .turn-harness { padding-left: var(--gap-tight); border-left: 3px dashed var(--line-strong); }
+.chat-optional { display: grid; gap: var(--gap-hair); min-width: 0; }
+.chat-optional-head { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-tight); }
+.chat-optional-head .wic-btn { min-width: 32px; height: 32px; padding: 0 var(--gap-tight); }
+.chat-warning { color: var(--red-ink); }
+.chat-end { margin: var(--gap-tight) 0 0; }
+.turn-end, .turn-harness-name { margin: 0 0 var(--gap-tight); }
 
 /* The passage picker (passage-picker.tsx) and the excerpt blocks it fills. */
 .passage-picker { display: grid; gap: var(--gap-tight); min-width: 0; }
