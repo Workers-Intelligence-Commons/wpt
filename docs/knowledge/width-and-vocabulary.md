@@ -102,8 +102,9 @@ Three models on one corpus with a vocabulary of 65,536, one run of each
 - A model of width 256 and 11 layers (41.0M parameters without the tables,
   74.5M with them), 256 entries per dimension, trained on 1.18B tokens in
   8,990 updates, validation loss 2.79: it writes 43% of the tokens of the
-  repeated sequence and chooses a stated word among four 68% of the time. A
-  width of 256 copies with this vocabulary. **measured here**
+  repeated sequence and chooses a stated word among four 68% of the time,
+  each word scored alone by its own tokens. A width of 256 copies with this
+  vocabulary. **measured here**
 
 ## Open
 

@@ -25,7 +25,9 @@ defined in [README.md](README.md).
 - Two runs of one order of 45M parameters copy a repeated sequence at
   95% and at 82% of its tokens: a test of copying moves by 13 points
   between seeds, so it ranks two models only when they differ by much
-  more. **measured here**, two runs
+  more. The same two runs write a number their context states in 84% and
+  45% of the prompts in English, 90% and 50% in French: a test of writing
+  a stated value moves by about 40 points. **measured here**, two runs
 - A loss measured on a few million tokens moves by about 0.05 nats with
   the windows drawn, as much as most gaps between models. Two models are
   compared on the same windows, or the gap says nothing: two runs of one
@@ -116,11 +118,14 @@ measure to the next while the training loss falls smoothly.
 | Validation loss at update 8,990, own windows | 2.79 | 2.85 |
 | Repeated sequence, tokens written | 95% | 82% |
 | Repeated sequence, written whole | 89% | 74% |
-| Stated word, likeliest of four, English and French | 77%, 80% | 80%, 74% |
-| Stated number, likeliest of four, English and French | 92%, 86% | 90%, 80% |
+| Stated word, likeliest of four, English and French | 100%, 100% | 98%, 100% |
+| Stated word, written, English and French | 14%, 30% | 30%, 28% |
+| Stated number, likeliest of four, English and French | 100%, 100% | 100%, 100% |
+| Stated number, written, English and French | 84%, 90% | 45%, 50% |
 
 The copying figures are those of the `copying` test of `wpt eval`, the
-same 200 prompts for both runs.
+same 200 prompts for both runs; the stated values were measured on the
+processor, at commit 321bb02efa.
 
 The two saved models were then measured on one set of 2,048 windows of
 2,048 tokens drawn once from the training tokens, 4.2M tokens:

@@ -208,14 +208,17 @@ layer 2 (57.7M parameters, RTX 5090).
 | Validation loss at update 8,990 | 2.79 | 2.65 |
 | Repeated sequence, tokens written | 95% | 84% |
 | Repeated sequence, written whole | 89% | 72% |
-| Stated word, likeliest of four, English and French | 77%, 80% | 76%, 71% |
-| Stated number, likeliest of four, English and French | 92%, 86% | 86%, 76% |
+| Stated word, likeliest of four, English and French | 100%, 100% | 98%, 97% |
+| Stated word, written, English and French | 14%, 30% | 12%, 24% |
+| Stated number, likeliest of four, English and French | 100%, 100% | 100%, 100% |
+| Stated number, written, English and French | 84%, 90% | 32%, 36% |
 
 The two models differ by the loops and by the table at once, and by 12.9M
 parameters. With two vocabulary tables and no loop, the same lookup table
 lowered the loss by 0.05 ([lookup-memory.md](lookup-memory.md)); if it
 does the same here, the loops give about 0.09. The copying figures are
-those of the `copying` test of `wpt eval`, on 200 prompts each.
+those of the `copying` test of `wpt eval`, on 200 prompts each; the stated
+values were measured on the processor, at commit 321bb02efa.
 
 A third model is the second with a gate on each extra pass: for each
 token, a share between 0 and 1 computed from the token's state before the
@@ -231,14 +234,22 @@ starts at 0.98. Trained once the same way (commit a067f3ba0d, RTX 5090).
 | Mean share kept of the third pass, at the end | | 0.42 |
 | Repeated sequence, tokens written | 84% | 95% |
 | Repeated sequence, written whole | 72% | 90% |
-| Stated word, likeliest of four, English and French | 76%, 71% | 78%, 72% |
-| Stated number, likeliest of four, English and French | 86%, 76% | 91%, 85% |
+| Stated word, likeliest of four, English and French | 98%, 97% | 78%, 72%, by tokens |
+| Stated word, written, English and French | 12%, 24% | 12%, 6%, by tokens |
+| Stated number, likeliest of four, English and French | 100%, 100% | 91%, 85%, by tokens |
+| Stated number, written, English and French | 32%, 36% | 0%, 1%, by tokens |
 
 The share kept of the third pass fell to 0.02 in the first 200 updates,
 rose again, and moved between 0.3 and 0.5 from update 5,000 to the end.
-Both runs measure their loss on the same windows. The copying figures
-differ by less than two runs of one recipe do
-([run-to-run-spread.md](run-to-run-spread.md)).
+Both runs measure their loss on the same windows. The copying figures of
+the repeated sequence differ by less than two runs of one recipe do
+([run-to-run-spread.md](run-to-run-spread.md)). The model with the gate
+cannot be loaded by `wpt eval`, whose models have no gate, so its stated
+values are counted by tokens: each of the four scored alone, without the
+sentence's period that the tokenizer may join to its last letters or
+digits, and written only when the tokens equal those of the value alone,
+which refuses most values written right. The stated values of the model
+without the gate were measured on the processor, at commit 321bb02efa.
 
 A model that loops writes token by token through what it keeps of the
 earlier tokens. Two trained models, the second of the first table (width

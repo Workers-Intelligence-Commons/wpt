@@ -133,11 +133,19 @@ tokens per parameter, commit b7dca7b2f7, RTX 5090).
 | Validation loss at update 8,990 | 2.79 | 2.84 | 2.85 |
 | Repeated sequence, tokens written | 43% | 70% | 48% |
 | Repeated sequence, written whole | 24% | 50% | 29% |
-| Stated word, likeliest of four, English and French | 68%, 68% | 74%, 75% | 72%, 66% |
-| Stated number, likeliest of four, English and French | 84%, 74% | 84%, 81% | 87%, 78% |
+| Stated word, likeliest of four, English and French | 68%, 68%, by tokens | 96%, 98% | 95%, 96% |
+| Stated word, written, English and French | 2%, 4%, by tokens | 18%, 38% | 4%, 15% |
+| Stated number, likeliest of four, English and French | 84%, 74%, by tokens | 100%, 100% | 100%, 100% |
+| Stated number, written, English and French | 0%, 1%, by tokens | 43%, 62% | 18%, 38% |
 
 The copying figures are those of the `copying` test of `wpt eval`, on 200
-prompts each. With the weights that turn the table's rows into what it
+prompts each; the stated values of the tables of 0.9M and of none were
+measured on the processor, at commit 321bb02efa. The model with the table
+of 13.0M has no drafter, which `wpt eval` needs, so its stated values are
+counted by tokens: each of the four scored alone, without the sentence's
+period that the tokenizer may join to its last letters or digits, and
+written only when the tokens equal those of the value alone, which
+refuses most values written right. With the weights that turn the table's rows into what it
 adds (W_V) set to zero in the trained model, the same test gives 74% of
 the tokens and 54% of the sequences whole for the small table (69% and 50%
 with it, on the same machine), and 37% and 19% for the large one (44% and

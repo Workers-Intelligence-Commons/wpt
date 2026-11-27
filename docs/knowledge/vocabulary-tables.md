@@ -136,11 +136,14 @@ parameter, RTX 5080 Laptop GPU).
 | Validation loss at update 8,990 | 2.85 | 2.79 |
 | Repeated sequence, tokens written | 48% | 95% |
 | Repeated sequence, written whole | 29% | 89% |
-| Stated word, likeliest of four, English and French | 72%, 66% | 77%, 80% |
-| Stated number, likeliest of four, English and French | 87%, 78% | 92%, 86% |
+| Stated word, likeliest of four, English and French | 95%, 96% | 100%, 100% |
+| Stated word, written, English and French | 4%, 15% | 14%, 30% |
+| Stated number, likeliest of four, English and French | 100%, 100% | 100%, 100% |
+| Stated number, written, English and French | 18%, 38% | 84%, 90% |
 
 The copying figures are those of the `copying` test of `wpt eval`, on 200
-prompts each. Other models of this shape copy 43% to 70% of the tokens
+prompts each; the stated values were measured on the processor, at commit
+321bb02efa. Other models of this shape copy 43% to 70% of the tokens
 from one run to another ([lookup-memory.md](lookup-memory.md)), so a gap
 of 47 points is outside what those runs show, and the spread between two
 runs of one order is still not measured.

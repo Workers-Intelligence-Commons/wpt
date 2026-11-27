@@ -35,9 +35,11 @@ shows a behaviour. Its marks are defined in [README.md](README.md).
   model
 - A model can rank a value its context states first among four and still
   not write it: at 19 tokens per parameter the stated word is the likeliest
-  of four in 82% of the prompts and is written in 11%, a stated number in
-  98% and 2%. A test by choice among a few answers says more than the model
-  does when it writes. **measured here**, one run
+  of four in 99% of the English prompts and is written in 33%, a stated
+  number in 100% and 47%. Where the answer starts, the first token of the
+  stated word has a median rank of 2 among every token of the vocabulary.
+  A test by choice among a few answers says more than the model does when
+  it writes. **measured here**, one run
 - The same kind of gap is published between ranking answers by their
   likelihood and making a model give one: small models do better ranked
   than asked, and size and instruction data close the gap, then reverse
@@ -177,7 +179,12 @@ answer is not in the context.
   copying columns are the test `copying` of `wpt eval`
   (docs/evaluation.md): a sequence of 8 words written twice then its first
   half, and a value stated in a sentence then asked for, against three
-  others (chance 25%), in English.
+  others (chance 25%), in English. None of the three models is kept with
+  the drafter `wpt eval` needs, so their stated values are counted by tokens:
+  each of the four scored alone, without the sentence's period that the
+  tokenizer may join to its last letters or digits, and written only when
+  the tokens equal those of the value alone, which refuses most values
+  written right.
 
   | Width, layers | Parameters | Tokens | Tokens per parameter | Validation loss | Sequence tokens written | Stated word chosen | Stated number chosen |
   | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -186,24 +193,29 @@ answer is not in the context.
   | 512, 11 | 191.1M | 354M | 1.9 | 3.01 | 0% | 56% | 74% |
 
   The model of width 256 writes the whole second half for 24% of the
-  sequences. None of the three writes a stated word or number: 4% at most.
-  **measured here**, one run of each model
+  sequences. By tokens, none of the three writes a stated word or number:
+  4% at most. **measured here**, one run of each model
 - A model of 196.0M parameters (width 512, 11 layers, 32 routed experts, 1
   loop, a lookup table at layer 2, one shared vocabulary table, a
   vocabulary of 65,536) trained once on 3.72B tokens, 19 tokens per
   parameter, with windows of 2,048, 8,192 then 32,768 tokens (RTX 5090,
   commit 7db97a409d). Its validation loss, on windows of 32,768 tokens of
   another corpus than the table's above, ends at 2.40. The `copying` test,
-  on 200 prompts each:
+  on 200 prompts each, its stated values measured on the processor at
+  commit 321bb02efa:
 
   | | English | French |
   | --- | --- | --- |
   | Sequence tokens written | 89% | |
   | Sequence written whole | 78% | |
-  | Stated word, likeliest of four | 82% | 74% |
-  | Stated word, written | 11% | 9% |
-  | Stated number, likeliest of four | 98% | 97% |
-  | Stated number, written | 2% | 2% |
+  | Stated word, likeliest of four | 99% | 98% |
+  | Stated word, written | 33% | 28% |
+  | Stated word, median rank of its first token | 2 | 4.5 |
+  | Stated word, mean probability of its first token | 0.13 | 0.07 |
+  | Stated number, likeliest of four | 100% | 100% |
+  | Stated number, written | 47% | 44% |
+  | Stated number, median rank of its first token | 1 | 1 |
+  | Stated number, mean probability of its first token | 0.37 | 0.14 |
 
   Given the start of a paragraph, it goes on in the paragraph's language,
   subject and form for a few sentences, then repeats itself. **measured
