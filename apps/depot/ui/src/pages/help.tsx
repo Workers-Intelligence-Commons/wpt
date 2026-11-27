@@ -159,12 +159,12 @@ export function HelpPage() {
 
       <Part on="erasures-explained" title="Erasures">
         <p>An erasure request names passages of texts by their place (from one character to another, in a field for a JSON kind) or a whole text, with a public reason. It never repeats the passage itself.</p>
-        <p>Admitted, it is carried out at once and cannot be undone: every place where the passage appears in that text is cut, in every version of it, snapshots included; a whole text leaves the depot. The depot marks nothing on the dock: a corpus holding the passage goes stale at the freight's next check, and until then the frozen dataset routes still send it, so run <Cmd>freight check</Cmd> right after the decision. Refused, the texts stay as they are. Every request is kept.</p>
+        <p>Admitted, it is carried out at once and cannot be undone: every place where the passage appears in that text is cut, in every version of it, snapshots included; a whole text leaves the depot. The depot marks nothing on the dock: a corpus holding the passage goes stale at the freight's next check, so run <Cmd>freight check</Cmd> right after the decision. Refused, the texts stay as they are. Every request is kept.</p>
       </Part>
 
       <Part on="older-models" title="Models trained before snapshots">
-        <p>A model trained before snapshots records a dataset of this depot, not a snapshot. It stays checkable the way it was: the code at the commit it records asks this depot's web app for its dataset, and the dataset routes that code calls still answer, frozen and read only, from what the depot kept of its libraries and datasets. Nothing in this interface writes those records any more. The other way is to restore a backup of the depot made before the upgrade and run the code of then on it.</p>
-        <p>Its locked libraries and datasets also became snapshots at the upgrade (see Snapshots), so a new order can name the same texts.</p>
+        <p>A model trained before snapshots records a dataset of this depot, not a snapshot. The depot keeps what it held of its libraries and datasets as the upgrade found it, and nothing writes or serves it any more.</p>
+        <p>Its locked libraries and datasets became snapshots at the upgrade (see Snapshots), so a new order can name the same texts.</p>
       </Part>
 
       <Part on="who-decides" title="Who decides, and Settings">

@@ -1,25 +1,18 @@
 import base64
-import hashlib
 import http.client
-import io
 import json
 import pickle
-import socket
 import sqlite3
 import threading
 import time
-from compression import zstd
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pyarrow.parquet as pq
 import pytest
 from pyroaring import BitMap
 
 from depot import About, Declaration, Depot, NewText, snapshots
-from depot.legacy import Legacy
 from depot_app import jobs as jobs_module
-from depot_app.downloads import Downloads
 from depot_app.jobs import KIND_GONE, WRITES_BEFORE, Jobs, connected
 from depot_app.web.routes import STATUSES, routes
 from depot_app.web.server import make_server
@@ -30,31 +23,13 @@ TEXTS = ["the quick brown fox jumps over the lazy dog", "pack my box with five d
 PUBLIC = "https://depot.example"  # the served depot's public address, DEPOT_URL
 
 
-def legacy_dataset(depot: Depot, name: str) -> str:
-    """The rows of the legacy tables, which nothing writes any more, of an open library holding every admitted
-    text of depot and of a dataset called name reading it with the tokenizer recipe "tiny", as a depot of format
-    12 left them for the frozen dataset routes (depot_app.web.legacy): the dataset's id."""
-    with depot.db.write("legacy dataset") as (con, number):
-        library, dataset = (depot._id(depot._take(con, kind)) for kind in ("libraries", "datasets"))
-        con.execute("INSERT INTO libraries_revisions (id, revision, change, latest, name) VALUES (?, 1, ?, 1, 'all')",
-                    (library, number))
-        con.execute("INSERT INTO memberships (library, text, joined_change, export_key) SELECT ?, id, ?, "
-                    "export_key(id) FROM texts WHERE status = 'admitted'", (library, number))
-        con.execute("INSERT INTO datasets_revisions (id, revision, change, latest, name, tokenizer, libraries) "
-                    "VALUES (?, 1, ?, 1, ?, 'tiny', ?)",
-                    (dataset, number, name, json.dumps([{"depot": None, "library": library, "change": number}])))
-    return dataset
-
-
 def depot_with_texts(address: str, name: str, tags=((),) * len(TEXTS)) -> Depot:
-    """A new depot whose four plain texts, admitted, each with its tags, are read by the legacy dataset "first"
-    (legacy_dataset), with a snapshot of them."""
+    """A new depot whose four plain texts, admitted, each with its tags, are in a snapshot."""
     depot = Depot.new(address, About(name, "Ada Lovelace", "ada@example.org"))
     depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
     depot.add([NewText(text=text, licenses=("CC0-1.0",), tags=tuple(tagged)) for text, tagged in zip(TEXTS, tags)],
               ME)
     depot.decide("admitted", "true", ME)
-    legacy_dataset(depot, "first")
     depot.create_snapshot()
     return depot
 
@@ -110,49 +85,6 @@ def ended(call, job: str) -> dict:
             return state
         time.sleep(0.1)
     raise AssertionError(f"the job {job} did not end")
-
-
-def test_the_export_gives_every_text_in_parts_the_same_bytes_each_time_with_no_tokenizer_and_no_job(served, tmp_path):
-    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
-    call = served(depot)
-    base = f"/api/datasets/{Legacy(depot.address).dataset('first')['id']}/export"
-
-    status, _, shown = call("GET", base)
-
-    assert status == 200 and shown["texts"] == len(TEXTS)
-    [part] = shown["parts"]
-    assert part["forms"]["jsonl.zst"] == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst",
-                                          "bytes": None, "sha256": None, "left_out": None}
-    status, headers, first = call("GET", f"{base}/part-00000.jsonl.zst")
-    assert headers["Content-Disposition"] == 'attachment; filename="first_part-00000.jsonl.zst"'  # saved by its dataset's name
-    assert call("GET", f"{base}/part-00000.jsonl.zst")[2] == first
-    rows = [json.loads(line) for line in zstd.decompress(first).decode().splitlines()]
-    assert sorted(row["text"] for row in rows) == sorted(TEXTS)
-    assert all(row["depot"] == PUBLIC and row["revision"] == 1 for row in rows)  # never the depot's file
-    table = call("GET", f"{base}/part-00000.parquet")[2]
-    assert pq.read_table(io.BytesIO(table)).to_pylist() == rows
-    known = call("GET", base)[2]["parts"][0]["forms"]["jsonl.zst"]
-    assert known == {"name": "part-00000.jsonl.zst", "download": "first_part-00000.jsonl.zst", "bytes": len(first), "sha256": hashlib.sha256(first).hexdigest(),
-                     "left_out": {"quote unmatched": 0, "quoted text left out": 0}}  # its conversations left out, by why
-    status, headers, piece = call("GET", f"{base}/part-00000.jsonl.zst", headers={"Range": "bytes=3-10"})
-    assert (status, piece, headers["Content-Range"]) == (206, first[3:11], f"bytes 3-10/{len(first)}")
-    assert call("GET", f"{base}/part-00001.parquet")[0] == 404
-    assert call("GET", "/api/jobs")[2] == []  # nothing was queued
-
-
-def test_text_exports_are_bounded_in_all_and_per_visitor(served, tmp_path):
-    depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
-    call = served(depot)
-    dataset = Legacy(depot.address).dataset("first")["id"]
-    text = f"/api/datasets/{dataset}/export/part-00000.jsonl.zst"
-    downloads = Downloads(Jobs(depot.address).path)  # the web app's own record of the streams being sent
-
-    with downloads.streaming(None, "203.0.113.1", "text"):  # one export to the first visitor
-        assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.1"})[0] == 429
-        assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.2"})[0] == 200
-        with downloads.streaming(None, "203.0.113.2", "text"):  # a second one, to another
-            assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.3"})[0] == 429
-    assert call("GET", text, headers={"X-Forwarded-For": "203.0.113.1"})[0] == 200  # once they ended
 
 
 def slow_once(depot, marker: str, *, progress, job):
@@ -298,39 +230,6 @@ def test_a_snapshot_s_page_gives_its_summary_what_erasures_did_since_and_sets_an
                                                                                            "erasures": [erasure]}
 
 
-def test_a_sample_whose_reader_went_away_leaves_the_sample_route_to_the_next_request(served, tmp_path):
-    # the frozen sample route of a dataset (depot_app.web.legacy): the sample is far bigger than the socket's
-    # buffers, so its producer meets a full queue once the reader is gone, and must still free its slot
-    depot = Depot.new(str(tmp_path / "depot.sqlite"), About("test-depot", "Ada Lovelace", "ada@example.org"))
-    depot.add_license("CC0-1.0", "Creative Commons Zero v1.0 Universal", "The CC0 text.")
-    words = [hashlib.sha256(str(n).encode()).hexdigest() for n in range(4096)]
-    depot.add([NewText(text=" ".join(words[n:] + words[:n]), licenses=("CC0-1.0",)) for n in range(400)], ME)
-    depot.decide("admitted", "true", ME)
-    legacy_dataset(depot, "first")
-    call = served(depot)
-    route = "/api/datasets/first/sample?bytes=1000000000"
-    with socket.create_connection(("127.0.0.1", int(call.url.rsplit(":", 1)[1])), timeout=60) as gone:
-        gone.sendall(f"GET {route} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
-        assert gone.recv(1000).startswith(b"HTTP/1.0 200")  # the reader goes away after its first bytes
-
-    answered = []
-    # another visitor: the slot of the first stays taken until the server finds its reader gone
-    reader = threading.Thread(target=lambda: answered.append(call("GET", route, headers={
-        "X-Forwarded-For": "203.0.113.9"})), daemon=True)
-    reader.start()
-    reader.join(120)
-    assert answered and answered[0][0] == 200
-    body = answered[0][2]
-    assert json.loads(body[body.rindex(b'{"end"'):])["texts"] == 400  # the whole sample, to its last line
-    # the same visitor as the one that went away, one sample at a time (VISITOR_EXPORTS): refused (429) until its
-    # slot is given back, then sent; a slot never given back would refuse it for good
-    deadline = time.monotonic() + 60
-    while (status := call("GET", "/api/datasets/first/sample?bytes=1000")[0]) == 429:
-        assert time.monotonic() < deadline, "the slot of the sample whose reader went away was never given back"
-        time.sleep(0.1)
-    assert status == 200
-
-
 def written_once(depot, text: str, *, progress) -> dict:
     """A write job: the text admitted."""
     decision, texts, _ = depot.decide("admitted", f"id = '{text}'", ME)
@@ -401,7 +300,9 @@ def test_a_queue_file_of_the_time_of_datasets_is_brought_up_and_its_dataset_jobs
             dataset TEXT, recipe TEXT, target TEXT, operation TEXT NOT NULL, arguments BLOB NOT NULL,
             state TEXT NOT NULL, stages TEXT NOT NULL, progress TEXT, answer TEXT, problem TEXT, status INTEGER,
             created REAL NOT NULL, started REAL, ended REAL, restarts INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE checkpoints (dataset TEXT PRIMARY KEY, state TEXT NOT NULL);""")
+        CREATE TABLE checkpoints (dataset TEXT PRIMARY KEY, state TEXT NOT NULL);
+        CREATE TABLE streams (id TEXT PRIMARY KEY, visitor TEXT NOT NULL);
+        CREATE TABLE export_texts (export TEXT PRIMARY KEY, texts INTEGER NOT NULL);""")
     arguments = pickle.dumps(((), {}))
     rows = [("a", 1, "corpus", "build first", "wic-1", None, "queued", "wpt.depot.web.builds:build_job"),
             ("b", 2, "write", "fork", None, None, "running", "wpt.depot.web.routes:fork_library"),
@@ -423,8 +324,9 @@ def test_a_queue_file_of_the_time_of_datasets_is_brought_up_and_its_dataset_jobs
     assert (found["d"]["state"], found["d"]["lane"]) == ("done", "write")
     # its selection may have named a library, which unpickles as nothing: run, it would reach every text
     assert (found["e"]["state"], found["e"]["problem"]) == ("failed", WRITES_BEFORE)
-    with connected(path) as con:  # what only builds kept is gone
-        assert not con.execute("SELECT name FROM sqlite_master WHERE name IN ('checkpoints', 'downloads')").fetchall()
+    with connected(path) as con:  # what only builds and the downloads of datasets kept is gone
+        assert not con.execute("SELECT name FROM sqlite_master WHERE name IN ('checkpoints', 'downloads', 'streams', "
+                               "'exported_parts', 'export_texts')").fetchall()
     Jobs(depot.address, STATUSES)  # brought up once: opening it again changes nothing
     assert {one["id"]: one["state"] for one in jobs.listed()} == {key: one["state"] for key, one in found.items()}
 
@@ -445,11 +347,15 @@ def test_a_vocabulary_or_corpus_job_queued_in_a_queue_of_today_s_layout_fails_wh
         "v": ("failed", KIND_GONE), "c": ("failed", KIND_GONE), "d": ("done", None)}
 
 
-def test_the_routes_of_tokenizer_recipes_recipes_and_builds_are_gone_and_the_frozen_reads_stay(served, tmp_path):
+def test_the_routes_of_tokenizer_recipes_datasets_recipes_and_builds_are_gone(served, tmp_path):
     depot = depot_with_texts(str(tmp_path / "depot.sqlite"), "test-depot")
     call = served(depot)
     for method, route in (("GET", "/api/tokenizers"), ("POST", "/api/tokenizers"), ("GET", "/api/vocabularies"),
-                          ("POST", "/api/recipes/check"), ("POST", "/api/recipes/build"),
-                          ("POST", "/api/recipes/compose"), ("GET", f"/api/builds/{'0' * 64}")):
-        assert call(method, route, {} if method == "POST" else None)[0] == 404, route
-    assert call("GET", "/api/tokenizers/none")[2]["problems"] == ["NotFound: no tokenizer recipe none"]
+                          ("GET", "/api/tokenizers/tiny"), ("GET", "/api/tokenizers/tiny/vocabularies/1/file"),
+                          ("GET", "/api/datasets"), ("GET", "/api/datasets/first"),
+                          ("GET", "/api/datasets/first/download"), ("GET", "/api/datasets/first/export"),
+                          ("GET", "/api/datasets/first/sample"), ("POST", "/api/recipes/check"),
+                          ("POST", "/api/recipes/build"), ("POST", "/api/recipes/compose"),
+                          ("GET", f"/api/builds/{'0' * 64}")):
+        status, _, answer = call(method, route, {} if method == "POST" else None)
+        assert (status, answer) == (404, {"problems": [f"no route {method} {route}"]}), route

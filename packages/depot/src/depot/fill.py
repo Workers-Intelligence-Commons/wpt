@@ -1,4 +1,4 @@
-"""How a part of a corpus, or of a vocabulary's sample, fills its budget a
+"""How a part of a corpus fills its budget a
 text at a time in the corpus's order (Fill), and the two numbers that close
 a part: FULL and SKIPS (docs/data-selection.md, "Filling a part")."""
 

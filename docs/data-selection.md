@@ -902,15 +902,6 @@ part of the size, so a corpus with a size holds fewer tokens of items by as
 many. The delivery note counts these conversations in `left_out`: `quoted
 text left out` and `quote unmatched`.
 
-The frozen export of a legacy dataset's texts ([depot-web.md](depot-web.md),
-"Models trained before snapshots") follows the same rule: it leaves out a
-conversation when a text it quotes is not a plain text the export holds
-from the conversation's depot, or when a selector does not match exactly
-one place of the revision of that text the export holds. It writes a
-conversation it keeps as its depot holds it, its excerpts naming their
-texts, which the same export holds. Each part counts the conversations it
-left out, under the same two names.
-
 ## Languages and translation
 
 As many languages as possible, plus translation as a capability. Clean

@@ -72,8 +72,9 @@ of it. The parts import one another only so:
 module and fails on any other, except those its list `EXCEPTIONS` names,
 each with its reason: the depot's own command and web app write its
 backups to the dock, keep the Translate button's models there, and read
-the corpora built before the freight there, which its frozen dataset
-routes send and an upgrade from a format before snapshots reads. A
+there the records of the corpora built before the freight, which an
+upgrade from a format before snapshots reads. The test also fails on an
+exception no import needs. A
 package's benchmarks and scripts (`packages/*/bench`, `packages/*/scripts`)
 are its part's. WPT reaches texts only through the freight's deliveries on
 the dock and reads no depot, so the test also fails on a module of WPT that
@@ -111,8 +112,7 @@ known by that address. The setting `DEPOT`, in the environment or in
 with its name, its maintainer and its takedown contact. The setting
 `DEPOT_URL`, read the same way, is the depot's public address, the web
 address of its `depot web`. `/api/about` answers it as the depot's
-address, and the frozen dataset routes and `depot upgrade` name the depot
-by it, never by its file; a depot without it is named by its name. A
+address, and `depot upgrade` names the depot by it, never by its file; a depot without it is named by its name. A
 corpus the freight delivers names the depot by the address its order's
 `data.depot` gives, and each of its items by the depot's name
 ([data-selection.md](data-selection.md), "Corpora").
@@ -130,7 +130,8 @@ upstream's). Every table declares a primary key. A depot brought up from
 format 12 or older also keeps the legacy tables of its libraries and
 datasets (`libraries_revisions`, `memberships`, `pins`, `library_moves`,
 `datasets_revisions`) as they were: no write touches them, and only the
-frozen legacy reader reads them (`depot/legacy.py`). What each table
+upgrade to format 13 reads them, to make snapshots of them
+(`depot/conversion.py`). What each table
 holds and the rules on it are in [data-selection.md](data-selection.md)
 (texts, items, tags, snapshots and corpora), [licenses.md](licenses.md)
 (licenses, notices and decisions) and [erasure.md](erasure.md)
@@ -337,9 +338,8 @@ unused: every revision the current format writes holds `[]` there, and a
 past revision brought up from an older format keeps the list it held, so a query over
 past revisions reads the decisions from `text_decisions` and its change
 numbers. The column stays because removing it rewrites the whole table.
-The column `tags` of `texts_revisions` is unused the same way, read only by
-the frozen routes of the legacy tables, which read the tags a revision held
-under an older format: the `texts` view gives each text's tags from the copy
+The column `tags` of `texts_revisions` is unused the same way, and a past
+revision keeps the tags it held under an older format: the `texts` view gives each text's tags from the copy
 on its current revision, the same as the rows of `taggings` it has not left,
 and the tags a text had at a change are the rows of `taggings` that cover it.
 A query that names no text column
@@ -757,9 +757,9 @@ them, and marks them stale after an erasure ([api/freight.md](api/freight.md),
 note, marked deleted. The corpora under `corpora/` stay readable by WPT
 (`wpt_corpus/corpora.py`). Only the freight marks them stale after an
 erasure, at its next check (`freight/erasures.py`, `freight/corpora.py`);
-the depot marks nothing on the dock, so its frozen dataset routes send one
-an erasure reached until that check ([erasure.md](erasure.md), "What it
-covers"). Nothing writes a new one.
+the depot marks nothing on the dock, so one an erasure reached stays fresh
+until that check ([erasure.md](erasure.md), "What it covers"). Nothing
+writes a new one.
 
 Hashes do two jobs. Every read checks the bytes against their sha256: a
 record names each file it points at by the one shape `{"key", "sha256"}` (the
@@ -903,7 +903,6 @@ refused change writes nothing.
 | a change of tags over a selection | `retag WHERE [--add T ...] [--remove T ...]`, its cost, then the change with `--yes` | `POST /api/texts/retag/estimate`, its cost (texts changed, rows and bytes written, seconds), then `POST /api/texts/retag` with the estimate it showed; the bulk bar of the "Texts" page |
 | the times of changes | `sql QUERY` | `POST /api/changes/times` |
 | a snapshot, named by the UTC time it is made | `snapshot new [--note TEXT]`, `snapshot list`, `snapshot show NAME [--owner DEPOT]` | `GET /api/snapshots/new` (the cost of making one now, and the snapshot job open), then `POST /api/snapshots` with the estimate it showed, a job, one at a time; `GET /api/snapshots`, `GET /api/snapshots/{id}` (its summary and the texts erased since), `GET /api/snapshots/{id}/sets` (its bounds and bitmaps, base64, and its digest), `POST /api/snapshots/{id}/texts` (a page of its texts at their revision then); page "Snapshots" |
-| a dataset of a depot of format 12 or older, and a tokenizer recipe, for models trained before snapshots | none | the frozen routes of `depot_app/web/legacy.py`: `GET /api/datasets`, `GET /api/datasets/{id}`, `GET /api/datasets/{name}/remote`, `GET /api/datasets/{id}/download` and its corpora, files and `everything.tar`, `GET /api/datasets/{id}/export` and its parts, `GET /api/datasets/{dataset}/sample`, `GET /api/tokenizers/{name}` and its `vocabularies/{version}/file`; no page |
 | the jobs | `jobs`, `jobs cancel ID` | `GET /api/jobs`, `GET /api/jobs/{id}`; page "Jobs" |
 | a plain text read translated, never saved | none | `GET /api/translations`, the language pairs of Mozilla's translation models, and `GET /api/translations/files/{sha256}`, one model file, fetched from Mozilla the first time and kept on the dock; the Translate button of the "Texts" page, whose translation runs in the browser |
 | erasures | `erase ID [START END]`, `erasures`, `decide admit\|refuse --erasure ID` | `/api/erasures`, `GET /api/erasures/{id}`, what one request asks to erase with the text around each passage, and `POST /api/erasures/decisions` on one or several requests; page "Erasures" asks, shows, lists and decides, and the current text of the "Texts" page asks |
@@ -1093,11 +1092,8 @@ restart of the server: a queued job stays queued, and a job a restart cut
 short runs again, at most `RESTARTS` times. At most one snapshot job is
 open, and each snapshot has at most one order by length (409 otherwise).
 Only `depot jobs cancel ID` cancels a
-job. The queue's file also holds what the downloads need
-(`depot_app/downloads.py`): the streams being sent, how many texts each legacy export counts, and each
-export part's size, sha256 and conversations left out once it was sent
-whole; and
-how many texts of each snapshot an erasure reached since, by last erasure.
+job. The queue's file also holds how many texts of each snapshot an
+erasure reached since, by last erasure.
 
 The review of an admission sets apart the texts the depot would refuse to
 admit because none of their licenses is allowed. The depot's own check
@@ -1159,19 +1155,17 @@ site that makes its own name resolve to 127.0.0.1 (DNS rebinding).
 A pull (which makes the machine fetch another depot) and a change of the
 depot's maintainer or takedown contact are commands only: the server has no route for them, and nothing is opened
 at an address a client gives. `POST /api/erasures/decisions` carries out
-an erasure in the depot alone: it marks nothing on the dock, and the frozen
-dataset routes still send a corpus that holds the erased text until the
-freight's next check marks it stale ([erasure.md](erasure.md), "What it
-covers"). No route reads a code repository: the depot lives apart from
-any, and builds no corpus.
-A legacy dataset's export reads its texts from the depot, never from the
-dock.
+an erasure in the depot alone: it marks nothing on the dock, and a corpus
+that holds the erased text stays fresh until the freight's next check
+marks it stale ([erasure.md](erasure.md), "What it covers"). No route
+reads a code repository: the depot lives apart from any, and builds no
+corpus.
 
 ## Packages
 
 | Package | Role |
 | --- | --- |
-| `depot` | the depot: texts and structured items, the decisions on them, snapshots and erasures, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore onto the dock (`backup.py`); the upgrade from an older format (`upgrade.py`, `delta.py`, and `conversion.py`, which makes snapshots of the libraries and datasets of format 12); erasures carried out (`erasure.py`); snapshots, made, read and checked against their digest (`snapshots.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); what code outside the depot asks of it, a snapshot, its listing, its texts' content and credits and the erasures, in values JSON carries, the only module code outside the depot imports ([api/depot.md](api/depot.md), `api.py`); a snapshot's texts in the order of their export keys (`order.py`), a long text taken as pieces (`pieces.py`); the libraries and datasets of format 12, read-only, for models trained before snapshots, with a dataset's export in parts and its sample, each share split over its texts' tags (`legacy.py`, `groups.py`, `fill.py`); the table of counts (`counts.py`); `DEPOT` (`settings.py`) |
+| `depot` | the depot: texts and structured items, the decisions on them, snapshots and erasures, in the tables of one SQLite file (`depot.py`, the only code that changes them, `schema.py`); its connections and the write that records each change (`database.py`); the app's policy on decisions (`policy.py`); a filter of texts turned into an SQL condition (`filters.py`); backup and restore onto the dock (`backup.py`); the upgrade from an older format (`upgrade.py`, `delta.py`, and `conversion.py`, which makes snapshots of the libraries and datasets of format 12); erasures carried out (`erasure.py`); snapshots, made, read and checked against their digest (`snapshots.py`); the kinds of texts and their schemas (`kinds.py`, `kinds/`); the excerpts of a conversation and where they match (`quotes.py`); clone and pull (`follow.py`); what code outside the depot asks of it, a snapshot, its listing, its texts' content and credits and the erasures, in values JSON carries, the only module code outside the depot imports ([api/depot.md](api/depot.md), `api.py`); a snapshot's texts in the order of their export keys (`order.py`), a long text taken as pieces (`pieces.py`); a share split over its texts' tags, which only the tests' reference corpus build uses (`groups.py`, `fill.py`); the table of counts (`counts.py`); `DEPOT` (`settings.py`) |
 | `wpt-orders` | the model and series orders and the images of agentic tasks: the service layer that reads and checks them (`orders.py`), the sizes a series derives (`series.py`), and the audit hook that keeps `data/` to the service layer (`guard.py`) |
 | `dock` | the dock (its kinds: a local folder or S3), its compression, its named files (deliveries, corpora, models, run folders) and its results; what code outside it asks of it, the gestures find, fetch and put, the only module code outside the dock imports ([api/dock.md](api/dock.md), `api.py`) |
 | `freight` | reads a request, chooses items in a depot's snapshot by the selection rules ([data-selection.md](data-selection.md)), reading the depot only through `depot.api` (`selection.py`, `groups.py`, `fill.py`), runs one preparation on them, a program it talks to through its standard input and output (`exchange.py`, `messages.py`; [api/preparation.md](api/preparation.md)), and leaves the result on the dock with a delivery note (`job.py`, `deliveries.py`); what the depot's erasures did to the deliveries (`erasures.py`); its queue, one job at a time (`jobs.py`); what code outside it asks of it ([api/freight.md](api/freight.md), `api.py`) |
@@ -1217,9 +1211,8 @@ its part (the workspace's root project, `wpt-workspace`, holds none):
 - `depot-app` (`apps/depot`, module `depot_app`), the command `depot` and
   the depot's web server, `depot web` (`depot_app/web/`: `server.py`,
   `routes.py`, `queue.py` for the routes of the jobs, `snapshots.py` for
-  the snapshots, `legacy.py` for the frozen dataset and tokenizer routes,
-  `translations.py` for the translation models of the Texts page, and
-  `ui.py`, which builds the interface of `apps/depot/ui` with Bun). The
+  the snapshots, `translations.py` for the translation models of the
+  Texts page, and `ui.py`, which builds the interface of `apps/depot/ui` with Bun). The
   root `package.json` makes one Bun workspace of the interface and the
   packages of the organization's design system, the git submodule
   `vendor/wic-design-system`, whose tokens and components the interface is

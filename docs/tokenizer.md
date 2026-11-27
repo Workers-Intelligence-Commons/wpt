@@ -66,9 +66,7 @@ most one vocabulary for each version of a tokenizer recipe, and `vocabulary_text
 every text it trained on, in the order they were read, by its depot (empty
 for the depot that holds the recipe, the web address for another depot)
 and its id there. Some docks hold some of those vocabularies as adopted
-deliveries (below), and the web app's frozen routes `GET /api/tokenizers/{name}` and its
-vocabulary file serve the models trained before snapshots
-([training.md](training.md), "Models trained before snapshots").
+deliveries (below); the web app serves none of them.
 
 ### A vocabulary in an order
 

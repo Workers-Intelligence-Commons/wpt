@@ -1,1 +1,0 @@
-{"content": {"check": {"content": "IyEvYmluL3NoCmVjaG8gMQo=", "mode": "100755"}, "files": {}, "task": {"image": "fixture", "instructions": "Task 0. River mirror stone basket of on under harbor over. Engine.", "limits": {"command_seconds": 5, "max_tokens": 6, "max_turns": 2}, "needs": []}}, "depot": "fixture", "id": "fixture-247"}

@@ -12,7 +12,6 @@ from depot import About, Depot, NewText, clone, ids, upgrade
 from depot.errors import DepotExists, HalfUpgraded, OtherFormat, Refused
 from depot.filters import KEY_INDEXES
 from depot.delta import DeltaFolder
-from depot.legacy import Legacy
 from depot.database import FULL_COPY_NEXT
 from depot.schema import FORMAT, KEYS, SIZES, VIEWS, tags_at
 
@@ -441,6 +440,13 @@ def library_named(depot, name: str) -> str:
     return depot.rows("SELECT id FROM libraries_revisions WHERE name = ? AND latest", (name,))[0]["id"]
 
 
+def stored_figures(depot, dataset: str) -> list[dict | None]:
+    """For each library of the current revision of the legacy dataset of that id, in order, the figures the revision
+    stores for it (column figures), None when it stores none."""
+    [row] = depot.rows("SELECT libraries, figures FROM datasets_revisions WHERE id = ? AND latest", (dataset,))
+    return (row["figures"] or {"libraries": [None] * len(row["libraries"])})["libraries"]
+
+
 def test_an_upgrade_of_a_format_4_file_builds_its_indexes_tables_and_statuses_in_place_and_keeps_every_row(
         make_depot, me, legacy_rows):
     new = make_depot("new")
@@ -617,8 +623,8 @@ def test_an_upgrade_to_format_9_fills_what_libraries_hold_exactly_and_goes_on_af
 
 
 def test_an_upgrade_to_format_9_gives_a_dataset_revision_figures_only_when_they_are_exact(make_depot, me, figures_at, legacy_rows):
-    # the pages show a revision's stored figures as what a build of it takes, so the upgrade gives them only to a
-    # revision whose libraries nothing changed after the change it reads them at, and leaves the others unknown
+    # a revision's stored figures say what it read, so the upgrade gives them only to a revision whose libraries
+    # nothing changed after the change it reads them at, and leaves the others unknown
     depot = decided(make_depot(), me, legacy_rows)
     first = library_named(depot, "first")
     texts = [one["id"] for one in depot.rows("SELECT id FROM texts WHERE status = 'admitted' ORDER BY id")]
@@ -645,10 +651,10 @@ def test_an_upgrade_to_format_9_gives_a_dataset_revision_figures_only_when_they_
 
     upgraded, _ = upgrade.upgrade(depot.address, log=lambda line: None)
 
-    assert [one["stored"] for one in Legacy(upgraded.address).figures(still)["libraries"]] == exact[still]
-    assert [one["stored"] for one in Legacy(upgraded.address).figures(moved)["libraries"]] == [None, exact[moved][1]]
-    assert [one["stored"] for one in Legacy(upgraded.address).figures(retagged)["libraries"]] == [None]
-    assert [one["stored"] for one in Legacy(upgraded.address).figures(pinned)["libraries"]] == [None]
+    assert stored_figures(upgraded, still) == exact[still]
+    assert stored_figures(upgraded, moved) == [None, exact[moved][1]]
+    assert stored_figures(upgraded, retagged) == [None]
+    assert stored_figures(upgraded, pinned) == [None]
     assert {one: figures_at(upgraded, one) for one in exact} == exact  # what a build reads is what it was
 
 
@@ -664,7 +670,7 @@ def test_an_upgrade_to_format_9_of_a_clone_gives_its_own_dataset_revisions_no_fi
 
     upgraded, _ = upgrade.upgrade(follower.address, log=lambda line: None)
 
-    assert [one["stored"] for one in Legacy(upgraded.address).figures(dataset)["libraries"]] == [None]
+    assert stored_figures(upgraded, dataset) == [None]
 
 
 def test_an_upgrade_to_format_10_lists_and_counts_what_the_writes_keep_and_goes_on_after_a_stop(

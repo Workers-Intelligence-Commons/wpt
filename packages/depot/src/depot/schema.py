@@ -52,8 +52,7 @@ a text's tags on the row it reads already. A read at a change reads the tags
 the text had then from taggings (tags_at). The column tags of
 texts_revisions is unused in the same way as decisions: every revision the
 current format writes holds '[]' there, and a past revision upgraded from an
-older format keeps the tags it held, which the frozen reader of the legacy
-tables reads (depot.legacy). The table counts holds how
+older format keeps the tags it held. The table counts holds how
 many current texts have each status, tag, license, score name and
 decision, every text and the texts of each tag and license split by status
 (those of each tag and license also in characters and bytes), and what the
@@ -68,8 +67,8 @@ the ids carry, which numbers its rows (depot.titles), so a plain search
 of words of 3 characters or more reads only the texts whose title holds
 them. A decision and a notice
 record the change that wrote them. The tokenizer recipes and vocabularies
-a depot kept are read and no longer written (only a pull brings an
-upstream's rows of them): each recipe's revisions (tokenizers_revisions),
+a depot kept stay as they are and are no longer written (only a pull
+brings an upstream's rows of them): each recipe's revisions (tokenizers_revisions),
 whose version rose only when what trained its vocabulary changed, the
 snapshot and kinds of its sample (sample), or before snapshots a dataset
 (dataset, and depot, the web address of the depot that held it, or null
@@ -78,14 +77,13 @@ at most one vocabulary for each version of a recipe, its merges kept as
 text, with the change that wrote it; vocabulary_texts, by position, every
 text it trained on, by its depot ('' for the depot that holds the recipe,
 else the web address of the depot whose sample a vocabulary trained before
-snapshots read) and id (depot.legacy reads them). numbers holds, for each
+snapshots read) and id. numbers holds, for each
 kind of id, the last number of the depot's own ids, so a number is never
 given twice, even once an erasure removed its row.
 
 The legacy tables (LEGACY) hold the libraries and datasets of a depot of an
 older format, as it left them: no write of the depot touches them, and only
-depot.legacy reads them, for the models trained before snapshots, with
-the upgrade to format 13, which makes snapshots of them
+the upgrade to format 13 reads them, to make snapshots of them
 (depot.conversion).
 Which texts a library holds is memberships: the change a text joined at and
 the change it left at (null while it is in). A locked library also has
@@ -148,9 +146,8 @@ indexes memberships_key and pins_key hold each library's rows by their
 export key, with every other column a read of the library needs (the text,
 and the changes it joined and left, or the revision pinned), so a library's
 texts whose key falls in a range are read in key order from the index alone,
-without reading the other libraries' rows nor its own outside the range
-(depot.legacy), and a library is counted from the
-index alone. The indexes memberships_order, pins_order and memberships_held,
+without reading the other libraries' rows nor its own outside the range,
+and a library is counted from the index alone. The indexes memberships_order, pins_order and memberships_held,
 which ordered a library's texts by id and its open memberships by text, are
 kept as an older format made them. The index text_decisions_order holds the rows of
 text_decisions by decision, then in the numeric order of their texts' ids;
@@ -163,7 +160,7 @@ rows past a change without reading a whole table (depot.follow). The
 partial index content_lists_long holds the content versions of kind
 plain longer than LONG characters, those a snapshot's listing cuts into
 pieces (depot.pieces), so a listing finds the long texts it reads from them
-without reading every text (depot.order, depot.legacy). The partial
+without reading every text (depot.order). The partial
 index texts_length holds the current texts by status, then by the length in
 characters of the content version each reads (content_length), then in the
 numeric order of their ids, so a page of texts ordered by length, the
@@ -321,7 +318,7 @@ REVISED = ("texts_revisions", "libraries_revisions", "erasures_revisions", "data
 JSON_COLUMNS = frozenset({"licenses", "authors", "tags", "decisions", "scores", "libraries", "parts", "problems",
                           "needles", "erased", "shares", "figures", "origin", "summary", "sample"})
 # the tables of libraries and datasets, which no write of the depot touches any more: they keep what a depot of an
-# older format held, and only depot.legacy and the upgrade to format 13 (depot.conversion) read them
+# older format held, and only the upgrade to format 13 (depot.conversion) reads them
 LEGACY = ("libraries_revisions", "memberships", "pins", "library_moves", "datasets_revisions")
 
 
@@ -415,6 +412,6 @@ VIEWS = {
     "tokenizers": ("SELECT id, revision, change, name, version, depot, dataset, sample, sample_bytes, vocab_size, "
                    "note FROM tokenizers_revisions WHERE latest"),
 }
-# the view tokenizers over a file of format 12, whose tokenizers_revisions has no column sample: what the frozen
-# reader of the legacy tables (depot.legacy) and the upgrade read there (database.Database.connect)
+# the view tokenizers over a file of format 12, whose tokenizers_revisions has no column sample, so a connection to
+# such a file, which the upgrade opens, makes its views (database.Database.connect)
 TOKENIZERS_12 = VIEWS["tokenizers"].replace(" sample,", " NULL AS sample,")

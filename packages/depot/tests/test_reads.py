@@ -7,7 +7,6 @@ import apsw
 
 from depot import NewText, follow, sizes
 from depot import depot as depots
-from depot.legacy import Export, Legacy
 from depot.filters import Filter
 
 BOUND = 50  # the window, the count step and SORTED of both depots: far below the texts of each
@@ -35,27 +34,26 @@ def steps_of(depot, action) -> int:
 def holding(make_depot, me, legacy_rows, texts: int, name: str):
     """A depot of texts admitted texts, every one with the tag common, the license CC0-1.0 and a score, 5 more with
     the tag rare and the license MIT, and SOME more admitted by a decision of their own; the legacy rows of an open
-    library every holding the first texts and of a dataset reading it; the same rows but for the number of texts."""
+    library holding the first texts, which a pull reads; the same rows but for the number of texts."""
     depot = make_depot(name)
     depot.add_license("MIT", "MIT License", "text")
     ids = depot.add([NewText(text=f"text {n}", licenses=("CC0-1.0",), tags=("common",)) for n in range(texts)], me)
     rare = depot.add([NewText(text=f"rare {n}", licenses=("MIT",), tags=("rare",)) for n in range(5)], me)
     depot.decide("admitted", ids + rare, me)
     depot.edit_scores([{"id": one, "scores": [{"name": "rank", "value": 1, "content_version": 1}]} for one in ids], me)
-    every = legacy_rows.library(depot, "every", ids)
+    legacy_rows.library(depot, "every", ids)
     some_ids = depot.add([NewText(text=f"some {n}", licenses=("CC0-1.0",)) for n in range(SOME)], me)
     decision = depot.decide("admitted", some_ids, me)[0]
-    dataset = legacy_rows.dataset(depot, "every", [every])
     snapshot = depot.create_snapshot()["id"]
-    return depot, {"order": sizes.build(depot, snapshot), "ids": ids, "rare": rare, "every": every, "some_ids": some_ids, "decision": decision,
-                   "dataset": dataset}
+    return depot, {"order": sizes.build(depot, snapshot), "ids": ids, "rare": rare, "some_ids": some_ids,
+                   "decision": decision}
 
 
 def routes(depot, me, held) -> dict:
     """{route: the action that runs it} of each page, count step, count and write of one text that the depot's
     pages and common commands run."""
     held_ = held
-    ids, every = held["ids"], held["every"]
+    ids = held["ids"]
     one, other = ids[len(ids) // 2], ids[len(ids) // 2 + 1]
 
     def far_page(selection, **options):
@@ -97,14 +95,12 @@ def routes(depot, me, held) -> dict:
         "every page of a decision on many texts": lambda: walk(Filter(decision=held_["decision"]), held_["some_ids"]),
         "count of a tag's statuses": lambda: held(Filter(tags=("common",))),
         "count of a license's statuses": lambda: held(Filter(licenses=("MIT",))),
-        "texts of an export": lambda: Export(Legacy(depot.address), held_["dataset"], None).texts(),
         "count step of every text": lambda: depot.count(Filter(), size=BOUND),
         "count step of a tag": lambda: depot.count(Filter(tags=("common",)), size=BOUND),
         "count step of a decision": lambda: depot.count(Filter(decision=held_["decision"]), size=BOUND),
         "texts a license blocks": lambda: depot.blocked(Filter()),
         "score names": depot.score_names,
         "score values": lambda: depot.score_values("rank"),
-        "count of a library": lambda: Legacy(depot.address).library_count(every, depot.change()),
         "rows a pull reads": pull_rows,
         "refusal of one text": lambda: depot.decide("refused", [one], me),
         "admission of one text by filter": lambda: depot.decide("admitted", Filter(ids=(one,)), me),

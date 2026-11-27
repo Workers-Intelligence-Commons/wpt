@@ -148,7 +148,7 @@ def test_a_depot_of_format_11_is_brought_to_13_in_one_run_as_the_check_said(tmp_
                for line in said)
     for one in made.values():
         assert texts_of(depot, one["id"])  # its sets match its digest
-    # the legacy reads of format 11 keep answering, the figures of the datasets in the layout of format 12
+    # the figures of the datasets stay, in the layout of format 12
     assert rows_of(path, "SELECT count(*) FROM datasets_revisions WHERE figures IS NOT NULL AND figures LIKE "
                          "'%\"kinds\"%'")[0][0] > 0
 
@@ -416,8 +416,8 @@ def test_every_revision_upgraded_keeps_the_kind_length_and_bytes_of_the_content_
     assert sizes_apart(depot) == [] and tags_apart(depot) == []
 
 
-def test_the_tags_each_revision_held_stay_for_the_legacy_reader_through_later_changes_of_tags(tmp_path):
-    # the frozen reader of the legacy tables reads a pinned revision's own column tags, order included; the copy of a
+def test_the_tags_each_revision_held_stay_through_later_changes_of_tags(tmp_path):
+    # a pinned revision keeps its own column tags, order included, as the older formats left them; the copy of a
     # text's tags that later changes rewrite lives in current_tags
     path, found = copied(tmp_path, 12)
     held = rows_of(path, "SELECT id, revision, tags FROM texts_revisions ORDER BY id, revision")

@@ -5,7 +5,7 @@ description = "The depot command and the depot's web app: two controllers over t
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.14"
 # depot: the depot's services; dock: the backups (depot backup, depot restore), the corpora an upgrade from a
-# format before snapshots reads, and the corpora the frozen dataset routes send, each through dock.api only;
+# format before snapshots reads, and the Translate button's models, each through dock.api only;
 # wic-utils: printed lines, the outside programs (Bun), every web request; jsonschema: the web app checks every
 # request and answer against its route's schema
 dependencies = ["depot", "dock", "wic-utils", "jsonschema>=4.23"]

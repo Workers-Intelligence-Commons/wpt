@@ -234,7 +234,6 @@ cap its estimated size (Room.expect).
     walk(source, snapshot, shares, kinds, after, spread)  the snapshot's listing under a data section, as Entry
     entries(listed, shares, kinds)                        a listing given, the same way
     pool_of(kind, tags, shares, kinds)                    a text's pool and whether a corpus takes it
-    sample_lines(texts, here)                             that stream as a depot's web app sends it
 """
 
 import collections
@@ -275,7 +274,6 @@ HELD_PAGE = 1000  # conversations the build reads from its work folder at a time
 LEFT_OUT, UNMATCHED = "quoted text left out", "quote unmatched"  # why a conversation is left out (_resolve)
 BATCH_BYTES = 8 << 20  # bytes of texts one worker's item reads and tokenizes
 BATCH_TEXTS = 4096  # texts one worker's item holds at most
-SAMPLE_TIMEOUT = 600  # seconds a read of a remote sample may wait for its next bytes
 IN_PROCESS = 16 << 20  # bytes of texts a build reads in its own process before it starts worker processes (_Workers)
 SHA256_HEX = 64  # hexadecimal characters of a sha256
 TIME = pa.timestamp("us", tz="UTC")
@@ -486,23 +484,6 @@ def walk(source: str, snapshot: str, shares: Sequence[str] | None, kinds: Sequen
 def _no_plan() -> groups.Plan:
     """The plan of an order whose shares choose nothing by group (depot.groups)."""
     return groups.Plan({}, np.zeros(0, np.int64))
-
-
-def sample_lines(texts: Iterator[tuple[str, str, bytes]]) -> Iterator[bytes]:
-    """The texts of a dataset's sample (depot.legacy.sample) as the
-    frozen sample route of a depot's web app sends them: for each text one
-    JSON line {"depot", "text", "bytes"}, depot as the sample gives it,
-    then the text's bytes; a last line {"end": true, "texts",
-    "bytes"}. A line {"waiting": true} may come between texts, for each
-    (None, None, b"") of texts: the sample is slow to find its next text."""
-    count = total = 0
-    for address, text, data in texts:
-        if address is None:
-            yield (json.dumps({"waiting": True}) + "\n").encode()
-            continue
-        yield (json.dumps({"depot": address, "text": text, "bytes": len(data)}) + "\n").encode() + data
-        count, total = count + 1, total + len(data)
-    yield (json.dumps({"end": True, "texts": count, "bytes": total}) + "\n").encode()
 
 
 def _proportions(shares: list[dict] | None, total: int) -> dict[int, int]:

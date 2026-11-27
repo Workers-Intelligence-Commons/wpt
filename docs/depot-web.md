@@ -22,9 +22,10 @@ depot through every route, with no login ([architecture.md](architecture.md),
   `https://depot.workers-intelligence-commons.org`, the address an order
   names the depot by. The app runs as `DEPOT_USER`, which must be able
   to write in that folder. It reads no `.env` file. The dock settings
-  Compose passes it name the dock that holds the corpora the frozen
-  dataset routes serve, with a key that reads and writes it; without
-  `DOCK`, it serves no corpus. It marks no corpus stale, with or without
+  Compose passes it name the dock that keeps the backups, the Translate
+  button's models and the corpora built before the freight, which `depot
+  upgrade` reads, with a key that reads and writes it; without `DOCK`, the
+  Translate button has no model. It marks no corpus stale, with or without
   `DOCK`: the freight's check does. It reads no code repository, and
   builds no corpus and trains no vocabulary: the freight does
   ([api/freight.md](api/freight.md)).
@@ -67,11 +68,7 @@ step refused with 429 or for lack of a free reader again after a wait, so
 counting leaves at least half of the second limit to the other requests.
 
 An address holds at most 20 connections at a time. A request body holds
-at most 100 MB, and the app has 100 seconds to answer. On the frozen
-routes of datasets, a corpus's files, an export's parts and a sample
-stream for as long as they last: nginx passes each piece on as it comes,
-without a temporary file, and waits up to 600 seconds between two pieces.
-The limits above count them as any other request.
+at most 100 MB, and the app has 100 seconds to answer.
 
 ## Jobs and downloads
 
@@ -129,38 +126,6 @@ other code. An order names a snapshot by its name, change and digest, which
 its page shows; the freight reads the snapshot through the depot's request
 module and makes the vocabulary and the corpus
 ([api/freight.md](api/freight.md)).
-
-### Models trained before snapshots
-
-The dataset routes and two reads of a tokenizer recipe are frozen: they
-answer what they answered for a depot
-of format 12, read-only, from the depot's legacy tables
-(`depot/legacy.py`, served by `depot_app/web/legacy.py`), so a model
-trained before snapshots can still be checked with the depot's address and
-the repository at the commit it records ([training.md](training.md),
-"Models trained before snapshots"). They have no page. They are `GET
-/api/datasets` and, for one dataset, its page, its `remote` fields, the
-listing of its corpora (`download`), each corpus's fixed link
-(`download/{vocabulary}/{size}`) with its files and `everything.tar`, its
-export and its parts, and its sample (`sample?bytes=N`), the plain texts a
-vocabulary of another depot trained on; and two reads of a tokenizer
-recipe, `GET /api/tokenizers/{name}` (its row, revisions and vocabularies,
-whether its version is trained) and `GET
-/api/tokenizers/{name}/vocabularies/{version}/file`, which `wpt train`
-at those commits reads for a dataset's vocabulary. Their answers are the depot's legacy rows
-and the corpora the dock kept; nothing builds a corpus of a dataset. The
-depot marks no corpus stale when it carries out an erasure: only the
-freight's check does (`freight check`, and the check before each of its
-jobs). Until that check runs, the download routes still list and send a
-corpus that holds the erased text. Run `freight check` right after
-admitting an erasure, and keep the timer that runs it
-([erasure.md](erasure.md), "What it covers"), so the gap lasts at most
-its period. The export gives a dataset revision's texts in numbered parts,
-each in JSONL compressed with zstd and in Parquet, made as it is sent and
-the same bytes every time, a conversation whose quotes it cannot hold left
-out ([data-selection.md](data-selection.md), "Conversations that quote
-texts"). At most 2 parts and samples are sent at once in all, and 1 to
-each visitor; past that the app answers 429.
 
 ## Cloudflare's address ranges
 
@@ -268,7 +233,7 @@ docker compose up -d --build
 | --- | --- |
 | `DEPOT_FOLDER` | the host folder that holds `wpt-depot.sqlite`; required |
 | `DEPOT_USER` | `uid:gid` the app runs as; default `1000:1000` |
-| `DOCK` | the dock that holds the corpora the frozen dataset routes serve (`s3://BUCKET/PREFIX`); unset, no corpus is served |
+| `DOCK` | the dock that keeps the backups, the Translate button's models and the corpora built before the freight, which `depot upgrade` reads (`s3://BUCKET/PREFIX`); unset, the Translate button has no model |
 | `DOCK_ACCESS_KEY_ID`, `DOCK_SECRET_ACCESS_KEY` | a key that reads and writes that dock |
 | `DOCK_ENDPOINT_URL`, `DOCK_REGION`, `DOCK_SESSION_TOKEN` | optional, as for any dock ([architecture.md](architecture.md), "The dock") |
 | `CERTBOT_EMAIL` | the address Let's Encrypt writes to about the certificate; required |

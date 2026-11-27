@@ -8,7 +8,7 @@
 # and, to update, `git pull --recurse-submodules` then `docker compose up -d --build`.
 #
 # Settings, from the environment or the .env file of this folder (never the
-# repository's .env, whose keys reach more than the corpora):
+# repository's .env, whose keys reach more than this dock):
 #
 #     DEPOT_FOLDER       the host's folder that holds the depot's file, wpt-depot.sqlite
 #                        (such as /home/ubuntu/depot); required. SQLite writes its -wal and
@@ -17,8 +17,9 @@
 #                        folder beside the file, and the dock its local copies in cache/
 #     DEPOT_USER         uid:gid the app runs as, which must be able to write in that
 #                        folder (default 1000:1000)
-#     DOCK               the dock that holds the corpora the frozen dataset routes serve,
-#                        and the backups (s3://BUCKET/PREFIX); unset, the app serves none
+#     DOCK               the dock that keeps the backups, the Translate button's models and
+#                        the corpora built before the freight, which `depot upgrade` reads
+#                        (s3://BUCKET/PREFIX); unset, the Translate button has no model
 #     DOCK_ACCESS_KEY_ID, DOCK_SECRET_ACCESS_KEY
 #                        a key that reads and writes that dock
 #     DOCK_ENDPOINT_URL, DOCK_REGION, DOCK_SESSION_TOKEN

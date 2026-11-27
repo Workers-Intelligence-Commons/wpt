@@ -11,7 +11,6 @@ from deltalake import write_deltalake
 from depot import About, Declaration, Depot, follow, format3, kinds, titles
 from depot.delta import STEPS, DeltaFolder
 from depot.ids import export_key
-from depot.legacy import Legacy
 
 ME = Declaration("Ada Lovelace", "ada@example.org", True)
 # the revisions of texts whose kind, length and bytes (schema.SIZES) are not those of the content version they read,
@@ -67,10 +66,9 @@ TAGS_ON_REVISIONS = ("UPDATE texts_revisions SET tags = (SELECT json_group_array
 class LegacyRows:
     """Writes the rows of the legacy tables (schema.LEGACY) that no code
     writes any more into a depot of the code's format, as an older format
-    left them, for the frozen reader of those tables (depot.legacy),
-    which reads the tags of a text from its revisions, as those formats
-    kept them: each write gives every revision the tags its text had while
-    it was the current one (TAGS_ON_REVISIONS)."""
+    left them, with the tags of each text on its revisions, as those
+    formats kept them: each write gives every revision the tags its text
+    had while it was the current one (TAGS_ON_REVISIONS)."""
 
     def library(self, depot: Depot, name: str, texts: list[str], locked: bool = False) -> str:
         """A library of the depot holding texts from now on, locked at once
@@ -119,7 +117,7 @@ class LegacyRows:
     def dataset(self, depot: Depot, name: str, libraries: list[str], shares: list[tuple[str, float]] | None = None,
                 max_tokens: int | None = None) -> dict:
         """A dataset of the depot reading its libraries at the current
-        change, with no figures stored: its current row, as Legacy reads it."""
+        change, with no figures stored: its current row."""
         with depot.db.write("legacy dataset") as (con, number):
             con.execute(TAGS_ON_REVISIONS)
             dataset = depot._id(depot._take(con, "datasets"))
@@ -129,7 +127,8 @@ class LegacyRows:
                         (dataset, number, name, json.dumps(refs),
                          None if shares is None else json.dumps([{"tag": tag, "share": share} for tag, share in shares]),
                          max_tokens))
-        return Legacy(depot.address).dataset_by_id(dataset)
+        return depot.rows("SELECT id, revision, change, name, tokenizer, libraries, shares, max_tokens, vocabulary "
+                          "FROM datasets_revisions WHERE latest AND id = ?", (dataset,))[0]
 
 
 @pytest.fixture

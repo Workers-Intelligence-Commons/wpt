@@ -14,7 +14,6 @@ from depot.errors import (BadContent, BadQuery, BelongsToUpstream, NoDepotSettin
                               Refused, TimeLimitReached, UpstreamUnreachable)
 from depot.depot import BELONGS_TO_UPSTREAM, NO_ALLOWED_LICENSE
 from depot.filters import Filter
-from depot.legacy import Legacy
 from depot.schema import FORMAT, KEYS
 from depot.settings import depot_address
 
@@ -1890,27 +1889,24 @@ def kept_vocabulary(depot, name: str, merges: bytes, texts: list[str]) -> str:
 def test_the_depot_writes_no_tokenizer_recipe_and_a_pull_brings_the_upstream_s_kept_ones(
         serve, make_depot, me, tmp_path):
     # the tables of the tokenizer recipes and vocabularies a depot trained stay, unwritten by any operation; what an
-    # upstream kept travels to its clones, which read it as it is (depot.legacy)
+    # upstream kept travels to its clones as it is
     upstream = make_depot()
     [text] = upstream.add([plain("one", "en")], me)
     recipe = kept_vocabulary(upstream, "kept", b"first", [text])
     assert not [name for name in dir(upstream) if "tokenizer" in name or "vocabular" in name]
     follower = clone(serve(upstream), str(tmp_path / "follower.sqlite"),
                      About("follower", "Grace Hopper", "grace@example.org"))
-    assert Legacy(follower.address).tokenizer("kept")["recipe"]["id"] == recipe
-    assert Legacy(follower.address).vocabulary_file("kept", 1) == (hashlib.sha256(b"first").hexdigest(), b"first")
+    assert follower.rows("SELECT id FROM tokenizers WHERE name = 'kept'") == [{"id": recipe}]
+    assert follower.rows("SELECT version, sha256, merges FROM vocabularies WHERE recipe = ?", (recipe,)) == [
+        {"version": 1, "sha256": hashlib.sha256(b"first").hexdigest(), "merges": "first"}]
 
     later = kept_vocabulary(upstream, "later", b"second", [text])
     pull(follower)
 
-    found = Legacy(follower.address).tokenizer("later")
-    assert (found["recipe"]["id"], found["trained"], found["vocabularies"][0]["texts"]) == (later, True, 1)
+    assert follower.rows("SELECT id FROM tokenizers WHERE name = 'later'") == [{"id": later}]
+    assert follower.rows("SELECT texts FROM vocabularies WHERE recipe = ?", (later,)) == [{"texts": 1}]
     assert follower.rows("SELECT depot, text FROM vocabulary_texts WHERE recipe = ?", (later,)) == [
         {"depot": "", "text": text}]
-    with pytest.raises(NotFound):
-        Legacy(follower.address).tokenizer("none")
-    with pytest.raises(NotFound, match="no vocabulary of its version 2"):
-        Legacy(follower.address).vocabulary_file("kept", 2)
 
 
 def test_an_admitted_text_put_back_under_review_can_be_decided_again(make_depot, me):

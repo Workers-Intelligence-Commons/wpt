@@ -26,11 +26,10 @@ code outside it asks it through depot.api alone (docs/api/depot.md).
     format3.py   the step of such a folder from format 2 to format 3
     api.py       what code outside the depot asks of it, in values JSON carries (docs/api/depot.md)
     order.py     a snapshot's texts in the order of their export keys, each read at its part's bound
-    groups.py    how a share of a dataset's sample splits its budget over the tags its texts carry (legacy.py)
+    groups.py    how a share splits its budget over the tags its texts carry, for the tests' reference build
     fill.py      the filling of one part of such a share (groups.py)
-    legacy.py    the libraries and datasets of format 12, read-only, for models trained before snapshots
     conversion.py the snapshots the upgrade to format 13 makes of locked libraries and dataset revisions, read
-                 from the libraries' tables; with legacy.py, the only code that reads those tables
+                 from the libraries' tables; the only code that reads those tables
     settings.py  DEPOT, the depot to work on, and DEPOT_URL, its public address
 """
 

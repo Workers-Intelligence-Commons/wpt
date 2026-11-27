@@ -17,7 +17,7 @@ The queue is a small SQLite file beside the depot, <depot file>.jobs,
 which nothing backs up: it holds each job's kind and lane, what it does in
 words, what it is for (its key: a sizes job's snapshot id; its target: what
 it makes), the operation it runs and its arguments, its state, its progress
-and its answer, and the jobs' other state (depot_app.downloads). Each
+and its answer. Each
 lane's runner takes the oldest queued job of its lane, marks it running and
 runs it in a spawned process; it looks at the queue when a job is added in
 its own process, and every POLL seconds. A job's state is queued, running,
@@ -45,7 +45,8 @@ more texts than the person chose. A job of a kind the web app no longer
 runs (KINDS_GONE: a vocabulary's training, a corpus's build) that was
 queued or running fails (KIND_GONE), and the tables of what only those
 jobs kept (the checkpoints of builds, when each corpus was last
-downloaded) go.
+downloaded) go, with those of the downloads of datasets the web app no
+longer sends (the streams being sent, the counts and parts of exports).
 
 A small write runs in the request itself (record) and is kept as a job that
 has ended, so every write answers the same way.
@@ -96,14 +97,11 @@ CREATE INDEX IF NOT EXISTS jobs_open ON jobs (state, number);
 DROP TABLE IF EXISTS checkpoints;
 CREATE TABLE IF NOT EXISTS erased_since (snapshot TEXT PRIMARY KEY, last_erasure INTEGER NOT NULL, found TEXT NOT NULL);
 DROP TABLE IF EXISTS downloads;
-CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, corpus TEXT, visitor TEXT NOT NULL, kind TEXT NOT NULL,
-    started REAL NOT NULL);
+DROP TABLE IF EXISTS streams;
 DROP TABLE IF EXISTS exports;
 DROP TABLE IF EXISTS export_parts;
-CREATE TABLE IF NOT EXISTS exported_parts (export TEXT NOT NULL, parts INTEGER NOT NULL, part INTEGER NOT NULL,
-    format TEXT NOT NULL, maker TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, left_out TEXT NOT NULL,
-    PRIMARY KEY (export, parts, part, format, maker));
-CREATE TABLE IF NOT EXISTS export_texts (export TEXT PRIMARY KEY, texts INTEGER NOT NULL);
+DROP TABLE IF EXISTS exported_parts;
+DROP TABLE IF EXISTS export_texts;
 DROP TABLE IF EXISTS marking;
 """
 
@@ -448,11 +446,9 @@ class Jobs:
 
     def start(self):
         """Take up the jobs a stop cut short (again, or failed past
-        RESTARTS restarts), forget the streams the stop cut, and start a
-        runner thread for each lane, which runs the lane's queued jobs one at
-        a time until stop()."""
+        RESTARTS restarts), and start a runner thread for each lane, which
+        runs the lane's queued jobs one at a time until stop()."""
         with connected(self.path, write=True) as con:
-            con.execute("DELETE FROM streams")
             for row in con.execute("SELECT id, restarts FROM jobs WHERE state = 'running'").fetchall():
                 if row["restarts"] >= RESTARTS:
                     con.execute("UPDATE jobs SET state = 'failed', status = 500, ended = ?, problem = ? WHERE id = ?",

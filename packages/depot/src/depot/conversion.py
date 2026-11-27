@@ -1,7 +1,7 @@
 """What the step to format 13 (depot.upgrade) makes of the libraries
 and datasets of format 12: the snapshots that stand for them, worked out
-by reading the legacy tables (schema.LEGACY), and checked against what the
-legacy read (depot.legacy) gives. Nothing here writes: plan and measure
+by reading the legacy tables (schema.LEGACY), and checked against what a
+depot of format 12 read of them (the legacy read). Nothing here writes: plan and measure
 read through any connection, read-only or not, so `depot upgrade
 --check` runs them on a file it never changes, and the upgrade writes what
 they give.
@@ -177,7 +177,7 @@ def plan(con, named: dict[tuple[str, int], list[str]], reads_here=None) -> tuple
     why each dataset revision left out is), as the module says. named:
     {(dataset id, revision): ids of the corpora whose record names it}.
     reads_here(address, library): whether a library a dataset names by a
-    depot's address is one of this depot's rows (depot.legacy.Legacy);
+    depot's address is one of this depot's rows (depot.upgrade);
     without it, only refs that name no address read here. Names are given
     in this order: libraries by id, then datasets by id and revision, each
     avoiding the names of the depot's own snapshots not made by the step

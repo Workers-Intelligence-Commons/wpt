@@ -5,8 +5,8 @@ DEPOT names the depot to work on, from the environment, else from a
 file:// address. DEPOT_URL, read the same way, is that depot's public
 address, the web address of its web app, which its web app gives as the
 depot's address (GET /api/about, what an order's data section names it by)
-and which names it in the corpora built from a dataset before
-(depot.legacy.depot_name).
+and which names it in the corpora built from a dataset before snapshots,
+whose records an upgrade to format 13 reads (depot.upgrade).
 """
 
 import os

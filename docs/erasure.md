@@ -191,13 +191,10 @@ The corpora the depot built before the freight, under the dock's
 same moments. The depot marks nothing on the dock: `depot decide admit
 --erasure`, `depot pull` and `depot web` carry the erasure out in the
 depot and stop there. So between an erasure and the freight's next check,
-the frozen dataset routes of `depot web` still send a corpus that holds
-the erased text, to whoever asks for it
-([depot-web.md](depot-web.md), "Models trained before snapshots").
-Running `freight check` right after the erasure closes that gap at once;
-the timer above bounds it to its period otherwise. The legacy tables of a
-depot brought up from format 12 hold no content, and the frozen dataset
-routes read the texts' content from the depot as erasures left it.
+a corpus that holds the erased text stays fresh. Running `freight check`
+right after the erasure closes that gap at once; the timer above bounds it
+to its period otherwise. The legacy tables of a depot brought up from
+format 12 hold no content, so an erasure has nothing to cut there.
 
 A trained vocabulary is not retrained when a text changes (see
 [tokenizer.md](tokenizer.md)), so merges learned from erased text, such as

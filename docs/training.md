@@ -1235,18 +1235,10 @@ dataset T of the depot D". Nothing rewrites such a folder's
 
 A model trained before snapshots has an order that names a dataset of a
 depot of format 12 or older, which `wpt train` refuses: an order names a
-snapshot. The code at the commit the model records reads the depot's web
-app through the dataset routes: `GET /api/datasets` to find the
-dataset, `GET /api/datasets/{id}/download` for the corpus of its
-vocabulary and size, `GET /api/tokenizers/{name}` and its vocabulary file
-(the only routes of tokenizer recipes the web app keeps),
-and, for another depot's vocabulary training, `GET /api/datasets/{id or
-name}/sample`. Those routes stay, frozen and read-only: they answer from
-the depot's legacy tables what they answered for the depot of format 12
-(`depot/legacy.py`, [depot-web.md](depot-web.md), "Models trained
-before snapshots"), so the depot's address and the repository at that
-commit still check the model. Its corpus is read from the dock that holds
-it, since nothing makes a corpus of a dataset. The upgrade to format 13
+snapshot. The depot's web app serves no dataset, no corpus of one and no
+tokenizer recipe, so the code at the commit the model records finds
+nothing to read there; the depot keeps its legacy tables as the upgrade
+left them, read by nothing. The upgrade to format 13
 makes a snapshot of each locked library and of each dataset revision a
 corpus was built from ([architecture.md](architecture.md), "Format"), so
 an order of the snapshot shape can ask the freight for the same texts.

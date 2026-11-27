@@ -2,8 +2,8 @@
 and snapshots, in the tables of one SQLite file (depot.schema). The
 tables of the libraries, datasets, tokenizer recipes and vocabularies an
 older depot held stay in the file, and no write touches them
-(depot.legacy reads them; a pull still brings an upstream's rows of
-them).
+(the upgrade to format 13 reads them; a pull still brings an upstream's
+rows of them).
 
 Depot is the only code that changes a depot's tables. Each operation is one
 change: one transaction under the next change number, recorded for the

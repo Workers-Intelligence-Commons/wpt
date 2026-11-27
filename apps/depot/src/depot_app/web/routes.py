@@ -5,8 +5,7 @@ applies every rule, so the pages and the subcommands cannot disagree. A
 pull and a change of the depot's maintainer or takedown
 contact have no route: they are commands only (docs/architecture.md, "Two
 interfaces"). The routes over the jobs are queue.py's, those over
-snapshots snapshots.py's, the frozen routes that models trained before
-snapshots read legacy.py's, and those behind the Texts page's translation
+snapshots snapshots.py's, and those behind the Texts page's translation
 translations.py's. The follow routes only read:
 they answer a clone or a pull of another depot (depot.follow), a page
 at a time.
@@ -44,16 +43,14 @@ from dock.api import DockError
 from .. import shared
 from ..shared import CONFIRMATION, REQUIREMENTS, jsonable
 from . import readers as limits
-from ..downloads import Downloads, TooMany
 from ..jobs import Busy, Jobs
-from .legacy import legacy
 from .queue import queue_routes
 from .readers import Readers
 from .translations import ModelsUnreachable, translation_routes
 from .server import Request, Route, Stream
 
 # the HTTP status of each failure; a failure's status is that of the first of its classes listed here
-STATUSES = {errors.NotFound: 404, errors.BadQuery: 400, Busy: 409, TooMany: 429, DockError: 503,
+STATUSES = {errors.NotFound: 404, errors.BadQuery: 400, Busy: 409, DockError: 503,
             ModelsUnreachable: 503, errors.DepotError: 422}
 # the costs of a change of tags a confirmation covers, with their slack in their unit
 RETAG_COSTS = {"changed": 10, "written": 50, "bytes": 1 << 20, "seconds": 5}
@@ -536,7 +533,6 @@ def routes(depot: Depot, jobs: Jobs) -> list[Route]:
             "oneOf": [{"type": "null"}, {**answer, "properties": {**answer.get("properties", {}), "left": left}}]}}}
     return [
         *queue_routes(depot, jobs, refusals),
-        *legacy(depot.address, Downloads(jobs.path), refusals),
         *translation_routes(refusals),
         Route("GET", "/api/about", about, "the depot's public address (DEPOT_URL, else its name), "
               "which an order's data section names it by, its change number, its current about row, the "

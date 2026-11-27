@@ -6,9 +6,8 @@ no login and no header to send; it checks neither the Host header nor a
 request's Content-Type. A query or a filter's condition only reads the
 depot's file and runs in a process of its own, stopped at a time limit
 and capped in memory (readers.py); the follow routes, which a clone or a
-pull of this depot reads, and the downloads of corpora, send their
-answers as they are made (Stream); the long work runs in the jobs' queue
-(depot_app.jobs); and a pull and a change of the
+pull of this depot reads, send their answers as they are made (Stream);
+the long work runs in the jobs' queue (depot_app.jobs); and a pull and a change of the
 depot's maintainer or takedown contact are commands only (what that leaves
 open: docs/architecture.md, "Two interfaces"). Each route declares the JSON
 Schema of the body it takes and
@@ -26,7 +25,7 @@ import traceback
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Iterator
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 import jsonschema
@@ -39,15 +38,14 @@ PROBLEMS = {"type": "object", "required": ["problems"],
 ASSETS = "assets"
 HASHED, REVALIDATED = "public, max-age=31536000, immutable", "no-cache"
 REFUSALS = {"400": "the body does not match the route's schema, or a query is not one read of the depot",
-            "404": "no such text, snapshot, erasure, legacy dataset or tokenizer recipe, or no such route",
+            "404": "no such text, snapshot or erasure, or no such route",
             "422": "the depot's rules refuse it, or a person's SQL ran past its time or memory, or its answer past its "
                    "size; nothing was written",
             "500": "a failure the routes do not name, whose trace the server prints; nothing was written",
             "503": "what the route needs is missing on this machine (the dock), or Mozilla's translation models "
                    "cannot be read",
             "409": "a snapshot is being made already, or the same snapshot ordered by length, or an estimate "
-                   "changed since it was shown",
-            "429": "as many legacy text exports and samples are being sent as the web app sends at once"}
+                   "changed since it was shown"}
 
 
 @dataclass(frozen=True)
@@ -65,12 +63,8 @@ class Stream:
 @dataclass(frozen=True)
 class Request:
     """What a route that asks for it (Route.request) gets of its request:
-    its headers, the values of its query string (the last of each name),
-    and the address it came from: X-Forwarded-For's first address, which
-    the web server in front sets to the visitor's, else the peer's."""
-    headers: Mapping[str, str]
+    the values of its query string (the last of each name)."""
     query: dict[str, str]
-    visitor: str
 
 
 @dataclass(frozen=True)
@@ -178,9 +172,7 @@ def make_server(routes: list[Route], static: Path, port: int = 0) -> ThreadingHT
                             return self._json(400, {"problems": [f"the body, at {where}: {error.message}"]})
                     try:
                         if route.request:
-                            forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-                            answer = route.handler(values, body, Request(
-                                self.headers, dict(parse_qsl(query)), forwarded or self.client_address[0]))
+                            answer = route.handler(values, body, Request(dict(parse_qsl(query))))
                         else:
                             answer = route.handler(values, body)
                     except Exception as error:  # answered, so that the page shows it, and its trace printed

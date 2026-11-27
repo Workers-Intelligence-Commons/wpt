@@ -22,7 +22,8 @@ module of WPT imports the libraries a depot's SQLite file is opened with
 fails too.
 
 The test reads the source of every module and fails on any import that
-breaks the rule and is not in EXCEPTIONS, each of which says why it stands.
+breaks the rule and is not in EXCEPTIONS, each of which says why it stands,
+and on an exception that no import needs.
 It also fails on any name of dock.api that another part takes, imported
 (`from dock.api import X`) or read from the module (`api.X` after `from dock
 import api`), and that is neither a function, an error, nor a plain value
@@ -53,9 +54,8 @@ DEPOT_FILES = ("sqlite3", "apsw")
 EXCEPTIONS = {
     ("depot_app", "dock.api"): "the depot's backups go to the dock until they have a place of their own, and an "
                                "upgrade from a format before snapshots reads the records of the dock's corpora",
-    ("depot_app.web.legacy", "dock.api"): "the frozen dataset routes send the corpora built from a dataset, which "
-                                          "the dock holds",
-    ("depot_app.corpora", "dock.api"): "the depot's reading of those corpora",
+    ("depot_app.corpora", "dock.api"): "an upgrade from a format before snapshots reads the records of the dock's "
+                                       "corpora",
     ("depot_app.web.routes", "dock.api"): "the routes answer a refusal of the dock as such",
     ("depot_app.web.translations", "dock.api"): "the Translate button's models are kept on the dock under their "
                                                 "sha256",
@@ -126,6 +126,13 @@ def problems() -> list[str]:
 
 def test_every_part_imports_the_others_only_as_the_rule_allows():
     assert problems() == [], "imports between the parts that the rule refuses:\n" + "\n".join(problems())
+
+
+def test_every_exception_stands_for_an_import_the_rule_refuses():
+    needed = {(module, ".".join(name.split(".")[:2])) for module, path in module_files().items()
+              for _, name in imported(module, path) if refused(module, name)}
+    unneeded = sorted(f"{importer} imports {name}" for importer, name in EXCEPTIONS if (importer, name) not in needed)
+    assert unneeded == [], "exceptions no import needs:\n" + "\n".join(unneeded)
 
 
 def test_no_module_of_wpt_opens_an_sqlite_file():

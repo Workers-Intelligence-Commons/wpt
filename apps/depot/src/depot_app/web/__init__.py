@@ -14,8 +14,6 @@ subcommands:
     queue.py    the routes over the jobs' queue
     snapshots.py  the routes over snapshots, and the job operations they
                 queue
-    legacy.py   the frozen dataset and tokenizer routes that models
-                trained before snapshots read, over depot.legacy
     translations.py  the language pairs and model files behind the
                 Texts page's translation, fetched from Mozilla
 

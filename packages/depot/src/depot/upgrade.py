@@ -183,7 +183,7 @@ revisions are written in a transaction that records the last text's id in
 upgrade_under_way, so a run after a stop copies only the texts after it,
 and a row written twice is ignored; no read of the file stays open across
 a commit, so the WAL is cut back after each. The revisions keep their column
-tags, which nothing of format 13 reads but depot.legacy; the counts of
+tags, which nothing of format 13 reads; the counts of
 tags, read from the revisions before this stage, stay right. Its stage
 sizes copies onto every revision of a text the kind, length and bytes of
 the content version it reads, looked up in the temporary table of the
@@ -1514,15 +1514,22 @@ def _named_13(con) -> dict[tuple[str, int], list[str]]:
 
 
 def _reads_here(path: Path):
-    """reads_here of depot.conversion.plan for the depot's file at path: the frozen legacy read's, opened when
-    a dataset first names a library by a depot's address."""
+    """reads_here of depot.conversion.plan for the depot's file at path, opened read-only when a dataset first
+    names a library by a depot's address: whether that library is one of this depot's rows. It is when the address
+    leads here (in any form, as Depot.place compares them), or, in a depot that follows an upstream, when the
+    address is the upstream's web address and the upstream owns the id, a library a pull brought here."""
     opened = []
 
     def reads_here(address: str, library: str) -> bool:
         if not opened:
-            from .legacy import Legacy
-            opened.append(Legacy(str(path)))
-        return opened[0].reads_here(address, library)
+            from .depot import Depot
+            opened.append(Depot(str(path), readonly=True))
+        depot = opened[0]
+        place = depot.place(address)
+        if place is None:
+            return True
+        upstream = depot.upstream()
+        return upstream is not None and place == depot.place(upstream) and bool(depot.upstream_owned([library]))
     return reads_here
 
 

@@ -102,8 +102,7 @@ def test_an_erasure_is_written_into_the_vocabulary_s_note_and_the_corpus_is_made
 
 def test_only_the_freight_s_check_marks_stale_a_corpus_the_depot_built_before_it(built, tmp_path):
     # an erasure the depot carried out leaves the corpus under corpora/ fresh until the freight checks, which marks
-    # it once (docs/erasure.md, "What it covers"); apps/depot/tests/test_legacy.py shows that the depot's commands
-    # and web app leave it as it was
+    # it once (docs/erasure.md, "What it covers")
     text = readers.rows(built.dock, readers.find(built.dock, built.corpus_id), "texts")[0]["id"]
     erased = built.depot.ask_erasure("a passage", [(text, 0, 5)], ME)
     built.depot.decide_erasure(erased, "admitted", ME)

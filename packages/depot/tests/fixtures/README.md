@@ -1,7 +1,7 @@
 # Fixture depots
 
 This folder holds two small synthetic depots, one of format 11 and one of format 12, each with the dock of its
-corpora. The upgrade tests and the legacy API's tests read them. Nothing in them is anyone's writing: every text is
+corpora. The upgrade tests read them. Nothing in them is anyone's writing: every text is
 made of words drawn from a fixed list with a fixed seed, and every decision is declared by "Ada Lovelace",
 ada@example.org.
 
@@ -34,7 +34,7 @@ Each dock holds one corpus built from revision 2 of `ds-two` at 2,000 tokens, an
 ## Making them again
 
 Making them again gives new ids for the corpora and new times, so every test that reads them has to be checked
-again, and so do the golden answers of `apps/depot/tests/legacy-golden/`.
+again.
 
 1. Extract each commit into its own folder, outside the repository, without touching git state:
    `git archive d0d454b22b | tar -x -C EXTRACT-11`, and the same with 6b470328c7 into `EXTRACT-12`.

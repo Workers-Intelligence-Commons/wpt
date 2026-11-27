@@ -791,10 +791,6 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
     request, upstream = web
     assert request("POST", "/api/texts", {"text": "Theirs.", "licenses": ["CC0-1.0"], "declaration": ME})[0] == 200
     upstream.decide("admitted", ["test-depot-1"], Declaration(ME["name"], ME["email"], True))
-    with upstream.db.write("a kept recipe") as (con, number):  # a tokenizer recipe the upstream kept, unwritten now
-        con.execute("INSERT INTO tokenizers_revisions (id, revision, change, latest, name, version, depot, dataset, "
-                    "sample_bytes, vocab_size) VALUES ('test-depot-9', 1, ?, 1, 'theirs', 1, NULL, '', 1000, 560)",
-                    (number,))
     follower = clone(request.url, str(tmp_path / "clone.sqlite"), About("test-clone", "Grace Hopper", "grace@example.org"))
     mine = serve(follower)
     assert mine("POST", "/api/texts", {"text": "Mine.", "licenses": ["CC0-1.0"], "declaration": ME}) == (
@@ -808,7 +804,6 @@ def test_a_clone_s_pages_say_what_belongs_to_the_upstream_and_refuse_changing_it
 
     assert mine("GET", "/api/texts/test-depot-1")[1]["upstream"] is True
     assert mine("GET", "/api/texts/test-clone-1")[1]["upstream"] is False
-    assert mine("GET", "/api/tokenizers/theirs")[1]["upstream"] is True
     assert mine("POST", "/api/texts/blocked", {"selection": named(["test-depot-1", "test-clone-1"]), "status": "refused"}) == (
         200, {"rows": [{"id": "test-depot-1", "reasons": ["belongs to the upstream"]}], "next": None, "partial": False})
     assert mine("POST", "/api/decisions", {"status": "refused", "selection": named(["test-clone-1"]), "declaration": ME})[0] == 200
