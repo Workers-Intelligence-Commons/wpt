@@ -396,6 +396,18 @@ over `warmup` updates to `lr`, then falls to `first_factor` of it after
 reads its tokens several times, `warmup` and `average_every` count the
 updates of one reading ("Readings", below).
 
+`weight_decay` is the value for one reading. A step of N readings runs N
+times the updates at the same learning rate and decays by `weight_decay`
+/ N, so the learning rate times the weight decay times the updates stays
+the same. The NorMuon matrices and the AdamW tensors take that value, and
+Engram's tables keep no decay; the decay stays cautious. The run's record
+gives the value used. The relation comes from *Frontier Pre-training at
+Microsoft AI* (Microsoft AI, 2026), which fitted it on sweeps of
+mixtures of experts of a few hundred million active parameters and more,
+of an optimizer it does not state, one run per point, holding the
+repetition of each source fixed, so not against readings
+([knowledge/reading-scarce-text.md](knowledge/reading-scarce-text.md)).
+
 With `average_states` above 0, the step keeps an average of the model's
 last states (IMU-1). The states are the model's whole state at the step's
 last update and every `average_every` updates before it, at most
@@ -583,7 +595,7 @@ read them and the readings.
 
 Choosing N, and what changes with it, is in
 [knowledge/reading-scarce-text.md](knowledge/reading-scarce-text.md).
-The weight decay stays the optimizer's setting whatever the readings.
+`by-part` divides its weight decay by N ("Optimizers", above).
 
 ### Streaming: a corpus larger than the disk
 

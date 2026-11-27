@@ -21,7 +21,11 @@ stage of the step together; "constant", lr at every update.
 `warmup` and `average_every` count the updates of one reading: a step
 that reads its examples several times (Run.readings) runs that many times
 each, so its schedule and its average are those of one reading stretched.
-The weight decay is the setting's, whatever the readings.
+`weight_decay` is the value for one reading: a step of N readings decays
+by weight_decay / N, every part that decays alike, so that the learning
+rate times the weight decay times the updates stays the same (the
+relation of "Frontier Pre-training at Microsoft AI", docs/training.md,
+"Optimizers"). Engram's tables, which never decay, stay at 0.
 
 The average (IMU-1, arXiv 2602.02522): with `average_states` above 0, the
 step keeps an exponential moving average of the model's states (its whole
@@ -95,14 +99,18 @@ class ByPart(Optimizer):
         self.model, self.settings, self.steps = model, settings, run.steps
         # counted in the updates of one reading: a step that reads its examples several times stretches them
         self.warmup, self.every = settings["warmup"] * run.readings, settings["average_every"] * run.readings
-        self.optimizer = NorMuonAdamW(model.optimizer_roles(), settings["lr"], settings["weight_decay"],
+        # the value of one reading: the learning rate times the weight decay times the updates stays the same
+        self.weight_decay = settings["weight_decay"] / run.readings
+        self.optimizer = NorMuonAdamW(model.optimizer_roles(), settings["lr"], self.weight_decay,
                                       settings["momentum"], (settings["beta1"], settings["beta2"]), settings["eps"],
                                       settings["table_lr_factor"])
         counts = self.optimizer.counts
         run.log(f"by-part: {counts['matrix']} NorMuon matrices, {counts['vector']} AdamW tensors, "
                 f"{counts['table']} Engram tables; schedule {settings['schedule']}"
                 + (f", warm-up {self.warmup:,} updates" if settings["schedule"] == "steps" else "")
-                + f"; weight decay {settings['weight_decay']:g}")
+                + f"; weight decay {self.weight_decay:g}"
+                + (f" (weight_decay {settings['weight_decay']:g} over {run.readings} readings)"
+                   if run.readings > 1 else ""))
         self.oldest = None  # the update of the average's oldest state
         if settings["average_states"]:
             every = self.every

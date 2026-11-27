@@ -1244,6 +1244,9 @@ def test_an_order_that_reads_its_text_twice_trains_twice_the_updates_and_says_so
                for text in said)
     assert f"its 3,000 tokens of plain text read {times:.2f} times (readings 2)" in \
         (tmp_path / "model" / "README.md").read_text()
+    # the weight decay used, the order's over the readings, is in the run's record
+    decay = order["steps"][0]["optimizer"]["settings"].get("weight_decay", 0.1)
+    assert any(f"; weight decay {decay / 2:g} (weight_decay {decay:g} over 2 readings)" in text for text in said)
 
 
 def test_each_step_that_reads_text_says_how_many_times_its_stages_read_it_and_warns_when_not_its_readings():

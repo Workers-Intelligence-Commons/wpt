@@ -179,19 +179,25 @@ it says **unchecked**.
 - **Readings of one text at WPT's sizes.** The same 1.18B tokens read 1,
   2, 4 and 8 times by two sizes, one near 10M parameters without the
   tables and one near 60M, everything else equal, compared on the bits
-  per byte of the held-out portion at the end of training, never on the
-  validation loss, whose windows are drawn from the training text and so
-  are read as many times. It closes the question for these sizes when the
+  per byte of the held-out portion at the end of training, never on a
+  loss measured on the text trained on, which repetition lowers. It closes
+  the question for these sizes when the
   gain of each doubling of the readings is known against the spread of
   two runs of one order ([run-to-run-spread.md](run-to-run-spread.md)):
   the readings past which a doubling no longer passes that spread. A run
   on twice the distinct text, where the snapshot holds it, says whether 2
   readings are worth new text here as in the sources.
-- **Weight decay under readings.** At one size and 4 readings, weight
-  decay 0.1, 0.4, 0.8 and 1.6 with NorMuon's cautious decay, against the
-  same values at 1 reading, on the held-out bits per byte. It says whether
-  the best weight decay moves with the readings at a fixed size and text,
-  which no source separates, and in which direction.
+- **Weight decay under readings.** The sources disagree on the direction:
+  more decay for more readings, or less decay for more updates. At one
+  size and text, 4 readings with NorMuon's cautious decay at a quarter of
+  the decay of one reading (the product of the learning rate, the weight
+  decay and the updates held), at the decay of one reading, and at twice
+  and four times it, each against 1 reading at its own best, compared on
+  the held-out bits per byte at the end of training and read against the
+  spread of two runs of one order. The decay that wins at 4 readings
+  settles the direction for this architecture: a quarter or below, the
+  product held; the decay of one reading or above, the decay rising with
+  the readings.
 - **Facts against loss.** No test of `wpt eval` asks a model for a fact
   its corpus states. A test of facts stated once and stated in several
   wordings, read 1 and 4 times, would say whether readings that lower the

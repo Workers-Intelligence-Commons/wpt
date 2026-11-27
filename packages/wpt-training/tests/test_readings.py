@@ -96,6 +96,22 @@ def test_the_schedule_of_three_readings_is_the_schedule_of_one_stretched_three_t
     assert three[:6] == [u / 6 for u in range(1, 7)]  # a warm-up of 2 updates of one reading: 6 of three
 
 
+def test_the_weight_decay_of_n_readings_is_the_order_s_over_n_for_every_part_that_decays():
+    # the learning rate times the weight decay times the updates stays that of one reading
+    model, said = WPT(ModelConfig(**TINY)), []
+
+    def decays(readings):
+        optimizer = read_text(readings, weight_decay=0.3).start_optimizer(
+            model, Run(tokens=400, parameters=1, steps=10 * readings, log=said.append, readings=readings))
+        return {("matrix" if group["muon"] else "table" if group["lr_factor"] != 1.0 else "vector"):
+                group["weight_decay"] for group in optimizer.optimizer.param_groups}
+
+    assert decays(1) == {"matrix": 0.3, "vector": 0.3, "table": 0.0}
+    assert any(line.endswith("; weight decay 0.3") for line in said)
+    assert decays(3) == {"matrix": 0.3 / 3, "vector": 0.3 / 3, "table": 0.0}  # Engram's tables never decay
+    assert any(line.endswith("; weight decay 0.1 (weight_decay 0.3 over 3 readings)") for line in said)
+
+
 def passes(updates):
     """The windows of a step's updates, in order, cut into its passes: a pass
     ends before the first window that predicts a token the pass predicted."""
