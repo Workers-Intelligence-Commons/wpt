@@ -397,8 +397,10 @@ of rows and records where it stopped, and the last removes the mark. Every
 way into a half-upgraded depot but `depot upgrade` refuses it, and the
 upgrade run again goes on from the batch after the last one written. It
 says how far it is as it goes. The change files record no change of layout, so
-before a step the file is marked for a full copy, under a new timeline, at
-its next backup. The step to format 5 builds the index `texts_order`, the
+before a step that changes the layout the file is marked for a full copy,
+under a new timeline, at its next backup. A step that changes none, such
+as the step to format 15, is a change of the depot recorded in a change
+file like any other: the next backup sends that file, and no full copy. The step to format 5 builds the index `texts_order`, the
 current texts in the numeric order of their ids. It is one `CREATE INDEX`
 that reads each current text's row once and rewrites no table, and it says
 what it does before it starts and how long it took. The step to format 6
@@ -566,7 +568,11 @@ harness"), a copy the step holds itself, as a new depot of format 15
 starts with it. It writes that one row of `kinds` and the about revision
 in one transaction, so a stop leaves the depot at format 14 and the step
 runs again whole; every conversation of format 14 matches the new schema,
-so none is read or rewritten.
+so none is read or rewritten. It changes no layout, so it is a change of
+the depot, kind `upgrade`, recorded in a change file: the next backup
+sends that change file on the depot's timeline and no full copy, and the
+check of a depot of format 14 says so. A depot that also runs the step to
+format 14 gets its full copy from that step, and the copy holds this one.
 
 `depot upgrade` alone, or with `--check`, writes nothing in the depot: it opens the
 file read-only and says what the upgrade would do. For a depot of format
@@ -579,7 +585,8 @@ they are, what is not converted and why, and the cost of every step left
 together: the seconds (from the rates `packages/depot/bench/upgrade.py`
 and `packages/depot/bench/large.py` measure, plus the time its own
 reads took), the free disk SQLite's temporary folder needs, the WAL at its
-largest, the disk added and the full copy the next backup sends. It reads
+largest, the disk added and the full copy the next backup sends, when a
+step changes the layout. It reads
 every snapshot at once in one merge of four sequential scans sorted by text
 id (`depot.conversion`), each sort holding only the columns the merge
 needs, then the tags and licenses of the revisions the snapshots read, in
@@ -686,7 +693,8 @@ refuse.
 `backups/<the depot's name>/` (`depot/backup.py`). `depot backup`
 sends each change file waiting beside the depot onto the dock and deletes
 it from the waiting folder once the dock holds it. Its first run on a
-file a command made whole (a new depot, a clone, an upgrade, a restore),
+file a command made whole (a new depot, a clone, an upgrade step that
+changes the layout, a restore),
 and a run with `--full`, also sends a full copy of the file, made with
 SQLite's backup into a temporary file beside the depot's file while the
 depot goes on being written. Each run records what it sent. Such a file
@@ -712,7 +720,10 @@ latest that reaches it; for a UTC time, the one that made the latest change
 or full copy at or before it. It takes that timeline's last full copy at or
 before the moment, then applies every change file after it in order, up to
 the moment. A change that does not apply exactly stops the restore, which
-leaves nothing at `TO`; it never writes over a file. It reads the backups of the
+leaves nothing at `TO`; so does a depot whose format at the moment is not
+the code's, which names the wpt format that restores it: a timeline may
+hold the step to format 15, so a moment before it gives a depot of format
+14, which only the wpt of format 14 restores. It never writes over a file. It reads the backups of the
 only depot name the dock holds backups of, or of the name `--depot` gives. Erasures
 carried out after the moment are not carried out in the restored depot.
 

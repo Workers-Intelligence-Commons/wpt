@@ -1,12 +1,13 @@
+import sys
 from pathlib import Path
 
 import apsw
 import pytest
 from depot_app import DockBackups
 
-from depot import Depot, NewText, backup, restore
-from depot.database import PENDING
-from depot.errors import BackupRefused, DepotExists
+from depot import Depot, NewText, backup, restore, upgrade
+from depot.database import FULL_COPY_NEXT, PENDING
+from depot.errors import BackupRefused, DepotExists, OtherFormat
 from depot.filters import Filter
 from depot.schema import KEYS
 
@@ -117,6 +118,51 @@ def test_a_restored_depot_backs_up_on_a_timeline_of_its_own(make_depot, me, tmp_
 
     assert branch.change() < depot.change()
     assert table_rows(latest.address) == table_rows(branch.address)
+
+
+def conversation_schema(path) -> str:
+    con = apsw.Connection(f"file:{Path(path).as_posix()}?mode=ro", flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI)
+    try:
+        return con.execute("SELECT schema FROM kinds WHERE id = 'conversation'").fetchall()[0][0]
+    finally:
+        con.close()
+
+
+def test_the_step_to_format_15_is_a_change_the_backups_carry_and_restore(make_depot, me, tmp_path, dock, monkeypatch):
+    # the step changes no layout, so a depot backed up onto the dock goes on with change files: its next backup
+    # sends no full copy of a file that may weigh terabytes, and its backups still give the depot back as it is after
+    # the step, at format 15 with the new conversation schema, and as it was before it, at format 14, for the wpt of
+    # that format
+    depot = make_depot()
+    depot.add([plain("one")], me)
+    with depot.db.bulk() as con:  # the depot as a depot of format 14 holds it: the conversation schema of format 14
+        con.execute("UPDATE kinds SET schema = ? WHERE id = 'conversation'", (upgrade.CONVERSATION_12,))
+        con.execute("UPDATE about_revisions SET format = 14")
+    assert backup(depot, dock)["full"] is not None
+    depot.add([plain("two")], me)
+    before, at_14, timeline = depot.change(), table_rows(depot.address), depot.db.timeline()
+    depot.db.close()
+
+    upgraded, start = upgrade.upgrade(depot.address, log=lambda line: None)
+
+    assert start == 14 and upgraded.format() == 15 and not (upgraded.db.waiting / FULL_COPY_NEXT).exists()
+    sent = backup(upgraded, dock)
+    assert sent["full"] is None and sent["timeline"] == timeline
+    assert [one["number"] for one in sent["changes"]] == [before, upgraded.change()]
+    restored = restore(dock, str(tmp_path / "after.sqlite"))
+    assert table_rows(restored.address) == table_rows(upgraded.address)
+    assert restored.format() == 15 and conversation_schema(restored.address) == upgrade.CONVERSATION_15
+    with pytest.raises(OtherFormat, match="restore it with the wpt of format 14"):
+        restore(dock, str(tmp_path / "before.sqlite"), at=str(before))
+    assert list(tmp_path.glob("before.sqlite*")) == []
+
+    # the wpt of format 14 restores that moment: the same chain, its format and its opening those of format 14
+    restoring = sys.modules["depot.backup"]
+    monkeypatch.setattr(restoring, "FORMAT", 14)
+    monkeypatch.setattr(restoring, "Depot", type("Format14", (), {"open": staticmethod(str)}))
+    restore(dock, str(tmp_path / "before.sqlite"), at=str(before))
+    assert table_rows(tmp_path / "before.sqlite") == at_14
+    assert conversation_schema(tmp_path / "before.sqlite") == upgrade.CONVERSATION_12
 
 
 def test_a_restore_keeps_no_copy_of_a_passage_erased_after_the_full_copy(make_depot, me, tmp_path, dock):

@@ -199,7 +199,9 @@ brings the depot up through every format between, so a depot of format 11
 goes to 12 and then to 13. The check, `--check`, only reads: it says what
 the upgrade does (each locked library and each dataset revision models were
 trained on made a snapshot, the open libraries left as they are), what it
-costs (time, WAL, disk, the full copy the next backup sends) and what to
+costs (time, WAL, disk, and the full copy the next backup sends when a
+step changes the layout; the step to format 15 changes none, so from
+format 14 the next backup sends only change files) and what to
 check before, and writes nothing in the depot; it saves what it measured
 beside the depot's file, in `wpt-depot.sqlite.upgrade-check.json`. It runs
 while the app keeps serving, from the new code's image: it holds one read

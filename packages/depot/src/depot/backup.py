@@ -6,8 +6,9 @@ file (depot.database): the rows it changed, as a session of SQLite
 records them. `depot backup` (backup) sends each change file waiting
 there onto the dock, under changes/, and deletes it from the folder once
 the dock holds it; its first run for the file's timeline
-(depot.database: a new depot, a clone, an upgrade and a restore each
-start one), and a run asked for one (`--full`), also send a full copy of
+(depot.database: a new depot, a clone, an upgrade step that changes the
+layout and a restore each start one), and a run asked for one (`--full`),
+also send a full copy of
 the file, under full/, made with SQLite's backup into a temporary file
 beside the depot's file while the depot goes on being written. Each run
 then writes its record under runs/: its timeline, the full copy and the
@@ -24,6 +25,12 @@ the last full copy at or before MOMENT, then every change file after it, in
 order, up to MOMENT (the latest change sent, by default), each change
 following the one before it. A change that does not apply exactly (a
 conflict, a missing link) stops the restore, which leaves nothing at TO;
+so does a depot whose format at that moment is not the code's. A
+timeline keeps one layout, since every upgrade step that changes the
+layout starts a new one, but it may hold a step that changes none, such as
+the step to format 15 (depot.upgrade), recorded as a change: its full
+copies and the depot at a moment after that change may then be of two
+formats, and the format that counts is the moment's;
 the file is written as `<TO>.restoring`, with the depot's own writer
 settings (a deleted row's bytes overwritten), and renamed once whole. The
 restored depot starts a timeline of its own, and its next backup sends a
@@ -146,10 +153,6 @@ def restore(dock, to: str, at: str | None = None, name: str | None = None) -> De
     try:
         copies.mkdir(parents=True)
         dock.fetch_into(chosen, working)
-        found_format = format_of(str(working))
-        if found_format != FORMAT:
-            raise OtherFormat(f"the backups of {name} are of format {found_format}, and this depot restores format "
-                              f"{FORMAT}")
         con = apsw.Connection(str(working))
         try:
             for pragma in WRITER:
@@ -165,6 +168,10 @@ def restore(dock, to: str, at: str | None = None, name: str | None = None) -> De
             raise BackupRefused(f"a change of the backups of {name} does not apply: {error}") from None
         finally:
             con.close()
+        found_format = format_of(str(working))
+        if found_format != FORMAT:
+            raise OtherFormat(f"the backups of {name} give a depot of format {found_format} at that moment, and this "
+                              f"depot restores format {FORMAT}: restore it with the wpt of format {found_format}")
     except BaseException:
         _remove(working, copies)
         raise

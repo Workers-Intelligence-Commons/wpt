@@ -163,7 +163,8 @@ it rewrites the depot, and the app must be stopped meanwhile.
    library and each dataset revision a corpus was built from becomes a
    snapshot; open libraries stay in the legacy tables), its checks, the
    names, the order data sections it prints, and the cost (seconds, WAL,
-   disk, the full copy the next backup sends). Set `DOCK` first, so
+   disk, the full copy the next backup sends after a step that changes
+   the layout; from format 14, change files only). Set `DOCK` first, so
    the dataset revisions its corpora were built from convert too.
 2. `uv run depot backup`, right before the upgrade. Only the wpt of
    the old format opens that backup: restoring it means checking out a

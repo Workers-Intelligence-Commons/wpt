@@ -920,6 +920,7 @@ def test_an_upgrade_to_format_14_builds_the_length_index_and_builds_it_again_aft
     assert [one[-1] for one in after["about_revisions"]] == [13, 14, 15]
     assert kept(after) == kept(before)
     assert "scores" in said[0] and any("at format 14" in line for line in said)
+    assert (upgraded.db.waiting / FULL_COPY_NEXT).exists()  # the index is a change of layout no change file records
     assert upgraded.score_values("quality") == values == {
         "name": "quality", "texts": 3, "low": 7.0, "high": 10.0,
         "common": [{"value": 7.0, "texts": 2}, {"value": 10.0, "texts": 1}]}
@@ -930,7 +931,8 @@ def test_an_upgrade_to_format_15_gives_the_conversation_kind_the_schema_that_tak
         make_depot, me, monkeypatch):
     # a depot checks each conversation against the schema its own table holds, so a depot of format 14 refuses what
     # a harness records until the step writes the schema a new depot starts with; the step writes one row in one
-    # transaction, so a stop leaves the depot at format 14 as it was, and the check says what it costs first
+    # change, so a stop leaves the depot at format 14 as it was, with no change file of it, and the check says what
+    # it costs first, a full copy at the next backup not among it (test_backup.py shows the backups carry the step)
     new = make_depot("new")
     depot = make_depot()
     depot.add([NewText(kind="conversation", content=json.dumps(CONVERSATION), licenses=("CC0-1.0",))], me)
@@ -940,15 +942,17 @@ def test_an_upgrade_to_format_15_gives_the_conversation_kind_the_schema_that_tak
         Depot.open(depot.address)
     checked = upgrade.check(depot.address)
     assert checked.passed and checked.cost["seconds"] == {"14 to 15": 0.0} and table_rows(depot.address) == held
+    assert checked.cost["backup"] == 0 and any("backup: no full copy" in line for line in checked.lines)
+    waiting = sorted(path.name for path in depot.db.waiting.iterdir())
 
-    def stopped(con, reached):
+    def stopped(con, number, reached):
         raise OSError("the machine stopped")
 
     with monkeypatch.context() as patch:
-        patch.setattr(upgrade, "_new_format", stopped)
+        patch.setattr(upgrade, "_about_at", stopped)
         with pytest.raises(OSError):
             upgrade.upgrade(depot.address, log=lambda line: None)
-    assert table_rows(depot.address) == held
+    assert table_rows(depot.address) == held and sorted(path.name for path in depot.db.waiting.iterdir()) == waiting
 
     upgraded, start = upgrade.upgrade(depot.address, log=lambda line: None)
 

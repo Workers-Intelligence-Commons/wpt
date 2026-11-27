@@ -44,8 +44,8 @@ pages, and after an erasure the WAL is folded into the file and emptied
 (checkpoint). The changesets keep what each change wrote and deleted, an
 erased passage included, until a backup sends them away (depot.backup).
 
-A file a command makes whole (a new depot, a clone, an upgrade, a restore)
-holds the marker FULL_COPY_NEXT in its waiting folder: its next backup
+A file a command makes whole (a new depot, a clone, an upgrade step that
+changes the layout, a restore) holds the marker FULL_COPY_NEXT in its waiting folder: its next backup
 sends a full copy, which every change after it builds on. It also gets a
 new timeline (TIMELINE, a random id in the waiting folder), which its
 backups record: a depot restored to an earlier moment numbers its changes
@@ -379,8 +379,8 @@ class Database:
     @contextlib.contextmanager
     def bulk(self) -> Iterator[apsw.Connection]:
         """A transaction of the writer that records no change: the rows a
-        command writes into a file it is making whole (a clone, an upgrade),
-        which holds FULL_COPY_NEXT."""
+        command writes into a file it is making whole (a clone, an upgrade
+        step that changes the layout), which holds FULL_COPY_NEXT."""
         with self._lock:
             con = self._write_connection()
             con.execute("BEGIN IMMEDIATE")

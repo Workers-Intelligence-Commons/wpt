@@ -27,9 +27,12 @@ rows and records in UNDER_WAY where it stopped; the last one drops it. A
 half-upgraded depot is at no format the code reads: every way in but the
 upgrade refuses it (errors.HalfUpgraded), and the upgrade run again goes
 on from the batch after the last one written, saying how far it is every
-SAY_EVERY seconds. Before a step, the file
-is marked to send a full copy at its next backup, under a new timeline
-(depot.database), since the change files record no change of layout.
+SAY_EVERY seconds. Before a step that changes the layout, the file is
+marked to send a full copy at its next backup, under a new timeline
+(depot.database), since the change files record no change of layout; a
+step that changes none (RECORDED) is written as a change of the depot,
+recorded in a change file like any other, and the next backup goes on
+from the last full copy.
 The step to format 5 builds the index texts_order (depot.schema) in
 one statement, which reads every current text's row once and rewrites no
 table; it says what it does before it starts and how long it took. The
@@ -234,7 +237,10 @@ of format 15 starts with it. It writes that one row of kinds and the
 about revision in one transaction, so a stop leaves the depot at format
 14 and the step runs again whole; it needs no half-upgraded mark, and no
 conversation is read or rewritten, since every conversation of format 14
-matches the new schema.
+matches the new schema. It changes no layout: it is a change of the depot,
+kind 'upgrade', recorded in a change file, so the next backup sends that
+change file and no full copy, and a restore of the depot's timeline to a
+moment after it gives the depot at format 15 (depot.backup).
 
 The check (check) opens the file read-only and writes nothing: for a depot
 of format 11 it checks what the step to format 12 checks before it ends,
@@ -765,7 +771,8 @@ def _in_place(path: Path, log, records: list[dict] | None = None, public: str | 
     try:
         while (reached := _format(db)) < FORMAT:
             db.settle()
-            db.mark_full_copy()
+            if reached not in RECORDED:
+                db.mark_full_copy()
             if reached == 12:
                 FILE_STEPS[reached](db, log, records, public, checked)
             else:
@@ -800,6 +807,11 @@ def _new_format(con, reached: int):
     """The upgrade's own change: a new revision of the about row at the format reached."""
     number = con.execute("SELECT coalesce(max(id), 0) + 1 FROM changes").fetchall()[0][0]
     con.execute("INSERT INTO changes (id, kind, made_at) VALUES (?, 'upgrade', ?)", (number, now()))
+    _about_at(con, number, reached)
+
+
+def _about_at(con, number: int, reached: int):
+    """A new revision of the about row at the format reached, under the change number."""
     con.execute("INSERT INTO about_revisions (revision, change, name, maintainer, takedown_contact, upstream, format) "
                 "SELECT revision + 1, ?, name, maintainer, takedown_contact, upstream, ? FROM about_revisions "
                 "ORDER BY revision DESC LIMIT 1", (number, reached))
@@ -2180,18 +2192,21 @@ CONVERSATION_15 = (
 
 def _to_15(db: Database, log):
     """Format 14 to 15, as the module says: the conversation kind's
-    schema, in one transaction."""
+    schema, in one change of the depot recorded in a change file."""
     log(f"{db.path}: writing the schema of the kind conversation that takes what an agent harness records, in one "
-        "transaction that writes one row of kinds")
-    with db.bulk() as con:
+        "change that writes one row of kinds, recorded in a change file: the next backup sends no full copy")
+    with db.write("upgrade") as (con, number):
         con.execute("UPDATE kinds SET schema = ? WHERE id = 'conversation'", (CONVERSATION_15,))
-        _new_format(con, 15)
+        _about_at(con, number, 15)
     log(f"{db.path}: the depot is at format 15")
 
 
 # each format of an SQLite file below the code's: the step that brings it to the next
 FILE_STEPS = {4: _to_5, 5: _to_6, 6: _to_7, 7: _to_8, 8: _to_9, 9: _to_10, 10: _to_11, 11: _to_12, 12: _to_13,
               13: _to_14, 14: _to_15}
+# the formats whose step to the next changes no layout: it is written as a change of the depot, recorded in a change
+# file, and the file is not marked for a full copy
+RECORDED = {14}
 
 
 # what `depot upgrade --check` takes for the time of what it does not read itself, measured on bench/large.py's
@@ -2534,20 +2549,23 @@ def _cost(con, path: Path, start: int, half: bool, measured: list, libraries: li
              f"  WAL at its largest: about {_size(wal)}, cut back to {_size(JOURNAL_LIMIT)} after each "
              "transaction",
              f"  backup: the next `depot backup` sends a full copy of the file, about {_size(size + added)}, "
-             "onto the dock (each step marks the file for a full copy, since change files record no layout)"]
+             "onto the dock (each step that changes the layout marks the file for a full copy, since change files "
+             "record no layout; the step 14 to 15, which changes none, is a change of the depot, which that full copy "
+             "holds)"]
     return {"seconds": seconds, "again": again, "added": added, "wal": wal, "backup": size + added,
             "tagsets": tagsets, "temporary": temporary, "lines": lines}
 
 
 def _cost_15(path: Path) -> dict:
-    """The cost of the step to format 15 alone (Check.cost) and its lines: one row of kinds written."""
-    size = path.stat().st_size
+    """The cost of the step to format 15 alone (Check.cost) and its lines: one row of kinds written, as a change
+    recorded in a change file, so the next backup sends no full copy (backup 0)."""
     lines = ["Cost of the step 14 to 15:",
              "  writing the schema of the kind conversation: one row of kinds, in one transaction, under a second",
              "  disk added: none to speak of; WAL: a few pages",
-             f"  backup: the next `depot backup` sends a full copy of the file, about {_size(size)}, onto the dock "
-             "(the step marks the file for a full copy, since change files record no layout)"]
-    return {"seconds": {"14 to 15": 0.0}, "again": 0.0, "added": 0, "wal": 0, "backup": size, "temporary": 0,
+             "  backup: no full copy; the step changes no layout and is a change of the depot like any other, so the "
+             "next `depot backup` sends its change file, a few kilobytes, with the change files waiting before it, on "
+             "the depot's timeline"]
+    return {"seconds": {"14 to 15": 0.0}, "again": 0.0, "added": 0, "wal": 0, "backup": 0, "temporary": 0,
             "lines": lines}
 
 
@@ -2571,7 +2589,8 @@ def _cost_14(con, path: Path) -> dict:
              f"  WAL at its largest: about {_size(added)}, the index's pages, cut back to {_size(JOURNAL_LIMIT)} "
              "after the step",
              f"  backup: the next `depot backup` sends a full copy of the file, about {_size(size + added)}, "
-             "onto the dock (the step marks the file for a full copy, since change files record no layout)"]
+             "onto the dock (the step 13 to 14 marks the file for a full copy, since change files record no layout; "
+             "the step 14 to 15, which changes none, is a change of the depot, which that full copy holds)"]
     return {"seconds": seconds, "again": 0.0, "added": added, "wal": added, "backup": size + added,
             "temporary": added, "lines": lines}
 
