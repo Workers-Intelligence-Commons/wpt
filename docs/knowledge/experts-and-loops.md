@@ -14,9 +14,40 @@ loops at small sizes, and half against it.
 
 - At an equal number of parameters, a model that loops beats one that does
   not, and the gain is larger the smaller the model. **published, agreed**
-- At equal training compute, a model that loops loses to a deeper one, and
-  loses more at small budgets. A loop is worth about half a layer of its
-  own. **published, agreed**
+- At equal training compute, a model that loops with ordinary residual
+  addition, each pass adding its change to what the passes before it
+  left, loses to a deeper one, and loses more at small budgets. A loop is
+  worth about half a layer of its own. **published, agreed**
+- With another residual rule, one source finds the opposite. When the
+  changes of all passes so far are multiplied by 1/4 at the end of each
+  pass, toward the loop's input, a looped model has a validation loss at or
+  under a standard model of the same executed depth on the same tokens, so
+  at equal compute, from 191M to 3B; a small learned reweighting of the
+  changes adds about 0.003 to the decay. The caveats are the source's own: at
+  191M the gain is within the spread between seeds (-0.0047, +0.0011 and
+  -0.0064 over three seeds); at 374M it is 0.023 against the standard
+  model at its best depth, over two seeds; at 778M it is 0.002 to 0.004
+  against that best depth, and its larger margins at 374M and 778M compare
+  with standard models deeper than their best depth. Every looped model has
+  unshared layers before and after the loop, and its own learning rate, up
+  to 3 times the standard model's. **published, one source**
+- A loop can keep, while writing, the keys and values of one pass instead
+  of one per pass. Each pass starts again from the embedding and reads the
+  earlier tokens only through keys and values made from the previous
+  pass's output (loop KV). Writing one pass per token then gives at token
+  t exactly what an unrolled loop of at least t + 2 passes gives: **proved**
+  by its source, for that architecture. The proof needs no assumption that
+  the passes' keys and values are alike. It does not show equality with
+  the 2 passes the model was trained with: that gap is measured, 0.0002 to
+  0.0014 nats at 113M. **published, one source**
+- At 113M with 2 passes, loop KV ties a plain loop, 3.291 to 3.308 against
+  3.299, when each layer also reads its own key and value of the current
+  token; without them it does no better than the model without loop,
+  3.310 and 3.322 against 3.318. **published, one source**, one run each
+- Run with more passes than it was trained with, a looped model does not
+  lower its loss. With ordinary addition the loss rises by 0.25 to 0.45
+  from 191M to 1.4B; with the decay above by 0.03 to 0.07.
+  **published, agreed**
 - Loops add reasoning and not knowledge: what a model can hold stays tied to
   its parameters. **published, agreed**
 - A small mixture of experts beats a dense model of equal compute and at
@@ -48,15 +79,18 @@ loops at small sizes, and half against it.
   against 82.40 on MATH-500. The prompt cannot: read that way it loses
   more than 10 points on GSM8K, so every pass keeps its own keys and values
   of the prompt. **published, one source**
-- So a model that loops keeps each pass's keys and values of its prompt,
-  which multiplies what it keeps of the prompt by the number of passes.
+- So a model that loops by passing each pass's output to the next keeps
+  each pass's keys and values of its prompt, which multiplies what it keeps
+  of the prompt by the number of passes; loop KV, above, does not.
   For the tokens it writes, the last pass's may be enough; the measure
   above read the prompt through them too, so it does not test this.
   **published, one source**, and the measure above agrees on the prompt
 - More experts and more loops add up more than they replace each other.
   **published, one source**
 - So the idea holds where the limit is the size of the model, its memory or
-  its file, and fails where the limit is training time. **hypothesis**
+  its file. Where the limit is training time it fails with ordinary
+  addition between passes, and holds only if the decay between passes
+  gains under 191M, which nothing measures. **hypothesis**
 - The two numbers do not trade the same thing. The number of experts
   changes the parameters and not the work per token, since 4 run whatever
   their number. Loops change the work per token, `loops + 1` times one
@@ -86,9 +120,10 @@ The 32 routed experts are 56% of the body at a width of 512 and 43% at 256.
 
 All figures in this section are **unchecked**: they were read through an
 automatic reader of the papers' pages. Each source exists on arXiv under
-its id, with the subject given here. The figures of *Ouro* on what the
-passes keep while writing, under "Measured with WPT", were compared with
-the paper's own text.
+its id, with the subject given here. Three sets of figures were compared
+with the papers' own text: those of *Ouro* on what the passes keep while
+writing, under "Measured with WPT", and all those of *Mixture-of-Loops
+Transformer* and *Loopback Transformer*.
 
 #### Mixtures of experts in small models
 
@@ -158,6 +193,104 @@ the paper's own text.
   the layer the loss stays near 7.4. A depth of 8 passes gains nothing
   over 4. A small matrix of its own for each pass moves the result by 2
   points at most.
+- *Mixture-of-Loops Transformer* (2026, arXiv 2611.34923), its Tables 2,
+  3, 6 and 11 and its Appendix B. Its small models have about 113M
+  parameters: width 768, 12 layers, the GPT-2 tokenizer, windows of 1,024
+  tokens, 3B tokens of FineWeb, the Muon optimizer, and one seed shared by
+  every run. All of them have 2 passes, and every pass has a loss of equal
+  weight, the plain loop included. Validation loss of the last pass:
+  - No loop 3.318; plain loop 3.299: 0.019 better at an equal number of
+    parameters, for twice the compute.
+  - Loop KV, with each layer also reading at the current token its own key
+    and value: 3.296 to 3.308. Adding those of the earlier layers of the
+    current pass: 3.291 to 3.302. Adding those of the previous pass at the
+    current token: 3.286 to 3.297, but then a token waits for its previous
+    pass and cannot be written in one pass. Without the current token's
+    keys and values: 3.310 and 3.322. Loop KV adds 1.8M to 3.5M parameters
+    for the projections of the previous pass's output.
+  - Looping only the first 6 layers, the other 6 running once on each
+    pass's output and reading the earlier tokens only through keys and
+    values made from it: 3.279 to 3.300 in the forms that can be written
+    one pass per token, 3.279 to 3.282 when each of the 6 layers has its
+    own projections of that output, 3.273 at best.
+  - The loss weights of the two passes, on the form above (Table 3): 1 to
+    1 gives 3.306 at the first pass and 3.279 at the last; 1 to 2 gives
+    3.315 and 3.276; 1 to 4 gives 3.322 and 3.272. A weight of 0 on the
+    first pass is not tried; the single-pass writing below assumes every
+    pass has a loss.
+  - Written one pass per token (Table 6), two other models of this size,
+    trained without gradient between the passes, on 8 windows of a prompt
+    of 128 tokens then 896 scored tokens: from an empty cache +0.0002
+    against the 2 trained passes; with the prompt read with 1 pass, +0.0014
+    and -0.0002 for the two models; with 2 passes, +0.0002 and -0.0005.
+  - What Appendix B proves, for loop KV: written one pass per token from an
+    empty cache, token t gets what an unrolled loop of at least t + 2
+    passes gives; with the prompt read in parallel, the written tokens get
+    what an unrolled loop gives that holds the prompt fixed. The keys and
+    values kept while writing are one pass's, as many as a model without
+    loop of the same layers keeps, against one set per pass for a loop
+    that passes its output on.
+  - At 700M (38 layers against 19 looped layers and 19 that read their
+    output, 400B tokens, AdamW, one run each), the looped model reaches the
+    standard model's final validation loss after 232.8B tokens, 1.7 times
+    fewer, for 2.01 times the training compute per token: 1.17 times the
+    standard model's total compute. At that total compute, 198.9B tokens,
+    it has not reached it yet; the paper says an exact comparison at equal
+    compute would need its own run.
+  - Not measured: anything under 113M, more than 2 passes, a loss on the
+    last pass alone, a second seed, and a deeper model of equal compute.
+- *Loopback Transformer* (2026, arXiv 2611.07226), its Tables 2, 4, 5, 7,
+  10 and 12. 191M to 3B, on ClimbMix, 20 tokens per parameter of the
+  standard model, windows of 4,096 tokens, AdamW with no weight decay.
+  Every looped model has 1 to 6 unshared layers before the loop and 1 to 6
+  after it; at 191M, 2 layers, 4 layers looped 4 times, then 2. The decay:
+  at the end of each pass, the loop's next input is its input plus a
+  quarter of what the passes have changed so far, including after the last
+  pass, before the unshared last layers. Only the factors 1/4 and 1 (no
+  decay) are tried. A learned reader, one vector per layer application,
+  then reweights the stored changes without changing their sum (11,520
+  parameters at 191M).
+  - Validation loss (Table 4a). At 191M: plain loop 2.6802, reader alone
+    2.6621, decay alone 2.6220, both 2.6187; the standard model 2.6234. At
+    374M with 24 layers: 2.4415, 2.4308, 2.3999, 2.3971; the standard
+    model 2.4198. The decay gives almost all of the gain, and the reader
+    adds about 0.003.
+  - Against the standard model of equal executed depth (Tables 2 and 9),
+    one run each: 2.6187 against 2.6234 at 191M with 20 layers, 2.4008
+    against 2.4395 at 374M with 32 layers, 2.2404 against 2.2644 at 778M
+    with 48 layers, 2.1073 against 2.1283 at 1.4B, 1.9849 against 2.0005
+    at 3B. The looped models store 40% to 75% of the standard model's
+    layer parameters.
+  - Seeds (Table 10 and its text): at 191M the gap to the standard model
+    is -0.0047, +0.0011 and -0.0064 over three seeds; at 374M with 24
+    layers, -0.0227 and -0.0261 over two.
+  - Depth at a fixed number of parameters (Table 12), 16 to 64 layers,
+    always 2 passes: the standard model is best at 24 layers at 374M and
+    at 778M. Against it there, the gap is -0.0227 at 374M; at 778M,
+    -0.0016 at 24 layers and -0.0037 for the looped model's own best depth,
+    48 layers. At 778M the standard model trained at a peak rate of 1e-3
+    and the looped one at 1.5e-3; the standard model at 1.5e-3 does 0.0020
+    better at 24 layers, as much as the gap there.
+  - The plain loop of the same tables loses to the standard model of equal
+    depth at 191M by 0.057, at 374M with 24 layers by 0.022, and at 778M at
+    every depth; it wins at 374M only at 32 to 64 layers, where the
+    standard model is past its best depth. At an equal number of stored
+    parameters, a standard model of 8 layers reaches 2.7376 against 2.6802
+    for the plain loop.
+  - More passes than trained, without retraining: at 191M with 8 passes
+    instead of 4 the loss rises by 0.060 with the decay and 0.454 for the
+    plain loop; with 4 instead of 2, by 0.074 and 0.270 at 374M, 0.028 and
+    0.248 at 1.4B. The paper says extra passes never lowered the loss.
+  - Learning rates: the looped models use 3e-3 at 191M against 1e-3 for
+    the standard model, the best of four rates for it; the same 2e-3 at
+    374M; 1.5e-3 against 1e-3 at 778M and 1.4B; the same 1e-3 at 3B.
+  - Not measured: anything under 191M, a loop over all layers with no
+    unshared layers, another factor of decay, and text other than
+    ClimbMix. The configurations disagree between tables: Table 5 gives
+    374M and 778M as 24 layers, [2, 10 looped twice, 2] and [2, 8 looped
+    twice, 6], while Table 2 reports 32 and 48 layers at those sizes, and
+    Table 12's 24-layer model at 778M is [2, 10 looped twice, 2], not the
+    [2, 8 looped twice, 6] of Tables 5 and 15.
 - Models of a few million parameters that loop over their own state solve
   puzzles (arXiv 2506.21734, arXiv 2510.04871) and are not models of
   language. The one model of language found built that way (arXiv
@@ -186,6 +319,12 @@ the paper's own text.
 #### What the sources dispute
 
 - Where loops stop paying: 2 passes, 4, or 9 to 12, by source.
+- Whether a looped model loses to a deeper one at equal compute. It does
+  with ordinary addition between passes, in arXiv 2604.21106, *Ouro*, and
+  the plain loop of *Loopback Transformer*. With the passes' changes
+  decayed toward the loop's input, *Loopback Transformer* finds it does
+  not from 191M to 3B, with unshared layers around the loop, by margins
+  that are within the spread between seeds at 191M.
 - Whether shared layers with many small experts beat a dense model.
 - Whether the best share of active experts depends on the model's size.
 
@@ -304,6 +443,21 @@ of the measure above that reads the first half through the last pass's
 values, 3.12 and 3.23 against 2.71 and 2.50, is the closest to the
 paper's reading of the prompt that way, and both lose.
 
+Loop KV (*Mixture-of-Loops Transformer*, above) keeps one pass's keys and
+values by another route. In Ouro and in the models measured above, each
+pass takes the previous pass's output at the same token, and every pass
+has its own keys and values of the earlier tokens; reading the last
+pass's instead is a substitution made at writing time, which works only
+as far as the passes' keys and values happen to be alike. In loop KV,
+each pass starts again from the embedding, and its layers read the
+earlier tokens only through keys and values made from the previous pass's
+output, in training as in writing. A token then never waits for its own
+previous pass, and writing one pass per token is the architecture's own
+computation, not a substitution: the proof that it equals an unrolled loop
+of at least t + 2 passes needs no assumption about the passes' keys and
+values. What remains measured is how far that unrolled loop is from the 2
+passes trained, 0.0002 to 0.0014 nats at 113M.
+
 ## Open
 
 - **Sharing keys and values between passes on the tokens written.** A
@@ -319,8 +473,68 @@ paper's reading of the prompt that way, and both lose.
 - **Loops alone and the table alone on the model with one table**: the
   measure above gives their sum.
 - **The same loss by a deeper model of equal compute.** A model that runs
-  its layers 3 times costs the compute of one 3 times as deep; the
-  published sources find the deeper one better.
+  its layers 3 times costs the compute of one 3 times as deep. With
+  ordinary addition between passes the published sources find the deeper
+  one better; with the decay below, one source finds the loop at or ahead
+  of it from 191M. The measure trains the deeper model beside the loops of
+  the decay measure, on the same tokens, each at its own best learning
+  rate.
+- **Decay between passes, with no parameter, on a model that loops over
+  all its layers.** *Loopback Transformer* measures the decay only with
+  unshared layers before and after the loop; it never tests a model whose
+  every layer loops and whose output head reads the last pass. A measure
+  trains at 45M (width 256, 11 layers, 2 loops), on the same tokens: a
+  plain loop; the same with each pass's input set to the embedding plus a
+  quarter of what the passes have changed so far, with the last pass
+  decayed; the same with the last pass not decayed; and the model without
+  loop. Whether the last pass is decayed is a choice to measure, not a
+  detail: decayed, the output head reads a quarter of the last pass's
+  change. Two seeds of each. It closes when the gap to the plain loop is
+  several times the spread between the two seeds of each model; the
+  published gain, 0.04 to 0.06 at 191M and 374M, would be. If it gains,
+  the same at about 120M.
+- **A loss on every pass against the last pass alone.** At 45M with 2
+  loops, on the same tokens: the loss on the last pass alone, the loss on
+  every pass with equal weights, and with the last pass weighted 4 times
+  the first. It compares the last pass's validation loss on the same
+  windows, and gives the first passes' loss beside it. *Mixture-of-Loops
+  Transformer* finds 1 to 4 better than 1 to 1 by 0.007 at 113M, one run
+  each, and never tries the last pass alone. It closes when the gaps are
+  read against two seeds of each.
+- **Loop KV, written one pass per token.** At 45M, on the same tokens:
+  a loop KV model with 2 loops and a loss on every pass, each layer
+  reading its own key and value of the current token, against a plain
+  loop with the same passes and the model without loop. It measures the
+  validation loss with the trained passes, then the loss of texts written
+  one pass per token, from an empty cache and after a prompt read with
+  every pass, against the trained passes. It closes the question for that
+  size if loop KV is within the spread between seeds of the plain loop and
+  the writing one pass per token within 0.01 of the trained passes: a
+  looped model would then keep one pass's keys and values while writing.
+  The published measure stops at 113M and 2 passes.
+- **Looping the first half of the layers only.** At 45M, on the same
+  tokens: the first half looped, the second half run once on each pass's
+  output, against all layers looped with the same passes and the model
+  without loop, each with its compute per token beside its loss (1.5
+  against 2 times one pass, with 2 passes). *Mixture-of-Loops Transformer*
+  finds the half loop better by 0.01 to 0.03 at 113M, one run each, with a
+  second half that reads the earlier tokens only through the looped half's
+  output. It closes when the gap is read against two seeds of each.
+- **A learning rate for looped models.** *Loopback Transformer* gives its
+  looped models their own peak rate, 3 times the standard model's at
+  191M, 1.5 times at 778M and 1.4B, and the same at 374M and 3B. A measure
+  trains at 45M a model with 2 loops at 1, 1.5, 2 and 3 times the best
+  rate of the model without loop, on the same tokens. It closes when the
+  best rate is found and its loss is read against the loss at the
+  no-loop model's rate and the spread between seeds; every comparison of a
+  loop with another model then gives each its own best rate.
+- **The validation loss at more passes than trained.** No training: the
+  models of the measures above, trained with 2 loops, evaluated with 3
+  and 4 loops on the same windows. The published loss rises with every
+  extra pass, by 0.25 to 0.45 for a plain loop and 0.03 to 0.07 with the
+  decay, from 191M to 1.4B. It closes when measured at 45M: whether the
+  loss rises, by how much, and whether the decay or a loss on every pass
+  holds it.
 
 - **The number of experts a small model needs.** A measure trains one shape
   at a width of 256 or 512 with 32, 16 and 8 experts, 4 per token, on the
@@ -348,4 +562,5 @@ paper's reading of the prompt that way, and both lose.
   compute, a plain model, a plain loop and a loop where a token that
   leaves does not run the later passes.
 - The figures of the published sources above, to be compared with their
-  texts, except those of *Ouro* on what the passes keep while writing.
+  texts, except those of *Ouro* on what the passes keep while writing and
+  those of *Mixture-of-Loops Transformer* and *Loopback Transformer*.

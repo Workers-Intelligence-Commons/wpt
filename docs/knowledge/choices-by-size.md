@@ -51,10 +51,14 @@ direction for most choices and a value for few.
   ([experts-and-loops.md](experts-and-loops.md)). **hypothesis**
 - **Loops, if the limit is the number of parameters.** At an equal number
   of parameters a loop gains more the smaller the model; at equal compute
-  it loses, and loses more at small budgets
-  ([experts-and-loops.md](experts-and-loops.md)). **published, agreed**.
-  At 45M parameters, 2 loops with a lookup table lower the loss by 0.14
-  for 3 times the compute. **measured here**, one run each
+  it loses with ordinary addition between passes, and loses more at small
+  budgets ([experts-and-loops.md](experts-and-loops.md)). **published,
+  agreed**. With the passes' changes decayed toward the loop's input, it
+  ties a standard model of equal compute at 191M and gains 0.02 at 374M,
+  with unshared layers around the loop; nothing under 191M.
+  **published, one source**. At 45M parameters, 2 loops with a lookup
+  table lower the loss by 0.14 for 3 times the compute. **measured here**,
+  one run each
 - **Lookup tables that grow slower than the model.** The gain of a table
   shrinks as the model grows; a table of 13.0M parameters lowers the loss
   of a model of 62M by 0.05, and one 16 times smaller does nothing
@@ -79,6 +83,9 @@ direction for most choices and a value for few.
   times what one pass keeps of it. The tokens written may keep the last
   pass's alone, in one model of 1.4B trained with a loss on every pass
   ([experts-and-loops.md](experts-and-loops.md)). **measured here**, and
+  **published, one source**. A loop whose passes start again from the
+  embedding and read the earlier tokens through the previous pass's output
+  keeps one pass's while writing, measured at 113M only. **proved** and
   **published, one source**
 - **Writing an answer catches up with choosing it.** From 0.1B to 104B,
   small models answer worse when asked than when their answers are ranked
@@ -127,8 +134,9 @@ One reading holds the statements above together. **hypothesis**
   loop at an equal number of parameters is largest at the smallest sizes.
 - A large model is short of compute. It adds parameters that cost no
   compute, many experts of which few run, lookup tables, and avoids
-  running a layer twice: at equal compute a deeper model beats a looped
-  one at every size measured.
+  running a layer twice: at equal compute a deeper model beats a loop with
+  ordinary addition between passes at every size measured. One source
+  finds a loop with decayed passes at or ahead of it from 191M to 3B.
 - Inside the layers the rule is the same at every size: a matrix whose
   numbers are shared or of low rank loses to a whole one
   ([layer-changes.md](layer-changes.md)). Sharing pays between whole
@@ -211,6 +219,10 @@ per parameter at each.
 - **A loop with passes chosen by token** against a plain model and a
   plain loop, at an equal number of parameters and equal compute, at 30M
   and 60M.
+- **A loop's own rules**: decay between passes, a loss on every pass,
+  loop KV written one pass per token, half the layers looped, the
+  learning rate, more passes than trained, at 45M then about 120M
+  ([experts-and-loops.md](experts-and-loops.md)).
 - **One depth against a depth that rises with size**, each with its own
   learning rate, over a series.
 - **Layers that keep a state in place of layers that read a short

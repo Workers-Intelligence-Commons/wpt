@@ -16,6 +16,12 @@ defined in [README.md](README.md).
 - Two runs of one recipe of 45M parameters on 1.18B tokens, measured on
   the same windows, differ by 0.001 nats, with an error of 0.001: less
   than a tenth of the published spread. **measured here**, two runs
+- A looped model's loss moves between seeds no more than a standard
+  model's: at 191M, two seeds move a plain loop by 0.0013 and a loop with
+  decayed passes by 0.0032, against 0.0090 for the standard model, on the
+  same windows. A gap of 0.005 between two models there changes sign from
+  one seed to another: -0.0047, +0.0011, -0.0064. **published, one
+  source**
 - Changing only the initial weights, or only the order of the text, gives
   nearly the whole spread each. **published, one source**, **unchecked**
 - Tests that count right answers differ far more between seeds than the
@@ -55,9 +61,10 @@ defined in [README.md](README.md).
 
 ## Evidence
 
-All figures from published sources in this section are **unchecked**: they
-were read through an automatic reader of the papers' pages. Each source
-exists under the id or address given.
+All figures from published sources in this section are **unchecked**,
+except those of *Loopback Transformer*: they were read through an
+automatic reader of the papers' pages. Each source exists under the id or
+address given.
 
 ### The size of the spread
 
@@ -73,6 +80,15 @@ exists under the id or address given.
   each. At 410M, 2 seeds of 10 stand apart with jumps of the loss.
   Predicting the final result from part of a run needed about 120,000 of
   143,000 updates.
+- *Loopback Transformer* (2026, arXiv 2611.07226), its Table 10 and its
+  text. Each seed sets the initial
+  weights and the order of the text; every model is measured on the same
+  1,024 windows of 4,096 tokens. At 191M, two seeds: standard model
+  2.6234 and 2.6144, plain loop 2.6802 and 2.6815, loop with decayed
+  passes 2.6187 and 2.6155. With a third seed, the decayed loop's gap to
+  the standard model is -0.0047, +0.0011 and -0.0064 over the three
+  seeds. At 374M, two seeds: standard 2.4198 and 2.4257, decayed loop
+  2.3971 and 2.3996, a gap of -0.0227 and -0.0261.
 
 ### Its causes
 
@@ -155,4 +171,5 @@ stage's, which is why the loss is higher than the run's own last measure.
 - **Whether an average of the last weights shrinks the spread.** The same
   runs evaluated with and without the average.
 - **Whether a model with loops, or with a lookup table, has the same
-  spread** as a plain one.
+  spread** as a plain one under 100M. At 191M, two seeds find a looped
+  model's spread no larger.
