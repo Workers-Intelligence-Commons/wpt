@@ -142,6 +142,25 @@ def test_general_knowledge_asks_each_question_in_both_languages(trained, tmp_pat
     assert "| **all** |" in card and "| fr rank | fr top 1 | fr top 10 | fr probability |" in card
 
 
+def test_free_text_shows_what_the_model_writes_from_each_opening(trained, tmp_path):
+    # the built-in test, with fewer and shorter texts
+    test = tmp_path / "free_text.py"
+    test.write_text((BUILT_IN / "free_text.py").read_text(encoding="utf-8").replace("ROWS = 4", "ROWS = 2").replace(
+        "WRITTEN = 200", "WRITTEN = 30"), encoding="utf-8")
+    main([str(trained.folder), str(test)])
+    data = json.loads((trained.folder / "evals" / "free_text.json").read_text())["data"]
+    assert set(data["languages"]) == {"fr", "en"}
+    for found in data["languages"].values():
+        assert len(found["texts"]) == 3 * 2 and all(one["tokens"] <= 30 for one in found["texts"])
+        assert 0 <= found["repeated"] <= 1 and 0 <= found["repeating"] <= 1
+    card = (trained.folder / "README.md").read_text()
+    assert "| fr |" in card
+    assert all(one["opening"] + one["text"] in card for found in data["languages"].values()
+               for one in found["texts"][::2])  # the first text of each opening
+    main([str(trained.folder), str(test)])  # the seed gives the same texts again
+    assert json.loads((trained.folder / "evals" / "free_text.json").read_text())["data"] == data
+
+
 
 def test_copying_measures_what_the_model_reuses_from_its_prompt(trained, tmp_path):
     # the built-in test, with fewer prompts and a lower floor of words: the test vocabulary is small
@@ -220,7 +239,7 @@ def test_every_built_in_test_runs_on_a_model_whose_corpus_has_no_held_out_portio
     changed(trained, change)
     main([str(trained.folder)])
     records = {path.stem: json.loads(path.read_text()) for path in (trained.folder / "evals").glob("*.json")}
-    assert set(records) == {"bits_per_byte", "copying", "general_knowledge"}  # the run went on past it
+    assert set(records) == {"bits_per_byte", "copying", "free_text", "general_knowledge"}  # the run went on past it
     data = records["bits_per_byte"]["data"]
     assert data["measured"] is False and reason in data["reason"] and set(data) == {"measured", "reason"}
     assert str(trained.folder) not in data["reason"]  # the folder never records where it lives

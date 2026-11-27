@@ -65,6 +65,7 @@ import torch.nn.functional as F
 from wpt_utils.device import processor_name
 
 DRAFT = 5  # draft tokens per row and step: the most DSpark's production drafter proposes (docs/model.md)
+TEMPERATURE, TOP_K = 0.8, 40  # the sampling a writer uses unless told otherwise: wpt chat's, and wpt eval's free_text
 COSTS_FILE = "scheduler-costs.json"  # a run's measured costs, in its record (costs_file, replayed_costs)
 
 
@@ -80,8 +81,8 @@ class Writer:
     docstring); then rounds counts the steps that drafted, verified the
     drafts the model checked, and accepted those it kept."""
 
-    def __init__(self, model, prompt, rows=1, *, temperature=0.8, top_k=40, generator=None, stops=(), drafter=None,
-                 draft=DRAFT, costs=None, outcomes=None, routes=False):
+    def __init__(self, model, prompt, rows=1, *, temperature=TEMPERATURE, top_k=TOP_K, generator=None, stops=(),
+                 drafter=None, draft=DRAFT, costs=None, outcomes=None, routes=False):
         if not prompt:
             raise ValueError("a prompt holds at least one token")
         if costs is not None and len(costs) < draft + 1:
@@ -353,8 +354,8 @@ def _cut(tokens, stops, limit):
     return tokens[:limit]
 
 
-def next_message(model, tokenizer, conversation, *, max_new_tokens, temperature=0.8, top_k=40, generator=None,
-                 drafter=None, costs=None) -> list[int]:
+def next_message(model, tokenizer, conversation, *, max_new_tokens, temperature=TEMPERATURE, top_k=TOP_K,
+                 generator=None, drafter=None, costs=None) -> list[int]:
     """The tokens the model writes for the assistant's next message after
     conversation (docs/chat-format.md), read through the chat template
     (wpt_tokenizer.chat.prompt): up to <|im_end|> or the end of a document,
@@ -373,7 +374,8 @@ def next_message(model, tokenizer, conversation, *, max_new_tokens, temperature=
 
 
 @torch.no_grad()
-def sample_tokens(model, ids, *, max_new_tokens, temperature=0.8, top_k=40, generator=None, drafter=None, costs=None):
+def sample_tokens(model, ids, *, max_new_tokens, temperature=TEMPERATURE, top_k=TOP_K, generator=None, drafter=None,
+                  costs=None):
     """Yield up to max_new_tokens sampled token ids, one at a time, after ids
     (a list of ints, at least one), through a Writer of one row. The caller
     decides when to stop by breaking out of the iteration."""
