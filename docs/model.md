@@ -30,8 +30,9 @@ token ids
          (In-Place TTT)
        every sublayer's input a weighted sum of the embedding and the
          earlier sublayers' outputs (Attention Residuals)
-  -> `loops` more times through layers 1 .. L, each pass starting from the
-     one before's output, or from the decayed change it made (Loops)
+  -> `loops` more times through layers 1 .. L (or the first `loop_layers`,
+     the others then once after the last pass), each pass starting from
+     the one before's output, or from the decayed change it made (Loops)
   -> one more such sum, RMSNorm, output head        (next-token scores)
   -> one multi-token prediction block, window attention (the token after next)
 ```
@@ -369,6 +370,16 @@ model is one pass: nothing of the loop is in its weights or its cost.
   (below). Ouro also trains an exit gate that learns when to stop
   looping; WPT has none, which is open to review.
 
+The evidence is mixed, which is why this is a number and not a fixed
+choice. In Ouro's test at equal compute, from 53M to 1.36B parameters,
+the plain model had the lower loss in every case, by 0.015 to 0.039;
+accuracy by number of passes peaks at 3 to 4. No paper combines loops
+with HySparse2 or with Attention Residuals, so the rule for the sources
+above and the cache's rule (Generation, below) are open to review. A
+size of a series computes `loops + 1` times the work per token of one
+pass, or with `loop_layers` one pass plus `loops` times the looped
+layers' work ("Model series").
+
 **Decay between passes.** An order number, `loop_decay` (`lambda`, above 0
 and below 1), changes what a pass after the first starts from. With `h0`
 the first pass's first source (the embedding) and `out` the pass before's
@@ -387,7 +398,8 @@ loop runs every layer has no coda, a shape the paper never tested: with
 `decay_last_pass` the output head reads `h0 + lambda (out - h0)`, the
 embedding itself weighing `1 - lambda` in it; without it the head reads
 `out`, and only the passes in between are decayed. Which of the two
-suits a model that loops every layer is not known. In the paper's
+suits a model that loops every layer is not known. With `loop_layers`
+(below), layers run once after the loop, as in the paper. In the paper's
 ablation (its Table 4a), at 191M parameters with 2 layers before, 4
 layers looped 4 times and 2 after, the decay of 1/4 lowered the
 validation loss from 2.6802 to 2.6220 against 2.6234 for a model without
@@ -412,14 +424,38 @@ without one. Its Table 3 compares the weights on its own looped model
 and 1:4 the second pass's cross-entropy is 3.279, 3.276 and 3.272, and
 the first's 3.306, 3.315 and 3.322.
 
-The evidence is mixed, which is why this is a number and not a fixed
-choice. In the paper's test at equal compute, from 53M to 1.36B
-parameters, the plain model had the lower loss in every case, by 0.015 to
-0.039; accuracy by number of passes peaks at 3 to 4. No paper combines
-loops with HySparse2 or with Attention Residuals, so the rule for the
-sources above and the cache's rule (Generation, below) are open to review.
-A size of a series computes `loops + 1` times the work per token of one
-pass ("Model series").
+**Looping the first layers.** An order number, `loop_layers`, makes the
+loop run only the first `loop_layers` layers on every pass; the other
+layers run once, after the last pass, as ordinary layers. Left out, the
+loop runs every layer.
+
+- The looped layers have their own sums of Attention Residuals, which
+  end with one more sum, the loop's output, where the head's sum ends
+  them without it. The layers after the loop have theirs too: their
+  first source is what follows the last pass (its decayed output with
+  `decay_last_pass`), and the head's sum ends them. The groups of
+  `residual_groups` are cut where the loop ends, so a group that spans
+  the boundary becomes two. The model has the same parameters as one
+  that loops every layer.
+- A second-half exact layer after the loop makes its keys and values
+  from the first half's output of the last pass, when the first half is
+  in the loop.
+- A loop may not end just before a sparse layer: the sparse layer reads
+  its exact layer's keys, values and choice of tokens, made on every
+  pass. The order is refused, naming both layers.
+- Engram and In-Place TTT keep their layers wherever the loop ends.
+- With `loop_losses`, the layers after the loop run once more from what
+  follows each other weighed pass, and the head reads that.
+- A drafter's features keep the layers' numbers: the feature of layer
+  `loop_layers` is what follows the loop.
+- R3 records the routed experts of the layers after the loop at the last
+  pass only, and the cache keeps their values at the last pass only.
+
+With `decay_last_pass`, this is Loopback's shape without a prefix: the
+loop, the decay after every pass, then layers that run once. It is not
+Mixture-of-Loops' U-MoLT, whose second half reads earlier tokens through
+keys and values made from the looped half's output: the layers after a
+WPT loop are ordinary layers.
 
 ## One vocabulary table
 
@@ -844,7 +880,8 @@ and every parameter belongs to exactly one of them (`WPT.parts`):
 - `experts`: the experts, shared and routed, with their norm and In-Place
   TTT's convolution and `W_target`;
 - `engram`: the Engram memories;
-- `residuals`: the queries and norm weights of Attention Residuals;
+- `residuals`: the queries and norm weights of Attention Residuals, the
+  sums of the layers after a loop of the first layers included;
 - `final-norm`: the last norm;
 - `output-head`: the output head;
 - `multi-token-prediction`: the MTP block.
@@ -965,8 +1002,9 @@ repository ("Model series", below). A model order holds:
   Engram orders, heads, table sizes and layers, the groups of Attention
   Residuals (`residual_groups`), the extra passes of the loop (`loops`,
   "Loops"; every order sets 0), optionally the rules of how the passes
-  follow each other and are trained (`loop_decay`, `decay_last_pass`,
-  `loop_losses`, "Loops"; no order sets them), and optionally one vocabulary table in place of two
+  follow each other, are trained and which layers they run (`loop_decay`,
+  `decay_last_pass`, `loop_losses`, `loop_layers`, "Loops"; no order sets
+  them), and optionally one vocabulary table in place of two
   (`tied_tables`, "One vocabulary table");
 - the `seed`;
 - the `steps`, in order, each a step with, when they differ from the step
@@ -1074,7 +1112,9 @@ each size's model order (`wpt_orders.series`):
   the paper's form rather than a count of its own. In-Place TTT adds its
   update and its change, counted as `6 x 2 x d_model x 2 shared_width`
   per token in each layer that has it. A model that loops does all of
-  this `loops + 1` times per token, and `M` counts every pass. The size's compute is
+  this `loops + 1` times per token, and `M` counts every pass; with
+  `loop_layers`, the passes after the first count the looped layers'
+  share alone (their parameters, attention term and In-Place TTT). The size's compute is
   the `C` whose `M_opt` is that `M`, and its tokens the `D_opt` of that `C`
   (DeepSeek's split of compute between model and data). The learning rate is the law's, rounded to 4
   significant digits, and AdamW's rates carry over to NorMuon ("Training").

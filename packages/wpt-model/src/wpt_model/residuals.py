@@ -83,12 +83,16 @@ class Mix(nn.Module):
 class Residuals(nn.Module):
     """The sums of `sublayers` sublayers cut into `groups` groups: mixes[j - 1]
     is sublayer j's (from 1; the first reads the embedding), and
-    mixes[sublayers - 1] the output head's."""
+    mixes[sublayers - 1] the output head's. ends, for each sublayer whether
+    it ends its group, the last True, gives the groups instead of
+    group_ends."""
 
-    def __init__(self, width, sublayers, groups):
+    def __init__(self, width, sublayers, groups=None, ends=None):
         super().__init__()
-        self.ends = group_ends(sublayers, groups)
-        self.groups = groups
+        self.ends = group_ends(sublayers, groups) if ends is None else tuple(ends)
+        if len(self.ends) != sublayers or not self.ends[-1]:
+            raise ValueError(f"attention residuals: {sublayers} sublayers, the last ending a group")
+        self.groups = sum(self.ends)
         self.mixes = nn.ModuleList(Mix(width) for _ in range(sublayers))
 
     def start(self, embedding, compiled=False):

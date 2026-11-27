@@ -210,6 +210,13 @@ def active_parameters(model: dict) -> int:
 
 
 def _count(model: dict, active: bool) -> int:
+    layers, rest = _counts(model, active)
+    return sum(layers) + rest
+
+
+def _counts(model: dict, active: bool) -> tuple[list[int], int]:
+    """(the parameters of each layer, in order, those of the rest: the
+    final norm and the multi-token prediction block), as _count counts them."""
     D = model["d_model"]
     H, c = model["attention_heads"], model["attention_head_dim"]
     norm, mix = D, 2 * D  # a sum of Attention Residuals: its query and its norm's weight
@@ -235,15 +242,17 @@ def _count(model: dict, active: bool) -> int:
         return rows * model["engram_dim"] + 2 * width * D + 3 * D + D * CONV_KERNEL
 
     ttt = D * TTT_KERNEL + D * D  # In-Place TTT's convolution and W_target
-    count = 0
+    layers = []
     for number, kind in enumerate(layer_kinds(model), start=1):
-        count += attention[kind] + experts(number <= HASH_LAYERS) + 2 * norm + 2 * mix
+        count = attention[kind] + experts(number <= HASH_LAYERS) + 2 * norm + 2 * mix
         count += engram() if number in model["engram_layers"] else 0
         count += ttt if _changes(number) else 0
+        layers.append(count)
     multi_token = (2 * norm + 2 * D * D + norm + attention["window"] + norm
                    + feed_forward(D, SHARED_EXPERTS * model["shared_width"]) + norm)
-    # the first sublayer reads the embedding without a sum, and the output head reads one: 2 sums per layer
-    return count + norm + multi_token  # the final norm, the multi-token prediction block
+    # the first sublayer reads the embedding without a sum, and the output head reads one: 2 sums per layer (with
+    # loop_layers, the loop's output and the coda's first sublayer stand for them)
+    return layers, norm + multi_token  # the final norm, the multi-token prediction block
 
 
 def _changes(number: int) -> bool:
@@ -263,12 +272,21 @@ def flops_per_token(model: dict, block_size: int) -> int:
     attention term, whatever the layers attend to), plus In-Place TTT's
     work, its update and its change counted as two more d_model x
     2 shared_width matrices in each layer that has it; times the passes
-    of the loop (loops + 1)."""
-    ttt = sum(_changes(number) for number in range(1, layer_count(model) + 1))
-    per_pass = (FLOPS_PER_PARAMETER * active_parameters(model)
-                + ATTENTION_FLOPS * layer_count(model) * model["d_model"] * block_size
+    of the loop (loops + 1). With loop_layers, the passes after the first
+    count only the layers the loop runs again."""
+    layers, rest = _counts(model, active=True)
+
+    def work(numbers, parameters):
+        ttt = sum(_changes(number) for number in numbers)
+        return (FLOPS_PER_PARAMETER * parameters
+                + ATTENTION_FLOPS * len(numbers) * model["d_model"] * block_size
                 + FLOPS_PER_PARAMETER * ttt * 2 * model["d_model"] * SHARED_EXPERTS * model["shared_width"])
-    return (model["loops"] + 1) * per_pass
+
+    per_pass = work(range(1, len(layers) + 1), sum(layers) + rest)
+    looped = model.get("loop_layers")
+    if looped is None:
+        return (model["loops"] + 1) * per_pass
+    return per_pass + model["loops"] * work(range(1, looped + 1), sum(layers[:looped]))
 
 
 def plan(series: dict, size: str, vocab_size: int) -> Plan:

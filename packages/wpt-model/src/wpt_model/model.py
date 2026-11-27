@@ -36,7 +36,12 @@ instead of out, h0 the embedding; with config.decay_last_pass, the last
 pass's output is decayed the same way before the head reads it. With
 config.loop_losses (Mixture-of-Loops' loop forcing, arXiv 2611.34923, its
 Eq. 8), the next-token loss is the weighted sum of each weighed pass's,
-each read through the output head; the scores are the last pass's.
+each read through the output head; the scores are the last pass's. With
+config.loop_layers, the loop runs the first loop_layers layers, through
+sums of Attention Residuals of their own that end with the loop's output,
+and the other layers (the coda) run once after the last pass, through
+their own sums (coda_residuals) whose first source is what follows that
+pass; once more for each other pass the loss weighs.
 Open to review: no exit gate learns when to stop (Ouro's).
 
 With recompute set, training keeps only the input of each window layer's
@@ -95,7 +100,7 @@ from .experts import SHARED_EXPERTS, Experts, Routes
 from .graphs import WindowGraphs
 from .layers import EPS, FeedForward, compute_dtype
 from .optimizer import roles
-from .residuals import Residuals
+from .residuals import Residuals, group_ends
 from .sequence import WHOLE, Carried, Split
 from .ttt import changes
 
@@ -115,7 +120,7 @@ _PART_OF = ((("mtp",), MULTI_TOKEN_PREDICTION), (("embedding",), EMBEDDING), (("
             (("final_norm",), FINAL_NORM),
             (("attention",), ATTENTION), (("attention_norm",), ATTENTION), (("experts", "router"), ROUTERS),
             (("experts",), EXPERTS), (("experts_norm",), EXPERTS), (("engram",), ENGRAM),
-            (("residuals",), RESIDUALS))
+            (("residuals",), RESIDUALS), (("coda_residuals",), RESIDUALS))
 
 
 def part_of(name: str) -> str:
@@ -313,7 +318,13 @@ class WPT(nn.Module):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList(Layer(config, number) for number in range(1, config.n_layer + 1))
-        self.residuals = Residuals(config.d_model, 2 * config.n_layer, config.residual_groups)
+        L, K = config.n_layer, config.looped_layers
+        if K == L:
+            self.residuals = Residuals(config.d_model, 2 * L, config.residual_groups)
+        else:  # the loop's sums end with its output's, the coda's with the head's; the groups cut where the loop ends
+            ends = group_ends(2 * L, config.residual_groups)
+            self.residuals = Residuals(config.d_model, 2 * K, ends=ends[:2 * K - 1] + (True,))
+            self.coda_residuals = Residuals(config.d_model, 2 * (L - K), ends=ends[2 * K:])
         self.final_norm = nn.RMSNorm(config.d_model, eps=EPS)
         self.head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.embedding = (TiedEmbedding(self.head) if config.tied_tables
@@ -483,13 +494,20 @@ class WPT(nn.Module):
         embedding = self.embedding(idx)
         weights = self.config.pass_weights
         exited = [] if exits and sum(weight > 0 for weight in weights) > 1 else None
+        coda = self.config.looped_layers < len(self.layers)
         first, last = embedding, self.config.loops
         for loop in range(last + 1):
-            out, found = self._pass(first, idx, canonical, embedding, record, replay, sequence.at(loop), loop,
-                                    features if loop == last else ())
+            place = sequence.at(loop)
+            out, found, bridge = self._pass(first, idx, canonical, embedding, record, replay, place, loop,
+                                            features if loop == last else ())
             follows = self._decayed(out, embedding) if loop < last or self.config.decay_last_pass else out
-            hidden = follows if self.config.decay_last_pass else out  # what the head reads after this pass
-            if exited is not None and weights[loop] > 0:
+            hidden = follows if self.config.decay_last_pass else out  # what follows this pass
+            weighed = exited is not None and weights[loop] > 0
+            if coda and (loop == last or weighed):  # the layers after the loop, once for each pass the head reads
+                hidden, after, _ = self._pass(hidden, idx, canonical, embedding, record, replay, place, loop,
+                                              features if loop == last else (), bridge, coda=True)
+                found.update(after)
+            if weighed:
                 exited.append(hidden)
             first = follows
         if len(self.layers) in features:
@@ -503,16 +521,25 @@ class WPT(nn.Module):
         decay = self.config.loop_decay
         return out if decay is None else torch.lerp(start.float(), out.float(), decay).to(out.dtype)
 
-    def _pass(self, first, idx, canonical, embedding, record, replay, sequence, loop, features):
-        """One pass through every layer, from its first source: (its output,
-        {layer number: its hidden state} for the features among its layers)."""
-        sources = self.residuals.start(first, compiled=bool(self.compiled) and self._whole(sequence))
+    def _pass(self, first, idx, canonical, embedding, record, replay, sequence, loop, features, bridge=None,
+              coda=False):
+        """One pass through the layers the loop runs (every layer, without
+        loop_layers), or with coda through the layers after them, from its
+        first source: (its output, {layer number: its hidden state} for the
+        features among its layers, the first half's output as the second
+        half's exact layers read it, or the bridge given while the first
+        half is not done)."""
+        K = self.config.looped_layers
+        residuals, numbers = ((self.coda_residuals, range(K + 1, len(self.layers) + 1)) if coda
+                              else (self.residuals, range(1, K + 1)))
+        sources = residuals.start(first, compiled=bool(self.compiled) and self._whole(sequence))
         recompute = self.recompute and self.training and torch.is_grad_enabled()
         found = {}
-        bridge = handoff = None
-        for number, layer in enumerate(self.layers, start=1):
+        handoff = None  # a sparse layer's exact layer runs in the same part (ModelConfig's loop_layers rule)
+        for number in numbers:
+            layer = self.layers[number - 1]
             attend, feed = self._sublayers(layer, sequence)
-            j = 2 * (number - 1)
+            j = 2 * (number - numbers[0])
             h = sources.input(j)
             if number - 1 in features:
                 found[number - 1] = h.float()
@@ -534,7 +561,7 @@ class WPT(nn.Module):
                 out = feed(h, idx, embedding, sequence, collect=sequence.collect, record=record, replay=replay,
                            loop=loop)
             sources.output(j + 1, out)
-        return sources.end(), found
+        return sources.end(), found, bridge
 
     @staticmethod
     def carried(offset, carried, collect=True):

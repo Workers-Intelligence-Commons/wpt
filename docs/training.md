@@ -843,7 +843,8 @@ window, also where a chunk crosses their boundaries.
 
 A model that loops (model.md, "Loops") runs every pass in each training
 pass. Its cost per token is `loops + 1` times one pass's, and so is its
-memory of activations, with `--recompute` too. Segments and slices hand
+memory of activations, with `--recompute` too; with `loop_layers`, the
+passes after the first cost what the looped layers cost. Segments and slices hand
 on each pass's values apart. R3 records and replays each pass's routed
 experts apart.
 

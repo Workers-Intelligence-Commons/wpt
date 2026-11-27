@@ -13,7 +13,7 @@ from .attention import ROPE_DIMS
 
 WINDOW, EXACT, SPARSE = "window", "exact", "sparse"  # the kinds of layer
 # the rules of how a loop's passes follow each other, each with its value when it is off: today's loop
-LOOP_RULES = {"loop_decay": None, "decay_last_pass": False, "loop_losses": None}
+LOOP_RULES = {"loop_decay": None, "decay_last_pass": False, "loop_losses": None, "loop_layers": None}
 
 
 def layer_kinds(window_layers, sparse_groups, sparse_layers):
@@ -55,6 +55,8 @@ class ModelConfig:
     decay_last_pass: bool = False    # the last pass's output decayed the same way before the output head reads it
     loop_losses: tuple | None = None  # each pass's weight in the next-token loss, one per pass (pass_weights);
                                       # None: the last pass's alone
+    loop_layers: int | None = None  # the leading layers the loop runs on every pass, the rest once after the
+                                    # last (looped_layers); None: every layer
 
     def __post_init__(self):
         object.__setattr__(self, "engram_layers", tuple(self.engram_layers))
@@ -101,7 +103,23 @@ class ModelConfig:
             elif min(weights) < 0 or not weights[-1] > 0:
                 problems.append("loop_losses are at least 0, and the last pass's above 0: it is the pass the "
                                 "model's scores come from")
+        looped = self.loop_layers
+        if looped is not None and self.loops:
+            if not 1 <= looped < self.n_layer:
+                problems.append(f"loop_layers must be between 1 and {self.n_layer - 1}, the layers but the last "
+                                "(leave it out to loop every layer)")
+            elif self.kinds[looped] == SPARSE:
+                exact = max(n for n in range(1, looped + 1) if self.kinds[n - 1] == EXACT)
+                problems.append(f"loop_layers {looped} would run sparse layer {looped + 1} once after the loop, "
+                                f"while exact layer {exact}, whose keys, values and choice of tokens it reads, "
+                                "runs on every pass: end the loop before an exact layer or a window layer")
         return problems
+
+    @property
+    def looped_layers(self) -> int:
+        """How many leading layers the loop runs on every pass: loop_layers,
+        or every layer."""
+        return self.n_layer if self.loop_layers is None else self.loop_layers
 
     @property
     def pass_weights(self) -> tuple:

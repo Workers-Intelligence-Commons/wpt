@@ -70,6 +70,21 @@ def test_a_size_s_training_follows_deepseek_llm_s_laws_at_the_compute_its_size_p
     assert plan.prefix_tokens == 18_521 * 29 * (WINDOW + 1)
 
 
+def test_a_pass_of_a_loop_over_the_first_layers_counts_those_layers_alone(ladder):
+    # each pass after the first adds what the looped layers cost in one pass: the same for every pass, less than a
+    # pass over every layer, and with the first 11 of 21 layers looped, their attention term and In-Place TTT's work
+    # (layers 1 and 7 of the 4 that have it) alone
+    model = series.shape(ladder, "512x10")
+    one = series.flops_per_token(model, WINDOW)
+    every = series.flops_per_token({**model, "loops": 1}, WINDOW) - one
+    looped = [series.flops_per_token({**model, "loops": n, "loop_layers": 11}, WINDOW) for n in (1, 2)]
+    assert looped[1] - looped[0] == looped[0] - one
+    assert 0 < looped[0] - one < every
+    ttt = 6 * 2 * 512 * 1024
+    assert (looped[0] - one) - 12 * 11 * 512 * WINDOW - 2 * ttt == pytest.approx(
+        (every - 12 * 21 * 512 * WINDOW - 4 * ttt) * 11 / 21, rel=0.2)  # the layers' parameters, about 11/21
+
+
 def test_the_batch_is_whole_windows_at_least_one_and_the_warm_up_a_share_of_the_updates(ladder):
     def planned(batch_windows, tokens=1000 * WINDOW, warmup_share=0.04):
         # laws of exponent 0 give the batch and the tokens straight away
